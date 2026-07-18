@@ -19,80 +19,47 @@ import (
 )
 
 const (
-	// gkeSandboxRuntimeKey / gkeSandboxRuntimeValue are the nodeSelector and
-	// toleration key/value GKE's secure-sandbox-policy ValidatingAdmissionPolicy
-	// requires on every Sandbox: the workload must be pinned to gVisor nodes and
-	// tolerate their NoSchedule taint. Without both, the admission policy rejects
-	// the Sandbox CR before the controller ever materialises a Pod.
+	// gkeSandboxRuntimeKey / gkeSandboxRuntimeValue are the gVisor
+	// nodeSelector/toleration GKE's secure-sandbox-policy admission requires on
+	// every Sandbox; see docs/executors/k8s-agent-sandbox.md.
 	gkeSandboxRuntimeKey   = "sandbox.gke.io/runtime"
 	gkeSandboxRuntimeValue = "gvisor"
 
-	// agentSandboxMaxTTL is the controller-owned GC backstop written into the
-	// Sandbox's spec.shutdownTime so a crashed orchestrator does not leak a
-	// sandbox: the controller deletes the Sandbox (and cascades to the Pod) once
-	// this absolute time passes. Close() is the normal teardown; this TTL only
-	// fires if Close() never runs. It is deliberately generous so it never cuts a
-	// live run short — a run that legitimately approaches 12h is far rarer than
-	// an orchestrator crash, and the cost of a too-short TTL (killing a working
-	// run) is worse than the cost of a too-long one (a leaked sandbox lingering a
-	// few extra hours).
+	// agentSandboxMaxTTL is the GC backstop TTL applied if Close() never runs;
+	// see docs/executors/k8s-agent-sandbox.md.
 	agentSandboxMaxTTL = 12 * time.Hour
 )
 
 // agentSandboxDefaultCPU / agentSandboxDefaultMemory are the per-container
-// limit+request defaults applied when the caller did not pin resources. GKE's
-// secure-sandbox-policy requires explicit CPU and memory limits on every
-// container in the Sandbox CR, so applyAgentSandboxAdmissionDeltas fills any gap
-// with these values rather than letting the Sandbox be rejected for an absent
-// limit. They are package vars (not consts) because resource.Quantity is not a
-// constant-expressible type.
+// limit+request defaults GKE's secure-sandbox-policy requires (see
+// docs/executors/k8s-agent-sandbox.md). Package vars, not consts:
+// resource.Quantity is not constant-expressible.
 var (
 	agentSandboxDefaultCPU    = resource.MustParse("500m")
 	agentSandboxDefaultMemory = resource.MustParse("512Mi")
 )
 
 // AgentSandboxExecutor implements Executor by provisioning the sandbox Pod
-// through GKE's Agent Sandbox controller: it creates an
-// agents.x-k8s.io/v1alpha1 Sandbox custom resource and the controller
-// materialises the backing Pod, rather than the executor creating a raw Pod
-// itself (the K8sExecutor path). Once the Sandbox is Ready, command execution
-// and file I/O ride the same pods/exec machinery as K8sExecutor via the
-// embedded podExecCore.
-//
-// The two executors share everything below the provisioning layer: the
-// hardened Pod spec (buildSandboxPodSpec), the per-Pod egress NetworkPolicy
-// (egressPolicyFor / podLabels), and the exec/file-I/O core. They differ only
-// in how the Pod comes into being — direct Pod create vs. the Sandbox CRD.
+// through GKE's Agent Sandbox controller (agents.x-k8s.io/v1alpha1 Sandbox),
+// rather than creating a raw Pod directly as K8sExecutor does. See
+// docs/executors/k8s-agent-sandbox.md.
 type AgentSandboxExecutor struct {
 	podExecCore
-	// dynamicClient drives the agents.x-k8s.io Sandbox CR (create / get / delete);
-	// the clientset embedded in podExecCore handles pods/exec and the
-	// NetworkPolicy.
+	// dynamicClient drives the Sandbox CR; podExecCore's clientset handles
+	// pods/exec and the NetworkPolicy.
 	dynamicClient dynamic.Interface
-	// sandboxName is the Sandbox CR's name. On the cold-create path it is also
-	// the backing Pod's name (the controller names the Pod after the Sandbox);
-	// the actual Pod name lives in podExecCore.podName, resolved at construction.
+	// sandboxName is the Sandbox CR's name; on the cold-create path it is
+	// also the backing Pod's name (resolved into podExecCore.podName).
 	sandboxName string
 	// networkPolicyName is the egress NetworkPolicy installed alongside the
-	// Sandbox. Close() deletes it best-effort after the Sandbox.
+	// Sandbox; Close() deletes it best-effort after the Sandbox.
 	networkPolicyName string
 }
 
 // applyAgentSandboxAdmissionDeltas mutates a base Pod spec (as produced by
-// buildSandboxPodSpec) so the Sandbox CR it is embedded in satisfies GKE's
-// secure-sandbox-policy ValidatingAdmissionPolicy. The base hardened spec
-// already covers drop-ALL, runAsNonRoot, automountServiceAccountToken=false and
-// the no-hostPath/hostNetwork/privileged requirements; this fills the four
-// gvisor-specific gaps the policy additionally mandates:
-//
-//   - spec.runtimeClassName == "gvisor" (forced unconditionally — the Sandbox
-//     path is gVisor-only, so any caller-set runtime is overridden here).
-//   - explicit CPU and memory limits on every container. A container missing
-//     either limit has BOTH that limit and the matching request filled with the
-//     package default; a caller-set value is preserved (only gaps are filled).
-//   - nodeSelector["sandbox.gke.io/runtime"] == "gvisor" (merged into any
-//     existing selector, never clobbering caller entries).
-//   - a toleration for the gVisor NoSchedule taint (appended idempotently).
+// buildSandboxPodSpec) so the embedding Sandbox CR satisfies GKE's
+// secure-sandbox-policy admission policy. See "The four GKE admission
+// deltas" in docs/executors/k8s-agent-sandbox.md.
 func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 	spec.RuntimeClassName = ptr.To(gkeSandboxRuntimeValue)
 
@@ -104,11 +71,9 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 		if c.Resources.Requests == nil {
 			c.Resources.Requests = corev1.ResourceList{}
 		}
-		// DeepCopy the package-default Quantity before storing it: resource.Quantity
-		// carries an internal *big.Int that a plain struct copy would alias, so a
-		// later mutation of a stored limit could corrupt the shared default for the
-		// next sandbox. Limits and Requests share one copy per container, matching
-		// resourcesToPodResources.
+		// DeepCopy avoids aliasing resource.Quantity's internal *big.Int across
+		// containers; a plain struct copy would let a later mutation corrupt the
+		// shared package default.
 		if _, ok := c.Resources.Limits[corev1.ResourceCPU]; !ok {
 			cpu := agentSandboxDefaultCPU.DeepCopy()
 			c.Resources.Limits[corev1.ResourceCPU] = cpu
@@ -126,9 +91,7 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 	}
 	spec.NodeSelector[gkeSandboxRuntimeKey] = gkeSandboxRuntimeValue
 
-	// Append the gVisor toleration only if an equivalent one is not already
-	// present. A flag (rather than an early return) keeps this delta independent
-	// of any future delta added after it.
+	// Append only if an equivalent toleration is not already present.
 	hasToleration := false
 	for _, t := range spec.Tolerations {
 		if t.Key == gkeSandboxRuntimeKey && t.Value == gkeSandboxRuntimeValue &&
@@ -148,26 +111,20 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 }
 
 // buildSandboxObject assembles the agents.x-k8s.io/v1alpha1 Sandbox custom
-// resource that the GKE Agent Sandbox controller reconciles into a Pod. The
-// typed Pod spec is converted to the unstructured map the CR's
-// spec.podTemplate.spec expects; the controller propagates podTemplate labels
-// to the Pod (stripping only agents.x-k8s.io/* keys), so the per-pod
-// stirrup.dev/pod label set by podLabels lands on the controller-created Pod
-// and the egress NetworkPolicy binds to it.
-//
-// shutdownPolicy "Delete" + shutdownTime is the controller's GC backstop: it
-// deletes the Sandbox at shutdownTime if Close() never runs (see
-// agentSandboxMaxTTL).
+// resource the GKE controller reconciles into a Pod. shutdownPolicy
+// "Delete" + shutdownTime is the GC backstop (agentSandboxMaxTTL); the
+// controller propagates podTemplate labels to the Pod so the per-pod
+// stirrup.dev/pod label set by podLabels lands on it and the egress
+// NetworkPolicy binds to it.
 func buildSandboxObject(namespace, name string, podSpec corev1.PodSpec, shutdownTime time.Time) (*metav1unstructured.Unstructured, error) {
 	specMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podSpec)
 	if err != nil {
 		return nil, fmt.Errorf("convert pod spec to unstructured: %w", err)
 	}
 
-	// podLabels is the single source of truth for the per-pod label set
-	// (stirrup-sandbox + stirrup.dev/pod). The unstructured tree wants
-	// map[string]any, so widen the map[string]string here rather than rebuild
-	// the labels inline and risk drift from the NetworkPolicy's selector.
+	// Widen to map[string]any (the unstructured tree's type) rather than
+	// rebuild the labels inline and risk drift from the NetworkPolicy's
+	// selector.
 	labels := map[string]any{}
 	for k, v := range podLabels(name) {
 		labels[k] = v
@@ -213,16 +170,11 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	if cfg.Namespace == "" {
 		return nil, fmt.Errorf("agent sandbox executor requires a namespace")
 	}
-	// Fail-closed: a nil Network leaves egress posture undefined. Rejecting it
-	// here forces the caller to declare intent, matching NewK8sExecutor and
-	// keeping CanNetwork honest against the installed policy.
+
 	if cfg.Network == nil {
 		return nil, fmt.Errorf("agent sandbox executor requires a network config (set executor.network.mode to \"none\" or \"allowlist\")")
 	}
 
-	// Compute the proxy env and validate the allowlist→URL requirement BEFORE
-	// creating any cluster objects, so a misconfigured allowlist run fails
-	// without leaving an orphaned Sandbox behind.
 	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
 	if err != nil {
 		return nil, err
@@ -244,10 +196,6 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 
 	logger := slog.Default()
 
-	// gVisor is the only runtime the Agent Sandbox path supports (GKE's
-	// secure-sandbox-policy admits nothing else, and applyAgentSandboxAdmissionDeltas
-	// forces it). Warn if the caller asked for something else so the override is
-	// visible rather than silent.
 	if cfg.RuntimeClassName != "" && cfg.RuntimeClassName != gkeSandboxRuntimeValue {
 		logger.Warn(
 			"agent sandbox executor: overriding executor.runtime with gvisor — the Agent Sandbox path is gVisor-only",
@@ -255,9 +203,6 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		)
 	}
 
-	// The Sandbox name doubles as the cold-path Pod name: the controller names
-	// the backing Pod after the Sandbox, and the per-pod egress NetworkPolicy /
-	// podLabels select on that name.
 	name, err := generatePodName()
 	if err != nil {
 		return nil, fmt.Errorf("generate sandbox name: %w", err)
@@ -266,13 +211,6 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	spec := buildSandboxPodSpec(cfg, proxyEnv)
 	applyAgentSandboxAdmissionDeltas(&spec)
 
-	// Install the egress NetworkPolicy BEFORE creating the Sandbox, for the same
-	// reason NewK8sExecutor does: the Pod name is client-side deterministic
-	// (cold-path Pod name == Sandbox name) and the policy selects on
-	// stirrup.dev/pod=<name>, so the policy can be in place before the
-	// controller materialises the Pod. Installing after readiness would leave a
-	// Running Pod with cluster-default egress in the Ready→policy window. A
-	// failure to install is fatal.
 	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, name)
 	if err != nil {
 		return nil, err
@@ -295,14 +233,8 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	err = wait.PollUntilContextTimeout(ctx, k8sReadyPollPeriod, k8sReadyTimeout, true, func(ctx context.Context) (bool, error) {
 		got, getErr := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if getErr != nil {
-			// Fail fast only on errors that will not resolve by retrying: an RBAC
-			// denial means the orchestrator cannot read the Sandbox at all. Every
-			// other class — a NotFound from read-after-write lag right after the
-			// create, or a transient 5xx/throttle during the controller's
-			// reconcile flurry (image pull, scheduling) — is retried until the
-			// readiness deadline. The Sandbox path has a wider readiness window
-			// than a raw Pod (controller watch + materialise), so a transient get
-			// error is meaningfully more likely here than in waitForPodReady.
+			// Only an RBAC denial fails fast; other errors retry until the
+			// readiness deadline (see docs/executors/k8s-agent-sandbox.md).
 			if apierrors.IsForbidden(getErr) || apierrors.IsUnauthorized(getErr) {
 				return false, getErr
 			}
@@ -315,22 +247,16 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	if err != nil {
 		deleteSandboxBestEffort(dyn, cfg.Namespace, name, logger)
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
-		// The duration is intentionally omitted: readiness can end on either
-		// k8sReadyTimeout or a shorter caller-context deadline, and a hardcoded
-		// "after 1m0s" would misreport the latter. The wrapped error carries the
-		// cause.
+		// Duration omitted: readiness can end on k8sReadyTimeout or a shorter
+		// caller deadline, and a hardcoded value would misreport the latter.
 		return nil, fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, err)
 	}
 
 	podName := resolveSandboxPodName(ready)
 
-	// v1 supports only the cold-create path, where the backing Pod is named after
-	// the Sandbox and so carries the stirrup.dev/pod=<name> label the egress
-	// NetworkPolicy selects on. A warm-pool-adopted Sandbox backs a Pod with a
-	// different (random) name and without that label, so the policy would bind to
-	// nothing and the Pod would run with unconfined egress — a silent fail-open.
-	// Refuse it until warm-pool support installs the policy against the resolved
-	// Pod name (or the controller-guaranteed sandbox-name-hash label).
+	// Cold-create only: an adopted (warm-pool) Sandbox's Pod name would not
+	// match, and the per-pod egress NetworkPolicy would bind to nothing. See
+	// docs/executors/k8s-agent-sandbox.md.
 	if podName != name {
 		deleteSandboxBestEffort(dyn, cfg.Namespace, name, logger)
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
@@ -356,27 +282,11 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	}, nil
 }
 
-// Close tears down the sandbox with its own background context (so cleanup
-// proceeds even if the caller's context is already cancelled).
-//
-// Only the Sandbox is deleted — NOT the Pod or Service. The controller owns them
-// via owner references and cascade-GCs them; deleting the Pod here would race
-// that cascade. The delete uses Foreground propagation, so the Sandbox object
-// lingers (with a deletion finalizer) until its dependent Pod is gone — which
-// makes "Sandbox gone" a reliable signal that the Pod is gone too.
-//
-// The egress NetworkPolicy is removed only AFTER the Sandbox (and, via the
-// foreground cascade, its Pod) is confirmed gone, so egress is never reopened for
-// a still-running Pod — the teardown analogue of the constructor's
-// policy-before-Pod ordering. The posture is fail-closed in three ways:
-//   - If the Sandbox delete fails (the Pod may still run), the policy is LEFT in
-//     place and the error returned; the shutdownTime TTL backstop still GCs the
-//     Sandbox eventually.
-//   - If the Sandbox does not disappear within the close timeout, the policy is
-//     LEFT in place (logged). A leftover policy is inert once the Pod is gone and
-//     still confines it if it somehow lingers.
-//   - A NotFound Sandbox is treated as already-gone (idempotent); the policy is
-//     then safe to remove.
+// Close tears down the sandbox with its own background context, deleting
+// only the Sandbox (not the Pod, which the controller cascade-GCs via
+// Foreground propagation) and then the egress NetworkPolicy. See "The
+// controller-owned TTL GC backstop" in docs/executors/k8s-agent-sandbox.md
+// for the fail-closed ordering.
 func (e *AgentSandboxExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
@@ -386,8 +296,7 @@ func (e *AgentSandboxExecutor) Close() error {
 		PropagationPolicy: &foreground,
 	})
 	if sbErr != nil && !apierrors.IsNotFound(sbErr) {
-		// The Sandbox (and its Pod) may still be running; keep the egress policy in
-		// place so the Pod stays confined.
+		// The Pod may still be running; the policy is left in place.
 		return fmt.Errorf("delete sandbox: %w", sbErr)
 	}
 
@@ -395,11 +304,6 @@ func (e *AgentSandboxExecutor) Close() error {
 		return nil
 	}
 
-	// Lift egress confinement only once the Sandbox is actually gone. A NotFound
-	// from the delete means it was already gone; otherwise poll until a Get
-	// reports NotFound (foreground propagation removes the object only after its
-	// dependent Pod is deleted). Transient get errors are ignored — the poll keeps
-	// waiting until the deadline.
 	gone := apierrors.IsNotFound(sbErr)
 	if !gone {
 		waitErr := wait.PollUntilContextTimeout(ctx, k8sReadyPollPeriod, k8sCloseTimeout, true, func(ctx context.Context) (bool, error) {
@@ -423,10 +327,8 @@ func (e *AgentSandboxExecutor) Close() error {
 	return nil
 }
 
-// deleteSandboxBestEffort attempts to delete the Sandbox CR, logging (but not
-// returning) any error. Used on constructor error paths to undo a Sandbox whose
-// readiness wait failed, so a failed construction leaves no orphaned Sandbox
-// (and, via the controller cascade, no orphaned Pod) behind.
+// deleteSandboxBestEffort deletes the Sandbox CR, logging (not returning)
+// any error. Used on constructor error paths to undo a partial create.
 func deleteSandboxBestEffort(dyn dynamic.Interface, namespace, name string, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()

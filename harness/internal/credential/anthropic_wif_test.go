@@ -13,9 +13,8 @@ import (
 	"time"
 )
 
-// validAnthropicWIFFields holds the four federation identifiers used
-// across the happy-path tests. The exact values are arbitrary; they
-// only need to round-trip through the request body unchanged.
+// Federation identifiers used across the happy-path tests; the exact
+// values are arbitrary and only need to round-trip unchanged.
 const (
 	testFederationRuleID = "fdrl_abc123"
 	testOrganizationID   = "550e8400-e29b-41d4-a716-446655440000"
@@ -24,8 +23,7 @@ const (
 )
 
 // newAnthropicWIFSourceForTest builds a source pointed at a test
-// server. Mirrors NewAnthropicWIFSource but patches tokenURL so we
-// never hit the real Anthropic endpoint.
+// server by patching tokenURL after construction.
 func newAnthropicWIFSourceForTest(t *testing.T, ts TokenSource, ruleID, orgID, saID, wsID, tokenURL string) *AnthropicWIFSource {
 	t.Helper()
 	src := NewAnthropicWIFSource(ts, ruleID, orgID, saID, wsID)
@@ -122,10 +120,7 @@ func TestAnthropicWIFSource_HappyPath(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_ExpiresInHonoured verifies that the parsed
-// expires_in feeds into the oauth2.Token.Expiry field. ReuseTokenSource
-// reads Expiry to decide whether to hit the exchange endpoint; without
-// the field set correctly, every adapter call would re-exchange.
+// Verifies the parsed expires_in feeds into oauth2.Token.Expiry.
 func TestAnthropicWIFSource_ExpiresInHonoured(t *testing.T) {
 	const customExpiresIn int64 = 600 // 10 minutes — well outside the 1-hour fallback
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", customExpiresIn, nil))
@@ -152,10 +147,7 @@ func TestAnthropicWIFSource_ExpiresInHonoured(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_MissingExpiresInFallback verifies the 1-hour
-// fallback when the server omits expires_in. Without this fallback,
-// ReuseTokenSource would treat the token as already expired and
-// re-hit the exchange on every BearerToken call.
+// Verifies the 1-hour expiry fallback when the server omits expires_in.
 func TestAnthropicWIFSource_MissingExpiresInFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -193,12 +185,8 @@ func TestAnthropicWIFSource_MissingExpiresInFallback(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_WorkspaceIDOmittedWhenEmpty asserts the
-// omitempty contract on the JSON body. Anthropic's endpoint requires
-// workspace_id absent — not present-as-empty-string — when the
-// federation rule is bound to a single workspace. Inspect the raw
-// bytes the server received, since unmarshalling would erase the
-// distinction.
+// Asserts workspace_id is omitted (not sent empty) when unset; inspects
+// raw bytes since unmarshalling would erase the distinction.
 func TestAnthropicWIFSource_WorkspaceIDOmittedWhenEmpty(t *testing.T) {
 	var capturedBody []byte
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 3600, func(_ anthropicOAuthRequest, raw []byte) {
@@ -225,9 +213,7 @@ func TestAnthropicWIFSource_WorkspaceIDOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_WorkspaceIDDefaultLiteralSent verifies the
-// magic string "default" rides through to the wire as a literal value
-// (and is not coerced to anything else).
+// Verifies the "default" workspace ID rides through as a literal value.
 func TestAnthropicWIFSource_WorkspaceIDDefaultLiteralSent(t *testing.T) {
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 3600, func(req anthropicOAuthRequest, _ []byte) {
 		if req.WorkspaceID != "default" {
@@ -251,9 +237,8 @@ func TestAnthropicWIFSource_WorkspaceIDDefaultLiteralSent(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody covers the four
-// status codes Anthropic uses for federation failures and asserts the
-// body is included in the wrapped error.
+// Covers the four status codes Anthropic uses for federation failures
+// and asserts the body is included in the wrapped error.
 func TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -291,14 +276,13 @@ func TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 			if !strings.Contains(msg, "Anthropic WIF") {
 				t.Errorf("error should be prefixed with \"Anthropic WIF\", got: %v", err)
 			}
-			// Status code must be visible to operators triaging the failure.
+
 			expectedStatus := http.StatusText(tc.status)
 			_ = expectedStatus
 			if !strings.Contains(msg, "returned ") {
 				t.Errorf("error should name the status code, got: %v", err)
 			}
-			// The body excerpt must be present (or its leading prefix when
-			// the body is short enough not to be truncated).
+
 			if tc.body != "" && !strings.Contains(msg, strings.TrimSpace(tc.body)[:min(20, len(strings.TrimSpace(tc.body)))]) {
 				t.Errorf("error should include body excerpt, got: %v", err)
 			}
@@ -306,10 +290,7 @@ func TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_HTTPErrorBodyTruncated verifies the response
-// body cap is enforced. A hostile or misconfigured endpoint that
-// streams a multi-MiB error body must not propagate the full payload
-// through every error wrapper into slog and OTel span statuses.
+// Verifies the response body cap is enforced on the error path.
 func TestAnthropicWIFSource_HTTPErrorBodyTruncated(t *testing.T) {
 	huge := strings.Repeat("A", stsErrorBodyLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -343,11 +324,8 @@ func TestAnthropicWIFSource_HTTPErrorBodyTruncated(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_HTTPErrorIncludesRequestID verifies the
-// request_id from the Anthropic response header rides through to the
-// error message. Operators triaging a federation failure use the
-// request_id to correlate with the Console authentication-history
-// page (see issue #117 Risk #1).
+// Verifies the request_id from the Anthropic response header rides
+// through to the error message.
 func TestAnthropicWIFSource_HTTPErrorIncludesRequestID(t *testing.T) {
 	const reqID = "req_01ABCDEFGHJKMNPQRSTVWXYZ12"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -376,10 +354,7 @@ func TestAnthropicWIFSource_HTTPErrorIncludesRequestID(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_MalformedJSONResponse covers the
-// json.Unmarshal branch in Token(). A 200 with non-JSON content must
-// produce a clear "parse token response" error rather than a
-// nil-pointer panic in the access-token check.
+// A 200 with non-JSON content must produce a parse error, not a panic.
 func TestAnthropicWIFSource_MalformedJSONResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -406,10 +381,8 @@ func TestAnthropicWIFSource_MalformedJSONResponse(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_EmptyAccessToken covers the empty-string
-// guard. A 200 response that omits the access_token must surface as a
-// federation error rather than yielding an empty bearer to the
-// provider adapter.
+// A 200 response omitting access_token must surface as an error, not
+// an empty bearer.
 func TestAnthropicWIFSource_EmptyAccessToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -436,12 +409,9 @@ func TestAnthropicWIFSource_EmptyAccessToken(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_JWTReadFreshOnEveryExchange verifies that the
-// underlying TokenSource is consulted on each exchange — not just once
-// at construction. Projected k8s tokens and GitHub Actions OIDC tokens
-// rotate ahead of expiry; if we cached the JWT inside the source the
-// federation flow would silently submit a stale assertion and fail
-// after the IdP rotation window.
+// Verifies the underlying TokenSource is consulted on each exchange,
+// not cached at construction, since projected tokens rotate ahead of
+// expiry.
 func TestAnthropicWIFSource_JWTReadFreshOnEveryExchange(t *testing.T) {
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 1, nil)) // 1s expiry forces refresh
 	defer srv.Close()
@@ -467,10 +437,8 @@ func TestAnthropicWIFSource_JWTReadFreshOnEveryExchange(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_ReuseTokenSourceCachesExchange pins the
-// ReuseTokenSource contract: while the cached access token is fresh,
-// repeated BearerToken calls must NOT round-trip to the exchange
-// endpoint.
+// Pins the ReuseTokenSource contract: repeated BearerToken calls must
+// not round-trip to the exchange endpoint while the token is fresh.
 func TestAnthropicWIFSource_ReuseTokenSourceCachesExchange(t *testing.T) {
 	var exchanges int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -569,15 +537,8 @@ func TestAnthropicWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight pins the
-// oauth2.ReuseTokenSource single-flight contract under contention.
-// Twenty goroutines start simultaneously, each call cred.BearerToken
-// expecting a fresh token; the underlying exchange must run exactly
-// once because ReuseTokenSource serialises refresh while the cached
-// token is still missing/expired. Without this, every concurrent
-// adapter request during a token-rotation window would slam the
-// exchange endpoint in parallel, exhausting Anthropic's rate budget
-// and amplifying any transient federation failure.
+// Pins the oauth2.ReuseTokenSource single-flight contract: twenty
+// concurrent BearerToken callers must trigger exactly one exchange.
 func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 	var exchanges atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -639,11 +600,7 @@ func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_NetworkError covers the http.Client.Do
-// failure path: a closed/refused server should produce a clear
-// "token request" error rather than a nil-pointer panic or a generic
-// I/O error operators cannot triage. Mirrors the HTTP-status-error
-// test above but exercises the connection-establishment branch.
+// Covers the http.Client.Do failure path against a refused connection.
 func TestAnthropicWIFSource_NetworkError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler must not be reached after server is closed")
@@ -673,14 +630,8 @@ func TestAnthropicWIFSource_NetworkError(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_NegativeExpiresInFallback documents the
-// safe-default behaviour for a malformed expires_in. The same code
-// branch (lifetime <= 0 → 1h) covers both the JSON-omitted case
-// (already tested above) and a hostile/buggy server returning a
-// negative value; without this test, a future refactor that uses
-// `if parsed.ExpiresIn == 0` would silently regress on the negative
-// case and produce a token whose Expiry is in the past — every
-// adapter request would re-exchange.
+// Pins the lifetime <= 0 → 1h fallback for a negative expires_in,
+// guarding against a future refactor narrowing the check to == 0.
 func TestAnthropicWIFSource_NegativeExpiresInFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -716,10 +667,7 @@ func TestAnthropicWIFSource_NegativeExpiresInFallback(t *testing.T) {
 	}
 }
 
-// TestAnthropicWIFSource_TokenSourceError verifies that an underlying
-// TokenSource failure is wrapped, not swallowed. Operators need the
-// inner cause to debug "the GHA OIDC endpoint is down" vs "Anthropic
-// rejected our assertion".
+// Verifies an underlying TokenSource failure is wrapped, not swallowed.
 func TestAnthropicWIFSource_TokenSourceError(t *testing.T) {
 	src := newAnthropicWIFSourceForTest(
 		t,

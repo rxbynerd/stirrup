@@ -140,8 +140,8 @@ func TestMultiStrategy_RecordsFallback(t *testing.T) {
 	}
 }
 
-// TestScannedStrategy_RecordsScansAndFindings verifies stirrup
-// .codescanner.scans (one per Apply that runs the scanner) and
+// TestScannedStrategy_RecordsScansAndFindings verifies
+// stirrup.codescanner.scans (one per Apply that runs the scanner) and
 // stirrup.codescanner.findings (one per finding, with severity and
 // blocked attributes). A planted secret in fresh content triggers a
 // block finding.

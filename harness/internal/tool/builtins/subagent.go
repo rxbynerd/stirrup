@@ -32,10 +32,9 @@ var spawnAgentSchema = json.RawMessage(`{
 	"additionalProperties": false
 }`)
 
-// SubAgentSpawner is the interface that SpawnAgentTool uses to run sub-agents.
-// This decouples the tool from the core package, avoiding a circular import.
-// The core.SpawnSubAgent function satisfies this interface shape via a closure
-// in the factory.
+// SubAgentSpawner runs a sub-agent. It decouples the tool from the core
+// package, avoiding a circular import; core.SpawnSubAgent satisfies it via
+// a closure in the factory.
 type SubAgentSpawner func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error)
 
 // SpawnAgentTool returns a tool that spawns a sub-agent to handle a subtask.
@@ -52,11 +51,8 @@ func SpawnAgentTool(spawner SubAgentSpawner) *tool.Tool {
 			"Example: {\"prompt\": \"Find every call site of harness.RunConfig.Redact and list them as path:line.\", \"mode\": \"research\", \"max_turns\": 8}",
 		InputExamples: []json.RawMessage{json.RawMessage(`{"prompt": "Find every call site of harness.RunConfig.Redact and list them as path:line.", "mode": "research", "max_turns": 8}`)},
 		InputSchema:   spawnAgentSchema,
-		// The spawn_agent tool itself does not mutate the workspace —
-		// the sub-agent it launches is gated by its own permission
-		// policy. We do however require upstream approval because
-		// spawning an agent consumes additional model budget and the
-		// operator may want to opt in to that.
+		// The sub-agent is gated by its own permission policy; approval
+		// is required here because spawning consumes additional budget.
 		WorkspaceMutating: false,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {

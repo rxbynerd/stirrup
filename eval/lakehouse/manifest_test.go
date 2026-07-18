@@ -13,11 +13,10 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestManifest_PopulatedOnStore pins #275's core write-path
-// behaviour: every StoreTrace and StoreRecording call appends a
-// matching manifest.jsonl line. A regression that wrote the JSON
-// but skipped the manifest would silently degrade query
-// performance back to O(files).
+// TestManifest_PopulatedOnStore pins that every StoreTrace and
+// StoreRecording call appends a matching manifest.jsonl line. A
+// regression that wrote the JSON but skipped the manifest would
+// silently degrade query performance back to O(files).
 func TestManifest_PopulatedOnStore(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
@@ -52,13 +51,11 @@ func TestManifest_PopulatedOnStore(t *testing.T) {
 	}
 }
 
-// TestManifest_FilterShortCircuitsLoad pins the read-path
-// performance contract: a filter that rejects entries on a
-// pre-decoded field (Outcome here) must skip the JSON load for
-// those entries. The smoke test stores a passing trace whose JSON
-// file is then truncated to invalid JSON; a query filtering for
-// Outcome=="failed" must succeed because the manifest entry tells
-// the read path it can skip loading the broken file.
+// TestManifest_FilterShortCircuitsLoad pins that a filter rejecting
+// entries on a pre-decoded field (Outcome here) skips the JSON load
+// for those entries: it stores a passing trace whose JSON file is
+// then truncated to invalid JSON, and a query filtering for a
+// different outcome must still succeed.
 func TestManifest_FilterShortCircuitsLoad(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)

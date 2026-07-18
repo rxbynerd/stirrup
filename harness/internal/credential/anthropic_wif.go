@@ -10,48 +10,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// anthropicOAuthURL is the public Anthropic OAuth token-exchange
-// endpoint. Held as a const and copied into each source's tokenURL
-// field so tests can swap in an httptest.Server without mutating
-// shared state. Production code never modifies the field.
+// anthropicOAuthURL is the Anthropic OAuth token-exchange endpoint,
+// copied into each source's tokenURL so tests can swap in an
+// httptest.Server without mutating shared state.
 const anthropicOAuthURL = "https://api.anthropic.com/v1/oauth/token"
 
-// anthropicVersionHeader pins the Anthropic API version for the
-// token-exchange request. Anthropic's docs require the header on every
-// request to /v1/oauth/token; the value here matches what the official
-// SDKs send.
+// anthropicVersionHeader is required by Anthropic on every request to
+// /v1/oauth/token.
 const anthropicVersionHeader = "2023-06-01"
 
 // anthropicJWTBearerGrantType is the OAuth 2.0 grant type for JWT
-// bearer assertion (RFC 7523). Anthropic uses the same identifier the
-// IETF spec defines.
+// bearer assertion (RFC 7523).
 const anthropicJWTBearerGrantType = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 
-// AnthropicWIFSource exchanges an OIDC identity token (from any
-// TokenSource — file/env/aws-irsa/azure-imds/github-actions-oidc/
-// gke-metadata) for a short-lived Anthropic access token via Workload
-// Identity Federation. The result is a Bearer token suitable for
-// Authorization on /v1/messages.
-//
-// Flow on each refresh:
-//  1. Fetch the OIDC JWT from tokenSource.Token(ctx). Re-read every
-//     time — projected k8s tokens and GitHub Actions OIDC tokens
-//     rotate ahead of their nominal exp, and Anthropic's docs require
-//     the JWT to be unexpired when the assertion is sent.
-//  2. POST JSON to https://api.anthropic.com/v1/oauth/token with the
-//     federation identifiers (rule, org, service account, optional
-//     workspace) and grant_type=jwt-bearer.
-//  3. Parse the OAuth response and return an oauth2.Token; the wrapping
-//     ReuseTokenSource caches it until expiry-soon.
-//
-// Concurrency is provided entirely by oauth2.ReuseTokenSource's built-
-// in single-flight; AnthropicWIFSource itself holds no mutable state
-// after construction (tokenURL is set once at NewAnthropicWIFSource
-// time and is only mutated by tests before use).
-//
-// No new SDK dependencies — Anthropic's OAuth endpoint is plain HTTPS
-// JSON; we hand-roll the request to keep the dependency surface small
-// (consistent with the rest of the credential package).
+// AnthropicWIFSource exchanges an OIDC identity token for a short-lived
+// Anthropic access token via Workload Identity Federation. See
+// docs/anthropic-wif.md for the refresh flow and risk mitigations.
 type AnthropicWIFSource struct {
 	tokenSource      TokenSource
 	federationRuleID string
@@ -88,16 +62,10 @@ func NewAnthropicWIFSource(ts TokenSource, federationRuleID, organizationID, ser
 }
 
 // Resolve validates the configured fields and returns a Resolved whose
-// BearerToken closure performs the token exchange lazily on first
-// invocation. The closure is wrapped in oauth2.ReuseTokenSource so
-// subsequent calls return the cached access token until the documented
-// expiry, with single-flight refresh under contention.
+// BearerToken closure performs the token exchange lazily, cached via
+// oauth2.ReuseTokenSource.
 //
-// The "Anthropic WIF:" error prefix is a deliberate log-greppability
-// convention shared with the GCP WIF source so federation errors
-// group together in operator dashboards.
-//
-//nolint:staticcheck // ST1005: capitalized prefix is intentional, see above.
+//nolint:staticcheck // ST1005: capitalized "Anthropic WIF:" prefix is intentional, shared convention across federation sources.
 func (a *AnthropicWIFSource) Resolve(_ context.Context) (*Resolved, error) {
 	if a.tokenSource == nil {
 		return nil, fmt.Errorf("Anthropic WIF: token source is required")
@@ -117,19 +85,15 @@ func (a *AnthropicWIFSource) Resolve(_ context.Context) (*Resolved, error) {
 	return &Resolved{BearerToken: bearerFromTokenSource(cached)}, nil
 }
 
-// anthropicWIFTokenSource implements oauth2.TokenSource. Token() runs
-// the full OAuth exchange flow and returns a token whose Expiry the
-// ReuseTokenSource wrapper inspects to decide when to call us again.
+// anthropicWIFTokenSource implements oauth2.TokenSource.
 type anthropicWIFTokenSource struct {
 	src *AnthropicWIFSource
 }
 
 // anthropicOAuthRequest is the JSON body shape documented at
 // https://platform.claude.com/docs/en/manage-claude/wif-reference.
-// workspace_id is omitted from the request when empty (omitempty)
-// because Anthropic's endpoint requires the field absent — not
-// present-as-empty-string — when the federation rule is bound to a
-// single workspace.
+// workspace_id must be absent (not empty-string) when the federation
+// rule is bound to a single workspace, hence omitempty.
 type anthropicOAuthRequest struct {
 	GrantType        string `json:"grant_type"`
 	Assertion        string `json:"assertion"`
@@ -140,24 +104,15 @@ type anthropicOAuthRequest struct {
 }
 
 // Token performs the OAuth token-exchange. Implements oauth2.TokenSource.
+// The transport, bounded response read, error decoration, and expiry
+// calculation are delegated to doJSONTokenExchange, shared with the
+// OpenAI WIF source.
 //
-// The request body and the anthropic-version header are Anthropic-specific;
-// the transport, bounded response read, error decoration, and expiry
-// calculation are delegated to doJSONTokenExchange, shared with the OpenAI
-// WIF source. Anthropic surfaces a request-id response header on non-2xx,
-// which rides through to the error for Console correlation.
-//
-// The "Anthropic WIF:" error prefix is a deliberate convention shared
-// with google_federation.go so federation failures group together in
-// log/dashboard searches.
-//
-//nolint:staticcheck // ST1005: capitalized prefix is intentional, see above.
+//nolint:staticcheck // ST1005: capitalized "Anthropic WIF:" prefix is intentional, shared convention across federation sources.
 func (t *anthropicWIFTokenSource) Token() (*oauth2.Token, error) {
-	// Internal context — the oauth2.TokenSource contract has no caller
-	// ctx. A cancelled adapter request must not poison subsequent
-	// refreshes (mirrors the rationale in google_federation.go's
-	// federationTokenSource.Token). 30 seconds covers the single
-	// round-trip with comfortable headroom.
+	// context.Background(), not the Resolve ctx: the oauth2.TokenSource
+	// contract has no caller ctx, and a cancelled adapter request must
+	// not poison subsequent refreshes.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

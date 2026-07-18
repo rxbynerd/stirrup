@@ -21,7 +21,6 @@ func TestMetricsRecording_Counters(t *testing.T) {
 		t.Fatalf("newMetricsFromMeter() error: %v", err)
 	}
 
-	// Record counter values.
 	m.Runs.Add(ctx, 1, metric.WithAttributes(attribute.String("run.mode", "execution")))
 	m.Turns.Add(ctx, 3)
 	m.TokensInput.Add(ctx, 1500)
@@ -39,8 +38,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	m.Stalls.Add(ctx, 1)
 	m.ContextCompactions.Add(ctx, 2)
 	m.SecurityEvents.Add(ctx, 4, metric.WithAttributes(attribute.String("event", "test")))
-	// Guard counters — exercised so a regression that silently
-	// dropped one of the new instruments would be caught here.
+
 	m.GuardChecks.Add(ctx, 7, metric.WithAttributes(
 		attribute.String("guard.phase", "pre_turn"),
 		attribute.String("guard.id", "granite-guardian"),
@@ -59,10 +57,6 @@ func TestMetricsRecording_Counters(t *testing.T) {
 		attribute.String("guard.id", "granite-guardian"),
 	))
 
-	// Component-level counters (issue #97) — exercised so a regression
-	// that silently dropped one of the new instruments would be caught
-	// here. Attributes are representative of what call-site wiring is
-	// expected to emit (parent.mode, server.name, strategy, type, etc.).
 	m.SubagentSpawns.Add(ctx, 2, metric.WithAttributes(
 		attribute.String("parent.mode", "execution"),
 	))
@@ -98,13 +92,11 @@ func TestMetricsRecording_Counters(t *testing.T) {
 		attribute.String("strategy", "sliding-window"),
 	))
 
-	// Collect metrics.
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
 		t.Fatalf("Collect() error: %v", err)
 	}
 
-	// Build a map of metric name -> sum for easier assertion.
 	sums := extractInt64Sums(t, rm)
 
 	assertInt64Sum(t, sums, "stirrup.harness.runs", 1)
@@ -149,21 +141,18 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 		t.Fatalf("newMetricsFromMeter() error: %v", err)
 	}
 
-	// Record histogram values.
 	m.RunDuration.Record(ctx, 1500.0, metric.WithAttributes(
 		attribute.String("run.mode", "execution"),
 		attribute.String("run.outcome", "success"),
 	))
 	m.TurnDuration.Record(ctx, 250.0)
 	m.ToolCallDuration.Record(ctx, 50.0)
-	// Guard duration histogram exercised so a regression that dropped
-	// the instrument would surface here.
+
 	m.GuardDuration.Record(ctx, 42.0, metric.WithAttributes(
 		attribute.String("guard.phase", "pre_turn"),
 		attribute.String("guard.id", "granite-guardian"),
 	))
 
-	// Component-level histograms (issue #97).
 	m.SubagentDuration.Record(ctx, 1200.0, metric.WithAttributes(
 		attribute.String("parent.mode", "execution"),
 	))
@@ -178,7 +167,6 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 		attribute.String("type", "test-runner"),
 	))
 
-	// Collect metrics.
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
 		t.Fatalf("Collect() error: %v", err)
@@ -204,22 +192,14 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	assertFloat64HistogramSum(t, histograms, "stirrup.verifier.duration_ms", 350.0)
 }
 
-// TestMetricsRecording_Resource is the regression test for the
-// "unknown_service:stirrup" bug on the metrics side: when no Resource is
-// attached to the MeterProvider, OTel-aware backends label the metric
-// stream with the SDK fallback service name. We assert here that the
-// resource carried alongside collected metrics carries service.name=stirrup
-// so this can't silently regress on the metrics path either.
-//
-// We also assert the issue #95 attributes (deployment.environment,
-// service.namespace) reach the metric resource — without these, any
-// Grafana group-by-environment or per-namespace dashboard query produces
-// nothing because the metric stream has no such labels. The default-value
-// path is exercised here; the explicit-options path is exercised by
+// TestMetricsRecording_Resource pins that the resource attached to the
+// MeterProvider carries service.name plus the deployment.environment /
+// service.namespace defaults, so metrics don't fall back to
+// "unknown_service:stirrup" or lose their Grafana group-by labels. The
+// explicit-options path is exercised by
 // TestMetricsRecording_ResourceWithExplicitOptions.
 func TestMetricsRecording_Resource(t *testing.T) {
-	// Pin env-var fallbacks to empty so the defaults are deterministic
-	// regardless of what the developer's shell happens to set.
+
 	t.Setenv(envEnvironment, "")
 	t.Setenv(envServiceNamespace, "")
 
@@ -266,11 +246,8 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	}
 }
 
-// TestMetricsRecording_ResourceWithExplicitOptions locks down the issue #95
-// acceptance criterion that operator-supplied ResourceOptions reach the
-// metric resource end-to-end. If a future refactor stopped threading
-// resourceOpts into the MeterProvider's Resource (e.g. dropped the
-// WithResource call in NewMetrics), this test would catch it.
+// TestMetricsRecording_ResourceWithExplicitOptions pins that
+// operator-supplied ResourceOptions reach the metric resource end-to-end.
 func TestMetricsRecording_ResourceWithExplicitOptions(t *testing.T) {
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
@@ -318,7 +295,7 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	ctx := context.Background()
 	m := NewNoopMetrics()
 
-	// All of these should be no-ops and must not panic.
+	// All instruments must be no-ops here and must not panic.
 	m.Runs.Add(ctx, 1)
 	m.Turns.Add(ctx, 5)
 	m.TokensInput.Add(ctx, 1000)
@@ -338,21 +315,12 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.ProviderLatency.Record(ctx, 100.0)
 	m.ProviderTTFB.Record(ctx, 30.0)
 
-	// Guard instruments. Same rationale as the component-level
-	// block below: every instrument registered in newMetricsFromMeter
-	// must appear here so a nil-field regression surfaces on the
-	// noop path immediately, not hours into a deployment.
 	m.GuardChecks.Add(ctx, 1)
 	m.GuardErrors.Add(ctx, 1)
 	m.GuardSkips.Add(ctx, 1)
 	m.GuardSpotlights.Add(ctx, 1)
 	m.GuardDuration.Record(ctx, 42.0)
 
-	// Component-level instruments (issue #97). Exercising every new
-	// instrument here means a regression that leaves any of them as a
-	// nil field in newMetricsFromMeter would surface as a panic on the
-	// noop path, rather than waiting for the first production
-	// observation (which can be hours into a deployment).
 	m.SubagentSpawns.Add(ctx, 1)
 	m.SubagentTokensInput.Add(ctx, 100)
 	m.SubagentTokensOutput.Add(ctx, 50)
@@ -406,8 +374,6 @@ func TestMetrics_CloseShutdownsProvider(t *testing.T) {
 		t.Fatal("expected error collecting after shutdown, got nil")
 	}
 }
-
-// --- test helpers ---
 
 func extractInt64Sums(t *testing.T, rm metricdata.ResourceMetrics) map[string]int64 {
 	t.Helper()

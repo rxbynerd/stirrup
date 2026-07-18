@@ -16,28 +16,11 @@ import (
 )
 
 // multiSchema is the JSON Schema for the explicit-operation edit tool.
-//
-// Issue #225 removes the prior inference-based routing (the model passed
-// whichever subset of {diff, old_string, content} matched its intent and
-// the harness guessed). The operation field is now required and declares
-// the intent; the field set the operation requires is described inline so
-// strict-mode normalization (#228) can lift it without re-reading this
-// file.
-//
-// Operation values:
-//   - "replace": find old_string in the file and substitute new_string.
-//     Required fields: old_string, new_string.
-//   - "delete":  remove old_string from the file. Required fields:
-//     old_string. (new_string is forbidden — pass "replace" if a
-//     non-empty replacement is intended.)
-//   - "rewrite": replace the entire file with content. Required fields:
-//     content.
-//   - "patch":   apply a unified diff. Required fields: diff.
-//
-// The schema below describes the union of fields. Per-operation field
-// requirements are enforced by Apply, not the JSON Schema, because most
-// JSON Schema validators struggle with conditional requireds and the
-// strict-mode lint (#228) can downcast this surface per provider later.
+// The operation field is required and declares intent; per-operation
+// field requirements ("replace" needs old_string+new_string, "delete"
+// needs old_string only, "rewrite" needs content, "patch" needs diff)
+// are enforced by Apply rather than the schema, since JSON Schema
+// validators struggle with conditional requireds.
 var multiSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -112,9 +95,8 @@ func (m *MultiStrategy) ToolDefinition() types.ToolDefinition {
 			"  - 'patch' applies a unified diff. Requires diff. Useful for multi-hunk edits.\n" +
 			"Example (replace): {\"path\": \"main.go\", \"operation\": \"replace\", \"old_string\": \"return nil\", \"new_string\": \"return err\"}",
 		InputSchema: multiSchema,
-		// #222 structured mirror of the worked example above; editStrategyTool
-		// propagates it onto the registered tool. Pinned to the description by
-		// TestBuiltinInputExamples_MatchDescription.
+		// Structured mirror of the worked example above, pinned to the
+		// description by TestBuiltinInputExamples_MatchDescription.
 		Presentation: &types.ToolPresentation{
 			InputExamples: []json.RawMessage{json.RawMessage(`{"path": "main.go", "operation": "replace", "old_string": "return nil", "new_string": "return err"}`)},
 		},
@@ -148,12 +130,10 @@ type strategyCandidate struct {
 // not lose the safety net just because it set operation explicitly.
 func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
 	start := time.Now()
-	// appliedStrategy tracks the last strategy that ran (or attempted
-	// to run) so we can record the edit.duration_ms histogram with
-	// the strategy label that actually carried the work — the one
-	// that succeeded if any did, otherwise the final candidate that
-	// failed. Empty if we never reached the candidate loop (parse
-	// error or no candidates).
+	// appliedStrategy names the strategy that carried the work (the one
+	// that succeeded, or the final candidate that failed), for tagging
+	// the edit.duration_ms histogram. Empty if the candidate loop was
+	// never reached (parse error or no candidates).
 	var appliedStrategy string
 	defer func() {
 		if m.Metrics != nil && appliedStrategy != "" {
@@ -203,10 +183,8 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 	for _, c := range candidates {
 		appliedStrategy = c.name
 		result, err := c.strat.Apply(ctx, c.input, exec)
-		// Record the attempt regardless of outcome. A hard error still
-		// counts as an attempt so dashboards show that the strategy
-		// was tried — recording only after a clean return would hide
-		// crashy strategies behind silence.
+		// Record regardless of outcome, including a hard error, so a
+		// crashy strategy doesn't vanish from the dashboards.
 		applied := err == nil && result != nil && result.Applied
 		m.recordAttempt(ctx, c.name, fellBackFrom, applied)
 		if err != nil {
@@ -216,7 +194,6 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 			return result, nil
 		}
 		failures = append(failures, fmt.Sprintf("%s: %s", c.name, result.Error))
-		// Subsequent attempts are fallbacks from this candidate.
 		fellBackFrom = c.name
 	}
 
@@ -282,21 +259,16 @@ func (m *MultiStrategy) recordAttempt(ctx context.Context, strategy, fellBackFro
 func (m *MultiStrategy) buildCandidates(params multiInput) ([]strategyCandidate, error) {
 	primary, ok := m.primaryFor(params)
 	if !ok {
-		// validateOperationFields already returned an error before we
-		// reach here, so this branch is unreachable in practice. The
-		// belt-and-braces check keeps a future contributor from adding
-		// a new operation to validateOperationFields without also
-		// wiring it here.
+		// Unreachable in practice: validateOperationFields already
+		// rejected unknown operations. Guards against a future operation
+		// added there but not wired here.
 		return nil, fmt.Errorf("no strategy mapped for operation %q", params.Operation)
 	}
 	candidates := []strategyCandidate{primary}
 
-	// Append other strategies in priority order (udiff → search-replace →
-	// whole-file), skipping the primary and any whose required fields
-	// were not supplied. This preserves the multi-strategy resilience
-	// the tool was designed for: explicit operation declares intent;
-	// soft fallback handles the case where the chosen strategy fails on
-	// real-world inputs (fuzzy diff context, etc).
+	// Other strategies queue as soft fallbacks, in priority order
+	// (udiff → search-replace → whole-file), when their required fields
+	// are also present.
 	if params.Diff != nil && primary.name != "udiff" {
 		if cand, ok := buildUdiffCandidate(m.udiff, params); ok {
 			candidates = append(candidates, cand)

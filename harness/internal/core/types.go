@@ -40,18 +40,16 @@ import (
 
 // DefaultAsyncToolTimeout is the per-call wait used by the async tool
 // dispatch path when a tool's AsyncDispatch.Timeout is non-positive.
-// Matches permission.DefaultAskUpstreamTimeout for consistency; both are
-// "wait for a control-plane response" timeouts.
+// Matches permission.DefaultAskUpstreamTimeout.
 const DefaultAsyncToolTimeout = 60 * time.Second
 
-// maxAsyncToolResultBytes caps the length of control-plane-supplied tool
-// result content. The control plane is partially trusted; an unbounded
-// string here is a DoS vector (CWE-400). 1MB matches the existing command
-// output cap used by the run_command sync tool.
+// maxAsyncToolResultBytes caps control-plane-supplied tool result content;
+// the control plane is partially trusted, so an unbounded string here is a
+// DoS vector (CWE-400). Matches the run_command sync tool's cap.
 const maxAsyncToolResultBytes = 1 << 20 // 1MB
 
 // asyncResultTruncationSuffix is appended when content exceeds
-// maxAsyncToolResultBytes. The model and the trace see this marker.
+// maxAsyncToolResultBytes.
 const asyncResultTruncationSuffix = "... [truncated by harness]"
 
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
@@ -65,19 +63,10 @@ type AgenticLoop struct {
 	Context   contextpkg.ContextStrategy
 	Tools     tool.ToolRegistry
 	// ToolProfile is the resolved toolset-profile presentation applied to
-	// Tools (issue #234). Nil means the default (identity) profile. Held on
-	// the loop so SpawnSubAgent can re-present the filtered child registry
-	// under the same profile, keeping parent and child tool names
-	// consistent. The factory always sets Tools to a *tool.Presenter built
-	// with this profile.
-	//
-	// Invariant: when Tools is a *tool.Presenter, its Profile() must equal
-	// ToolProfile. The factory guarantees this by construction; a caller
-	// assembling an AgenticLoop by hand (tests, embedders) must uphold it
-	// or SpawnSubAgent will re-present children under a profile that
-	// disagrees with the parent's presented names. There is no runtime
-	// guard — compare Tools.(*tool.Presenter).Profile() against ToolProfile
-	// at construction if the wiring is not obviously consistent.
+	// Tools; nil means the default (identity) profile. When Tools is a
+	// *tool.Presenter its Profile() must equal ToolProfile — the factory
+	// guarantees this by construction, but a hand-assembled loop (tests,
+	// embedders) must uphold it manually. See docs/architecture.md.
 	ToolProfile *tool.Profile
 	Executor    executor.Executor
 	Edit        edit.EditStrategy
@@ -86,36 +75,22 @@ type AgenticLoop struct {
 	Git         git.GitStrategy
 	GuardRail   guard.GuardRail
 	// RuleOfTwo is the Rule-of-Two runtime sensitive-data monitor.
-	// Enforcement (block-external / ask-upstream via the permission
-	// gate, and the loop's redact / abort actions) keys on the monitor's
-	// run-scoped latch. The factory injects ruleoftwo.NewNoop() when the
-	// run is unarmed so loop call sites stay unconditional; hand-assembled
-	// loops (tests, embedders) may leave it nil and the observe helpers
-	// no-op, mirroring GuardRail.
+	// Enforcement keys on its run-scoped latch. The factory injects
+	// ruleoftwo.NewNoop() when the run is unarmed so call sites stay
+	// unconditional; a hand-assembled loop may leave it nil.
 	RuleOfTwo  ruleoftwo.Monitor
-	Escalation EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
-	// Hooks runs the run's configured lifecycle hooks (#461). Optional,
-	// like GuardRail/RuleOfTwo/Escalation: Run() nil-checks it before
-	// every call, so a hand-assembled loop (tests, embedders) that
-	// leaves it unset sees no behaviour change. The factory always
-	// injects a non-nil value (hook.Noop when the run has no
-	// HooksConfig, or is a sub-agent); *hook.ExecRunner otherwise.
+	Escalation EscalationPolicy // tool-choice missed-tool recovery; nil = disabled
+	// Hooks runs the run's configured lifecycle hooks; optional, like
+	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
+	// non-nil value. See docs/configuration.md#lifecycle-hooks.
 	Hooks hook.Runner
-	// Shutdown, when non-nil, is a process-lifetime context that is
-	// done when the harness has received a process-level shutdown
-	// signal (SIGTERM/SIGINT/pod deletion) — deliberately independent
-	// of the ctx passed to Run(), which carries the run's own
-	// wall-clock deadline and control-plane "cancel" ControlEvent.
-	// The detached postRun hook phase (#461) races its bounded budget
-	// against Shutdown so it can survive a run-deadline/control-plane
-	// cancel (the documented intent) while still observing a genuine
-	// process shutdown promptly, rather than running unconditionally
-	// for up to its full budget while the orchestrator's SIGKILL
-	// escalation counts down. The cmd/factory layer constructs and
-	// injects this — the loop must not read signals or env directly
-	// (CLAUDE.md invariant). Nil-safe: a hand-assembled loop (tests,
-	// embedders) that leaves it unset sees the pre-remediation
-	// behaviour (postRun bounded only by its own budget).
+	// Shutdown, when non-nil, is a process-lifetime context done when the
+	// harness receives a process-level shutdown signal (SIGTERM/SIGINT/pod
+	// deletion) — independent of Run()'s ctx, which carries the run's own
+	// deadline and control-plane cancel. The detached postRun hook phase
+	// races its bounded budget against Shutdown so it can survive a
+	// run-deadline/control-plane cancel while still observing a genuine
+	// process shutdown promptly. See docs/architecture.md. Nil-safe.
 	Shutdown     context.Context
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
@@ -124,39 +99,32 @@ type AgenticLoop struct {
 	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
-	// MetricAttrs is a set of attributes prepended to every metric
-	// observation emitted from this loop. Empty for top-level runs;
-	// SpawnSubAgent populates it on child loops with subagent=true and
-	// parent.run_id=<parent run id> so dashboards can decompose a run
-	// into parent vs child observations.
+	// MetricAttrs is prepended to every metric observation from this loop.
+	// Empty for top-level runs; SpawnSubAgent populates it on child loops
+	// with subagent=true and parent.run_id so dashboards can decompose a
+	// run into parent vs child observations.
 	MetricAttrs  []attribute.KeyValue
 	emitReady    bool
 	ownedClosers []io.Closer
 
 	// lastContextTokens holds the most recent absolute context-window token
-	// estimate for the in-flight run. It is published from runInnerLoop
-	// after each Context.Prepare and read from the ContextTokens gauge
-	// callback registered in Run. atomic ensures the read in the OTel
-	// collection goroutine sees a complete value.
+	// estimate, published after each Context.Prepare and read from the
+	// ContextTokens gauge callback. atomic ensures a complete value is seen
+	// by the OTel collection goroutine.
 	lastContextTokens atomic.Int64
 
-	// asyncOnce guards lazy construction of asyncCorrelator. The
-	// correlator is created and attached to the transport on the first
-	// async tool dispatch — most runs never use any async tools and pay
-	// no cost. The pointer is held in an atomic so non-dispatcher
-	// goroutines (e.g. tests, diagnostics) can read it safely without
-	// going through Once.Do.
+	// asyncOnce guards lazy construction of asyncCorrelator: most runs
+	// never use async tools and pay no cost. Held in an atomic so
+	// non-dispatcher goroutines can read it without going through Once.Do.
 	asyncOnce       sync.Once
 	asyncCorrelator atomic.Pointer[transport.Correlator]
 
-	// asyncExtractorOverride, when non-nil, is attached to the async
-	// correlator in place of extractAsyncToolResult. It exists solely as a
-	// test seam: the production path has no way to deliver a non-
-	// asyncToolResult payload to dispatchAsyncToolCall (extractAsyncToolResult
-	// only ever produces asyncToolResult), so the defensive
-	// async_internal_error branch is otherwise unreachable. Tests set this
-	// via withAsyncExtractor before the first dispatch to exercise that
-	// branch. Never set in production wiring.
+	// asyncExtractorOverride, when non-nil, replaces extractAsyncToolResult
+	// on the async correlator. Test-only seam: the production extractor
+	// never delivers a non-asyncToolResult payload, so the defensive
+	// async_internal_error branch is otherwise unreachable. Set via
+	// withAsyncExtractor before the first dispatch; never set in
+	// production wiring.
 	asyncExtractorOverride transport.PayloadExtractor
 }
 
@@ -169,12 +137,10 @@ type asyncToolResult struct {
 
 // extractAsyncToolResult is the PayloadExtractor for tool_result_response
 // control events. Returns an empty id (and so is ignored) for any other
-// event type. Content is truncated at maxAsyncToolResultBytes before
-// flowing into tool output, message history, or the wire — the cap is
-// applied here, at the extraction boundary, so it is enforced regardless
-// of how the payload is later consumed (success path, error path, trace).
-// Truncation happens in bytes (not runes) to keep the bound predictable;
-// downstream consumers do not assume valid UTF-8.
+// event type. Content is truncated at maxAsyncToolResultBytes here, at the
+// extraction boundary, so the cap is enforced regardless of how the payload
+// is later consumed. Truncation is by bytes, not runes, since downstream
+// consumers do not assume valid UTF-8.
 func extractAsyncToolResult(event types.ControlEvent) (string, any) {
 	if event.Type != "tool_result_response" {
 		return "", nil
@@ -296,50 +262,35 @@ func (l *AgenticLoop) metricAttrs(extra ...attribute.KeyValue) metric.Measuremen
 // validating input against the tool's JSON Schema. Returns the tool result
 // string and whether it succeeded.
 //
-// Preserved as a (string, bool) wrapper around dispatchToolCallCategorized
-// so existing test sites that take a two-value return continue to compile.
-// Production call sites in planAndDispatch use the categorised variant
-// directly so the per-failure category flows into the
-// stirrup.harness.tool_failures metric and the ToolCallTrace ErrorCategory
-// field.
-//
-// NOTE: this shim drops the structured payload. New tests that need to assert
-// structured output must call dispatchToolCallCategorized directly.
+// A (string, bool) wrapper around dispatchToolCallCategorized kept so
+// existing two-value test call sites still compile; it drops the structured
+// payload and failure category. Production call sites use the categorised
+// variant directly.
 func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall) (string, bool) {
 	out, ok, _, _ := l.dispatchToolCallCategorized(ctx, call)
 	return out, ok
 }
 
-// structuredOutput carries the optional typed result payload (issue #231)
-// from a StructuredHandler back through dispatch. The zero value (nil payload,
-// empty kind) means "no structured data": every failure path and every plain-
-// Handler tool returns it, so a text-only result stays text-only. Kind names
-// the payload's shape so it can be routed without unmarshalling (see
-// types.ToolResult.Kind).
+// structuredOutput carries the optional typed result payload from a
+// StructuredHandler back through dispatch. The zero value means "no
+// structured data": every failure path and every plain-Handler tool
+// returns it. Kind names the payload's shape (see types.ToolResult.Kind).
 type structuredOutput struct {
 	payload json.RawMessage
 	kind    string
 }
 
 // dispatchToolCallCategorized is the production entry point. The third
-// return value is the bounded failure category for failed calls; on
-// success the category is empty. Every failure path in this function and
-// its async helper must assign a ToolFailureCategory drawn from the enum
-// in harness/internal/observability/toolfailure.go.
-//
-// The fourth return value is the optional structured result payload (issue
-// #231). It is the zero structuredOutput on every failure path and for any
-// tool that exposes only a plain Handler, so a text-only result stays
-// text-only; it is populated only on the success path of a StructuredHandler.
+// return value is the bounded failure category for failed calls (empty on
+// success); every failure path here and in the async helper must assign one
+// from the enum in harness/internal/observability/toolfailure.go. The fourth
+// return value is the optional structured result payload, populated only on
+// a StructuredHandler's success path.
 func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call types.ToolCall) (string, bool, observability.ToolFailureCategory, structuredOutput) {
 	t := l.Tools.Resolve(call.Name)
 	if t == nil {
-		// Issue #225 split the legacy search_files tool into two strictly-
-		// typed tools (grep_files for regex content search, find_files for
-		// glob filename search). Emitting a directional error here turns
-		// what would otherwise be an opaque "Unknown tool" miss into a
-		// migration hint the model can act on in-loop, while still
-		// preserving the unknown-tool failure category for telemetry.
+		// A directional rename hint turns an opaque "Unknown tool" miss
+		// into a migration the model can act on in-loop.
 		if msg, ok := renamedToolHint(call.Name); ok {
 			return msg, false, observability.ToolFailureUnknownTool, structuredOutput{}
 		}
@@ -347,10 +298,9 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 	}
 
 	// Strip prototype-pollution keys before validation so we can both notify
-	// the SecurityLogger AND continue validating the cleaned form. ValidateJSONSchema
-	// also strips internally; calling here in addition is harmless and gives us
-	// a chance to surface the security event. Errors here mean unparseable JSON,
-	// which ValidateJSONSchema will report with its own message.
+	// the SecurityLogger AND continue validating the cleaned form.
+	// ValidateJSONSchema also strips internally; calling here in addition
+	// gives us a chance to surface the security event.
 	cleaned, droppedKeys, stripErr := security.StripDangerousKeysFromInput(call.Input)
 	if stripErr == nil && len(droppedKeys) > 0 && l.Security != nil {
 		l.Security.PrototypePollutionBlocked(call.Name, droppedKeys)
@@ -370,9 +320,7 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 
 	// Key the write-target guard on the internal tool ID (t.Name), not the
 	// model-facing alias (call.Name): a guard rule written against the
-	// internal name must fire under any toolset profile (issue #234). t is
-	// resolved above; the gating layers (permission policy, mutating-tool
-	// set, this guard) all uniformly key on internal identity.
+	// internal name must fire under any toolset profile.
 	if findings := security.GuardToolCall(t.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
 		if l.Security != nil {
 			l.Security.ToolCallGuardTriggered(call.Name, findings)
@@ -380,10 +328,8 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false, observability.ToolFailureSecurityGuard, structuredOutput{}
 	}
 
-	// Check permissions for tools that mutate the workspace or that
-	// otherwise require upstream approval (e.g. network-touching tools
-	// like web_fetch, or budget-consuming tools like spawn_agent). The
-	// permission policy decides what to actually do with each flag.
+	// Check permissions for tools that mutate the workspace or otherwise
+	// require upstream approval (e.g. web_fetch, spawn_agent).
 	if t.WorkspaceMutating || t.RequiresApproval {
 		_, permSpan := l.Tracer.Start(l.traceCtx(ctx), "permission.check",
 			oteltrace.WithAttributes(
@@ -411,21 +357,17 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 	}
 
 	// Async tools resolve their result via the transport correlator: the
-	// preflight returns an AsyncDispatch describing the request_id and
-	// per-call timeout to use, the loop emits a tool_result_request event,
-	// and blocks until a tool_result_response arrives (or ctx is cancelled
-	// / the timeout fires). Permission and security checks above already
-	// ran and gated dispatch identically to the sync path.
+	// preflight returns an AsyncDispatch, the loop emits a
+	// tool_result_request event, and blocks until a tool_result_response
+	// arrives (or ctx is cancelled / the timeout fires).
 	if t.AsyncHandler != nil {
 		output, success, category := l.dispatchAsyncToolCall(ctx, t, call, inputForCall)
 		return output, success, category, structuredOutput{}
 	}
 
-	// Execute the tool handler with the cleaned input so the handler does not
-	// see prototype-pollution keys either. A StructuredHandler is preferred
-	// over the plain Handler: it yields the identical text plus an optional
-	// typed structured payload (issue #231). Either form is acceptable; a
-	// tool that sets only Handler simply returns no structured payload.
+	// Use the cleaned input so the handler never sees prototype-pollution
+	// keys either. A StructuredHandler yields text plus an optional typed
+	// payload; a tool with only Handler returns no structured payload.
 	switch {
 	case t.StructuredHandler != nil:
 		res, err := t.StructuredHandler(ctx, inputForCall)
@@ -444,21 +386,11 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 	}
 }
 
-// dispatchAsyncToolCall runs the async tool path:
-//
-//  1. Refuse the call up front when the transport cannot deliver responses
-//     (NullTransport): an async tool here would block until the per-call
-//     timeout for nothing. Returning a clear error lets the model recover.
-//  2. Invoke the tool's AsyncHandler as a preflight. The handler returns
-//     an AsyncDispatch carrying any per-call timeout override; the loop
-//     owns the wire request ID via its transport correlator.
-//  3. Emit a "tool_result_request" HarnessEvent carrying the request_id,
-//     the model's tool_use_id, the tool name, and the input.
-//  4. Block on the matching "tool_result_response" via the loop's async
-//     correlator under run-context cancellation and the per-call timeout.
-//
-// The error taxonomy surfaced via the returned content string is documented
-// in dispatchAsyncToolCall's call sites (see the constants below); the
+// dispatchAsyncToolCall runs the async tool path: it refuses the call up
+// front when the transport cannot deliver responses, invokes the tool's
+// AsyncHandler as a preflight, emits a "tool_result_request" HarnessEvent,
+// and blocks on the matching "tool_result_response" via the loop's async
+// correlator under run-context cancellation and the per-call timeout. The
 // model sees IsError=true on every failure path.
 func (l *AgenticLoop) dispatchAsyncToolCall(
 	ctx context.Context,
@@ -468,8 +400,8 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 ) (string, bool, observability.ToolFailureCategory) {
 	correlator := l.ensureAsyncCorrelator()
 	if correlator == nil {
-		// NullTransport (sub-agent) — no control plane to round-trip
-		// through. Fail fast rather than burning the per-call timeout.
+		// NullTransport (sub-agent): no control plane to round-trip
+		// through, so fail fast rather than burning the per-call timeout.
 		return fmt.Sprintf(
 			"async tool %s unavailable: this loop has no live control-plane transport",
 			call.Name,
@@ -486,10 +418,8 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		timeout = DefaultAsyncToolTimeout
 	}
 
-	// The correlator allocates the wire request ID. The AsyncDispatch
-	// struct intentionally does not expose that ID to tool authors —
-	// correlation is a loop concern, single source of truth, and a
-	// tool-supplied value would be silently overridden.
+	// The correlator allocates the wire request ID; AsyncDispatch does not
+	// expose it to tool authors, since correlation is a loop concern.
 
 	payload, err := correlator.Await(ctx, timeout, func(requestID string) error {
 		return l.Transport.Emit(types.HarnessEvent{
@@ -501,34 +431,25 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		})
 	})
 	if err != nil {
-		// Distinguish error classes for the model:
-		//   - emit failure   → "transport_disconnect"
-		//   - timeout        → "async tool timeout"
-		//   - ctx cancellation → "async tool cancelled"
 		// The correlator wraps emit errors with "emit failed", timeouts
 		// with "timed out", and ctx errors carry context.Canceled /
 		// context.DeadlineExceeded in the chain.
 		if strings.Contains(err.Error(), "emit failed") {
 			return fmt.Sprintf("async tool %s transport_disconnect: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTransport
 		}
-		// Deadline expiry MUST be checked before cancellation. Both the
-		// correlator's per-call timeout and a run-level deadline on ctx
-		// surface as context.DeadlineExceeded wrapped by %w; the
-		// previous combined branch mis-routed every deadline-expired
-		// run to async_cancelled, polluting any alert keyed on
-		// async_cancelled spikes (which signal user cancellation, not
-		// timeout). errors.Is(DeadlineExceeded) and errors.Is(Canceled)
-		// can both return true for some wrapper chains, so order
-		// matters: timeout-first preserves the operator-meaningful
-		// distinction.
+		// Deadline expiry MUST be checked before cancellation: both the
+		// correlator's per-call timeout and a run-level deadline surface as
+		// context.DeadlineExceeded, and errors.Is can match both sentinels
+		// on some wrapper chains, so timeout-first preserves the
+		// operator-meaningful distinction (vs. polluting async_cancelled,
+		// which should mean user cancellation only).
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTimeout
 		}
 		if errors.Is(err, context.Canceled) {
 			return fmt.Sprintf("async tool %s cancelled: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncCancelled
 		}
-		// Default: timeout (correlator: "timed out after ...") and any
-		// other unexpected wrapping go here.
+
 		return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTimeout
 	}
 
@@ -537,21 +458,13 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// Defensive: extractAsyncToolResult only ever delivers
 		// asyncToolResult, so reaching this branch means the correlator
 		// was wired with a different extractor. Treat as a hard error.
-		// Exercised by TestToolFailureMetrics_AsyncInternalError via the
-		// withAsyncExtractor test seam (issue #312).
 		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false, observability.ToolFailureAsyncInternal
 	}
 	if resp.isError {
-		// The control plane is partially trusted: a compromised or
-		// misbehaving control plane could embed secret-shaped strings
-		// in the error payload, and the failure path forwards this
-		// content into the JSONL trace via RecordToolCall.ErrorReason
-		// without going through the transport's outbound scrub. Scrub
-		// at the point of entry so both the model context and the
-		// trace see the redacted form. The structured prefix matches
-		// the other three error taxonomy paths (transport_disconnect,
-		// timeout, internal error) so the model can disambiguate
-		// upstream failures from harness-side failures.
+		// The control plane is partially trusted and could embed
+		// secret-shaped strings in the error payload; scrub at the point of
+		// entry so both the model context and the trace see the redacted
+		// form (this path bypasses the transport's outbound scrub).
 		scrubbed := security.Scrub(resp.content)
 		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false, observability.ToolFailureAsyncUpstreamError
 	}
@@ -571,12 +484,11 @@ func buildMessages(userPrompt string) []types.Message {
 }
 
 // appendAssistantContent adds the model's response content blocks to the
-// message history as an assistant message. replayFields is the
-// provider-opaque round-trip state the stream's message_complete event
-// carried (quirks ReplayFields); attaching it to the persisted Message
-// lets the originating provider's adapter echo it back on subsequent
-// turns. nil for providers that emit none — omitempty keeps the
-// serialised message byte-identical in that case.
+// message history as an assistant message. replayFields is provider-opaque
+// round-trip state from the stream's message_complete event; attaching it
+// lets the originating provider's adapter echo it back on subsequent turns.
+// nil for providers that emit none, keeping the serialised message
+// byte-identical in that case.
 func appendAssistantContent(messages []types.Message, blocks []types.ContentBlock, replayFields map[string]json.RawMessage) []types.Message {
 	return append(messages, types.Message{
 		Role:         "assistant",
@@ -620,12 +532,9 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 }
 
 // streamResult holds the results of consuming a model response stream.
-//
-// ReplayFields is the provider-opaque round-trip state stashed from the
-// stream's message_complete event (quirks ReplayFields, design §9 risk
-// 7). The loop attaches it to the assistant Message it persists; the
-// values are opaque data plumbed through, never inspected or logged
-// here — the loop-purity invariant is untouched.
+// ReplayFields is provider-opaque round-trip state from the message_complete
+// event, plumbed through to the persisted assistant Message without being
+// inspected or logged.
 type streamResult struct {
 	Blocks       []types.ContentBlock
 	StopReason   string
@@ -669,12 +578,10 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			inputBytes, _ := json.Marshal(event.Input)
-			// ThoughtSignature is provider-opaque state that the harness
-			// must echo back unchanged on the next request so the model
-			// can resume its prior reasoning. Currently populated only by
-			// the Gemini 3.x adapter (#194). Adapters that do not emit
-			// the field leave it empty, and `omitempty` keeps it off the
-			// wire for downstream consumers (request marshallers, traces).
+			// ThoughtSignature is provider-opaque state the harness must
+			// echo back unchanged on the next request so the model can
+			// resume its prior reasoning. Adapters that do not emit it
+			// leave it empty; omitempty keeps it off the wire.
 			result.Blocks = append(result.Blocks, types.ContentBlock{
 				Type:             "tool_use",
 				ID:               event.ID,
@@ -742,11 +649,9 @@ func estimateCurrentTokens(messages []types.Message) int {
 			total += len(block.ID) / tokenEstimationDivisor
 			total += len(block.Name) / tokenEstimationDivisor
 			total += len(block.ToolUseID) / tokenEstimationDivisor
-			// The structured envelope (issue #231) rides on tool_result
-			// blocks and, for a Gemini object-response result, can be up to
-			// maxMCPStructuredSize; counting it keeps the budget estimate from
-			// under-shooting and triggering a mid-run context overflow. Kind
-			// is a short discriminator and not worth counting.
+			// The structured envelope rides on tool_result blocks and can be
+			// large (e.g. a Gemini object-response result); counting it
+			// avoids under-shooting the budget and overflowing mid-run.
 			total += len(block.Structured) / tokenEstimationDivisor
 		}
 	}
@@ -774,15 +679,9 @@ func estimateToolDefinitionTokens(tools []types.ToolDefinition) int {
 	return total
 }
 
-// renamedToolHint maps legacy tool names removed in the issue #225 schema
-// redesign to a directional error message naming the replacement(s). It
-// returns ("", false) for any name that was never registered under a
-// previous taxonomy; the caller falls through to the generic unknown-tool
-// path in that case.
-//
-// Kept as a small table rather than a sentinel so future renames can land
-// here without touching dispatch logic. The strings are stable: a future
-// reviewer searching for the migration message can grep this file.
+// renamedToolHint maps legacy tool names to a directional error message
+// naming the replacement(s). Returns ("", false) for any unrecognised name;
+// the caller falls through to the generic unknown-tool path in that case.
 func renamedToolHint(name string) (string, bool) {
 	switch name {
 	case "search_files":

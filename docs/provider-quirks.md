@@ -352,6 +352,25 @@ unmatched: its sampling-param behaviour is not confirmed against a live
 capture, so a rule is added once verified rather than assumed from the
 Fable 5 family resemblance.
 
+The `gpt-4o-mini*` strict-mode rule is deliberately narrower than
+`gpt-4o*`: OpenAI's structured-outputs guide lists bare `gpt-4o` as
+supporting strict mode too, but that has not been verified against a
+current snapshot, and a wider glob risks a 400 on a deployment whose
+`gpt-4o` snapshot diverges from the guide. `TestBuiltinRulesStrictMode`
+pins the negative case (bare `gpt-4o` gets no rule) so widening the
+glob is a deliberate, tested edit rather than an accidental regression.
+
+The `gemini-3*` schema-lint rule (`SchemaUnsupportedFeatures: pattern,
+format`) takes a conservative reject-at-build-time position: Gemini's
+function-declaration Schema dialect does not reliably honour the
+JSON-Schema `pattern` and `format` keywords across the Gemini 3.x
+rollout — some surfaces silently ignore them, others reject the
+request outright — so the harness rejects a tool schema that uses
+either keyword rather than risk the wire transform silently dropping
+a validation rule. The built-in tool schemas do not use either
+keyword, so the rule only catches operator-supplied or MCP-imported
+schemas.
+
 The `openai-responses / *` rule pins the Responses-specific behaviour
 flags (`OpenAIResponsesBehaviourFlags`) to their zero values so the
 resolved struct, not the adapter, is the source of truth for the
@@ -409,6 +428,23 @@ accumulated to replay. Multi-turn tool-calling against DeepSeek v4
 thinking mode through the batch path therefore still fails with 400
 on the turn after a tool call; see §9 risk 7.
 
+A related gap exists in the eval `ReplayProvider`
+(`provider/replay.go`), which replays recorded `TurnRecord`s as
+streaming model responses for eval testing without live API calls.
+`TurnRecord` does not carry the message-level ReplayFields state —
+the trace scrubber deliberately drops it as provider-opaque — so a
+live-continuation run seeded from a recording (e.g. `mineFailureTasks`)
+against DeepSeek v4 thinking mode will miss `reasoning_content` on the
+replayed turn and 400 on the first real tool-call request. Closing it
+needs a `TurnRecord` schema change (a recording-side carrier exempt
+from the scrub drop); live continuation against v4 thinking mode is
+not a supported workflow today. This contrasts with
+`ContentBlock.ThoughtSignature`, which rides the typed block and is
+forwarded by `ReplayProvider` today, so Gemini 3 live-continuation
+seeded from a recording does carry the model's prior reasoning state
+into the next Vertex request — pure eval replay never resubmits it
+anywhere, so forwarding it adds no leakage surface.
+
 The captured-fields debug log line is `quirks replay fields
 captured` at slog DEBUG level. It records a per-path summary of
 `{count, total_len}` only — captured values themselves are
@@ -439,6 +475,36 @@ loop.Provider
 Two separate responsibilities: tool-name normalization is a
 loop→adapter concern; quirk resolution is an adapter→wire concern.
 The factory composes both without either knowing about the other.
+
+### 4.1 Strict-schema normalisation cache (`provider/strictschema_cache.go`)
+
+`NormalizeStrictSchema` (the OpenAI structured-outputs rewrite —
+`additionalProperties: false`, all properties required, optional
+fields nullable-wrapped) is an expensive recursive walk, and the same
+tool schema is re-sent on every turn of a run. `strictSchemaCache`
+memoises the result within a single adapter instance; the factory
+builds one adapter per run, so per-adapter scope matches "per-run"
+caching: a tool's schema is stable within a run, and different runs
+route through different adapter instances, so a cache entry from one
+run cannot leak into another.
+
+The cache key is `(model, tool-name, schema-bytes-hash)`. Including
+`model` is load-bearing: a dynamic-router run can switch models turn
+to turn, and a strict-mode rule may pin different models to different
+strict-mode contracts (e.g. a future model with stricter
+`additionalProperties` semantics). Hashing the raw schema bytes
+protects against a runtime overwrite of a tool's canonical schema —
+if the bytes change, the hash changes, and the stale rewrite is
+bypassed.
+
+Errors are NOT cached: a schema that fails the strict-mode lint
+re-fails on every turn, so a rule change that introduces strict mode
+mid-run does not paper over a transient parse problem, and an
+operator sees the failure surface in logs each time. The miss path
+takes a write lock and re-checks for the key after acquiring it, so
+concurrent first-misses on the same key produce exactly one
+normalisation call and one `Misses` increment — this gives the cache
+singleflight semantics without a separate singleflight dependency.
 
 ## 5. Operator surface
 

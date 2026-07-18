@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// absoluteMaxTurns is the hard upper bound on MaxTurns enforced during
-	// RunConfig validation, independent of what the caller requests.
+	// absoluteMaxTurns is the hard upper bound on MaxTurns, independent
+	// of what the caller requests.
 	absoluteMaxTurns = 100
 
 	// maxFollowUpGrace is the maximum allowed follow-up grace period in seconds.
@@ -30,75 +30,54 @@ const (
 	maxTokenBudget = 50_000_000
 
 	// minContextStrategyMaxTokens is the smallest ContextStrategyConfig.MaxTokens
-	// ValidateRunConfig accepts once the field is set; 0 keeps its
-	// "unset, use the harness default window" meaning and validates
-	// cleanly regardless. harness/internal/core scales its response
-	// reserve down proportionally for small budgets (issue #444), so
-	// almost any positive maxTokens is numerically workable — this floor
-	// exists only to reject values so small that no split of the budget
-	// could hold a system prompt, a tool definition list, and a single
-	// message. It is deliberately far below the old, since-removed hard
-	// floor of 64000 (the harness's flat response reserve): rejecting
-	// every maxTokens at or under that constant is the exact footgun
-	// #444 reports for small-context local models. It is also kept
-	// below the 1000-token fixtures used by existing config-plumbing
-	// tests that are not exercising real runs.
+	// ValidateRunConfig accepts once set; 0 keeps its "unset, use the
+	// harness default window" meaning. The floor is deliberately low: it
+	// only rejects budgets too small to hold a system prompt, a tool
+	// definition list, and a single message — the harness scales its
+	// response reserve down proportionally for small budgets.
 	minContextStrategyMaxTokens = 512
 
-	// maxTemperature is the upper bound on RunConfig.Temperature.
-	// Chosen as the union of provider-side ranges: Anthropic accepts
-	// [0, 1], OpenAI and Gemini accept [0, 2]. Values inside the union
-	// validate cleanly here so a single config can target multiple
-	// providers; the adapter still surfaces the provider's own rejection
-	// when a value lands above that provider's narrower range.
+	// maxTemperature is the upper bound on RunConfig.Temperature: the
+	// union of provider-side ranges (Anthropic [0, 1]; OpenAI/Gemini
+	// [0, 2]). A value inside the union may still be rejected by a
+	// provider with a narrower range at request time.
 	maxTemperature = 2.0
 
 	// maxSessionNameLength is the maximum allowed length, in bytes, of
-	// SessionName. Capped to keep log lines, OTel attribute values, and
-	// trace JSON predictable; well above any genuine human-readable label.
+	// SessionName. Bounds log lines, OTel attribute values, and trace JSON.
 	maxSessionNameLength = 255
 
-	// Provider retry defaults. Filled in by applyProviderRetryDefaults
-	// when the caller leaves a field zero so downstream consumers always
-	// see a populated ProviderRetryConfig.
+	// Provider retry defaults, filled in by applyProviderRetryDefaults
+	// when the caller leaves a field zero.
 	defaultProviderRetryMaxAttempts       = 3
 	defaultProviderRetryInitialDelayMs    = 500
 	defaultProviderRetryMaxDelayMs        = 16000
 	defaultProviderRetryWallClockBudgetMs = 90000
 
-	// Provider retry hard ceilings. Enforced by
-	// validateProviderRetryConfig regardless of whether the value came
-	// from the caller or a default. InitialDelayMs has no independent
-	// ceiling; it is transitively bounded by maxProviderRetryMaxDelayMs
-	// via the cross-field invariant (initialDelayMs <= maxDelayMs).
+	// Provider retry hard ceilings, enforced by validateProviderRetryConfig
+	// regardless of whether the value came from the caller or a default.
+	// InitialDelayMs has no independent ceiling; it is transitively
+	// bounded via the initialDelayMs <= maxDelayMs cross-field invariant.
 	maxProviderRetryMaxAttempts       = 5
 	maxProviderRetryMaxDelayMs        = 60000
 	maxProviderRetryWallClockBudgetMs = 300000
 
 	// DefaultToolDispatchMaxParallel is the fan-out applied when
-	// ToolDispatchConfig is omitted or MaxParallel is zero. Chosen as a
-	// balance between latency and over-subscription on the deep-research
-	// multi-step-synthesis tier.
+	// ToolDispatchConfig is omitted or MaxParallel is zero.
 	DefaultToolDispatchMaxParallel = 4
 
 	// MaxToolDispatchMaxParallel is the hard ceiling on
-	// ToolDispatchConfig.MaxParallel enforced by ValidateRunConfig. Caps
-	// runaway concurrency so a misconfigured run cannot saturate the
-	// provider/transport beyond what the rest of the harness is sized
-	// for.
+	// ToolDispatchConfig.MaxParallel enforced by ValidateRunConfig.
 	MaxToolDispatchMaxParallel = 16
 
 	// DefaultBatchMaxWaitSeconds is the harness-side default wall-clock
-	// cap on a batch wait (24 h), matching the Anthropic and OpenAI
-	// provider-side SLA for batch completion. Applied by ValidateRunConfig
-	// when Batch.Enabled and Batch.MaxWaitSeconds == nil.
+	// cap on a batch wait (24h), matching the Anthropic/OpenAI batch SLA.
+	// Applied when Batch.Enabled and Batch.MaxWaitSeconds == nil.
 	DefaultBatchMaxWaitSeconds = 86400
 
 	// batchTurnsLatencyWarnThreshold is the maxTurns ceiling above which
-	// ValidateRunConfig emits a slog WARN: each turn can take up to 24 h
-	// of wall-clock waiting on the provider, so a run with many turns can
-	// spend weeks in flight. The threshold is the operator's reasonable
-	// upper bound before the latency exposure deserves a heads-up.
+	// ValidateRunConfig emits a slog WARN, since each turn can wait up to
+	// 24h on the provider.
 	batchTurnsLatencyWarnThreshold = 5
 )
 
@@ -137,21 +116,10 @@ type RunConfig struct {
 	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"`
 	Timeout        *int     `json:"timeout,omitempty"`
 
-	// Temperature is the sampling temperature forwarded to the provider
-	// on every turn. Nil means "use the harness default" (0.1 — a low
-	// value that biases for determinism on coding tasks). A non-nil value
-	// is forwarded verbatim, including an explicit 0.0 for greedy
-	// decoding; this is the only way to override the default downwards.
-	//
-	// Validated against [0.0, maxTemperature]. The union of provider
-	// ranges (Anthropic [0, 1], OpenAI/Gemini [0, 2]) means a value
-	// inside the union may still be rejected by the chosen provider's
-	// own API; the adapter surfaces that rejection at request time
-	// rather than at validation.
-	//
-	// Reasoning models that reject temperature on the wire are a
-	// separate concern: the provider adapter is responsible for
-	// stripping the field when the selected model requires it.
+	// Temperature is the sampling temperature forwarded to the provider on
+	// every turn. Nil means "use the harness default" (0.1). See
+	// docs/configuration.md#limits-and-budgets for the validated range
+	// and provider-specific caveats.
 	Temperature *float64 `json:"temperature,omitempty"`
 
 	// FollowUpGrace is the number of seconds to keep the transport open after
@@ -163,48 +131,29 @@ type RunConfig struct {
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `json:"logLevel,omitempty"`
 
-	// SystemPromptOverride, when set, is used as the complete system prompt
-	// preamble, bypassing prompt_builder mode selection. Workspace path,
-	// turn budget, and dynamic_context sections are still appended.
-	//
-	// The value is used verbatim and is never template-parsed, so prompts
-	// compiled by an external prompt-management system (e.g. Langfuse)
-	// pass through untouched even when they contain "{{" sequences.
-	// Mutually exclusive with promptBuilder.template and
-	// promptBuilder.promptModel — see ValidateRunConfig.
+	// SystemPromptOverride, when set, replaces the complete system prompt
+	// preamble, bypassing prompt_builder mode selection; workspace path,
+	// turn budget, and dynamic_context sections are still appended. Used
+	// verbatim, never template-parsed. Mutually exclusive with
+	// promptBuilder.template and promptBuilder.promptModel.
 	SystemPromptOverride string `json:"systemPromptOverride,omitempty"`
 
 	// RuleOfTwo carries the operator override for the "Agents Rule of
-	// Two" structural invariant enforced in ValidateRunConfig. When nil
-	// (the default) the invariant is enforced; setting Enforce: false
-	// is the only supported way to bypass it. The override exists so a
-	// human reviewer can sign off on a config that legitimately needs
-	// all three capabilities at once — it should not be set lightly.
+	// Two" structural invariant enforced in ValidateRunConfig. Nil (the
+	// default) enforces the invariant; Enforce: false is the only
+	// supported bypass. See docs/safety-rings.md.
 	RuleOfTwo *RuleOfTwoConfig `json:"ruleOfTwo,omitempty"`
 
-	// CodeScanner configures the post-edit static analysis pass that
-	// scans every successful EditStrategy.Apply for hardcoded secrets,
-	// eval/exec sinks, and other known-bad patterns. When nil,
-	// ValidateRunConfig fills in a sensible default per mode
-	// (patterns for execution, none for read-only modes).
+	// CodeScanner configures the post-edit static analysis pass over
+	// every successful EditStrategy.Apply. When nil, ValidateRunConfig
+	// fills in a mode-aware default (patterns for execution, none for
+	// read-only modes).
 	CodeScanner *CodeScannerConfig `json:"codeScanner,omitempty"`
 
-	// SensitiveData, when explicitly true, declares that this run will
-	// expose the agent to sensitive data inside its conversation. It is
-	// the operator-supplied signal for the "sensitive data" leg of the
-	// Rule of Two. Provider/VCS/MCP API keys are deliberately *not*
-	// inferred as sensitive data: the harness keeps those out of the
-	// agent's reach (env-allowlist on run_command, log scrubbing,
-	// SecretStore deferred resolution). What "sensitive data" really
-	// means for the rule is data the agent itself can read — and only
-	// the operator can know that at config time. Per-entry sensitivity
-	// can also be declared via DynamicContextValue.Sensitive; either
-	// signal trips the rule's sensitive-data leg.
-	//
-	// Pointer so unset is wire-distinguishable from explicit false: the
-	// secure default in v1 is "not sensitive unless declared". Future
-	// work (#42 follow-up tracking GuardRail integration) may compute
-	// this at runtime from observed conversation content.
+	// SensitiveData, when true, declares that the agent will hold
+	// sensitive data in its conversation — the operator-supplied signal
+	// for the Rule of Two's "sensitive data" leg. Pointer so unset is
+	// wire-distinguishable from explicit false. See docs/safety-rings.md.
 	SensitiveData *bool `json:"sensitiveData,omitempty"`
 
 	// GuardRail configures the LLM-based safety classifier that runs
@@ -214,63 +163,31 @@ type RunConfig struct {
 	GuardRail *GuardRailConfig `json:"guardRail,omitempty"`
 
 	// Observability carries the run-scoped attributes that ride on the
-	// OTel Resource (deployment.environment, service.namespace) so
-	// traces and metrics emitted by this run share a consistent
-	// resource identity with other runs in the same deployment. Only
-	// low-cardinality fields belong here — high-cardinality identifiers
-	// like RunID stay span/instrument-level so metric series do not
-	// explode. When unset the resource builder falls back to environment
-	// variables and finally to safe defaults ("local" / "stirrup").
+	// OTel Resource so traces and metrics share a consistent resource
+	// identity across a deployment. See docs/observability-cloud.md.
 	Observability ObservabilityConfig `json:"observability,omitempty"`
 
-	// ToolDispatch tunes the parallel async-tool dispatch loop (knob
-	// applies to all AsyncHandler-backed tools, not just spawn_agent).
-	// Nil (or a zero MaxParallel) selects DefaultToolDispatchMaxParallel;
-	// see EffectiveToolDispatchMaxParallel for the resolution helper
-	// used by the loop. The field is a pointer so an absent value on the
-	// wire is distinguishable from an explicit zero — both are legal and
-	// resolve to the default, but keeping the distinction lets future
-	// fields (per-tool overrides, semaphore strategy) land without a
-	// breaking change.
+	// ToolDispatch tunes the parallel async-tool dispatch loop for all
+	// AsyncHandler-backed tools. Nil (or a zero MaxParallel) selects
+	// DefaultToolDispatchMaxParallel; see EffectiveToolDispatchMaxParallel.
 	ToolDispatch *ToolDispatchConfig `json:"toolDispatch,omitempty"`
 
 	// ToolChoiceEscalation configures the bounded recovery the loop runs
 	// when the model returns a final answer without calling any tool on a
-	// turn the harness expected tool use (#230). Nil — the default — means
-	// the feature is OFF: a bare run takes no extra turns and is byte-for-
-	// byte unchanged. Set Enabled=true to opt in; see
-	// ToolChoiceEscalationConfig for the per-knob semantics and the
-	// mode-aware policy that decides when a no-tool answer is suspicious.
+	// turn the harness expected tool use. Nil (the default) is OFF: a
+	// bare run is byte-for-byte unchanged. See ToolChoiceEscalationConfig.
 	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
 
 	// Hooks configures operator-authored lifecycle hooks that run around
-	// the agentic session (#461): PreRun before the session starts (setup
-	// — clone, provision a runtime), PostRun after it ends (artifact
-	// submission, smoke tests). Nil means no hooks — a bare run is
-	// byte-for-byte unchanged. See HooksConfig for the full contract.
+	// the agentic session: PreRun before it starts, PostRun after it
+	// ends. Nil means no hooks. See docs/configuration.md#lifecycle-hooks.
 	Hooks *HooksConfig `json:"hooks,omitempty"`
 }
 
-// ObservabilityConfig carries operator-supplied labels that are promoted to
-// the OTel Resource shared by all signals (traces, metrics) for a run. The
-// fields are free-form labels with a deliberately conservative character
-// set so they cannot inject CRLF, query-string separators, or other URL/
-// header surprises into downstream backends.
-//
-// Derived attributes (e.g. harness.run.mode from RunConfig.Mode) are added
-// at resource-construction time in observability.BuildResource and must NOT
-// be added here or to the proto message — they are not operator-configurable
-// labels, so plumbing them through the wire format would create a confusing
-// "you can override the run mode in your RunConfig but only for telemetry"
-// surface. New issue #94 attributes that are pure operator metadata belong
-// here; new derived attributes belong in observability.ResourceOptions.
-//
-// Zero-value fields (empty string) are NOT stored defaults. Defaults
-// ("local" for Environment, "stirrup" for ServiceNamespace) are applied in
-// observability.BuildResource via a precedence chain:
-// RunConfig → OTEL_* env vars → hardcoded defaults. A recorded RunConfig
-// with empty observability fields does not mean the attribute was absent
-// from emitted spans — it means the default or env-var value was used.
+// ObservabilityConfig carries operator-supplied labels promoted to the OTel
+// Resource shared by all signals for a run. Zero-value fields are not
+// stored defaults — see docs/observability-cloud.md for the precedence
+// chain and the derived-vs-operator-metadata split.
 type ObservabilityConfig struct {
 	Environment      string `json:"environment,omitempty"`
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
@@ -463,51 +380,28 @@ type CodeScannerConfig struct {
 	BlockOnWarn bool     `json:"blockOnWarn,omitempty"`
 
 	// SemgrepConfigPath, when non-empty, is passed to semgrep as
-	// `--config <path>` instead of the default `--config auto`. Set
-	// this to a local rules bundle (e.g. /etc/stirrup/semgrep-rules/)
-	// to disable the implicit network fetch of rule packs from
-	// semgrep.dev — required for air-gapped deployments and the only
-	// way to pin the scanner against supply-chain shifts (M7). Empty
-	// preserves the historical default of "auto".
+	// `--config <path>` instead of the default `--config auto`. Set to a
+	// local rules bundle to disable the implicit network fetch of rule
+	// packs from semgrep.dev — required for air-gapped deployments.
 	SemgrepConfigPath string `json:"semgrepConfigPath,omitempty"`
 }
 
-// GuardRailConfig configures the LLM-based safety classifier that runs
-// at three intervention points in the agentic loop: pre-turn (untrusted
-// content before it enters context), pre-tool (model-proposed tool call
-// before dispatch), and post-turn (assistant text before it is forwarded
-// to the user). Defaults to "none" — guardrails are opt-in per run.
-//
-//   - "none"             — disable guardrails (default).
-//   - "granite-guardian" — Granite Guardian 4.1-8B served via vLLM
-//     using the OpenAI-compatible chat-completions API. Requires
-//     Endpoint.
-//   - "composite"        — sequential / parallel layering of stages.
-//     Each entry in Stages must be a non-composite type;
-//     composite-of-composite is rejected.
-//   - "cloud-judge"      — reuse an existing ProviderAdapter so
-//     environments that cannot run their own vLLM still have a guard
-//     option.
+// GuardRailConfig configures the LLM-based safety classifier that runs at
+// the pre_turn, pre_tool, and post_turn intervention points in the agentic
+// loop. Defaults to "none" (opt-in per run). See docs/guardrails.md for the
+// adapter types, phase semantics, and composite layering.
 type GuardRailConfig struct {
 	Type   string            `json:"type"`             // "none" | "granite-guardian" | "composite" | "cloud-judge"
 	Stages []GuardRailConfig `json:"stages,omitempty"` // composite only
 	Phases []string          `json:"phases,omitempty"` // restrict to phases; default = all three
 
-	// Composite layering mode is reserved for future use. v1 always
-	// wires composites as Sequential (first-deny-wins, last decision
-	// otherwise). The guard package exports a Parallel implementation
-	// but no config field selects it; embedders who need parallel
-	// composition must build the GuardRail tree manually.
+	// Composites always wire as Sequential (first-deny-wins); the guard
+	// package's Parallel implementation has no config field and requires
+	// building the GuardRail tree manually.
 
-	// Adapter config (granite-guardian, cloud-judge):
-
-	// Endpoint is the URL of the classifier service. Must parse with
-	// net/url and use scheme http or https. A path component is allowed
-	// (vLLM typically serves at /v1/chat/completions); query strings are
-	// accepted because some gateways encode their own pin parameters.
-	// Required for "granite-guardian"; rejected for "none" / "composite"
-	// because those types have no transport of their own and a stale
-	// value would be silently ignored.
+	// Endpoint is the classifier service URL (http/https, net/url
+	// parseable). Required for "granite-guardian"; rejected for "none" /
+	// "composite", which have no transport of their own.
 	Endpoint string `json:"endpoint,omitempty"`
 
 	// Model identifies the classifier model (e.g.
@@ -641,22 +535,15 @@ func redactProviderConfig(provider ProviderConfig) ProviderConfig {
 	}
 	// Deep-copy Provider.Retry so a downstream consumer holding the
 	// redacted config cannot reach back into the live RunConfig via the
-	// shared pointer. Redact() does not mutate Retry today, but every
-	// other pointer field it touches is deep-copied; matching the
-	// established pattern closes the aliasing window before a Wave 2
-	// retry-helper that mutates Retry could silently corrupt the live
-	// config it was handed a "safe copy" of.
+	// shared pointer, matching every other pointer field Redact() touches.
 	if provider.Retry != nil {
 		retry := *provider.Retry
 		provider.Retry = &retry
 	}
-	// Mirror the Retry deep-copy for Provider.Batch. The aliasing risk
-	// is concrete: validateBatchConfig mutates Batch.MaxWaitSeconds in
-	// place to apply the default, and the phase-2 BatchAdapter (#135)
-	// is expected to hold a reference to the Redact()-derived snapshot
-	// across the run. Without the deep copy, a later default-apply
-	// write would reach the redacted copy through the shared pointer
-	// and break the snapshot contract.
+	// Mirror the deep-copy for Provider.Batch: validateBatchConfig mutates
+	// Batch.MaxWaitSeconds in place, so without this a later default-apply
+	// write would reach the redacted copy through the shared pointer and
+	// break the snapshot contract.
 	if provider.Batch != nil {
 		batch := *provider.Batch
 		provider.Batch = &batch
@@ -698,18 +585,14 @@ type ProviderConfig struct {
 	Credential *CredentialConfig `json:"credential,omitempty"` // cross-cloud credential federation (nil = infer from provider type)
 
 	// APIKeyHeader overrides the HTTP header used to send the resolved API
-	// key. Empty string preserves today's "Authorization: Bearer <key>"
-	// behaviour. Set to "api-key" for Azure OpenAI key auth, or to a
-	// vendor-specific header name (e.g. "x-api-key") for other gateways.
-	// Only consulted by the openai-compatible and openai-responses adapters;
-	// ignored by anthropic and bedrock (which derive auth from CredentialConfig).
+	// key. Empty preserves "Authorization: Bearer <key>"; set to "api-key"
+	// for Azure OpenAI, or a vendor-specific name otherwise. Only
+	// consulted by the openai-compatible and openai-responses adapters.
 	APIKeyHeader string `json:"apiKeyHeader,omitempty"`
 
 	// QueryParams are appended to every request URL by the openai-compatible
-	// and openai-responses adapters. Used for Azure OpenAI's api-version pin
-	// (e.g. {"api-version": "preview"}) and similar gateway parameters. Keys
-	// supplied here override any duplicate keys present in BaseURL's query
-	// string. Ignored by other provider types.
+	// and openai-responses adapters (e.g. Azure OpenAI's api-version pin).
+	// Keys here override duplicate keys in BaseURL's query string.
 	QueryParams map[string]string `json:"queryParams,omitempty"`
 
 	// GCPProject is the Google Cloud project ID hosting the Vertex AI
@@ -753,27 +636,10 @@ type ProviderConfig struct {
 	// transport / mode cross-field invariants enforced by ValidateRunConfig.
 	Batch *BatchProviderConfig `json:"batch,omitempty"`
 
-	// CompatProfile, when non-empty, selects an optional compatibility
-	// profile for providers that require non-standard extensions on top
-	// of the canonical wire shape. The factory uses the value to inject
-	// a pre-defined rule into the provider's quirks registry; the
-	// wire-shape knowledge lives in harness/internal/provider/compat/
-	// and is not authored by the operator.
-	//
-	// Closed enum, validated at startup. Currently supported:
-	//
-	//   ""          — no compat profile (default).
-	//   "zai-glm"   — Z.ai GLM tool_stream extension and legacy
-	//                 max_tokens field for all GLM models, plus
-	//                 reasoning_content replay and the thinking object
-	//                 ({"type":"enabled"}) for the GLM-4.5+ thinking
-	//                 family (glm-4.5/4.6/4.7 and the glm-5 line).
-	//                 Applied on top of provider.type =
-	//                 "openai-compatible".
-	//
-	// Unknown values are rejected by ValidateRunConfig. Adding a new
-	// value requires both an entry in validCompatProfiles and a matching
-	// rule in harness/internal/provider/compat/.
+	// CompatProfile, when non-empty, selects a compatibility profile for
+	// providers requiring non-standard wire extensions. Closed enum,
+	// validated at startup; only legal non-empty value in v1 is
+	// "zai-glm". See docs/provider-quirks.md.
 	CompatProfile string `json:"compatProfile,omitempty"`
 }
 
@@ -809,9 +675,7 @@ type BatchProviderConfig struct {
 
 // IsBatchEnabled reports whether this provider config opts into async
 // batch submission. Centralises the (Batch != nil && Batch.Enabled)
-// predicate so callers that key on the run's batch posture (lakehouse
-// bucketing, mine-failures filter) share a single source of truth
-// (#138).
+// predicate as a single source of truth for callers keying on batch posture.
 func (p ProviderConfig) IsBatchEnabled() bool {
 	return p.Batch != nil && p.Batch.Enabled
 }
@@ -860,47 +724,13 @@ type GeminiSafetySetting struct {
 	Threshold string `json:"threshold"`
 }
 
-// CredentialConfig selects the credential acquisition method for a provider.
-// When omitted from ProviderConfig, the credential type is inferred:
+// CredentialConfig selects the credential acquisition method for a
+// provider. When omitted from ProviderConfig, the type is inferred:
 // bedrock uses "aws-default", gemini uses "gcp-default", all others use
-// "static" (resolving APIKeyRef).
-//
-// Valid Type values:
-//   - "static"                            — resolve APIKeyRef via SecretStore.
-//   - "aws-default"                       — AWS SDK default credential chain.
-//   - "web-identity"                      — OIDC -> STS AssumeRoleWithWebIdentity.
-//   - "gcp-default"                       — Google Application Default
-//     Credentials. Default for "gemini". Rejects user-mode gcloud creds.
-//   - "gcp-service-account"               — explicit service account JSON key
-//     file. Requires ProviderConfig.GCPCredentialsFile.
-//   - "gcp-workload-identity"             — GKE Workload Identity (compute
-//     metadata access token).
-//   - "gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
-//     Identity Federation (STS + optional service-account impersonation).
-//     Requires Audience and TokenSource.
-//   - "anthropic-wif"                     — non-Anthropic runtime → Anthropic
-//     API via Workload Identity Federation. Exchanges an OIDC JWT (from
-//     TokenSource) at https://api.anthropic.com/v1/oauth/token for a
-//     short-lived Anthropic access token. Requires FederationRuleID,
-//     OrganizationID, ServiceAccountID, and TokenSource. Mutually exclusive
-//     with the provider's APIKeyRef on the same provider entry.
-//   - "azure-workload-identity"           — Azure Entra ID Workload Identity
-//     Federation. Exchanges an OIDC JWT (from TokenSource) for an Entra
-//     access token via the OAuth2 client_credentials + jwt-bearer grant
-//     against login.microsoftonline.com. Requires AzureTenantID,
-//     AzureClientID, and TokenSource. Bearer is sent as
-//     "Authorization: Bearer" — APIKeyRef and APIKeyHeader="api-key" are
-//     mutually exclusive with this type.
-//   - "openai-wif"                        — OpenAI Workload Identity
-//     Federation. Exchanges an OIDC JWT (from TokenSource) at
-//     https://auth.openai.com/oauth/token for a short-lived OpenAI access
-//     token via the RFC 8693 token-exchange grant. Requires
-//     OpenAIIdentityProviderID, OpenAIServiceAccountID, and TokenSource.
-//     Pairs only with the openai-compatible / openai-responses provider
-//     types; Bearer is sent as "Authorization: Bearer", so APIKeyRef and
-//     APIKeyHeader="api-key" are mutually exclusive with this type. The
-//     audience is set on the TokenSource (canonically
-//     https://api.openai.com/v1), not in the exchange body.
+// "static" (resolving APIKeyRef). See docs/credential-federation.md for
+// the full Type enum, and docs/anthropic-wif.md, docs/openai-wif.md,
+// docs/azure-workload-identity.md for the three WIF flows' field
+// requirements and wire protocols.
 type CredentialConfig struct {
 	Type           string             `json:"type"`
 	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity", "gcp-workload-identity-federation", "anthropic-wif", "azure-workload-identity"
@@ -910,77 +740,52 @@ type CredentialConfig struct {
 	ServiceAccount string             `json:"serviceAccount,omitempty"` // optional for "gcp-workload-identity-federation": SA email to impersonate
 
 	// FederationRuleID is required for "anthropic-wif". Format: "fdrl_...".
-	// Per Anthropic's WIF reference docs this is a non-secret identifier
-	// safe to commit to source control or bake into a container image.
+	// Non-secret per Anthropic's WIF docs.
 	FederationRuleID string `json:"federationRuleId,omitempty"`
 
-	// OrganizationID is required for "anthropic-wif". Format: lowercase
-	// RFC 4122 UUID (e.g. "550e8400-e29b-41d4-a716-446655440000").
-	// Identifies which Anthropic organization the federation rule belongs
-	// to. Non-secret per Anthropic's docs.
+	// OrganizationID is required for "anthropic-wif": a lowercase RFC 4122
+	// UUID identifying the Anthropic organization. Non-secret.
 	OrganizationID string `json:"organizationId,omitempty"`
 
 	// ServiceAccountID is required for "anthropic-wif". Format: "svac_...".
-	// The non-human principal the resulting access token acts as.
-	// Non-secret per Anthropic's docs.
+	// The non-human principal the resulting access token acts as. Non-secret.
 	ServiceAccountID string `json:"serviceAccountId,omitempty"`
 
-	// WorkspaceID is conditional for "anthropic-wif". Either the literal
-	// string "default" or a "wrkspc_..." identifier. Required when the
-	// federation rule is enabled for more than one workspace; omit (empty
-	// string) when the rule is bound to a single workspace.
-	// Non-secret per Anthropic's docs.
+	// WorkspaceID is conditional for "anthropic-wif": "default" or a
+	// "wrkspc_..." identifier, required only when the federation rule is
+	// enabled for more than one workspace. Non-secret.
 	WorkspaceID string `json:"workspaceId,omitempty"`
 
-	// AzureTenantID is required for "azure-workload-identity". UUID of the
-	// Azure AD tenant that owns the App Registration / federated identity
-	// credential. Lowercase canonical 8-4-4-4-12 form is required.
+	// AzureTenantID is required for "azure-workload-identity": the Azure AD
+	// tenant UUID, canonical lowercase 8-4-4-4-12 form.
 	AzureTenantID string `json:"azureTenantId,omitempty"`
 
-	// AzureClientID is required for "azure-workload-identity". UUID of the
-	// App Registration / federated identity credential client ID. Same
-	// canonical form as AzureTenantID.
+	// AzureClientID is required for "azure-workload-identity": the App
+	// Registration / federated identity client UUID, same form as AzureTenantID.
 	AzureClientID string `json:"azureClientId,omitempty"`
 
-	// AzureScope is optional for "azure-workload-identity". OAuth2 scope to
-	// request; default is "https://cognitiveservices.azure.com/.default"
-	// (Azure OpenAI / Foundry). Override for non-default Azure audiences
-	// (custom AAD app registrations, sovereign clouds). Must be a valid
-	// HTTPS URL when set.
+	// AzureScope is optional for "azure-workload-identity"; defaults to
+	// "https://cognitiveservices.azure.com/.default". Must be a valid HTTPS
+	// URL when set.
 	AzureScope string `json:"azureScope,omitempty"`
 
-	// AzureTokenURL is optional for "azure-workload-identity". Overrides
-	// the OAuth2 token endpoint URL. Default fills in
-	// https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token (Azure
-	// global cloud); set this for sovereign clouds — login.microsoftonline.us
-	// (Azure Government), login.partner.microsoftonline.cn (Azure China),
-	// or login.microsoftonline.de (Azure Germany, deprecated). Must be a
-	// syntactically valid HTTPS URL when set.
+	// AzureTokenURL is optional for "azure-workload-identity"; overrides
+	// the OAuth2 token endpoint (default: Azure global cloud). Set for
+	// sovereign clouds. Must be a valid HTTPS URL when set.
 	AzureTokenURL string `json:"azureTokenUrl,omitempty"`
 
-	// OpenAIIdentityProviderID is required for "openai-wif". The OpenAI
-	// Workload Identity Provider ID an organization owner registers in the
-	// OpenAI dashboard; it binds the trusted OIDC issuer, expected audience,
-	// and key source. Sent as identity_provider_id in the token-exchange
-	// body. Non-secret: it identifies the provider but cannot authenticate.
-	// OpenAI's reference does not document a stable prefix or charset, so it
-	// is validated only as a printable, whitespace-free identifier.
+	// OpenAIIdentityProviderID is required for "openai-wif": the Workload
+	// Identity Provider ID registered in the OpenAI dashboard. Non-secret;
+	// validated only as a printable, whitespace-free identifier.
 	OpenAIIdentityProviderID string `json:"openaiIdentityProviderId,omitempty"`
 
-	// OpenAIServiceAccountID is required for "openai-wif". The OpenAI
-	// service-account ID the federation mapping targets; the resulting
-	// access token acts as this non-human principal. Sent as
-	// service_account_id in the token-exchange body. Non-secret, and
-	// validated with the same opaque-identifier shape as
-	// OpenAIIdentityProviderID.
+	// OpenAIServiceAccountID is required for "openai-wif": the OpenAI
+	// service-account ID the federation mapping targets. Non-secret, same
+	// opaque-identifier validation as OpenAIIdentityProviderID.
 	OpenAIServiceAccountID string `json:"openaiServiceAccountId,omitempty"`
 
-	// OpenAISubjectTokenType is optional for "openai-wif". The RFC 8693
-	// subject_token_type URN for the exchange. Default (empty) applies
-	// "urn:ietf:params:oauth:token-type:jwt", which every OpenAI-documented
-	// identity provider uses; override only when the IdP issues a different
-	// token type (e.g. an id_token). Must be an RFC 8693 token-type URN
-	// when set.
+	// OpenAISubjectTokenType is optional for "openai-wif"; defaults to the
+	// RFC 8693 JWT URN. Override only when the IdP issues a different token type.
 	OpenAISubjectTokenType string `json:"openaiSubjectTokenType,omitempty"`
 }
 
@@ -1055,72 +860,32 @@ type ExecutorConfig struct {
 	Resources  *ResourceLimits   `json:"resources,omitempty"`
 	Proxy      string            `json:"proxy,omitempty"`
 
-	// K8s* fields configure the "k8s" and "k8s-sandbox" executors, which run
-	// the agent in a sandbox Pod ("k8s" manages the Pod directly;
-	// "k8s-sandbox" provisions it via the Agent Sandbox CRD). They are ignored
-	// for every other Type. K8sNamespace is required for both types; the rest
-	// are optional. The Pod's container image comes from the shared Image field
-	// (required for both types) and the OCI sandbox is selected via the shared
-	// Runtime field, which maps to the Pod's RuntimeClassName ("k8s-sandbox" is
-	// gVisor-only and forces "gvisor").
+	// K8s* fields configure the "k8s" and "k8s-sandbox" executors ("k8s"
+	// manages the sandbox Pod directly; "k8s-sandbox" provisions it via the
+	// Agent Sandbox CRD). Ignored for every other Type. K8sNamespace is
+	// required for both; the rest are optional. See docs/executors/k8s.md.
 	K8sNamespace      string            `json:"k8sNamespace,omitempty"`
 	K8sKubeconfig     string            `json:"k8sKubeconfig,omitempty"`
 	K8sNodeSelector   map[string]string `json:"k8sNodeSelector,omitempty"`
 	K8sServiceAccount string            `json:"k8sServiceAccount,omitempty"`
 
 	// K8sEgressProxyURL is the URL the sandbox Pod's HTTP_PROXY / HTTPS_PROXY
-	// point at when Network.Mode == "allowlist". The k8s and k8s-sandbox
-	// executors install an egress NetworkPolicy that confines the Pod to the
-	// proxy (plus DNS), so this URL is required in allowlist mode and rejected
-	// otherwise. The proxy runs as a separate Deployment — see
-	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand. The
-	// proxy MUST run in the same namespace as the sandbox Pod (the policy
-	// selects it by PodSelector with no NamespaceSelector). Ignored for every
-	// non-k8s-family Type.
+	// point at when Network.Mode == "allowlist"; required in that mode,
+	// rejected otherwise. See docs/executors/k8s.md#egress.
 	K8sEgressProxyURL string `json:"k8sEgressProxyUrl,omitempty"`
 
-	// Runtime selects the OCI sandbox runtime. Empty string means "use the
-	// platform default". The closed set of accepted values is enforced by
-	// ValidateRunConfig and is per-Type (see validK8sRuntimes /
-	// validContainerRuntimes): the names differ between the container and
-	// k8s executors because they reference different things.
-	//
-	// For type "container" it is the engine's OCI runtime name and the
-	// harness omits the field on the create-container request when empty:
-	//   ""           — engine default (typically runc)
-	//   "runc"       — vanilla runc
-	//   "runsc"      — gVisor (user-space kernel)
-	//   "kata"       — Kata Containers (default flavour)
-	//   "kata-qemu"  — Kata Containers backed by QEMU
-	//   "kata-fc"    — Kata Containers backed by Firecracker
-	//   "kata-clh"   — Kata Containers backed by Cloud Hypervisor
-	//
-	// For type "k8s" it is the Pod's RuntimeClassName and the harness omits
-	// the field on the Pod spec when empty. The cluster must have a matching
-	// RuntimeClass registered:
-	//   ""           — cluster default RuntimeClass
-	//   "runc"       — vanilla runc
-	//   "gvisor"     — gVisor (the conventional RuntimeClass name; the
-	//                  underlying handler is runsc)
-	//   "kata-qemu"  — Kata Containers backed by QEMU
-	//   "kata-fc"    — Kata Containers backed by Firecracker
-	//   "kata-clh"   — Kata Containers backed by Cloud Hypervisor
+	// Runtime selects the OCI sandbox runtime. Empty means "use the
+	// platform default". The closed set differs by executor Type — see
+	// docs/configuration.md (container: engine OCI runtime name; k8s: Pod
+	// RuntimeClassName, note "gvisor" not "runsc"; k8s-sandbox: gVisor-only).
 	Runtime string `json:"runtime,omitempty"`
 
 	// RegistryAllowlist constrains which container image references the
-	// container executor may run. Each entry is a path.Match glob over the
-	// normalised reference (registry host + repository path, tag/digest
-	// stripped) — e.g. "ghcr.io/rxbynerd/*" or "docker.io/library/*". An
-	// empty list lets the executor fall back to its built-in default (the
-	// project's own ghcr.io/rxbynerd images plus Docker Hub official
-	// "library/*" images). A reference matching no pattern is rejected
-	// before any container is created. Only meaningful for
-	// executor.type == "container".
-	//
-	// Globbing follows path.Match semantics: "*" matches within a single path
-	// segment and does NOT cross "/". So "ghcr.io/rxbynerd/*" matches
-	// "ghcr.io/rxbynerd/base" but not "ghcr.io/rxbynerd/team/base"; allow the
-	// deeper namespace with an explicit "ghcr.io/rxbynerd/*/*" entry.
+	// container executor may run: path.Match globs over the normalised
+	// reference (registry host + repo path, tag/digest stripped). Empty
+	// falls back to the built-in default. "*" does not cross "/" —
+	// "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a
+	// deeper namespace. Only meaningful for executor.type == "container".
 	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
 
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
@@ -1166,40 +931,24 @@ type ToolDispatchConfig struct {
 	MaxParallel int `json:"maxParallel,omitempty"`
 }
 
-// ToolChoiceEscalationConfig configures the missed-tool recovery (#230).
-//
-// The feature is OFF by default: a nil *ToolChoiceEscalationConfig on the
-// RunConfig disables it entirely, and an explicit Enabled:false does the
-// same. When enabled, the loop watches the first assistant turn of an
-// inner-loop run: if tools are available, no tool call has happened yet,
-// and the model returns a final/text answer, the loop treats it as a
-// likely missed-tool failure and retries the turn — forcing native
-// required tool choice when the resolved provider supports it, or
-// injecting a stronger-prompt message otherwise.
-//
-// The trigger is intentionally conservative (see the loop's escalation
-// policy). It never fires when no tools are available, and it never
-// exceeds MaxRetries.
+// ToolChoiceEscalationConfig configures recovery from a first-turn no-tool
+// answer on a workspace-dependent task: forcing native required tool choice
+// when the provider supports it, or a stronger-prompt retry otherwise. OFF
+// by default (nil or Enabled:false). See docs/configuration.md.
 type ToolChoiceEscalationConfig struct {
-	// Enabled turns the recovery on. Default false (safe): a bare run
-	// must not change behaviour, so the loop only escalates when an
-	// operator explicitly opts in.
+	// Enabled turns the recovery on. Default false: a bare run must not
+	// change behaviour.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// MaxRetries caps the number of forced retries per inner-loop run.
-	// Zero (or a nil config) resolves to DefaultToolChoiceEscalationMaxRetries
-	// via EffectiveToolChoiceEscalationMaxRetries; values outside
-	// [1, MaxToolChoiceEscalationMaxRetries] are rejected by
-	// ValidateRunConfig. The cap bounds the recovery so a model that
-	// keeps refusing to call a tool cannot drive an unbounded retry loop.
+	// MaxRetries caps forced retries per inner-loop run. Zero resolves to
+	// DefaultToolChoiceEscalationMaxRetries; bounded to
+	// [1, MaxToolChoiceEscalationMaxRetries] by ValidateRunConfig.
 	MaxRetries int `json:"maxRetries,omitempty"`
 }
 
 const (
 	// DefaultToolChoiceEscalationMaxRetries is the per-inner-loop forced
 	// retry cap applied when escalation is enabled but MaxRetries is unset.
-	// One matches the issue #230 default: a single recovery attempt is the
-	// conservative starting point.
 	DefaultToolChoiceEscalationMaxRetries = 1
 
 	// MaxToolChoiceEscalationMaxRetries is the hard ceiling on
@@ -1225,20 +974,13 @@ func (rc *RunConfig) EffectiveToolChoiceEscalationMaxRetries() int {
 	return rc.ToolChoiceEscalation.MaxRetries
 }
 
-// HooksConfig configures operator-authored lifecycle hooks that run
-// around the agentic session (issue #461). PreRun executes after the
-// harness builds the system prompt and before GitStrategy.Setup — the
-// natural place to clone a repo or provision a runtime the deterministic
-// git strategy then assumes already exists; a fatal PreRun failure fails
-// the run with outcome "setup_failed" before any turn runs. PostRun
-// executes after GitStrategy.Finalise, once the run's outcome is known,
-// for artifact submission or smoke tests.
-//
-// Hook output is trace-only: it is recorded on types.HookExecution and
-// never enters the model's context. Hooks run through the same Executor
-// the agent's tools use, so they share the run's sandbox and network
-// egress posture — there is no separate credential or network surface to
-// configure.
+// HooksConfig configures operator-authored lifecycle hooks that run around
+// the agentic session: PreRun before GitStrategy.Setup (clone, provision a
+// runtime; a fatal failure aborts the run with outcome "setup_failed"),
+// PostRun after GitStrategy.Finalise (artifact submission, smoke tests).
+// Hook output is trace-only and never enters the model's context; hooks run
+// through the run's own Executor, sharing its sandbox and egress posture.
+// See docs/configuration.md#lifecycle-hooks.
 type HooksConfig struct {
 	// PreRun are hooks executed, in order, before the agentic session
 	// starts.
@@ -1252,27 +994,21 @@ type HooksConfig struct {
 }
 
 // HookConfig is a single operator-authored lifecycle hook: an ordered
-// shell command executed via "sh -c" through the run's Executor.
+// shell command executed via "sh -c" through the run's Executor. See
+// docs/configuration.md#lifecycle-hooks for field defaults and bounds.
 type HookConfig struct {
 	// Type selects the hook kind. Empty defaults to "command" — the only
-	// value ValidateRunConfig accepts in v1. The field is present so a
-	// future typed step (e.g. a declarative git-clone source) can land
-	// additively without a schema break, matching the
-	// validateOptionalType convention used elsewhere in this file.
+	// value ValidateRunConfig accepts in v1; present so a future typed
+	// step can land additively without a schema break.
 	Type string `json:"type,omitempty"`
 
-	// Name is a short trace label (<=64 bytes, printable, no control
-	// characters). Purely descriptive — it never affects dispatch.
+	// Name is a short trace label. Purely descriptive.
 	Name string `json:"name,omitempty"`
 
-	// Command is the shell command executed via "sh -c" through the
-	// run's Executor. Required, non-empty after TrimSpace, <=16KB. Must
-	// not contain a "secret://" reference: hook commands are operator
-	// config recorded verbatim in the trace — like
-	// VerifierConfig.Command — so embedding a secret reference here
-	// would defeat the SecretStore contract. Resolve credentials via
-	// control-plane runtime bindings instead (locked design decision,
-	// issue #461).
+	// Command is the shell command executed via "sh -c" through the run's
+	// Executor. Must not contain a "secret://" reference: it is recorded
+	// verbatim in the trace, so resolve credentials via control-plane
+	// runtime bindings instead.
 	Command string `json:"command"`
 
 	// TimeoutSeconds bounds the hook's execution. Zero resolves to
@@ -1380,121 +1116,65 @@ type TraceEmitterConfig struct {
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
 
 	// Bucket is the GCS bucket the "gcs" emitter writes the run's JSONL
-	// trace to. Required when Type == "gcs"; rejected for every other
-	// emitter type so a stale config does not silently keep a bucket
-	// reference alive across a type change. Validated against the GCS
-	// bucket naming rules (lowercase, no slashes, 3-63 chars).
+	// trace to. Required when Type == "gcs"; rejected for every other type.
 	Bucket string `json:"bucket,omitempty"`
 
-	// ObjectPrefix is joined with the run ID at write time to form the
-	// final GCS object name (e.g. "traces/" + RunID + ".jsonl"). Empty
-	// is allowed; trailing slash is treated as implicit. Only consulted
-	// by the "gcs" emitter.
+	// ObjectPrefix is joined with the run ID to form the GCS object name.
+	// Empty is allowed; trailing slash is implicit. "gcs" emitter only.
 	ObjectPrefix string `json:"objectPrefix,omitempty"`
 
-	// Credential, when set, overrides the default credential resolution
-	// for the "gcs" emitter (which defaults to gcp-workload-identity
-	// against the runtime's metadata server). The field has no meaning
-	// for jsonl or otel and is rejected on those types. Secret-bearing
-	// sub-fields are scrubbed by RunConfig.Redact() the same way as
-	// Provider.Credential.
+	// Credential overrides the default credential resolution for the
+	// "gcs" emitter (default: gcp-workload-identity). Rejected on jsonl
+	// and otel. Secret-bearing sub-fields are scrubbed by Redact() the
+	// same way as Provider.Credential.
 	Credential *CredentialConfig `json:"credential,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
 	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
-	// HTTP/JSON is intentionally not supported; binary protobuf is the only
-	// HTTP encoding accepted by Grafana Cloud and most managed OTLP gateways
-	// and adding JSON has no clear demand. Ignored for the "jsonl" emitter.
+	// HTTP/JSON is intentionally not supported. Ignored for "jsonl".
 	Protocol string `json:"protocol,omitempty"`
 
 	// Headers are extra HTTP headers attached to every OTLP export
-	// request. Keys are header names; values may be plaintext or a
-	// "secret://" reference resolved via the SecretStore at exporter
-	// init time (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
-	// Resolved values flow through the same scrubbing layer as logs and
-	// are rewritten to "secret://[REDACTED]" by RunConfig.Redact() before
-	// any persisted trace or recording is written.
-	//
-	// Only applied when type=="otel". For protocol "grpc" the SDK sends
-	// these as gRPC metadata; for "http/protobuf" they are attached as
-	// HTTP request headers.
+	// request. Values may be plaintext or a "secret://" reference
+	// resolved at exporter init time, rewritten to "secret://[REDACTED]"
+	// by Redact(). Only applied when type=="otel".
 	Headers map[string]string `json:"headers,omitempty"`
 
 	// CaptureContent opts the otel emitter into recording prompt and
-	// completion content on spans using the OTel GenAI semantic-convention
-	// attributes (gen_ai.input.messages, gen_ai.output.messages,
-	// gen_ai.system_instructions). Default false: the GenAI spec marks
-	// message content Opt-In because it is likely to contain PII, and
-	// with the toggle off the otel emitter's span output is unchanged.
-	//
-	// When enabled, content flows through the same defence-in-depth
-	// scrubbing layer (security.Scrub) the jsonl emitter applies to its
-	// turn_record lines, so secret-shaped substrings are replaced with
-	// [REDACTED] before any span attribute is set. The toggle is not
-	// gated on mode or SensitiveData: the jsonl and gcs emitters already
-	// record full transcript content in every mode regardless of the
-	// Rule-of-Two sensitive-data signal, and an explicit default-off
-	// opt-in is the operator's deliberate consent. Only consulted when
-	// type=="otel"; rejected on the jsonl and gcs emitters like Protocol
-	// and Headers.
+	// completion content on spans via the OTel GenAI semconv attributes.
+	// Default false (Opt-In per the GenAI spec, since content likely
+	// contains PII); when enabled, content still passes through the same
+	// scrubbing layer (security.Scrub) the jsonl emitter uses. Only
+	// consulted when type=="otel". See docs/observability-cloud.md.
 	CaptureContent bool `json:"captureContent,omitempty"`
 }
 
-// ResultSinkConfig selects the result sink implementation. The
-// discriminator values are a closed set so AWS / Azure adapters can land
-// without breaking changes. Only "none" and "stdout-json" are
-// implemented in this issue; "gcp-pubsub" and "gcs" are reserved values
-// that fail validation with a "not yet implemented" error until their
-// adapters land. The "gcp-" prefix on the cloud-provider discriminator
-// mirrors the credential type prefix ("gcp-workload-identity") and
-// reserves sibling slots for "aws-sns" / "azure-eventgrid" without
-// requiring a deprecation cycle on the bare "pubsub" name.
-//
-// The result sink carries the run's *answer* (a small RunResult JSON
-// payload) — distinct from the trace emitter, which carries the run's
-// *evidence* (full JSONL trace + spans). A run can configure both
-// independently.
+// ResultSinkConfig selects the result sink implementation: the run's
+// *answer* (a small RunResult JSON payload), distinct from the trace
+// emitter's *evidence* (full JSONL trace + spans). Discriminator is a
+// closed set so AWS/Azure adapters can land without breaking changes;
+// only "none" and "stdout-json" are implemented today. See
+// docs/cloud-run-jobs.md.
 type ResultSinkConfig struct {
-	// Type selects the adapter. Closed set:
-	//   "none"        — disabled (the default when ResultSink is nil).
-	//   "stdout-json" — write a single "STIRRUP_RESULT <json>" line to
-	//                   stdout at end-of-run. Reads cleanly from Cloud
-	//                   Logging / CloudWatch / journald.
-	//   "gcp-pubsub"  — RESERVED. Will publish RunResult to a GCP
-	//                   Pub/Sub topic; rejected with a "not yet
-	//                   implemented" error today.
-	//   "gcs"         — RESERVED. Will write RunResult as a JSON
-	//                   object to GCS; rejected with a "not yet
-	//                   implemented" error today.
+	// Type selects the adapter: "none" (disabled, default), "stdout-json"
+	// (writes "STIRRUP_RESULT <json>" to stdout at end-of-run), or the
+	// reserved "gcp-pubsub" / "gcs" (rejected as not yet implemented).
 	Type string `json:"type"`
 
-	// Topic is the Pub/Sub topic name for the future "gcp-pubsub"
-	// adapter. Parsed but currently unused — the validator rejects
-	// gcp-pubsub with "not yet implemented" before this field is
-	// consulted. Carrying topic on a non-"gcp-pubsub" type is rejected
-	// to avoid silent drop when an operator copies a Pub/Sub block into
-	// a different sink config.
+	// Topic is the Pub/Sub topic name for the future "gcp-pubsub" adapter.
+	// Parsed but currently unused; rejected on any other type.
 	Topic string `json:"topic,omitempty"`
 
-	// Attributes are extra message attributes attached to the future
-	// "gcp-pubsub" adapter's published message. Values may carry
-	// "secret://" references which RunConfig.Redact() rewrites to
-	// "secret://[REDACTED]" before any trace or recording is
-	// persisted. Parsed but currently unused — the validator rejects
-	// gcp-pubsub with "not yet implemented" before this field is
-	// consulted. Carrying attributes on a non-"gcp-pubsub" type is
-	// rejected for the same reason as Topic.
+	// Attributes are extra message attributes for the future "gcp-pubsub"
+	// adapter. Values may carry "secret://" references rewritten by
+	// Redact(). Parsed but currently unused; rejected on any other type.
 	Attributes map[string]string `json:"attributes,omitempty"`
 
-	// MaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText
-	// (issue #463). Zero (the default) means
-	// DefaultMaxFinalAssistantTextBytes; use
+	// MaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText. Zero
+	// means DefaultMaxFinalAssistantTextBytes; use
 	// ResolvedMaxFinalAssistantTextBytes rather than reading this field
-	// directly. Unlike Topic/Attributes this is not gated to a single
-	// sink type: it bounds the RunResult field itself, so it applies
-	// regardless of which sink (or none) consumes the result — an
-	// embedder reading RunResult directly benefits from the same bound
-	// as the stdout-json sink.
+	// directly. Applies regardless of which sink (or none) consumes the
+	// result, unlike Topic/Attributes which are gated to gcp-pubsub.
 	MaxFinalAssistantTextBytes int `json:"maxFinalAssistantTextBytes,omitempty"`
 }
 
@@ -1515,13 +1195,9 @@ type ToolsConfig struct {
 	BuiltIn    []string          `json:"builtIn,omitempty"`    // which built-in tools to enable
 	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"` // MCP server connections
 	// Profile selects a model-facing presentation for the registered
-	// tools (issue #234). It controls only the names/descriptions a model
-	// sees on the wire — internal dispatch identities are unchanged, so a
-	// config that names tools by their internal IDs (grep_files,
-	// edit_file, …) keeps working under any profile. The zero value
-	// ("default") is the identity presentation: a bare run is byte-
-	// identical to the pre-profile behaviour. Closed set, validated by
-	// ValidateRunConfig.
+	// tools — only the names/descriptions on the wire, not internal
+	// dispatch identities. Zero value ("default") is the identity
+	// presentation. Closed set, validated by ValidateRunConfig.
 	Profile string `json:"profile,omitempty"`
 }
 
@@ -1572,31 +1248,15 @@ var validBatchProviderTypes = map[string]bool{
 // values accepted by ValidateRunConfig. Adding an entry requires a
 // matching rule in harness/internal/provider/compat/ and a factory
 // resolveCompatProfile switch arm.
-//
-// Wave 2 Step 1 ships the enum but no compat rules; "zai-glm" is the
-// only legal non-empty value and its rule lands in Step 2 alongside the
-// factory plumbing.
 var validCompatProfiles = map[string]bool{
 	"":        true, // explicit empty is the default (no profile)
 	"zai-glm": true,
 }
 
 // validToolsProfiles is the closed set of ToolsConfig.Profile values
-// accepted by ValidateRunConfig (issue #234). The empty string and
-// "default" are both the identity presentation (no aliasing) so a
-// config that omits the field and one that sets it to "default" behave
-// identically and validate cleanly.
-//
-// Adding an entry requires a matching profile table in
-// harness/internal/tool/profile.go; an entry here without one would
-// validate at config time but present no aliases, which is a silent
-// no-op rather than a clear error.
-//
-// "coding-classic" is the one alternate shipped in v1: it presents the
-// terse, widely-recognised coding-tool names (read_file→read_file is a
-// no-op, grep_files→grep, find_files→find, run_command→bash) that
-// models with strong coding-CLI priors call by reflex, while dispatch
-// still resolves them to the internal tools.
+// accepted by ValidateRunConfig. The empty string and "default" are both
+// the identity presentation. Adding an entry requires a matching profile
+// table in harness/internal/tool/profile.go. See docs/configuration.md.
 var validToolsProfiles = map[string]bool{
 	"":               true, // explicit empty is the default (no aliasing)
 	"default":        true,
@@ -1681,10 +1341,8 @@ var modelLabelPattern = regexp.MustCompile(`^[A-Za-z0-9./_-]{1,64}$`)
 // `_` accommodates underscore-variant headers (e.g. `x_honeycomb_team`)
 // that some gateways accept; bracketing characters, whitespace, colon,
 // and CRLF are intentionally excluded so a typo in a RunConfig file
-// cannot smuggle a CRLF-injected secondary header into the OTel
-// SDK's request builder. Mirrors the validation contract on
-// `apiKeyHeaderPattern` above; see runconfig.go:1862-1887 for the
-// OpenAI-side counterpart.
+// cannot smuggle a CRLF-injected secondary header into the OTel SDK's
+// request builder. Mirrors the validation contract on apiKeyHeaderPattern.
 var traceEmitterHeaderNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // maxQueryStringBytes caps the encoded-form size of QueryParams to bound
@@ -1737,13 +1395,12 @@ var executorExecCapable = map[string]bool{
 	"none":        false,
 }
 
-// ExecutorCanExec reports whether executorType can execute hook
-// commands. This is the sanctioned check for hooks.preRun/postRun
-// eligibility (issue #475) — do not reintroduce a hardcoded
-// `== "api"` comparison. Any new executor type that cannot execute
-// commands (there is no "none" executor type today) must be added to
-// executorExecCapable, not just validExecutorTypes, or it will silently
-// pass hook validation and fail at runtime.
+// ExecutorCanExec reports whether executorType can execute hook commands.
+// This is the sanctioned check for hooks.preRun/postRun eligibility — do
+// not reintroduce a hardcoded `== "api"` comparison. Any new executor type
+// that cannot execute commands must be added to executorExecCapable, not
+// just validExecutorTypes, or it will silently pass hook validation and
+// fail at runtime.
 func ExecutorCanExec(executorType string) bool {
 	return executorExecCapable[executorType]
 }
@@ -1878,14 +1535,11 @@ var validLogsExportTypes = map[string]bool{
 	"otlp": true,
 }
 
-// validResultSinkTypes is the closed set of ResultSinkConfig.Type
-// values. Only the entries in implementedResultSinkTypes are wired in
-// this release; the remainder are reserved so AWS / Azure / gcp-pubsub
-// adapters can ship without breaking the config wire schema. The
-// cloud-provider entries carry an explicit "gcp-" prefix to match the
-// credential discriminators ("gcp-workload-identity") and to reserve
-// sibling slots for "aws-sns" and "azure-eventgrid" without a
-// deprecation cycle.
+// validResultSinkTypes is the closed set of ResultSinkConfig.Type values.
+// Only the entries in implementedResultSinkTypes are wired; the rest are
+// reserved so AWS/Azure/gcp-pubsub adapters can ship without breaking the
+// wire schema. The "gcp-" prefix matches the credential discriminators
+// and reserves sibling slots for "aws-sns" / "azure-eventgrid".
 var validResultSinkTypes = map[string]bool{
 	"none":        true,
 	"stdout-json": true,
@@ -1893,11 +1547,9 @@ var validResultSinkTypes = map[string]bool{
 	"gcs":         true,
 }
 
-// implementedResultSinkTypes is the subset of validResultSinkTypes for
-// which an adapter is wired today. ValidateRunConfig rejects every
-// other entry in validResultSinkTypes with a "not yet implemented"
-// error so an operator sees a clear message instead of a surprising
-// nil-component crash at boot.
+// implementedResultSinkTypes is the subset of validResultSinkTypes with a
+// wired adapter. ValidateRunConfig rejects every other entry with a
+// "not yet implemented" error instead of a nil-component crash at boot.
 var implementedResultSinkTypes = map[string]bool{
 	"none":        true,
 	"stdout-json": true,
@@ -2319,14 +1971,14 @@ func ValidateRunConfig(config *RunConfig) error {
 
 	// Read-only modes must not enable write-capable tools.
 	//
-	// Lifecycle hooks (#461) are deliberately NOT covered by this
-	// invariant: it bounds the *agent's* tools — what the model can
-	// reach mid-conversation — not operator-authored, deterministic
-	// commands declared in reviewable RunConfig. Precedent already
-	// exists for exec outside the tool surface in read-only modes (the
-	// test-runner verifier's command, the deterministic git strategy's
-	// branch creation); a pre-run hook that clones a repo is exactly
-	// what a planning run needs to have something to read.
+	// Lifecycle hooks are deliberately NOT covered by this invariant: it
+	// bounds the *agent's* tools — what the model can reach mid-
+	// conversation — not operator-authored, deterministic commands
+	// declared in reviewable RunConfig. Precedent already exists for exec
+	// outside the tool surface in read-only modes (the test-runner
+	// verifier's command, the deterministic git strategy's branch
+	// creation); a pre-run hook that clones a repo is exactly what a
+	// planning run needs to have something to read.
 	if readOnlyModes[config.Mode] {
 		if len(config.Tools.BuiltIn) == 0 {
 			errs = append(errs, fmt.Sprintf(
@@ -2453,10 +2105,10 @@ func validatePromptBuilderConfig(config *RunConfig, errs *[]string) {
 
 // validateContextStrategyBudget rejects a ContextStrategyConfig.MaxTokens
 // value that cannot possibly work, while leaving every other positive
-// value — however small — to run: see minContextStrategyMaxTokens for
-// why a low floor, not a high one, is the correct fix for #444. Negative
-// values are always rejected; MaxTokens has no meaning below zero and
-// silently treating it as "unset" would mask a caller bug.
+// value — however small — to run: see minContextStrategyMaxTokens for the
+// floor rationale. Negative values are always rejected; MaxTokens has no
+// meaning below zero and silently treating it as "unset" would mask a
+// caller bug.
 func validateContextStrategyBudget(cfg ContextStrategyConfig, errs *[]string) {
 	switch {
 	case cfg.MaxTokens < 0:
@@ -2488,10 +2140,9 @@ func validateCompatProfile(path, value string, errs *[]string) {
 }
 
 // validateToolsProfile enforces the closed set of legal
-// ToolsConfig.Profile values (issue #234). Empty string and "default"
-// are the identity presentation and validate cleanly. Unknown values
-// fail loudly with the legal-set list so a typo surfaces at startup
-// rather than as a silently un-aliased run.
+// ToolsConfig.Profile values. Unknown values fail loudly with the
+// legal-set list so a typo surfaces at startup rather than as a
+// silently un-aliased run.
 func validateToolsProfile(value string, errs *[]string) {
 	if validToolsProfiles[value] {
 		return
@@ -2530,10 +2181,10 @@ func pathHasDotDotSegment(path string) bool {
 //     traversal sequences (e.g. "../../etc/passwd") so a malicious
 //     control plane cannot trick the harness into reading sensitive
 //     host files and surfacing chunks of their content via Cedar
-//     parser error messages (M6).
+//     parser error messages.
 //   - PolicyFile set with a non-policy-engine type is a misconfiguration
 //     footgun: the file is silently ignored and the operator believes
-//     they have applied a Cedar policy. Reject it loudly (S7).
+//     they have applied a Cedar policy. Reject it loudly.
 //   - Fallback, when set, must name one of the three non-policy-engine
 //     policies. policy-engine -> policy-engine fallback would loop on a
 //     no-decision response, so it's rejected here.
@@ -2584,17 +2235,15 @@ func RuleOfTwoState(config *RunConfig) (holdsUntrusted, holdsSensitive, canCommE
 // emits a rule_of_two_disabled security event at run start to keep the
 // override auditable.
 //
-// The three booleans are deliberately crude in v1 (per the issue
-// brief). They will be refined as we collect eval-suite signal.
+// The three booleans are deliberately crude in v1; they will be refined
+// as we collect eval-suite signal.
 //
-// Lifecycle hooks (#461) do not participate in any of the three legs:
-// they add no agent-reachable capability (they run outside the
-// conversation entirely), their output is trace-only and never enters
-// the model's context (so a hook cannot smuggle sensitive data into a
-// turn), and they share the run's existing egress posture rather than
-// opening a new external-communication surface. HooksConfig is
-// intentionally absent from ruleOfTwoUntrustedInput / ruleOfTwoSensitiveData
-// / ruleOfTwoExternalComm below.
+// Lifecycle hooks do not participate in any of the three legs: they add
+// no agent-reachable capability, their output is trace-only and never
+// enters the model's context, and they share the run's existing egress
+// posture. HooksConfig is intentionally absent from
+// ruleOfTwoUntrustedInput / ruleOfTwoSensitiveData / ruleOfTwoExternalComm
+// below.
 func validateRuleOfTwo(config *RunConfig, errs *[]string) {
 	holdsUntrusted := ruleOfTwoUntrustedInput(config)
 	holdsSensitive := ruleOfTwoSensitiveData(config)
@@ -2949,7 +2598,7 @@ var validHookTypes = map[string]bool{"": true, "command": true}
 // validHookRunOnValues is the closed set of HookConfig.RunOn values.
 var validHookRunOnValues = map[string]bool{"": true, "always": true, "success": true, "failure": true}
 
-// validateHooksConfig enforces the HooksConfig invariants (issue #461):
+// validateHooksConfig enforces the HooksConfig invariants:
 //
 //   - Hooks require an exec-capable executor — the "api" executor is
 //     read-only and cannot run them. types cannot import the executor
@@ -3005,10 +2654,9 @@ func validateHooksConfig(config *RunConfig, errs *[]string) {
 	}
 
 	if config.Timeout != nil && preSum > *config.Timeout {
-		// Layering note: same "types-side slog.Warn" mechanism as the
-		// batch maxTurns latency warning above (gh-134 precedent) —
-		// spec-faithful but leaves callers without a way to observe or
-		// suppress the warning short of manipulating slog.Default.
+		// Same types-side slog.Warn mechanism as the batch maxTurns
+		// latency warning below; leaves callers without a way to observe
+		// or suppress the warning short of manipulating slog.Default.
 		slog.Warn(
 			"sum of hooks.preRun effective timeouts exceeds the run's wall-clock timeout",
 			"preRunTimeoutSumSeconds", preSum,
@@ -3145,13 +2793,11 @@ func fmtProviderRetryValue(value int, isDefault bool) string {
 }
 
 // validateBatchConfig enforces the cross-field invariants on
-// ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch
-// only applies to the top-level Provider in v1; entries in
-// Providers[] are streaming-only and any Batch field on them is
-// ignored. The validator mutates *config when Batch.Enabled and
-// MaxWaitSeconds is unset — downstream consumers should always see
-// a populated value so the adapter wiring (phase 2) can avoid
-// nil-checking on the hot path.
+// ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch only
+// applies to the top-level Provider in v1; entries in Providers[] are
+// streaming-only and any Batch field on them is ignored. The validator
+// mutates *config when Batch.Enabled and MaxWaitSeconds is unset so
+// downstream consumers always see a populated value.
 func validateBatchConfig(config *RunConfig, errs *[]string) {
 	batch := config.Provider.Batch
 	if batch == nil {
@@ -3210,22 +2856,16 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, "batch.maxWaitSeconds must be in range (0, 86400]")
 		}
 	} else {
-		// Default applied in-place so phase-2 adapter wiring can rely
-		// on a populated value without re-reading the default. Only
-		// runs on the Enabled=true branch (see comment above the func)
-		// so a disabled batch block keeps MaxWaitSeconds nil and the
-		// "operator did not configure" signal survives.
+		// Only runs on the Enabled=true branch, so a disabled batch
+		// block keeps MaxWaitSeconds nil and the "operator did not
+		// configure" signal survives.
 		def := DefaultBatchMaxWaitSeconds
 		batch.MaxWaitSeconds = &def
 	}
 	if config.MaxTurns > batchTurnsLatencyWarnThreshold {
-		// Layering note: this warn is in types/ for spec-faithfulness
-		// (gh-134 requires the same mechanism as rule_of_two_warning).
-		// Follow-up: move to harness/internal/core/factory.go via a
-		// ValidateRunConfigResult or companion ValidateRunConfigWarnings
-		// function so callers (tests, eval runner, library embedders)
-		// stop having to manipulate slog.Default to observe or suppress
-		// the warning.
+		// This warn is in types/, the same mechanism rule_of_two_warning
+		// uses, which leaves callers without a way to observe or suppress
+		// it short of manipulating slog.Default.
 		slog.Warn(
 			"batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency",
 			"maxTurns", config.MaxTurns,
@@ -3302,8 +2942,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 
 	// Cardinality bound on the provider.model OTel metric label across all
 	// provider types. The Gemini-specific check above is URL-safety; this
-	// one is observability self-harm prevention for anthropic,
-	// openai-compatible, openai-responses, and bedrock (issue #310).
+	// one is observability self-harm prevention.
 	validateProviderModelLabel(config, errs)
 
 	checkProviderRef := func(path, name string) {
@@ -3952,7 +3591,7 @@ func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string
 //     unset with gcp-service-account, the credential source has
 //     nothing to load. Both shapes are hard errors.
 //   - GCPCredentialsFile may arrive over gRPC. Reject ".." segments
-//     with the same logic permissionPolicy.policyFile uses (M6).
+//     with the same logic permissionPolicy.policyFile uses.
 //   - Each GeminiSafetySetting must reference a category and threshold
 //     from the closed Vertex AI set; values that pass through to the
 //     API verbatim would otherwise produce confusing 400s.
@@ -4042,9 +3681,8 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 //     must NOT also carry an apiKeyRef. The Anthropic SDK precedence
 //     chain puts ANTHROPIC_API_KEY above federation, which means a
 //     leftover key silently shadows WIF and the operator never knows
-//     the federated path went unused. Per issue #117 (Risk #4),
-//     stirrup fails closed at validation time rather than replicating
-//     that surprise.
+//     the federated path went unused; stirrup fails closed at
+//     validation time rather than replicating that surprise.
 //
 //  2. credential.type="anthropic-wif" must only pair with
 //     provider.type="anthropic". An operator who passes
@@ -4165,9 +3803,9 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 // "<region>.anthropic.<model>" (inference profile), or a full ARN. The
 // CLI's flag-only default is "claude-sonnet-4-6" — the Anthropic API
 // alias — which Bedrock rejects with an opaque ValidationException only
-// after IAM/SigV4 setup and a network round-trip (see #65). We have
-// enough information at config-load time to fail closed with a message
-// that names the inference-profile shape and points the operator at
+// after IAM/SigV4 setup and a network round-trip. We have enough
+// information at config-load time to fail closed with a message that
+// names the inference-profile shape and points the operator at
 // `aws bedrock list-inference-profiles`.
 //
 // The check trips whenever the resolved router provider is bedrock,
@@ -4242,13 +3880,12 @@ func validateBedrockModelID(config *RunConfig, errs *[]string) {
 // validateProviderModelLabel bounds the character set and length of the
 // router-resolved model string for every provider type, because that
 // value rides on the provider.model OTel metric label (dispatch.go and
-// loop.go). #304 hardened the model-controlled tool.name label; this is
-// the operator-controlled sibling: an operator with RunConfig authoring
-// power (Cloud Run job spec, gRPC submitter) could otherwise set an
-// unbounded or non-printable model string that inflates TSDB cardinality
-// or breaks dashboard label rendering (CWE-400, issue #310). The bound is
-// modelLabelPattern — which allows forward slashes for OpenRouter-style
-// provider/model naming while staying conservative on characters.
+// loop.go): an operator with RunConfig authoring power (Cloud Run job
+// spec, gRPC submitter) could otherwise set an unbounded or non-printable
+// model string that inflates TSDB cardinality or breaks dashboard label
+// rendering. The bound is modelLabelPattern — which allows forward
+// slashes for OpenRouter-style provider/model naming while staying
+// conservative on characters.
 //
 // Scope mirrors validateGeminiModelName: ModelRouter.Model under the
 // resolved default provider, plus each ModeModels override. CheapModel /
@@ -4652,23 +4289,20 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			))
 		}
 	}
-	// Reject `headers` on the gRPC transport. The gRPC exporter path
-	// in harness/internal/trace/otel.go and observability/metrics.go
-	// unconditionally calls WithInsecure(), so any bearer/Basic
-	// credential supplied via headers would be transmitted in
-	// plaintext. The native HTTP path is the only protocol that
-	// accepts headers in this PR; full gRPC TLS support is a deferred
-	// follow-up (see synthesis DF-4). Empty Protocol defaults to gRPC
-	// at exporter construction time, so the check applies there too.
+	// Reject `headers` on the gRPC transport. The gRPC exporter path in
+	// harness/internal/trace/otel.go and observability/metrics.go
+	// unconditionally calls WithInsecure(), so any bearer/Basic credential
+	// supplied via headers would be transmitted in plaintext; only the
+	// HTTP protocol accepts headers today. Empty Protocol defaults to
+	// gRPC at exporter construction time, so the check applies there too.
 	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
 		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; gRPC transport uses WithInsecure() and would send credentials in plaintext")
 	}
 	// Header name and value validation. Block CRLF injection at
 	// config-load time rather than letting a "Bearer foo\r\nX-Inj: e"
-	// value reach the net/http header builder, which panics on CRLF
-	// in Go 1.26. This mirrors the OpenAI-side validation at
-	// validateOpenAIAuthFields (runconfig.go:1862-1887) so the two
-	// auth-header surfaces share the same hardening.
+	// value reach the net/http header builder, which panics on CRLF in
+	// Go 1.26. Mirrors validateOpenAIAuthFields so both auth-header
+	// surfaces share the same hardening.
 	for k, v := range cfg.Headers {
 		if !traceEmitterHeaderNamePattern.MatchString(k) {
 			*errs = append(*errs, fmt.Sprintf(
@@ -4741,7 +4375,7 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 // sets differ; an empty runtime is always valid and any other Type
 // (local, api) rejects a non-empty runtime outright — silently dropping
 // it would let an operator believe they have sandbox isolation while the
-// workload runs on the host (S8).
+// workload runs on the host.
 func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Runtime == "" {
 		return

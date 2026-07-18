@@ -55,10 +55,9 @@ func (f *fakeOTLPMetricsServer) snapshot() []capturedMetricsRequest {
 	return out
 }
 
-// TestNewMetrics_HTTPProtocol_RoutesToV1Metrics is the metrics-side
-// happy-path test for issue #100. Constructing a Metrics with
-// protocol="http/protobuf", incrementing a counter, and forcing a
-// flush via Close() must POST to /v1/metrics with the configured
+// TestNewMetrics_HTTPProtocol_RoutesToV1Metrics pins that constructing a
+// Metrics with protocol="http/protobuf", incrementing a counter, and
+// forcing a flush via Close() POSTs to /v1/metrics with the configured
 // header.
 func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 	fake := &fakeOTLPMetricsServer{}
@@ -84,16 +83,13 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 
-	// Increment a counter so the exporter has something non-empty to
-	// flush on Shutdown. Without an actual measurement, the periodic
-	// reader's first export would be a no-op and the test would race
-	// against the first collection cycle.
+	// Without a measurement, the periodic reader's first export would be
+	// a no-op and the test would race against the first collection cycle.
 	m.Runs.Add(ctx, 1, metric.WithAttributes(attribute.String("run.mode", "execution")))
 	m.TokensInput.Add(ctx, 42)
 
-	// Close drives a final ForceFlush + Shutdown synchronously, which
-	// is what we want here: the test asserts on the captured POSTs
-	// immediately after Close returns.
+	// Close drives a final ForceFlush + Shutdown synchronously, so the
+	// test can assert on captured POSTs immediately after it returns.
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -117,10 +113,9 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 	}
 }
 
-// TestNewMetrics_HTTPProtocol_PreservesGatewayPath mirrors the
-// trace-side path-preservation test: a Grafana-Cloud–style URL ending
-// in /otlp must produce metrics POSTs to /otlp/v1/metrics so the
-// gateway's tenant routing is preserved.
+// TestNewMetrics_HTTPProtocol_PreservesGatewayPath pins that a
+// Grafana-Cloud–style URL ending in /otlp produces metrics POSTs to
+// /otlp/v1/metrics so the gateway's tenant routing is preserved.
 func TestNewMetrics_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
 	if path := joinMetricsPath("/otlp"); path != "/otlp/v1/metrics" {
 		t.Errorf("joinMetricsPath(/otlp) = %q, want /otlp/v1/metrics", path)
@@ -143,9 +138,8 @@ func TestNewMetrics_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
 	}
 }
 
-// TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol is the parallel
-// of the trace-side validation test: an unknown wire-protocol value
-// must surface as a clear error rather than silently falling back.
+// TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol pins that an unknown
+// wire-protocol value surfaces as a clear error rather than falling back.
 func TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 	_, err := NewMetrics(
 		context.Background(),
@@ -162,18 +156,12 @@ func TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 	}
 }
 
-// TestNewMetrics_GRPCProtocol_AcceptsHeaders is a smoke test that the
-// gRPC path also accepts a non-empty headers map without erroring on
-// option construction. The actual export round-trip is exercised
-// separately because gRPC requires a real gRPC server to capture the
-// metadata, which is heavier than this layer wants to set up; the
-// no-error result here catches a regression that drops the WithHeaders
-// option from the slice.
+// TestNewMetrics_GRPCProtocol_AcceptsHeaders is a smoke test that the gRPC
+// path accepts a non-empty headers map without erroring on option
+// construction; catches a regression that drops WithHeaders from the slice.
 func TestNewMetrics_GRPCProtocol_AcceptsHeaders(t *testing.T) {
-	// Direct exporter construction so we exercise the option-
-	// stitching path without paying the OTel SDK's connection
-	// timeout on Close. NewMetrics goes through the same path; the
-	// extra plumbing is incidental to this test's intent.
+	// Direct exporter construction avoids the OTel SDK's connection
+	// timeout on Close.
 	exp, err := buildOTLPMetricExporter(
 		context.Background(),
 		"127.0.0.1:1",

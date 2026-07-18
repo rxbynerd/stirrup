@@ -11,16 +11,12 @@ type DynamicRouterConfig struct {
 	ExpensiveSelection ModelSelection
 
 	// ExpensiveTurnThreshold: if Turn >= this value, use the expensive model.
-	// Later turns tend to require deeper reasoning.
 	ExpensiveTurnThreshold int
 
-	// ExpensiveTokenThreshold: if cumulative output tokens >= this value,
-	// use the expensive model. High output suggests complex reasoning chains.
+	// ExpensiveTokenThreshold: if cumulative output tokens >= this value, use the expensive model.
 	ExpensiveTokenThreshold int
 
 	// CheapStopReasons: if LastStopReason is in this set, use the cheap model.
-	// For example, "tool_use" means the model just invoked tools and the next
-	// turn only needs to process tool results — genuinely cheap work.
 	CheapStopReasons []string
 }
 
@@ -52,27 +48,18 @@ func NewDynamicRouter(cfg DynamicRouterConfig) *DynamicRouter {
 	}
 }
 
-// Select picks a model based on the current turn's complexity signals.
-//
-// Priority order:
-//  1. Cheap stop reason match → cheap model (tool result processing is genuinely cheap)
-//  2. Turn >= expensive turn threshold → expensive model
-//  3. Cumulative output tokens >= expensive token threshold → expensive model
-//  4. Otherwise → default model
+// Select picks a model based on the current turn's complexity signals, in
+// priority order: cheap stop reason, then turn threshold, then token
+// threshold, falling back to the default selection.
 func (r *DynamicRouter) Select(_ context.Context, rc RouterContext) ModelSelection {
-	// 1. Cheap stop reason takes priority: if the previous turn ended with
-	// a tool call, the next turn just processes results.
 	if rc.LastStopReason != "" && r.cheapStopReasons[rc.LastStopReason] {
 		return r.cheapSel
 	}
 
-	// 2. Late turns are harder — the model may need to reason about
-	// accumulated context and recover from earlier mistakes.
 	if r.expensiveTurnThreshold > 0 && rc.Turn >= r.expensiveTurnThreshold {
 		return r.expensiveSel
 	}
 
-	// 3. High cumulative output suggests the model is doing complex work.
 	if r.expensiveTokenThreshold > 0 && rc.TokenUsage.Output >= r.expensiveTokenThreshold {
 		return r.expensiveSel
 	}

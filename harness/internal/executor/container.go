@@ -19,47 +19,31 @@ const (
 	containerWorkspace = "/workspace"
 	maxDockerFrameSize = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
 
-	// hardenedUser is the uid:gid the container's main process and every
-	// exec run under. 65534:65534 is the conventional nobody:nogroup pair,
-	// so a container escape lands on an unprivileged identity. Writes still
-	// succeed against the workspace bind and the tmpfs scratch mounts; the
-	// read-only rootfs is unaffected by the non-root user.
+	// hardenedUser is the conventional nobody:nogroup pair, so a container
+	// escape lands on an unprivileged identity.
 	hardenedUser = "65534:65534"
 
 	// tmpfsTmpSize and shmSize size the two writable scratch mounts the
-	// read-only rootfs profile provides. /tmp is the catch-all scratch
-	// directory many tools assume is writable; /dev/shm is sized via its own
-	// tmpfs entry rather than the separate ShmSize host-config field so the
-	// size and the nosuid/nodev/noexec flags stay on one mount. Both carry
-	// nosuid,nodev,noexec so a dropped binary cannot be executed from them.
+	// read-only rootfs requires. Both carry nosuid,nodev,noexec (tmpfsMountOpts)
+	// so a dropped binary cannot be executed from them.
 	tmpfsTmpSize = 256 * 1024 * 1024 // 256 MiB
 	shmSize      = 64 * 1024 * 1024  // 64 MiB
 
-	// tmpfsMountOpts is the mount-option string applied to both tmpfs
-	// scratch mounts. size is appended per-mount.
 	tmpfsMountOpts = "rw,nosuid,nodev,noexec"
 
-	// hostGatewayHost is the DNS name we add to the container's /etc/hosts
-	// (via ExtraHosts) that resolves to the host's address. Docker Engine
-	// >=20.10 and Podman >=4.0 expand the magic value "host-gateway" into
-	// the real bridge gateway IP. The harness does not support older
-	// runtimes for the allowlist mode — see docs/safety-rings.md (Wave 4).
+	// hostGatewayHost resolves to the host's address via Docker/Podman's
+	// magic "host-gateway" ExtraHosts value (Docker >=20.10, Podman >=4.0).
 	hostGatewayHost = "host.docker.internal"
 )
 
 var (
-	// containerFileIOTimeout bounds a single ReadFile/WriteFile operation
-	// (archive transfer, plus WriteFile's mkdir -p). Mirrors
-	// k8sFileIOTimeout: file I/O has no caller-supplied timeout, and the
-	// Docker API client's transport has no blanket timeout of its own (see
-	// container_api.go), so without an explicit deadline here a wedged
-	// daemon would hang the calling goroutine indefinitely. A var (not
-	// const), like the timeouts in container_api.go, so tests can shrink
-	// it to exercise the timeout path quickly.
+	// containerFileIOTimeout bounds a single ReadFile/WriteFile operation.
+	// The Docker API client's transport has no blanket timeout of its own
+	// (see container_api.go), so a wedged daemon would otherwise hang the
+	// calling goroutine indefinitely. A var, not const, so tests can shrink it.
 	containerFileIOTimeout = 60 * time.Second
 	// containerMkdirTimeout bounds WriteFile's "mkdir -p" exec call
-	// specifically — snappier than the file-transfer budget above since it
-	// is a small, near-instant operation on a healthy daemon.
+	// specifically, snappier than the file-transfer budget above.
 	containerMkdirTimeout = 10 * time.Second
 )
 
@@ -70,21 +54,16 @@ type ContainerExecutorConfig struct {
 	Network    *types.NetworkConfig
 	Resources  *types.ResourceLimits
 	SocketPath string // override auto-detection; empty = auto-detect
-	// RegistryAllowlist constrains which image references may be run. Each
-	// entry is a glob over the normalised reference (registry host + repo
-	// path, digest/tag stripped) — e.g. "ghcr.io/stirrup/*". An empty list
-	// falls back to defaultRegistryAllowlist. A reference matching no
-	// pattern is rejected at construction before any container is created.
+	// RegistryAllowlist is a set of globs over the normalised image
+	// reference (registry host + repo path, digest/tag stripped). An empty
+	// list falls back to defaultRegistryAllowlist.
 	RegistryAllowlist []string
-	// Runtime selects the OCI runtime for the container (e.g. "runsc",
-	// "kata", "kata-qemu", "kata-fc"). Empty means "use the engine
-	// default" — the field is omitted from the create-container request,
-	// which yields runc on stock Docker. Validation of the closed set is
-	// performed by types.ValidateRunConfig before the executor is built.
+	// Runtime selects the OCI runtime (e.g. "runsc", "kata-qemu"). Empty
+	// omits the field from the create-container request, yielding runc.
 	Runtime string
 	// EgressSecurity, when non-nil, is wired into the egress proxy so
-	// per-request egress_allowed / egress_blocked events flow through the
-	// same SecurityLogger the executor uses for path/file events.
+	// per-request events flow through the same SecurityLogger the executor
+	// uses for path/file events.
 	EgressSecurity egressproxy.SecurityEventEmitter
 }
 
@@ -118,15 +97,10 @@ func (e *ContainerExecutor) Probe(ctx context.Context) error {
 }
 
 // ProbeContainerEngine performs the dry-run preflight check for a
-// container executor WITHOUT constructing or starting a container. It
-// builds only the Engine API client (honouring cfg.SocketPath or
-// auto-detecting the socket), pings the daemon, and verifies the image is
-// present locally. Crucially it never calls createContainer/startContainer
-// and never starts the egress proxy, so a `--dry-run` of a container
-// config is truly read-only — unlike NewContainerExecutorWithContext,
-// which creates a live container as a construction side effect. The
-// preflight path (core.Preflight) uses this instead of building a full
-// ContainerExecutor (issue #245 step 7).
+// container executor WITHOUT constructing or starting a container: it
+// pings the daemon and verifies the image is present locally. Unlike
+// NewContainerExecutorWithContext, it never creates a container or starts
+// the egress proxy, so a `--dry-run` stays read-only.
 func ProbeContainerEngine(ctx context.Context, cfg ContainerExecutorConfig) error {
 	if cfg.Image != "" {
 		if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
@@ -170,8 +144,7 @@ func probeContainerEngine(ctx context.Context, api *containerAPIClient, image st
 // container.
 //
 // Deprecated: use NewContainerExecutorWithContext to ensure the egress proxy
-// goroutine is bounded by the caller's lifetime. This wrapper preserves the
-// pre-#42 signature for callers that have not migrated yet.
+// goroutine is bounded by the caller's lifetime.
 func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, error) {
 	return NewContainerExecutorWithContext(context.Background(), cfg)
 }
@@ -221,10 +194,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	)
 	if cfg.Network != nil && cfg.Network.Mode == "allowlist" {
 		var err error
-		// Plumb the caller's ctx into Start so the proxy goroutine is
-		// torn down when the build path is cancelled. Pre-#42 this was
-		// context.Background(), which leaked listeners on slow boots and
-		// on early-return failure paths (M4).
+
 		proxy, err = egressproxy.Start(ctx, egressproxy.Config{
 			Allowlist: cfg.Network.Allowlist,
 			Security:  cfg.EgressSecurity,
@@ -232,10 +202,9 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		if err != nil {
 			return nil, fmt.Errorf("start egress proxy: %w", err)
 		}
-		// We need the host-side port; the host of the listener is on
-		// 127.0.0.1 but the container reaches us via the bridge gateway,
-		// not loopback, so we replace the listen host with the magic
-		// host.docker.internal name (resolved by ExtraHosts below).
+		// The container reaches the host-bound listener via the bridge
+		// gateway, not loopback, so the listen host is replaced with the
+		// magic host.docker.internal name (resolved by ExtraHosts below).
 		_, port, splitErr := splitListenAddr(proxy.Addr())
 		if splitErr != nil {
 			stopProxyBounded(proxy)
@@ -250,15 +219,12 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 			"HTTPS_PROXY=" + proxyURL,
 			"NO_PROXY=localhost,127.0.0.1,::1",
 		}
-		// TODO(#42 follow-up): with this design, fail-closed depends on
-		// the in-container client honouring HTTP_PROXY / HTTPS_PROXY. A
-		// raw-TCP client (or one that does its own DNS) inside the
-		// container can still bypass the proxy because the bridge
-		// network has unrestricted egress. The full fail-closed posture
-		// requires an iptables / nftables drop on the host that whitelists
-		// only the proxy's listen address; that drop is privilege-sensitive
-		// and not portable to macOS Docker Desktop. Tracked separately so
-		// this v1 ships with the limitation honestly documented.
+		// TODO(#42 follow-up): fail-closed depends on the in-container
+		// client honouring HTTP_PROXY/HTTPS_PROXY; a raw-TCP client can
+		// still bypass the proxy since the bridge network has unrestricted
+		// egress. Full fail-closed needs a host iptables/nftables drop,
+		// which is privilege-sensitive and not portable to macOS Docker
+		// Desktop.
 	}
 
 	if cfg.Resources != nil {
@@ -310,11 +276,9 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	}, nil
 }
 
-// stopProxyBounded shuts the egress proxy down with a 5-second deadline.
-// We never want a hung Engine on the host to wedge an executor build's
-// error-path cleanup, and we never want to leak a listener if Stop never
-// returns. The bounded timeout is the only correct knob here: passing
-// context.Background() unbounded was the M4 leak risk.
+// stopProxyBounded shuts the egress proxy down with a 5-second deadline so
+// a hung Engine cannot wedge an executor build's error-path cleanup, and a
+// listener is never leaked if Stop never returns.
 func stopProxyBounded(p *egressproxy.Proxy) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -338,12 +302,11 @@ func (e *ContainerExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Stop with a short grace period, then force-remove.
 	_ = e.api.stopContainer(ctx, e.containerID, 5)
 	removeErr := e.api.removeContainer(ctx, e.containerID, true)
 
 	// Always attempt to stop the proxy, even if container removal failed,
-	// so we don't leak a listening socket on the host.
+	// to avoid leaking a listening socket on the host.
 	if e.proxy != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = e.proxy.Stop(stopCtx)
@@ -367,7 +330,6 @@ func (e *ContainerExecutor) ResolvePath(relativePath string) (string, error) {
 		resolved = path.Join(e.workspace, relativePath)
 	}
 
-	// Ensure the resolved path is within the workspace.
 	if resolved != e.workspace && !strings.HasPrefix(resolved, e.workspace+"/") {
 		if e.Security != nil {
 			e.Security.PathTraversalBlocked(relativePath, e.workspace)
@@ -379,9 +341,8 @@ func (e *ContainerExecutor) ResolvePath(relativePath string) (string, error) {
 
 // ReadFile reads a file from inside the container using the archive API.
 // The file must be within /workspace and no larger than 10 MB. The whole
-// operation is bounded by containerFileIOTimeout (#S2): the archive
-// endpoints have no timeout of their own (see container_api.go), so a
-// wedged daemon would otherwise hang the calling goroutine indefinitely.
+// operation is bounded by containerFileIOTimeout since the archive
+// endpoints have no timeout of their own (see container_api.go).
 func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
 	resolved, err := e.ResolvePath(filePath)
 	if err != nil {
@@ -425,12 +386,9 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 }
 
 // classifyFileIOCtxErr wraps a ReadFile/WriteFile failure through the
-// shared ErrTimeout sentinel when it happened because ctx's own
-// containerFileIOTimeout deadline elapsed (e.g. a wedged daemon mid-archive
-// transfer), rather than surfacing the raw transport/tar error — composing
-// with #489's classifyExecCtxErr instead of a bespoke error, so callers
-// matching on errors.Is(err, ErrTimeout) see this identically to an Exec
-// command timeout.
+// shared ErrTimeout sentinel when it happened because the containerFileIOTimeout
+// deadline elapsed, so callers matching errors.Is(err, ErrTimeout) see this
+// identically to an Exec command timeout.
 func classifyFileIOCtxErr(ctx context.Context, verb string, err error) error {
 	if ctx.Err() != nil {
 		return classifyExecCtxErr(ctx, containerFileIOTimeout)
@@ -442,7 +400,7 @@ func classifyFileIOCtxErr(ctx context.Context, verb string, err error) error {
 // API. Parent directories must already exist in the container, or the
 // archive extraction will create them. Content must not exceed 10 MB. The
 // whole operation (mkdir -p plus the archive upload) is bounded by
-// containerFileIOTimeout (#S2), for the same reason as ReadFile.
+// containerFileIOTimeout, for the same reason as ReadFile.
 func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, content string) error {
 	if len(content) > maxFileSize {
 		if e.Security != nil {
@@ -459,7 +417,6 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
 	defer cancel()
 
-	// Ensure parent directory exists inside the container.
 	dir := path.Dir(resolved)
 	if dir != e.workspace {
 		_, mkdirErr := e.execInContainer(ctx, []string{"mkdir", "-p", dir}, e.workspace, containerMkdirTimeout)
@@ -468,7 +425,6 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 		}
 	}
 
-	// Build a tar archive containing the single file.
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
@@ -488,7 +444,6 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 		return fmt.Errorf("close tar writer: %w", err)
 	}
 
-	// Upload to the parent directory so the file is placed correctly.
 	if err := e.api.putArchive(ctx, e.containerID, dir, &buf); err != nil {
 		return classifyFileIOCtxErr(ctx, "put archive", err)
 	}
@@ -539,11 +494,9 @@ func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout ti
 	result, err := e.execInContainer(ctx, []string{"sh", "-c", command}, e.workspace, timeout)
 	if err != nil {
 		if ctx.Err() != nil {
-			// execInContainer returns whatever it managed to capture before
-			// the ctx ended (nil only if the command never started, e.g. the
-			// exec create/start call itself was cut off) — preserve it
-			// rather than discarding the partial output an operator needs
-			// most when triaging a stalled command (#473).
+			// Preserve whatever output execInContainer captured before the
+			// ctx ended, rather than discarding it (nil only if the command
+			// never started).
 			if result == nil {
 				result = &ExecResult{}
 			}
@@ -588,28 +541,14 @@ func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 	}
 }
 
-// execInContainer runs a command inside the container using the exec API.
-// It handles the full create → start → read output → inspect flow, bounding
-// the whole sequence by timeout (a context.WithTimeout child of ctx). Every
-// call site already computed a timeout value, but the parameter used to be
-// named `_` and silently dropped — so WriteFile's mkdir and ListDirectory's
-// ls ran under whatever deadline ctx happened to carry (often none), and a
-// wedged daemon on those paths could hang the caller indefinitely (#S2).
-// Exec() itself was unaffected by that specific bug (it already wraps ctx
-// with the same timeout before calling in), but the internal wrap here is
-// applied unconditionally for uniformity and because it is what non-Exec
-// callers rely on.
-//
-// On a failure partway through — most commonly the ctx ending (deadline or
-// cancellation) while demuxDockerStream is blocked reading the exec
-// stream — the returned *ExecResult still carries whatever stdout/stderr
-// was captured before the failure, rather than nil; only a failure before
-// any output could exist (create/start exec) returns a nil result. Exec
-// relies on this to preserve partial output on timeout (#473). A ctx-expiry
-// failure is classified via classifyExecCtxErr so callers matching on
-// errors.Is(err, ErrTimeout) — including WriteFile's mkdir and
-// ListDirectory's ls, which previously had no such classification at all —
-// see this identically to a top-level Exec timeout.
+// execInContainer runs a command inside the container using the exec API,
+// handling the full create → start → read output → inspect flow bounded by
+// timeout. On a failure partway through (most commonly the ctx ending while
+// demuxDockerStream is blocked reading), the returned *ExecResult still
+// carries whatever stdout/stderr was captured; only a failure before any
+// output could exist (create/start exec) returns a nil result. A ctx-expiry
+// failure is classified via classifyExecCtxErr so callers matching
+// errors.Is(err, ErrTimeout) see this identically to a top-level Exec timeout.
 func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, timeout time.Duration) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

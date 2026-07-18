@@ -19,8 +19,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// --- factory helpers ---
-
 func TestExternalCommToolSet(t *testing.T) {
 	registry := tool.NewRegistry()
 	for _, name := range []string{"run_command", "web_fetch", "read_file", "mcp_github_create_issue"} {
@@ -79,11 +77,9 @@ func TestWrapRuleOfTwoGate_Matrix(t *testing.T) {
 }
 
 // TestResolveRuleOfTwoArming_ExplicitPatternsWithSensitiveNotPreTripped
-// is the D5 regression: an operator who explicitly selects
-// classifier:"patterns" AND declares sensitiveData on a run that holds
-// only the external-comm leg gets observe-only arming whose monitor is
-// NOT pre-tripped, so detection telemetry actually flows. Pre-tripping
-// (the pre-fix behaviour) suppressed every scan.
+// pins that explicit classifier:"patterns" plus sensitiveData:true still
+// yields observe-only arming whose monitor is not pre-tripped, so
+// detection telemetry keeps flowing.
 func TestResolveRuleOfTwoArming_ExplicitPatternsWithSensitiveNotPreTripped(t *testing.T) {
 	sensitive := true
 	cfg := &types.RunConfig{
@@ -106,11 +102,9 @@ func TestResolveRuleOfTwoArming_ExplicitPatternsWithSensitiveNotPreTripped(t *te
 	}
 }
 
-// TestBuildLoop_EnforceFalseObservesOnly is the D2 live-loop pin: with
-// ruleOfTwo.enforce:false the factory arms observe-only — detections
-// still emit, but the gate is absent, so external-comm tools keep
-// working after sensitive data is seen. This is the auditable-override
-// posture (the detection events stay; only enforcement is disarmed).
+// TestBuildLoop_EnforceFalseObservesOnly pins that ruleOfTwo.enforce:false
+// arms observe-only: detections still emit, but the gate is absent, so
+// external-comm tools keep working after sensitive data is seen.
 func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
@@ -201,18 +195,12 @@ func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
 }
 
 // TestBuildLoop_EnvExfilDeniedEndToEnd is the canonical Rule-of-Two
-// enforcement scenario, driven end-to-end through the factory over a
-// real local executor: the model reads a seeded config file carrying a
-// live-shaped key (sensitive data enters the conversation), then issues
-// an otherwise-innocuous run_command. The factory auto-arms enforcing
-// block-external (a benign dynamic-context entry supplies the
-// untrusted-input leg; run_command supplies external comms), so the
-// run_command call is denied with the rule_of_two reason and the run
-// still finishes cleanly. The seeded file is NOT named .env and the
-// command is a plain `ls`, so neither trips the GuardToolCall tripwire
-// (credential_path / exfiltration_command) — proving the denial comes
-// from the Rule-of-Two gate, which revokes egress regardless of the
-// specific command once sensitive data is on hand.
+// enforcement scenario: the model reads a seeded file carrying a
+// live-shaped key, then attempts an otherwise-innocuous run_command; the
+// factory auto-arms enforcing block-external once sensitive data is
+// observed, so the command is denied and the run still finishes cleanly.
+// Neither the seeded file name nor the command trips GuardToolCall, so
+// the denial demonstrably comes from the Rule-of-Two gate.
 func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
@@ -223,16 +211,16 @@ func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
 	}
 
 	server := newOpenAIServer(t, nil, []string{
-		// Turn 1: read the key-bearing notes file.
+
 		openAIChunk(`{"id":"r1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"deploy-notes.txt\"}"}}]},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"r1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +
 			"data: [DONE]\n\n",
-		// Turn 2: an innocuous shell command — denied purely because
-		// the latch tripped, not because of the command content.
+		// An innocuous shell command, denied purely because the latch
+		// tripped, not because of the command content.
 		openAIChunk(`{"id":"r2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"run_command","arguments":"{\"command\":\"ls -la\"}"}}]},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"r2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +
 			"data: [DONE]\n\n",
-		// Turn 3: model gives up.
+
 		openAIChunk(`{"id":"r3","choices":[{"index":0,"delta":{"content":"blocked"},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"r3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
 			"data: [DONE]\n\n",
@@ -255,8 +243,8 @@ func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 		// read_file (sensitive-data ingress) + run_command (external
-		// comms). A benign dynamic-context entry supplies the
-		// untrusted-input leg so the factory auto-arms enforcement.
+		// comms); the dynamic-context entry supplies the untrusted-input
+		// leg so the factory auto-arms enforcement.
 		Tools:          types.ToolsConfig{BuiltIn: []string{"read_file", "run_command"}},
 		DynamicContext: map[string]types.DynamicContextValue{"task": {Value: "review the repository layout"}},
 		MaxTurns:       5,
@@ -303,12 +291,8 @@ func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
 	}
 }
 
-// --- sub-agent regression: ForChildRun under wrappers ---
-
 // childParentRunIDForbid is a Cedar policy that denies run_command for
 // any principal carrying parentRunId — i.e. exactly sub-agent runs.
-// Mirrors TestPolicyEngine_ForChildRun_PopulatesParentRunID; here it
-// pins that the clone survives the factory's wrapper chain.
 const childParentRunIDForbid = `forbid (
 	principal,
 	action == Action::"tool:run_command",
@@ -373,12 +357,9 @@ func childRunCommandScript() *scriptedProvider {
 	}
 }
 
-// TestSpawnSubAgent_ForChildRunSurvivesWrapperChain is the regression
-// for the wave-4 Unwrap fix: with the policy engine wrapped in the
-// rule-of-two gate and the metric recorder, the child must still get a
-// parentRunId-populated Cedar clone — the pre-fix direct type-assert
-// silently skipped the clone under any wrapper, negating the
-// subagent-capability-cap starter policy.
+// TestSpawnSubAgent_ForChildRunSurvivesWrapperChain pins that with the
+// policy engine wrapped in the rule-of-two gate and the metric recorder,
+// the child still gets a parentRunId-populated Cedar clone.
 func TestSpawnSubAgent_ForChildRunSurvivesWrapperChain(t *testing.T) {
 	prov := &mockProvider{}
 	parentLoop := buildSubAgentTestLoop(prov)
@@ -417,8 +398,6 @@ func TestSpawnSubAgent_ForChildRunSurvivesWrapperChain(t *testing.T) {
 		t.Errorf("denial must come from the Cedar clone, not the (untripped) gate: %s", out)
 	}
 }
-
-// --- redact action ---
 
 // structuredLeakProvider scripts a tool call whose result carries a
 // credential in both the text Content and the Structured payload, then
@@ -556,8 +535,6 @@ func (p *messageCapturingProvider) Stream(ctx context.Context, params types.Stre
 	return p.inner.Stream(ctx, params)
 }
 
-// --- abort action ---
-
 func TestLoop_RuleOfTwoAbortTerminatesOnToolResult(t *testing.T) {
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
@@ -622,13 +599,11 @@ func TestLoop_RuleOfTwoAbortTurnZeroBeforeProviderCall(t *testing.T) {
 	}
 }
 
-// TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort documents WHY the
-// validator rejects onDetect:"abort" + sensitiveData:true (Wave-4
-// review item 1): a pre-tripped abort monitor never fires the abort,
-// because the loop keys abort on the false→true Transition and a
-// pre-tripped latch can never transition. The provider IS reached and
-// the run completes normally. This is the regression pin for anyone who
-// later removes the validator check — the loop alone cannot catch this.
+// TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort documents why the
+// validator rejects onDetect:"abort" + sensitiveData:true: a pre-tripped
+// abort monitor never fires, because the loop keys abort on the
+// false→true transition and a pre-tripped latch can never transition —
+// the provider is still reached and the run completes normally.
 func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -655,18 +630,13 @@ func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
 	}
 }
 
-// --- default-flip pin (inverse of the wave-3 dark-ship pin) ---
-
-// TestBuildLoop_DefaultArmedEnforcesBlockExternal pins the wave-4
-// behaviour flip: a factory-built run that holds untrusted input AND
-// external comms (web_fetch) under the default policy now denies egress
-// once sensitive data is observed — the inverse of the wave-3 dark-ship
-// pin, where the identical scenario completed with egress intact.
+// TestBuildLoop_DefaultArmedEnforcesBlockExternal pins that a
+// factory-built run holding both untrusted input and external comms
+// (web_fetch) denies egress once sensitive data is observed under the
+// default policy.
 func TestBuildLoop_DefaultArmedEnforcesBlockExternal(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
-	// Turn 1: model calls web_fetch (untrusted + external). Turn 2:
-	// model calls web_fetch again (now denied). Turn 3: final answer.
 	server := newOpenAIServer(t, nil, []string{
 		openAIChunk(`{"id":"r1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example.com/\"}"}}]},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"r1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +

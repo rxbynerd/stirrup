@@ -17,12 +17,8 @@ import (
 const DefaultAskUpstreamTimeout = 60 * time.Second
 
 // Transport is a minimal interface matching the subset of transport.Transport
-// needed by AskUpstreamPolicy. Defined locally to avoid a circular import
-// between the permission and transport packages.
-//
-// (The transport package itself does not import permission, so this is
-// strictly a hygiene measure: it keeps callers free to substitute a fake
-// in tests without depending on the full transport.Transport interface.)
+// needed by AskUpstreamPolicy. Defined locally so tests can substitute a
+// fake without depending on the full transport.Transport interface.
 type Transport interface {
 	Emit(event types.HarnessEvent) error
 	OnControl(handler func(event types.ControlEvent))

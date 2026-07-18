@@ -20,35 +20,17 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// maxPromptFileBytes caps the size of a --prompt-file we will read into
-// memory. Matches the 10 MiB cap on file reads in
-// harness/internal/executor/local.go (maxFileSize): a prompt is a short
-// brief, anything in this range is almost certainly a mistake (a symlink
-// to /dev/zero, a binary pasted as the path, etc.). The cap prevents OOM
-// on a malformed input. Duplicated rather than imported because the
-// executor constant is package-private and the coupling is one-shot.
+// maxPromptFileBytes caps --prompt-file reads to avoid OOM on a
+// malformed input (matches local.go's maxFileSize; duplicated because
+// that constant is package-private).
 const maxPromptFileBytes int64 = 10 * 1024 * 1024 // matches local.go maxFileSize
 
-// readPromptFile loads a --prompt-file from disk with size + empty
-// guards and trailing-newline trimming. Extracted as a tiny helper
-// (rather than a full resolvePrompt extraction) because the file I/O
-// concerns — size cap, empty check, path sanitisation, error wrapping
-// — are non-trivial enough that duplicating them at both runHarness
-// call sites would invite drift. The resolution chain that decides
-// which source wins stays inlined per issue #165's "minimal-diff,
-// house style" direction.
-//
-// Path is cleaned with filepath.Clean before stat; relative paths are
-// resolved by the OS against the CWD (parallel to --config, NOT
-// --workspace), so an operator running `stirrup harness
-// --prompt-file ./brief.txt` from their checkout gets the file next
-// to them, not next to a possibly-remote workspace.
+// readPromptFile loads a --prompt-file from disk with a size cap, an
+// empty check, and trailing-newline trimming. Relative paths resolve
+// against the CWD, parallel to --config rather than --workspace.
 func readPromptFile(path string) (string, error) {
-	// Every failure here is an I/O error (exit 3): a --prompt-file the
-	// harness could not stat, open, or read, or one whose contents
-	// failed a pre-read precondition (directory, non-regular, oversize,
-	// empty). None is a JSON parse failure — the prompt file is plain
-	// text — so they all classify as I/O.
+	// Every failure here is an I/O error (exit 3); the prompt file is
+	// plain text, so none is a JSON parse failure.
 	clean := filepath.Clean(path)
 	info, err := os.Stat(clean)
 	if err != nil {
@@ -57,30 +39,18 @@ func readPromptFile(path string) (string, error) {
 	if info.IsDir() {
 		return "", ioError(fmt.Errorf("reading --prompt-file %q: is a directory", path))
 	}
-	// Reject character devices, named pipes (FIFOs), Unix sockets, and
-	// every other non-regular file type. `os.Stat` reports Size()==0
-	// for FIFOs and char devices on both Linux and macOS, which would
-	// otherwise sail past the size cap below. The concrete failure
-	// modes that this guard closes are:
-	//   - /dev/zero or an unwritten FIFO: ReadAll blocks forever and
-	//     the harness hangs at startup.
-	//   - A FIFO pre-loaded with >10 MiB: all of it is read into memory
-	//     before the post-read cap check trips.
-	// The IsDir() guard above does not cover these; IsDir() is false
-	// for devices and FIFOs.
+	// Reject FIFOs/char devices/sockets: os.Stat reports Size()==0 for
+	// these, which would sail past the size cap below and could hang
+	// ReadAll forever (e.g. /dev/zero or an unwritten FIFO).
 	if !info.Mode().IsRegular() {
 		return "", ioError(fmt.Errorf("reading --prompt-file %q: not a regular file", path))
 	}
 	if info.Size() > maxPromptFileBytes {
 		return "", ioError(fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes))
 	}
-	// Bounded read via io.LimitReader. Belt-and-braces alongside the
-	// stat-time size check above: closes the TOCTOU window where the
-	// file grows between os.Stat and the open call, and provides a
-	// second line of defence if a future refactor accidentally drops
-	// the IsRegular() guard. The +1 byte over the cap lets us
-	// distinguish "exactly at the cap" from "larger than the cap" so
-	// the operator-facing error is accurate.
+	// Bounded read closes the TOCTOU window where the file grows
+	// between os.Stat and Open; +1 byte distinguishes "at the cap"
+	// from "over the cap" for an accurate error.
 	f, err := os.Open(clean)
 	if err != nil {
 		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
@@ -93,10 +63,8 @@ func readPromptFile(path string) (string, error) {
 	if int64(len(data)) > maxPromptFileBytes {
 		return "", ioError(fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes))
 	}
-	// Trim only trailing CR/LF so `echo "prompt" > file` and
-	// `printf 'prompt\n' > file` both produce the same string. Leading
-	// whitespace is preserved — a prompt that intentionally opens with
-	// indentation (e.g. a code block) should round-trip unchanged.
+	// Trim only trailing CR/LF; leading whitespace (e.g. an
+	// intentionally-indented code block) round-trips unchanged.
 	trimmed := strings.TrimRight(string(data), "\r\n")
 	if trimmed == "" {
 		return "", ioError(fmt.Errorf("--prompt-file %q is empty", path))
@@ -118,22 +86,19 @@ type harnessCLIOptions struct {
 	APIKeyHeader string
 	QueryParams  map[string]string
 
-	// CompatProfile selects an optional provider-quirks compat profile
-	// (Wave 2 #221). Closed set, validated by ValidateRunConfig; the
-	// flag is empty by default so a bare invocation does not opt into a
-	// compat shape.
+	// CompatProfile selects an optional provider-quirks compat profile;
+	// closed set validated by ValidateRunConfig, empty by default.
 	CompatProfile string
 
-	// ToolsProfile selects the model-facing toolset profile (issue #234).
-	// Closed set, validated by ValidateRunConfig. Empty by default, which
-	// is the identity presentation: a bare invocation presents tools under
-	// their internal names exactly as before.
+	// ToolsProfile selects the model-facing toolset profile; closed set
+	// validated by ValidateRunConfig, empty by default (identity
+	// presentation).
 	ToolsProfile string
 	Model        string
 
 	// PromptModel pins the model identity the system prompt templates
-	// render against (promptBuilder.promptModel, issue #492) without
-	// changing the wire model. Empty derives it from Model.
+	// render against without changing the wire model. Empty derives it
+	// from Model.
 	PromptModel string
 
 	Workspace     string
@@ -146,55 +111,40 @@ type harnessCLIOptions struct {
 	LogLevel      string
 
 	// Temperature overrides the loop's default sampling temperature.
-	// Nil means "do not override" (the harness default applies). A
-	// pointer is used so an explicit --temperature=0 (greedy decoding)
-	// is distinguishable from the flag being absent — cobra's Float64
-	// store is a plain float64, so the disambiguation has to happen at
-	// the flags.Changed() check site upstream.
+	// Nil means "do not override". A pointer disambiguates an explicit
+	// --temperature=0 (greedy decoding) from the flag being absent,
+	// since cobra's Float64 store cannot represent absence.
 	Temperature *float64
 
-	// Vertex AI Gemini provider fields. Only meaningful when
-	// ProviderType == "gemini"; ValidateRunConfig rejects them on
-	// every other provider type, so the flag-only path safely
-	// passes them through whatever the user typed.
+	// Vertex AI Gemini provider fields; meaningful only when
+	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
 	GCPProject         string
 	GCPLocation        string
 	GCPCredentialsFile string
 
-	// Anthropic Workload Identity Federation fields (issue #117). Only
-	// meaningful when ProviderType == "anthropic" and the operator wants
-	// federated auth instead of a static API key. Validation rejects
-	// these on every other provider type. When any of the four ID fields
-	// is set, the flag-only path infers credential.type=anthropic-wif
-	// and the JWT-source flag (or env var) selects the IdP wiring.
+	// Anthropic Workload Identity Federation fields; meaningful only
+	// when ProviderType == "anthropic". Any of the four ID fields being
+	// set infers credential.type=anthropic-wif.
 	AnthropicFederationRuleID string
 	AnthropicOrganizationID   string
 	AnthropicServiceAccountID string
 	AnthropicWorkspaceID      string
-	// AnthropicFromGitHubActions opts the workload-identity flow into
-	// the runner-injected ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN
-	// fallback. Implicit selection from env presence is deliberately
-	// rejected (issue #117 risk #5: silent IdP selection makes
-	// credential bugs unfixable).
+	// AnthropicFromGitHubActions opts into the runner-injected
+	// ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN fallback explicitly; implicit
+	// selection from env presence is rejected.
 	AnthropicFromGitHubActions bool
 
-	// Azure Entra ID Workload Identity Federation fields (issue #118).
-	// Only meaningful when --provider is openai-compatible or
-	// openai-responses against an Azure OpenAI / Foundry endpoint.
-	// Setting --azure-tenant-id implies credential.type=azure-workload-identity
-	// (the file/flag is the discriminator, mirroring the
-	// --gcp-credentials-file pattern). The TokenSource selection — file,
-	// github-actions-oidc, aws-irsa, etc. — must come from --config
-	// because flag syntax cannot cleanly express the per-source shape.
+	// Azure Entra ID Workload Identity Federation fields; meaningful only
+	// against an Azure OpenAI / Foundry endpoint. --azure-tenant-id
+	// implies credential.type=azure-workload-identity. TokenSource
+	// selection must come from --config.
 	AzureTenantID string
 	AzureClientID string
 	AzureScope    string
 
-	// Component-selection escape hatches. These let the caller steer the
-	// non-trivial component choices without having to reach for a full
-	// --config file. Empty strings fall back to the documented default
-	// (local executor, multi edit strategy, none verifier, none git
-	// strategy, jsonl trace emitter).
+	// Component-selection escape hatches. Empty strings fall back to the
+	// documented default (local executor, multi edit strategy, none
+	// verifier, none git strategy, jsonl trace emitter).
 	ExecutorType     string
 	EditStrategyType string
 	VerifierType     string
@@ -203,141 +153,100 @@ type harnessCLIOptions struct {
 	OTelEndpoint     string
 	OTelProtocol     string
 
-	// OTelHeaders carries the parsed --otel-header key=value entries onto
-	// traceEmitter.headers. Values may be "secret://" references — the
-	// flag transports references only; resolution happens at exporter
-	// init via the SecretStore and RunConfig.Redact() strips them before
-	// any trace or recording is persisted. ValidateRunConfig rejects the
-	// combination with the (default) gRPC protocol because that exporter
-	// path is WithInsecure().
+	// OTelHeaders carries parsed --otel-header key=value entries.
+	// Values may be "secret://" references, resolved at exporter init;
+	// RunConfig.Redact() strips them before any trace is persisted.
 	OTelHeaders map[string]string
 
-	// OTelMetricsEndpoint sets traceEmitter.metricsEndpoint for runs whose
-	// metrics target a different collector than traces. Empty defers to
-	// the trace endpoint at factory-build time.
+	// OTelMetricsEndpoint sets traceEmitter.metricsEndpoint for runs
+	// whose metrics target a different collector than traces. Empty
+	// defers to the trace endpoint.
 	OTelMetricsEndpoint string
 
-	// OTelCaptureContent opts the otel emitter into GenAI semconv content
-	// capture (issue #413 Part A). Default false; see
-	// types.TraceEmitterConfig.CaptureContent for the PII rationale.
+	// OTelCaptureContent opts the otel emitter into GenAI semconv
+	// content capture; see types.TraceEmitterConfig.CaptureContent for
+	// the PII rationale.
 	OTelCaptureContent bool
 
-	// Safety-ring escape hatches (issue #42). These set RunConfig fields
-	// on the matching sub-config; an empty string leaves the field unset
-	// so ValidateRunConfig's mode-aware defaulting can take over.
+	// Safety-ring escape hatches. Empty string leaves the field unset so
+	// ValidateRunConfig's mode-aware defaulting can take over.
 	ContainerRuntime     string
 	PermissionPolicyFile string
 	CodeScannerType      string
 
-	// K8s executor escape hatches (issue #80). These set the
-	// Executor.K8s* fields when --executor=k8s or --executor=k8s-sandbox.
-	// K8sNamespace is required for either k8s-family run; the rest are
-	// optional. The Pod image comes from the shared Image field and the
-	// sandbox runtime from ContainerRuntime (mapped to the Pod
-	// RuntimeClassName; k8s-sandbox is gVisor-only and forces "gvisor").
+	// K8s executor escape hatches (--executor=k8s or k8s-sandbox).
+	// K8sNamespace is required; the rest are optional. The sandbox
+	// runtime derives from ContainerRuntime (k8s-sandbox is
+	// gVisor-only and forces "gvisor").
 	K8sNamespace      string
 	K8sKubeconfig     string
 	K8sServiceAccount string
 	K8sNodeSelector   map[string]string
 	K8sEgressProxyURL string
 
-	// GuardRail escape hatches (issue #43). When any of these is non-zero
-	// the flag-only path constructs a GuardRailConfig; an entirely-zero
-	// trio leaves config.GuardRail nil so the factory installs the
-	// no-op "none" guard. Composite stages are not surfaced as flags —
-	// they require a --config file because flag syntax cannot express
-	// per-stage phase restrictions.
+	// GuardRail escape hatches. An entirely-zero trio leaves
+	// config.GuardRail nil so the factory installs the no-op "none"
+	// guard. Composite stages require a --config file.
 	GuardRailType     string
 	GuardRailEndpoint string
 	GuardRailModel    string
 	GuardRailFailOpen bool
 
-	// Observability resource attributes (issue #95). Empty values fall
-	// through to env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
-	// OTEL_SERVICE_NAMESPACE) and finally to defaults at OTel resource
-	// construction time, so leaving these unset is a valid choice for
-	// local development.
+	// Observability resource attributes. Empty values fall through to
+	// env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
+	// OTEL_SERVICE_NAMESPACE) and then to defaults.
 	DeploymentEnvironment string
 	ServiceNamespace      string
 
-	// LogExport (issue #96) opts structured logs into OTLP export alongside
-	// the stderr default. "none" (or empty) keeps stderr-only; "otlp" adds
-	// the OTLP/gRPC log exporter. LogExportEndpoint is normally empty so the
-	// factory falls back to the trace emitter's endpoint, but the
-	// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT env var (read in the builder) pins it
-	// when set.
+	// LogExport opts structured logs into OTLP export alongside the
+	// stderr default. "none"/empty keeps stderr-only; "otlp" adds the
+	// OTLP/gRPC log exporter. LogExportEndpoint defers to the trace
+	// emitter's endpoint when empty.
 	LogExport         string
 	LogExportEndpoint string
 
-	// Provider retry policy overrides (issue #197). Zero values leave
-	// the corresponding field unset on Provider.Retry so
-	// ValidateRunConfig fills in the documented defaults
-	// (MaxAttempts=3, InitialDelayMs=500, MaxDelayMs=16000,
-	// WallClockBudgetMs=90000). Operators with multi-provider configs
-	// must use --config to set per-named-provider retry policies; the
-	// flags here apply only to the default provider.
+	// Provider retry policy overrides. Zero values leave the
+	// corresponding Provider.Retry field unset so ValidateRunConfig
+	// fills in its defaults. Applies only to the default provider;
+	// multi-provider retry policies require --config.
 	ProviderRetryMaxAttempts     int
 	ProviderRetryInitialDelay    time.Duration
 	ProviderRetryMaxDelay        time.Duration
 	ProviderRetryWallClockBudget time.Duration
 
-	// Workspace export (issue #164). WorkspaceExportTo is a gs:// URI
-	// stored on RunConfig.Executor.WorkspaceExportTo so the export
-	// fires from runWithConfig regardless of which code path built
-	// the config. WorkspaceExportRequired is *not* persisted on
-	// RunConfig — it is a CLI-only behaviour flag that controls
-	// whether export failure terminates the run non-zero. The two
-	// are decoupled so a config-file-only operator can set the URI
-	// once and pass --export-workspace-required from the wrapper
-	// script that knows whether the artifact is load-bearing.
+	// Workspace export. WorkspaceExportTo is a gs:// URI stored on
+	// RunConfig.Executor.WorkspaceExportTo. WorkspaceExportRequired is
+	// CLI-only (not persisted on RunConfig): it controls whether a
+	// failed export terminates the run non-zero.
 	WorkspaceExportTo       string
 	WorkspaceExportRequired bool
 
 	// ToolDispatchMaxParallel sets the parallel async-tool dispatch
-	// fan-out (issue #184). Zero defers to the library default
-	// (DefaultToolDispatchMaxParallel) by leaving config.ToolDispatch
-	// nil so the loop reads the effective value via
-	// EffectiveToolDispatchMaxParallel.
+	// fan-out. Zero defers to DefaultToolDispatchMaxParallel by leaving
+	// config.ToolDispatch nil.
 	ToolDispatchMaxParallel int
 
-	// EscalateToolChoice opts the run into the missed-tool recovery
-	// (issue #230). When false (the default) no
-	// ToolChoiceEscalation sub-config is persisted, so the loop's
-	// escalation path stays inert. EscalateToolChoiceMaxRetries tunes the
-	// per-inner-loop retry cap; zero defers to the library default
-	// (DefaultToolChoiceEscalationMaxRetries) and is ignored entirely
-	// unless EscalateToolChoice is set.
+	// EscalateToolChoice opts the run into missed-tool recovery; false
+	// keeps the loop's escalation path inert. EscalateToolChoiceMaxRetries
+	// is ignored unless EscalateToolChoice is set.
 	EscalateToolChoice           bool
 	EscalateToolChoiceMaxRetries int
 
-	// Batch opts the run into async batch submission (issue #136).
-	// The flag carries only the Enabled bit; operators wanting any of
-	// the other BatchProviderConfig fields (MaxWaitSeconds,
-	// HarnessSidePolling, FallbackOnTimeout, CancelBundleOnRunCancel,
-	// AllowInteractiveModes) must use --config. Validation of the
-	// batch shape — transport, mode, provider type — runs in
-	// ValidateRunConfig and is shared with the --config path.
+	// Batch opts the run into async batch submission, carrying only the
+	// Enabled bit; the remaining BatchProviderConfig fields require
+	// --config.
 	Batch bool
 }
 
-// buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
-// It is the single place that encodes defaults such as the per-mode
-// permission policy and the fall-back built-in tool list required by
-// read-only modes. Kept pure so tests can exercise every --mode value
+// buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`,
+// encoding defaults such as the per-mode permission policy and read-only
+// built-in tool list. Kept pure so tests can exercise every --mode value
 // without invoking the agentic loop.
 //
-// Returns a non-nil error only when an operator-supplied flag fails an
-// up-front sanity check (e.g. a sub-millisecond retry duration that
-// would silently truncate to zero). Most validation still happens later
-// in `ValidateRunConfig`; the checks here exist where the truncation
-// would erase operator intent before the validator ever sees it.
-//
-// Internally delegates to buildHarnessRunConfigCore for the field-by-
-// field shape, then runs applyModeDefaults so the returned config is
-// ready for the validator. Splitting the two lets BuildRunConfig hand
-// run-config's ResolveBase path a config without the mode-default
-// mutations applied, matching the spec's "leave the document minimally
-// mutated" contract for chained pipeline stages.
+// Returns a non-nil error only when a flag fails an up-front sanity
+// check that would otherwise silently erase operator intent (e.g. a
+// sub-millisecond retry duration truncating to zero); most validation
+// happens later in ValidateRunConfig.
 func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	cfg, err := buildHarnessRunConfigCore(opts)
 	if err != nil {
@@ -359,10 +268,8 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		executorType = "local"
 	}
 	// EditStrategyType intentionally not defaulted here: an empty value
-	// flows into RunConfig.EditStrategy.Type and is filled with "multi"
-	// by types.ValidateRunConfig via applyEditStrategyDefault. Keeping the
-	// default in one place (validation) means CLI, gRPC, and direct
-	// RunConfig embedding all land on the same edit-tool surface.
+	// is filled with "multi" by types.ValidateRunConfig, keeping the
+	// default in one place for CLI, gRPC, and direct embedding alike.
 	editStrategyType := opts.EditStrategyType
 	verifierType := opts.VerifierType
 	if verifierType == "" {
@@ -383,10 +290,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		traceEmitter.FilePath = opts.TracePath
 	case "otel":
 		traceEmitter.Endpoint = opts.OTelEndpoint
-		// Protocol stays empty by default so the exporter falls
-		// through to the OTel SDK's grpc default. Operators who
-		// want OTLP/HTTP set --otel-protocol=http/protobuf;
-		// validation rejects any other value.
+		// Empty Protocol falls through to the OTel SDK's grpc default.
 		traceEmitter.Protocol = opts.OTelProtocol
 		traceEmitter.Headers = opts.OTelHeaders
 		traceEmitter.MetricsEndpoint = opts.OTelMetricsEndpoint
@@ -400,17 +304,10 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		Prompt:      opts.Prompt,
 		Provider: types.ProviderConfig{
 			Type: opts.ProviderType,
-			// APIKeyRef is dropped for the gemini provider because Vertex
-			// AI uses GCP IAM rather than API keys; the validator rejects
-			// APIKeyRef on a gemini run, and forcing the user to type
-			// --api-key-ref="" alongside --provider gemini would be
-			// hostile UX. Same logic for Azure WIF: the validator rejects
-			// APIKeyRef alongside credential.type=azure-workload-identity
-			// because the Bearer is fetched via OAuth2 token exchange, so
-			// a flag-only Azure WIF run with the cobra default
-			// --api-key-ref="secret://ANTHROPIC_API_KEY" would otherwise
-			// fail validation with a confusing message about a value the
-			// operator never set.
+			// Dropped for gemini (Vertex AI uses GCP IAM) and for Azure
+			// WIF (bearer comes from OAuth2 exchange); the validator
+			// rejects APIKeyRef in both cases, and the cobra default
+			// would otherwise trip it with a confusing error.
 			APIKeyRef: func() string {
 				if opts.ProviderType == "gemini" || opts.AzureTenantID != "" {
 					return ""
@@ -443,10 +340,8 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		EditStrategy: types.EditStrategyConfig{Type: editStrategyType},
 		Verifier:     types.VerifierConfig{Type: verifierType},
 		GitStrategy:  types.GitStrategyConfig{Type: gitStrategyType},
-		// Tools.BuiltIn is left empty here (the validator treats an empty
-		// list as "all built-ins"); only the model-facing profile is set
-		// from the flag. applyModeDefaults fills BuiltIn for read-only
-		// modes afterwards and leaves Profile untouched.
+		// Tools.BuiltIn is left empty (validator treats empty as "all
+		// built-ins"); applyModeDefaults fills it for read-only modes.
 		Tools:        types.ToolsConfig{Profile: opts.ToolsProfile},
 		Transport:    types.TransportConfig{Type: opts.TransportType, Address: opts.TransportAddr},
 		TraceEmitter: traceEmitter,
@@ -463,11 +358,8 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.Temperature = &t
 	}
 
-	// Vertex AI Gemini fields. The validator rejects these on every
-	// other provider type, so the flag-only path scopes them to gemini
-	// to keep --provider switching ergonomic (you can leave --gcp-*
-	// flags at their defaults and they will not leak onto non-gemini
-	// runs).
+	// Scoped to gemini so --gcp-* flags left at their defaults do not
+	// leak onto non-gemini runs; the validator rejects them otherwise.
 	if opts.ProviderType == "gemini" {
 		config.Provider.GCPProject = opts.GCPProject
 		config.Provider.GCPLocation = opts.GCPLocation
@@ -475,35 +367,21 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	}
 
 	// --gcp-credentials-file implies credential.type=gcp-service-account
-	// when no other credential type is configured. This mirrors how
-	// --permission-policy-file implies type=policy-engine: the file
-	// path is the discriminator, so requiring the user to set both is
-	// redundant. An explicit Credential.Type set elsewhere wins.
+	// when no other credential type is configured (file path is the
+	// discriminator, mirroring --permission-policy-file below).
 	if opts.ProviderType == "gemini" && opts.GCPCredentialsFile != "" && config.Provider.Credential == nil {
 		config.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 	}
 
-	// Anthropic Workload Identity Federation (issue #117) is populated
-	// exclusively by applyAnthropicWIFOverrides at the runHarness call
-	// site — it owns flag + env-var precedence for both the --config
-	// path and the flag-only path, so duplicating the flag path here
-	// would only create drift the next time a fifth WIF field lands.
-	// Keep this comment as a signpost so future edits do not re-add a
-	// parallel population block.
+	// Anthropic WIF is populated exclusively by applyAnthropicWIFOverrides
+	// at the runHarness call site, which owns flag + env-var precedence
+	// for both the --config and flag-only paths.
 
 	// --azure-tenant-id implies credential.type=azure-workload-identity
-	// when no other credential type is configured. This mirrors the
-	// --gcp-credentials-file shortcut above: the flag is the
-	// discriminator. The TokenSource still must come from --config
-	// (no flag-only path for tokenSource selection — too many shape
-	// variants to express cleanly as flags). A flag-only invocation
-	// with --azure-tenant-id will therefore fail validateRunConfig
-	// with "azure-workload-identity requires tokenSource", which is
-	// the correct UX: the validator's error tells the operator to
-	// reach for --config to wire the source. The flag is NOT silently
-	// dropped, because that would let an Azure WIF run reach the
-	// validator with an inconsistent shape and surface a confusing
-	// error about credential.type rather than the missing tokenSource.
+	// when no other credential type is configured; TokenSource selection
+	// still requires --config (too many shapes to express as flags), so
+	// a flag-only invocation fails validateRunConfig with a clear
+	// "requires tokenSource" error rather than silently dropping the flag.
 	if opts.AzureTenantID != "" && config.Provider.Credential == nil {
 		config.Provider.Credential = &types.CredentialConfig{
 			Type:          "azure-workload-identity",
@@ -517,9 +395,8 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	// so ValidateRunConfig's mode-aware defaulting (e.g. CodeScanner
 	// "patterns" for execution mode) still kicks in for unset values.
 	if opts.PermissionPolicyFile != "" {
-		// --permission-policy-file implies type=policy-engine when the
-		// caller has not explicitly chosen a policy elsewhere; this is
-		// the convenience shortcut documented in the flag help.
+		// Implies type=policy-engine when the caller has not chosen a
+		// policy elsewhere.
 		config.PermissionPolicy.PolicyFile = opts.PermissionPolicyFile
 		if config.PermissionPolicy.Type == "" {
 			config.PermissionPolicy.Type = "policy-engine"
@@ -529,10 +406,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.CodeScanner = &types.CodeScannerConfig{Type: opts.CodeScannerType}
 	}
 
-	// GuardRail (issue #43). Only construct the sub-config when the caller
-	// touched at least one of the three GuardRail flags; an entirely-empty
-	// trio leaves config.GuardRail nil and the factory installs the
-	// no-op "none" guard. Composite stages can only be set via --config.
+	// Constructed only when the caller touched at least one GuardRail
+	// flag; an entirely-empty set leaves config.GuardRail nil so the
+	// factory installs the no-op "none" guard.
 	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen {
 		config.GuardRail = &types.GuardRailConfig{
 			Type:     opts.GuardRailType,
@@ -542,16 +418,10 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		}
 	}
 
-	// Observability resource attributes (issue #95) and log export
-	// (issue #96). Only construct the sub-config when the caller touched at
-	// least one of the relevant flags. An entirely-empty set leaves
-	// config.Observability at the zero value so a future validator or factory
-	// branch that distinguishes "operator pinned" from "fall through to env"
-	// can do so. Matches the flag-only construction pattern used for GuardRail
-	// above. "none" is treated as not-set for LogExport so a bare --log-export
-	// none (or its default) does not materialise a sub-config; the factory
-	// reads Type=="otlp" to opt in, and empty/"none" is stderr-only either
-	// way.
+	// Constructed only when the caller touched at least one of the
+	// relevant flags, matching the GuardRail pattern above. "none" is
+	// treated as not-set so a bare --log-export none does not
+	// materialise a sub-config; empty/"none" is stderr-only either way.
 	logExport := opts.LogExport
 	if logExport == "none" {
 		logExport = ""
@@ -567,30 +437,18 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		}
 	}
 
-	// Provider retry policy (issue #197). Only allocate
-	// Provider.Retry when the caller touched at least one flag;
-	// otherwise leave it nil so ValidateRunConfig fills the documented
-	// defaults. Each non-zero field overrides its slot independently,
-	// matching the partial-override pattern used by GuardRail above.
+	// Only allocate Provider.Retry when the caller touched at least one
+	// flag; otherwise leave it nil so ValidateRunConfig fills defaults.
 	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
 		return nil, err
 	}
 
-	// Parallel-dispatch knob (issue #184). Only construct the sub-config
-	// when the operator opted in; leaving it nil lets the loop reach for
-	// types.DefaultToolDispatchMaxParallel via
-	// EffectiveToolDispatchMaxParallel without persisting an opinion
-	// that the operator did not voice.
+	// Nil ToolDispatch lets the loop reach for
+	// DefaultToolDispatchMaxParallel via EffectiveToolDispatchMaxParallel.
 	if opts.ToolDispatchMaxParallel > 0 {
 		config.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: opts.ToolDispatchMaxParallel}
 	}
 
-	// Tool-choice escalation (issue #230). Only persist the sub-config
-	// when the operator opted in via --escalate-tool-choice; leaving it
-	// nil keeps the loop's escalation path inert so a bare run is
-	// unchanged. The retry-cap flag is carried through verbatim — zero is
-	// legal and resolves to DefaultToolChoiceEscalationMaxRetries via
-	// EffectiveToolChoiceEscalationMaxRetries.
 	if opts.EscalateToolChoice {
 		config.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{
 			Enabled:    true,
@@ -598,14 +456,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		}
 	}
 
-	// Batch (issue #136). --batch carries only the Enabled bit; every
-	// other BatchProviderConfig field stays at its zero value because
-	// the flag-only path has no --config to merge against. Operators
-	// who need MaxWaitSeconds, HarnessSidePolling, FallbackOnTimeout,
-	// CancelBundleOnRunCancel, or AllowInteractiveModes must use
-	// --config — flag syntax cannot cleanly express the cross-field
-	// invariants the validator enforces. ValidateRunConfig defaults
-	// MaxWaitSeconds to 24 h when Enabled and the slot is nil.
+	// --batch carries only the Enabled bit; the remaining
+	// BatchProviderConfig fields require --config since flag syntax
+	// cannot express their cross-field invariants.
 	if opts.Batch {
 		config.Provider.Batch = &types.BatchProviderConfig{Enabled: true}
 	}
@@ -614,17 +467,13 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 }
 
 // applyProviderRetryOverrides mutates pc.Retry to reflect any of the
-// four provider-retry CLI flags the operator set. Each flag maps to a
-// single ProviderRetryConfig field; an unset flag (zero value) leaves
-// its slot zero so ValidateRunConfig's per-field defaulting fills it
-// in. Duration flags are converted to integer milliseconds because the
-// wire format (ProviderRetryConfig) stores millisecond magnitudes.
+// four provider-retry CLI flags the operator set; an unset flag (zero
+// value) leaves its slot zero so ValidateRunConfig's per-field
+// defaulting fills it in.
 //
-// Returns a non-nil error if any non-zero duration is below the
-// millisecond resolution boundary (e.g. 500µs). Without that guard a
-// `int(d / time.Millisecond)` conversion truncates to zero and the
-// zero-guard below treats the value as "flag not set", silently
-// erasing the operator's expressed intent.
+// Returns a non-nil error if any non-zero duration is below 1ms
+// resolution — otherwise the millisecond conversion truncates to zero
+// and is indistinguishable from "flag not set".
 func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOptions) error {
 	maxAttempts := opts.ProviderRetryMaxAttempts
 	initialMs, err := retryDurationToMs("--provider-retry-initial-delay", opts.ProviderRetryInitialDelay)
@@ -661,14 +510,10 @@ func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOption
 }
 
 // optionalFloat64Flag returns a heap-allocated copy of the named Float64
-// flag's value iff the operator set it on the command line, and nil
-// otherwise. cobra's Float64 store cannot represent absence — both an
-// unset flag and an explicit --foo=0 read back as 0.0 — so the
-// Changed() bit is the only safe way to preserve "use the default"
-// versus "the operator chose 0". Used by --temperature on both the
-// --config-path (applyOverrides) and the flag-only (runHarness) entry
-// points; centralising the pattern keeps the two paths from drifting
-// when a future env-var fallback (e.g. STIRRUP_TEMPERATURE) lands.
+// flag's value iff the operator set it, and nil otherwise. cobra's
+// Float64 store cannot represent absence — an unset flag and an
+// explicit --foo=0 both read back as 0.0 — so Changed() is the only
+// safe disambiguator.
 func optionalFloat64Flag(cmd *cobra.Command, name string) *float64 {
 	f := cmd.Flags()
 	if !f.Changed(name) {
@@ -678,11 +523,9 @@ func optionalFloat64Flag(cmd *cobra.Command, name string) *float64 {
 	return &v
 }
 
-// retryDurationToMs converts a positive Duration to whole milliseconds
-// for the provider-retry CLI flags, rejecting any non-zero value below
-// 1ms. A zero input (the flag's default sentinel) returns zero with no
-// error, preserving the "flag not set" path. Errors include the flag
-// name so the operator sees which value they need to raise.
+// retryDurationToMs converts a positive Duration to whole milliseconds,
+// rejecting any non-zero value below 1ms. Zero (the flag default)
+// returns zero with no error, preserving the "flag not set" path.
 func retryDurationToMs(flagName string, d time.Duration) (int, error) {
 	if d == 0 {
 		return 0, nil
@@ -693,33 +536,21 @@ func retryDurationToMs(flagName string, d time.Duration) (int, error) {
 	return int(d / time.Millisecond), nil
 }
 
-// applyModeDefaults fills in PermissionPolicy and the read-only Tools.BuiltIn
-// list based on cfg.Mode, but only for fields the caller has not set
-// explicitly. This is shared between the flag-only path (buildHarnessRunConfig)
-// and the --config path (runHarness, after applyOverrides) so the two paths
-// produce architecturally consistent configs.
-//
-// The function never strips an explicit configuration — if the caller set
-// allow-all on a read-only mode, ValidateRunConfig will reject it with a
-// clear error rather than this function silently rewriting the choice.
-// That keeps user intent visible: a wrong combination fails loudly.
+// applyModeDefaults fills in PermissionPolicy and the read-only
+// Tools.BuiltIn list based on cfg.Mode, but only for fields the caller
+// has not set explicitly — an explicit conflicting choice is left for
+// ValidateRunConfig to reject rather than silently rewritten. Shared
+// between the flag-only and --config paths so both produce consistent
+// configs.
 func applyModeDefaults(cfg *types.RunConfig) {
 	if types.IsReadOnlyMode(cfg.Mode) {
 		if cfg.PermissionPolicy.Type == "" {
 			cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
 		}
-		// Read-only modes need an explicit Tools.BuiltIn list so validation
-		// passes: the validator rejects an empty list for read-only modes
-		// to force callers to opt specific tools in rather than accidentally
-		// inheriting the full set.
-		//
-		// The default is executor-aware: executor.type="none" has no
-		// filesystem/shell capability at all, so injecting the full
-		// DefaultReadOnlyBuiltInTools() would hand ValidateRunConfig's
-		// none-executor fail-fast a mode-generated (not operator-explicit)
-		// tool list to reject, making `--executor none` fail out of the box
-		// under the default "planning" mode. See
-		// DefaultReadOnlyBuiltInToolsForExecutor's doc comment.
+		// The validator rejects an empty Tools.BuiltIn for read-only
+		// modes; the default is executor-aware because executor.type="none"
+		// has no filesystem/shell capability at all (see
+		// DefaultReadOnlyBuiltInToolsForExecutor's doc comment).
 		if len(cfg.Tools.BuiltIn) == 0 {
 			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInToolsForExecutor(cfg.Executor.Type)
 		}
@@ -728,23 +559,17 @@ func applyModeDefaults(cfg *types.RunConfig) {
 	}
 }
 
-// maxConfigFileBytes caps the size of a --config file we will read into
-// memory before parsing. A RunConfig is at most a few KB; anything in the
-// MB range is almost certainly a mistake (a symlink to /dev/zero, a binary
-// pasted into the path, etc.). The cap prevents OOM on a malformed input.
+// maxConfigFileBytes caps --config reads to avoid OOM on a malformed
+// input; a RunConfig is at most a few KB.
 const maxConfigFileBytes int64 = 1 << 20 // 1 MiB
 
 // loadRunConfigFile reads a JSON file at path and unmarshals it into a
-// RunConfig. The file is expected to mirror the proto schema in
-// proto/harness/v1/harness.proto (the canonical source of truth). Unknown
-// JSON fields are rejected so that typos in the config file surface as
-// errors rather than being silently ignored.
+// RunConfig, mirroring the schema in proto/harness/v1/harness.proto.
+// Unknown JSON fields are rejected so config typos surface as errors.
 func loadRunConfigFile(path string) (*types.RunConfig, error) {
-	// A missing / unreadable / oversize / empty file is an I/O failure
-	// (exit 3): the bytes never reached the JSON decoder. Only the decode
-	// step below is a parse failure (exit 2). I/O-class errors use the
-	// "reading config file" prefix and parse-class errors use "parsing
-	// config file" so the operator-facing wording matches the exit code.
+	// I/O-class errors (exit 3, "reading config file") vs. the decode
+	// step's parse-class error (exit 2, "parsing config file") so the
+	// operator-facing wording matches the exit code.
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, ioError(fmt.Errorf("reading config file %q: %w", path, err))
@@ -827,11 +652,8 @@ default first-touch posture.`,
 func init() {
 	rootCmd.AddCommand(harnessCmd)
 
-	// All RunConfig-producing flags live in addRunConfigFlags so the
-	// run-config subcommand can register the same set without drifting.
-	// CLI-behaviour flags that do not round-trip through RunConfig
-	// (--export-workspace-required, --output-runconfig) remain on the
-	// harness command directly.
+	// RunConfig-producing flags live in addRunConfigFlags so the
+	// run-config subcommand registers the same set without drifting.
 	addRunConfigFlags(harnessCmd)
 
 	f := harnessCmd.Flags()
@@ -860,10 +682,8 @@ func init() {
 }
 
 // validateOutputMode rejects any --output value outside the closed
-// three-value set. The check fires before the agentic loop builds so a
-// typo surfaces with a clear operator-facing error rather than as a
-// missing summary at end-of-run (which would otherwise be silently
-// ignored when the resolved value did not match any branch downstream).
+// three-value set, before the loop builds, so a typo surfaces as a clear
+// error rather than a silently missing summary at end-of-run.
 func validateOutputMode(mode string) error {
 	switch mode {
 	case "text", "json", "none":
@@ -873,19 +693,14 @@ func validateOutputMode(mode string) error {
 	}
 }
 
-// applyOverrides mutates cfg in place, replacing fields whose corresponding
-// flag was explicitly set on the command line. Defaults (i.e. flags the
-// user did not touch) deliberately do NOT override the file. The list of
-// flags handled here mirrors the documented override surface in the
-// CLI help text.
+// applyOverrides mutates cfg in place, replacing fields whose
+// corresponding flag was explicitly set on the command line; flags left
+// at their default deliberately do NOT override the file.
 //
-// Returns a non-nil error when an override is structurally invalid (today,
-// only a malformed --query-param entry triggers this). The flag-only path
-// in runHarness already fails hard for the same input, so propagating the
-// error here keeps the two paths aligned: a typo at the CLI must never be
-// silently dropped, because that would let a request reach the provider
-// missing a required parameter (e.g. Azure's `api-version`) and surface as
-// an opaque HTTP 400 instead of a clear operator error.
+// Returns a non-nil error when an override is structurally invalid
+// (today, only a malformed --query-param entry): silently dropping it
+// would let a request reach the provider missing a required parameter
+// and surface as an opaque HTTP 400 instead of a clear operator error.
 func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
@@ -913,10 +728,8 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("trace") {
 		path, _ := f.GetString("trace")
 		cfg.TraceEmitter.FilePath = path
-		// --trace is the JSONL trace path; if the file uses the otel emitter
-		// FilePath would be ignored. To make the user's intent stand, coerce
-		// the emitter type to jsonl unless the user also set --trace-emitter
-		// explicitly (in which case their explicit choice wins).
+		// --trace is the JSONL path; coerce the emitter type to jsonl
+		// unless --trace-emitter was also set explicitly.
 		if !changed("trace-emitter") {
 			cfg.TraceEmitter.Type = "jsonl"
 		}
@@ -938,11 +751,8 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.FollowUpGrace = nil
 		}
 	}
-	// optionalFloat64Flag distinguishes an explicit --temperature=0
-	// (greedy decoding) from the flag being absent: cobra's Float64
-	// store coerces both to 0.0, so without the Changed() check every
-	// run that omitted --temperature would silently rewrite a
-	// file-provided non-zero value to greedy decoding.
+	// See optionalFloat64Flag: without the Changed() check, omitting
+	// --temperature would silently rewrite a file-provided value to 0.
 	if t := optionalFloat64Flag(cmd, "temperature"); t != nil {
 		cfg.Temperature = t
 	}
@@ -951,22 +761,15 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("provider") {
 		cfg.Provider.Type, _ = f.GetString("provider")
-		// Vertex AI uses GCP IAM, not API keys. When the operator
-		// switches an existing config to gemini via --provider, the old
-		// provider's APIKeyRef would otherwise linger and trip
-		// validateGeminiProviderFields with a confusing "apiKeyRef must
-		// not be set" error about a value the operator did not
-		// intentionally set on this run. Mirror buildHarnessRunConfig's
-		// flag-only behaviour by clearing APIKeyRef unless the operator
-		// explicitly passed --api-key-ref alongside --provider gemini.
+		// Vertex AI uses GCP IAM, not API keys; clear a lingering
+		// file-provided APIKeyRef on switching to gemini, mirroring
+		// buildHarnessRunConfig's flag-only behaviour.
 		if cfg.Provider.Type == "gemini" && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
 		}
 	}
 	if changed("model") {
-		// Override the router's model. The config file may set the model
-		// on the router (per-mode/dynamic) — for static routers this is
-		// where the active model lives.
+		// For static routers this is where the active model lives.
 		cfg.ModelRouter.Model, _ = f.GetString("model")
 	}
 	if changed("prompt-model") {
@@ -993,45 +796,30 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("gcp-location") {
 		cfg.Provider.GCPLocation, _ = f.GetString("gcp-location")
 	}
-	// When a config file omits gcpLocation and the operator has not
-	// explicitly passed --gcp-location, the validator otherwise rejects
-	// with "gcpLocation is required" even though the flag carries a
-	// documented default of "global". Apply the default explicitly on
-	// the gemini path so the same default reaches both flag-only and
-	// --config users. (The flag-only buildHarnessRunConfig path already
-	// gets this for free because cobra populates GCPLocation with the
-	// flag default before harnessCLIOptions is read.)
+	// Apply the documented "global" default explicitly on the --config
+	// path; the flag-only path gets it for free from the cobra default.
 	if cfg.Provider.Type == "gemini" && cfg.Provider.GCPLocation == "" {
 		cfg.Provider.GCPLocation = "global"
 	}
 	if changed("gcp-credentials-file") {
 		path, _ := f.GetString("gcp-credentials-file")
 		cfg.Provider.GCPCredentialsFile = path
-		// Setting --gcp-credentials-file implies the explicit
-		// gcp-service-account credential type so the credential layer
-		// reads the file rather than falling through to ADC. Mirrors
-		// the convenience shortcut buildHarnessRunConfig applies for
-		// the flag-only path. An existing Credential.Type from the
-		// config file wins (this only fills in unset).
+		// Implies gcp-service-account credential type so the file is
+		// read rather than falling through to ADC; an existing
+		// Credential.Type from the file wins.
 		if path != "" && cfg.Provider.Credential == nil {
 			cfg.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 		}
 	}
 
 	// Anthropic WIF folding lives in BuildRunConfig as a single
-	// post-override step (see runconfigbuilder.go). Calling it again
-	// here would double-invoke its slog.Warn diagnostics and silently
-	// double-count any future non-idempotent additions.
+	// post-override step (see runconfigbuilder.go); calling it again
+	// here would double-invoke its slog.Warn diagnostics.
 
-	// Azure Entra ID Workload Identity Federation (issue #118). The three
-	// --azure-* flags compose: --azure-tenant-id alone is enough to imply
-	// credential.type=azure-workload-identity (mirroring the
-	// --gcp-credentials-file pattern); --azure-client-id and --azure-scope
-	// fill in fields on whichever Credential block the operator ends up
-	// with (file-loaded or flag-implied). An explicit Credential block of
-	// any other type in the file wins — operators who have set
-	// credential.type=static deliberately should not have it silently
-	// upgraded to WIF by a stray --azure-tenant-id.
+	// --azure-tenant-id alone implies credential.type=azure-workload-identity
+	// (mirroring --gcp-credentials-file); --azure-client-id/--azure-scope
+	// fill in fields on whichever Credential block results. An explicit
+	// Credential block of a different type in the file wins.
 	if changed("azure-tenant-id") {
 		tenantID, _ := f.GetString("azure-tenant-id")
 		if tenantID != "" && cfg.Provider.Credential == nil {
@@ -1040,13 +828,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		if cfg.Provider.Credential != nil {
 			cfg.Provider.Credential.AzureTenantID = tenantID
 		}
-		// Azure WIF resolves the bearer dynamically via OAuth2 token
-		// exchange; the validator rejects APIKeyRef alongside
-		// credential.type=azure-workload-identity. Mirror the gemini
-		// clear above so an operator who switches an existing config to
-		// Azure WIF via --azure-tenant-id does not have to also pass
-		// --api-key-ref="" to clear a stale value the file kept around.
-		// An explicit --api-key-ref on the same command line wins.
+		// Azure WIF resolves the bearer via OAuth2 exchange; the
+		// validator rejects APIKeyRef alongside it. Explicit
+		// --api-key-ref on the same command line wins.
 		if tenantID != "" && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
 		}
@@ -1072,23 +856,14 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 	}
 	if changed("query-param") {
-		// Replace rather than merge: explicit --query-param flags clear any
-		// QueryParams set in the --config file, mirroring how a single
-		// --base-url flag wholesale replaces the file's BaseURL. Mixing
-		// would surprise users who set --query-param to override a stale
-		// file entry.
+		// Replace rather than merge: explicit --query-param flags clear
+		// any QueryParams from the --config file, mirroring --base-url.
 		raw, _ := f.GetStringArray("query-param")
 		cfg.Provider.QueryParams = nil
 		for _, entry := range raw {
 			k, v, err := parseQueryParam(entry)
 			if err != nil {
-				// Hard-fail rather than dropping the malformed entry. The
-				// flag-only path in runHarness returns the same shape of
-				// error for the same input; warning-and-continue here would
-				// leave Path 1 (--config) and Path 2 (flags only) inconsistent
-				// and let an Azure request proceed without a required
-				// parameter (e.g. api-version), surfacing later as an opaque
-				// HTTP 400 from the provider.
+				// Hard-fail rather than dropping the malformed entry.
 				return fmt.Errorf("--query-param %q: %w", entry, err)
 			}
 			if cfg.Provider.QueryParams == nil {
@@ -1119,18 +894,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		cfg.TraceEmitter.Protocol, _ = f.GetString("otel-protocol")
 	}
 	if changed("otel-header") {
-		// Replace rather than merge: explicit --otel-header flags clear
-		// any headers set in the --config file, mirroring the
-		// --query-param override semantics above. Merging would surprise
-		// users who set --otel-header to override a stale file entry.
+		// Replace rather than merge, mirroring --query-param above.
 		raw, _ := f.GetStringArray("otel-header")
 		cfg.TraceEmitter.Headers = nil
 		for _, entry := range raw {
 			k, v, err := parseQueryParam(entry)
 			if err != nil {
-				// Hard-fail like --query-param: dropping a malformed
-				// auth header would let the run proceed and surface as
-				// an opaque 401 from the OTLP gateway at first export.
+				// Hard-fail rather than dropping the malformed entry.
 				return fmt.Errorf("--otel-header %q: %w", entry, err)
 			}
 			if cfg.TraceEmitter.Headers == nil {
@@ -1178,11 +948,8 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("permission-policy-file") {
 		path, _ := f.GetString("permission-policy-file")
 		cfg.PermissionPolicy.PolicyFile = path
-		// If the file already names a non-policy-engine type, leave it
-		// alone — the user is fine-tuning a config that ships its own
-		// policy choice. Only flip to policy-engine when the type was
-		// not set by the file. This mirrors the buildHarnessRunConfig
-		// convenience shortcut.
+		// Only flip to policy-engine when the file didn't already name a
+		// type; mirrors the buildHarnessRunConfig shortcut.
 		if path != "" && cfg.PermissionPolicy.Type == "" {
 			cfg.PermissionPolicy.Type = "policy-engine"
 		}
@@ -1190,19 +957,15 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("code-scanner") {
 		typ, _ := f.GetString("code-scanner")
 		if typ == "" {
-			// Empty flag means "fall back to the mode default";
-			// represent that by clearing the field so applyCodeScannerDefault
-			// can re-fill it during validation.
+			// Empty flag falls back to the mode default via
+			// applyCodeScannerDefault during validation.
 			cfg.CodeScanner = nil
 		} else {
 			cfg.CodeScanner = &types.CodeScannerConfig{Type: typ}
 		}
 	}
-	// GuardRail (issue #43). Each flag is independently overrideable so
-	// callers can fine-tune one field (e.g. swap the endpoint) without
-	// having to restate the rest of the file's GuardRail block. The "set
-	// type to empty string" convention clears the GuardRail entirely,
-	// matching the --code-scanner pattern above.
+	// Each GuardRail flag is independently overrideable; empty type
+	// clears the GuardRail entirely, matching --code-scanner above.
 	if changed("guardrail") {
 		typ, _ := f.GetString("guardrail")
 		if typ == "" {
@@ -1235,21 +998,17 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.GuardRail.FailOpen = failOpen
 	}
-	// Observability resource attributes (issue #95). Each flag overrides
-	// the corresponding RunConfig field independently so an operator can
-	// fine-tune one (e.g. swap the environment label) without restating
-	// the rest of the file's observability block.
+	// Each flag independently overrides the corresponding field without
+	// restating the rest of the file's observability block.
 	if changed("deployment-environment") {
 		cfg.Observability.Environment, _ = f.GetString("deployment-environment")
 	}
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")
 	}
-	// Log export (issue #96). --log-export overrides observability.logsExport.type;
-	// "none" maps to the empty (stderr-only) form so flipping a file's "otlp"
-	// back off via --log-export none works. OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
-	// when set, pins the log endpoint regardless of the file value, mirroring
-	// the per-signal env override the OTel SDK honours.
+	// "none" maps to the empty (stderr-only) form so --log-export none
+	// flips a file's "otlp" back off. OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+	// when set, pins the log endpoint regardless of the file value.
 	if changed("log-export") {
 		v, _ := f.GetString("log-export")
 		if v == "none" {
@@ -1261,19 +1020,12 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		cfg.Observability.LogsExport.Endpoint = endpoint
 	}
 
-	// Workspace export (issue #164). The flag explicitly overrides
-	// whatever the file set so a deployment can flip the destination
-	// URI without re-templating the JSON. An empty flag value with
-	// "changed" status clears the field entirely — the mirror of
-	// "set to empty to clear" applied elsewhere in this file.
 	if changed("export-workspace-to") {
 		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
 	}
 
-	// Parallel async-tool dispatch (issue #184). Explicit zero clears
-	// the field so the loop falls back to DefaultToolDispatchMaxParallel;
-	// any positive value pins MaxParallel on cfg.ToolDispatch without
-	// disturbing other fields a future revision might introduce.
+	// Explicit zero clears the field so the loop falls back to
+	// DefaultToolDispatchMaxParallel.
 	if changed("max-tool-parallel") {
 		mp, _ := f.GetInt("max-tool-parallel")
 		if mp > 0 {
@@ -1286,27 +1038,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 	}
 
-	// Provider retry policy (issue #197). Each flag overrides its slot
-	// on cfg.Provider.Retry independently so an operator can pin a
-	// single value (e.g. just --provider-retry-max-attempts=5) without
-	// having to restate the rest of the file's retry block. A flag left
-	// at its zero default does NOT override the file, matching the
-	// general "explicit flag wins; defaults don't" rule documented in
-	// the precedence section of docs/configuration.md.
 	if err := applyProviderRetryFlagOverrides(cmd, &cfg.Provider); err != nil {
 		return err
 	}
 
-	// Batch (issue #136). --batch only flips the Enabled bit; every
-	// other Batch field (MaxWaitSeconds, HarnessSidePolling,
-	// FallbackOnTimeout, CancelBundleOnRunCancel,
-	// AllowInteractiveModes) must come from --config because flag
-	// syntax cannot express their cross-field invariants. When the
-	// file already supplied a Batch block, preserve its other fields
-	// so an operator can keep e.g. harnessSidePolling=true from the
-	// file and only flip enabled=true at the CLI. When the file
-	// omitted Batch entirely, allocate a fresh block with only
-	// Enabled set.
+	// --batch only flips the Enabled bit; other Batch fields must come
+	// from --config. Preserve the rest of an existing Batch block (e.g.
+	// harnessSidePolling) rather than replacing it.
 	if changed("batch") {
 		enabled, _ := f.GetBool("batch")
 		if enabled {
@@ -1316,24 +1054,15 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 				cfg.Provider.Batch.Enabled = true
 			}
 		} else if cfg.Provider.Batch != nil {
-			// Explicit --batch=false clears Enabled but preserves the
-			// surrounding struct. The divergence from --code-scanner ""
-			// and --guardrail "" (which nil the entire sub-config) is
-			// deliberate: keeping HarnessSidePolling and other fields
-			// intact means a follow-up --batch=true re-enables without
-			// the operator having to re-supply --config, which matches
-			// the mode-toggle workflow the flag is built for.
+			// Preserve the struct (unlike --code-scanner ""/--guardrail
+			// "" which nil the sub-config) so a follow-up --batch=true
+			// re-enables without re-supplying --config.
 			cfg.Provider.Batch.Enabled = false
 		}
 	}
 
-	// Tool-choice escalation (issue #230). --escalate-tool-choice flips
-	// the Enabled bit, preserving any file-supplied MaxRetries so a
-	// follow-up toggle does not require re-supplying --config (same
-	// mode-toggle rationale as --batch). --escalate-tool-choice-max-retries
-	// pins the cap independently; like --max-tool-parallel an explicit
-	// override only takes effect when set, and the loop resolves an unset
-	// cap to DefaultToolChoiceEscalationMaxRetries.
+	// --escalate-tool-choice flips Enabled, preserving any file-supplied
+	// MaxRetries (same toggle rationale as --batch).
 	if changed("escalate-tool-choice") {
 		enabled, _ := f.GetBool("escalate-tool-choice")
 		if enabled {
@@ -1355,14 +1084,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	return nil
 }
 
-// applyProviderRetryFlagOverrides mutates pc.Retry to reflect any of
-// the --provider-retry-* CLI flags the operator explicitly set on top
-// of an existing --config file. Mirrors applyProviderRetryOverrides for
-// the flag-only path but uses cmd.Flags().Changed() so a flag left at
+// applyProviderRetryFlagOverrides mirrors applyProviderRetryOverrides
+// for the --config path, using cmd.Flags().Changed() so a flag left at
 // its zero default does not clobber a file-supplied value.
-//
-// Returns a non-nil error if any operator-supplied duration is below
-// the 1ms resolution boundary (see retryDurationToMs).
 func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfig) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
@@ -1410,14 +1134,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	f := cmd.Flags()
 	configPath, _ := f.GetString("config")
 
-	// Validate --output before any side effects: BuildRunConfig reads
-	// files and resolves env-var-shaped credentials, and the
-	// --output-runconfig dry-run branch below exits without running
-	// the loop. A bad --output value should not silently coexist with
-	// either path — operators expect closed-set violations to surface
-	// before the harness commits to a config-resolution or capture
-	// outcome. --output is not a RunConfig field, so this check has no
-	// dependency on BuildRunConfig.
+	// Validate --output before any side effects (file reads, credential
+	// resolution) in BuildRunConfig below.
 	outputMode, _ := f.GetString("output")
 	if err := validateOutputMode(outputMode); err != nil {
 		return err
@@ -1432,16 +1150,13 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		// A bare `stirrup harness` on an interactive terminal reaches the
-		// prompt-required gate with this sentinel (issue #249). Print the
-		// grouped, example-led hint to stderr and exit 0 — returning nil
-		// so Cobra appends neither its error line nor its full usage
-		// block. Colour is auto-detected against the SAME writer the hint
-		// is written to: deciding colour off os.Stderr while writing to
-		// cmd.ErrOrStderr() would leak ANSI into a non-TTY sink when a
-		// caller redirected stderr via cmd.SetErr (or a piped
-		// `2>&1 | cat`). Non-TTY callers never produce this sentinel
-		// (resolvePromptForRun returns the opaque errPromptRequired
-		// instead), so scripted use keeps its terse, non-zero failure.
+		// prompt-required gate with this sentinel. Print the hint to
+		// stderr and exit 0 (returning nil so Cobra appends neither its
+		// error line nor usage block). Colour is auto-detected against
+		// the SAME writer the hint is written to, to avoid leaking ANSI
+		// into a redirected non-TTY stderr. Non-TTY callers never
+		// produce this sentinel, so scripted use keeps its terse,
+		// non-zero failure.
 		if errors.Is(err, errPromptHintRequested) {
 			w := cmd.ErrOrStderr()
 			printHarnessUsageHint(w, shouldColor(colorAuto, w))
@@ -1450,11 +1165,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --dry-run preflight (issue #245). The probe gates and the timeout
-	// only make sense alongside --dry-run; supplying one without --dry-run
-	// is an invalid flag combination (exit 4) rather than a silent no-op.
-	// This check runs after BuildRunConfig so a bad config still surfaces
-	// its own (exit 1/2/3) class first.
+	// Probe gates and timeout only make sense alongside --dry-run; runs
+	// after BuildRunConfig so a bad config surfaces its own exit class
+	// first.
 	dryRun, _ := f.GetBool("dry-run")
 	if err := validateDryRunFlags(f, dryRun); err != nil {
 		return err
@@ -1464,12 +1177,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return runDryRun(cmd, cfg, dryRunOptionsFromFlags(f), outputMode, outPath)
 	}
 
-	// --output-runconfig is a config capture: write the validated
-	// RunConfig to the named path (or stdout) and exit without
-	// invoking the loop. The validator has already run inside
-	// BuildRunConfig, so reaching this branch with an invalid config
-	// is structurally impossible — that is what the spec means by
-	// "never writes on validation failure".
+	// Config capture: write the validated RunConfig and exit without
+	// invoking the loop. BuildRunConfig has already validated, so this
+	// never writes on a validation failure.
 	if outPath, _ := f.GetString("output-runconfig"); outPath != "" {
 		return writeOutputRunConfig(outPath, cfg)
 	}
@@ -1482,20 +1192,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 }
 
 // writeOutputRunConfig emits the resolved RunConfig as pretty-printed
-// JSON to the named path. The special value "-" writes to stdout so
-// `--output-runconfig=-` composes with `stirrup run-config` for
-// pipeline replay. Non-stdout paths open with 0600 — a captured
-// RunConfig may carry secret:// references whose names are operationally
-// sensitive even though the references themselves are not secrets, and
-// the conservative mode matches how the rest of the harness writes
-// operator-facing artifacts (trace files, prompt files).
+// JSON to the named path, or to stdout for path "-". Non-stdout paths
+// open with 0600 since a captured RunConfig may carry secret://
+// reference names that are operationally sensitive.
 func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
 	if path == "-" {
 		return writeRunConfigJSON(os.Stdout, cfg, false)
 	}
-	// O_TRUNC because a captured config replaces any previous one at
-	// the same path; the alternative ("append") would silently corrupt
-	// a replay file.
+	// O_TRUNC: a captured config replaces any previous one at the path.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return ioError(fmt.Errorf("opening --output-runconfig %q: %w", path, err))
@@ -1504,16 +1208,9 @@ func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
 }
 
 // writeAndCloseRunConfig is the testable seam writeOutputRunConfig
-// delegates to once a writer is available. Tests inject a synthetic
-// io.WriteCloser whose Close returns an error to pin the deferred-
-// flush diagnostic path.
-//
-// Linux's buffered file I/O can defer kernel page flushes until
-// Close. A successful writeRunConfigJSON but a failed Close (ENOSPC,
-// EIO, NFS commit failure) would otherwise hand the operator a
-// zero-exit run with a corrupt or empty capture file and no
-// diagnostic. Surface the close error when the prior write
-// succeeded.
+// delegates to. Surfaces a Close error (ENOSPC, EIO, NFS commit
+// failure) when the prior write succeeded, since buffered file I/O can
+// defer the actual flush until Close.
 func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig) error {
 	writeErr := writeRunConfigJSON(wc, cfg, false)
 	if cerr := wc.Close(); cerr != nil && writeErr == nil {
@@ -1522,10 +1219,7 @@ func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig
 	return writeErr
 }
 
-// dryRunProbeGates lists the flags whose only meaning is to gate a
-// --dry-run probe. Supplying any of them without --dry-run is an invalid
-// combination (exit 4). Kept as a table so the error names the offending
-// flag and a future probe gate is one append away.
+// dryRunProbeGates lists flags meaningful only alongside --dry-run.
 var dryRunProbeGates = []string{
 	"no-probe-provider",
 	"no-probe-mcp",
@@ -1535,11 +1229,10 @@ var dryRunProbeGates = []string{
 	"dry-run-timeout",
 }
 
-// validateDryRunFlags rejects a --dry-run probe gate or --dry-run-timeout
-// supplied without --dry-run. Those flags are inert outside a dry-run, so
-// rather than silently ignoring them (which would hide an operator typo
-// such as `--no-probe-provider` on a real run that then contacts the
-// provider anyway) the harness fails with the usage class (exit 4).
+// validateDryRunFlags rejects a --dry-run probe gate or
+// --dry-run-timeout supplied without --dry-run (exit 4), rather than
+// silently ignoring a typo that would otherwise contact the provider
+// on a real run.
 func validateDryRunFlags(f *flag.FlagSet, dryRun bool) error {
 	if dryRun {
 		return nil
@@ -1571,35 +1264,19 @@ func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
 	}
 }
 
-// runDryRun executes the preflight, renders the report, optionally writes
-// the captured RunConfig (when --output-runconfig is also set, per the
-// issue's compose edge case), and maps the aggregate to an exit code:
+// runDryRun executes the preflight, renders the report, optionally
+// writes the captured RunConfig, and maps the aggregate to an exit
+// code (nil for all steps ok/skip, else a plain error). The config
+// write happens only after a successfully-produced report, so a
+// dry-run that surfaces a misconfiguration still captures the config.
 //
-//	all steps ok/skip -> nil (exit 0)
-//	any step failed   -> a plain error (exit 1, the untyped default)
-//
-// Order matches the spec: validate -> preflight -> write config (if
-// requested) -> exit. The config write happens only when the report
-// itself did not fail to produce, so a dry-run that surfaces a
-// misconfiguration still captures the config the operator was probing.
-//
-// outputMode "json" emits the structured report to stdout; otherwise a
-// human-readable per-step report goes to stderr (so it does not collide
-// with a captured config on stdout).
-// preflightFn is the seam through which runDryRun invokes the preflight.
-// Production points it at core.Preflight; tests substitute a stub that
-// returns a canned report so the dispatch/output/exit-code branches of
-// runDryRun can be exercised without a live config or network.
+// preflightFn is the seam through which runDryRun invokes the
+// preflight; tests substitute a stub returning a canned report.
 var preflightFn = core.Preflight
 
 func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOptions, outputMode, outputRunConfigPath string) error {
-	// Wire signal cancellation so a SIGINT/SIGTERM mid-preflight cancels
-	// the context and lets in-flight probes (and any owned resource
-	// cleanup inside Preflight) unwind, matching runWithConfig. Without
-	// this a Cloud Run job cancellation during a dry-run would not
-	// propagate to the probe context. Rooted at context.Background() (as
-	// runWithConfig and job.go are) rather than cmd.Context(), which is
-	// nil for a command constructed outside Cobra's Execute path.
+	// Rooted at context.Background(), matching runWithConfig, rather
+	// than cmd.Context() which is nil outside Cobra's Execute path.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setupSignalHandler(cancel)
@@ -1612,12 +1289,10 @@ func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOpti
 }
 
 // renderAndDispatchPreflight writes the report (JSON to stdout for
-// --output=json, the human report to stderr otherwise), composes with
+// --output=json, human-readable to stderr otherwise), composes with
 // --output-runconfig when requested, and maps the aggregate to an exit
-// code: a failed --output-runconfig write (exit 3) takes precedence over a
-// probe failure (exit 1) so a broken capture path is not masked by a soft
-// probe failure. Split out from runDryRun so the output/compose/exit
-// branches are unit-testable without invoking the real preflight.
+// code: a failed --output-runconfig write (exit 3) takes precedence
+// over a probe failure (exit 1) so it is not masked.
 func renderAndDispatchPreflight(cmd *cobra.Command, report *core.PreflightReport, cfg *types.RunConfig, outputMode, outputRunConfigPath string) error {
 	if outputMode == "json" {
 		if err := writePreflightJSON(cmd.OutOrStdout(), report); err != nil {
@@ -1639,8 +1314,7 @@ func renderAndDispatchPreflight(cmd *cobra.Command, report *core.PreflightReport
 	return nil
 }
 
-// failedStepCount counts the failed steps in a report for the summary
-// error message.
+// failedStepCount counts the failed steps in a report.
 func failedStepCount(report *core.PreflightReport) int {
 	n := 0
 	for _, s := range report.Steps {
@@ -1663,12 +1337,9 @@ func writePreflightJSON(w io.Writer, report *core.PreflightReport) error {
 	return nil
 }
 
-// writePreflightText renders a human-readable per-step report to w. Each
-// line leads with the status so an operator scanning the output spots a
-// FAIL immediately; the remediation hint (when present) is indented under
-// the failing step. Built into a strings.Builder and written once,
-// matching printHarnessUsageHint — the report is a best-effort stderr
-// surface, so a write failure to stderr is not propagated.
+// writePreflightText renders a human-readable per-step report to w,
+// each line leading with the status; a remediation hint (when present)
+// is indented under a failing step.
 func writePreflightText(w io.Writer, report *core.PreflightReport) {
 	var b strings.Builder
 	b.WriteString("Dry-run preflight:\n")
@@ -1692,43 +1363,19 @@ func writePreflightText(w io.Writer, report *core.PreflightReport) {
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
-// the documented env-var fallbacks into the RunConfig. Called from
-// both paths so --config users and flag-only users see the same
-// resolution chain:
+// documented env-var fallbacks into the RunConfig; see docs/anthropic-wif.md
+// for the full precedence chain and risk rationale. Called from both
+// paths so --config and flag-only users see the same resolution.
 //
-//  1. Federation IDs: explicit flag > ANTHROPIC_*_ID env var > file value.
-//     Setting any ID without a Credential block infers
-//     credential.type=anthropic-wif.
-//  2. Token source inference (only when Credential.TokenSource is nil
-//     so a config-file source always wins):
-//     - --anthropic-from-github-actions → github-actions-oidc with
-//     Anthropic OAuth audience
-//     - ANTHROPIC_IDENTITY_TOKEN_FILE → file source pointing at it
-//     - ANTHROPIC_IDENTITY_TOKEN → env source
-//     - Naked ACTIONS_ID_TOKEN_REQUEST_URL is NOT auto-selected
-//     (issue #117 risk #5: silent IdP selection makes credential
-//     bugs unfixable; require explicit opt-in).
-//  3. apiKeyRef mutual exclusion: anthropic + anthropic-wif must not
-//     also carry a static API key (issue #117 risk #4 — leftover
-//     ANTHROPIC_API_KEY silently shadows federation in the SDK).
-//     Explicit --api-key-ref is a hard error; the default
-//     "secret://ANTHROPIC_API_KEY" is cleared silently because no
-//     intent was expressed.
-//
-// Returns a non-nil error only on the apiKeyRef guard; everything
-// else is best-effort folding that ValidateRunConfig will reject if
-// the resulting shape is invalid.
+// Returns a non-nil error only on the apiKeyRef guard; everything else
+// is best-effort folding that ValidateRunConfig rejects if invalid.
 func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
 
-	// Step 1 — federation IDs from flags + env. Local helper keeps the
-	// dispatch table compact. The middle "registered-default" branch
-	// from an earlier draft has been collapsed: all four
-	// --anthropic-* WIF flags register an empty-string default, so a
-	// non-changed flag is always "", and falling through to env-var
-	// lookup is the correct behaviour. Mirrors the gcp-credentials-file
-	// shape elsewhere in this file.
+	// Federation IDs from flags + env; all four --anthropic-* WIF flags
+	// register an empty-string default, so a non-changed flag always
+	// falls through to the env-var lookup.
 	resolveID := func(flagName, envName string) string {
 		if changed(flagName) {
 			v, _ := f.GetString(flagName)
@@ -1745,12 +1392,8 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 
 	anyIDSet := ruleID != "" || orgID != "" || saID != "" || wsID != ""
 
-	// Step 2 — type inference. Only fire when the operator has
-	// signalled WIF intent (any ID set, the GHA opt-in, or an existing
-	// type=anthropic-wif config). A config that already names a
-	// non-anthropic-wif credential type plus a federation ID is
-	// inconsistent — surface it loudly rather than silently rewriting
-	// the operator's choice.
+	// Only fire when the operator has signalled WIF intent (any ID set,
+	// the GHA opt-in, or an existing type=anthropic-wif config).
 	if !anyIDSet && !fromGHA &&
 		(cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "anthropic-wif") {
 		return nil
@@ -1769,8 +1412,7 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	}
 
 	// Apply IDs after the type is settled; an explicit/env value
-	// overrides an existing value from --config. (changed() above is
-	// the precedence gate — env-only fills in unset values.)
+	// overrides an existing value from --config.
 	if ruleID != "" {
 		cfg.Provider.Credential.FederationRuleID = ruleID
 	}
@@ -1784,16 +1426,9 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 		cfg.Provider.Credential.WorkspaceID = wsID
 	}
 
-	// Step 3 — token-source inference. A config-file token source
-	// always wins; we only fill in the slot when it is nil. Order
-	// follows the issue's documented precedence: explicit GHA opt-in
-	// first, then the two ANTHROPIC_IDENTITY_TOKEN_* env vars.
-	//
-	// If the operator passed --anthropic-from-github-actions but a
-	// --config file already set credential.tokenSource, the flag has
-	// no effect. Surface this as a warning so it is not silently
-	// dropped — the config file wins, but the operator should know
-	// their flag was discarded so they can fix the redundancy.
+	// Token-source inference: a config-file source always wins; the
+	// warning tells the operator their flag was discarded rather than
+	// silently dropping it.
 	if fromGHA && cfg.Provider.Credential.TokenSource != nil {
 		slog.Warn("--anthropic-from-github-actions ignored: config file already specifies credential.tokenSource",
 			"existing_type", cfg.Provider.Credential.TokenSource.Type)
@@ -1801,8 +1436,8 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	if cfg.Provider.Credential.TokenSource == nil {
 		switch {
 		case fromGHA:
-			// Audience defaults to the Anthropic OAuth host; operators
-			// who need a different audience claim must use --config.
+			// Audience defaults to the Anthropic OAuth host; a custom
+			// audience claim requires --config.
 			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
 				Type:     "github-actions-oidc",
 				Audience: "https://api.anthropic.com",
@@ -1818,19 +1453,14 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 				EnvVar: "ANTHROPIC_IDENTITY_TOKEN",
 			}
 			// Bare ACTIONS_ID_TOKEN_REQUEST_URL is intentionally NOT
-			// handled here. Silent IdP selection from env presence is
-			// rejected per issue #117 risk #5 — operators must opt in
-			// via --anthropic-from-github-actions.
+			// handled here — operators must opt in explicitly via
+			// --anthropic-from-github-actions.
 		}
 	}
 
-	// Step 4 — apiKeyRef mutual exclusion. Only enforce on the
-	// anthropic provider with anthropic-wif credentials; other
-	// combinations are validated separately (validateAnthropicProviderFields
-	// catches a leftover --config value, but it does not know about the
-	// per-provider default flag value being "secret://ANTHROPIC_API_KEY",
-	// so we have to reconcile the default-vs-explicit case here before
-	// validation runs).
+	// Only enforce on the anthropic provider with anthropic-wif
+	// credentials; reconciles the cobra default flag value against WIF
+	// before validateAnthropicProviderFields runs.
 	if cfg.Provider.Type == "anthropic" &&
 		cfg.Provider.Credential != nil &&
 		cfg.Provider.Credential.Type == "anthropic-wif" &&
@@ -1852,29 +1482,12 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 }
 
 // applyOpenAIWIFOverrides folds the OpenAI-WIF flag surface and the
-// OPENAI_* env fallbacks into cfg, mirroring applyAnthropicWIFOverrides.
-// Resolution chain:
+// OPENAI_* env fallbacks into cfg, mirroring applyAnthropicWIFOverrides;
+// see docs/openai-wif.md for the full precedence chain.
 //
-//  1. Federation IDs: explicit flag > OPENAI_* env var > file value.
-//     Setting any ID (or the GHA opt-in) without a Credential block infers
-//     credential.type=openai-wif.
-//  2. Token source inference (only when Credential.TokenSource is nil so a
-//     config-file source always wins):
-//     - --openai-from-github-actions → github-actions-oidc with the OpenAI
-//     API audience (https://api.openai.com/v1)
-//     - OPENAI_IDENTITY_TOKEN_FILE → file source pointing at it
-//     - OPENAI_IDENTITY_TOKEN → env source
-//     A bare ACTIONS_ID_TOKEN_REQUEST_URL is NOT auto-selected — silent IdP
-//     selection from env presence is rejected (mirrors the Anthropic path,
-//     issue #117 risk #5).
-//  3. apiKeyRef mutual exclusion: an openai-wif credential on an OpenAI
-//     provider must not also carry a static key. Explicit --api-key-ref is a
-//     hard error; the default "secret://ANTHROPIC_API_KEY" is cleared
-//     silently because no intent was expressed.
-//
-// Returns a non-nil error only on the conflicting-type and apiKeyRef guards;
-// everything else is best-effort folding that ValidateRunConfig rejects if
-// the resulting shape is invalid.
+// Returns a non-nil error only on the conflicting-type and apiKeyRef
+// guards; everything else is best-effort folding that ValidateRunConfig
+// rejects if invalid.
 func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
@@ -1892,17 +1505,11 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	subjectTokenType := resolveID("openai-subject-token-type", "OPENAI_SUBJECT_TOKEN_TYPE")
 	fromGHA, _ := f.GetBool("openai-from-github-actions")
 
-	// Only the two required identifiers discriminate WIF intent.
-	// subjectTokenType is an optional modifier of an already-chosen flow —
-	// it has an env-var fallback (OPENAI_SUBJECT_TOKEN_TYPE), so including
-	// it here would let a stray env var on a CI runner flip a plain
-	// openai-compatible run into the WIF path and then fail validation with
-	// a confusing "requires openaiIdentityProviderId". It is still applied
-	// below once the type is settled.
+	// Only the two required identifiers discriminate WIF intent;
+	// subjectTokenType has its own env fallback, so including it here
+	// would let a stray CI env var flip a plain run onto the WIF path.
 	anyIDSet := idpID != "" || saID != ""
 
-	// Only fire when the operator has signalled WIF intent (any ID set, the
-	// GHA opt-in, or an existing type=openai-wif config).
 	if !anyIDSet && !fromGHA &&
 		(cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "openai-wif") {
 		return nil
@@ -1920,8 +1527,8 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 			cfg.Provider.Credential.Type)
 	}
 
-	// Apply IDs after the type is settled; an explicit/env value overrides an
-	// existing value from --config.
+	// Apply IDs after the type is settled; an explicit/env value
+	// overrides an existing value from --config.
 	if idpID != "" {
 		cfg.Provider.Credential.OpenAIIdentityProviderID = idpID
 	}
@@ -1932,8 +1539,7 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 		cfg.Provider.Credential.OpenAISubjectTokenType = subjectTokenType
 	}
 
-	// Token-source inference. A config-file token source always wins; fill
-	// the slot only when it is nil.
+	// A config-file token source always wins; fill the slot only when nil.
 	if fromGHA && cfg.Provider.Credential.TokenSource != nil {
 		slog.Warn("--openai-from-github-actions ignored: config file already specifies credential.tokenSource",
 			"existing_type", cfg.Provider.Credential.TokenSource.Type)
@@ -1941,10 +1547,8 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	if cfg.Provider.Credential.TokenSource == nil {
 		switch {
 		case fromGHA:
-			// OpenAI validates the audience from the subject token's aud
-			// claim against the provider config; the canonical value is the
-			// OpenAI API root. Operators needing a custom audience must use
-			// --config.
+			// Canonical audience is the OpenAI API root; a custom
+			// audience claim requires --config.
 			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
 				Type:     "github-actions-oidc",
 				Audience: "https://api.openai.com/v1",
@@ -1962,13 +1566,8 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 	}
 
-	// apiKeyRef mutual exclusion. Only enforce on the OpenAI-shaped providers
-	// with openai-wif credentials; validateOpenAIWIFCrossField catches a
-	// leftover --config value, but it cannot tell the cobra default apart
-	// from an operator-set value. The --api-key-ref default is the shared
-	// "secret://ANTHROPIC_API_KEY" string regardless of provider, so an
-	// OpenAI WIF run carries it unless reconciled: clear it when it is the
-	// untouched default, hard-error when it was set explicitly.
+	// Reconciles the cobra default flag value (shared "secret://ANTHROPIC_API_KEY"
+	// across providers) against WIF before validateOpenAIWIFCrossField runs.
 	if (cfg.Provider.Type == "openai-compatible" || cfg.Provider.Type == "openai-responses") &&
 		cfg.Provider.Credential != nil &&
 		cfg.Provider.Credential.Type == "openai-wif" &&
@@ -1989,29 +1588,24 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	return nil
 }
 
-// runOptions carries CLI-only behaviour that doesn't fit on RunConfig.
-// exportWorkspaceRequired controls whether a failed workspace export
-// propagates a non-zero exit code. outputMode selects the post-run
-// summary surface: "text" prints the human-readable stderr summary,
-// "json" emits a single STIRRUP_RESULT line on stdout, "none"
-// suppresses both. Threading them through here (rather than embedding
-// them on RunConfig) keeps the wire schema free of CLI-shaped knobs.
+// runOptions carries CLI-only behaviour that doesn't fit on RunConfig,
+// keeping the wire schema free of CLI-shaped knobs. outputMode selects
+// the post-run summary surface: "text" (stderr), "json" (a single
+// STIRRUP_RESULT line on stdout), or "none".
 type runOptions struct {
 	exportWorkspaceRequired bool
 	outputMode              string
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
-// invocations. Both code paths converge here once they have a validated
-// RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
-// below is safe.
+// invocations, once both have a validated RunConfig (ValidateRunConfig
+// rejects nil Timeout, so the dereference below is safe).
 func runWithConfig(config *types.RunConfig, opts runOptions) error {
-	// shutdownCtx carries only the process-level shutdown signal
-	// (SIGINT/SIGTERM), deliberately independent of ctx's run-deadline
-	// cancellation below. The agentic loop's detached postRun hook
-	// phase (issue #461) is built to survive ctx's own deadline but
-	// must still observe a genuine process shutdown promptly — see
-	// AgenticLoop.Shutdown and docs/cloud-run-jobs.md.
+	// shutdownCtx carries only the process-level shutdown signal,
+	// independent of ctx's run-deadline cancellation below: the
+	// detached postRun hook phase must survive ctx's own deadline but
+	// still observe a genuine shutdown — see AgenticLoop.Shutdown and
+	// docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
@@ -2035,48 +1629,28 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	runTrace, runErr := loop.Run(ctx, config)
 	if runTrace == nil {
 		// No trace was produced at all (e.g. the trace emitter itself
-		// failed inside finishWithOutcome/finishWithError) — there is
-		// nothing to emit.
+		// failed) — nothing to emit.
 		return fmt.Errorf("running harness: %w", runErr)
 	}
 
-	// emitRunOutput must not inherit ctx: by the time we reach here ctx
-	// may already be cancelled (signal handler fired, or the per-run
-	// timeout elapsed). StdoutJSONSink ignores its context today, but
-	// any future sink that respects cancellation — gcp-pubsub, gcs —
-	// would silently fail to emit the structured result on every
-	// cancelled run, and emitRunResult logs-and-discards sink errors.
-	// Use a fresh, short-deadline context for post-run emission so
-	// cancellation does not eat the run's answer. Mirrors the
-	// bestEffortCancel pattern in batchpoll.go.
+	// A fresh, short-deadline context so a signal-cancelled/timed-out
+	// ctx does not eat the run's answer (mirrors bestEffortCancel in
+	// batchpoll.go).
 	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
 	defer emitCancel()
 	emitRunOutput(emitCtx, config, runTrace, opts.outputMode)
 
 	if runErr != nil {
-		// A RunTrace was produced even though Run() returned a fatal
-		// error: finishWithOutcome's early-return paths (build-system-
-		// prompt failure, git setup failure, and — issue #461 — a
-		// fatal preRun hook failure) return a valid trace alongside a
-		// non-nil error. The RunResult/resultSink emission above must
-		// still run for these — skipping it made the run's own
-		// structured outcome (and RunResult.HookFailures) unreachable
-		// on the most common trigger for setup_failed/hook_failed —
-		// but a failed run has nothing further to do, so still return
-		// the error here rather than continuing to workspace export /
-		// follow-up grace.
+		// finishWithOutcome's early-return paths (build-system-prompt
+		// failure, git setup failure, fatal preRun hook failure) return
+		// a valid trace alongside a non-nil error; the RunResult
+		// emission above must still run for these, but a failed run has
+		// nothing further to do.
 		return fmt.Errorf("running harness: %w", runErr)
 	}
 
-	// Workspace export (issue #164). Called after the trace and
-	// resultSink so a failed upload's slog warning lands after the
-	// run's structured outcome — easier to correlate during
-	// post-mortem. When required, the error here propagates and
-	// becomes the process exit status. Uses an independent context for
-	// the same reason as emitRunOutput above — a signal-cancelled run
-	// must still upload its workspace if the operator opted in — with
-	// a longer deadline because the GCS PUT can carry many MB of
-	// tarball.
+	// Independent context, same reason as emitRunOutput, with a longer
+	// deadline for a possibly multi-MB GCS PUT.
 	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
 	defer exportCancel()
 	if err := exportWorkspace(exportCtx, config, opts.exportWorkspaceRequired); err != nil {
@@ -2086,10 +1660,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)
 	}
-	// A non-success outcome reached here (runErr == nil but, e.g.,
-	// Outcome == "error" from a provider failure, or "hook_failed" from
-	// a fatal postRun hook) must still fail the process — see
-	// runOutcomeError. The RunResult/stderr summary above already
-	// carries the real outcome; this only affects the exit code.
+	// A non-success outcome reached here (runErr == nil but e.g.
+	// Outcome == "error" or "hook_failed") must still fail the process.
 	return runOutcomeError(runTrace)
 }

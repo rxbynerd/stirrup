@@ -17,10 +17,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// baselineRunConfig builds a valid RunConfig that satisfies
-// types.ValidateRunConfig (execution mode, anthropic provider, max_turns
-// + timeout set). Tests that exercise merge / redaction / dry-run start
-// from this so they only have to vary the fields under test.
+// baselineRunConfig builds a valid RunConfig satisfying
+// types.ValidateRunConfig; tests vary fields from this base.
 func baselineRunConfig() *types.RunConfig {
 	timeout := 300
 	return &types.RunConfig{
@@ -32,8 +30,7 @@ func baselineRunConfig() *types.RunConfig {
 }
 
 // TestMergeOverrides_NoOverlay confirms a nil overlay leaves the baseline
-// untouched. mergeOverrides has to be safe to call with no per-task
-// overrides — that is the suite-baseline-only path.
+// untouched.
 func TestMergeOverrides_NoOverlay(t *testing.T) {
 	baseline := baselineRunConfig()
 	got := mergeOverrides(baseline, nil)
@@ -47,7 +44,6 @@ func TestMergeOverrides_NoOverlay(t *testing.T) {
 
 // TestMergeOverrides_SparseField asserts a sparse overlay only changes
 // the named field; every other baseline field passes through unchanged.
-// This is the core "sparse overlay" contract for per-task overrides.
 func TestMergeOverrides_SparseField(t *testing.T) {
 	baseline := baselineRunConfig()
 	four := 4
@@ -65,10 +61,9 @@ func TestMergeOverrides_SparseField(t *testing.T) {
 	}
 }
 
-// TestMergeOverrides_MultipleFields covers the case where an overlay
-// touches a pointer field (Provider) and a scalar field (Mode) at the
-// same time. Both should land; pointer copies are deref'd so the merged
-// config does not alias overlay-owned memory.
+// TestMergeOverrides_MultipleFields covers an overlay touching a pointer
+// field (Provider) and a scalar field (Mode) together; pointer copies
+// are deref'd so the merged config does not alias overlay memory.
 func TestMergeOverrides_MultipleFields(t *testing.T) {
 	baseline := baselineRunConfig()
 	overlay := &types.RunConfigOverrides{
@@ -91,10 +86,8 @@ func TestMergeOverrides_MultipleFields(t *testing.T) {
 	}
 }
 
-// TestMergeOverrides_NilBaseline asserts the explicit nil-baseline guard.
-// A merge with no baseline is a programming bug (the caller should never
-// produce overrides without a base), and the helper returns nil rather
-// than fabricating a half-formed config.
+// TestMergeOverrides_NilBaseline asserts a nil baseline returns nil
+// rather than fabricating a half-formed config.
 func TestMergeOverrides_NilBaseline(t *testing.T) {
 	four := 4
 	got := mergeOverrides(nil, &types.RunConfigOverrides{MaxTurns: &four})
@@ -104,9 +97,8 @@ func TestMergeOverrides_NilBaseline(t *testing.T) {
 }
 
 // TestBuildMergedConfig_FromInlineBaseline exercises the suite-inline
-// baseline path end-to-end: clone the baseline, apply overrides, return
-// a fresh allocation. Mutating the result must not be observable on the
-// suite's original RunConfig pointer.
+// baseline path end-to-end: clone, apply overrides, return a fresh
+// allocation not aliasing the suite's original RunConfig pointer.
 func TestBuildMergedConfig_FromInlineBaseline(t *testing.T) {
 	suite := types.EvalSuite{
 		ID:        "s",
@@ -137,8 +129,8 @@ func TestBuildMergedConfig_FromInlineBaseline(t *testing.T) {
 }
 
 // TestBuildMergedConfig_FromFileBaseline asserts the run_config_file
-// path reads the JSON, decodes a RunConfig, and applies overrides
-// identically to the inline path.
+// path reads and decodes a RunConfig and applies overrides identically
+// to the inline path.
 func TestBuildMergedConfig_FromFileBaseline(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")
@@ -177,8 +169,7 @@ func TestBuildMergedConfig_FromFileBaseline(t *testing.T) {
 }
 
 // TestResolveBaseline_None pins the legacy path: a suite with neither a
-// file nor an inline block returns (nil, nil) so the runner skips the
-// --config wire entirely.
+// file nor an inline block returns (nil, nil).
 func TestResolveBaseline_None(t *testing.T) {
 	suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}}
 	baseline, err := resolveBaseline(suite)
@@ -192,8 +183,7 @@ func TestResolveBaseline_None(t *testing.T) {
 
 // TestResolveBaseline_FileErrors covers the failure modes of the file
 // loader: missing path, directory, oversized payload, empty file,
-// unknown JSON fields. Each must surface a non-nil error rather than
-// silently producing a partial baseline.
+// unknown JSON fields.
 func TestResolveBaseline_FileErrors(t *testing.T) {
 	dir := t.TempDir()
 
@@ -244,13 +234,12 @@ func TestResolveBaseline_FileErrors(t *testing.T) {
 			want: "parsing run_config_file",
 		},
 		{
-			// Guards against a regression where a future change could
-			// drop the size cap. The file is one byte over the cap.
+			// One byte over the cap; JSON parseability is irrelevant
+			// since the size guard fires before json.Decode.
 			name: "oversize",
 			setup: func(t *testing.T) string {
 				p := filepath.Join(dir, "oversize.json")
-				// JSON parseability is irrelevant: the size guard fires
-				// before json.Decode runs.
+				// The size guard fires before json.Decode runs.
 				big := bytes.Repeat([]byte("x"), int(maxRunConfigFileBytes)+1)
 				if err := os.WriteFile(p, big, 0o600); err != nil {
 					t.Fatal(err)
@@ -275,15 +264,10 @@ func TestResolveBaseline_FileErrors(t *testing.T) {
 	}
 }
 
-// TestResolveBaseline_RejectsFIFO is the regression guard for the
-// worker-pool DoS vector: a named pipe at run_config_file would block
-// os.ReadFile indefinitely under the old two-syscall Stat+ReadFile
-// shape, deadlocking every worker that hit the path. The
-// IsRegular() check in loadRunConfigFile rejects it before the read
-// blocks.
-//
-// FIFOs are a POSIX construct; the test skips on non-unix platforms
-// (Windows has no equivalent in syscall.Mkfifo).
+// TestResolveBaseline_RejectsFIFO confirms a named pipe at
+// run_config_file is rejected by the IsRegular() check in
+// loadRunConfigFile rather than blocking os.ReadFile indefinitely.
+// FIFOs are a POSIX construct; the test skips on non-unix platforms.
 func TestResolveBaseline_RejectsFIFO(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("FIFOs unsupported on Windows")
@@ -305,11 +289,8 @@ func TestResolveBaseline_RejectsFIFO(t *testing.T) {
 }
 
 // TestResolveBaseline_RejectsBothFileAndInlineBlock pins the
-// mutual-exclusion guard for Go callers. The HCL parser already
-// rejects suites that set both fields, but integration tests and
-// the experiment runner construct EvalSuite directly. The runner
-// must surface a clear error rather than silently preferring the
-// file and discarding the inline block.
+// mutual-exclusion guard for Go callers that construct EvalSuite
+// directly, bypassing the HCL parser's own check.
 func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
 	suite := types.EvalSuite{
 		ID:            "dual",
@@ -330,10 +311,8 @@ func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
 }
 
 // TestMergeOverrides_AllOverlayFields fans the merge contract over
-// every pointer-typed overlay field. Without this, a regression that
-// drops one of ModelRouter / ContextStrategy / EditStrategy / Verifier
-// / MaxTurns from mergeOverrides would not be caught by the existing
-// "Mode + Provider" coverage.
+// every pointer-typed overlay field (ModelRouter, ContextStrategy,
+// EditStrategy, Verifier, MaxTurns).
 func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 	t.Run("ModelRouter", func(t *testing.T) {
 		baseline := baselineRunConfig()
@@ -411,11 +390,9 @@ func TestMergeOverrides_ZeroModeDoesNotOverwrite(t *testing.T) {
 }
 
 // TestBuildMergedConfig_FileBaselineWithTaskOverride covers the
-// combined path: the suite carries a file-based baseline AND the
-// task carries a sparse overlay. The merged config must reflect
-// both — the baseline's provider/timeout and the overlay's
-// MaxTurns. Without this, the file path could drift apart from the
-// inline path silently.
+// combined path: a file-based baseline plus a per-task overlay. The
+// merged config must reflect both the baseline's provider/timeout and
+// the overlay's MaxTurns.
 func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")
@@ -458,12 +435,9 @@ func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 }
 
 // TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent pins the
-// timeout-injection contract introduced for the suite-level inline
-// run_config flow. The HCL grammar does not surface `timeout` (it is
-// runner-owned), so a merged config originating from an inline block
-// arrives with Timeout == nil. ValidateRunConfig requires a positive
-// timeout, so without the injection both dry-run and live-run would
-// false-fail every suite using the inline shape.
+// timeout-injection contract: the HCL grammar does not surface
+// `timeout`, so a merged config from an inline block arrives with
+// Timeout == nil and must get the runner's default injected.
 func TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent(t *testing.T) {
 	baseline := &types.RunConfig{
 		Mode:     "execution",
@@ -487,12 +461,9 @@ func TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestBuildMergedConfig_PreservesExplicitTimeout confirms that a
-// Timeout already pinned by the baseline (e.g. a JSON config loaded
-// via run_config_file) survives the merge unchanged. Injecting the
-// default unconditionally would silently override a JSON baseline's
-// explicit longer timeout — exactly the kind of authoring trap the
-// new RunConfig surface is meant to close.
+// TestBuildMergedConfig_PreservesExplicitTimeout confirms a Timeout
+// already pinned by the baseline survives the merge unchanged rather
+// than being overwritten by the default.
 func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
 	explicit := 900
 	baseline := &types.RunConfig{
@@ -510,12 +481,9 @@ func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
 	}
 }
 
-// TestDryRun_InlineConfigWithoutTimeoutPasses guards against the false-
-// failure regression: a suite with an inline run_config block that
-// does not set `timeout` must still pass dry-run validation. Before
-// the timeout-injection fix, ValidateRunConfig would reject every such
-// suite with "timeout is required" — the most common authoring shape
-// failing dry-run.
+// TestDryRun_InlineConfigWithoutTimeoutPasses asserts a suite with an
+// inline run_config block that omits `timeout` still passes dry-run
+// validation via the timeout-injection contract.
 func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 	baseline := &types.RunConfig{
 		Mode:     "execution",
@@ -541,8 +509,8 @@ func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 }
 
 // TestDryRun_NoBaselineIsNoOp pins the backwards-compat contract: a
-// suite with no run_config block must still dry-run as "pass" for every
-// task, exactly as it did before this chunk.
+// suite with no run_config block must still dry-run as "pass" for
+// every task.
 func TestDryRun_NoBaselineIsNoOp(t *testing.T) {
 	suite := types.EvalSuite{
 		ID: "legacy-suite",
@@ -569,9 +537,8 @@ func TestDryRun_NoBaselineIsNoOp(t *testing.T) {
 }
 
 // TestDryRun_InvalidMergedConfig surfaces a ValidateRunConfig failure as
-// a per-task "error" outcome without aborting siblings. The invalid
-// shape is the canonical read-only-mode invariant called out in
-// CLAUDE.md: planning mode plus a write tool in tools.builtIn.
+// a per-task "error" outcome without aborting siblings: planning mode
+// plus a write tool in tools.builtIn.
 func TestDryRun_InvalidMergedConfig(t *testing.T) {
 	timeout := 300
 	bad := &types.RunConfig{
@@ -595,11 +562,8 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 	if len(result.Tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(result.Tasks))
 	}
-	// Every task in this suite inherits the same broken baseline, so
-	// every task should surface the same validation error rather than
-	// pass. The point of this test is to confirm the per-task wiring is
-	// in place — sibling-isolation is exercised by the per-task overlay
-	// test below.
+	// Every task inherits the same broken baseline, so every task
+	// should surface the same validation error rather than pass.
 	for _, tr := range result.Tasks {
 		if tr.Outcome != "error" {
 			t.Errorf("task %s: outcome = %q, want error", tr.TaskID, tr.Outcome)
@@ -621,10 +585,9 @@ func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 		MaxTurns: 10,
 		Timeout:  &timeout,
 	}
-	// An override that flips the mode to planning without supplying a
-	// compatible tools.builtIn list triggers the "read-only mode requires
-	// an explicit tools.builtIn list" rule. The other task uses no
-	// override so the baseline stays valid.
+	// An override that flips the mode to planning without a compatible
+	// tools.builtIn list triggers the read-only-mode rule; the other
+	// task uses no override so the baseline stays valid.
 	suite := types.EvalSuite{
 		ID:        "mixed-suite",
 		RunConfig: baseline,
@@ -654,13 +617,10 @@ func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 }
 
 // TestRunSuite_NoBaselineUsesLegacyInvocation verifies the
-// backwards-compat invariant from the issue: a suite with no
-// run_config_file / run_config block must invoke the harness with the
-// legacy five flags only — no --config wire, no redacted artifact.
-//
-// The fake harness writes its argv to a sidecar file so the test can
-// inspect what the runner actually passed; the assertion is that
-// "--config" is not among the args.
+// backwards-compat invariant: a suite with no run_config_file /
+// run_config block must invoke the harness with the legacy five flags
+// only — no --config wire, no redacted artifact. The fake harness
+// writes its argv to a sidecar file so the test can inspect it.
 func TestRunSuite_NoBaselineUsesLegacyInvocation(t *testing.T) {
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
@@ -709,21 +669,16 @@ done
 }
 
 // TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact covers the
-// new invocation path: when the suite declares a baseline, the runner
-// must (a) invoke the harness with --config <path> and no shadowing
-// flags (no --mode, no --timeout, no --trace — those land in the
-// merged config or in the per-task tmpdir), (b) write the merged
-// config to that path with TraceEmitter.FilePath set to the runner's
-// trace path, and (c) retain a run_config.redacted.json alongside
-// the trace artifacts.
+// baseline invocation path: the runner must (a) invoke the harness
+// with --config <path> and no shadowing flags, (b) write the merged
+// config with TraceEmitter.FilePath set to the runner's trace path,
+// and (c) retain a run_config.redacted.json alongside the trace
+// artifacts.
 func TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact(t *testing.T) {
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
 	configCapture := filepath.Join(logDir, "config-capture.json")
-	// The fake harness no longer receives --trace on the merged-config
-	// path. Read the trace path out of the merged config instead, so a
-	// successful trace artifact is still produced for parseTraceFile to
-	// consume in runTask.
+	// The fake harness reads the trace path out of the merged config.
 	script := fmt.Sprintf(`#!/bin/sh
 CONFIG=""
 echo "$@" >> %q
@@ -825,9 +780,8 @@ fi
 		t.Errorf("redacted artifact missing redaction marker; data: %q", string(redactedData))
 	}
 
-	// (d) S1: retained redacted config must be mode 0o600 — it carries
-	// operator posture (provider type/model/network allowlists) and
-	// must not be world-readable on shared CI runners.
+	// (d) retained redacted config must be mode 0o600 — it carries
+	// operator posture and must not be world-readable on shared CI runners.
 	info, err := os.Stat(redactedPath)
 	if err != nil {
 		t.Fatalf("stat redacted artifact: %v", err)
@@ -839,9 +793,8 @@ fi
 
 // TestRunSuite_HarnessFailWithTracePreservesVerdict covers the
 // runTask branch where the harness exits non-zero but still leaves a
-// usable trace behind. The runner must consult the judge and return
-// a real outcome (pass/fail) rather than discarding the trace and
-// reporting "error".
+// usable trace: the runner must consult the judge rather than
+// discarding the trace and reporting "error".
 func TestRunSuite_HarnessFailWithTracePreservesVerdict(t *testing.T) {
 	script := `#!/bin/sh
 TRACE=""
@@ -873,22 +826,18 @@ exit 1
 	if len(result.Tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
 	}
-	// Judge looks for a missing file → fail, not error. The trace
-	// was preserved so the outcome reflects the judge's verdict.
+	// Judge rejects the missing file, but the trace was consumed.
 	if result.Tasks[0].Outcome != "fail" {
 		t.Errorf("outcome = %q, want fail (judge rejected, trace consumed)", result.Tasks[0].Outcome)
 	}
 }
 
 // TestRunSuite_CloneRepoFailureSurfacedAsError exercises the
-// runTask repo-clone error path. A nonexistent remote URL makes
-// `git clone` fail quickly and the runner must report the task as
-// "error" without spawning the harness.
+// runTask repo-clone error path: a nonexistent remote URL makes
+// `git clone` fail quickly and the runner must report "error"
+// without spawning the harness.
 func TestRunSuite_CloneRepoFailureSurfacedAsError(t *testing.T) {
-	// git may not be installed in some sandboxed CI environments. If
-	// the binary is missing the test skips — cloneRepo's error path
-	// is still exercised below via the unreachable-remote URL on
-	// systems that do have git.
+	// Skip when git isn't installed; the error path is otherwise unreachable.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
 	}
@@ -952,10 +901,8 @@ exit 2
 	}
 }
 
-// TestRunSuite_HarnessSuccessWithoutTraceErrors covers the
-// parse-trace error path after a clean harness exit. Without this,
-// a harness that exits 0 but emits no trace would silently produce
-// an undefined outcome.
+// TestRunSuite_HarnessSuccessWithoutTraceErrors covers the parse-trace
+// error path after a clean harness exit that emits no trace.
 func TestRunSuite_HarnessSuccessWithoutTraceErrors(t *testing.T) {
 	script := `#!/bin/sh
 exit 0
@@ -996,10 +943,8 @@ func TestBuildMergedConfig_NilBaseline(t *testing.T) {
 }
 
 // TestRunSuite_FailOutcomeOnJudgeReject covers the buildResult
-// fail-outcome branch: the harness succeeds and writes a trace, but
-// the judge's verdict is Passed=false. The outcome must be "fail",
-// not "error" — the harness ran cleanly; the run simply did not
-// meet the suite's criteria.
+// fail-outcome branch: harness success plus Passed=false must yield
+// "fail", not "error".
 func TestRunSuite_FailOutcomeOnJudgeReject(t *testing.T) {
 	script := `#!/bin/sh
 TRACE=""
@@ -1013,8 +958,6 @@ done
 `
 	harness := writeFakeHarness(t, script)
 
-	// file-exists judge with a path that the harness will never
-	// create — the harness ran but the judge rejects.
 	suite := types.EvalSuite{
 		ID: "legacy-fail",
 		Tasks: []types.EvalTask{
@@ -1034,11 +977,9 @@ done
 	}
 }
 
-// TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess covers B6:
-// when the merged RunConfig fails ValidateRunConfig the runner must
-// surface a per-task "error" outcome without launching the harness.
-// The fake harness records every invocation in argLog; the test
-// asserts that file stays empty.
+// TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess asserts that
+// when the merged RunConfig fails ValidateRunConfig, the runner
+// surfaces a per-task "error" outcome without launching the harness.
 func TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess(t *testing.T) {
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
@@ -1049,9 +990,7 @@ echo "$@" >> %q
 
 	timeout := 300
 	// Review mode requires a restrictive permission policy; allow-all
-	// trips the read-only-mode invariant in ValidateRunConfig before
-	// any tools.builtIn check kicks in. The baseline is otherwise
-	// well-formed.
+	// trips the read-only-mode invariant in ValidateRunConfig.
 	bad := &types.RunConfig{
 		Mode:             "review",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"},
@@ -1090,17 +1029,11 @@ echo "$@" >> %q
 	}
 }
 
-// TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets is the
-// belt-and-braces guard for the invariant in CLAUDE.md: the retained
-// run_config.redacted.json must never contain a resolved secret, only
-// references. Today Redact() handles every secret-bearing field on
-// RunConfig; if a future field is added without an accompanying Redact
-// path, this test should catch it via a substring check for plausible
-// secret-shaped values that should not appear in a redacted file.
+// TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets asserts
+// the retained run_config.redacted.json never contains a resolved
+// secret, only references.
 func TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets(t *testing.T) {
-	// The runner no longer passes --trace when --config is in use; the
-	// trace path rides in TraceEmitter.FilePath inside the merged
-	// config. Extract it from the JSON to produce a valid trace.
+	// The fake harness reads the trace path out of the merged config.
 	script := `#!/bin/sh
 CONFIG=""
 while [ $# -gt 0 ]; do
@@ -1145,8 +1078,8 @@ fi
 	if err != nil {
 		t.Fatalf("reading redacted artifact: %v", err)
 	}
-	// The reference must be redacted; the bare secret:// scheme outside
-	// a [REDACTED] context is the failure mode to guard against.
+	// The bare secret:// scheme outside a [REDACTED] context is the
+	// failure mode to guard against.
 	body := string(data)
 	if strings.Contains(body, "secret://ANTHROPIC_API_KEY") {
 		t.Errorf("redacted artifact still contains the original secret reference; data: %q", body)
@@ -1156,13 +1089,9 @@ fi
 	}
 }
 
-// TestWarnIfRawAPIKeyRef pins the defense-in-depth warning: if a raw
-// api_key_ref ever reaches the retain-artifact path (meaning both the
-// parse-time and validate-time gates were bypassed), the warning must
-// fire for every secret-bearing field on the merged config so an
-// operator inspecting the artifact tree sees the bypass. Without this
-// signal, Redact() would quietly rewrite the raw value to the
-// sentinel and the misconfiguration would be invisible.
+// TestWarnIfRawAPIKeyRef pins the defense-in-depth warning: it must
+// fire for every secret-bearing field on the merged config when a raw
+// (non secret://) apiKeyRef reaches the retain-artifact path.
 func TestWarnIfRawAPIKeyRef(t *testing.T) {
 	cfg := &types.RunConfig{
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "sk-ant-raw"},
@@ -1194,9 +1123,8 @@ func TestWarnIfRawAPIKeyRef(t *testing.T) {
 }
 
 // TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent confirms the warning
-// only fires for raw values. A merged config where every apiKeyRef
-// uses the secret:// scheme must produce no stderr output — the warn
-// path is a regression alarm, not a chatty diagnostic.
+// only fires for raw values; an all-secret:// config produces no
+// stderr output.
 func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
 	cfg := &types.RunConfig{
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"},
@@ -1211,9 +1139,8 @@ func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
 }
 
 // captureStderr replaces os.Stderr with a pipe for the duration of fn
-// and returns whatever fn wrote. Closes over the pipe so each invocation
-// is self-contained — concurrent tests must not run this helper in
-// parallel since os.Stderr is process-global.
+// and returns whatever fn wrote. os.Stderr is process-global, so
+// concurrent tests must not run this helper in parallel.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	origStderr := os.Stderr

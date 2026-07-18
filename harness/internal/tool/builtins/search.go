@@ -122,17 +122,12 @@ func (d *ripgrepDetector) detect() bool {
 	return d.present.Load()
 }
 
-// probeRipgrepLocal checks whether `rg` is on PATH and answers --version
-// cleanly. We deliberately probe at the host level (exec.LookPath) rather
-// than through the workspace executor: the rg binary, when present, lives
-// on the host. Container/API executors that lack rg will fall through to
-// the Go-native search path regardless of host state because their
-// CanExec capability path is separate.
+// probeRipgrepLocal checks whether `rg` is on PATH. It probes at the host
+// level (exec.LookPath) rather than through the workspace executor, since the
+// rg binary, when present, lives on the host; executors that lack rg fall
+// through to the Go-native search path regardless of host state.
 func probeRipgrepLocal() bool {
-	// We only want to know whether the binary exists; we do not actually
-	// run it here. exec.LookPath is sufficient and avoids spawning a
-	// process at import time. Callers that want to spawn rg through the
-	// workspace executor do so via the executor.Exec path.
+
 	if _, err := lookPath("rg"); err != nil {
 		return false
 	}
@@ -149,9 +144,7 @@ var lookPath = func(name string) (string, error) {
 // GrepFilesTool returns a tool that searches file contents for a regular
 // expression. It prefers `rg` (ripgrep) when available — both for speed and
 // for its richer ignore-file handling — and falls back to a Go-native
-// implementation when rg is not on PATH. Output is structured as
-// "path:line:match" lines so a future strict-mode pass (#231) can parse it
-// without re-running the search.
+// implementation when rg is not on PATH.
 func GrepFilesTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
 		Name: "grep_files",
@@ -165,8 +158,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			// JSON example with `\\b`, which JSON parsers then decode to
 			// `\b` for the regex engine.
 			"Example: {\"pattern\": \"func ReadFile\\\\b\", \"include\": [\"*.go\"], \"path\": \"harness/internal\"}",
-		// #222 structured example. The `\\b` here matches the runtime description
-		// substring (the Go source double-escaped it once); pinned by
+		// Must stay byte-identical to the description's example; pinned by
 		// TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"pattern": "func ReadFile\\b", "include": ["*.go"], "path": "harness/internal"}`)},
 		InputSchema:       grepFilesSchema,
@@ -213,18 +205,9 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 				return tool.StructuredResult{}, fmt.Errorf("resolve search path: %w", err)
 			}
 
-			// matches is built directly from source data by whichever search
-			// path runs — never re-parsed from rendered text — so a colon in a
-			// path or a matched line can never corrupt or silently drop a
-			// structured match (issue #231). The text rendering is derived from
-			// the same matches afterwards and stays byte-identical to the
-			// historical "path:line:text" format.
 			// Collect one element past maxResults so genuine truncation is
 			// distinguishable from a result count that lands exactly on the
-			// cap: with a probe element, len(matches) > maxResults proves more
-			// matches existed, whereas == maxResults is a clean fit. The probe
-			// is trimmed before serialization so the caller never sees it
-			// (issue #341).
+			// cap; the probe element is trimmed before serialization.
 			probeMax := maxResults + 1
 			var matches []searchMatch
 			gotResult := false
@@ -237,18 +220,15 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 					return tool.StructuredResult{}, rgErr
 				case rgErr != nil:
 					// Executor transport failure (Docker socket timeout,
-					// container restart, etc.) — treat the same as an rg
-					// exit code >= 2 and fall through to the native walker.
-					// A transient transport flake should not be more fatal
-					// than a real rg error.
+					// container restart, etc.) is treated the same as an rg
+					// exit code >= 2: fall through to the native walker rather
+					// than treating a transient flake as fatal.
 					slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
 				case ok:
 					matches = rgMatches
 					gotResult = true
 				}
-				// rg exited with an unexpected error code, or its transport
-				// failed; fall through to the Go-native walker so the
-				// caller still gets an answer.
+
 			}
 			if !gotResult {
 				nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, probeMax)
@@ -362,12 +342,9 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 				return tool.StructuredResult{}, fmt.Errorf("resolve search path: %w", err)
 			}
 
-			// findNative returns the typed path list directly; the text is
-			// derived from it so a path containing a newline-free colon (or any
-			// other char) cannot diverge the two representations (issue #231).
 			// Collect one path past maxResults so a count landing exactly on
 			// the cap is not misreported as truncated; the probe path is
-			// trimmed before serialization (issue #341).
+			// trimmed before serialization.
 			probeMax := maxResults + 1
 			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
 			if err != nil {
@@ -457,10 +434,6 @@ func (t rgJSONText) value() string {
 // reports whether rg produced a usable answer (true) or hit an unexpected error
 // code that warrants falling back to the Go-native walker (false). Error
 // returns are reserved for executor failures that the caller surfaces directly.
-//
-// Reconstructing "path:line:text" from these fields (renderGrepText) is
-// byte-identical to rg's `--no-heading --line-number` text output for the
-// directory-target invocation used here.
 func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
 	var args []string
 	args = append(args, "rg", "--json", "--color", "never",
@@ -494,14 +467,10 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 }
 
 // parseRipgrepJSON walks rg's newline-delimited JSON event stream and collects
-// the "match" events into searchMatch structs, capped at maxResults (callers
-// pass probeMax = userMax+1 so the one-past-the-cap probe element survives here
-// and is detectable by the caller). rg's --max-count is per-file, so a
-// workspace with many files can exceed the global bound; the cap here enforces
-// it. Non-"match" events (begin/end/summary) and
-// any line that does not parse as a JSON object are skipped — rg only emits
-// well-formed objects, so a parse miss is a defensive no-op, never a dropped
-// match for a colon-bearing path.
+// the "match" events into searchMatch structs, capped at maxResults. rg's
+// --max-count is per-file, so a workspace with many files can exceed the
+// global bound; the cap here enforces it. Non-"match" events and lines that
+// fail to parse are skipped.
 func parseRipgrepJSON(stdout string, maxResults int) []searchMatch {
 	var matches []searchMatch
 	for _, line := range strings.Split(stdout, "\n") {
@@ -583,9 +552,7 @@ func grepNative(dir string, re *regexp.Regexp, include, exclude []string, maxRes
 				if relErr != nil {
 					rel = path
 				}
-				// Build the typed match directly; the text rendering is
-				// derived from these fields by renderGrepText, so a colon in
-				// rel or line never confuses path/line/text (issue #231).
+
 				results = append(results, searchMatch{Path: rel, Line: lineNum + 1, Text: line})
 				if len(results) >= maxResults {
 					return errStopWalk
@@ -699,15 +666,10 @@ func globHit(g, base, rel string) bool {
 // doubleStarMatch translates `**` into a regex `.*` over a path-segment-aware
 // matcher. A short helper rather than a dependency on doublestar keeps the
 // behaviour explicit at the call site and avoids pulling another module.
-//
 // Non-wildcard runes are passed through regexp.QuoteMeta so glob patterns
-// containing regex metacharacters ([, ], (, ), +, {, }, |, \, ^, $) translate
-// to a regex that matches them literally. The previous implementation
-// escaped only `.`; any other metacharacter produced either a compile error
-// (silently swallowed, so the filter failed open) or a regex with unintended
-// semantics (capturing groups, quantifiers). Iteration is by rune so
-// multi-byte UTF-8 path segments (e.g. café/**) are not split across the
-// pass-through path.
+// containing regex metacharacters translate to a regex that matches them
+// literally; iteration is by rune so multi-byte UTF-8 path segments are not
+// split across the pass-through path.
 func doubleStarMatch(pattern, path string) bool {
 	var b strings.Builder
 	b.WriteString("^")

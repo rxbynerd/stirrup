@@ -166,11 +166,8 @@ func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	}
 }
 
-// TestRedact_SessionNamePreserved pins that SessionName survives Redact().
-// SessionName is not a secret — it's the operator's chosen label and it
-// must appear in persisted traces so logs and traces can be cross-
-// referenced. If Redact() ever starts stripping SessionName, downstream
-// trace consumers (eval lakehouse, JSONL replay) lose the link.
+// TestRedact_SessionNamePreserved pins that SessionName survives Redact(): it is
+// an operator label, not a secret, and must persist in traces for cross-referencing.
 func TestRedact_SessionNamePreserved(t *testing.T) {
 	rc := RunConfig{
 		SessionName: "nightly-eval",
@@ -190,14 +187,9 @@ func TestRedact_EmptyConfig(t *testing.T) {
 	}
 }
 
-// TestRedact_TraceEmitterHeaders pins that a "secret://" value in a
-// trace-emitter header is rewritten to "secret://[REDACTED]" by Redact()
-// while plaintext values pass through unchanged. Issue #100: when
-// Stirrup ships traces directly to a cloud gateway (Grafana Cloud,
-// Honeycomb, etc.) the auth token rides on the Authorization header. The
-// resolved bearer must never enter a persisted RunTrace, but the secret
-// reference itself shouldn't either — an operator rotating the env var
-// expects no trace of the old reference to remain.
+// TestRedact_TraceEmitterHeaders pins that a "secret://" trace-emitter header value
+// is rewritten to "secret://[REDACTED]" by Redact() while plaintext headers pass
+// through unchanged; the resolved bearer must never reach a persisted trace.
 func TestRedact_TraceEmitterHeaders(t *testing.T) {
 	rc := RunConfig{
 		TraceEmitter: TraceEmitterConfig{
@@ -224,14 +216,8 @@ func TestRedact_TraceEmitterHeaders(t *testing.T) {
 }
 
 // TestRedact_ProviderRetryNotAliased pins that Redact() deep-copies
-// ProviderConfig.Retry on both the top-level Provider and every entry
-// in Providers. The shallow copy `redacted := rc` aliases the Retry
-// pointer; without an explicit deep-copy, a downstream consumer
-// mutating the redacted config's Retry struct would reach back into
-// the live RunConfig. No code mutates Retry today, but every other
-// pointer field touched by Redact() is deep-copied — matching the
-// established pattern closes the aliasing window before Wave 2 lands
-// retry-helper code that could exercise it.
+// ProviderConfig.Retry on both the top-level Provider and every Providers entry,
+// so mutating the redacted config's Retry cannot reach the live one.
 func TestRedact_ProviderRetryNotAliased(t *testing.T) {
 	rc := RunConfig{
 		Provider: ProviderConfig{
@@ -473,10 +459,9 @@ func TestValidateRunConfig_KnownToolsProfilesAccepted(t *testing.T) {
 	}
 }
 
-// TestToolsConfig_ProfileOmittedOnWire pins the issue #234 back-compat
-// guarantee at the wire level: an empty Profile must not emit a "profile"
-// key, so a config written before profiles existed round-trips
-// byte-identically. The positive case confirms the key appears when set.
+// TestToolsConfig_ProfileOmittedOnWire pins that an empty Profile is omitted from
+// the wire (so pre-profile configs round-trip byte-identically), and a set Profile
+// appears on the wire.
 func TestToolsConfig_ProfileOmittedOnWire(t *testing.T) {
 	b, err := json.Marshal(ToolsConfig{BuiltIn: []string{"read_file"}})
 	if err != nil {
@@ -583,7 +568,7 @@ func TestValidateRunConfig_MultipleErrors(t *testing.T) {
 		t.Fatal("expected error for multiple violations")
 	}
 	errStr := err.Error()
-	// Should contain all three errors.
+
 	if !strings.Contains(errStr, "planning") {
 		t.Error("expected error to mention planning mode violation")
 	}
@@ -617,11 +602,8 @@ func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
 	}
 }
 
-// A toolset profile must not loosen the read-only-mode write-tool
-// exclusion. Profile selection presents aliases for tools that are
-// already enabled; it cannot smuggle a write tool past validation, so a
-// read-only mode that lists a write tool is still rejected regardless of
-// the profile. (Issue #234 hard constraint.)
+// A toolset profile must not loosen the read-only-mode write-tool exclusion: a
+// read-only mode that lists a write tool is rejected regardless of profile.
 func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *testing.T) {
 	for _, profile := range []string{"default", "coding-classic"} {
 		t.Run(profile, func(t *testing.T) {
@@ -675,11 +657,9 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ReadOnlyModeAcceptsGitTools proves the #29 invariant
-// that the read-only VCS tools (git_status, git_changed_files, git_diff,
-// git_show) are accepted in every read-only mode, while a config that also
-// lists a write tool is still rejected. The two halves share a fixture so the
-// only difference between accept and reject is the presence of run_command.
+// TestValidateRunConfig_ReadOnlyModeAcceptsGitTools pins that read-only VCS tools
+// (git_status, git_changed_files, git_diff, git_show) are accepted in every
+// read-only mode, while a config that also lists a write tool is still rejected.
 func TestValidateRunConfig_ReadOnlyModeAcceptsGitTools(t *testing.T) {
 	gitTools := []string{"git_status", "git_changed_files", "git_diff", "git_show"}
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
@@ -708,20 +688,16 @@ func TestValidateRunConfig_ReadOnlyModeAcceptsGitTools(t *testing.T) {
 	}
 }
 
-// TestDefaultReadOnlyBuiltInTools_PassesValidation locks in the invariant
-// that DefaultReadOnlyBuiltInTools() is always a valid Tools.BuiltIn list
-// for every read-only mode. Callers (notably the stirrup CLI) rely on
-// this: if someone adds a new mode to readOnlyModes, or adds a new tool
-// to mutatingTools that happens to also live in the default list,
-// this test catches it before ValidateRunConfig starts rejecting every
-// run booted in that mode.
+// TestDefaultReadOnlyBuiltInTools_PassesValidation locks in that
+// DefaultReadOnlyBuiltInTools() is always a valid Tools.BuiltIn list for every
+// read-only mode, so adding a mode or a mutating tool without updating the
+// defaults fails loudly here rather than at runtime.
 func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
 	defaults := DefaultReadOnlyBuiltInTools()
 	if len(defaults) == 0 {
 		t.Fatal("DefaultReadOnlyBuiltInTools returned an empty list")
 	}
 
-	// Sanity: none of the defaults should be a known mutating tool.
 	for _, tool := range defaults {
 		if mutatingTools[tool] {
 			t.Errorf("DefaultReadOnlyBuiltInTools contains mutating tool %q", tool)
@@ -731,10 +707,8 @@ func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
 		}
 	}
 
-	// Validation: the defaults must satisfy ValidateRunConfig for every
-	// mode the validator treats as read-only. Iterate over the actual
-	// readOnlyModes map so adding a new read-only mode without updating
-	// the defaults (or vice versa) fails loudly.
+	// Iterate over the actual readOnlyModes map so adding a new read-only mode
+	// without updating the defaults (or vice versa) fails loudly.
 	for mode := range readOnlyModes {
 		t.Run(mode, func(t *testing.T) {
 			c := validConfig()
@@ -820,12 +794,9 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ContextStrategyMaxTokens is the regression test
-// for #444: a hard floor at the harness's old flat response reserve
-// (64000) would reject exactly the small-context local-model configs
-// the issue is about, so the accepted range is deliberately wide —
-// only structurally-impossible budgets (negative, or too small to hold
-// a system prompt and a single message under any split) are rejected.
+// TestValidateRunConfig_ContextStrategyMaxTokens pins a deliberately wide
+// accepted range so small-context local-model configs aren't rejected by a hard
+// floor; only structurally-impossible budgets are rejected.
 func TestValidateRunConfig_ContextStrategyMaxTokens(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -837,9 +808,8 @@ func TestValidateRunConfig_ContextStrategyMaxTokens(t *testing.T) {
 		{"one token rejected", 1, true},
 		{"just below floor rejected", minContextStrategyMaxTokens - 1, true},
 		{"floor boundary accepted", minContextStrategyMaxTokens, false},
-		// Matches the fixture value used by several harness/cmd/stirrup/cmd
-		// config-plumbing tests that are not exercising a real run — must
-		// stay accepted so this validation does not regress them.
+		// Matches the fixture value used by several harness/cmd/stirrup/cmd config-plumbing
+		// tests that don't exercise a real run; must stay accepted so those don't regress.
 		{"small-context fixture value accepted", 1000, false},
 		{"small local-model window accepted", 32768, false},
 		{"default window accepted", 200000, false},
@@ -880,13 +850,9 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 		t.Fatalf("expected temperature error for value > 2.0, got: %v", err)
 	}
 
-	// Non-finite values must be rejected explicitly. IEEE 754 NaN
-	// compares false against both bounds, so without a finite-number
-	// guard `--temperature=NaN` (strconv.ParseFloat accepts "NaN")
-	// would slip past the range checks and reach the provider. +Inf
-	// is caught by the > maxTemperature comparison today, but the
-	// finite-number guard is the contract — assert it directly so a
-	// later refactor cannot regress it.
+	// Non-finite values must be rejected explicitly: IEEE 754 NaN compares false
+	// against both bounds, so without a finite-number guard "--temperature=NaN"
+	// would slip past the range checks and reach the provider.
 	nan := math.NaN()
 	c.Temperature = &nan
 	err = ValidateRunConfig(c)
@@ -1010,15 +976,10 @@ func TestValidateRunConfig_SessionNameRejectsInvalidUTF8(t *testing.T) {
 }
 
 func TestValidateRunConfig_OpenAIResponsesProvider(t *testing.T) {
-	// The new openai-responses provider type must be accepted by validation.
-	// Before this case existed, callers who configured a Responses adapter
-	// would be rejected at validation time.
+	// The openai-responses provider type must be accepted by validation.
 	//
-	// We pin Tools.BuiltIn to a side-effect-free set so this test stays
-	// focused on provider-type validation; with the default (nil) tool
-	// list every built-in is enabled, which combined with the secret
-	// reference would trigger Rule of Two and obscure the actual
-	// failure mode this test is asserting against.
+	// Tools.BuiltIn is pinned to a side-effect-free set so this test stays focused on
+	// provider-type validation instead of also tripping Rule of Two.
 	c := validConfig()
 	c.Provider = ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
@@ -1322,11 +1283,11 @@ func TestRedact_CredentialConfigPreserved(t *testing.T) {
 		},
 	}
 	redacted := rc.Redact()
-	// APIKeyRef should be redacted
+
 	if redacted.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", redacted.Provider.APIKeyRef)
 	}
-	// Credential config should be preserved (not sensitive)
+	// Not sensitive, so Redact() must leave the credential config untouched.
 	if redacted.Provider.Credential == nil {
 		t.Fatal("Credential should not be nil after redaction")
 	}
@@ -1338,13 +1299,9 @@ func TestRedact_CredentialConfigPreserved(t *testing.T) {
 	}
 }
 
-// TestRedact_AnthropicWIFFieldsPreserved verifies that the four
-// Anthropic federation identifiers ride through Redact() unchanged.
-// Per issue #117 and Anthropic's WIF reference docs, these are
-// non-secret values intended to be safe to commit to source control or
-// bake into a container image; redacting them would needlessly hide
-// information operators need to debug a federation failure from a
-// stored trace.
+// TestRedact_AnthropicWIFFieldsPreserved verifies the four Anthropic federation
+// identifiers ride through Redact() unchanged: they are non-secret values safe to
+// commit to source control, and redacting them would hide debugging information.
 func TestRedact_AnthropicWIFFieldsPreserved(t *testing.T) {
 	rc := RunConfig{
 		Provider: ProviderConfig{
@@ -1645,10 +1602,8 @@ func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
 			errSubstr: "workspaceId is only valid for credential type \"anthropic-wif\"",
 		},
 		{
-			// Cross-provider validation (issue #117 N4 / important):
-			// pairing credential.type=anthropic-wif with a non-Anthropic
-			// provider type would result in stirrup exchanging a WIF
-			// access token (sk-ant-oat01-...) and handing it to a
+			// Cross-provider validation: pairing credential.type=anthropic-wif with a
+			// non-Anthropic provider would exchange a WIF access token and hand it to a
 			// third-party endpoint. Fail closed at config-load time.
 			name: "anthropic-wif paired with openai-compatible rejected",
 			mutate: func(c *RunConfig) {
@@ -1948,7 +1903,7 @@ func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
 	}
 }
 
-// --- ValidateRunConfig: APIKeyHeader / QueryParams (issue #48) ---
+// --- ValidateRunConfig: APIKeyHeader / QueryParams ---
 
 func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
 	cases := []string{"", "api-key", "x-api-key", "Ocp-Apim-Subscription-Key", "Authorization"}
@@ -1981,12 +1936,10 @@ func TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_RuntimeSetIsPerType pins the per-Type runtime
-// split: a name valid for one executor must be rejected on the other when
-// it is not in that executor's closed set. The trap this guards is naively
-// widening a shared map, which would let "container" accept "gvisor" (a
-// k8s RuntimeClass name, not a Docker OCI runtime) or let "k8s" accept
-// "runsc" (the container name for gVisor).
+// TestValidateRunConfig_RuntimeSetIsPerType pins that a runtime name valid for one
+// executor is rejected on the other: naively sharing the closed set would let
+// "container" accept "gvisor" (a k8s RuntimeClass, not a Docker OCI runtime) or
+// "k8s" accept "runsc" (the container name for gVisor).
 func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -2157,13 +2110,9 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_K8sSandboxExecutorFields exercises the
-// type-"k8s-sandbox" arm. The Agent Sandbox executor reuses the entire K8s*
-// config surface, so the same cross-field requirements as "k8s" apply (Image
-// and K8sNamespace required, Workspace rejected, Network required, the
-// egress-proxy/allowlist coupling) — but its runtime set is narrower: gVisor
-// is the only admissible RuntimeClass, so "gvisor" (or empty) is accepted and
-// every other value is rejected with the k8s-sandbox-specific message.
+// TestValidateRunConfig_K8sSandboxExecutorFields exercises the type="k8s-sandbox"
+// arm, which reuses the K8s* cross-field requirements (Image, K8sNamespace,
+// Network, egress-proxy coupling) but narrows the runtime set to gVisor only.
 func TestValidateRunConfig_K8sSandboxExecutorFields(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -2546,11 +2495,9 @@ func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_PolicyFile_PathTraversalRejected covers M6:
-// a forged policyFile containing ".." must be rejected before any
-// os.ReadFile happens. Without this, a malicious control plane could
-// trick the harness into reading host files outside the workspace
-// and leaking partial content via Cedar parser error messages.
+// TestValidateRunConfig_PolicyFile_PathTraversalRejected pins that a forged
+// policyFile containing ".." is rejected before any os.ReadFile happens, so a
+// malicious control plane cannot read host files outside the workspace.
 func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
 	cases := []string{
 		"../../etc/passwd",
@@ -2573,12 +2520,9 @@ func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_PolicyFile_RelativePathAllowed confirms that
-// relative paths without traversal segments still validate. The shipped
-// example RunConfig uses one (examples/policies/destructive-shell.cedar)
-// and we don't want to break it for operators who run against the repo
-// checkout. M6's stricter "absolute-only" alternative was rejected for
-// this reason.
+// TestValidateRunConfig_PolicyFile_RelativePathAllowed confirms relative paths
+// without traversal segments still validate — the shipped example RunConfig uses
+// one (examples/policies/destructive-shell.cedar).
 func TestValidateRunConfig_PolicyFile_RelativePathAllowed(t *testing.T) {
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
@@ -2591,10 +2535,9 @@ func TestValidateRunConfig_PolicyFile_RelativePathAllowed(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError covers
-// S7: a policyFile set with a non-policy-engine type is silently
-// dropped today, leaving the operator believing they have applied a
-// Cedar policy. Reject the misconfiguration loudly.
+// TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError pins that a
+// policyFile set with a non-policy-engine type is rejected rather than silently
+// dropped, which would leave an operator believing a Cedar policy applies.
 func TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError(t *testing.T) {
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
@@ -2610,10 +2553,9 @@ func TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError(t *testing.T) 
 	}
 }
 
-// TestValidateRunConfig_RuntimeRequiresContainerExecutor covers S8:
-// executor.runtime only changes behaviour for the container executor.
-// A "local" run that sets runtime: "runsc" looks like gVisor isolation
-// is enabled but the field is silently ignored — fail loudly instead.
+// TestValidateRunConfig_RuntimeRequiresContainerExecutor pins that executor.runtime
+// is rejected outside the container executor rather than silently ignored — a
+// "local" run with runtime: "runsc" only looks isolated.
 func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
 	cases := []string{"local", "api"}
 	for _, execType := range cases {
@@ -2751,13 +2693,9 @@ func TestValidateRunConfig_CodeScannerExplicitOverridesDefault(t *testing.T) {
 
 // --- EditStrategy default ---
 
-// TestValidateRunConfig_EditStrategyDefaultsToMulti pins the
-// single-normalization-point contract for the edit strategy: a
-// directly-embedded RunConfig with an empty EditStrategy.Type lands on
-// "multi" after validation, matching the CLI and gRPC entrypoints. Prior
-// to this default, the same caller would have reached the factory with
-// an empty Type and silently received the whole-file strategy, which
-// exposes a different write-tool surface than the CLI default.
+// TestValidateRunConfig_EditStrategyDefaultsToMulti pins that a directly-embedded
+// RunConfig with an empty EditStrategy.Type lands on "multi" after validation,
+// matching the CLI and gRPC entrypoints.
 func TestValidateRunConfig_EditStrategyDefaultsToMulti(t *testing.T) {
 	c := validConfig() // EditStrategy.Type deliberately left empty
 	if err := ValidateRunConfig(c); err != nil {
@@ -2786,18 +2724,13 @@ func TestValidateRunConfig_EditStrategyExplicitPreserved(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_FuzzyThresholdBounds pins the previously-panicking
-// config (fuzzyThreshold <= 0) to a validation error instead of a runtime
-// crash. harness/internal/edit/udiff.go treats fuzzyThreshold as a
-// similarity ratio: applyHunk's fuzzy-match fallback compares the best
-// found similarity (0.0 when nothing matches, alongside a sentinel
-// position of -1) against the threshold with `>=`. A threshold <= 0 makes
-// that comparison trivially true even when no position actually matched,
-// so the strategy proceeds to splice at index -1 and panics. Legal range
-// is (0, 1]: the code's own doc comments describe the ratio as 0.0-1.0,
-// and 1.0 (exact matches only) is a legitimate, if extreme, configuration.
+// TestValidateRunConfig_FuzzyThresholdBounds pins fuzzyThreshold <= 0 to a
+// validation error instead of a runtime panic: harness/internal/edit/udiff.go's
+// fuzzy-match fallback compares similarity to the threshold with `>=`, so a
+// threshold <= 0 makes that comparison trivially true even with no match, and the
+// strategy splices at a sentinel index of -1. Legal range is (0, 1].
 func TestValidateRunConfig_FuzzyThresholdBounds(t *testing.T) {
-	// The exact previously-panicking shape from the defect report.
+
 	c := validConfig()
 	zero := 0.0
 	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &zero}
@@ -2852,21 +2785,11 @@ func TestValidateRunConfig_FuzzyThresholdBounds(t *testing.T) {
 // pollute the table-driven tests below.
 func boolRef(b bool) *bool { return &b }
 
-// ruleOfTwoConfig builds a RunConfig that exercises specific
-// combinations of the three Rule-of-Two flags. Each leg can be
-// turned on independently:
-//
-//   - holdsUntrusted is enabled by populating DynamicContext.
-//   - holdsSensitive is enabled via the explicit RunConfig.SensitiveData
-//     declaration. Operational secret references (provider/VCS/MCP API
-//     keys) deliberately do NOT trip this leg — see ruleOfTwoSensitiveData
-//     for rationale.
-//   - canCommExternal is enabled by setting a non-"none" NetworkConfig
-//     (so we don't have to drag in the Tools.BuiltIn semantics, which
-//     are exercised separately in the dedicated table-driven test).
-//
-// The default tool list is constrained so isolated leg-flips don't
-// trigger extra capabilities by accident.
+// ruleOfTwoConfig builds a RunConfig that exercises each Rule-of-Two leg
+// independently: holdsUntrusted via DynamicContext, holdsSensitive via
+// RunConfig.SensitiveData (operational secret refs deliberately do not trip this
+// leg), and canCommExternal via a non-"none" NetworkConfig. The default tool list
+// is constrained so isolated leg-flips don't trigger extra capabilities.
 func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunConfig {
 	timeout := 60
 	c := &RunConfig{
@@ -2990,11 +2913,10 @@ func TestValidateRunConfig_QueryParams_RejectsEmptyKey(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced
-// pins the design choice that shape validation is universal: even if the
-// fields will be ignored at runtime (because the provider is anthropic),
-// keeping a malformed value in a stale config is a footgun. Forward
-// compatibility means "ignore at runtime", not "skip validation".
+// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced pins that
+// shape validation is universal: even fields the runtime will ignore (non-OpenAI
+// provider) must still be well-formed. Forward compatibility means "ignore at
+// runtime", not "skip validation".
 func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced(t *testing.T) {
 	c := validConfig() // Provider.Type == "anthropic"
 	c.Provider.APIKeyHeader = "bad: header"
@@ -3126,19 +3048,10 @@ func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger pins
-// the deliberate semantic that operational secret references — provider
-// API keys, VCS backend keys, MCP server keys, including SSM-backed ones
-// — do NOT trip the sensitive-data leg of the Rule of Two. The harness
-// keeps these out of the agent's reach (run_command env-allowlist, log
-// scrubbing, SecretStore deferred resolution), so they are not "data the
-// agent has access to" in the rule's sense. The opposite would degrade
-// the rule to "rule of one" because every working config has a provider
-// API key.
-//
-// This test combines untrusted-input (DynamicContext) + external-comm
-// (web_fetch) with a worst-case secret reference; the run is expected
-// to validate cleanly because no sensitive-data signal is set.
+// TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger pins that
+// operational secret references (provider/VCS/MCP API keys) do not trip the
+// sensitive-data leg: the harness keeps them out of the agent's reach, so they
+// aren't "data the agent has access to" in the rule's sense.
 func TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger(t *testing.T) {
 	timeout := 60
 	cases := []struct {
@@ -3220,13 +3133,10 @@ func TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers(t *tes
 	}
 }
 
-// TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive pins the
-// out-of-the-box behavior: with neither RunConfig.SensitiveData nor any
-// sensitive DynamicContext entry, the sensitive-data leg is false and
-// a config with untrusted + external (which is what a bare
-// `stirrup harness --prompt "x"` produces) validates cleanly. This is
-// the regression guard for the original issue: PR #51's heuristic was
-// always tripping sensitive-data on a bare invocation.
+// TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive pins the out-of-the-box
+// behavior: with no SensitiveData flag and no sensitive DynamicContext entry, a
+// config with untrusted + external input (a bare `stirrup harness --prompt "x"`)
+// validates cleanly.
 func TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive(t *testing.T) {
 	timeout := 60
 	c := &RunConfig{
@@ -3243,11 +3153,9 @@ func TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn verifies
-// the issue brief's "tool-enabled checks must reflect the actual
-// tools.builtIn list". A run-command-disabled config must not be
-// flagged as canCommunicateExternally on that leg alone — even though
-// "all tools enabled" (empty list) would.
+// TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn pins that
+// tool-enabled checks reflect the actual tools.builtIn list: a run-command-disabled
+// config is not flagged as canCommunicateExternally on that leg alone.
 func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T) {
 	timeout := 60
 	c := &RunConfig{
@@ -3365,12 +3273,10 @@ func TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField(t *testing.
 	})
 }
 
-// TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField
-// pins the dead-config rejection from the Wave-4 review: onDetect "abort"
-// fires only on a runtime latch transition, but a statically-sensitive run
-// pre-trips the latch before the first scan, so no transition ever fires
-// and the abort silently never happens. The validator rejects the
-// combination and directs the operator to block-external.
+// TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField pins
+// the dead-config rejection: onDetect "abort" fires only on a runtime latch
+// transition, but a statically-sensitive run pre-trips the latch before the first
+// scan, so the abort would silently never happen.
 func TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField(t *testing.T) {
 	t.Run("abort with sensitiveData rejected", func(t *testing.T) {
 		c := validConfig()
@@ -3831,9 +3737,8 @@ func TestValidateGuardRailConfig(t *testing.T) {
 	}
 }
 
-// geminiValidConfig is the smallest RunConfig that exercises a healthy
-// gemini provider — wave-1 baseline used by the negative-path tests
-// below to swap one field at a time.
+// geminiValidConfig is the smallest RunConfig that exercises a healthy gemini
+// provider, used by the negative-path tests below to swap one field at a time.
 func geminiValidConfig() *RunConfig {
 	c := validConfig()
 	c.Provider = ProviderConfig{
@@ -4210,16 +4115,10 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_AzureWorkloadIdentity covers the Azure WIF
-// credential type's field-level rules (UUID format on tenant/client,
-// required token source, optional but HTTPS-only scope) and the two
-// cross-field invariants (apiKeyRef and apiKeyHeader="api-key" are
-// mutually exclusive with the WIF type because the bearer is fetched
-// via OAuth2 token-exchange and must travel on Authorization: Bearer).
-//
-// The cases mirror the structural shape of the GCP WIF table-driven
-// tests above so a reviewer reading the two side by side can see the
-// federation paths' invariants line up.
+// TestValidateRunConfig_AzureWorkloadIdentity covers the Azure WIF credential
+// type's field-level rules (UUID tenant/client, required token source, HTTPS-only
+// scope) and the cross-field invariants: apiKeyRef and apiKeyHeader="api-key" are
+// mutually exclusive with WIF since the bearer travels on Authorization: Bearer.
 func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 	const (
 		validTenant = "11111111-2222-3333-4444-555555555555"
@@ -4565,13 +4464,9 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_AzureWIFIncompatibleProvider is a focused
-// regression check on the provider-type guard: a credential block of
-// type azure-workload-identity must not pair with non-OpenAI provider
-// types. The error message must name both the failing credential type
-// and the accepted provider types so an operator can grep for the
-// fix path. Defence-in-depth alongside the in-table coverage in
-// TestValidateRunConfig_AzureWorkloadIdentity.
+// TestValidateRunConfig_AzureWIFIncompatibleProvider is a focused regression
+// check: a credential block of type azure-workload-identity must not pair with a
+// non-OpenAI provider type, and the error must name both.
 func TestValidateRunConfig_AzureWIFIncompatibleProvider(t *testing.T) {
 	c := validConfig()
 	c.Provider = ProviderConfig{
@@ -4605,13 +4500,10 @@ func TestValidateRunConfig_AzureWIFIncompatibleProvider(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_GeminiModelNameWithSlash verifies B5: a Vertex
-// model name containing a slash (or other URL-reserved bytes) is
-// rejected at validation time. The adapter url.PathEscape's the name
-// at the request-construction layer, but a model identifier with
-// slashes is almost always a copy-paste error or malicious input —
-// surface it loudly rather than letting a percent-encoded path land at
-// a real (but unintended) Vertex endpoint.
+// TestValidateRunConfig_GeminiModelNameWithSlash pins that a Vertex model name
+// containing a slash is rejected at validation time — the adapter's
+// url.PathEscape would otherwise let a malformed identifier reach a real but
+// unintended Vertex endpoint.
 func TestValidateRunConfig_GeminiModelNameWithSlash(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -4960,20 +4852,11 @@ func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins the
-// MF-2 invariant: gRPC OTLP exporter paths in
-// harness/internal/trace/otel.go and observability/metrics.go
-// unconditionally call WithInsecure(), so any bearer/Basic credential
-// supplied via Headers would be transmitted in plaintext. The
-// validator must reject the combination at config-load time —
-// catching it here means an operator never even attempts to ship
-// credentials over an insecure gRPC channel.
-//
-// Empty Protocol defaults to gRPC at exporter construction, so the
-// rejection covers both `""` and `"grpc"`. The accept cases (gRPC
-// with empty headers, http/protobuf with non-empty headers) are
-// covered as subtests so a future regression that overzealously
-// rejects them would be caught.
+// TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins that gRPC OTLP exporter
+// paths unconditionally call WithInsecure(), so a bearer/Basic credential in
+// Headers would transmit in plaintext; the validator rejects the combination at
+// config-load time. Empty Protocol defaults to gRPC, so the rejection covers both
+// `""` and `"grpc"`.
 func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 	t.Run("empty protocol with headers rejected", func(t *testing.T) {
 		c := validConfig()
@@ -5028,13 +4911,10 @@ func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 	})
 }
 
-// TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected pins the MF-6
-// hardening: a header name containing CRLF, or a value containing CRLF,
-// must be rejected at config-load. Go 1.26's net/http panics on CRLF in
-// header values; surfacing the misuse at validation time turns a
-// process-crash into an "invalid config" error message. Mirrors the
-// CRLF rejection on apiKeyHeader / queryParams in
-// validateOpenAIAuthFields (runconfig.go:1862-1887).
+// TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected pins that a header name
+// or value containing CRLF is rejected at config-load: Go's net/http panics on
+// CRLF in header values, so surfacing the misuse here turns a process crash into
+// a config error.
 func TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected(t *testing.T) {
 	t.Run("CR in header name rejected", func(t *testing.T) {
 		c := validConfig()
@@ -5215,15 +5095,11 @@ func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T
 	}
 }
 
-// TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated pins
-// the UX behaviour for the asymmetric case where the caller supplies
-// maxDelayMs but leaves initialDelayMs at the JSON-omitempty zero.
-// Defaulting fills initialDelayMs with 500 before the cross-field
-// invariant runs, and historically the resulting error read
-// "initialDelayMs (500) must be <= maxDelayMs (100)" — naming a value
-// the caller never wrote. The "(default)" annotation makes it clear
-// where the offending value came from so the operator can either
-// raise maxDelayMs or pin a smaller initialDelayMs explicitly.
+// TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated pins the UX
+// for the asymmetric case where the caller sets maxDelayMs but leaves
+// initialDelayMs at zero: the defaulter fills initialDelayMs to 500 before the
+// cross-field check runs, so the error must annotate it as "(default)" rather
+// than naming a value the caller never wrote.
 func TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated(t *testing.T) {
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{
@@ -5269,14 +5145,9 @@ func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.
 	}
 }
 
-// TestValidateRunConfig_ProviderRetryNegativeMaxAttempts pins that a
-// negative MaxAttempts (e.g. {"maxAttempts": -1} in JSON) is rejected.
-// The defaulter only fills on `== 0`, so a negative value reaches the
-// validator unchanged. Without this test, a future inversion of the
-// `< 0` guard on InitialDelayMs to `<= 0`, or a parallel guard added
-// to the range check below, could pass undetected — and once Wave 2
-// casts these fields to time.Duration, a negative value would silently
-// flip retry semantics.
+// TestValidateRunConfig_ProviderRetryNegativeMaxAttempts pins that a negative
+// MaxAttempts is rejected: the defaulter only fills on `== 0`, so a negative
+// value reaches the validator unchanged.
 func TestValidateRunConfig_ProviderRetryNegativeMaxAttempts(t *testing.T) {
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: -1}
@@ -5290,10 +5161,8 @@ func TestValidateRunConfig_ProviderRetryNegativeMaxAttempts(t *testing.T) {
 }
 
 // TestValidateRunConfig_ProviderRetryNegativeInitialDelay pins the
-// `cfg.InitialDelayMs < 0` branch. The defaulter only fills the field
-// when it is exactly zero, so an explicit `-1` passes through to
-// validation. See the docstring on the MaxAttempts test above for the
-// Wave-2 regression class this prevents.
+// `cfg.InitialDelayMs < 0` branch: the defaulter only fills the field when it is
+// exactly zero, so an explicit -1 passes through to validation.
 func TestValidateRunConfig_ProviderRetryNegativeInitialDelay(t *testing.T) {
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{InitialDelayMs: -1}
@@ -5336,12 +5205,9 @@ func TestValidateRunConfig_ProviderRetryNegativeWallClockBudget(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay pins
-// the strict-less-than boundary of the cross-field invariant. Equality
-// is intentionally valid — a single attempt is allowed to consume the
-// entire wall-clock budget on its backoff — and tightening the check to
-// `<=` would reject a valid operator config at runtime. Pin equality as
-// a passing case so the regression is caught at unit-test time.
+// TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay pins the
+// strict-less-than boundary: equality is intentionally valid, since a single
+// attempt may consume the entire wall-clock budget on its backoff.
 func TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay(t *testing.T) {
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{
@@ -5353,15 +5219,10 @@ func TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay(t *testing
 	}
 }
 
-// TestValidateProviderRetryConfig_NilIsNoop exercises the `cfg == nil`
-// guard at the top of validateProviderRetryConfig directly. The public
-// ValidateRunConfig path always runs applyProviderRetryDefaults first,
-// which allocates a non-nil ProviderRetryConfig before validation, so
-// the nil guard is structurally unreachable through the public API.
-// Without this direct call, the branch shows statement count=0 in the
-// coverage profile and a future refactor that bypasses the defaulter
-// would lose the safety net silently. Brings validateProviderRetryConfig
-// to 100% coverage.
+// TestValidateProviderRetryConfig_NilIsNoop exercises the `cfg == nil` guard
+// directly. The public ValidateRunConfig path always runs
+// applyProviderRetryDefaults first, which allocates a non-nil config, so the nil
+// guard is structurally unreachable through the public API.
 func TestValidateProviderRetryConfig_NilIsNoop(t *testing.T) {
 	var errs []string
 	validateProviderRetryConfig("provider.retry", nil, providerRetryDefaulted{}, &errs)
@@ -5371,13 +5232,8 @@ func TestValidateProviderRetryConfig_NilIsNoop(t *testing.T) {
 }
 
 // TestValidateRunConfig_ProviderRetryNamedProviderRejected pins the
-// "providers[<name>].retry" path string used in error messages for the
-// named-provider rejection branch. The happy path is covered by
-// TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently;
-// without this negative-path test, a refactor of the
-// fmt.Sprintf("providers[%s]", name) format string (or a typo in the
-// ".retry" suffix) would silently regress the operator-facing
-// diagnostics.
+// "providers[<name>].retry" path string used in the named-provider rejection
+// error, so a refactor of the format string can't silently regress it.
 func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
@@ -5400,14 +5256,10 @@ func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock pins
-// the nil-allocation branch of defaultProviderRetry for an entry in
-// the Providers map. The existing
-// TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently
-// supplies a partial (non-nil) ProviderRetryConfig, exercising only
-// the "fill missing fields" branches. A refactor that split the
-// nil-allocation path by call site (top-level vs map entry) would not
-// be caught without this test.
+// TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock pins the
+// nil-allocation branch of defaultProviderRetry for a Providers map entry,
+// distinct from the partial-block "fill missing fields" branches covered
+// elsewhere.
 func TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock(t *testing.T) {
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
@@ -5522,9 +5374,9 @@ func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected pins the
-// M3 fix: traceEmitter.objectPrefix must reject ".." segments so an
-// operator-supplied prefix cannot rewrite the produced GCS object path.
+// TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected pins that
+// traceEmitter.objectPrefix rejects ".." segments so it cannot rewrite the
+// produced GCS object path.
 func TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected(t *testing.T) {
 	cases := []string{
 		"../escape/",
@@ -5551,11 +5403,9 @@ func TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected(t *testing.T)
 	}
 }
 
-// TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised
-// pins S3 option A: a missing trailing slash on objectPrefix is
-// normalised in place by the validator so gcsObjectName produces a
-// well-formed object path. Rejecting would be more pedantic but the
-// api-design reviewer recommended ergonomics here.
+// TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised pins
+// that a missing trailing slash on objectPrefix is normalised in place so
+// gcsObjectName produces a well-formed object path.
 func TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised(t *testing.T) {
 	cases := []struct {
 		name string
@@ -5585,10 +5435,9 @@ func TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised(t *t
 	}
 }
 
-// TestValidateRunConfig_RunID_PatternEnforced pins the M3 fix: RunID is
-// interpolated verbatim into the gcs trace emitter object name, so any
-// slash, control byte, or path-traversal segment must be rejected at
-// config-load time rather than reaching the GCS REST API.
+// TestValidateRunConfig_RunID_PatternEnforced pins that RunID, interpolated
+// verbatim into the gcs trace emitter object name, rejects any slash, control
+// byte, or path-traversal segment at config-load time.
 func TestValidateRunConfig_RunID_PatternEnforced(t *testing.T) {
 	t.Run("slash rejected", func(t *testing.T) {
 		c := validConfig()
@@ -5692,12 +5541,9 @@ func TestValidateRunConfig_ResultSink_GCPPubsubReserved(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ResultSink_BarePubsubRejected pins S1's
-// discriminator rename: the bare "pubsub" string is no longer in
-// validResultSinkTypes, so an operator who somehow ships it gets the
-// unsupported-type error rather than the reserved-but-unimplemented
-// path. No deprecation cycle is needed because "pubsub" has never
-// shipped in a released binary.
+// TestValidateRunConfig_ResultSink_BarePubsubRejected pins that the bare
+// "pubsub" string is not in validResultSinkTypes; it has never shipped in a
+// released binary so no deprecation cycle is needed.
 func TestValidateRunConfig_ResultSink_BarePubsubRejected(t *testing.T) {
 	c := validConfig()
 	c.ResultSink = &ResultSinkConfig{Type: "pubsub"}
@@ -5710,10 +5556,9 @@ func TestValidateRunConfig_ResultSink_BarePubsubRejected(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub pins S2:
-// resultSink.topic is meaningful only for the gcp-pubsub adapter, so
-// carrying it on a stdout-json sink fails loudly rather than being
-// silently ignored.
+// TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub pins that
+// resultSink.topic is meaningful only for the gcp-pubsub adapter; carrying it on
+// a stdout-json sink fails loudly rather than being silently ignored.
 func TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub(t *testing.T) {
 	t.Run("topic on stdout-json", func(t *testing.T) {
 		c := validConfig()
@@ -5760,12 +5605,10 @@ func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes pins
-// issue #463's validation: zero (the "use the default" sentinel) and
-// any positive override pass, a negative value is rejected, and —
-// unlike Topic/Attributes — the field is accepted on every implemented
-// sink type because it bounds the RunResult field itself rather than a
-// per-adapter wire detail.
+// TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes pins that zero (the
+// "use the default" sentinel) and any positive override pass, a negative value
+// is rejected, and — unlike Topic/Attributes — the field is accepted on every
+// implemented sink type since it bounds the RunResult field itself.
 func TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes(t *testing.T) {
 	t.Run("zero is the default sentinel and passes", func(t *testing.T) {
 		c := validConfig()
@@ -5904,12 +5747,10 @@ func TestRedact_ResultSinkAttributes(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_BedrockModelIDShape pins the fail-fast guard
-// added for #65. The CLI's default --model is an Anthropic-API alias
-// ("claude-sonnet-4-6") that Bedrock rejects only after IAM/SigV4
-// setup and a network round-trip; the validator catches the shape
-// before any provider call and points the operator at the
-// inference-profile path.
+// TestValidateRunConfig_BedrockModelIDShape pins the fail-fast guard: the CLI's
+// default --model is an Anthropic-API alias that Bedrock rejects only after
+// IAM/SigV4 setup and a network round-trip, so the validator catches the shape
+// before any provider call.
 func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 	t.Run("valid_model_ids", func(t *testing.T) {
 		cases := []string{
@@ -6036,13 +5877,11 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 	})
 }
 
-// TestValidateRunConfig_ProviderModelLabelBound pins the cardinality
-// guard from #310: the router-resolved model string rides on the
-// provider.model OTel metric label, so for anthropic, openai-compatible,
-// and openai-responses it must match modelLabelPattern
-// (^[A-Za-z0-9./_-]{1,64}$), which allows forward slashes for
-// OpenRouter-style "provider/model" naming. #304 hardened the
-// model-controlled tool.name label; this is the operator-controlled sibling.
+// TestValidateRunConfig_ProviderModelLabelBound pins the cardinality guard: the
+// router-resolved model string rides on the provider.model OTel metric label, so
+// for anthropic, openai-compatible, and openai-responses it must match
+// modelLabelPattern (^[A-Za-z0-9./_-]{1,64}$), which allows forward slashes for
+// OpenRouter-style "provider/model" naming.
 func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 	// A 65-char model string overruns the 64-char label cap.
 	tooLong := strings.Repeat("a", 65)
@@ -6259,11 +6098,10 @@ func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange pins the
-// MaxRetries bound (#230): values outside [1, MaxToolChoiceEscalationMaxRetries]
-// are rejected with the "0 (use default)" sentinel called out, mirroring
-// the ToolDispatch bound. The check fires regardless of Enabled so a
-// disabled config carrying a bad value still fails loudly.
+// TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange pins the MaxRetries
+// bound: values outside [1, MaxToolChoiceEscalationMaxRetries] are rejected with
+// the "0 (use default)" sentinel called out. The check fires regardless of
+// Enabled so a disabled config carrying a bad value still fails loudly.
 func TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange(t *testing.T) {
 	for _, n := range []int{-1, MaxToolChoiceEscalationMaxRetries + 1, 9_000} {
 		t.Run(fmt.Sprintf("max_retries=%d", n), func(t *testing.T) {
@@ -6583,9 +6421,9 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNilApplyDefault(t *testing.T) {
 }
 
 func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWhenDisabled(t *testing.T) {
-	// The default applies only to Enabled=true configs; a disabled batch
-	// block keeps MaxWaitSeconds nil so a phase-2 consumer can still
-	// distinguish "operator did not set this" from "default applied".
+	// The default applies only to Enabled=true configs; a disabled batch block keeps
+	// MaxWaitSeconds nil so callers can still distinguish "operator did not set
+	// this" from "default applied".
 	c := batchValidConfig()
 	c.Provider.Batch = &BatchProviderConfig{Enabled: false}
 	if err := ValidateRunConfig(c); err != nil {
@@ -6597,16 +6435,12 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWhenDisabled(t *testi
 }
 
 func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
-	// Route slog through a buffer so we can assert the WARN line emitted
-	// by validateBatchConfig appears for maxTurns above the threshold
-	// and is absent at or below it. Pattern mirrors otel_http_test.go.
+	// Route slog through a buffer so we can assert the WARN line emitted by
+	// validateBatchConfig appears above the threshold and is absent at or below it.
 	//
-	// The assertion deliberately pins the static message + structured
-	// attrs rather than substring-matching a formatted hours figure.
-	// validateBatchConfig moved to a static slog.Warn message during
-	// the phase-1 remediation so log consumers can parse the threshold
-	// and max-hours values from structured fields instead of having to
-	// re-multiply maxTurns * 24 from a free-text string.
+	// The assertion pins the static message + structured attrs rather than
+	// substring-matching a formatted hours figure, so consumers can parse the
+	// threshold and max-hours values from structured fields.
 	const wantMsg = "batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency"
 	for _, tc := range []struct {
 		name     string
@@ -6681,14 +6515,9 @@ func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_Batch_ProvidersMapRejected pins the phase-1
-// review fix for the silent-accept gap: ValidateRunConfig now rejects
-// any non-nil Batch on a named providers map entry. Batch is a
-// top-level-only concept in v1, but the validator previously parsed
-// the field on map entries, stored it, and silently ignored it at
-// runtime. The strict rejection (any non-nil, not just Enabled=true)
-// matches the project's "clean is preferred" pre-1.0 posture and the
-// reviewer convergence on a hard error.
+// TestValidateRunConfig_Batch_ProvidersMapRejected pins that ValidateRunConfig
+// rejects any non-nil Batch on a named providers map entry: Batch is a
+// top-level-only concept in v1 and is otherwise silently ignored at runtime.
 func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 	t.Run("enabled_batch_on_named_entry_fails", func(t *testing.T) {
 		c := batchValidConfig()
@@ -6730,12 +6559,9 @@ func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 	})
 }
 
-// TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError
-// pins the phase-1 fix for the spurious double-error when batch is
-// enabled but the provider type is empty. Before the fix the operator
-// got both "provider type is required" (correct) and "batch is not
-// supported for provider type \"\"" (misleading — the root cause is
-// the missing type, not batch compatibility).
+// TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError pins that
+// when batch is enabled but the provider type is empty, only the "provider type
+// is required" error surfaces, not also a misleading batch-compatibility error.
 func TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError(t *testing.T) {
 	c := batchValidConfig()
 	c.Provider.Type = ""
@@ -6752,15 +6578,10 @@ func TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError(t *te
 	}
 }
 
-// TestBatchProviderConfig_JSONRoundTrip pins the *int with omitempty
-// invariant on BatchProviderConfig.MaxWaitSeconds. Phase-2 consumers
-// rely on the nil/non-nil distinction to tell "operator did not
-// configure this field" from "default applied" — a JSON marshal +
-// unmarshal cycle must preserve both states. The disabled-but-present
-// case (Batch != nil with Enabled=false) is the second invariant: the
-// `omitempty` is on the containing pointer field, not the inner
-// struct, so a present block must survive even when every inner field
-// is the zero value.
+// TestBatchProviderConfig_JSONRoundTrip pins the *int with omitempty invariant on
+// BatchProviderConfig.MaxWaitSeconds: callers rely on the nil/non-nil distinction
+// to tell "not configured" from "default applied", so a marshal+unmarshal cycle
+// must preserve both states, including a present-but-disabled block.
 func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 	t.Run("enabled_with_max_wait_seconds_round_trips", func(t *testing.T) {
 		maxWait := 3600
@@ -6810,11 +6631,10 @@ func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 	})
 
 	t.Run("disabled_but_present_block_survives_round_trip", func(t *testing.T) {
-		// `omitempty` is on ProviderConfig.Batch (the *pointer), not on
-		// the inner BatchProviderConfig fields. Marshaling a non-nil
-		// pointer to a zero-valued struct must emit a "batch" key the
-		// unmarshaler sees, otherwise phase-2 callers cannot tell "no
-		// batch key in JSON" from "batch present but disabled".
+		// `omitempty` is on ProviderConfig.Batch (the *pointer), not on the inner
+		// BatchProviderConfig fields: marshaling a non-nil pointer to a zero-valued
+		// struct must still emit a "batch" key so callers can distinguish "no batch key"
+		// from "batch present but disabled".
 		pc := ProviderConfig{
 			Type:  "anthropic",
 			Batch: &BatchProviderConfig{Enabled: false},
@@ -6842,9 +6662,8 @@ func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 	})
 
 	t.Run("absent_batch_unmarshals_as_nil", func(t *testing.T) {
-		// Cross-check: the omitempty pointer on a nil Batch must drop
-		// the key entirely on marshal, and an absent key must unmarshal
-		// to nil. This is the third state phase-2 consumers care about.
+		// Cross-check: the omitempty pointer on a nil Batch must drop the key entirely
+		// on marshal, and an absent key must unmarshal to nil.
 		pc := ProviderConfig{Type: "anthropic"}
 		data, err := json.Marshal(pc)
 		if err != nil {
@@ -6863,14 +6682,10 @@ func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 	})
 }
 
-// TestRedact_ProviderBatchNotAliased pins the phase-1 review fix for
-// the Redact() deep-copy gap on Provider.Batch. validateBatchConfig
-// mutates Batch.MaxWaitSeconds in place to apply the default; if
-// Redact() shares the pointer with the live config, a subsequent
-// default-apply write reaches the redacted snapshot through the
-// shared pointer and breaks the contract that Redact() produces a
-// stable copy. The aliasing risk also applies to entries in the
-// Providers map.
+// TestRedact_ProviderBatchNotAliased pins the Redact() deep-copy on
+// Provider.Batch: validateBatchConfig mutates Batch.MaxWaitSeconds in place, so a
+// shared pointer would let a later default-apply write reach the redacted
+// snapshot through it. The same risk applies to entries in the Providers map.
 func TestRedact_ProviderBatchNotAliased(t *testing.T) {
 	maxWait := 3600
 	otherMaxWait := 1800
@@ -6913,10 +6728,9 @@ func TestRedact_ProviderBatchNotAliased(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_CompatProfile pins the closed-enum behaviour
-// for ProviderConfig.CompatProfile (Wave 2 #221 Step 1). Empty and
-// "zai-glm" must validate; any other value must fail at startup with
-// an error mentioning the field path.
+// TestValidateRunConfig_CompatProfile pins the closed-enum behaviour for
+// ProviderConfig.CompatProfile: empty and "zai-glm" validate; any other value
+// fails at startup with an error mentioning the field path.
 func TestValidateRunConfig_CompatProfile(t *testing.T) {
 	t.Run("empty-accepted", func(t *testing.T) {
 		c := validConfig()
@@ -6963,7 +6777,7 @@ func TestValidateRunConfig_CompatProfile(t *testing.T) {
 	})
 }
 
-// --- HooksConfig (issue #461) ---
+// --- HooksConfig ---
 
 func validHookConfig() HookConfig {
 	return HookConfig{Command: "echo ok"}
@@ -7085,13 +6899,10 @@ func TestValidateRunConfig_Hooks_CommandRejectsSecretRef(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode pins the
-// read-only-mode carve-out for lifecycle hooks: the invariant bounds
-// only the model's tool surface, not operator-authored, deterministic
-// commands declared in reviewable RunConfig, so hooks — including a
-// postRun hook that writes (git push) — validate cleanly in every
-// read-only mode. A silent regression risk if the read-only check is
-// ever tightened without remembering the exception.
+// TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode pins the read-only-mode
+// carve-out for lifecycle hooks: the invariant bounds only the model's tool
+// surface, not operator-authored deterministic commands, so hooks — including a
+// postRun hook that writes (git push) — validate cleanly in every read-only mode.
 func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
 	readOnlyModes := []string{"planning", "review", "research", "toil"}
 	for _, mode := range readOnlyModes {
@@ -7111,18 +6922,10 @@ func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
 	}
 }
 
-// TestRuleOfTwoState_HooksNeverAffectLegs pins that Hooks plays no part
-// in any of the three Rule-of-Two legs: RuleOfTwoState must report
-// identical flags for two configs differing only in Hooks being nil vs.
-// populated with a network-touching, dynamic-context-referencing hook.
-// The base config is deliberately built to already trip all three legs
-// (DynamicContext with Sensitive:true trips untrusted-input and
-// sensitive-data; web_fetch trips external-comm) so the comparison is
-// meaningful rather than trivially false==false. Correct today (none of
-// ruleOfTwoUntrustedInput/ruleOfTwoSensitiveData/ruleOfTwoExternalComm
-// reference config.Hooks) but unprotected against a future change that
-// accidentally wires a postRun hook's network call into the
-// external-communication leg.
+// TestRuleOfTwoState_HooksNeverAffectLegs pins that Hooks plays no part in any of
+// the three Rule-of-Two legs: RuleOfTwoState must report identical flags for two
+// configs differing only in Hooks. The base config already trips all three legs
+// so the comparison is meaningful rather than trivially false==false.
 func TestRuleOfTwoState_HooksNeverAffectLegs(t *testing.T) {
 	base := validConfig()
 	base.DynamicContext = map[string]DynamicContextValue{
@@ -7451,19 +7254,12 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 	}
 }
 
-// TestBuiltInToolCapabilitySets_CoverCanonicalList guards against drift
-// between the types-side capability mirrors (readCapabilityBuiltInTools,
-// mutatingTools — hand-kept mirrors of harness/internal/core/factory.go's
-// buildToolRegistry capability gates, since types cannot import
-// harness/internal) and validBuiltInToolNames, the canonical closed set
-// of built-in tool names accepted anywhere in tools.builtIn. If a future
-// built-in tool is added to validBuiltInToolNames without updating one of
-// these sets (or the known-ungated exception list below), it would
-// silently escape both validateNoneExecutorTools's fail-fast and
-// DefaultReadOnlyBuiltInToolsForExecutor's filter — reintroducing the
-// "tool vanishes from the registry / isn't rejected" class of bug #447
-// exists to prevent. The union of all three must equal
-// validBuiltInToolNames exactly: no tool omitted, no tool double-counted.
+// TestBuiltInToolCapabilitySets_CoverCanonicalList guards against drift between
+// the types-side capability mirrors (readCapabilityBuiltInTools, mutatingTools —
+// hand-kept mirrors of harness/internal/core/factory.go's buildToolRegistry gates)
+// and validBuiltInToolNames, the canonical closed set: their union must equal
+// validBuiltInToolNames exactly, or a new tool could silently escape the
+// none-executor fail-fast and the read-only-defaults filter.
 func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 	// Tools factory.go's buildToolRegistry registers without ever gating
 	// on the executor's Capabilities() — see readCapabilityBuiltInTools's
@@ -7496,12 +7292,8 @@ func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 }
 
 // TestDefaultReadOnlyBuiltInToolsForExecutor_None pins the exact
-// capability-ungated subset the "none" branch returns, and proves the
-// result passes ValidateRunConfig for every read-only mode paired with
-// executor.type="none" — the scenario that was dead on arrival before
-// this filter existed (a bare `--executor none` invocation defaults to
-// mode "planning", and the unfiltered DefaultReadOnlyBuiltInTools()
-// tripped the none-executor fail-fast on its own mode-injected default).
+// capability-ungated subset the "none" branch returns, and proves it passes
+// ValidateRunConfig for every read-only mode paired with executor.type="none".
 func TestDefaultReadOnlyBuiltInToolsForExecutor_None(t *testing.T) {
 	got := DefaultReadOnlyBuiltInToolsForExecutor("none")
 	want := []string{"web_fetch", "spawn_agent"}
@@ -7625,13 +7417,10 @@ func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce
-// pins the N2 fix: Runtime and RegistryAllowlist are rejected for
-// executor.type="none" by the generic validateExecutorRuntime /
-// validateExecutorRegistryAllowlist validators (which already reject them
-// for any Type outside their own applicable set), not by
-// validateNoneExecutor — so setting either alongside executor.type="none"
-// must produce exactly one error string, not two.
+// TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce pins
+// that Runtime and RegistryAllowlist are rejected for executor.type="none" by the
+// generic validateExecutorRuntime / validateExecutorRegistryAllowlist validators,
+// not validateNoneExecutor — so setting either produces exactly one error, not two.
 func TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce(t *testing.T) {
 	t.Run("runtime", func(t *testing.T) {
 		c := validConfig()

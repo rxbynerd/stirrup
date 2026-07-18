@@ -160,9 +160,7 @@ func (e *GCSTraceEmitter) RecordTurn(turn types.TurnTrace) {
 
 // RecordTurnRecord is a no-op for GCS. The single-blob upload path
 // is summary-only by design — full transcript recording lives on the
-// JSONLTraceEmitter which streams events to a local file. A future
-// follow-up could ship the streamed events to GCS as a separate object;
-// for v0.1 the summary upload is unchanged.
+// JSONLTraceEmitter which streams events to a local file.
 func (e *GCSTraceEmitter) RecordTurnRecord(_ types.TurnRecord) {}
 
 // RecordToolCall appends a tool call trace.
@@ -195,12 +193,9 @@ func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
 // consumers can ingest both emitters' output with one parser.
 //
 // Concurrency: the mutex is held only long enough to snapshot the
-// mutable fields. The HTTP upload (up to gcsUploadTimeout = 60s) runs
-// lock-free, so a concurrent RecordTurn/RecordToolCall from a still-
-// draining loop does not block waiting for the upload to complete and
-// a second Finish call cannot deadlock against the first. This is the
-// behaviour difference from JSONLTraceEmitter, where the equivalent
-// work is an in-process append and a millisecond mutex hold is fine.
+// mutable fields; the HTTP upload runs lock-free so a concurrent
+// RecordTurn/RecordToolCall or a second Finish call cannot deadlock
+// against it.
 func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
 	e.mu.Lock()
 	runID := e.runID

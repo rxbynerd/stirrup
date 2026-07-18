@@ -11,15 +11,11 @@ import (
 )
 
 // LogExporter owns the OTel logs SDK pipeline that ships structured log
-// records to an OTLP/gRPC collector alongside the existing trace and metric
-// exporters. It is constructed only when log export is opted in
+// records to an OTLP/gRPC collector alongside the trace and metric
+// exporters. Constructed only when log export is opted in
 // (RunConfig.Observability.LogsExport.Type == "otlp"); the stderr path
-// always remains the default and is unaffected by whether this exists.
-//
-// The exporter is wrapped in the SDK BatchProcessor so records are queued
-// and flushed in batches, matching the WithBatcher / NewPeriodicReader
-// batching used by the trace and metric pipelines. Close must be called at
-// run end to flush the tail of the batch and shut the gRPC connection down.
+// remains the default regardless. Close must be called at run end to flush
+// the tail of the batch and shut the gRPC connection down.
 type LogExporter struct {
 	provider *sdklog.LoggerProvider
 }
@@ -36,21 +32,16 @@ const loggerName = "stirrup-harness"
 // SpanContextHandler so the OTLP path is scrubbed and trace-correlated
 // identically to the stderr path.
 //
-// headers is forwarded to the gRPC transport unchanged; resolve any
-// "secret://" references upstream via ResolveHeaders so the SDK only ever
-// sees plaintext bearer tokens — the same contract the trace and metric
-// exporters honour.
+// headers must already have any "secret://" references resolved (see
+// ResolveHeaders) — the SDK sees them unchanged, the same contract the
+// trace and metric exporters honour.
 //
-// resourceOpts threads the run-scoped resource attributes
-// (deployment.environment, service.namespace, harness.run.mode) so logs
-// carry the same resource identity as the traces and metrics from this run,
-// which is what lets a backend join the three signals.
+// resourceOpts threads the run-scoped resource attributes so logs carry the
+// same resource identity as the traces and metrics from this run, letting a
+// backend join the three signals.
 //
-// The endpoint follows the OTLP/gRPC convention used elsewhere: a bare
-// host:port is dialled with WithInsecure (the local-collector default),
-// while an explicit https:// URL keeps TLS on. Only gRPC is supported here;
-// log export over OTLP/HTTP is left for a future change (none of the
-// targeted managed gateways require it for the logs signal today).
+// Only OTLP/gRPC is supported; OTLP/HTTP log export is left for a future
+// change.
 func NewLogExporter(ctx context.Context, endpoint string, headers map[string]string, resourceOpts ResourceOptions) (*LogExporter, slog.Handler, error) {
 	exporter, err := buildOTLPLogExporter(ctx, endpoint, headers)
 	if err != nil {
@@ -67,11 +58,9 @@ func NewLogExporter(ctx context.Context, endpoint string, headers map[string]str
 	return &LogExporter{provider: provider}, handler, nil
 }
 
-// buildOTLPLogExporter constructs the OTLP/gRPC log exporter. Kept private
-// and mirrors buildOTLPTraceExporter / buildOTLPMetricExporter so the three
-// signals dial collectors identically. WithInsecure is applied for plain
-// "http://" or scheme-less endpoints (the local-collector case) and skipped
-// for "https://" so a Grafana Cloud endpoint never falls back to plaintext.
+// buildOTLPLogExporter constructs the OTLP/gRPC log exporter, mirroring
+// buildOTLPTraceExporter / buildOTLPMetricExporter so all three signals
+// dial collectors identically.
 func buildOTLPLogExporter(ctx context.Context, endpoint string, headers map[string]string) (*otlploggrpc.Exporter, error) {
 	opts := []otlploggrpc.Option{
 		otlploggrpc.WithEndpoint(stripURLScheme(endpoint)),

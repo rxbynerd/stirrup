@@ -15,16 +15,13 @@ type FileWriter interface {
 }
 
 const (
-	// offloadSizeThreshold is the minimum character count for a tool_result
-	// content block to be eligible for offloading.
+	// offloadSizeThreshold is the minimum tool_result content length eligible for offloading.
 	offloadSizeThreshold = 2000
 
-	// recentPreservedMessages is the number of recent messages to keep in
-	// full regardless of size. 6 messages = 3 assistant+user turn pairs.
+	// recentPreservedMessages is the number of recent messages kept in full regardless of size.
 	recentPreservedMessages = 6
 
-	// truncationKeepChars is the number of characters to keep at the start
-	// and end of a content block when truncation is used as a fallback.
+	// truncationKeepChars is chars kept at each end when truncating as a fallback.
 	truncationKeepChars = 500
 )
 
@@ -71,7 +68,6 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 		return messages, nil
 	}
 
-	// Determine the boundary between offload-eligible and recent messages.
 	recentStart := len(messages) - recentPreservedMessages
 	if recentStart < 0 {
 		recentStart = 0
@@ -106,24 +102,15 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 					filePath,
 				)
 			}
-			// Drop the structured envelope (issue #231) alongside the
-			// offloaded/truncated text: the structured payload mirrors the
-			// same large output, so retaining it would defeat the offload
-			// it was meant to shrink. The text fallback the model now sees
-			// points at the offload file, which is the authoritative copy.
+			// The structured envelope mirrors the same large output, so
+			// keeping it would defeat the offload it was meant to shrink.
 			newContent[j].Structured = nil
 			newContent[j].Kind = ""
 			modified = true
 		}
 
 		if modified {
-			// ReplayFields must survive the rebuild: it carries the
-			// provider-opaque round-trip state (e.g. DeepSeek v4's
-			// reasoning_content) that the next request replays —
-			// dropping it here silently 400s the following tool-call
-			// turn. The long multi-turn run with large tool outputs
-			// that triggers this offload is exactly the workload the
-			// replay threading exists for.
+			// ReplayFields must survive the rebuild; see docs/provider-quirks.md.
 			result[i] = types.Message{
 				Role:         msg.Role,
 				Synthetic:    msg.Synthetic,

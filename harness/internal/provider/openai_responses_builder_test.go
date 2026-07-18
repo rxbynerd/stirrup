@@ -16,8 +16,8 @@ import (
 
 // responsesBuilderCases enumerates representative StreamParams shapes
 // for the builder vs Stream equivalence assertion. The Responses API's
-// input[] discriminated union means we want at least one case that
-// exercises every variant: message (user/assistant), function_call,
+// input[] discriminated union needs at least one case that exercises
+// every variant: message (user/assistant), function_call,
 // function_call_output.
 func responsesBuilderCases() []struct {
 	name   string
@@ -101,8 +101,7 @@ func responsesBuilderCases() []struct {
 // buildResponsesRequest produces the same wire body the Stream method
 // would emit, modulo the Stream field (the helper deliberately leaves
 // Stream at its zero value; Stream sets it to true after the call). The
-// batch path (phase 6 of #133) reuses the builder and must be
-// byte-identical otherwise.
+// batch path reuses the builder and must be byte-identical otherwise.
 //
 // Equivalence is checked by setting Stream=true on the builder output
 // before marshalling, mirroring Stream's own pin. This both confirms

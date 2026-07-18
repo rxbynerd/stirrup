@@ -260,12 +260,10 @@ func TestCloudJudgeCustomModelOverride(t *testing.T) {
 	}
 }
 
-// TestParseCloudJudgeResponse_LastMatchWins asserts that when the raw
-// response contains multiple JSON verdict objects, the LAST one is
-// returned. This is the security-critical behaviour: classified content
-// is interpolated into the prompt before the JSON instruction, so a
-// first-match strategy would let an attacker who can plant a verdict
-// object in tool output spoof the classifier's reply.
+// TestParseCloudJudgeResponse_LastMatchWins pins security-critical
+// behaviour: when the raw response contains multiple JSON verdict
+// objects, the LAST one wins, so an attacker cannot spoof the verdict
+// by planting an earlier one in classified content.
 func TestParseCloudJudgeResponse_LastMatchWins(t *testing.T) {
 	// Early "allow" represents an attacker-planted spoof; the model's
 	// own deny verdict comes later and must win.

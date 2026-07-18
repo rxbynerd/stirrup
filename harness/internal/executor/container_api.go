@@ -18,25 +18,17 @@ const apiVersion = "v1.47"
 
 var (
 	// containerDialTimeout bounds the initial Unix-socket connection. A var
-	// (not const) so tests can shrink it to exercise the timeout path
-	// without waiting out the real production window.
+	// (not const) so tests can shrink it to exercise the timeout path.
 	containerDialTimeout = 10 * time.Second
 	// containerResponseHeaderTimeout bounds only the wait for response
-	// headers, never the body — so it cannot kill a long-running exec
-	// output stream or a large archive transfer once headers have arrived
-	// (Docker sends both essentially immediately after accepting a
-	// request). It is the connection-level backstop that catches a daemon
-	// that accepts the connection but then never answers at all,
-	// independent of whether a per-call context deadline was set below.
+	// headers, never the body, so it cannot kill a long-running exec output
+	// stream or archive transfer once headers have arrived. Connection-level
+	// backstop for a daemon that accepts but never answers.
 	containerResponseHeaderTimeout = 30 * time.Second
 	// containerControlPlaneTimeout bounds a single short Docker Engine API
-	// call — create/start/stop/remove/ping/exec-create/exec-inspect. It is
-	// deliberately NOT applied to startExec (exec output attach) or the
-	// archive endpoints (getArchive/putArchive): those are long-lived
-	// streaming calls bounded instead by the caller's own command/file-I/O
-	// deadline, so a legitimate slow-but-alive stream is never killed by
-	// this control-plane window. Mirrors k8sAPITimeout's role for the k8s
-	// executor's rest.Config.Timeout.
+	// call (create/start/stop/remove/ping/exec-create/exec-inspect).
+	// Deliberately NOT applied to startExec or the archive endpoints, which
+	// are long-lived streams bounded by the caller's own deadline instead.
 	containerControlPlaneTimeout = 30 * time.Second
 )
 
@@ -48,18 +40,9 @@ type containerAPIClient struct {
 	host   string // display-only; all requests go to http://localhost
 }
 
-// newContainerAPIClient creates a client connected to the given Unix socket.
-//
-// The client deliberately has no blanket http.Client.Timeout: exec output
-// attach and archive (file) transfer are long-lived streaming reads that can
-// legitimately outlast any single short window, and a client-level Timeout
-// bounds the entire round trip including the body. Instead, every
-// control-plane method below applies its own context.WithTimeout, and
-// streaming calls are bounded by the caller's command/file-I/O deadline
-// (see container.go). The Transport's ResponseHeaderTimeout (and the
-// dialer's timeout) still give an explicit, connection-level bound — as the
-// project's HTTP-client invariant requires — for the case where a caller
-// forgets to supply one.
+// newContainerAPIClient creates a client connected to the given Unix
+// socket. It carries no blanket http.Client.Timeout — see the timeout
+// tiering rationale in docs/architecture.md.
 func newContainerAPIClient(socketPath string) *containerAPIClient {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -73,14 +56,10 @@ func newContainerAPIClient(socketPath string) *containerAPIClient {
 	}
 }
 
-// classifyControlPlaneErr wraps a failed short Docker Engine API call
-// through the shared ErrTimeout sentinel when the failure happened because
-// ctx's own containerControlPlaneTimeout deadline elapsed — e.g. a daemon
-// that accepted the connection but never answered — rather than surfacing
-// the raw transport error. This composes with #489's classifyExecCtxErr
-// instead of inventing a parallel timeout-detection mechanism, so callers
-// matching on errors.Is(err, ErrTimeout) see this identically to a
-// command timeout.
+// classifyControlPlaneErr reclassifies a failed short Docker Engine API
+// call through the shared ErrTimeout sentinel when containerControlPlaneTimeout
+// elapsed, so callers matching errors.Is(err, ErrTimeout) see it identically
+// to a command timeout. See docs/architecture.md.
 func classifyControlPlaneErr(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return classifyExecCtxErr(ctx, containerControlPlaneTimeout)
@@ -147,21 +126,17 @@ func (c *containerAPIClient) doRequest(req *http.Request) (*http.Response, error
 	return resp, nil
 }
 
-// --- Container lifecycle ---
-
 // containerCreateRequest is the JSON body for POST /containers/create.
 type containerCreateRequest struct {
 	Image      string   `json:"Image"`
 	Cmd        []string `json:"Cmd"`
 	WorkingDir string   `json:"WorkingDir"`
-	// Env is the list of "KEY=value" environment-variable pairs to set on
-	// the container. Used to propagate HTTP_PROXY / HTTPS_PROXY / NO_PROXY
-	// when an egress proxy is in front of the container.
+	// Env propagates HTTP_PROXY/HTTPS_PROXY/NO_PROXY when an egress proxy
+	// fronts the container.
 	Env        []string    `json:"Env,omitempty"`
 	HostConfig *hostConfig `json:"HostConfig"`
-	// User runs the container's main process as the given uid[:gid]. The
-	// hardened profile sets "65534:65534" (nobody:nogroup) so a container
-	// escape lands on an unprivileged identity rather than root.
+	// User runs the container's main process as uid[:gid]; see
+	// docs/security.md for the hardened default.
 	User string `json:"User,omitempty"`
 }
 
@@ -173,31 +148,19 @@ type hostConfig struct {
 	PidsLimit   *int64   `json:"PidsLimit,omitempty"`
 	CapDrop     []string `json:"CapDrop,omitempty"`
 	SecurityOpt []string `json:"SecurityOpt,omitempty"`
-	// ReadonlyRootfs makes the container's root filesystem read-only. The
-	// field is security-critical and deliberately carries no omitempty: a
-	// bool with omitempty drops false from the wire, so a future caller that
-	// forgot to set it would silently get a writable rootfs with no error.
-	// Emitting the field unconditionally fails loud instead.
+	// No omitempty: a bool with omitempty would drop false from the wire,
+	// silently defaulting to a writable rootfs. See docs/security.md.
 	ReadonlyRootfs bool `json:"ReadonlyRootfs"`
 	// Tmpfs maps an in-container path to a comma-separated mount-option
-	// string. The size is expressed in raw bytes (e.g.
-	// "rw,nosuid,nodev,noexec,size=268435456" for 256 MiB). With a read-only
-	// rootfs the run still needs writable, non-executable scratch at /tmp and
-	// /dev/shm; the option string is the Engine API vehicle for
-	// nosuid/nodev/noexec on a tmpfs, which top-level Binds cannot carry. The
-	// /dev/shm entry's size replaces the separate ShmSize field so the size
-	// and the nosuid/nodev/noexec flags travel together as one mount — a
-	// split ShmSize could win on some engines and silently drop noexec.
+	// string (e.g. "rw,nosuid,nodev,noexec,size=268435456"); see
+	// docs/security.md. The size rides in the option string rather than a
+	// separate ShmSize field so it and noexec travel together on one mount.
 	Tmpfs map[string]string `json:"Tmpfs,omitempty"`
-	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor,
-	// "kata-qemu" for Kata Containers). Empty means "use the engine
-	// default", in which case the field is omitted from the wire so the
-	// engine picks runc.
+	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor). Empty is
+	// omitted from the wire so the engine picks its default (runc).
 	Runtime string `json:"Runtime,omitempty"`
-	// ExtraHosts adds entries to the container's /etc/hosts. Used to
-	// inject "host.docker.internal:host-gateway" so the container can
-	// reach the host's egress proxy on Docker Engine >=20.10 and
-	// Podman >=4.0.
+	// ExtraHosts injects "host.docker.internal:host-gateway" so the
+	// container can reach the host's egress proxy.
 	ExtraHosts []string `json:"ExtraHosts,omitempty"`
 }
 
@@ -345,8 +308,6 @@ func (c *containerAPIClient) removeContainer(ctx context.Context, id string, for
 	return nil
 }
 
-// --- Exec ---
-
 type execCreateRequest struct {
 	AttachStdout bool     `json:"AttachStdout"`
 	AttachStderr bool     `json:"AttachStderr"`
@@ -358,11 +319,8 @@ type execCreateResponse struct {
 	ID string `json:"Id"`
 }
 
-// createExec is a short control-plane call — it registers the exec instance
-// but does not run it — so it gets containerControlPlaneTimeout rather than
-// the caller's (potentially much longer) command timeout. startExec is the
-// call that actually runs the command and streams output; that one is
-// bounded by the caller's timeout instead (see execInContainer).
+// createExec registers the exec instance but does not run it, so it gets
+// containerControlPlaneTimeout rather than the caller's command timeout.
 func (c *containerAPIClient) createExec(ctx context.Context, containerID string, cmd []string, workdir string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
 	defer cancel()
@@ -399,13 +357,9 @@ func (c *containerAPIClient) createExec(ctx context.Context, containerID string,
 }
 
 // startExec starts an exec instance and returns the multiplexed output
-// stream. The caller must close the returned ReadCloser. Unlike the other
-// methods in this file, startExec deliberately does NOT apply
-// containerControlPlaneTimeout: it is the call that actually runs the
-// command and streams its output, so bounding it to the short control-plane
-// window would kill a legitimate long-running command almost immediately.
-// It relies entirely on ctx, which the caller (execInContainer) has already
-// bound to the command's own timeout.
+// stream. The caller must close the returned ReadCloser. Deliberately does
+// NOT apply containerControlPlaneTimeout — bounded by ctx only, which the
+// caller has already bound to the command's own timeout.
 func (c *containerAPIClient) startExec(ctx context.Context, execID string) (io.ReadCloser, error) {
 	body := `{"Detach":false,"Tty":false}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -429,9 +383,7 @@ type execInspectResponse struct {
 }
 
 // inspectExec is a short metadata read (fetch the exit code after the
-// command has already finished streaming), so it gets the control-plane
-// timeout rather than whatever budget remained on the command's own
-// deadline.
+// command finished streaming), so it gets the control-plane timeout.
 func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
 	defer cancel()
@@ -456,13 +408,9 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 	return result.ExitCode, nil
 }
 
-// --- Archive (file transfer) ---
-
-// putArchive uploads a tar archive to a path inside the container. Like
-// startExec, this is a long-lived streaming call (the archive body can be
-// up to maxFileSize) so it is bounded only by ctx — the caller
-// (ContainerExecutor.WriteFile) applies containerFileIOTimeout — not by
-// containerControlPlaneTimeout.
+// putArchive uploads a tar archive to a path inside the container.
+// Long-lived streaming call bounded only by ctx (the caller applies
+// containerFileIOTimeout), same as startExec.
 func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPath string, tarReader io.Reader) error {
 	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(destPath))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.url(url), tarReader)

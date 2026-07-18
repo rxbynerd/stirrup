@@ -5,18 +5,14 @@ import (
 	"strings"
 )
 
-// The CLI entry-point usage hints (issue #249) are hand-authored
-// templates, NOT generated from Cobra's flag list, so the wording is a
-// single deliberate edit rather than a regenerated artifact that drifts
-// toward the noise the hint exists to avoid. `--help` remains the
-// authoritative, exhaustive reference.
+// The CLI entry-point usage hints are hand-authored templates, not
+// generated from Cobra's flag list. `--help` remains the authoritative,
+// exhaustive reference.
 
 // printRootUsageHint writes the bare-`stirrup` two-subcommand hint to w.
 // Plain text only — no ANSI, no boxes, no headings beyond the single
 // title line — because the hint must read identically whether stdout is
-// a terminal, a pager, or captured into a file. The shape mirrors the
-// issue #249 template verbatim so a future edit to the wording is a
-// deliberate single-site change rather than a regenerated artifact.
+// a terminal, a pager, or captured into a file.
 func printRootUsageHint(w io.Writer) {
 	const hint = `stirrup — a coding agent harness
 
@@ -38,15 +34,9 @@ For version:  stirrup --version
 // multi-line template.
 //
 // color is decided by the caller via shouldColor so the TTY / NO_COLOR
-// detection stays in one place (trace.go). When false the function
-// emits plain text — every colorize call collapses to its argument —
-// which is the form a piped `2>&1 | cat` must observe.
-//
-// The grouping mirrors the flag concerns documented in
-// docs/configuration.md (Required, Run shape, Provider, Configuration)
-// so an operator who reads the hint and then the doc sees the same
-// mental model. It is deliberately a curated subset, not the full flag
-// list: `stirrup harness --help` remains authoritative for the rest.
+// detection stays in one place (trace.go). It is deliberately a curated
+// flag subset mirroring docs/configuration.md's grouping; `stirrup
+// harness --help` remains authoritative for the rest.
 func printHarnessUsageHint(w io.Writer, color bool) {
 	var b strings.Builder
 

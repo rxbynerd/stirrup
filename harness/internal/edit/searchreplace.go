@@ -68,12 +68,10 @@ func (s *SearchReplaceStrategy) Apply(ctx context.Context, input json.RawMessage
 		}, nil
 	}
 
-	// Handle file creation: empty old_string on a nonexistent file.
 	if params.OldString == "" {
 		return s.handleCreate(ctx, params.Path, params.NewString, exec)
 	}
 
-	// Read existing file content.
 	content, err := exec.ReadFile(ctx, params.Path)
 	if err != nil {
 		return &EditResult{
@@ -83,7 +81,6 @@ func (s *SearchReplaceStrategy) Apply(ctx context.Context, input json.RawMessage
 		}, nil
 	}
 
-	// Count occurrences to enforce exactly-one semantics.
 	count := strings.Count(content, params.OldString)
 	if count == 0 {
 		return &EditResult{
@@ -100,7 +97,6 @@ func (s *SearchReplaceStrategy) Apply(ctx context.Context, input json.RawMessage
 		}, nil
 	}
 
-	// Perform the replacement.
 	newContent := strings.Replace(content, params.OldString, params.NewString, 1)
 
 	if err := exec.WriteFile(ctx, params.Path, newContent); err != nil {
@@ -124,7 +120,7 @@ func (s *SearchReplaceStrategy) Apply(ctx context.Context, input json.RawMessage
 // already exists, it returns an error — empty old_string is only valid for
 // creation.
 func (s *SearchReplaceStrategy) handleCreate(ctx context.Context, path, newString string, exec executor.Executor) (*EditResult, error) {
-	// Check if the file already exists.
+
 	_, err := exec.ReadFile(ctx, path)
 	if err == nil {
 		return &EditResult{
@@ -151,9 +147,8 @@ func (s *SearchReplaceStrategy) handleCreate(ctx context.Context, path, newStrin
 	}, nil
 }
 
-// unifiedDiff produces a minimal unified-diff-style output showing what changed
-// between old and new content. This is a simple line-based implementation
-// sufficient for edit result display.
+// unifiedDiff produces a minimal unified-diff-style output showing what
+// changed between old and new content, sufficient for edit result display.
 func unifiedDiff(path, oldContent, newContent string) string {
 	oldLines := splitLines(oldContent)
 	newLines := splitLines(newContent)
@@ -162,20 +157,17 @@ func unifiedDiff(path, oldContent, newContent string) string {
 	fmt.Fprintf(&b, "--- a/%s\n", path)
 	fmt.Fprintf(&b, "+++ b/%s\n", path)
 
-	// Walk through both line slices and emit hunks for changed regions.
-	// This is a simple O(n) scan that works well for search-replace edits
-	// which typically affect a small contiguous region.
+	// Simple O(n) scan; sufficient for search-replace edits, which
+	// typically affect a small contiguous region.
 	i, j := 0, 0
 	for i < len(oldLines) || j < len(newLines) {
-		// Find next difference.
+
 		if i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j] {
 			i++
 			j++
 			continue
 		}
 
-		// Found a difference — determine the hunk boundaries.
-		// Include up to 3 lines of context before the change.
 		contextBefore := 3
 		hunkStartOld := i - contextBefore
 		if hunkStartOld < 0 {
@@ -183,11 +175,10 @@ func unifiedDiff(path, oldContent, newContent string) string {
 		}
 		hunkStartNew := j - (i - hunkStartOld)
 
-		// Scan to find the end of the changed region.
 		oi, nj := i, j
 		for oi < len(oldLines) || nj < len(newLines) {
 			if oi < len(oldLines) && nj < len(newLines) && oldLines[oi] == newLines[nj] {
-				// Check if we have enough matching lines to end the hunk.
+
 				match := 0
 				for oi+match < len(oldLines) && nj+match < len(newLines) && oldLines[oi+match] == newLines[nj+match] {
 					match++
@@ -210,7 +201,6 @@ func unifiedDiff(path, oldContent, newContent string) string {
 			}
 		}
 
-		// Include up to 3 lines of context after the change.
 		contextAfter := 3
 		hunkEndOld := oi + contextAfter
 		if hunkEndOld > len(oldLines) {
@@ -221,34 +211,28 @@ func unifiedDiff(path, oldContent, newContent string) string {
 			hunkEndNew = len(newLines)
 		}
 
-		// Emit hunk header.
 		oldLen := hunkEndOld - hunkStartOld
 		newLen := hunkEndNew - hunkStartNew
 		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", hunkStartOld+1, oldLen, hunkStartNew+1, newLen)
 
-		// Emit context before.
 		for k := hunkStartOld; k < i; k++ {
 			fmt.Fprintf(&b, " %s\n", oldLines[k])
 		}
 
-		// Emit removed lines.
 		for k := i; k < oi; k++ {
 			fmt.Fprintf(&b, "-%s\n", oldLines[k])
 		}
 
-		// Emit added lines.
 		for k := j; k < nj; k++ {
 			fmt.Fprintf(&b, "+%s\n", newLines[k])
 		}
 
-		// Emit context after.
 		afterCount := 0
 		for oi+afterCount < hunkEndOld {
 			fmt.Fprintf(&b, " %s\n", oldLines[oi+afterCount])
 			afterCount++
 		}
 
-		// Advance past the hunk.
 		i = hunkEndOld
 		j = hunkEndNew
 	}
@@ -256,13 +240,13 @@ func unifiedDiff(path, oldContent, newContent string) string {
 	return b.String()
 }
 
-// splitLines splits a string into lines, handling the edge case of an empty
-// string returning no lines rather than a single empty line.
+// splitLines splits a string into lines. An empty string returns no lines
+// rather than a single empty line.
 func splitLines(s string) []string {
 	if s == "" {
 		return nil
 	}
-	// Remove trailing newline to avoid a spurious empty line at the end.
+	// Trim the trailing newline to avoid a spurious empty final line.
 	s = strings.TrimSuffix(s, "\n")
 	return strings.Split(s, "\n")
 }

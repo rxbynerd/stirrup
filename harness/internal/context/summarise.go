@@ -11,9 +11,7 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// minRecentMessages is the minimum number of recent messages to preserve
-// verbatim when summarising. This keeps enough context for coherent
-// continuation while the older history gets compressed into a summary.
+// minRecentMessages is the minimum number of recent messages preserved verbatim when summarising.
 const minRecentMessages = 6
 
 var summaryInjectionPatterns = []*regexp.Regexp{
@@ -77,7 +75,6 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 		return messages, nil
 	}
 
-	// Split into old messages (to summarise) and recent (to keep verbatim).
 	splitIdx := splitPoint(messages, minRecentMessages)
 	if splitIdx <= 0 {
 		// Not enough messages to summarise; return what we have.
@@ -87,7 +84,6 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 	old := messages[:splitIdx]
 	recent := messages[splitIdx:]
 
-	// Check if we already have a cached summary for these old messages.
 	hash := hashMessages(old)
 	if hash == s.cachedHash && s.cachedSummary != "" {
 		result := prependSummary(s.cachedSummary, recent)
@@ -100,7 +96,6 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 		return result, nil
 	}
 
-	// Generate a summary via the provider.
 	summary, err := s.generateSummary(ctx, old)
 	if err != nil {
 		// Fallback: sliding window behavior (drop oldest, keep recent).
@@ -114,7 +109,6 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 		return result, nil
 	}
 
-	// Cache the result.
 	s.cachedHash = hash
 	s.cachedSummary = summary
 
@@ -134,9 +128,7 @@ func (s *SummariseStrategy) LastCompaction() *CompactionEvent {
 	return s.lastCompaction
 }
 
-// splitPoint determines where to split messages. We keep at least
-// minRecent messages at the end, returning the index that divides
-// old messages from recent messages.
+// splitPoint returns the index dividing old messages from the last minRecent recent ones.
 func splitPoint(messages []types.Message, minRecent int) int {
 	if len(messages) <= minRecent {
 		return 0
@@ -256,9 +248,7 @@ func stripSummaryInjectionPhrases(value string) string {
 	return value
 }
 
-// hashMessages produces a deterministic hash of message contents for cache
-// invalidation. We hash roles and text content, which is sufficient to
-// detect changes without being expensive.
+// hashMessages produces a deterministic hash of message roles and text content for cache invalidation.
 func hashMessages(messages []types.Message) string {
 	h := sha256.New()
 	for _, msg := range messages {

@@ -2,9 +2,8 @@ package types
 
 import "testing"
 
-// TestEvalOutcomeFor walks every row of the derivation table in the
-// EvalOutcomeFor docstring. A failing row indicates a regression in
-// the (Outcome, VerificationResults) → EvalOutcome mapping.
+// TestEvalOutcomeFor walks the (Outcome, VerificationResults) →
+// EvalOutcome mapping documented in docs/eval.md.
 func TestEvalOutcomeFor(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -70,11 +69,8 @@ func TestEvalOutcomeFor(t *testing.T) {
 		{name: "cancelled", trace: RunTrace{Outcome: "cancelled"}, want: EvalInconclusive},
 		{name: "verification_error", trace: RunTrace{Outcome: "verification_error"}, want: EvalInconclusive},
 
-		// Lifecycle-hook infra failures (issue #461): a fatal preRun/postRun
-		// hook failure is an infra signal, not a quality verdict on the
-		// model's work — pinned explicitly (rather than relying on the
-		// unknown-outcome default below) so a future change to either
-		// bucket is caught by name.
+		// Lifecycle-hook infra failures are pinned explicitly rather than
+		// relying on the unknown-outcome default below.
 		{name: "setup_failed", trace: RunTrace{Outcome: "setup_failed"}, want: EvalInconclusive},
 		{name: "hook_failed", trace: RunTrace{Outcome: "hook_failed"}, want: EvalInconclusive},
 

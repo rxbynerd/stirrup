@@ -49,7 +49,6 @@ func Compare(baseline, current eval.SuiteResult) eval.ComparisonReport {
 	}
 }
 
-// indexByTaskID builds a lookup map from TaskID to TaskResult.
 func indexByTaskID(tasks []eval.TaskResult) map[string]*eval.TaskResult {
 	m := make(map[string]*eval.TaskResult, len(tasks))
 	for i := range tasks {
@@ -58,18 +57,15 @@ func indexByTaskID(tasks []eval.TaskResult) map[string]*eval.TaskResult {
 	return m
 }
 
-// isPass returns true if the outcome represents a passing state.
 func isPass(outcome string) bool {
 	return outcome == "pass"
 }
 
-// isFail returns true if the outcome represents a non-passing state.
 func isFail(outcome string) bool {
 	return outcome == "fail" || outcome == "error"
 }
 
-// turnsDelta computes (current turns - baseline turns) from RunTrace,
-// returning 0 if either trace is nil.
+// turnsDelta returns 0 if either trace is nil.
 func turnsDelta(baseline, current *eval.TaskResult) int {
 	if baseline.Trace == nil || current.Trace == nil {
 		return 0

@@ -138,7 +138,6 @@ func TestComposedPromptBuilder_DynamicContext(t *testing.T) {
 		t.Error("missing issue untrusted_context block")
 	}
 
-	// Verify alphabetical ordering.
 	diffIdx := strings.Index(result, `name="diff"`)
 	issueIdx := strings.Index(result, `name="issue"`)
 	if diffIdx > issueIdx {
@@ -177,7 +176,6 @@ func TestComposedPromptBuilder_DynamicContext_SanitizesDirectCalls(t *testing.T)
 	}
 }
 
-// errorFragment is a test helper that always returns an error.
 type errorFragment struct{ err error }
 
 func (f *errorFragment) Render(_ context.Context, _ PromptContext) (string, error) {
@@ -203,7 +201,6 @@ func TestComposedPromptBuilder_ErrorPropagation(t *testing.T) {
 func TestComposedPromptBuilder_WorkspaceTreeFragment(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create some files and a directory.
 	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644)
 	_ = os.Mkdir(filepath.Join(dir, "pkg"), 0o755)
@@ -243,14 +240,12 @@ func TestComposedPromptBuilder_WorkspaceTreeFragment_EmptyWorkspace(t *testing.T
 }
 
 func TestComposedPromptBuilder_GitStatusFragment(t *testing.T) {
-	// Only run if git is available.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 
 	dir := t.TempDir()
 
-	// Initialize a git repo with one commit so status works.
 	cmds := [][]string{
 		{"git", "-C", dir, "init"},
 		{"git", "-C", dir, "config", "user.email", "test@test.com"},
@@ -265,7 +260,6 @@ func TestComposedPromptBuilder_GitStatusFragment(t *testing.T) {
 
 	fragment := GitStatusFragment()
 
-	// Clean repo.
 	result, err := fragment.Render(context.Background(), PromptContext{
 		Mode:      "execution",
 		Workspace: dir,
@@ -277,7 +271,6 @@ func TestComposedPromptBuilder_GitStatusFragment(t *testing.T) {
 		t.Errorf("expected clean status, got %q", result)
 	}
 
-	// Create an untracked file.
 	_ = os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello"), 0o644)
 
 	result, err = fragment.Render(context.Background(), PromptContext{
@@ -313,7 +306,6 @@ func TestComposedPromptBuilder_GitStatusFragment_NotARepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)
 	}
-	// Not a git repo -- should silently return empty.
 	if result != "" {
 		t.Errorf("expected empty string for non-repo, got %q", result)
 	}
@@ -322,7 +314,6 @@ func TestComposedPromptBuilder_GitStatusFragment_NotARepo(t *testing.T) {
 func TestComposedPromptBuilder_WorkspacePathFragment(t *testing.T) {
 	fragment := WorkspacePathFragment()
 
-	// Non-empty workspace produces expected string.
 	result, err := fragment.Render(context.Background(), PromptContext{
 		Mode:      "execution",
 		Workspace: "/srv/workspace",
@@ -334,7 +325,6 @@ func TestComposedPromptBuilder_WorkspacePathFragment(t *testing.T) {
 		t.Errorf("got %q, want %q", result, "Working directory: /srv/workspace")
 	}
 
-	// Empty workspace produces empty string.
 	result, err = fragment.Render(context.Background(), PromptContext{Mode: "execution"})
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)
@@ -347,7 +337,6 @@ func TestComposedPromptBuilder_WorkspacePathFragment(t *testing.T) {
 func TestComposedPromptBuilder_TurnBudgetFragment(t *testing.T) {
 	fragment := TurnBudgetFragment()
 
-	// Positive MaxTurns produces expected string.
 	result, err := fragment.Render(context.Background(), PromptContext{
 		Mode:     "execution",
 		MaxTurns: 20,
@@ -359,7 +348,6 @@ func TestComposedPromptBuilder_TurnBudgetFragment(t *testing.T) {
 		t.Errorf("got %q", result)
 	}
 
-	// Zero MaxTurns produces empty string.
 	result, err = fragment.Render(context.Background(), PromptContext{Mode: "execution"})
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)
@@ -368,7 +356,6 @@ func TestComposedPromptBuilder_TurnBudgetFragment(t *testing.T) {
 		t.Errorf("expected empty string for zero MaxTurns, got %q", result)
 	}
 
-	// Negative MaxTurns produces empty string.
 	result, err = fragment.Render(context.Background(), PromptContext{Mode: "execution", MaxTurns: -1})
 	if err != nil {
 		t.Fatalf("Render() error: %v", err)

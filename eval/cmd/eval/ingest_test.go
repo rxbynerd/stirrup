@@ -12,10 +12,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// writeTraceFile writes lines to a JSONL trace file under dir and
-// returns the path. Test helper kept local so the ingest tests do
-// not depend on the harness package's own emitter (an internal
-// boundary per CLAUDE.md).
+// writeTraceFile writes lines to a JSONL trace file under dir and returns
+// the path. Kept local so ingest tests do not depend on the harness
+// package's own emitter (an internal boundary per CLAUDE.md).
 func writeTraceFile(t *testing.T, dir, name string, lines []string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -38,9 +37,9 @@ func mustMarshal(t *testing.T, v any) string {
 	return string(b)
 }
 
-// TestIngestFile_StreamingFullRun pins the happy-path streaming
-// ingest: a run_started + N turn_records + run_finished file lands
-// one traces/<id>.json plus one recordings/<id>.json on disk.
+// TestIngestFile_StreamingFullRun pins that a run_started + N
+// turn_records + run_finished file lands one traces/<id>.json plus one
+// recordings/<id>.json on disk.
 func TestIngestFile_StreamingFullRun(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "run-1.jsonl", []string{
@@ -93,10 +92,9 @@ func TestIngestFile_StreamingFullRun(t *testing.T) {
 	}
 }
 
-// TestIngestFile_LegacySingleBlob pins backward-compat: a pre-#270
-// JSONL trace file (one RunTrace per line, no kind discriminator)
-// ingests as traces only — no recordings/ entry is produced because
-// the legacy shape has no transcript content.
+// TestIngestFile_LegacySingleBlob pins that a legacy JSONL trace file (one
+// RunTrace per line, no kind discriminator) ingests as traces only — no
+// recordings/ entry, since the legacy shape has no transcript content.
 func TestIngestFile_LegacySingleBlob(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "legacy.jsonl", []string{
@@ -128,10 +126,10 @@ func TestIngestFile_LegacySingleBlob(t *testing.T) {
 	}
 }
 
-// TestIngestFile_PartialStream pins the interrupted-run path: a
-// streaming trace missing its run_finished event is ingested as a
-// recording with FinalOutcome.Outcome=="interrupted" by default,
-// or skipped entirely when --skip-partial is set.
+// TestIngestFile_PartialStream pins that a streaming trace missing its
+// run_finished event is ingested as a recording with
+// FinalOutcome.Outcome=="interrupted" by default, or skipped entirely when
+// --skip-partial is set.
 func TestIngestFile_PartialStream(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "partial.jsonl", []string{
@@ -146,7 +144,6 @@ func TestIngestFile_PartialStream(t *testing.T) {
 			"turn":        1,
 			"modelOutput": []types.ContentBlock{{Type: "text", Text: "only"}},
 		}),
-		// no run_finished event
 	})
 
 	storeDir := t.TempDir()
@@ -172,8 +169,6 @@ func TestIngestFile_PartialStream(t *testing.T) {
 		t.Errorf("trace = %+v, want one with Outcome=interrupted", gotTraces)
 	}
 
-	// Re-ingest with --skip-partial against a fresh store: nothing
-	// should land.
 	storeDir2 := t.TempDir()
 	store2, err := lakehouse.NewFileStore(storeDir2)
 	if err != nil {
@@ -189,11 +184,9 @@ func TestIngestFile_PartialStream(t *testing.T) {
 	}
 }
 
-// TestIngestFile_Idempotent pins that re-ingesting the same file
-// is a no-op in net effect — the resulting on-disk state is
-// identical to a single ingest. Together with the atomic-write
-// pattern from #267 this guarantees no torn files even on
-// concurrent retry.
+// TestIngestFile_Idempotent pins that re-ingesting the same file is a no-op
+// in net effect: the resulting on-disk state is identical to a single
+// ingest.
 func TestIngestFile_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "run-i.jsonl", []string{
@@ -230,11 +223,9 @@ func TestIngestFile_Idempotent(t *testing.T) {
 	}
 }
 
-// TestDetectFormat covers the three cases the format peeker has to
-// distinguish: streaming events (line carries a kind key), legacy
-// single-blob (line lacks kind), and empty file. Mixed-format
-// invocation works at the per-file level — each --trace argument is
-// detected independently.
+// TestDetectFormat covers the three cases the format peeker distinguishes:
+// streaming events (line carries a kind key), legacy single-blob (line
+// lacks kind), and empty file.
 func TestDetectFormat(t *testing.T) {
 	dir := t.TempDir()
 

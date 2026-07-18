@@ -244,8 +244,7 @@ func TestTail_HandlerErrorAborts(t *testing.T) {
 
 // streamingTrace renders a synthetic streaming-event JSONL file: one
 // run_started, len(turns) turn_records, and one run_finished (when
-// finalOutcome.ID != ""). Used to drive the reader's streaming-format
-// tests without coupling them to harness/internal/trace.
+// finalOutcome.ID != "").
 func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []types.TurnRecord, finalOutcome types.RunTrace) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -282,10 +281,8 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 }
 
 // TestReader_StreamingFormat_NextYieldsRunFinishedTrace pins that on
-// the new streaming wire shape, Reader.Next surfaces the trace
-// embedded in the run_finished event and silently skips the
-// run_started / turn_record / tool_call_record events. Legacy
-// consumers (eval runner's parseTraceFile) keep working unchanged.
+// the streaming wire shape, Reader.Next surfaces the trace embedded
+// in the run_finished event and skips the other event kinds.
 func TestReader_StreamingFormat_NextYieldsRunFinishedTrace(t *testing.T) {
 	body := streamingTrace(t,
 		"run-stream",
@@ -310,8 +307,7 @@ func TestReader_StreamingFormat_NextYieldsRunFinishedTrace(t *testing.T) {
 
 // TestReader_LegacyAndStreamingParseEquivalent pins that a legacy
 // single-blob trace and a streaming trace describing the same run
-// surface identical *types.RunTrace values via Reader.Next. This is
-// the backward-compatibility AC of #270.
+// surface identical *types.RunTrace values via Reader.Next.
 func TestReader_LegacyAndStreamingParseEquivalent(t *testing.T) {
 	finalOutcome := types.RunTrace{
 		ID:      "run-shared",

@@ -98,8 +98,6 @@ func TestDynamicRouter_CheapStopReasonTakesPriorityOverHighTurn(t *testing.T) {
 }
 
 func TestDynamicRouter_ZeroThresholdsAlwaysExpensive(t *testing.T) {
-	// With thresholds at zero, any turn >= 0 and any output >= 0 triggers
-	// the expensive path. But cheap stop reason still takes priority.
 	cfg := DynamicRouterConfig{
 		DefaultSelection:        defaultSel,
 		CheapSelection:          cheapSel,
@@ -110,9 +108,7 @@ func TestDynamicRouter_ZeroThresholdsAlwaysExpensive(t *testing.T) {
 	}
 	r := NewDynamicRouter(cfg)
 
-	// Zero thresholds are treated as "disabled" (the > 0 guard), so this
-	// falls through to default. This is the intended behaviour: zero means
-	// "don't use this threshold", not "always trigger".
+	// Zero thresholds are disabled, not "always trigger".
 	sel := r.Select(context.Background(), RouterContext{
 		Mode:           "execution",
 		Turn:           0,
@@ -206,7 +202,6 @@ func TestDynamicRouter_CustomSelections(t *testing.T) {
 func TestDynamicRouter_Turn0NoHistory(t *testing.T) {
 	r := NewDynamicRouter(standardConfig)
 
-	// First turn: no stop reason, zero tokens, turn 0.
 	sel := r.Select(context.Background(), RouterContext{
 		Mode: "execution",
 		Turn: 0,

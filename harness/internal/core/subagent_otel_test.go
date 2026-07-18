@@ -46,35 +46,13 @@ func (p *multiCallProviderForOTel) Stream(_ context.Context, _ types.StreamParam
 	return ch, nil
 }
 
-// TestSpawnSubAgent_OTelSpansNestUnderToolSpan is the load-bearing test
-// for issue #55 acceptance criterion #2: spans emitted by the sub-agent
-// loop must hang off the parent's tool.spawn_agent span, not the parent
-// run root.
-//
-// The child loop creates its own provider.stream, context.prepare,
-// permission.check, and tool.<name> spans via l.Tracer.Start(
-// l.traceCtx(ctx), ...). Those calls resolve the parent context via
-// the loop's TraceContext field; SpawnSubAgent now sets that field to
-// the parent's tool-span ctx so child spans nest correctly. (The
-// turn[N] spans synthesized inside OTelTraceEmitter.RecordTurn are
-// parented from the emitter's rootCtx and do not exercise this path,
-// so the assertion targets the child loop's directly-emitted spans.
-// The turn[N] gap is tracked in #89; see otel.go:RecordTurn TODO.)
-//
-// Setup:
-//
-//   - parent loop runs through one turn that emits a tool_call(spawn_agent),
-//     then a second turn that ends.
-//   - the parent dispatches spawn_agent → SpawnSubAgent → child loop.
-//   - the child runs one turn that emits text_delta + end_turn.
-//   - both parent and child use the same OTel TracerProvider so all spans
-//     land in the same in-memory exporter.
-//
-// Assertion: at least one of the child loop's directly-emitted spans
-// (provider.stream, tool.<name>, permission.check, context.prepare)
-// has the tool.spawn_agent span's SpanID as its Parent.SpanID. Without
-// the ctx threading and TraceContext inheritance shipped in #55, the
-// child's spans are rooted at the parent's run span instead.
+// TestSpawnSubAgent_OTelSpansNestUnderToolSpan pins that spans emitted by
+// the sub-agent loop nest under the parent's tool.spawn_agent span, not
+// the parent run root: SpawnSubAgent sets the child loop's TraceContext
+// to the parent's tool-span ctx so provider.stream/context.prepare/
+// permission.check/tool.<name> spans parent correctly. (Turn[N] spans
+// synthesized in OTelTraceEmitter.RecordTurn are parented from the
+// emitter's rootCtx and are not exercised here; see otel.go:RecordTurn.)
 func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -108,10 +86,9 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	}
 
 	registry := tool.NewRegistry()
-	// Register a placeholder spawn_agent — we replace the handler below
-	// with a closure that calls SpawnSubAgent (the production factory
-	// does the same at construction time; here we wire it manually so
-	// the test does not depend on factory.Build).
+	// Placeholder spawn_agent; the handler is wired below with a closure
+	// that calls SpawnSubAgent directly, so the test does not depend on
+	// factory.Build.
 	registry.Register(&tool.Tool{
 		Name:              "spawn_agent",
 		Description:       "Spawn a sub-agent",
@@ -142,9 +119,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.RunID = "parent-run-otel"
 
-	// Wire the spawn_agent handler now that parentLoop exists. It mirrors
-	// the closure factory.go installs at production build time but uses
-	// childProv as the child's provider so the child run completes
+	// Uses childProv as the child's provider so the child run completes
 	// deterministically without an outbound API call.
 	registry.Resolve("spawn_agent").Handler = func(ctx context.Context, input json.RawMessage) (string, error) {
 		var args struct {
@@ -153,10 +128,9 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		if err := json.Unmarshal(input, &args); err != nil {
 			return "", err
 		}
-		// Swap the parent's provider for the child during SpawnSubAgent's
-		// call: SpawnSubAgent reuses parent.Provider for the child.
-		// Saving/restoring is fine because the parent loop has already
-		// returned from its current turn before this handler runs.
+		// SpawnSubAgent reuses parent.Provider for the child; saving and
+		// restoring is fine here since the parent has already returned
+		// from its current turn before this handler runs.
 		origProv := parentLoop.Provider
 		parentLoop.Provider = childProv
 		defer func() { parentLoop.Provider = origProv }()
@@ -181,7 +155,6 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		t.Fatal("expected at least one OTel span, got none")
 	}
 
-	// Find the parent's tool.spawn_agent span and capture its SpanID.
 	var toolSpan tracetest.SpanStub
 	for _, s := range spans {
 		if s.Name == "tool.spawn_agent" {
@@ -197,21 +170,9 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		t.Fatal("tool.spawn_agent span has invalid SpanID")
 	}
 
-	// Walk all spans created INSIDE the child loop and assert at least
-	// one has tool.spawn_agent as its parent. Without the ctx threading
-	// + TraceContext inheritance shipped in #55, the child loop's spans
-	// are parented under the parent's run span, not under
-	// tool.spawn_agent.
-	//
-	// The child-loop spans we expect to see are:
-	//
-	//   - provider.stream (per turn)
-	//   - context.prepare (per turn)
-	//   - tool.<name>     (when the child dispatches a tool — not exercised here)
-	//   - permission.check (when the child dispatches a permissioned tool)
-	//
-	// The child runs one turn here, so provider.stream and
-	// context.prepare are the load-bearing checks.
+	// Assert at least one child-loop span (provider.stream / context.prepare,
+	// the only ones exercised by the child's single turn) has tool.spawn_agent
+	// as its parent, not the parent's run span.
 	childSpanNames := map[string]bool{
 		"provider.stream": true,
 		"context.prepare": true,
@@ -235,18 +196,10 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	}
 }
 
-// TestLoop_PreToolGuardSpanNestsUnderToolSpan is the regression test
-// for #55 B3: the guard.pre_tool span created inside guardCheck must
-// be parented to the tool.<name> span, not to the run-root, so OTel
-// traces correctly show "tool dispatch -> guard pre-tool denied" as a
-// nested operation. Before the fix, guardCheck was passed the outer
-// turn ctx and the resulting guard.pre_tool span landed as a sibling
-// of tool.<name> for every denied tool call.
-//
-// Setup: a single-turn provider emitting one tool_call, with a
-// fakeGuard configured to deny the PhasePreTool check. The tool.test
-// span and guard.pre_tool span are emitted via the in-memory exporter;
-// the assertion is on the parent SpanID linkage between them.
+// TestLoop_PreToolGuardSpanNestsUnderToolSpan pins that the guard.pre_tool
+// span created inside guardCheck is parented to the tool.<name> span, not
+// the run root, so traces show "tool dispatch -> guard pre-tool denied"
+// as a nested operation.
 func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -290,9 +243,8 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 		Tracer:      tracer,
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),
-		// Deny-everything guard: PreTurn allows turn 0 (we want the
-		// loop to reach tool dispatch), so we narrow the deny to the
-		// PreTool phase only via a custom guard implementation.
+		// PreTurn allows turn 0 (so the loop reaches tool dispatch); only
+		// the PreTool phase is denied.
 		GuardRail: &phaseSpecificDenyGuard{denyPhase: guard.PhasePreTool},
 	}
 
@@ -303,7 +255,6 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 
 	spans := exporter.GetSpans()
 
-	// Locate tool.test_tool and guard.pre_tool.
 	var toolSpan, guardSpan tracetest.SpanStub
 	for _, s := range spans {
 		switch s.Name {
@@ -331,9 +282,7 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 }
 
 // phaseSpecificDenyGuard denies a specific guard phase and allows all
-// others. Used in the B3 nesting test to ensure PreTurn allows turn 0
-// (so the loop reaches tool dispatch) while PreTool denies the call
-// (so the guard.pre_tool span is actually emitted).
+// others.
 type phaseSpecificDenyGuard struct {
 	denyPhase guard.Phase
 }

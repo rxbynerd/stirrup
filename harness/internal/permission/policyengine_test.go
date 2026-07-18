@@ -312,11 +312,9 @@ func TestPolicyEngine_SubAgentCap(t *testing.T) {
 	}
 }
 
-// TestGoValueToCedar_DeepNestingReturnsError covers M5: a tool input
-// nested past maxCedarDepth must produce a clean error rather than
-// recursing far enough to exhaust the goroutine stack and panic. The
-// JSON decoder permits ~10000 levels of nesting on its own, so the
-// depth check has to live in goValueToCedar.
+// TestGoValueToCedar_DeepNestingReturnsError: a tool input nested past
+// maxCedarDepth must produce a clean error rather than recursing far
+// enough to exhaust the goroutine stack and panic.
 func TestGoValueToCedar_DeepNestingReturnsError(t *testing.T) {
 	// Build a 100-deep nest. 100 > maxCedarDepth (64) so the limit
 	// should fire well before any stack growth becomes a concern.
@@ -344,10 +342,10 @@ func TestGoValueToCedar_DeepNestingReturnsError(t *testing.T) {
 	}
 }
 
-// TestPolicyEngine_ForChildRun_PopulatesParentRunID exercises the M3
-// fix: a sub-agent's permission policy must be a clone with
-// parentRunId set to the parent's runID. The same Cedar policy that
-// permits run_command from the parent must deny it from the child.
+// TestPolicyEngine_ForChildRun_PopulatesParentRunID: a sub-agent's
+// permission policy must be a clone with parentRunId set to the
+// parent's runID. The same Cedar policy that permits run_command from
+// the parent must deny it from the child.
 func TestPolicyEngine_ForChildRun_PopulatesParentRunID(t *testing.T) {
 	policy := `forbid (
 		principal,
@@ -609,11 +607,9 @@ func TestNew_PolicyEngine_MissingFile(t *testing.T) {
 	}
 }
 
-// TestPermissionNew_EmptyTypeReturnsError covers S3: a zero-value
-// PermissionPolicyConfig used to coerce silently to allow-all,
-// handing a misconfigured caller the most permissive policy with no
-// signal. Make the omission an explicit error so a future migration
-// or zero-valued direct-call cannot quietly drop permissions.
+// TestPermissionNew_EmptyTypeReturnsError: a zero-value
+// PermissionPolicyConfig must error rather than silently coercing to
+// allow-all.
 func TestPermissionNew_EmptyTypeReturnsError(t *testing.T) {
 	_, err := New(types.PermissionPolicyConfig{}, PolicyEngineEnv{}, nil)
 	if err == nil {

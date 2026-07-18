@@ -17,9 +17,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 )
 
-// staticBearerSource yields a fixed bearer token. Mirrors the helper
-// in trace/gcs_test.go but redeclared here so the two test packages
-// stay independent.
+// staticBearerSource yields a fixed bearer token.
 type staticBearerSource struct{ token string }
 
 func (s *staticBearerSource) Resolve(_ context.Context) (*credential.Resolved, error) {
@@ -103,8 +101,6 @@ func TestGCSExporter_Success(t *testing.T) {
 		t.Errorf("URL missing expected name: %q", got.URL)
 	}
 
-	// The uploaded body must decode as a valid gzipped tar containing
-	// hello.txt and subdir/nested.txt.
 	gzr, err := gzip.NewReader(bytes.NewReader(got.Body))
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
@@ -156,7 +152,6 @@ func TestGCSExporter_ServerError(t *testing.T) {
 
 func TestGCSExporter_EmptyDirectorySkip(t *testing.T) {
 	dir := t.TempDir()
-	// Don't write any files; just have the empty dir.
 
 	srv := &captureUploadServer{}
 	httpSrv := httptest.NewServer(srv.handler())
@@ -205,23 +200,11 @@ func TestGCSExporter_RefuseSymlinkEscape(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
-	// Symlink inside the workspace pointing to a sibling directory
-	// outside it. The exporter must refuse this rather than
-	// dereferencing the link and capturing the parent dir's contents.
 	if err := os.Symlink(outside, filepath.Join(workspace, "escape")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	// Also a regular file inside the workspace so the walk has
-	// something to do.
 	writeFile(t, filepath.Join(workspace, "innocent.txt"), "ok")
 
-	// The exporter refuses the entire archive when a symlink in the
-	// walked tree resolves outside the workspace root. Silent
-	// record-as-symlink is too permissive: an untar on the consumer
-	// side that follows symlinks during extraction would then read
-	// the parent dir's contents. Failing the whole export forces the
-	// operator to fix the source rather than ship a half-trusted
-	// tarball.
 	srv := &captureUploadServer{}
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -244,11 +227,7 @@ func TestGCSExporter_RefuseSymlinkEscape(t *testing.T) {
 }
 
 // TestGCSExporter_InternalSymlinkOK pins that symlinks staying inside
-// the workspace are recorded as symlink entries (not dereferenced),
-// matching the typical "go.sum -> ../go.sum" pattern in monorepo
-// sub-modules. Without this, every internal symlink would fail the
-// escape check and surprise an operator whose workspace happens to
-// contain a relative symlink.
+// the workspace are recorded as symlink entries, not dereferenced.
 func TestGCSExporter_InternalSymlinkOK(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "real.txt"), "real")
@@ -292,20 +271,11 @@ func TestGCSExporter_InternalSymlinkOK(t *testing.T) {
 	}
 }
 
-// TestGCSExporter_RefusesDanglingSymlink pins S6: a symlink whose
-// target does not exist (a "dangling" link) must be refused at
-// archive time. filepath.EvalSymlinks returns an error for dangling
-// links; the previous behaviour skipped the containment check on
-// that error and silently included the symlink. Downstream tar
-// extraction without --no-dereference can then be exploited via a
-// symlink-then-overwrite pattern targeting an absolute path outside
-// the workspace.
+// TestGCSExporter_RefusesDanglingSymlink pins that a symlink whose
+// target does not exist must be refused at archive time.
 func TestGCSExporter_RefusesDanglingSymlink(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "innocent.txt"), "ok")
-	// Target intentionally points at a non-existent path. The target
-	// is absolute so a permissive walk would happily include the link
-	// even though its dereferenced destination is unreachable.
 	target := filepath.Join(dir, "definitely-does-not-exist", "secret")
 	if err := os.Symlink(target, filepath.Join(dir, "dangling")); err != nil {
 		t.Fatalf("symlink: %v", err)

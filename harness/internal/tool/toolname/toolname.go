@@ -1,21 +1,7 @@
 // Package toolname provides per-provider normalization and collision
 // detection for tool/function names that flow from the registry into a
-// provider request.
-//
-// Provider tool-name constraints are stricter than what Stirrup's
-// registration boundaries enforce. MCP-derived names in particular can
-// contain hyphens, dots, spaces, or non-ASCII codepoints that one
-// provider accepts and another rejects, so a registered tool can become
-// an un-callable function name on the wire. This package centralises
-// those constraints into a single Policy table and produces a
-// deterministic, round-trip-safe Mapping between the internal name a
-// handler is registered under and the external name a provider sees.
-//
-// The normalization layer is intentionally provider-agnostic: callers
-// pass a provider-type discriminator and receive a Mapping, never the
-// concrete Policy. Adapters do not import this package — the
-// normalization wrapper in harness/internal/provider sits between the
-// loop and the concrete adapter and is the only consumer.
+// provider request. See docs/architecture.md#provider-facing-tool-name-normalization
+// for the design and per-provider rules.
 //
 // TODO(#221): when the capability-profile work lands, fold PolicyFor
 // into the profile so each provider declares its own naming rules
@@ -31,90 +17,55 @@ import (
 )
 
 // Policy describes the per-provider function-name constraints applied
-// during normalization. The defaults pick the strictest commonly-
-// supported character set so a name produced under one policy is
-// likely to be acceptable under another.
-//
-// MaxLen bounds the externalised name after character substitution. A
-// name that exceeds MaxLen is truncated and disambiguated with a short
-// stable hash suffix derived from the internal name so two long names
-// that share a common prefix do not collide silently.
-//
-// AllowHyphen / AllowLeadingDigit toggle the two real differences
-// across the providers Stirrup targets today. Gemini disallows hyphens
-// in function names entirely and requires the first character to be a
-// letter or underscore; OpenAI and Anthropic accept both.
+// during normalization: MaxLen bounds the externalised name, and
+// AllowHyphen / AllowLeadingDigit toggle the two real differences across
+// the providers Stirrup targets today.
 type Policy struct {
 	MaxLen            int
 	AllowHyphen       bool
 	AllowLeadingDigit bool
 }
 
-// PolicyFor returns the Policy that applies to the given provider type
-// string (the discriminator used in RunConfig.Provider.Type and in the
-// providers map). Unknown providers fall through to the strictest
-// policy so an adapter added without updating this table degrades to
-// "still serialises a name the provider will accept" rather than
-// "crashes the first turn".
+// PolicyFor returns the Policy for the given provider type (the
+// discriminator used in RunConfig.Provider.Type). Unknown providers fall
+// through to the strictest policy.
 //
 // TODO(#221): move the per-provider data into the capability profile so
 // each adapter declares its rules in one place.
 func PolicyFor(providerType string) Policy {
 	switch providerType {
 	case "anthropic":
-		// Anthropic accepts [a-zA-Z0-9_-]{1,64} on the Messages API
-		// tool name. Leading digits are permitted; hyphens are
-		// permitted.
+		// [A-Za-z0-9_-]{1,64}, leading digits allowed.
 		return Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
 	case "openai-compatible", "openai-responses":
-		// Chat Completions and the Responses API both enforce
-		// ^[a-zA-Z0-9_-]{1,64}$ on function names. Leading digits are
-		// permitted in practice; hyphens are permitted.
+		// Same character set as Anthropic.
 		return Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
 	case "bedrock":
-		// Bedrock Converse API mirrors the Anthropic constraint for
-		// the Anthropic-backed models that dominate today's deployment
-		// and matches the OpenAI rule for the Mistral/Llama-backed
-		// models. [a-zA-Z0-9_-]{1,64} is the safe union.
+		// Conservative union of the Anthropic/OpenAI-backed models it fronts.
 		return Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
 	case "gemini":
-		// Vertex AI function declarations require the name to match
-		// `[a-zA-Z_][a-zA-Z0-9_]*` with a 64-character cap. Hyphens
-		// are rejected and a leading digit is rejected.
+		// Vertex AI: no hyphens, no leading digit.
 		return Policy{MaxLen: 64, AllowHyphen: false, AllowLeadingDigit: false}
 	default:
-		// Unknown provider: pick the strictest constraint set so a new
-		// adapter cannot regress on naming until its policy is
-		// registered here.
+		// Strictest policy until a real one is registered.
 		return Policy{MaxLen: 64, AllowHyphen: false, AllowLeadingDigit: false}
 	}
 }
 
 // Mapping records the bidirectional translation between internal
 // (registry-side) names and external (provider-facing) names for a
-// single request. Both directions are pre-built so dispatch does not
-// have to recompute the normalization for every inbound tool_call
-// event.
-//
-// A name absent from ExternalFor is one the caller never passed in;
-// callers should fall back to the original string in that case rather
-// than treating absence as an error, so untouched fields (e.g. a
-// tool_use block on a message from a prior turn whose tool has since
-// been unregistered) round-trip unchanged.
+// single request. A name absent from ExternalFor is one the caller never
+// passed in and round-trips unchanged rather than erroring.
 type Mapping struct {
 	// ExternalFor maps internal name → external name.
 	ExternalFor map[string]string
-	// InternalFor maps external name → internal name. This is the
-	// inverse of ExternalFor and is what the adapter wrapper consults
-	// when translating an inbound tool_call event back to the name
-	// the registry knows the tool by.
+	// InternalFor is the inverse, consulted when translating an inbound
+	// tool_call event back to the registry-side name.
 	InternalFor map[string]string
 }
 
 // Translate returns the external name for an internal one, falling
-// back to the input when the name is not in the mapping. The fallback
-// keeps adapter wrappers terse — a missing entry is exactly the case
-// where no normalization is required.
+// back to the input when the name is not in the mapping.
 func (m *Mapping) Translate(internal string) string {
 	if m == nil {
 		return internal
@@ -126,8 +77,7 @@ func (m *Mapping) Translate(internal string) string {
 }
 
 // Reverse returns the internal name for an external one, falling back
-// to the input on a miss. See Translate for the rationale on
-// pass-through.
+// to the input on a miss.
 func (m *Mapping) Reverse(external string) string {
 	if m == nil {
 		return external
@@ -138,22 +88,11 @@ func (m *Mapping) Reverse(external string) string {
 	return external
 }
 
-// Build produces a Mapping for the given internal tool names under the
-// supplied Policy. The returned mapping is deterministic: two
-// invocations with the same name set and the same Policy produce
-// identical external names and identical collision detection.
-//
-// Build returns an error when two distinct internal names normalise
-// to the same external name and the disambiguation suffix cannot
-// resolve the collision (e.g. caller passed the same internal name
-// twice). Failing closed is the correct behaviour for the loop: a
-// silent alias would route a tool call to the wrong handler.
+// Build produces a deterministic Mapping for the given internal tool
+// names under the supplied Policy. It returns an error when a collision
+// after normalization cannot be resolved by disambiguation — failing
+// closed rather than silently aliasing a tool call to the wrong handler.
 func Build(internalNames []string, policy Policy) (*Mapping, error) {
-	// First pass: compute the candidate external name for every internal
-	// name by normalising it onto the policy's character set. The
-	// candidate slice is positionally aligned with internalNames, so the
-	// collision resolver below can key disambiguation off the internal
-	// name while colliding on the candidate.
 	candidates := make([]string, len(internalNames))
 	for i, name := range internalNames {
 		candidates[i] = sanitize(name, policy)
@@ -163,21 +102,16 @@ func Build(internalNames []string, policy Policy) (*Mapping, error) {
 
 // BuildFromCandidates resolves collisions among caller-supplied external
 // candidate names and returns the round-trip Mapping. It is the shared
-// core of the collision algorithm: Build calls it after sanitising each
-// internal name onto the policy character set, and the toolset-profile
-// presenter (issue #234) calls it with each tool's profile alias as the
-// candidate so alias collisions are disambiguated by exactly the same
-// deterministic hash-suffix scheme — there is no second algorithm.
+// collision core: Build calls it after sanitising each internal name,
+// and the toolset-profile presenter calls it with each tool's alias as
+// the candidate, so alias collisions resolve via the same scheme.
 //
 // keys are the unique identities the disambiguation suffix is derived
-// from (the internal tool IDs); candidates[i] is the desired external
-// name for keys[i]. The two slices must be the same length. A duplicate
-// key is a caller bug (the registry contract is that internal names are
-// unique) and is rejected; two distinct keys whose candidates collide are
-// disambiguated by appending the SHA-256-derived suffix of the colliding
-// key, within the policy's length budget. A collision the suffix cannot
-// resolve fails closed — a silent alias would route a tool call to the
-// wrong handler.
+// from; candidates[i] is the desired external name for keys[i]. The two
+// slices must be the same length. A duplicate key is rejected; distinct
+// keys whose candidates collide are disambiguated with a SHA-256-derived
+// suffix of the colliding key, within the policy's length budget. A
+// collision the suffix cannot resolve fails closed.
 func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, error) {
 	if len(keys) != len(candidates) {
 		return nil, fmt.Errorf("toolname: keys/candidates length mismatch (%d vs %d)", len(keys), len(candidates))
@@ -188,11 +122,8 @@ func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, er
 		InternalFor: make(map[string]string, len(keys)),
 	}
 
-	// Deduplicate keys — a single internal name passed twice is a caller
-	// bug, not a collision. The registry contract is that names are
-	// unique, but tests and embedding callers may bypass it; surface the
-	// duplicate as an explicit error rather than silently overwriting the
-	// first entry.
+	// A duplicate key is a caller bug, not a collision, since the registry
+	// contract is that internal names are unique.
 	seen := make(map[string]struct{}, len(keys))
 	for _, n := range keys {
 		if _, dup := seen[n]; dup {
@@ -201,23 +132,12 @@ func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, er
 		seen[n] = struct{}{}
 	}
 
-	// Detect collisions among the candidates. When two candidates collide,
-	// derive a disambiguating suffix from the colliding key's SHA-256
-	// hash. This is deterministic, keeps the suffix short, and survives
-	// reordering of the input slice.
-	//
-	// The suffix is appended within the MaxLen budget — a candidate may be
-	// shorter than MaxLen, in which case the suffix is added directly; a
-	// MaxLen-truncated candidate has its truncation shortened to make
-	// room.
 	used := make(map[string]string, len(candidates)) // external → key
 	for i, ext := range candidates {
 		key := keys[i]
 		if existing, taken := used[ext]; taken && existing != key {
-			// Capture the pre-disambiguation candidate so the irresolvable
-			// error names the alias the author actually wrote, not the
-			// SHA-suffixed form disambiguate derived (which appears nowhere
-			// in their input and would misdirect the fix).
+			// Capture the pre-disambiguation candidate so an irresolvable
+			// error names the alias the author actually wrote.
 			origExt := ext
 			ext = disambiguate(ext, key, policy)
 			if other, stillCollides := used[ext]; stillCollides && other != key {
@@ -235,12 +155,9 @@ func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, er
 	return m, nil
 }
 
-// BuildSorted is a convenience wrapper for callers that hold a
-// ToolDefinition-like slice and want a deterministic Mapping
-// independent of registration order. The caller may want this when
-// the registry's order is operator-controlled (e.g. via a config
-// file) but the Mapping is consumed by trace persistence where order
-// drift between runs would inflate diffs.
+// BuildSorted builds a Mapping independent of input ordering — useful
+// when the registry order is operator-controlled but the Mapping feeds
+// trace persistence, where order drift between runs would inflate diffs.
 func BuildSorted(internalNames []string, policy Policy) (*Mapping, error) {
 	names := make([]string, len(internalNames))
 	copy(names, internalNames)
@@ -284,9 +201,8 @@ func sanitize(name string, policy Policy) string {
 
 	out := b.String()
 
-	// Enforce length cap. A name that exceeds MaxLen is hard-truncated
-	// here; Build's disambiguation pass adds a hash suffix when the
-	// truncated form collides with another truncated form.
+	// Build's disambiguation pass adds a hash suffix when a truncated
+	// form collides with another truncated form.
 	if policy.MaxLen > 0 && len(out) > policy.MaxLen {
 		out = out[:policy.MaxLen]
 	}
@@ -294,15 +210,10 @@ func sanitize(name string, policy Policy) string {
 }
 
 // disambiguate produces a deterministic disambiguating form of ext for
-// the given internal name, keeping the result within the policy's
-// length budget. The suffix is derived from the SHA-256 of the
-// internal name so the same internal name always maps to the same
-// disambiguated form regardless of the order in which collisions are
-// detected.
-//
-// Suffix layout: "_" + first 6 hex chars of SHA-256(internal). 7
-// characters total. When MaxLen is short enough that suffix + truncated
-// prefix do not fit, the prefix is trimmed further to make room.
+// the given internal name, within the policy's length budget. The
+// suffix ("_" + 6 hex chars of SHA-256(internal)) depends only on the
+// internal name, so the result is independent of collision-detection
+// order.
 func disambiguate(ext, internal string, policy Policy) string {
 	const suffixHexChars = 6
 	suffix := nameHashSuffix(internal, suffixHexChars)

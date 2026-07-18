@@ -23,10 +23,7 @@ import (
 // into a dry-run reachability/authentication probe. Components satisfy it
 // WITHOUT importing core — Preflight type-asserts each constructed
 // component to this interface and calls Probe when present, or records a
-// skip when absent. This keeps the dependency direction one-way (core ->
-// components) and preserves the invariant that the agentic loop is a pure
-// function of its interfaces: Preflight is a separate entry point that
-// never touches loop.go.
+// skip when absent.
 //
 // Probe must be side-effect-free with respect to the run: it may open a
 // network connection or read a file, but it must not spend provider
@@ -79,11 +76,7 @@ type PreflightOptions struct {
 	SkipTrace    bool
 	SkipEgress   bool
 	// SkipExecutor gates the container-engine probe (--no-probe-executor).
-	// When true the executor-probe step records a skip with a reason
-	// instead of pinging the container engine, so an operator can suppress
-	// the engine probe symmetrically with the network probes. It has no
-	// effect on local/api executors, which construct without contacting an
-	// engine and expose no Probe regardless.
+	// No effect on local/api executors, which expose no Probe regardless.
 	SkipExecutor bool
 	Timeout      time.Duration
 }
@@ -93,34 +86,16 @@ type PreflightOptions struct {
 // documented for --dry-run-timeout.
 const DefaultPreflightTimeout = 30 * time.Second
 
-// Preflight runs every initialisation step short of the first agentic
-// turn and returns a per-step report. It validates the config, constructs
-// each probe-eligible component (a construction failure becomes a failed
-// step naming the component — this is where credential resolution, which
-// BuildLoop performs inline during provider construction, surfaces), then
-// probes each constructed component by iterating builtComponents.probeSteps,
-// the SAME probe enumeration BuildLoop's components satisfy.
+// Preflight runs every initialisation step short of the first agentic turn
+// and returns a per-step report. It validates the config, constructs each
+// probe-eligible component individually (so one failure is isolated to its
+// own step rather than aborting the whole report), then probes each via
+// builtComponents.probeSteps — the same enumeration BuildLoop's components
+// satisfy, which is what keeps a dry-run structurally in parity with a real
+// run (see docs/architecture.md).
 //
-// PARITY INVARIANT (issue #356): the probe-eligible set is defined once in
-// builtComponents.probeSteps and constructed by buildComponents, which
-// BuildLoopWithTransport also calls. A new probe-eligible component added to
-// buildComponents is therefore enumerated by probeSteps and probed here
-// automatically; TestPreflightParity fails if a probeSteps entry has no
-// corresponding step in a representative-config report. This removes the
-// old "keep in lockstep" hazard where a component added to BuildLoop alone
-// produced a false "all OK" dry-run.
-//
-// Construction here is per-component (not the bundled buildComponents call
-// BuildLoop uses) so a single component's failure is isolated to its own
-// step rather than aborting the whole report — the dry-run's value is
-// showing EVERY step's outcome. The probe phase then drives off the
-// assembled builtComponents.probeSteps so the shared enumeration still
-// governs what is probed.
-//
-// The whole sequence runs under a context.WithTimeout(ctx, opts.Timeout)
-// so a wedged endpoint cannot hang the dry-run past the operator's budget.
-// Owned resources (trace exporters) are closed before returning so a
-// dry-run leaves nothing running.
+// The whole sequence runs under a context.WithTimeout(ctx, opts.Timeout).
+// Owned resources (trace exporters) are closed before returning.
 //
 // Preflight returns a non-nil error only for an internal failure that
 // prevents producing a report at all; a report with failed steps is
@@ -145,7 +120,6 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		add(PreflightStep{Name: name, Status: PreflightFail, Detail: err.Error(), Hint: hint})
 	}
 
-	// 1. Config validation — the same fast invariant check BuildLoop runs.
 	if err := types.ValidateRunConfig(config); err != nil {
 		fail("config-validation", err, "fix the RunConfig shape; see `stirrup run-config --validate`")
 		report.finalise()
@@ -158,7 +132,6 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	// belong to a real run's audit trail). Discard them.
 	secLogger := security.NewSecurityLogger(io.Discard, config.RunID)
 
-	// 2. Secret store.
 	secrets, err := security.NewAutoSecretStore(ctx, config)
 	if err != nil {
 		fail("secret-store", err, "check the secret backend (env/file/SSM) for the referenced secret:// paths")
@@ -167,15 +140,13 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	}
 	ok("secret-store", "secret store constructed")
 
-	// 3. Decide the dry-run executor (read-only: nil for container, built
-	// for local/api). Its construction step is emitted by buildComponents,
-	// not here, so the executor step stays a property of the shared
-	// constructor.
+	// Executor construction is read-only here (nil for container, built for
+	// local/api); its construction step is emitted by buildComponents below.
 	execResult := preflightExecutorConstruct(ctx, config, secrets, secLogger)
 
-	// 4. Resolve trace-emitter headers up front so a secret:// resolution
-	// failure surfaces as its own dedicated step rather than as an opaque
-	// trace-emitter construction error inside buildComponents.
+	// Resolved up front so a secret:// resolution failure surfaces as its
+	// own dedicated step rather than an opaque trace-emitter construction
+	// error inside buildComponents.
 	resolvedHeaders, hdrErr := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
 	if hdrErr != nil {
 		fail("trace-emitter", hdrErr, "resolve secret:// references in traceEmitter.headers")
@@ -183,18 +154,13 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		return report, nil
 	}
 
-	// 5. Construct the probe-eligible component set through buildComponents —
-	// the SAME constructor BuildLoopWithTransport calls. This is what makes
-	// the parity structural: a component cannot be built for a real run
-	// without also being built (and step-reported, and probe-enumerated) in
-	// the dry-run. The sink emits each component's construction step; a
-	// construction failure stops the dry-run at the first error (an
-	// acceptable trade for a single shared construction path — every later
-	// step depends on this one anyway, and a valid config builds the whole
-	// set so its report is unchanged).
+	// buildComponents is the SAME constructor BuildLoopWithTransport calls —
+	// this is what makes the parity structural. A construction failure
+	// stops the dry-run at the first error; the sink has already recorded
+	// the step.
 	//
 	// An empty registry and nil transport match the dry-run intent for the
-	// permission policy: the construction (and any Cedar parse) is what is
+	// permission policy: construction (and any Cedar parse) is what is
 	// validated, not the run's tool set or upstream approval channel.
 	sink := &componentStepSink{ok: ok, failStep: fail}
 	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, resolvedHeaders, resourceOptionsFromConfig(config), sink)
@@ -209,24 +175,16 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		defer func() { _ = closer.Close() }()
 	}
 
-	// 6. Probe phase. Drive off the SHARED probe enumeration so the set of
-	// things probed here is exactly the set BuildLoop's components satisfy.
 	for _, step := range bc.probeSteps() {
 		runProbeStep(ctx, config, step, opts, ok, skip, fail)
 	}
 
-	// 8. MCP servers. Probed per-server with a tools/list handshake that
-	// does not register tools. Gated by --no-probe-mcp.
 	preflightMCP(ctx, config, secrets, opts, ok, skip, fail)
 
-	// 9. Egress allowlist. Only relevant for the container executor in
-	// allowlist network mode. Gated by --no-probe-egress.
 	preflightEgress(ctx, config, opts, ok, skip, fail)
-
-	// 10. Workspace export destination. Only when a gs:// export URI is
-	// configured. It has no dedicated --no-probe gate: the probe is a
-	// read-only bucket-metadata GET that spends nothing, so it always runs
-	// when an export destination is set.
+	// No dedicated --no-probe gate: the probe is a read-only
+	// bucket-metadata GET that spends nothing, so it always runs when an
+	// export destination is set.
 	preflightWorkspaceExport(ctx, config, ok, skip, fail)
 
 	report.finalise()
@@ -344,23 +302,15 @@ func isNilComponent(component any) bool {
 
 // preflightExecutorConstruct decides the dry-run executor and returns it as
 // an executorBuildResult for buildComponents to thread onto the component set
-// and emit as the "executor" construction step. It does NOT emit the step
-// itself — buildComponents owns step emission so the construction-step set is
-// a property of the shared constructor.
+// and emit as the "executor" construction step; it does not emit the step
+// itself.
 //
 // The container path is deliberately NOT routed through buildExecutor:
 // constructing a ContainerExecutor creates and STARTS a real container (and
-// the egress proxy in allowlist mode) as a side effect, which contradicts
-// the read-only intent of a dry-run (issue #245 step 7). For container it
-// returns a nil executor with an ok note that the engine is checked
-// read-only in preflightExecutorProbe rather than built here. local and api
-// executors are cheap to construct and have no live side effects, so they
-// are built here and returned for the probe phase (neither implements a
-// Probe → the probe step records a skip).
-//
-// A returned local/api executor needs no Close: it holds no live resource,
-// so the dry-run leaves nothing running. The container path, which would, is
-// never constructed.
+// the egress proxy in allowlist mode), which contradicts the read-only
+// intent of a dry-run. For container it returns a nil executor, checked
+// read-only in preflightExecutorProbe instead. local and api executors are
+// cheap and side-effect-free, so they are built here for the probe phase.
 func preflightExecutorConstruct(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -450,13 +400,9 @@ func providerProbeDetail(providerType string) string {
 }
 
 // preflightMCP probes every configured MCP server. Gated by
-// --no-probe-mcp. An MCP probe failure is recorded as a fail (consistent
-// with every other probe), which fails the dry-run. The issue notes MCP
-// failures are non-fatal unless --strict is set; --strict is out of scope
-// for this change, so the simpler consistent behaviour is chosen and
-// documented: a configured MCP server that does not answer the
-// tools/list handshake fails the dry-run, and an operator who expects an
-// MCP server to be down can suppress the probe with --no-probe-mcp.
+// --no-probe-mcp. A configured server that does not answer the
+// tools/list handshake fails the dry-run; an operator who expects a
+// server to be down can suppress the probe with --no-probe-mcp.
 func preflightMCP(
 	ctx context.Context,
 	config *types.RunConfig,

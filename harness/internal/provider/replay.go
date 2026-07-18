@@ -69,13 +69,11 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 				}
 				// Estimate tokens from the JSON input size.
 				estimatedTokens += len(block.Input) / 4
-				// ThoughtSignature is intentionally forwarded here so
-				// live-continuation paths seeded from this recording
-				// (e.g. mineFailureTasks) carry the model's prior
-				// reasoning state into the next Vertex request (#194).
-				// Pure eval replay (no live API calls) is unaffected:
-				// the blob is never re-submitted to any provider in
-				// that scenario, so forwarding adds no leakage surface.
+				// ThoughtSignature is forwarded so live-continuation paths
+				// seeded from this recording carry the model's prior
+				// reasoning state into the next Vertex request; pure eval
+				// replay never resubmits it, so this adds no leakage
+				// surface.
 				ch <- types.StreamEvent{
 					Type:             "tool_call",
 					ID:               block.ID,
@@ -94,17 +92,8 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 			estimatedTokens = 1
 		}
 
-		// Known gap: ReplayFields is NOT forwarded here. TurnRecord does
-		// not carry the message-level replay state (the trace scrubber
-		// deliberately drops it as provider-opaque), so a
-		// live-continuation run seeded from a recording against
-		// DeepSeek v4 thinking mode will miss reasoning_content on the
-		// replayed turn and 400 on the first real tool-call request.
-		// Closing it needs a TurnRecord schema change (a recording-side
-		// carrier exempt from the scrub drop) — tracked as a follow-up;
-		// live continuation against v4 thinking mode is not a supported
-		// workflow today. Contrast with ThoughtSignature above, which
-		// rides the ContentBlock and is forwarded.
+		// Known gap: ReplayFields is NOT forwarded here, unlike
+		// ThoughtSignature above; see docs/provider-quirks.md.
 		ch <- types.StreamEvent{
 			Type:         "message_complete",
 			StopReason:   stopReason,

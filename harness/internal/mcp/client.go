@@ -30,83 +30,42 @@ import (
 
 const maxMCPResponseSize = 10 * 1024 * 1024 // 10 MB
 
-// maxMCPStructuredSize bounds the byte size of the structured envelope the
-// bridge preserves from a single tools/call response (the marshalled
-// mcpStructuredResult: structuredContent plus the non-text content
-// descriptors). MCP server output is UNTRUSTED — a hostile or misconfigured
-// server could return a multi-megabyte structuredContent object (still
-// within the 10 MB transport cap) that would then be threaded into every
-// subsequent turn's message history AND the persisted trace, multiplying the
-// memory and storage cost (CWE-400). When the marshalled envelope exceeds
-// this cap the bridge drops the structured payload and keeps only the text
-// content, with a marker noting the omission, so the model still receives a
-// usable result without the harness retaining an unbounded blob. 256 KB is
-// generous for a legitimate structured result while well below the transport
-// ceiling.
+// maxMCPStructuredSize bounds the marshalled mcpStructuredResult envelope
+// preserved from a tools/call response; an oversized envelope is dropped
+// with a marker rather than retained. See docs/security.md#mcp-result-bounding.
 const maxMCPStructuredSize = 256 * 1024
 
-// maxMCPEmbeddedResourceTextLen bounds the inlined text the bridge preserves
-// from a single embedded-resource content item. Embedded resources can carry
-// arbitrarily large text/blob bodies; the bridge records a bounded prefix
-// plus the resource URI/mime so the model knows the resource exists and can
-// re-fetch it, rather than inlining an unbounded (untrusted) body into the
-// envelope. The full body is never required for the model to act — the URI
-// is the durable handle.
+// maxMCPEmbeddedResourceTextLen bounds the inlined text preserved from a
+// single embedded-resource content item; the URI remains the durable handle
+// for the rest.
 const maxMCPEmbeddedResourceTextLen = 8 * 1024
 
-// maxMCPContentItems caps the number of content items the bridge will
-// process from a single tools/call response before building the non-text
-// descriptor slice. A hostile 10 MB response can pack ~700K minimal items
-// (e.g. {"type":"image"} at ~15 bytes each); iterating them all would grow
-// the NonText slice to tens of megabytes (with slice-doubling overhead)
-// before the final marshalled-size check fires, a transient spike
-// repeatable every tool turn (CWE-789/400). Capping the input count BEFORE
-// the loop bounds the allocation up front. 512 is far above any realistic
-// tool result while keeping the worst-case descriptor slice small; overflow
-// is marked, not silently dropped.
+// maxMCPContentItems caps content items processed from one tools/call
+// response before the descriptor slice is built, bounding worst-case
+// allocation ahead of the size check; overflow is marked, not dropped.
 const maxMCPContentItems = 512
 
-// kindMCPToolResult is the ToolResult.Kind discriminator for the structured
-// envelope the MCP bridge produces. It is distinct from the built-in kinds
-// (command_result, etc.) because an MCP result is a heterogeneous container
-// (structuredContent + typed descriptors for non-text content) rather than a
-// single built-in shape. Consumers route on this value to know the payload is
-// an mcpStructuredResult.
+// kindMCPToolResult is the ToolResult.Kind for the MCP structured envelope,
+// distinct from the built-in kinds since an MCP result mixes structured
+// content with typed non-text descriptors.
 const kindMCPToolResult = "mcp_tool_result"
 
-// maxMCPToolNameLen caps the length of a per-tool name as reported by a
-// remote MCP server. mt.Name is taken verbatim from the wire response and
-// becomes a metric attribute (`tool.name`) on stirrup.mcp.calls; an
-// uncapped value lets a malicious or misconfigured server inject
-// arbitrarily long unique attribute values, blowing up cardinality on
-// the OTLP exporter (CWE-400). 128 is comfortably above any realistic
-// MCP tool name and well below typical metric backend label limits.
+// maxMCPToolNameLen caps a remote tool name; it becomes a metric attribute
+// value, so an unbounded server-supplied name would blow up cardinality.
 const maxMCPToolNameLen = 128
 
-// maxMCPToolsPerServer caps the number of tools a single MCP server may
-// register. Combined with maxMCPToolNameLen this bounds the cardinality
-// contribution of any one server to (count * length) regardless of how
-// the server is misbehaving. Tools beyond the cap are dropped at
-// registration time with a structured warning so operators can spot
-// misconfigured servers.
+// maxMCPToolsPerServer caps tools registered per server; combined with
+// maxMCPToolNameLen this bounds one server's metric-cardinality contribution.
 const maxMCPToolsPerServer = 64
 
-// maxMCPSessionIDLen caps the length of the Mcp-Session-Id value accepted from
-// a server response. The captured value is echoed back verbatim on every
-// subsequent request header, so an unbounded server-controlled string would
-// let a hostile or buggy server grow the harness's outbound request size
-// without limit. A session ID past this cap is rejected (not stored) and the
-// prior value is kept. 512 bytes is well above any legitimate opaque token.
+// maxMCPSessionIDLen caps the accepted Mcp-Session-Id; it is echoed on every
+// later request, so an unbounded value would grow outbound header size
+// without limit.
 const maxMCPSessionIDLen = 512
 
 // sanitizeMCPToolName truncates a remote tool name to maxMCPToolNameLen
-// runes. Returns the input unchanged when it is already within the cap.
-//
-// The cap is on runes, not bytes: a byte-slice truncation (s[:128]) could
-// split a multi-byte UTF-8 name mid-codepoint and emit an invalid-UTF-8
-// string, which then becomes both a registry map key and the `tool.name`
-// OTLP attribute on stirrup.mcp.calls — OpenTelemetry SDKs treat invalid
-// attribute values as implementation-defined and may reject the export.
+// runes (not bytes, to avoid splitting a multi-byte name mid-codepoint,
+// which would produce an invalid OTLP attribute value).
 func sanitizeMCPToolName(s string) string {
 	runes := []rune(s)
 	if len(runes) > maxMCPToolNameLen {
@@ -147,13 +106,9 @@ type mcpTool struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 	// Annotations carries the server-declared MCP tool annotations (spec
-	// 2025-06-18). types.ToolAnnotations mirrors the MCP object field-for-
-	// field, so it doubles as the wire-parse target; absent annotations leave
-	// it nil. The harness surfaces these on the tool's ToolPresentation (#222)
-	// but does not yet act on them — the conservative WorkspaceMutating/
-	// RequiresApproval defaults below still govern gating regardless of what a
-	// remote server claims, so a server cannot relax its own gating by
-	// asserting readOnlyHint.
+	// 2025-06-18), advisory only — gating always uses the conservative
+	// WorkspaceMutating/RequiresApproval defaults below regardless of what a
+	// server claims.
 	Annotations *types.ToolAnnotations `json:"annotations,omitempty"`
 }
 
@@ -162,10 +117,7 @@ type toolsListResult struct {
 }
 
 // contentItem is one entry in a tools/call result's content array (MCP spec
-// 2025-06-18 §server/tools). The harness reads `text` for the canonical
-// fallback and the remaining fields to describe non-text content explicitly
-// rather than discarding it. Only the fields the bridge acts on are
-// unmarshalled; unknown fields are ignored.
+// 2025-06-18 §server/tools). Only fields the bridge acts on are unmarshalled.
 //
 //	type=="text"          → Text
 //	type=="image"|"audio" → MimeType (the bytes are not inlined)
@@ -181,10 +133,8 @@ type contentItem struct {
 }
 
 // mcpEmbeddedResource is the `resource` field of a type=="resource" content
-// item — an inlined resource the server chose to embed in the result. The
-// text/blob body is UNTRUSTED and potentially large; the bridge records a
-// bounded prefix of Text and never inlines Blob (binary), keeping the URI as
-// the durable handle.
+// item. Text/blob bodies are untrusted and potentially large; the bridge
+// bounds Text and never inlines Blob, keeping the URI as the durable handle.
 type mcpEmbeddedResource struct {
 	URI      string `json:"uri"`
 	MimeType string `json:"mimeType"`
@@ -193,23 +143,19 @@ type mcpEmbeddedResource struct {
 }
 
 // toolsCallResult is the tools/call response. StructuredContent is the
-// optional typed object an MCP tool returns when it declares an outputSchema
-// (MCP spec 2025-06-18). It is captured as raw JSON and preserved into the
-// B1 envelope. Meta is ignored beyond decoding tolerance.
+// optional typed object a tool returns when it declares an outputSchema
+// (MCP spec 2025-06-18), captured as raw JSON.
 type toolsCallResult struct {
 	Content           []contentItem   `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent"`
 	IsError           bool            `json:"isError"`
 }
 
-// mcpStructuredResult is the typed envelope the bridge marshals into
-// ToolResult.Structured for an MCP tools/call result (issue #231 B2). It is a
-// concrete Go struct, not a map[string]any (wave-2 design D13): StructuredContent
-// carries the server's typed object verbatim (bounded), and NonText explicitly
-// describes every content item the harness does not inline as text, so a
-// resource link / embedded resource / image is REPRESENTED rather than silently
-// dropped. The whole envelope is scrubbed and size-bounded before it reaches a
-// trace or the model history (see callToolStructured).
+// mcpStructuredResult is the envelope the bridge marshals into
+// ToolResult.Structured for an MCP tools/call result: StructuredContent
+// carries the server's typed object verbatim (bounded), and NonText
+// represents every non-text content item explicitly rather than dropping it.
+// Scrubbed and size-bounded before reaching a trace or model history.
 type mcpStructuredResult struct {
 	// StructuredContent is the server's structuredContent object, preserved
 	// verbatim when present and within the size bound. Omitted when the
@@ -221,13 +167,10 @@ type mcpStructuredResult struct {
 	NonText []mcpNonTextContent `json:"non_text_content,omitempty"`
 }
 
-// mcpNonTextContent is the explicit, marked representation of one non-text
-// content item from a tools/call result. The harness does not forward image
-// or audio bytes or unbounded embedded-resource bodies; instead it records
-// what the item was (Kind), its addressing (URI/MimeType/Name), and — for an
-// embedded text resource — a bounded prefix (Text, with Truncated set when
-// the body was longer). This is the "represent-or-mark, never silently drop"
-// contract from issue #231.
+// mcpNonTextContent represents one non-text content item from a tools/call
+// result. Image/audio bytes and unbounded resource bodies are never
+// forwarded; instead it records Kind, addressing (URI/MimeType/Name), and
+// for an embedded text resource a bounded prefix (Text, Truncated when cut).
 type mcpNonTextContent struct {
 	// Kind is the MCP content type: "image", "audio", "resource_link",
 	// "resource", or "unsupported" for a type the bridge does not recognise.
@@ -249,19 +192,12 @@ type Client struct {
 	registry   *tool.Registry
 	nextID     atomic.Int64
 
-	// Metrics is optional. When set, every MCP tool invocation records
-	// stirrup.mcp.calls and stirrup.mcp.duration_ms with attributes
-	// (server.name, tool.name, success). A nil Metrics is safe at every
-	// call site — callers (including the factory) wire this after
-	// construction. Field-injected to avoid breaking existing NewClient
-	// callers.
+	// Metrics is optional; when set, records stirrup.mcp.calls and
+	// stirrup.mcp.duration_ms per invocation. Nil is safe everywhere.
 	Metrics *observability.Metrics
 
-	// Logger is optional. When set, the client emits structured warnings for
-	// operator-visible anomalies — notably a server advertising more tools
-	// than maxMCPToolsPerServer (the overflow is dropped). A nil Logger is
-	// safe everywhere; the helper guards it. Field-injected for the same
-	// backwards-compatibility reason as Metrics.
+	// Logger is optional; when set, emits structured warnings for
+	// operator-visible anomalies (e.g. tool-count overflow). Nil is safe.
 	Logger *slog.Logger
 
 	mu       sync.Mutex
@@ -276,17 +212,9 @@ func (c *Client) warn(msg string, args ...any) {
 	}
 }
 
-// validateMCPHost enforces the connect-time trust-model gate on a server
-// URI: a parseable http/https scheme, a present host, https for any remote
-// (non-loopback) target, the shared SSRF guard against private/reserved
-// addresses, and the optional AllowedMCPHosts pin. It mirrors the static
-// checks in types.ValidateRunConfig but also runs the resolving SSRF guard,
-// because a config that validated at parse time can still point at a name
-// that resolves to a private address — the same reuse web_fetch relies on.
-//
-// Loopback http URIs are permitted for local development; the resolving SSRF
-// guard is therefore skipped only for a loopback IP literal or a
-// localhost name, never for a remote host.
+// validateMCPHost enforces the connect-time trust-model gate: scheme,
+// present host, https for non-loopback targets, the shared SSRF guard, and
+// the optional AllowedMCPHosts pin. See docs/security.md#mcp-server-trust-model.
 func validateMCPHost(config types.MCPServerConfig) error {
 	parsed, err := url.Parse(config.URI)
 	if err != nil {
@@ -326,11 +254,9 @@ func validateMCPHost(config types.MCPServerConfig) error {
 	return nil
 }
 
-// filterAllowedTools applies the per-server AllowedTools allowlist to the set
-// of advertised tools. An empty allowlist returns the input unchanged
-// (register everything). Otherwise only tools whose server-reported name is
-// listed survive; the rest are dropped with a warning so a server advertising
-// tools beyond its trust grant is visible to operators.
+// filterAllowedTools applies the per-server AllowedTools allowlist. An empty
+// allowlist registers everything; otherwise only listed tool names survive,
+// with the rest dropped and a warning logged.
 func (c *Client) filterAllowedTools(config types.MCPServerConfig, tools []mcpTool) []mcpTool {
 	if len(config.AllowedTools) == 0 {
 		return tools
@@ -357,10 +283,8 @@ func (c *Client) filterAllowedTools(config types.MCPServerConfig, tools []mcpToo
 type serverSession struct {
 	name string // operator-supplied logical name, for log attribution
 	uri  string
-	// displayURI is uri with userinfo and query string stripped. Logs and
-	// returned errors must use this rather than uri: an operator may embed
-	// credentials in the URI (https://user:pass@host or ?api_key=...), and
-	// RunConfig.Redact() does not cover this path (CWE-532).
+	// displayURI is uri with userinfo/query stripped; logs and errors must
+	// use it, never uri, since an operator may embed credentials in the URI.
 	displayURI string
 	token      string // bearer token, empty if no auth
 	sessionID  string // Mcp-Session-Id from server
@@ -369,17 +293,9 @@ type serverSession struct {
 const mcpClientTimeout = 30 * time.Second
 
 // NewClient creates an MCP client that registers discovered tools into the
-// given registry. It uses the provided http.Client for all requests; if nil,
-// a default client with a 30-second timeout is used to prevent unbounded
-// connections to remote MCP servers.
-//
-// The default client's transport re-validates every dialled host through the
-// shared SSRF guard (security.LoopbackAwareDialContext), so a server whose DNS
-// record flips to a non-loopback private/reserved address between the
-// connect-time check and the actual dial is still refused — DNS-rebinding
-// protection consistent with web_fetch. Loopback targets are permitted because
-// a remote http:// URI is already rejected upstream (ValidateRunConfig /
-// validateMCPHost) and a localhost MCP server is a supported local-dev case.
+// given registry. If httpClient is nil, a default client with a 30-second
+// timeout and DNS-rebinding-safe dialing is used (see
+// docs/security.md#ssrf-protection-web_fetch-and-mcp).
 func NewClient(registry *tool.Registry, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{
@@ -412,27 +328,17 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	c.sessions[config.URI] = sess
 	c.mu.Unlock()
 
-	// Discover tools.
 	tools, err := c.listTools(ctx, sess)
 	if err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
 
-	// Apply the per-server tool allowlist BEFORE the cardinality cap so a
-	// hostile server cannot fill the cap with disallowed tools and starve
-	// the legitimate ones. An empty AllowedTools registers everything
-	// (backward-compatible); a non-empty list drops any advertised tool not
-	// named, with a warning so operators can spot a server advertising more
-	// than it was trusted for.
+	// Allowlist filtering happens before the count cap so a hostile server
+	// cannot fill the cap with disallowed tools and starve legitimate ones.
 	tools = c.filterAllowedTools(config, tools)
 
-	// Cap the number of tools we register per server. A misconfigured or
-	// hostile MCP server could otherwise expose thousands of unique
-	// `tool.name` metric attribute values via stirrup.mcp.calls and
-	// permission decisions, causing cardinality explosion in the OTLP
-	// exporter (CWE-400). Drop the overflow with a warning so operators
-	// can investigate; the first maxMCPToolsPerServer tools are
-	// still usable.
+	// Caps per-server tool.name cardinality on metric attributes (CWE-400);
+	// overflow is dropped with a warning.
 	if len(tools) > maxMCPToolsPerServer {
 		c.warn("mcp tool count exceeded cap; overflow dropped",
 			"server", config.Name,
@@ -442,7 +348,6 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 		tools = tools[:maxMCPToolsPerServer]
 	}
 
-	// Register each discovered tool.
 	for _, mt := range tools {
 		c.registerMCPTool(config.Name, sess, mt)
 	}
@@ -450,17 +355,9 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	return nil
 }
 
-// Probe performs a read-only reachability and authentication handshake
-// against a single MCP server for a dry-run preflight: it validates the
-// URI shape, resolves the configured bearer token, and issues the same
-// tools/list request Connect uses — but it does NOT register the
-// discovered tools into the registry. This keeps the probe a pure
-// side-effect-free check that can run before (or instead of) the real
-// Connect, and avoids mutating a registry a non-dry-run path may also be
-// populating.
-//
-// A returned error names the server so the preflight step can point the
-// operator at the specific misconfigured entry.
+// Probe performs a read-only reachability and auth handshake against a
+// single MCP server for a dry-run preflight: the same tools/list request as
+// Connect, but it does NOT register the discovered tools into the registry.
 func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
 	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
@@ -472,11 +369,9 @@ func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secret
 	return nil
 }
 
-// newSession runs the shared Connect/Probe prologue: it validates the
-// required Name/URI fields and the trust-model host gate (scheme, https,
-// SSRF, allowedMCPHosts), resolves the bearer token, and returns a session
-// carrying the logical name for log attribution. Factoring it here keeps the
-// two entry points from drifting in their gating.
+// newSession runs the shared Connect/Probe prologue: validates Name/URI and
+// the trust-model host gate, resolves the bearer token, and returns a
+// session carrying the logical name for log attribution.
 func newSession(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) (*serverSession, error) {
 	if config.Name == "" {
 		return nil, fmt.Errorf("mcp: server config missing required Name field")
@@ -506,12 +401,9 @@ func newSession(ctx context.Context, config types.MCPServerConfig, secrets secur
 }
 
 // displaySafeURI strips userinfo and the query string from a URI so it can be
-// logged or returned in an error without leaking credentials an operator may
-// have embedded (https://user:pass@host or ?api_key=...). The full URI is kept
-// on serverSession.uri for the actual request. On a parse failure it returns a
-// fixed sentinel rather than the raw input — validateMCPHost has already
-// rejected unparseable URIs by the time a session is built, so this branch is
-// defence in depth and must not echo the original string.
+// logged or returned in an error without leaking embedded credentials
+// (https://user:pass@host or ?api_key=...). On a parse failure it returns a
+// fixed sentinel rather than echoing the unparseable input.
 func displaySafeURI(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -550,19 +442,15 @@ func (c *Client) listTools(ctx context.Context, sess *serverSession) ([]mcpTool,
 }
 
 // callTool sends a tools/call JSON-RPC request and returns the canonical
-// text result plus a structured envelope (issue #231 B2). It records
-// stirrup.mcp.calls and stirrup.mcp.duration_ms when Metrics is set. The
-// serverName argument is the operator-supplied logical name (used for the
-// server.name attribute) — distinct from sess.uri so dashboards group by
-// intent rather than transport target.
+// text result plus a structured envelope (the marshalled mcpStructuredResult,
+// or nil for text-only). It records stirrup.mcp.calls and
+// stirrup.mcp.duration_ms when Metrics is set; serverName (not sess.uri) is
+// the metric attribute, so dashboards group by operator intent.
 //
-// The returned structured envelope is the marshalled mcpStructuredResult or
-// nil for a text-only result. It is NOT scrubbed here: scrubbing is applied at
-// the trace-emission boundary, when the trace emitter's RecordTurnRecord runs
-// the payload through scrubRawJSON before writing each line (the value flows
-// back through tool.StructuredResult → dispatch → RecordTurnRecord). Size
-// bounding, however, is enforced here at the trust boundary so an oversized
-// untrusted payload is never materialised into the loop in the first place.
+// The envelope is NOT scrubbed here — that happens at the trace-emission
+// boundary (RecordTurnRecord via scrubRawJSON). Size bounding is enforced
+// here, at the trust boundary, so an oversized untrusted payload never
+// reaches the loop.
 func (c *Client) callTool(ctx context.Context, sess *serverSession, serverName, name string, arguments json.RawMessage) (string, json.RawMessage, error) {
 	start := time.Now()
 	text, structured, err := c.callToolInner(ctx, sess, name, arguments)
@@ -594,17 +482,14 @@ func (c *Client) callToolInner(ctx context.Context, sess *serverSession, name st
 	}
 
 	if result.IsError {
-		// A tool-reported error surfaces as a Go error built from the text
-		// content; structured content on an error result is not preserved
-		// (the dispatch error path carries no structured payload).
+		// Structured content is not preserved on a tool-reported error.
 		return "", nil, fmt.Errorf("mcp tool error: %s", strings.Join(textContentItems(result.Content), "; "))
 	}
 
 	text := strings.Join(textContentItems(result.Content), "\n")
 	structured := buildMCPStructured(result)
-	// Defence-in-depth: treat a literal JSON null envelope as absent so a
-	// "null" payload can never reach the dispatch path and fabricate a
-	// structured turn (the StructuredHandler keys on len(structured) > 0).
+	// Treat literal JSON null as absent so it never reaches dispatch as a
+	// fabricated structured turn (StructuredHandler keys on len>0).
 	if string(structured) == "null" {
 		structured = nil
 	}
@@ -624,21 +509,14 @@ func textContentItems(items []contentItem) []string {
 	return texts
 }
 
-// buildMCPStructured assembles the bounded mcpStructuredResult envelope from a
-// successful tools/call result and returns its marshalled form, or nil when
-// there is nothing structured to preserve. It enforces the untrusted-input
-// size bounds (CWE-400): structuredContent over maxMCPStructuredSize is
-// dropped (with a marker), embedded-resource text is truncated to
-// maxMCPEmbeddedResourceTextLen, and image/audio bytes are never inlined.
-// Non-text content is always represented (never silently discarded) so the
-// model knows the item existed even when the bytes are not forwarded.
+// buildMCPStructured assembles the bounded mcpStructuredResult envelope from
+// a successful tools/call result, or nil when there is nothing structured to
+// preserve. Non-text content is always represented, never silently dropped.
 func buildMCPStructured(result toolsCallResult) json.RawMessage {
 	env := mcpStructuredResult{}
 
-	// Cap the content item count BEFORE the loop so a hostile response cannot
-	// force an unbounded descriptor-slice allocation ahead of the final
-	// marshalled-size check (CWE-789/400). The overflow is marked, not
-	// silently dropped, so an oversized server is visible in the envelope.
+	// Capped before the loop to bound descriptor-slice allocation up front
+	// (CWE-789/400); overflow is marked, not silently dropped.
 	if len(result.Content) > maxMCPContentItems {
 		result.Content = result.Content[:maxMCPContentItems]
 		env.NonText = append(env.NonText, mcpNonTextContent{
@@ -647,29 +525,22 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 		})
 	}
 
-	// structuredContent: preserve verbatim when present, non-null, and within
-	// bound. An explicit JSON null is treated as ABSENT — a non-nil
-	// json.RawMessage("null") would otherwise pass the len>0 guard and, since
-	// omitempty does not omit a non-nil slice, serialise "structured_content":null
-	// onto the wire, fabricating a structured turn for a server that signalled
-	// no structured content.
+	// A literal JSON null is treated as absent: omitempty does not omit a
+	// non-nil json.RawMessage, so an unguarded "null" would otherwise
+	// serialise onto the wire as a fabricated structured turn.
 	switch {
 	case len(result.StructuredContent) == 0 || string(result.StructuredContent) == "null":
-		// Absent: nothing to preserve.
 	case len(result.StructuredContent) <= maxMCPStructuredSize:
 		env.StructuredContent = result.StructuredContent
 	default:
-		// Mark the omission so a reader of the envelope (and the model,
-		// via the descriptor) can tell the server returned structured
-		// content that was too large to retain rather than that there
-		// was none.
+		// Mark, don't silently drop, so the envelope distinguishes oversized
+		// from absent.
 		env.NonText = append(env.NonText, mcpNonTextContent{
 			Kind: "unsupported",
 			Name: "structuredContent dropped: exceeds size bound",
 		})
 	}
 
-	// Non-text content items: represent each explicitly.
 	for _, item := range result.Content {
 		switch item.Type {
 		case "text":
@@ -689,8 +560,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 		case "resource":
 			env.NonText = append(env.NonText, embeddedResourceDescriptor(item.Resource))
 		default:
-			// An unrecognised content type is still represented, not dropped,
-			// so a future MCP content kind surfaces as a visible marker.
+			// Unrecognised type still represented, not dropped.
 			env.NonText = append(env.NonText, mcpNonTextContent{
 				Kind: "unsupported",
 				Name: item.Type,
@@ -704,16 +574,13 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 
 	encoded, err := json.Marshal(env)
 	if err != nil {
-		// A marshal failure means the (untrusted) structuredContent was not
-		// valid JSON to re-emit; drop the structured envelope entirely rather
-		// than risk an invalid payload. The text fallback is unaffected.
+		// Untrusted structuredContent was not valid JSON to re-emit; drop the
+		// envelope, text fallback unaffected.
 		return nil
 	}
-	// Final defence: if the assembled envelope still exceeds the bound (e.g. a
-	// flood of non-text descriptors that individually passed), replace it with
-	// a marker envelope rather than silently returning nil — the
-	// represent-or-mark contract means a reader can distinguish "no structured
-	// content" from "envelope too large". The text content survives either way.
+	// Final bound check (e.g. many small descriptors adding up): replace with
+	// a marker envelope rather than nil, so "too large" stays distinguishable
+	// from "no structured content".
 	if len(encoded) > maxMCPStructuredSize {
 		fallback := mcpStructuredResult{
 			NonText: []mcpNonTextContent{{
@@ -730,9 +597,8 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 }
 
 // embeddedResourceDescriptor builds the bounded descriptor for a
-// type=="resource" content item. The URI/mime are the durable handle; the
-// inlined text body is truncated to maxMCPEmbeddedResourceTextLen and binary
-// blobs are never inlined (only noted via Truncated when present).
+// type=="resource" content item: text truncated to
+// maxMCPEmbeddedResourceTextLen, binary blobs never inlined.
 func embeddedResourceDescriptor(res *mcpEmbeddedResource) mcpNonTextContent {
 	d := mcpNonTextContent{Kind: "resource"}
 	if res == nil {
@@ -749,19 +615,15 @@ func embeddedResourceDescriptor(res *mcpEmbeddedResource) mcpNonTextContent {
 			d.Text = res.Text
 		}
 	case res.Blob != "":
-		// Binary body: never inlined. Mark that a blob exists so the model
-		// knows to fetch the resource by URI if it needs the bytes.
+		// Never inlined; Truncated signals a blob exists to fetch by URI.
 		d.Truncated = true
 	}
 	return d
 }
 
-// recordCall emits the per-invocation MCP counter and duration histogram.
-// A nil Metrics short-circuits — every call site assumes Metrics is
-// optional. Note: the issue's attribute set for mcp.calls also includes
-// `success`; an mcp tool error returned by the server is treated as a
-// failed call here so dashboards can distinguish transport/protocol
-// errors from successful responses.
+// recordCall emits the per-invocation MCP counter and duration histogram; a
+// nil Metrics short-circuits. A tool-reported error counts as a failed call
+// so dashboards distinguish it from transport/protocol errors.
 func (c *Client) recordCall(ctx context.Context, serverName, toolName string, success bool, elapsed time.Duration) {
 	if c.Metrics == nil {
 		return
@@ -800,12 +662,10 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Send bearer token if configured.
 	if sess.token != "" {
 		req.Header.Set("Authorization", "Bearer "+sess.token)
 	}
 
-	// Send session ID if we have one from a prior response.
 	c.mu.Lock()
 	sessionID := sess.sessionID
 	c.mu.Unlock()
@@ -815,10 +675,9 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// *url.Error embeds the full request URL — including any credential
-		// query string, which Go does NOT redact (it only masks userinfo) — in
-		// its message. Unwrap to the transport-level cause so the dial failure
-		// is still reported without leaking the credentialed URI (CWE-532).
+		// *url.Error embeds the full request URL (Go redacts only userinfo,
+		// not query strings) in its message; unwrap to the transport cause so
+		// the error doesn't leak a credentialed URI (CWE-532).
 		cause := err
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
@@ -828,9 +687,8 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Capture session ID from response. Reject an over-cap value rather than
-	// store it: the ID is echoed back on every later request, so an unbounded
-	// server-controlled string would inflate outbound headers indefinitely.
+	// An over-cap session ID is rejected, not stored: it is echoed on every
+	// later request, so an unbounded value would inflate outbound headers.
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		if len(sid) > maxMCPSessionIDLen {
 			c.warn("mcp session ID exceeded cap; ignoring",
@@ -865,48 +723,30 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 }
 
 // registerMCPTool creates a Tool backed by a remote MCP tools/call invocation
-// and registers it in the registry. Tool names are prefixed with the server
-// name to avoid collisions: "mcp_{serverName}_{toolName}".
-//
-// mt.Name is sanitised via sanitizeMCPToolName so a remote server that
-// returns an absurdly long name cannot inject high-cardinality strings
-// into the metric attribute stream (`tool.name` on stirrup.mcp.calls and
-// stirrup.permission.decisions). The sanitised form is used both for
-// registration and for outbound metric attribution.
+// and registers it in the registry as "mcp_{serverName}_{toolName}".
+// mt.Name is sanitised so a server cannot inject high-cardinality tool.name
+// metric values.
 func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpTool) {
 	remoteName := sanitizeMCPToolName(mt.Name)
 	prefixedName := fmt.Sprintf("mcp_%s_%s", serverName, remoteName)
 	remoteSess := sess
-	// Capture serverName by value so each handler reports the correct
-	// operator-supplied name — independent of any later registration on
-	// the same client.
+	// Captured by value so the handler closure is independent of later
+	// registrations on the same client.
 	remoteServerName := serverName
 
 	c.registry.Register(&tool.Tool{
 		Name:        prefixedName,
 		Description: mt.Description,
 		InputSchema: mt.InputSchema,
-		// Carry the server-declared annotations through to the tool's
-		// ToolPresentation (#222). They are advisory metadata only — the
-		// conservative WorkspaceMutating/RequiresApproval defaults below are
-		// what govern gating, never these hints.
+		// Advisory only; gating always uses the conservative defaults below.
 		Annotations: mt.Annotations,
-		// MCP tools are remote and opaque to the harness: we cannot
-		// statically tell whether they mutate the workspace, so be
-		// conservative and assume they do. They also require upstream
-		// approval for the same reason — the operator should be in the
-		// loop on remote tool execution.
+		// MCP tools are opaque to the harness; assume mutation and require
+		// approval.
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
-		// StructuredHandler (not Handler) so the bridge can preserve
-		// structuredContent and non-text descriptors into the #231 envelope.
-		// The canonical text is always populated as the fallback, so a
-		// resolution against a provider with no structured capability still
-		// sends exactly the text the plain Handler would have returned. The
-		// returned Structured payload is bounded at the trust boundary
-		// (callTool) and scrubbed downstream by the dispatch path, never
-		// here — MCP output is untrusted and must not bypass the shared
-		// scrub on its way to a trace.
+		// StructuredHandler (not Handler) so structuredContent/non-text
+		// descriptors survive; bounded in callTool and scrubbed downstream,
+		// never here.
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			text, structured, err := c.callTool(ctx, remoteSess, remoteServerName, remoteName, input)
 			if err != nil {

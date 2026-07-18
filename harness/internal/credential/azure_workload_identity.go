@@ -13,50 +13,26 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// azureDefaultScope is the OAuth2 scope used for Azure OpenAI / Cognitive
-// Services. Operators MAY override this for non-default Azure audiences,
-// but the vast majority of stirrup deployments target Azure OpenAI and
-// the default keeps RunConfigs concise.
+// azureDefaultScope is the OAuth2 scope used for Azure OpenAI /
+// Cognitive Services; operators may override it for other audiences.
 const azureDefaultScope = "https://cognitiveservices.azure.com/.default"
 
 // azureTokenURLTemplate is a printf template for the Microsoft Entra ID
-// token endpoint. The `%s` is filled with the URL-escaped tenant UUID.
-// This is the global Azure cloud endpoint. Sovereign clouds
-// (login.microsoftonline.us, login.partner.microsoftonline.cn,
-// login.microsoftonline.de) are reachable via the
-// CredentialConfig.AzureTokenURL override — see
-// NewAzureWorkloadIdentitySource and docs/azure-workload-identity.md.
+// token endpoint (global Azure cloud); `%s` is the URL-escaped tenant
+// UUID. Sovereign clouds use the CredentialConfig.AzureTokenURL
+// override — see docs/azure-workload-identity.md.
 const azureTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
 
 // AzureWorkloadIdentitySource exchanges an OIDC identity token (from any
-// TokenSource — projected k8s file, IRSA, Azure IMDS, GHA, env, …) for a
-// short-lived Microsoft Entra ID access token via the OAuth2
-// client_credentials grant with a JWT client assertion.
+// TokenSource) for a short-lived Microsoft Entra ID access token via the
+// OAuth2 client_credentials grant with a JWT client assertion. See
+// docs/azure-workload-identity.md for the exchange flow.
 //
-// Flow:
-//  1. Fetch the OIDC token from tokenSource.Token(ctx). The token is
-//     re-read on every refresh so projected-volume rotations and IRSA
-//     file updates are picked up automatically.
-//  2. POST application/x-www-form-urlencoded to
-//     https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token with
-//     grant_type=client_credentials and client_assertion={JWT}.
-//  3. Wrap the result in oauth2.ReuseTokenSource so the access token is
-//     cached and refreshed lazily; the returned BearerToken closure can
-//     be invoked freely on every provider request without re-hitting
-//     Entra. ReuseTokenSource also provides single-flight semantics, so
-//     no separate sync.Mutex is required here.
-//
-// The wire format differs from GCP STS in two material ways:
-//   - Body is form-encoded, not JSON (Microsoft's documented contract).
-//   - Errors carry a `correlation_id` (or sometimes `correlationId`)
-//     which is the operator's only handle when filing a Microsoft
-//     support ticket. The exchange surfaces it in the wrapped error
-//     when present.
-//
-// No new SDK dependencies — the Entra token endpoint is plain HTTPS
-// with form-encoded bodies; we hand-roll the request to keep the
-// dependency surface small (consistent with the rest of the credential
-// package).
+// The wire format differs from GCP STS in two ways: the body is
+// form-encoded rather than JSON, and errors carry a `correlation_id`
+// (or camelCase `correlationId`) that the exchange surfaces in the
+// wrapped error when present — the operator's handle for a Microsoft
+// support ticket.
 type AzureWorkloadIdentitySource struct {
 	tokenSource TokenSource
 	tenantID    string
@@ -73,16 +49,10 @@ type AzureWorkloadIdentitySource struct {
 // scope is the OAuth2 audience (empty defaults to Azure OpenAI /
 // Cognitive Services).
 //
-// The optional variadic tokenURLOverride argument lets sovereign-cloud
-// deployments (Azure Government, Azure China) point the exchange at a
-// non-default authority (login.microsoftonline.us /
-// .partner.microsoftonline.cn / .microsoftonline.de). The first
-// non-empty entry wins; any other entries are ignored. Empty or
-// omitted means "fill in the global-cloud endpoint at
-// login.microsoftonline.com". Variadic rather than a positional
-// argument so existing callers (and embedding-API callers who do not
-// need sovereign-cloud support) keep their four-arg call sites
-// unchanged.
+// The optional variadic tokenURLOverride lets sovereign-cloud
+// deployments (Azure Government, China, Germany) point the exchange at
+// a non-default authority; the first non-empty entry wins. Variadic
+// rather than positional so existing four-arg call sites are unchanged.
 func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope string, tokenURLOverride ...string) *AzureWorkloadIdentitySource {
 	if scope == "" {
 		scope = azureDefaultScope
@@ -111,15 +81,11 @@ func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope st
 }
 
 // Resolve validates the configured fields and returns a Resolved whose
-// BearerToken closure performs the Entra token exchange lazily on first
-// invocation. The closure is wrapped in oauth2.ReuseTokenSource so
-// subsequent calls return the cached access token until expiry.
-//
-// Defence-in-depth: tenantID/clientID emptiness is also rejected by
-// types.ValidateRunConfig, but checking again here means a programmatic
-// caller of NewAzureWorkloadIdentitySource that bypasses the config
-// layer still gets a clear error rather than a malformed request to
-// Entra.
+// BearerToken closure performs the Entra token exchange lazily, wrapped
+// in oauth2.ReuseTokenSource so subsequent calls return the cached
+// access token until expiry. tenantID/clientID emptiness is also
+// rejected by types.ValidateRunConfig; checking again here covers
+// programmatic callers that bypass the config layer.
 func (a *AzureWorkloadIdentitySource) Resolve(_ context.Context) (*Resolved, error) {
 	if a.tokenSource == nil {
 		return nil, fmt.Errorf("azure-workload-identity: token source is required")
@@ -131,19 +97,16 @@ func (a *AzureWorkloadIdentitySource) Resolve(_ context.Context) (*Resolved, err
 		return nil, fmt.Errorf("azure-workload-identity: clientID is required")
 	}
 
-	// Refresh runs on its own context (mirrors federationTokenSource):
-	// a cancelled Resolve ctx must not poison subsequent token
-	// refreshes triggered by adapter calls inside the agentic loop.
+	// Refresh runs on its own context: a cancelled Resolve ctx must not
+	// poison subsequent token refreshes triggered by adapter calls.
 	inner := &azureTokenSource{src: a}
 	cached := oauth2.ReuseTokenSource(nil, inner)
 	return &Resolved{BearerToken: bearerFromTokenSource(cached)}, nil
 }
 
-// azureTokenSource implements oauth2.TokenSource. Token() runs the
-// full client_credentials exchange, returning a token whose Expiry
-// the ReuseTokenSource wrapper inspects to decide whether to call us
-// again. ReuseTokenSource serialises concurrent callers internally,
-// so no mutex is needed here.
+// azureTokenSource implements oauth2.TokenSource, running the full
+// client_credentials exchange. ReuseTokenSource serialises concurrent
+// callers internally, so no mutex is needed here.
 type azureTokenSource struct {
 	src *AzureWorkloadIdentitySource
 }
@@ -169,9 +132,7 @@ type azureErrorResponse struct {
 }
 
 func (a *azureTokenSource) Token() (*oauth2.Token, error) {
-	// Internal context — the oauth2 contract has no caller ctx. A
-	// 30-second budget covers the round-trip to Entra with comfortable
-	// headroom; matches GCP federation precedent.
+	// Internal context: the oauth2 contract has no caller ctx.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -203,10 +164,6 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Reuse the GCP federation body cap (64 KiB). Real Entra responses
-	// are well under 8 KiB; the cap exists so a misconfigured proxy
-	// cannot exhaust memory streaming an unbounded payload into the
-	// JSON parser.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, stsResponseLimit))
 	if err != nil {
 		return nil, fmt.Errorf("azure-workload-identity: read token response: %w", err)
@@ -233,11 +190,9 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 		tokenType = "Bearer"
 	}
 
-	// Entra always returns expires_in in seconds (typically 3599 or
-	// 5399). Fall back to a 1-hour assumption if the server omitted it
-	// for any reason — without a non-zero expiry, ReuseTokenSource
-	// would treat the token as already expired and re-hit Entra on
-	// every adapter request, exhausting tenant rate limits.
+	// Fall back to a 1-hour assumption if the server omitted expires_in
+	// — without a non-zero expiry, ReuseTokenSource would treat the
+	// token as already expired and re-hit Entra on every request.
 	lifetime := time.Duration(parsed.ExpiresIn) * time.Second
 	if lifetime <= 0 {
 		lifetime = time.Hour
@@ -250,23 +205,15 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 }
 
 // maxCorrelationIDLen caps the correlation_id surfaced through error
-// messages. Real Entra correlation IDs are 36-byte UUIDs; 64 leaves
-// modest headroom while bounding the worst case if a hostile or
-// malfunctioning endpoint returns a much larger value.
+// messages. Real Entra correlation IDs are 36-byte UUIDs; 64 bounds the
+// worst case from a hostile or malfunctioning endpoint.
 const maxCorrelationIDLen = 64
 
 // correlationIDSuffix returns " (correlation_id=<id>)" when the body
 // parses as JSON and carries a correlation_id (snake_case or
-// camelCase). On non-JSON or absent IDs it returns the empty string —
-// json.Unmarshal handles non-JSON bodies cleanly without panicking, so
-// no defensive recover is required. The correlation ID is the only
-// handle operators have when filing a Microsoft support ticket; the
-// JWT itself never appears in error output.
-//
-// The id passes through sanitiseCorrelationID before formatting so
-// control characters, ANSI escapes, and oversized values from a
-// hostile or malfunctioning endpoint cannot land in slog / OTel /
-// terminal output verbatim.
+// camelCase), or "" otherwise. The id passes through
+// sanitiseCorrelationID so control characters, ANSI escapes, and
+// oversized values cannot land in slog / OTel / terminal output verbatim.
 func correlationIDSuffix(body []byte) string {
 	var parsed azureErrorResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -283,18 +230,14 @@ func correlationIDSuffix(body []byte) string {
 }
 
 // sanitiseCorrelationID strips non-printable bytes (control chars, ANSI
-// escapes, embedded NULs) and caps the length at maxCorrelationIDLen.
-// The resulting string is safe to embed verbatim in slog attributes,
-// OTel span events, and terminal output — none of which expects to
-// receive control sequences from a remote authority server.
+// escapes, embedded NULs) and caps the length at maxCorrelationIDLen so
+// the result is safe to embed verbatim in slog, OTel, and terminal output.
 func sanitiseCorrelationID(id string) string {
 	var b strings.Builder
 	b.Grow(len(id))
 	for _, r := range id {
-		// Restrict to printable ASCII (space through tilde). The Entra
-		// correlation_id is documented as a UUID, so any byte outside
-		// that range is anomalous and we drop it rather than try to
-		// preserve it.
+		// Restrict to printable ASCII; the documented UUID shape means
+		// any byte outside that range is anomalous.
 		if r >= 0x20 && r < 0x7f {
 			b.WriteRune(r)
 		}

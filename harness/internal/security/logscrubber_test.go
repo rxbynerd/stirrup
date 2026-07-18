@@ -169,12 +169,9 @@ func TestScrub_BearerTokenWithBase64Chars(t *testing.T) {
 	}
 }
 
-// TestScrub_BasicAuth pins the gh-100 SF-2 hardening: Grafana Cloud's
-// documented OTLP gateway credential is `Basic <base64>`, not Bearer.
-// Without this pattern, a resolved Basic token (e.g. from
-// `Authorization: secret://GRAFANA_CLOUD_AUTH`) would survive any slog
-// output unscrubbed, defeating the ScrubHandler defence-in-depth
-// contract for the new OTLP/HTTP feature.
+// TestScrub_BasicAuth pins that Grafana Cloud's documented OTLP gateway
+// credential (`Basic <base64>`, not Bearer) is scrubbed. Without this
+// pattern, a resolved Basic token would survive slog output unredacted.
 func TestScrub_BasicAuth(t *testing.T) {
 	input := "Authorization: Basic dXNlcjpwYXNz"
 	got := Scrub(input)

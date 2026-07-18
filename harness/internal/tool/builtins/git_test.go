@@ -14,8 +14,6 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
-// --- shellQuote / validation unit tests ---
-
 func TestValidateGitRef_RejectsOptionInjection(t *testing.T) {
 	for _, ref := range []string{"--upload-pack=/bin/sh", "-x", "--output=foo"} {
 		if err := validateGitRef(ref); err == nil {
@@ -39,8 +37,6 @@ func TestValidateGitRef_AcceptsNormalRefs(t *testing.T) {
 		}
 	}
 }
-
-// --- shell-injection neutralisation via the mock executor ---
 
 // captureExec returns a mock executor that records the command string Exec was
 // invoked with so tests can assert what reached the shell.
@@ -129,8 +125,6 @@ func TestGitShow_RefWithCommandSubstitutionIsRejected(t *testing.T) {
 	}
 }
 
-// --- non-git workspace ---
-
 func TestGitStatus_NonGitWorkspaceErrorsClearly(t *testing.T) {
 	mock := &mockExecutor{
 		execFunc: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
@@ -147,8 +141,6 @@ func TestGitStatus_NonGitWorkspaceErrorsClearly(t *testing.T) {
 		t.Errorf("error %q does not clearly state the workspace is not a git repository", err)
 	}
 }
-
-// --- path traversal rejection ---
 
 func TestGitDiff_PathTraversalRejected(t *testing.T) {
 	mock := &mockExecutor{
@@ -174,8 +166,6 @@ func TestGitDiff_PathTraversalRejected(t *testing.T) {
 		}
 	}
 }
-
-// --- bounded output ---
 
 func TestGitDiff_OutputTruncated(t *testing.T) {
 	// Build a diff larger than both caps.
@@ -526,8 +516,6 @@ func TestBoundDiff_MidRuneByteCap(t *testing.T) {
 	}
 }
 
-// --- end-to-end against a real git repo via the local executor ---
-
 func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -566,7 +554,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 	runGitCmd("add", "tracked.txt")
 	runGitCmd("commit", "-q", "-m", "initial")
 
-	// Modify the tracked file and add an untracked file.
 	if err := os.WriteFile(tracked, []byte("original\nmodified\n"), 0o644); err != nil {
 		t.Fatalf("modify tracked: %v", err)
 	}
@@ -580,7 +567,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// git_status
 	statusRes, err := GitStatusTool(ex).StructuredHandler(ctx, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("git_status: %v", err)
@@ -608,7 +594,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 		t.Errorf("git_status did not report untracked.txt; entries=%+v", status.Entries)
 	}
 
-	// git_changed_files (unstaged)
 	cfRes, err := GitChangedFilesTool(ex).StructuredHandler(ctx, json.RawMessage(`{"staged": false}`))
 	if err != nil {
 		t.Fatalf("git_changed_files: %v", err)
@@ -627,7 +612,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 		t.Errorf("git_changed_files did not report modified tracked.txt; files=%+v", changed.Files)
 	}
 
-	// git_diff (whole worktree)
 	diffRes, err := GitDiffTool(ex).StructuredHandler(ctx, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("git_diff: %v", err)
@@ -636,7 +620,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 		t.Errorf("git_diff text missing the added line; got:\n%s", diffRes.Text)
 	}
 
-	// git_diff scoped to a single path.
 	diffPathRes, err := GitDiffTool(ex).StructuredHandler(ctx, json.RawMessage(`{"path": "tracked.txt"}`))
 	if err != nil {
 		t.Fatalf("git_diff path: %v", err)
@@ -645,7 +628,6 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 		t.Errorf("scoped git_diff missing path; got:\n%s", diffPathRes.Text)
 	}
 
-	// git_show on HEAD restricted to the committed file.
 	showRes, err := GitShowTool(ex).StructuredHandler(ctx, json.RawMessage(`{"ref": "HEAD", "path": "tracked.txt"}`))
 	if err != nil {
 		t.Fatalf("git_show: %v", err)
@@ -654,8 +636,7 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 		t.Errorf("git_show missing committed content; got:\n%s", showRes.Text)
 	}
 
-	// Stage the modification last (it empties the unstaged view), then assert
-	// the --cached views report it end to end.
+	// Staging last, since it empties the unstaged view checked above.
 	runGitCmd("add", "tracked.txt")
 	stagedFiles, err := GitChangedFilesTool(ex).StructuredHandler(ctx, json.RawMessage(`{"staged": true}`))
 	if err != nil {

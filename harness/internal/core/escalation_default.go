@@ -6,40 +6,24 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 )
 
-// capabilityResolver is the minimal view of the quirks registry the
-// default escalation policy needs: resolve a (provider, model) pair to its
-// tool-choice capability. Declared as an interface so tests can inject a
-// fake capability without a real registry, and so the policy depends on a
-// behaviour rather than the concrete *quirks.Registry.
+// capabilityResolver resolves a (provider, model) pair to its tool-choice
+// capability. An interface so tests can inject a fake without a real
+// *quirks.Registry.
 type capabilityResolver interface {
 	Resolve(providerType, model string) quirks.ProviderQuirks
 }
 
 // modeRequirement describes the first-turn tool expectation for a run mode.
-// A mode absent from the table (or one whose requirement is the zero value)
-// is treated as "no tool required" and never escalates — this is what keeps
-// modes where a no-tool answer is legitimate safe from spurious retries.
+// A mode absent from the table, or with a zero-value requirement, needs no
+// tool and never escalates.
 type modeRequirement struct {
-	// description is the human-readable requirement injected into the
-	// prompt-fallback message and surfaced on the trace span. It names
-	// what the model was expected to do (e.g. "inspect the workspace with
-	// a read or search tool"). Empty means the mode requires no tool.
+	// description is injected into the prompt-fallback message and the
+	// trace span. Empty means the mode requires no tool.
 	description string
 }
 
-// modeRequirements is the conservative, mode-aware policy table (#230).
-//
-//   - planning / review: expect at least one read/search tool call before
-//     a final answer — both modes reason about existing code.
-//   - research: a fetch is an acceptable first tool, so the requirement is
-//     phrased around gathering context rather than reading the workspace.
-//   - execution: the agent edits code, so it must read before it answers.
-//   - toil: a read-only mode for routine maintenance; like planning/review
-//     it should inspect before concluding.
-//
-// A mode not present here requires no tool and is never escalated. The
-// table is intentionally small and explicit; widening it is a deliberate
-// policy change, not an accident of defaulting.
+// modeRequirements is the mode-aware policy table; a mode not listed here
+// requires no tool and is never escalated.
 var modeRequirements = map[string]modeRequirement{
 	"planning":  {description: "inspect the relevant files with a read or search tool before answering"},
 	"review":    {description: "inspect the code under review with a read or search tool before answering"},
@@ -48,15 +32,12 @@ var modeRequirements = map[string]modeRequirement{
 	"toil":      {description: "inspect the relevant files with a read or search tool before answering"},
 }
 
-// defaultEscalationPolicy is the production EscalationPolicy. It is OFF
-// unless maxRetries > 0 (the factory passes 0 when the operator did not
-// opt in via RunConfig.ToolChoiceEscalation), so a bare run never escalates.
-//
-// The detection heuristic is deliberately conservative: it fires only on
-// the first assistant turn of an inner-loop run, only when tools were
-// available and none was called, only for modes with a tool requirement,
-// and never beyond the configured cap. Native vs prompt fallback is chosen
-// from the resolved provider tool-choice capability.
+// defaultEscalationPolicy is the production EscalationPolicy. It is off
+// unless maxRetries > 0. It fires only on the first assistant turn of an
+// inner-loop run when tools were available, none was called, the mode has
+// a tool requirement, and the retry cap has not been reached; native vs
+// prompt fallback is chosen from the resolved provider tool-choice
+// capability.
 type defaultEscalationPolicy struct {
 	maxRetries int
 	caps       capabilityResolver
@@ -65,56 +46,34 @@ type defaultEscalationPolicy struct {
 var _ EscalationPolicy = (*defaultEscalationPolicy)(nil)
 
 // newDefaultEscalationPolicy builds the production policy. maxRetries <= 0
-// yields a policy that never escalates (the disabled / OFF-by-default
-// case); the factory only passes a positive cap when the operator opted
-// in. caps resolves provider tool-choice capability; a nil caps degrades
-// every decision to the prompt fallback (no native capability is ever
-// detected) rather than panicking.
+// never escalates. A nil caps degrades every decision to the prompt
+// fallback rather than panicking.
 func newDefaultEscalationPolicy(maxRetries int, caps capabilityResolver) *defaultEscalationPolicy {
 	return &defaultEscalationPolicy{maxRetries: maxRetries, caps: caps}
 }
 
-// Decide implements EscalationPolicy. See the conservative-trigger
-// description on defaultEscalationPolicy. The guard ordering mirrors the
-// interface contract so each early return documents one reason a no-tool
-// answer is NOT a missed-tool failure.
+// Decide implements EscalationPolicy.
 func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision {
 	none := EscalationDecision{Kind: EscalationNone}
 
-	// Feature off / cap not configured.
 	if p.maxRetries <= 0 {
 		return none
 	}
-	// Never exceed the cap — bounds the recovery so a model that keeps
-	// refusing to call a tool cannot drive an unbounded retry loop.
 	if in.EscalationsSoFar >= p.maxRetries {
 		return none
 	}
-	// A tool_use turn is the model doing exactly what we wanted; only a
-	// final/text answer is a candidate.
 	if in.StopReason == "tool_use" {
 		return none
 	}
-	// No tools available → the model cannot be expected to call one. This
-	// also covers purely conceptual questions on a tool-less run.
 	if !in.ToolsAvailable {
 		return none
 	}
-	// The model must not have called any tool yet. This is the
-	// load-bearing gate: it distinguishes a model skipping workspace
-	// context from one that answered after using tools (which is a
-	// legitimate judgement). It is NOT keyed on Turn — a forced retry
-	// advances the turn counter, so gating on Turn would make the
-	// EscalationsSoFar cap unreachable for maxRetries > 1, and Turn is a
-	// weaker proxy that breaks when a compacted context resets it. With
-	// PriorToolCalls == 0 as the gate, escalation repeats (up to the cap
-	// checked above) only while the model still has not called any tool,
-	// and stops naturally the moment one is called.
+	// Gated on PriorToolCalls rather than Turn: a forced retry advances the
+	// turn counter (which would make the cap above unreachable for
+	// maxRetries > 1), and Turn is reset by context compaction.
 	if in.PriorToolCalls > 0 {
 		return none
 	}
-	// Mode-aware requirement. Modes absent from the table require no tool,
-	// so a no-tool answer there is legitimate and must not be escalated.
 	req, ok := modeRequirements[in.Mode]
 	if !ok || req.description == "" {
 		return none
@@ -136,9 +95,7 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 }
 
 // supportsNativeRequired reports whether the resolved (provider, model)
-// pair can force at least one tool call natively. A nil resolver or an
-// empty provider means "no native capability", so the policy falls back to
-// the prompt path.
+// pair can force at least one tool call natively.
 func (p *defaultEscalationPolicy) supportsNativeRequired(providerType, model string) bool {
 	if p.caps == nil || providerType == "" {
 		return false

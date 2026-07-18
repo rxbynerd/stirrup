@@ -389,11 +389,9 @@ func TestGCPWIFSource_EmptySTSAccessToken(t *testing.T) {
 	}
 }
 
-// TestGCPWIFSource_STSMalformedJSON exercises the json.Unmarshal
-// branch on the STS response body (google_federation.go:263–264).
-// A misconfigured proxy or hostile endpoint that returns a 200 with
-// non-JSON content must produce a clear "parse STS response" error
-// rather than a nil-pointer panic in the access-token check.
+// TestGCPWIFSource_STSMalformedJSON verifies a 200 response with
+// non-JSON content produces a clear "parse STS response" error rather
+// than a nil-pointer panic in the access-token check.
 func TestGCPWIFSource_STSMalformedJSON(t *testing.T) {
 	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -415,12 +413,10 @@ func TestGCPWIFSource_STSMalformedJSON(t *testing.T) {
 	}
 }
 
-// TestGCPWIFSource_STSZeroExpiresIn exercises the documented
-// 1-hour fallback when the STS response omits or zeroes expires_in
-// (google_federation.go:274–277). The fallback is what keeps
-// oauth2.ReuseTokenSource able to refresh; without it the cache
-// would treat the token as already expired and re-hit STS on every
-// adapter request.
+// TestGCPWIFSource_STSZeroExpiresIn verifies the 1-hour fallback when
+// the STS response omits or zeroes expires_in; without it,
+// oauth2.ReuseTokenSource would treat the token as already expired and
+// re-hit STS on every adapter request.
 func TestGCPWIFSource_STSZeroExpiresIn(t *testing.T) {
 	var calls int32
 	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -457,10 +453,9 @@ func TestGCPWIFSource_STSZeroExpiresIn(t *testing.T) {
 	}
 }
 
-// TestGCPWIFSource_ImpersonationMalformedJSON exercises the
-// json.Unmarshal branch on the IAM Credentials response
-// (google_federation.go:318–320). Symmetric to the STS case but the
-// error label distinguishes the two hops for operators triaging logs.
+// TestGCPWIFSource_ImpersonationMalformedJSON is the IAM Credentials
+// counterpart to TestGCPWIFSource_STSMalformedJSON; the error label
+// distinguishes the two hops for operators triaging logs.
 func TestGCPWIFSource_ImpersonationMalformedJSON(t *testing.T) {
 	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
 	defer sts.Close()
@@ -492,9 +487,8 @@ func TestGCPWIFSource_ImpersonationMalformedJSON(t *testing.T) {
 	}
 }
 
-// TestGCPWIFSource_ImpersonationEmptyAccessToken exercises the
-// empty-string check at google_federation.go:322. A 200 response
-// that omits the access token must surface as a federation error
+// TestGCPWIFSource_ImpersonationEmptyAccessToken verifies a 200
+// response that omits the access token surfaces as a federation error
 // rather than yielding an empty bearer to the provider adapter.
 func TestGCPWIFSource_ImpersonationEmptyAccessToken(t *testing.T) {
 	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
@@ -527,11 +521,10 @@ func TestGCPWIFSource_ImpersonationEmptyAccessToken(t *testing.T) {
 	}
 }
 
-// TestGCPWIFSource_ImpersonationMalformedExpireTime exercises the
-// time.Parse branch at google_federation.go:326–329. A non-RFC3339
-// expireTime cannot be cached against, and refreshing on every
-// request would burn through IAM quota — so the source surfaces the
-// parse failure as an error rather than fabricating an expiry.
+// TestGCPWIFSource_ImpersonationMalformedExpireTime verifies a
+// non-RFC3339 expireTime surfaces as a parse error rather than a
+// fabricated expiry — a fabricated expiry can't be cached against, and
+// refreshing on every request would burn through IAM quota.
 func TestGCPWIFSource_ImpersonationMalformedExpireTime(t *testing.T) {
 	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
 	defer sts.Close()
@@ -563,14 +556,13 @@ func TestGCPWIFSource_ImpersonationMalformedExpireTime(t *testing.T) {
 	}
 }
 
-// TestTruncateForError_TruncatesLongBody guards the error-body cap
-// (google_federation.go:336–342). Without the cap, a hostile STS
-// endpoint that streams a 1 MiB error body would propagate the full
-// payload through every error wrapper into slog and OTel span
-// statuses.
+// TestTruncateForError_TruncatesLongBody guards the error-body cap:
+// without it, a hostile STS endpoint streaming a 1 MiB error body
+// would propagate the full payload through every error wrapper into
+// slog and OTel span statuses.
 func TestTruncateForError_TruncatesLongBody(t *testing.T) {
-	// Build a body larger than the cap. The trailing characters must
-	// be dropped, not the leading ones — operators read from the start.
+	// Trailing characters must be dropped, not the leading ones —
+	// operators read from the start.
 	long := make([]byte, stsErrorBodyLimit+128)
 	for i := range long {
 		long[i] = 'A'
@@ -578,9 +570,6 @@ func TestTruncateForError_TruncatesLongBody(t *testing.T) {
 
 	got := truncateForError(long)
 
-	// Truncated output is "<first stsErrorBodyLimit bytes>…" so the
-	// rune count is stsErrorBodyLimit + 1 (the ellipsis) and the byte
-	// length is stsErrorBodyLimit + 3 (UTF-8 ellipsis is 3 bytes).
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("truncated output should end with ellipsis, got: %q (...)", got[len(got)-min(20, len(got)):])
 	}

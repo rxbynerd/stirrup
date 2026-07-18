@@ -14,11 +14,10 @@ type TokenUsage struct {
 // RunTrace captures the full telemetry of a single harness run.
 //
 // ToolCalls contains tool call summaries for this run and any sub-agent
-// runs whose trace was forwarded to this emitter (see #55 nested
-// trace forwarding). Entries with a non-empty RunID distinct from the
-// parent run's ID — equivalently, a non-empty ParentRunID — are sub-
-// agent calls. Consumers computing parent-only aggregates must filter
-// on RunID/ParentRunID; otherwise sub-agent activity is double-counted.
+// runs whose trace was forwarded to this emitter. Entries with a non-empty
+// ParentRunID are sub-agent calls; consumers computing parent-only
+// aggregates must filter on RunID/ParentRunID or sub-agent activity is
+// double-counted.
 type RunTrace struct {
 	ID                  string               `json:"id"`
 	Config              RunConfig            `json:"config"`
@@ -32,43 +31,32 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed".
-	// setup_failed and hook_failed (issue #461) report a fatal lifecycle-hook
-	// failure: setup_failed means a PreRun hook failed before the session
-	// started (zero turns ran); hook_failed means a PostRun hook failed after
-	// an otherwise-successful run (it never overrides a non-success outcome —
-	// the primary failure cause stays authoritative).
+	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
 	Outcome string `json:"outcome"`
 	// FinalAssistantText is the loop's last non-empty assistant text,
 	// concatenated across the text blocks of the final response and carried
 	// through to RunResult.FinalAssistantText. Omitted when the run produced
 	// no assistant turn (e.g. an early validation failure before any turn).
 	FinalAssistantText string `json:"finalAssistantText,omitempty"`
-	// HookResults carries every lifecycle hook execution recorded during
-	// the run (issue #461), across both phases, in dispatch order. Empty
-	// when no hooks were configured. Populated by trace emitters that
-	// implement the optional trace.HookRecorder capability (today, the
-	// JSONL emitter).
+	// HookResults carries every lifecycle hook execution recorded during the
+	// run, across both phases, in dispatch order. Empty when no hooks were
+	// configured. Populated by trace emitters implementing trace.HookRecorder
+	// (today, the JSONL emitter).
 	HookResults []HookExecution `json:"hookResults,omitempty"`
 }
 
-// HookExecution records the outcome of a single lifecycle hook (issue
-// #461). Phase distinguishes "preRun" (before GitStrategy.Setup) from
-// "postRun" (after GitStrategy.Finalise); Index is the hook's position
-// within its phase's configured list (RunConfig.Hooks.PreRun /
-// .PostRun), so a trace consumer can correlate a result back to the
-// RunConfig entry that produced it even when Name is empty.
+// HookExecution records the outcome of a single lifecycle hook. Phase
+// distinguishes "preRun" (before GitStrategy.Setup) from "postRun" (after
+// GitStrategy.Finalise); Index is the hook's position within its phase's
+// configured list, correlating a result back to its RunConfig entry even
+// when Name is empty.
 //
-// OutputTail is the scrubbed (security.Scrub), tail-capped combined
-// stdout+stderr of the hook — trace-only, never surfaced to the model.
-// Truncated reports whether the persisted (scrubbed) output exceeded the
-// 4KB tail cap; truncation keeps the tail (not the head) because a
-// failing command's most useful diagnostic is usually printed last.
-//
-// Command is also scrubbed (security.Scrub) by the trace emitter before
-// persistence, as defence-in-depth alongside ValidateRunConfig's
-// structural, case-insensitive rejection of a "secret://" reference in
-// a hook command — the trace must not depend solely on that guard being
-// airtight.
+// OutputTail and Command are scrubbed (security.Scrub) by the trace
+// emitter before persistence — defence-in-depth alongside
+// ValidateRunConfig's rejection of "secret://" references in hook
+// commands. Truncated reports whether the tail-capped (4KB) output was
+// cut; the cap keeps the tail, not the head, since a failing command's
+// most useful diagnostic is usually printed last.
 type HookExecution struct {
 	Phase   string `json:"phase"` // "preRun" | "postRun"
 	Index   int    `json:"index"`
@@ -90,30 +78,21 @@ type HookExecution struct {
 	Truncated        bool   `json:"truncated,omitempty"`
 }
 
-// Failed reports whether the hook execution failed. This is the
-// sanctioned failure check: prefer it over comparing ExitCode or Error
-// directly, since ExitCode's zero value is ambiguous (see the ExitCode
-// field doc) and Error is the only field that reliably distinguishes
-// "ran and failed" from "ran and succeeded" or "never ran".
+// Failed reports whether the hook execution failed. Prefer this over
+// comparing ExitCode or Error directly, since ExitCode's zero value is
+// ambiguous (see the ExitCode field doc).
 func (h HookExecution) Failed() bool {
 	return h.Error != ""
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.
 //
-// Name is the model-facing name the call arrived under: under a toolset
-// profile (issue #234) this is the alias presented to the model.
-// InternalName is the canonical internal tool ID the alias dispatched to.
-// Under the default profile (no aliasing) the two are equal, and
-// InternalName is omitted from the wire to keep the existing trace shape
-// byte-identical; a non-default profile records both so a trace is
-// auditable and the alias→internal binding is recoverable.
-//
-// An empty InternalName is ambiguous in isolation: it means the tool was
-// called by its internal name under the default profile, OR the name did
-// not resolve to a known tool under a non-default profile. The active
-// profile is recorded in the run's RunConfig (tools.profile); read it
-// alongside the record to disambiguate.
+// Name is the model-facing name the call arrived under — under a toolset
+// profile this is the alias presented to the model. InternalName is the
+// canonical internal tool ID the alias dispatched to; equal to Name and
+// omitted from the wire under the default (no-alias) profile. An empty
+// InternalName is ambiguous in isolation — check RunConfig's tools.profile
+// to disambiguate "default profile" from "name did not resolve".
 type ToolCallSummary struct {
 	// ID is the provider-assigned tool_use identifier the call arrived
 	// under. Empty on traces that predate the field and for providers
@@ -127,12 +106,9 @@ type ToolCallSummary struct {
 	InputSize    int    `json:"inputSize,omitempty"`
 	OutputSize   int    `json:"outputSize,omitempty"`
 	// RunID identifies the run that produced this tool call. Populated only
-	// when the call originated in a sub-agent run forwarded to a parent
-	// emitter; absent (omitempty) on parent-emitted events to preserve
-	// the existing wire shape.
+	// for sub-agent calls forwarded to a parent emitter.
 	RunID string `json:"runId,omitempty"`
-	// ParentRunID is the run ID of the sub-agent's parent. Populated only
-	// for forwarded sub-agent events.
+	// ParentRunID is the run ID of the sub-agent's parent, when forwarded.
 	ParentRunID string `json:"parentRunId,omitempty"`
 	// ErrorCategory is the normalised failure category for failed calls.
 	// Always empty on Success=true; one of the
@@ -149,10 +125,9 @@ type VerificationResult struct {
 	Details  map[string]any `json:"details,omitempty"`
 }
 
-// TurnMode* are the documented values of TurnTrace.Mode. Empty
-// string ("") means streaming for backward compatibility with
-// pre-phase-5 traces (#138) and for error turns that fail before a
-// concrete provider is resolved.
+// TurnMode* are the documented values of TurnTrace.Mode. Empty string
+// means streaming, for backward compatibility with older traces and for
+// error turns that fail before a concrete provider is resolved.
 const (
 	TurnModeStreaming = "streaming"
 	TurnModeBatch     = "batch"
@@ -177,9 +152,8 @@ type TurnTrace struct {
 	// ParentRunID is the run ID of the sub-agent's parent. Populated only
 	// for forwarded sub-agent events.
 	ParentRunID string `json:"parentRunId,omitempty"`
-	// Mode is "streaming" or "batch". Empty string deserialises from
-	// traces that predate this field; downstream consumers treat empty
-	// as streaming for backward compatibility (#138).
+	// Mode is "streaming" or "batch". Empty deserialises from traces that
+	// predate this field; treated as streaming for backward compatibility.
 	Mode string `json:"mode,omitempty"`
 	// BatchID is the provider-assigned batch identifier for batch turns.
 	// Empty for streaming turns. Allows cross-referencing a TurnTrace
@@ -187,9 +161,7 @@ type TurnTrace struct {
 	BatchID string `json:"batchId,omitempty"`
 }
 
-// IsBatch reports whether the turn was submitted via async batch. An
-// empty Mode is treated as streaming for backward compatibility with
-// traces that predate the Mode field (phase 5, #138).
+// IsBatch reports whether the turn was submitted via async batch.
 func (t TurnTrace) IsBatch() bool {
 	return t.Mode == TurnModeBatch
 }
@@ -197,13 +169,8 @@ func (t TurnTrace) IsBatch() bool {
 // ToolCallTrace records telemetry for a single tool call.
 //
 // Field order MUST match ToolCallSummary so the cast in trace emitters
-// (types.ToolCallSummary(tc)) remains valid.
-//
-// Name is the model-facing name (the alias under a toolset profile);
-// InternalName is the internal tool ID it dispatched to (issue #234).
-// See ToolCallSummary for the omitempty rationale and the empty-value
-// ambiguity (default profile vs unresolved name under a non-default
-// profile).
+// (types.ToolCallSummary(tc)) remains valid. See ToolCallSummary for the
+// Name/InternalName omitempty rationale.
 type ToolCallTrace struct {
 	// ID is the provider-assigned tool_use identifier the call arrived
 	// under. Empty on traces that predate the field and for providers
@@ -219,12 +186,9 @@ type ToolCallTrace struct {
 	InputSize    int    `json:"inputSize,omitempty"`
 	OutputSize   int    `json:"outputSize,omitempty"`
 	// RunID identifies the run that produced this tool call. Populated only
-	// when the call originated in a sub-agent run forwarded to a parent
-	// emitter; absent (omitempty) on parent-emitted events to preserve
-	// the existing wire shape.
+	// for sub-agent calls forwarded to a parent emitter.
 	RunID string `json:"runId,omitempty"`
-	// ParentRunID is the run ID of the sub-agent's parent. Populated only
-	// for forwarded sub-agent events.
+	// ParentRunID is the run ID of the sub-agent's parent, when forwarded.
 	ParentRunID string `json:"parentRunId,omitempty"`
 	// ErrorCategory is the normalised failure category for failed calls.
 	// Always empty on Success=true; one of the
@@ -237,13 +201,9 @@ type ToolCallTrace struct {
 // TurnRecord captures the full input/output of a single agentic loop turn.
 //
 // RunID and ParentRunID mirror the forwarding tags on TurnTrace and
-// ToolCallTrace: populated only when the record originated in a
-// sub-agent run forwarded to a parent emitter (see
-// trace.NestedJSONLEmitter), absent (omitempty) on parent-emitted
-// records so the existing wire shape is preserved. The OTel emitter's
-// content-capture path keys its turn-summary pairing on RunID+Turn so
-// a sub-agent's turn N cannot be misattributed to the parent's turn N
-// when both are in flight.
+// ToolCallTrace (see trace.NestedJSONLEmitter). The OTel emitter keys its
+// turn-summary pairing on RunID+Turn so a sub-agent's turn N is never
+// misattributed to the parent's turn N.
 type TurnRecord struct {
 	Turn        int              `json:"turn"`
 	ModelInput  ModelInput       `json:"modelInput"`
@@ -262,19 +222,17 @@ type ModelInput struct {
 
 // ToolCallRecord records a single tool call and its result.
 //
-// Structured carries the optional typed result envelope (issue #231) when the
-// tool produced one; it is nil for text-only tools and so omitted from the
-// persisted trace. It is scrubbed for secret-shaped content at record time on
-// the same footing as Output — a file excerpt or command transcript captured
-// in the structured payload can contain credentials just as the text can.
-// Kind names the Structured payload's shape (see ToolResult.Kind); empty and
-// omitted for text-only calls.
+// Structured carries the optional typed result envelope when the tool
+// produced one; nil and omitted for text-only tools. It is scrubbed for
+// secret-shaped content at record time on the same footing as Output.
+// Kind names the Structured payload's shape (see ToolResult.Kind); empty
+// and omitted for text-only calls.
 type ToolCallRecord struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// InternalName is the canonical internal tool ID the model-facing Name
-	// dispatched to under a toolset profile (issue #234). Equal to Name and
-	// omitted from the wire under the default (no-alias) profile.
+	// dispatched to under a toolset profile. Equal to Name and omitted
+	// from the wire under the default (no-alias) profile.
 	InternalName string          `json:"internalName,omitempty"`
 	Input        json.RawMessage `json:"input"`
 	Output       string          `json:"output"`

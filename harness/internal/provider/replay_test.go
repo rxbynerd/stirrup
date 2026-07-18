@@ -136,7 +136,6 @@ func TestReplayProvider_TurnsExhausted(t *testing.T) {
 
 	rp := NewReplayProvider(turns)
 
-	// First call succeeds.
 	ch, err := rp.Stream(context.Background(), types.StreamParams{})
 	if err != nil {
 		t.Fatalf("Stream() error: %v", err)
@@ -144,7 +143,6 @@ func TestReplayProvider_TurnsExhausted(t *testing.T) {
 	for range ch {
 	}
 
-	// Second call should fail.
 	_, err = rp.Stream(context.Background(), types.StreamParams{})
 	if err == nil {
 		t.Fatal("expected error when turns exhausted, got nil")
@@ -165,7 +163,7 @@ func TestReplayProvider_ContextCancellation(t *testing.T) {
 
 	rp := NewReplayProvider(turns)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
+	cancel()
 
 	ch, err := rp.Stream(ctx, types.StreamParams{})
 	if err != nil {
@@ -174,7 +172,6 @@ func TestReplayProvider_ContextCancellation(t *testing.T) {
 
 	events := collectEvents(t, ch)
 
-	// Should get an error event from context cancellation at some point.
 	foundError := false
 	for _, ev := range events {
 		if ev.Type == "error" && ev.Error != nil {
@@ -199,7 +196,6 @@ func TestReplayProvider_EmptyModelOutput(t *testing.T) {
 
 	events := collectEvents(t, ch)
 
-	// Should still get a message_complete event.
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
 	}
@@ -211,15 +207,10 @@ func TestReplayProvider_EmptyModelOutput(t *testing.T) {
 	}
 }
 
-// TestReplayProvider_ForwardsThoughtSignature pins the issue #194
-// follow-on behaviour: a tool_use ContentBlock in a TurnRecord that
-// carries a ThoughtSignature must surface that value on the emitted
-// tool_call StreamEvent. The load-bearing path is live-continuation
-// (mineFailureTasks) where ReplayProvider seeds the history of a run
-// that subsequently calls a real Vertex provider — dropping the
-// signature there would silently degrade cross-turn reasoning
-// continuity for exactly the multi-turn agentic sequences likely to
-// appear in a failure recording.
+// TestReplayProvider_ForwardsThoughtSignature pins that a tool_use
+// ContentBlock's ThoughtSignature must surface on the emitted tool_call
+// StreamEvent — load-bearing for live-continuation replay into a real
+// provider, where dropping it would degrade cross-turn reasoning.
 func TestReplayProvider_ForwardsThoughtSignature(t *testing.T) {
 	const sig = "REPLAYED-SIG=="
 	turns := []types.TurnRecord{

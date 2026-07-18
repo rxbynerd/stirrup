@@ -58,39 +58,24 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		return nil, fmt.Errorf("sub-agent prompt must not be empty")
 	}
 
-	// Determine max turns via the dedicated helper so tests can exercise
-	// the capping branches without driving an entire SpawnSubAgent path
-	// (#55, B5).
 	maxTurns := capSubAgentMaxTurns(subConfig.MaxTurns, parentConfig.MaxTurns)
 
-	// Determine mode.
 	mode := subConfig.Mode
 	if mode == "" {
 		mode = parentConfig.Mode
 	}
 
-	// Build a child tool registry that excludes spawn_agent to prevent
-	// recursion. filterToolRegistry rebuilds a plain registry keyed by the
-	// internal tool IDs (Resolve returns tools whose Name is the internal
-	// identity), so the child starts from internal names regardless of the
-	// parent's presentation. Re-wrap it under the parent's toolset profile
-	// (issue #234) so a sub-agent sees the same aliases the parent does;
-	// NewPresenter on a default/nil profile is the identity presentation,
-	// so the non-profile path is unchanged. A presenter build failure here
-	// would only arise from an alias collision the parent already resolved,
-	// so fall back to the unaliased child registry rather than aborting the
-	// spawn.
+	// filterToolRegistry keys on internal tool IDs, not the parent's
+	// presented aliases, so the exclusion holds regardless of toolset
+	// profile. Re-wrap under the parent's profile so the sub-agent sees
+	// the same aliases as the parent.
 	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
 	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
 		childTools = presenter
 	} else {
-		// A build failure here only arises from an alias collision in the
-		// child tool set — which the parent's presenter already resolved
-		// over a superset, so it should not recur. Degrade to the unaliased
-		// child registry rather than aborting the spawn, but never silently:
-		// the child would then run with internal tool names while the
-		// parent context and the model's prior turns used aliases, breaking
-		// tool-name continuity. Surface it so the divergence is auditable.
+		// Degrade to the unaliased registry rather than aborting the spawn,
+		// but log it: the child would otherwise use internal tool names
+		// while prior turns used aliases, breaking tool-name continuity.
 		profileName := ""
 		if parent.ToolProfile != nil {
 			profileName = parent.ToolProfile.Name
@@ -99,12 +84,8 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 			"err", err, "profile", profileName)
 	}
 
-	// Use a capture transport to collect the sub-agent's text output.
-	// The capture transport wraps a NullTransport, recording text_delta
-	// events so we can extract the final assistant response.
 	captureTp := newCaptureTransport()
 
-	// Use the parent's tracer if available, otherwise noop.
 	tracer := parent.Tracer
 	if tracer == nil {
 		tracer = noop.NewTracerProvider().Tracer("")
@@ -118,47 +99,32 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
-	// Lifecycle hooks are parent-run-only (#461): the child gets
-	// hook.Noop regardless of what childConfig.Hooks carries (see
-	// below), so clear the field here too — otherwise a persisted child
-	// trace would carry a HooksConfig the sub-agent never actually ran,
-	// misleading a trace consumer into thinking it did.
+	// Lifecycle hooks are parent-run-only: the child always gets hook.Noop
+	// (below), so clear the field here too, or a persisted child trace
+	// would claim hooks the sub-agent never ran.
 	childConfig.Hooks = nil
 
-	// Permissions: when the innermost policy is a Cedar policy-engine
-	// policy, the sub-agent gets its own clone with parentRunId
-	// populated. This is the only path that activates the
-	// subagent-capability-cap.cedar starter policy — without it,
-	// principal.parentRunId is absent and `has parentRunId` evaluates
-	// to false for every sub-agent run, silently negating the policy
-	// (M3). The factory wraps the policy (Rule-of-Two gate, metric
-	// recorder), so the assertion goes through permission.Unwrap and
-	// the same wrapper chain is rebuilt around the clone — a direct
-	// type-assert would silently skip the clone under any wrapper, and
-	// substituting the bare clone would shed the gate, turning
-	// spawn_agent into a latch escape hatch.
+	// A Cedar policy-engine policy gets a per-child clone with parentRunId
+	// populated, which is what lets the subagent-capability-cap.cedar
+	// starter policy match. permission.Unwrap/RewrapChain find and replace
+	// the policy through any wrapper chain (Rule-of-Two gate, metric
+	// recorder) so the clone doesn't shed those wrappers.
 	childPermissions := parent.Permissions
 	if parentPolicyEngine, ok := permission.Unwrap(parent.Permissions).(*permission.PolicyEnginePolicy); ok {
 		clone := parentPolicyEngine.ForChildRun(childConfig.RunID)
 		if rewrapped, ok := permission.RewrapChain(parent.Permissions, clone); ok {
 			childPermissions = rewrapped
 		} else {
-			// A wrapper without Rewrap support: keep the parent's full
-			// chain (every wrapper intact) at the cost of the per-child
-			// Cedar identity, and surface the divergence — fail toward
-			// more enforcement, not less.
+			// Not rewrappable: keep the parent's full chain (fail toward
+			// more enforcement) rather than the per-child Cedar identity.
 			parent.Logger.Warn("permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
 		}
 	}
 
-	// Forwarding trace emitter: every Turn / ToolCall the child records
-	// is forwarded live to the parent's TraceEmitter, tagged with the
-	// child's runID and the parent's runID. Replaces the previous
-	// bytes.Buffer{} sink, which discarded every sub-agent trace event.
-	// See harness/internal/trace/nested_jsonl.go.
+	// Forwards every Turn/ToolCall the child records to the parent's
+	// TraceEmitter, tagged with the child's and parent's runIDs.
 	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID)
 
-	// Build the child loop, reusing parent components where safe.
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
 		Providers:   parent.Providers,
@@ -172,9 +138,8 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Verifier:    verifier.NewNoneVerifier(),
 		Permissions: childPermissions,
 		Git:         git.NewNoneGitStrategy(),
-		// Hooks are parent-run-only (#461): a sub-agent never runs
-		// lifecycle hooks, regardless of what the parent's RunConfig
-		// configured.
+		// A sub-agent never runs lifecycle hooks, regardless of the
+		// parent's RunConfig.
 		Hooks:     hook.NewNoop(),
 		Transport: captureTp,
 		Trace:     childTrace,
@@ -182,38 +147,23 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Metrics:   parent.Metrics,
 		Logger:    parent.Logger,
 		Security:  parent.Security,
-		// Inherit the parent's GuardRail so spawned sub-agents are
-		// not a silent escape hatch around the configured guards.
-		// Without this, an indirect-injection payload could route
-		// harmful work through spawn_agent and bypass all phases.
+		// Inherited so spawn_agent can't bypass the configured guards.
 		GuardRail: parent.GuardRail,
-		// Share (not copy) the parent's Rule-of-Two monitor for the
-		// same reason: the latch is run-scoped, so sensitive content
-		// observed by either side must tighten the whole run —
-		// spawn_agent must not be a latch escape hatch.
+		// Shared (not copied): the latch is run-scoped, so sensitive
+		// content observed by either side must tighten the whole run.
 		RuleOfTwo: parent.RuleOfTwo,
-		// Tag every metric observation emitted from the child so
-		// dashboards can decompose a run into parent vs sub-agent
-		// contributions. The parent's run id is preserved as
-		// run.parent_id so correlated traces and metrics line up.
-		// Attribute keys follow the run.* namespace convention used by
-		// every other run-scoped attribute (run.mode, run.id, etc.).
+		// Tags child-emitted metrics so dashboards can decompose a run
+		// into parent vs sub-agent contributions.
 		MetricAttrs: []attribute.KeyValue{
 			attribute.Bool("run.subagent", true),
 			attribute.String("run.parent_id", parentConfig.RunID),
 		},
 	}
 
-	// Inherit the parent's tool-span ctx as the child's TraceContext so
-	// every span the child loop creates (turn[N], tool.<name>, etc.)
-	// nests under the parent's tool.spawn_agent span. The Run() method
-	// preserves a pre-set TraceContext rather than overwriting it.
+	// Nests every child span under the parent's tool.spawn_agent span;
+	// Run() preserves a pre-set TraceContext rather than overwriting it.
 	childLoop.TraceContext = ctx
 
-	// Run the child loop synchronously while timing the spawn for
-	// stirrup.subagent.duration_ms / stirrup.subagent.spawns. Token
-	// observations come from the child's RunTrace (TokenUsage) so the
-	// counts align exactly with what was billed to the run.
 	start := time.Now()
 	runTrace, err := childLoop.Run(ctx, &childConfig)
 	elapsed := time.Since(start)
@@ -228,8 +178,6 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		}, nil
 	}
 
-	// Extract the output: prefer the captured text from the transport,
-	// falling back to a summary string.
 	output := captureTp.lastText()
 	if output == "" {
 		output = fmt.Sprintf("Sub-agent completed with outcome: %s", runTrace.Outcome)
@@ -256,12 +204,9 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode str
 	if parent == nil || parent.Metrics == nil {
 		return
 	}
-	// Route every observation through parent.metricAttrs so the loop's
-	// MetricAttrs (e.g. run.subagent / run.parent_id when the parent is
-	// itself a sub-agent) prepend correctly. Bypassing this with raw
-	// metric.WithAttributes would drop those attributes on multi-level
-	// spawn trees and break the attribution chain on dashboards
-	// (CWE-778).
+	// parent.metricAttrs prepends the loop's own MetricAttrs (e.g.
+	// run.parent_id when the parent is itself a sub-agent); bypassing it
+	// would break attribution on multi-level spawn trees.
 	parent.Metrics.SubagentSpawns.Add(ctx, 1, parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 		attribute.Bool("success", success),
@@ -290,7 +235,7 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode str
 //     parent's overall budget.
 //
 // Pulled out of SpawnSubAgent so tests can exercise the branches
-// directly without standing up a full sub-agent loop (#55, B5).
+// directly without standing up a full sub-agent loop.
 func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
 	maxTurns := requested
 	if maxTurns <= 0 {

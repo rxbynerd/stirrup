@@ -8,7 +8,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// stubVerifier is a configurable Verifier for testing the composite.
 type stubVerifier struct {
 	result *types.VerificationResult
 	err    error
@@ -43,7 +42,6 @@ func errorStub(err error) *stubVerifier {
 	return &stubVerifier{err: err}
 }
 
-// Verify CompositeVerifier satisfies the Verifier interface at compile time.
 var _ Verifier = (*CompositeVerifier)(nil)
 
 func TestCompositeVerifier_AllPass(t *testing.T) {

@@ -205,18 +205,10 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 	}
 }
 
-// TestBuildSource_AzureWorkloadIdentityBadTokenSourceType pins the
-// error-path BuildSource takes when an Azure WIF Credential is paired
-// with a TokenSource of an unsupported type. The error must wrap the
-// inner BuildTokenSource failure with "build token source" so the
-// operator's stack trace points at the right config field.
-//
-// Without this coverage, a future refactor that swallows the
-// BuildTokenSource error would silently fall through to a malformed
-// AzureWorkloadIdentitySource construction (or worse, a nil source)
-// and the misconfiguration would only surface inside the agentic loop
-// as a vague "token source returned empty subject token" failure 60s
-// into a run.
+// TestBuildSource_AzureWorkloadIdentityBadTokenSourceType verifies that
+// an unsupported inner TokenSource type wraps the BuildTokenSource
+// failure with "build token source" rather than silently falling
+// through to a malformed or nil source.
 func TestBuildSource_AzureWorkloadIdentityBadTokenSourceType(t *testing.T) {
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
@@ -335,11 +327,9 @@ func TestBuildTokenSource_AzureIMDSMissingResource(t *testing.T) {
 }
 
 func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
-	// The GHA constructor reads + validates the issuance URL at
-	// construction time so the URL is frozen across the source's
-	// lifetime (a malicious sidecar with env-write access cannot swap
-	// it between Token() calls). The env var must therefore be
-	// populated before BuildTokenSource is invoked.
+	// The constructor reads the issuance URL once, freezing it across
+	// the source's lifetime, so the env var must be set before
+	// BuildTokenSource is invoked.
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.actions.githubusercontent.com/?api-version=2.0")
 
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{

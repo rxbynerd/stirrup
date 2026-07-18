@@ -32,9 +32,9 @@ func structuredToolResultMessages() []types.Message {
 }
 
 // textOnlyToolResultMessages is structuredToolResultMessages with the
-// envelope stripped — the pre-#231 shape. A capability-off serialisation of
-// the structured history must equal the serialisation of this history, which
-// is how the tests prove "text-by-default is byte-identical to today".
+// envelope stripped. A capability-off serialisation of the structured
+// history must equal the serialisation of this history, which is how the
+// tests prove "text-by-default is byte-identical to today".
 func textOnlyToolResultMessages() []types.Message {
 	msgs := structuredToolResultMessages()
 	last := msgs[len(msgs)-1].Content
@@ -145,10 +145,10 @@ func TestAnthropicStructuredToolResult_TextByDefault(t *testing.T) {
 	}
 }
 
-// TestAnthropicToolResultContent_EmptyContentCapabilityOn (REC-1) pins that an
+// TestAnthropicToolResultContent_EmptyContentCapabilityOn pins that an
 // empty canonical text with a non-empty structured payload does NOT emit the
-// array form with a meaningless empty-string first part. It falls through to a
-// nil return — the pre-#231 omitempty shape for an empty-content tool result —
+// array form with a meaningless empty-string first part. It falls through to
+// a nil return (the omitempty shape for an empty-content tool result)
 // regardless of the structured envelope.
 func TestAnthropicToolResultContent_EmptyContentCapabilityOn(t *testing.T) {
 	cap := quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}

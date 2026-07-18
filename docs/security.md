@@ -70,6 +70,22 @@ leakage through a misformatted log line is structurally impossible —
 the scrubber runs before any handler (JSON, text, OTel log
 exporter) sees the attribute.
 
+### Transport-error URL unwrapping
+
+When `http.Client.Do` fails, Go wraps the transport error in a
+`*url.Error` whose `Error()` string embeds the full request URL,
+including any query parameters — Go redacts userinfo but not the
+query string. Provider adapters that accept operator-configured
+`QueryParams` (for example Azure OpenAI's `api-version` /
+`sig`-bearing URLs) therefore risk leaking credentialed URLs into
+logs or traces if the raw error is ever surfaced. Pattern-matching
+scrubbers only catch known secret shapes, not arbitrary opaque
+tokens (Azure SAS signatures, opaque gateway tokens). Provider
+adapters and `provider.DoWithRetry` instead unwrap `*url.Error` to
+its transport cause at the `Do` call site, so the credentialed URL
+never enters the error chain — a guarantee that does not depend on
+pattern matching.
+
 ## Input validation
 
 All tool inputs are validated against a JSON Schema before the tool
@@ -214,6 +230,17 @@ it. `grep_files` additionally uses `shellQuote()` on every value
 interpolated into the `rg` invocation. Tested against
 `../../../etc/passwd`, symlink escapes, and absolute paths.
 
+The workspace exporter (`harness/internal/workspaceexport`) applies
+the same containment check when building the export tarball: any
+path that resolves outside the workspace root, including via a
+symlinked parent directory, is refused and fails the whole export.
+Dangling symlinks (whose target does not exist, so `EvalSymlinks`
+itself errors) are refused rather than silently included — a
+downstream `tar -xzf` without `--no-dereference` could otherwise be
+exploited via a symlink-then-overwrite pattern targeting a path
+outside the workspace. Symlinks that stay inside the workspace are
+recorded as symlink entries, not dereferenced.
+
 ## Environment filtering
 
 When the local executor runs a shell command, the child process's
@@ -296,6 +323,29 @@ mounts.
 
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
+
+### Egress proxy CONNECT/SNI protocol
+
+The in-process egress proxy (`harness/internal/executor/egressproxy`)
+terminates HTTPS `CONNECT` requests and cross-checks the TLS SNI
+against the allowlisted host before allowing any bytes through. Its
+handler writes the `200 Connection Established` response *before*
+peeking the client's TLS ClientHello for SNI, not after: an RFC 7231
+§4.3.6-compliant client (curl, browsers, Go `net/http`, git) sends no
+tunnel bytes until it has seen a 2xx, so peeking first deadlocks
+every compliant client until the read deadline fires. The host
+allowlist is already enforced before the hijack (a 403 is returned
+before the 200 would be written), so the 200 only promises a tunnel
+to an allowlisted *host*.
+
+The SNI cross-check still gates whether any bytes ever reach an
+upstream: no upstream connection is dialed and nothing is spliced
+until the ClientHello SNI is confirmed to match the allowlisted
+host. A bad, absent, or mismatched SNI drops the hijacked connection
+before any upstream dial — the client's in-flight TLS handshake
+fails, but no egress leak occurs. Sending the 200 early costs only
+that a denied client briefly sees "tunnel established"; the audit
+event is still emitted.
 
 ## Untrusted context
 

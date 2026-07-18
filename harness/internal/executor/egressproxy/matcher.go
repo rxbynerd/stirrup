@@ -19,8 +19,7 @@ import (
 )
 
 // defaultAllowPort is the implicit port for an allowlist entry with no
-// explicit port suffix. The issue requires HTTPS-only egress by default;
-// any other destination port must be opted in by suffixing the entry.
+// explicit port suffix; other ports must be opted in via suffix.
 const defaultAllowPort = 443
 
 // matcherEntry is a single parsed allowlist row.

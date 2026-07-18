@@ -328,6 +328,16 @@ the `pods/exec` stream (SPDY fallback), so exec and file I/O work through
 the Connect Gateway proxy — not only against a directly-reachable API
 server.
 
+WebSocket exec is the modern default: API servers have served the
+`v5.channel.k8s.io` subprotocol since v1.29, and unlike the legacy SPDY
+upgrade it survives an HTTP(S) proxy or the Connect Gateway sitting in
+front of the API server — both reject the SPDY upgrade outright (the
+gateway returns a bare HTTP 400). SPDY is retained as a fallback so the
+executor keeps working against API servers that predate the WebSocket
+exec subprotocol; the fallback fires only on a genuine upgrade/proxy
+failure, so a normal command error is not retried. This mirrors
+`k8s.io/kubectl`'s `createExecutor`.
+
 #### 3 — Standing objects
 
 ```sh

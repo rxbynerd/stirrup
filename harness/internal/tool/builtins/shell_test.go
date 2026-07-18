@@ -15,9 +15,8 @@ import (
 // TestFormatRunCommand_ExitCodeOnlyNoOutput locks the exact text for a command
 // that produced no stdout or stderr but exited non-zero. The "[exit code: N]"
 // line is written with a leading newline unconditionally, so an otherwise empty
-// rendering still begins with "\n". This byte-for-byte shape is part of the
-// pre-#231 text contract every provider must accept; a regression here would
-// silently change the model-visible output for silent-but-failing commands.
+// rendering still begins with "\n"; a regression here would silently change
+// the model-visible output for silent-but-failing commands.
 func TestFormatRunCommand_ExitCodeOnlyNoOutput(t *testing.T) {
 	got := formatRunCommand("", "", 2)
 	const want = "\n[exit code: 2]"
@@ -27,12 +26,10 @@ func TestFormatRunCommand_ExitCodeOnlyNoOutput(t *testing.T) {
 }
 
 // TestRunCommandTool_TimeoutClampedTo300s pins the run_command tool's
-// independent 300s (5 min) timeout ceiling. Issue #461 raised the shared
-// executor.maxTimeout cap to 30 minutes so lifecycle hooks can run a cold
-// `bundle install`, but the model-reachable run_command tool must keep
-// its own tighter 300s clamp — the two are deliberately decoupled (see
-// the maxTimeout doc comment in executor/local.go) so raising the
-// executor cap does not silently hand the agent a longer exec budget.
+// independent 300s (5 min) timeout ceiling, which stays decoupled from the
+// shared (and larger) executor.maxTimeout cap — see the maxTimeout doc
+// comment in executor/local.go — so raising the executor cap does not
+// silently hand the model-reachable tool a longer exec budget.
 func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
 	var gotTimeout time.Duration
 	exec := &mockExecutor{
@@ -53,16 +50,15 @@ func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
 	}
 }
 
-// TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome pins #489's
-// contract at the tool layer: an executor.Exec error that wraps
-// executor.ErrTimeout must not surface as a hard tool error, since every
-// executor implementation still returns whatever partial stdout/stderr it
-// captured before the kill. The handler must classify the error via
-// errors.Is (mirroring harness/internal/hook/runner.go's isTimeoutErr),
-// report TimedOut in the structured payload, preserve the partial output,
-// and make the timeout unambiguous in the Text fallback so a model reading
-// only Text (not Structured) can still tell a timeout apart from a clean
-// exit.
+// TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome pins the
+// tool-layer contract: an executor.Exec error that wraps executor.ErrTimeout
+// must not surface as a hard tool error, since every executor implementation
+// still returns whatever partial stdout/stderr it captured before the kill.
+// The handler must classify the error via errors.Is (mirroring
+// harness/internal/hook/runner.go's isTimeoutErr), report TimedOut in the
+// structured payload, preserve the partial output, and make the timeout
+// unambiguous in the Text fallback so a model reading only Text (not
+// Structured) can still tell a timeout apart from a clean exit.
 func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 	const timeout = 5 * time.Second
 	execErr := fmt.Errorf("%w after %s: %w", executor.ErrTimeout, timeout, context.DeadlineExceeded)

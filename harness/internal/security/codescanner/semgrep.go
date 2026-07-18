@@ -24,12 +24,9 @@ const defaultSemgrepTimeout = 30 * time.Second
 // that emits canned JSON) without rewriting the constructor contract.
 var semgrepBinary = "semgrep"
 
-// defaultSemgrepConfigArg is the value passed to `semgrep --config`
-// when the operator does not configure ConfigPath explicitly. "auto"
-// preserves pre-#42 behaviour (semgrep fetches the matching rule
-// packs for each detected language from semgrep.dev) but is the
-// supply-chain risk M7 surfaces; operators who care should set a
-// local path.
+// defaultSemgrepConfigArg is used when ConfigPath is unset. "auto"
+// fetches rule packs from semgrep.dev, a supply-chain risk operators
+// avoid by setting a local path.
 const defaultSemgrepConfigArg = "auto"
 
 // SemgrepScanner shells out to a local `semgrep` binary, piping the file
@@ -41,12 +38,9 @@ type SemgrepScanner struct {
 	// defaultSemgrepTimeout (30s).
 	Timeout time.Duration
 
-	// ConfigPath is the value passed to `semgrep --config`. Empty
-	// means "auto" (download rule packs from semgrep.dev, the
-	// historical default). Set to a local rules-bundle path to
-	// disable the network dependency — required for air-gapped
-	// deployments and the only way to pin against supply-chain
-	// shifts in the upstream registry (M7).
+	// ConfigPath is the value passed to `semgrep --config`. Empty means
+	// "auto". Set to a local rules-bundle path for air-gapped
+	// deployments or to pin against upstream registry drift.
 	ConfigPath string
 
 	// path is the resolved absolute path to the semgrep binary.
@@ -77,7 +71,7 @@ var noopWarnOnce sync.Once
 // NewSemgrepScanner returns a CodeScanner backed by the semgrep binary if
 // present on PATH. Returns NoopSemgrepScanner otherwise (with a single
 // startup warning routed through slog). configPath is forwarded to
-// `semgrep --config`; empty falls back to "auto" (the pre-#42 default).
+// `semgrep --config`; empty falls back to "auto".
 func NewSemgrepScanner(configPath string) CodeScanner {
 	resolved, err := exec.LookPath(semgrepBinary)
 	if err != nil {

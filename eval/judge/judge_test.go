@@ -248,10 +248,8 @@ func TestComposite_DefaultRequireAll(t *testing.T) {
 	}
 }
 
-// TestDiffReview_RequiresCriteria pins the input-validation contract:
-// the diff-review judge fails fast when its criteria string is empty,
-// without trying to make any API call. This is the "operator forgot
-// to fill in the judge block" error path.
+// TestDiffReview_RequiresCriteria pins that the diff-review judge fails
+// fast when criteria is empty, without making an API call.
 func TestDiffReview_RequiresCriteria(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "diff-review"}
@@ -264,14 +262,11 @@ func TestDiffReview_RequiresCriteria(t *testing.T) {
 	}
 }
 
-// TestDiffReview_RequiresAPIKey pins the missing-secret error path:
-// with criteria set but ANTHROPIC_API_KEY unset, the judge returns
-// a clear error rather than crashing or silently passing.
+// TestDiffReview_RequiresAPIKey pins that with criteria set but
+// ANTHROPIC_API_KEY unset, the judge returns a clear error.
 func TestDiffReview_RequiresAPIKey(t *testing.T) {
-	// Initialize a workspace as a git repo so captureDiff succeeds
-	// before the api-key check fires. Without `git init` the
-	// `git diff HEAD` call fails first; we want the test to pin
-	// the api-key error, not the missing-repo error.
+	// git init the workspace so captureDiff succeeds before the api-key
+	// check fires, pinning the api-key error rather than a repo error.
 	dir := t.TempDir()
 	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
 		t.Skipf("git init unavailable: %v", err)

@@ -49,10 +49,10 @@ func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
 	}
 }
 
-// TestProbeContainerEngine_NoContainerCreated is the load-bearing R1
-// regression: a container dry-run must ping + inspect the image but never
-// create or start a container, and never touch the egress proxy. The mock
-// engine fails the test if it sees a create/start request.
+// TestProbeContainerEngine_NoContainerCreated asserts a container dry-run
+// pings + inspects the image but never creates or starts a container, and
+// never touches the egress proxy. The mock engine fails the test if it sees
+// a create/start request.
 func TestProbeContainerEngine_NoContainerCreated(t *testing.T) {
 	var createHits, startHits atomic.Int64
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{

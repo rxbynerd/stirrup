@@ -16,9 +16,8 @@ import (
 )
 
 // Event-type discriminators for the batch wire protocol. HarnessEvents
-// flow harness → control plane; the single ControlEvent type flows
-// control plane → harness. The strings are part of the wire contract
-// (see types/events.go HarnessEvent.Type / ControlEvent.Type docs).
+// flow harness → control plane; ControlEvent flows control plane →
+// harness. See types/events.go for the wire contract.
 const (
 	eventBatchSubmission    = "batch_submission"
 	eventBatchWaiting       = "batch_waiting"
@@ -27,11 +26,9 @@ const (
 )
 
 // batchWaitingHeartbeatIntervalNs holds the cadence (in nanoseconds) at
-// which the controlPlaneBatchClient emits batch_waiting HarnessEvents
-// while a batch submission is in flight. Stored as an atomic so tests
-// can lower it without racing the heartbeat goroutines that earlier
-// tests may still be running. Use getBatchWaitingHeartbeatInterval /
-// setBatchWaitingHeartbeatInterval rather than touching this directly.
+// which controlPlaneBatchClient emits batch_waiting HarnessEvents while
+// a submission is in flight. Atomic so tests can lower it without
+// racing heartbeat goroutines from earlier tests.
 var batchWaitingHeartbeatIntervalNs atomic.Int64
 
 func init() {
@@ -57,9 +54,9 @@ type BatchClient interface {
 	// correlation handle; the provider-side batch identifier may differ
 	// and is carried inside the eventual BatchResult.
 	//
-	// In v1, callers must pass exactly one entry; implementations reject
-	// len(entries) != 1. The slice shape is reserved for OpenAI's
-	// multi-entry file-upload path (phase 6, #139).
+	// Callers must pass exactly one entry; implementations reject
+	// len(entries) != 1. The slice shape is reserved for a future
+	// multi-entry file-upload path.
 	Submit(ctx context.Context, entries []BatchEntry) (batchID string, err error)
 
 	// Result blocks until the batch identified by batchID resolves (or
@@ -71,8 +68,7 @@ type BatchClient interface {
 // BatchEntry is a single submission within a batch.
 type BatchEntry struct {
 	// CustomID is the per-entry correlation handle echoed back in the
-	// batch_result. The BatchAdapter uses the shape "stirrup-<runID>-turn-<n>"
-	// (see BatchAdapter.Stream).
+	// batch_result, shaped "stirrup-<runID>-turn-<n>" (see BatchAdapter.Stream).
 	CustomID string `json:"custom_id"`
 
 	// Provider names the upstream API shape the Body conforms to.
@@ -116,10 +112,8 @@ type BatchResultError struct {
 // provider-side batch entry.
 type BatchSubmission struct {
 	// SchemaVersion identifies the payload shape so the control plane
-	// can route legacy submissions without ambiguity. Submit always
-	// emits 1 in phase 2; increment when adding fields that consumers
-	// must know about (phase 6 may bump to 2 for OpenAI base_url /
-	// endpoint routing).
+	// can route legacy submissions without ambiguity; increment when
+	// adding fields consumers must know about.
 	SchemaVersion int `json:"schema_version"`
 
 	// ProviderType is the provider shape the Body conforms to.
@@ -152,20 +146,16 @@ type BatchAdapter struct {
 	runID     string
 	turnCount atomic.Int64
 	// Registry resolves per-(provider, model) quirks for the request
-	// body marshalling path. The factory plumbs the compat-profile-
-	// aware registry from the wrapped streaming adapter here so a
-	// batch run against a compat-profile provider sees the same
-	// wire shape the streaming path would have produced. Nil falls
-	// back to quirks.DefaultRegistry() so tests and callers that do
-	// not depend on a compat profile get the built-in rule set
-	// without setting the field. Exported (not a constructor arg)
-	// to avoid churn on every NewBatchAdapter call site in tests.
+	// body marshalling path, so a batch run against a compat-profile
+	// provider sees the same wire shape the streaming path would have
+	// produced. Nil falls back to quirks.DefaultRegistry(). Exported
+	// (not a constructor arg) to avoid churn on every NewBatchAdapter
+	// call site in tests.
 	Registry *quirks.Registry
 	// lastBatchID stores the provider-assigned batch identifier from the
-	// most recent successful Submit. The agentic loop reads it via
-	// LastBatchID() after streamEventsToResult returns to populate
-	// TurnTrace.BatchID (#138). Stored as atomic.Value so concurrent
-	// turns (none in v1, defence in depth) do not race the read.
+	// most recent successful Submit; the agentic loop reads it via
+	// LastBatchID() to populate TurnTrace.BatchID. atomic.Value as
+	// defence in depth against concurrent turns.
 	lastBatchID atomic.Value // string
 }
 
@@ -214,14 +204,8 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 		close(ch)
 		return ch, nil
 	}
-	// Publish the batch identifier so the agentic loop can read it via
-	// LastBatchID() once streamEventsToResult drains the channel and
-	// populate TurnTrace.BatchID. Stored on Submit success — not after
-	// Result — so the loop sees the ID even on a downstream fabrication
-	// or fallback path. The control-plane client returns its own
-	// correlation handle ("batch-N"); the polling client returns the
-	// provider-assigned ID ("msgbatch_..."). Both are useful for
-	// cross-referencing the turn from outside the harness.
+	// Stored on Submit success (not after Result) so the loop sees the
+	// ID even on a downstream fabrication or fallback path.
 	a.lastBatchID.Store(batchID)
 
 	ch := make(chan types.StreamEvent, 64)
@@ -231,9 +215,7 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 
 // LastBatchID returns the provider-assigned identifier of the most
 // recent successfully-submitted batch. Empty before the first Submit
-// and remains the previous value if a later Submit fails. The agentic
-// loop calls it after streamEventsToResult to attach the ID to the
-// turn's TurnTrace (#138).
+// and remains the previous value if a later Submit fails.
 func (a *BatchAdapter) LastBatchID() string {
 	v := a.lastBatchID.Load()
 	if v == nil {
@@ -246,15 +228,6 @@ func (a *BatchAdapter) LastBatchID() string {
 // marshalRequestBody projects params into the wire body for the
 // configured provider type. Unsupported provider types surface as a
 // marshal-time error so the caller can emit a single error StreamEvent.
-//
-// The Registry field, set by the factory from the wrapped streaming
-// adapter, drives the openai-compatible projection. When a compat
-// profile is active (e.g. CompatProfile=zai-glm) the registry carries
-// the compat rule, so a batch body emitted here uses the same wire
-// shape the streaming path would have produced. Nil falls back to
-// quirks.DefaultRegistry() — the built-in rule set only — which is
-// the correct behaviour for the v1 allow-listed batch providers
-// (anthropic plus the two OpenAI dialects without a compat profile).
 func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMessage, error) {
 	switch a.provType {
 	case "anthropic":
@@ -270,11 +243,8 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-compatible", params.Model)
-		// Batch submissions go through a one-shot adapter that does
-		// not retain a cache between calls. Pass nil so the strict-
-		// mode normaliser runs synchronously per request — a batch
-		// submission is rare enough that the per-tool walk cost is
-		// negligible compared to the round-trip latency.
+		// Pass nil cache: a batch submission is rare enough that the
+		// per-tool normaliser walk cost is negligible.
 		req, err := buildOpenAIRequest(params, false, q, nil)
 		if err != nil {
 			return nil, err
@@ -332,12 +302,10 @@ func (a *BatchAdapter) awaitAndFabricate(
 	}
 
 	if entry.Err != nil {
-		// Prefix the error type so reviewers (and the eventual outcome
-		// mapper in #138) can distinguish batch-side failure categories
-		// from inner provider errors without parsing the wrapped chain.
-		// Scrub the message at this single fan-in point so a provider
-		// returning a credential-shaped string in its error body cannot
-		// propagate verbatim into transport warnings / OTel spans.
+		// Prefix the error type to distinguish batch-side failure
+		// categories from inner provider errors. Scrub at this single
+		// fan-in point so a provider returning a credential-shaped
+		// string in its error body cannot propagate verbatim.
 		ch <- types.StreamEvent{
 			Type:  "error",
 			Error: fmt.Errorf("[%s] %s", entry.Err.Type, security.Scrub(entry.Err.Message)),
@@ -375,21 +343,18 @@ func (a *BatchAdapter) pumpInner(ctx context.Context, ch chan<- types.StreamEven
 var errBatchExpired = errors.New("batch expired")
 
 // isBatchTimeout reports whether err wraps errBatchExpired — i.e. the
-// BatchClient reported its wall-clock cap fired before the batch
-// resolved. Both control-plane and (phase-4) polling clients wrap the
-// same sentinel so the BatchAdapter timeout-fallback branch is provider-
-// independent.
+// BatchClient's wall-clock cap fired before the batch resolved. Both
+// control-plane and polling clients wrap the same sentinel so the
+// timeout-fallback branch is provider-independent.
 func isBatchTimeout(err error) bool {
 	return errors.Is(err, errBatchExpired)
 }
 
 // fabricateStream decodes a batch response and emits the StreamEvent
 // sequence the streaming adapter would have produced for the same body.
-// Anthropic, OpenAI Chat Completions, and OpenAI Responses are all
-// supported as of phase 6 (#139). Unsupported provider types emit a
-// single error event so the caller (awaitAndFabricate) does not have to
-// track a separate error return — mirrors the ProviderAdapter.Stream
-// convention where all failures surface as in-channel error events.
+// Unsupported provider types emit a single error event rather than a
+// separate error return, mirroring ProviderAdapter.Stream's convention
+// of surfacing all failures as in-channel error events.
 func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string) {
 	switch provType {
 	case "anthropic":
@@ -432,14 +397,11 @@ type anthropicBatchContentBlock struct {
 }
 
 // fabricateAnthropicStream mirrors the SSE event sequence consumeSSE
-// produces in anthropic.go: one text_delta per text content block, one
-// tool_call per tool_use block, then a single message_complete carrying
-// the assembled content blocks plus stop_reason / output_tokens.
-//
-// Emits one text_delta per text content block (not per token) — the
-// assembled ContentBlock in message_complete matches streamEventsToResult's
-// reconstruction so a fabricated stream is observationally
-// indistinguishable from the live SSE path for the agentic loop.
+// produces in anthropic.go: one text_delta per text content block (not
+// per token), one tool_call per tool_use block, then a single
+// message_complete carrying the assembled content blocks plus
+// stop_reason / output_tokens — observationally indistinguishable from
+// the live SSE path for the agentic loop.
 func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp anthropicBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -492,12 +454,11 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 // batch lifecycle (polling, webhooks); the harness only sees the
 // request/result boundary.
 //
-// The Submit/Result split (vs. emit-then-await in one call, as the
-// AskUpstreamPolicy does) is dictated by the BatchClient contract: the
-// BatchAdapter must hand the streaming goroutine a non-blocking Submit
-// so it can run the heartbeat alongside Result. We therefore reproduce
-// the correlator's pending-map pattern locally rather than reusing
-// transport.Correlator (which exposes only the emit-and-await shape).
+// The Submit/Result split (rather than emit-then-await in one call) is
+// dictated by the BatchClient contract: the BatchAdapter needs a
+// non-blocking Submit so it can run the heartbeat alongside Result.
+// This reproduces the correlator's pending-map pattern locally rather
+// than reusing transport.Correlator, which only exposes emit-and-await.
 type controlPlaneBatchClient struct {
 	transport          transport.Transport
 	maxWait            time.Duration
@@ -507,20 +468,18 @@ type controlPlaneBatchClient struct {
 	nextID int
 	// pending and customID are keyed by requestID. The client always
 	// submits size-1 batches (see Submit); the map[customID]→*BatchResult
-	// shape returned by Result is for forward compatibility with phase-4
-	// multi-entry batches (harnessPollingBatchClient, #137).
+	// shape returned by Result is for forward compatibility with future
+	// multi-entry batches.
 	pending  map[string]chan *BatchResult
 	customID map[string]string // requestID -> originating entry CustomID
 }
 
 // NewControlPlaneBatchClient constructs a batch client that delegates the
 // provider-side batch lifecycle to the control plane via the gRPC
-// transport. maxWait is the wall-clock cap on Result; the BatchAdapter
-// also applies this via cfg.MaxWaitSeconds (defence in depth).
-// cancelBundleOnExit, when true, causes the client to emit a
-// batch_cancel_request HarnessEvent on ctx-cancel or wall-clock-cap exit
-// from Result so the control plane can cancel the matching provider-side
-// batch entry (Provider.Batch.CancelBundleOnRunCancel).
+// transport. maxWait is the wall-clock cap on Result (BatchAdapter also
+// applies cfg.MaxWaitSeconds as defence in depth). cancelBundleOnExit,
+// when true, emits a batch_cancel_request HarnessEvent on ctx-cancel or
+// wall-clock-cap exit from Result (Provider.Batch.CancelBundleOnRunCancel).
 func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration, cancelBundleOnExit bool) *controlPlaneBatchClient {
 	c := &controlPlaneBatchClient{
 		transport:          t,
@@ -534,14 +493,9 @@ func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration, ca
 }
 
 // handleControl routes batch_result ControlEvents to the pending Result
-// caller. Mirrors transport.Correlator.deliver, but specialised for the
-// BatchResult payload so we can keep the channel typed.
-//
-// Result owns deletion from both c.pending and c.customID on every exit
-// path; handleControl never deletes. The non-blocking send below covers
-// the case where Result has already abandoned the entry (timeout, ctx
-// cancel) — releasePending will have removed the map entry so the next
-// lookup is safely absent.
+// caller. Result owns deletion from both c.pending and c.customID on
+// every exit path; handleControl never deletes. The non-blocking send
+// covers the case where Result has already abandoned the entry.
 func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 	if event.Type != eventBatchResult || event.RequestID == "" {
 		return
@@ -558,23 +512,18 @@ func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 	select {
 	case ch <- result:
 	default:
-		// Result already drained or abandoned this entry; map cleanup
-		// runs on the Result side via releasePending.
+		// Result already abandoned this entry.
 	}
 }
 
 // maxBatchResponseBytes caps the size of a batch_result Content payload
-// the harness will decode. The cap exists as a defence-in-depth measure:
-// the control plane is partially trusted, and an unbounded payload here
-// would let a misbehaving plane allocate arbitrary harness-side memory
-// (CWE-400). 4 MiB is comfortably above the largest plausible Anthropic
-// Messages-API response while still bounded.
+// the harness will decode, defending against a misbehaving control
+// plane allocating unbounded harness-side memory (CWE-400).
 const maxBatchResponseBytes = 4 * 1024 * 1024
 
 // decodeBatchResult turns a batch_result ControlEvent's content into a
 // *BatchResult. An empty content, oversize payload, or malformed JSON
-// surfaces as a BatchResult.Err so the BatchAdapter sees a non-nil entry
-// even when the control plane mis-frames the event.
+// surfaces as a BatchResult.Err rather than a nil entry.
 func decodeBatchResult(event types.ControlEvent) *BatchResult {
 	if event.Content == "" {
 		return &BatchResult{
@@ -603,9 +552,7 @@ func decodeBatchResult(event types.ControlEvent) *BatchResult {
 // batch_result ControlEvent later, on the same client.
 func (c *controlPlaneBatchClient) Submit(ctx context.Context, entries []BatchEntry) (string, error) {
 	if len(entries) != 1 {
-		// The control-plane wire contract is one batch_submission per
-		// harness turn. Multi-entry submission is reserved for the
-		// future stdio polling client (phase 4).
+
 		return "", fmt.Errorf("controlPlaneBatchClient: expected exactly 1 entry, got %d", len(entries))
 	}
 	entry := entries[0]
@@ -638,9 +585,6 @@ func (c *controlPlaneBatchClient) Submit(ctx context.Context, entries []BatchEnt
 		return "", fmt.Errorf("emit batch_submission: %w", err)
 	}
 
-	// The heartbeat goroutine watches the pending map for self-cleanup;
-	// it exits when the entry is no longer present (resolved or timed
-	// out) or when ctx fires.
 	go c.heartbeat(ctx, requestID)
 
 	return requestID, nil
@@ -659,11 +603,9 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 
 	timeout := c.maxWait
 	if timeout <= 0 {
-		// The harness-side default for batch waits is the same as the
-		// validator's documented MaxWaitSeconds default (24 h); reusing
-		// transport.DefaultCorrelatorTimeout here was a copy-paste from
-		// the askupstream pattern and would silently expire long batches
-		// after the much shorter correlator default.
+		// Must not fall back to transport.DefaultCorrelatorTimeout: that
+		// default is far shorter than DefaultBatchMaxWaitSeconds and
+		// would silently expire long batches early.
 		timeout = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
 	}
 	timer := time.NewTimer(timeout)
@@ -671,8 +613,7 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 
 	select {
 	case result := <-ch:
-		// Result owns map cleanup on every exit path; releasePending
-		// drops both c.pending and c.customID atomically.
+
 		c.releasePending(batchID)
 		return map[string]*BatchResult{customID: result}, nil
 	case <-timer.C:
@@ -686,12 +627,10 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 	}
 }
 
-// maybeEmitCancelRequest emits a batch_cancel_request HarnessEvent for the
-// given submission when the client was constructed with
-// cancelBundleOnExit=true. Errors from Emit are intentionally ignored:
-// the transport is already breaking, and surfacing a secondary error
-// here would obscure the primary timeout/cancel surface returned by
-// Result. Fire-and-forget mirrors the heartbeat goroutine.
+// maybeEmitCancelRequest emits a batch_cancel_request HarnessEvent for
+// the given submission when cancelBundleOnExit=true. Emit errors are
+// ignored so they don't obscure the primary timeout/cancel error
+// returned by Result.
 func (c *controlPlaneBatchClient) maybeEmitCancelRequest(requestID string) {
 	if !c.cancelBundleOnExit {
 		return
@@ -702,9 +641,8 @@ func (c *controlPlaneBatchClient) maybeEmitCancelRequest(requestID string) {
 	})
 }
 
-// releasePending removes a pending entry. Safe to call when the entry has
-// already been removed (e.g. because handleControl resolved it
-// concurrently with a timeout firing).
+// releasePending removes a pending entry; safe to call when it has
+// already been removed by a concurrent resolution.
 func (c *controlPlaneBatchClient) releasePending(requestID string) {
 	c.mu.Lock()
 	delete(c.pending, requestID)
@@ -712,9 +650,7 @@ func (c *controlPlaneBatchClient) releasePending(requestID string) {
 	c.mu.Unlock()
 }
 
-// nextRequestID issues a monotonically increasing request ID. The
-// "batch-<n>" shape mirrors the askupstream "perm-<n>" convention from
-// transport.Correlator.
+// nextRequestID issues a monotonically increasing "batch-<n>" request ID.
 func (c *controlPlaneBatchClient) nextRequestID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -723,10 +659,8 @@ func (c *controlPlaneBatchClient) nextRequestID() string {
 }
 
 // heartbeat emits a batch_waiting HarnessEvent at the configured cadence
-// until ctx fires or the pending entry is removed. Errors from Emit are
-// ignored — a transport that breaks mid-wait will surface the same break
-// to Result via the underlying RPC, which is a more reliable signal than
-// a heartbeat error.
+// until ctx fires or the pending entry is removed. Emit errors are
+// ignored: a broken transport surfaces via Result's underlying RPC.
 func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID string) {
 	ticker := time.NewTicker(getBatchWaitingHeartbeatInterval())
 	defer ticker.Stop()
@@ -785,13 +719,8 @@ type openaiChatBatchToolCall struct {
 // produces in openai.go: one text_delta for any non-empty assistant
 // content, one tool_call per tool_calls entry (in upstream order), then
 // a single message_complete carrying the mapped finish_reason and the
-// usage.completion_tokens count.
-//
-// The streaming consumeSSE does not populate StreamEvent.Content on
-// message_complete (it accumulates tool calls in a side map keyed by
-// index rather than building a ContentBlock list). To stay
-// observationally equivalent the fabricated message_complete leaves
-// Content nil as well.
+// usage.completion_tokens count. Content is left nil on message_complete
+// to match consumeSSE, which does not populate it either.
 func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiChatBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -847,10 +776,9 @@ type openaiResponsesBatchResponse struct {
 	} `json:"usage,omitempty"`
 }
 
-// openaiResponsesBatchOutputItem is one item in the response.output
-// array. Type discriminates: "message" carries assistant text inside
-// content[]; "function_call" carries a single call's id/name/arguments
-// flat on the item.
+// openaiResponsesBatchOutputItem is one item in response.output. Type
+// discriminates: "message" carries assistant text inside content[];
+// "function_call" carries a single call's id/name/arguments flat.
 type openaiResponsesBatchOutputItem struct {
 	Type      string                             `json:"type"`
 	ID        string                             `json:"id,omitempty"`
@@ -868,16 +796,9 @@ type openaiResponsesBatchContentBlock struct {
 // fabricateOpenAIResponsesStream mirrors the SSE event sequence the
 // Responses adapter's consumeSSE produces on a completed response: one
 // text_delta per assistant output_text content block, one tool_call per
-// function_call output item (in upstream order, matching the streaming
-// adapter's output_idx-stable sort because the JSON array preserves
-// document order), then a single message_complete carrying the derived
-// stop reason and usage.output_tokens.
-//
-// The Responses batch endpoint's response shape (the body inside an
-// output file line's "response.body" field) is the same response object
-// the streaming endpoint delivers via response.completed.response, so
-// the fabrication reuses the structural projection here rather than the
-// SSE event walk in openai_responses.go.
+// function_call output item (in upstream order — the JSON array
+// preserves document order), then a single message_complete carrying
+// the derived stop reason and usage.output_tokens.
 func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiResponsesBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -923,9 +844,7 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 }
 
 // deriveOpenAIResponsesStopReason adapts the batch response shape to
-// the shared deriveResponsesStopReason helper. Retained as a thin
-// wrapper so the call site at fabricateOpenAIResponsesStream stays
-// legible.
+// the shared deriveResponsesStopReason helper.
 func deriveOpenAIResponsesStopReason(resp openaiResponsesBatchResponse, hasTool bool) string {
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
@@ -936,12 +855,10 @@ func deriveOpenAIResponsesStopReason(resp openaiResponsesBatchResponse, hasTool 
 
 // deriveResponsesStopReason maps an OpenAI Responses API status /
 // incomplete_details.reason / tool-presence tuple to stirrup's stop
-// reason vocabulary. Shared between the streaming path
-// (openai_responses.go's deriveStopReason) and the batch fabrication
-// path (batch.go's deriveOpenAIResponsesStopReason) so a new status
-// arm only has to be applied once. Tool calls take precedence over
-// plain end_turn so the agentic loop dispatches tools before treating
-// the turn as final.
+// reason vocabulary, shared between the streaming and batch fabrication
+// paths so a new status arm only has to be applied once. Tool calls
+// take precedence over plain end_turn so the agentic loop dispatches
+// tools before treating the turn as final.
 func deriveResponsesStopReason(status, incompleteReason string, hasTool bool) string {
 	switch status {
 	case "completed":

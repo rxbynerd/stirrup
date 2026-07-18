@@ -12,36 +12,18 @@ import (
 // ErrTimeout is the sentinel every Executor implementation's Exec method
 // wraps (via %w) into the returned error when a command is killed because
 // its per-call deadline elapsed. It is the load-bearing distinction between
-// a genuine timeout and any other reason Exec's context ends — most
-// importantly a SIGTERM-driven parent-context cancellation, which must NOT
-// satisfy errors.Is(err, ErrTimeout). Callers (notably the hook runner,
-// harness/internal/hook/runner.go) match on this sentinel instead of the
-// error's formatted text, so a wording change in one executor can't
-// silently break TimedOut classification downstream (#468).
-//
-// The container executor also routes its Docker Engine API deadlines
-// through this sentinel (#S2): the short control-plane calls
-// (create/start/stop/exec-create/exec-inspect) and the file I/O paths
-// (ReadFile/WriteFile) have no caller-supplied timeout of their own, so
-// they apply an internal one and classify a resulting ctx expiry the same
-// way, rather than inventing a second, parallel timeout-detection
-// mechanism — see container_api.go's classifyControlPlaneErr and
-// container.go's classifyFileIOCtxErr.
+// a genuine timeout and any other reason Exec's context ends — a
+// SIGTERM-driven parent-context cancellation must NOT satisfy
+// errors.Is(err, ErrTimeout). Callers (notably the hook runner) match on
+// this sentinel rather than the error's formatted text. See
+// docs/architecture.md for the cross-executor classification contract.
 var ErrTimeout = errors.New("command timed out")
 
 // classifyExecCtxErr builds the error an Executor's Exec method returns once
-// its ctx (a context.WithTimeout child of the caller's ctx) is Done after a
-// failed command. context.DeadlineExceeded means the per-call timeout
-// genuinely elapsed, so the result wraps both ErrTimeout and the underlying
-// context error. Any other ctx.Err() (context.Canceled, or a custom cause
-// propagated from an ancestor via context.WithCancelCause — e.g. the
-// control plane's cancel or a SIGTERM-driven shutdown) is reported as a
-// cancellation, not a timeout: previously local.go and container.go
-// reported *any* ctx cancellation as "command timed out after <configured
-// timeout>", corrupting HookExecution.TimedOut for a signal-killed hook and
-// misleading operators triaging traces (#469). Shared by local.go,
-// container.go, and k8s_execcore.go (and, via its embedded podExecCore, the
-// k8s-sandbox executor) so all executors classify identically.
+// its ctx is Done after a failed command: a genuine DeadlineExceeded wraps
+// ErrTimeout, while any other ctx.Err() (cancellation) is reported as such,
+// not a timeout. Shared by local.go, container.go, and k8s_execcore.go so
+// all executors classify identically.
 func classifyExecCtxErr(ctx context.Context, timeout time.Duration) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%w after %s: %w", ErrTimeout, timeout, ctx.Err())

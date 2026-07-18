@@ -39,7 +39,7 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 			"timeout is in seconds (default 30, max 300); the command is killed when the timeout elapses. " +
 			"On timeout this returns the partial stdout/stderr captured before the deadline plus a '[timed out after Ns]' marker, not a hard error, so act on the partial output or rerun with a longer timeout. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
-		// #222 structured example, pinned to the description by TestBuiltinInputExamples_MatchDescription.
+		// Pinned to the description by TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"command": "go test ./harness/internal/tool/...", "timeout": 120}`)},
 		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
@@ -73,14 +73,9 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 				if !errors.Is(err, executor.ErrTimeout) {
 					return tool.StructuredResult{}, err
 				}
-				// #489's executors return partial output alongside the
-				// wrapped ErrTimeout, so a genuine timeout is a soft
-				// outcome the model can act on (e.g. rerun with a longer
-				// timeout or narrow the command) rather than a hard tool
-				// error. result can in principle still be nil if the
-				// executor was cut off before producing one at all
-				// (e.g. a control-plane deadline before exec even
-				// started); handle that defensively instead of panicking.
+				// result can be nil if the executor was cut off before
+				// producing one (e.g. a control-plane deadline before
+				// exec even started).
 				if result == nil {
 					result = &executor.ExecResult{}
 				}
@@ -93,18 +88,8 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 }
 
 // buildCommandResult builds the StructuredResult for a run_command
-// invocation, covering both the clean-exit and timed-out-soft-outcome cases
-// (timedOut). On timeout, result carries whatever partial output the
-// executor captured before the kill; result.ExitCode is executor-dependent
-// in that case (local.go leaves it 0, container.go and k8s_execcore.go set
-// -1) and never a meaningful status, since the process never ran to
-// completion — callers must gate on TimedOut and never read ExitCode as a
-// real exit status when it is true. The Text fallback appends an
-// unambiguous "[timed out after Ns]" marker after the normal
-// formatRunCommand rendering when timedOut, so a model reading only Text
-// (not Structured) can still distinguish a timeout from a clean exit;
-// formatRunCommand itself stays byte-identical to its pre-#231/#489
-// contract.
+// invocation, covering both the clean-exit and timed-out cases. See
+// docs/architecture.md for the timeout/ExitCode contract.
 func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOut bool) (tool.StructuredResult, error) {
 	structured, marshalErr := json.Marshal(commandResult{
 		Stdout:         result.Stdout,
@@ -131,9 +116,7 @@ func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOu
 
 // formatRunCommand renders the canonical text output for run_command:
 // stdout, then a "STDERR:" block when stderr is non-empty, then a
-// "[exit code: N]" line when the command exited non-zero. This is the
-// text fallback every provider can accept and must stay byte-identical to
-// the pre-#231 rendering.
+// "[exit code: N]" line when the command exited non-zero.
 func formatRunCommand(stdout, stderr string, exitCode int) string {
 	var out strings.Builder
 	if stdout != "" {

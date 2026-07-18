@@ -9,12 +9,10 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestLoadSuiteHCL_RunConfigFileOnly pins the simplest baseline shape:
-// a suite-level `run_config_file = "..."` attribute populates the
-// corresponding EvalSuite field and leaves EvalSuite.RunConfig nil.
-// Tasks without per-task overrides must still have a nil
-// RunConfigOverrides. The relative path is resolved against the suite
-// file's directory so authors can write intuitive relative paths.
+// TestLoadSuiteHCL_RunConfigFileOnly asserts a suite-level
+// `run_config_file` attribute populates EvalSuite.RunConfigFile
+// (resolved against the suite file's directory) and leaves
+// EvalSuite.RunConfig and task RunConfigOverrides nil.
 func TestLoadSuiteHCL_RunConfigFileOnly(t *testing.T) {
 	src := `
 suite "s" {
@@ -51,9 +49,8 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RunConfigFileAbsolutePath confirms that absolute paths
-// in `run_config_file` are preserved verbatim — the relative-resolution
-// pass must only join paths that are not already absolute.
+// TestLoadSuiteHCL_RunConfigFileAbsolutePath confirms absolute paths in
+// `run_config_file` are preserved verbatim.
 func TestLoadSuiteHCL_RunConfigFileAbsolutePath(t *testing.T) {
 	abs := "/etc/stirrup/baseline.json"
 	src := `
@@ -79,9 +76,9 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_InlineRunConfigBlock pins the inline `run_config` shape:
-// nested provider / model_router / scalar fields all decode into a
-// non-nil *types.RunConfig matching what callers would build by hand.
+// TestLoadSuiteHCL_InlineRunConfigBlock asserts an inline `run_config`
+// block's nested provider / model_router / scalar fields decode into a
+// non-nil *types.RunConfig matching a hand-built equivalent.
 func TestLoadSuiteHCL_InlineRunConfigBlock(t *testing.T) {
 	src := `
 suite "s" {
@@ -151,8 +148,7 @@ suite "s" {
 
 // TestLoadSuiteHCL_RunConfigMutuallyExclusive asserts that setting both
 // `run_config_file` and `run_config` on the same suite is a parse error
-// that names the suite ID and both offending field names — operators
-// must be able to locate the conflict from the error alone.
+// naming the suite ID and both offending fields.
 func TestLoadSuiteHCL_RunConfigMutuallyExclusive(t *testing.T) {
 	src := `
 suite "dual-baseline" {
@@ -185,9 +181,8 @@ suite "dual-baseline" {
 	}
 }
 
-// TestLoadSuiteHCL_TaskRunConfigOverrides exercises the sparse
-// per-task overlay: a subset of fields are set, the rest must remain
-// unset (zero values / nil pointers) on the resulting
+// TestLoadSuiteHCL_TaskRunConfigOverrides asserts the per-task overlay is
+// sparse: fields not set in the HCL remain zero/nil on the resulting
 // *types.RunConfigOverrides.
 func TestLoadSuiteHCL_TaskRunConfigOverrides(t *testing.T) {
 	src := `
@@ -236,8 +231,6 @@ suite "s" {
 	if ov.Provider.APIKeyRef != "secret://ANTHROPIC_KEY" {
 		t.Errorf("Provider.APIKeyRef = %q, want %q", ov.Provider.APIKeyRef, "secret://ANTHROPIC_KEY")
 	}
-	// Fields not set must stay nil/zero — the overrides surface is
-	// sparse by contract.
 	if ov.ModelRouter != nil {
 		t.Errorf("ModelRouter should be nil, got %#v", ov.ModelRouter)
 	}
@@ -256,15 +249,9 @@ suite "s" {
 }
 
 // TestLoadSuiteHCL_TaskRunConfigOverridesAllPointerBlocks pins the
-// pointer-typed overlay branches in runConfigOverridesSpecToType:
-// model_router, context_strategy, edit_strategy, and verifier. Each
-// must round-trip into a non-nil pointer on the resulting
-// *types.RunConfigOverrides with the named fields preserved.
-//
-// The sub-blocks exist on the runConfigOverridesSpec for parity with
-// the suite-level runConfigSpec; without this test, a typo in any of
-// the four converter branches (e.g. assigning to the wrong target
-// field) would silently drop the overlay.
+// pointer-typed overlay branches in runConfigOverridesSpecToType
+// (model_router, context_strategy, edit_strategy, verifier): each must
+// round-trip into a non-nil pointer with the named fields preserved.
 func TestLoadSuiteHCL_TaskRunConfigOverridesAllPointerBlocks(t *testing.T) {
 	src := `
 suite "s" {
@@ -331,12 +318,9 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RunConfigOverridesRejectsMode pins the post-B2
-// invariant: run_config_overrides { mode = "..." } must be a parse
-// error. Accepting the field opens a silent-conflict footgun where
-// the overlay's mode is overwritten by the runner's --mode flag.
-// The check is structural — the HCL surface omits mode entirely, so
-// gohcl rejects it with an "unknown attribute" diagnostic.
+// TestLoadSuiteHCL_RunConfigOverridesRejectsMode asserts
+// `run_config_overrides { mode = "..." }` is a parse error: the HCL
+// surface omits mode entirely, so gohcl rejects it as unknown.
 func TestLoadSuiteHCL_RunConfigOverridesRejectsMode(t *testing.T) {
 	src := `
 suite "s" {
@@ -365,11 +349,8 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_ProviderWithCredential closes the
-// credentialSpecToType coverage gap. The credential block is a
-// security-critical path: a field-name typo silently drops an auth
-// parameter and the live run picks up a misconfigured credential at
-// runtime rather than at parse time.
+// TestLoadSuiteHCL_ProviderWithCredential covers credentialSpecToType:
+// a field-name typo here would silently drop an auth parameter.
 func TestLoadSuiteHCL_ProviderWithCredential(t *testing.T) {
 	src := `
 suite "s" {
@@ -428,11 +409,9 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RunConfigUnknownAttribute pins the "unknown
-// attributes are errors" contract on the inline `run_config` block.
-// Silently dropping a typo (e.g. `max_turn` instead of `max_turns`)
-// would let a regression suite be validated against the wrong config;
-// the parser must reject the construct.
+// TestLoadSuiteHCL_RunConfigUnknownAttribute asserts unknown attributes
+// in the inline `run_config` block (e.g. a `max_turn` typo) are parse
+// errors, not silently dropped.
 func TestLoadSuiteHCL_RunConfigUnknownAttribute(t *testing.T) {
 	src := `
 suite "s" {
@@ -461,8 +440,7 @@ suite "s" {
 }
 
 // TestLoadSuiteHCL_RunConfigOverridesUnknownAttribute mirrors the
-// previous test for the per-task overlay: typos in
-// `run_config_overrides` must fail loudly.
+// previous test for `run_config_overrides`.
 func TestLoadSuiteHCL_RunConfigOverridesUnknownAttribute(t *testing.T) {
 	src := `
 suite "s" {
@@ -491,15 +469,9 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_ExistingSuitesParse asserts that a suite which
-// never declared any of the chunk-2 RunConfig fields continues to
-// parse with the new code path and produce zero-valued RunConfig
-// fields. This is the backwards-compat contract from the issue.
-//
-// `openai-responses-empty-tool-output.hcl` was updated in chunk 4
-// to demonstrate the new authoring surface (it now sets a
-// suite-level `run_config` block); its parse is covered by
-// TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig below.
+// TestLoadSuiteHCL_ExistingSuitesParse asserts that a suite declaring
+// none of the RunConfig fields still parses and produces zero-valued
+// RunConfig fields (backwards compatibility).
 func TestLoadSuiteHCL_ExistingSuitesParse(t *testing.T) {
 	cases := []string{
 		"../suites/guardrail.hcl",
@@ -529,10 +501,8 @@ func TestLoadSuiteHCL_ExistingSuitesParse(t *testing.T) {
 }
 
 // TestLoadSuiteHCL_ToolUseSuiteParses asserts the tool-use reliability
-// suite (#233) parses and that its tool-trace judges decode with their
-// sequence / call expectations intact. The suite ships with the eval-gate;
-// a parse regression here would surface as an opaque runner failure, so
-// pin it in the spec package where the error is precise.
+// suite parses and that its tool-trace judges decode with their
+// sequence / call expectations intact.
 func TestLoadSuiteHCL_ToolUseSuiteParses(t *testing.T) {
 	got, err := LoadSuiteHCL("../suites/tooluse.hcl")
 	if err != nil {
@@ -545,8 +515,6 @@ func TestLoadSuiteHCL_ToolUseSuiteParses(t *testing.T) {
 		t.Fatal("expected at least one task")
 	}
 
-	// At least one task must carry a tool-trace judge with a non-empty
-	// sequence — that is the trace-side coverage the suite exists to add.
 	sawSequence := false
 	var walk func(j types.EvalJudge)
 	walk = func(j types.EvalJudge) {
@@ -571,14 +539,10 @@ func TestLoadSuiteHCL_ToolUseSuiteParses(t *testing.T) {
 	}
 }
 
-// TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig pins the
-// openai-responses regression suite's chunk-4 update: the suite now
-// authors a suite-level inline `run_config` block that nails the
-// provider type and model_router so the regression scenario cannot
-// be silently nullified by an operator's environment. The check is
-// deliberately shallow (presence + provider type + model) — the
-// full decoding surface is exhaustively tested elsewhere in this
-// file; here we only care that the live suite uses the new flow.
+// TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig asserts the
+// openai-responses regression suite pins its provider type and
+// model_router via an inline `run_config` block, so the regression
+// scenario can't be silently nullified by an operator's environment.
 func TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig(t *testing.T) {
 	got, err := LoadSuiteHCL("../suites/openai-responses-empty-tool-output.hcl")
 	if err != nil {
@@ -604,14 +568,10 @@ func TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig(t *testing.T) {
 	}
 }
 
-// TestLoadSuiteHCL_RuleOfTwoSuitesParse pins the deterministic
-// Rule-of-Two runtime-classifier suites. Both ship for operators to run
-// against the rule-of-two leg; a parse or arming-shape regression would
-// surface only as an opaque runner failure or, worse, a suite that
-// silently no longer arms the classifier. The enforcing suite must keep
-// the arming inputs (web_fetch + run_command, no declared sensitivity, no
-// enforce override) and the observe-only companion must keep
-// enforce:false.
+// TestLoadSuiteHCL_RuleOfTwoSuitesParse asserts the Rule-of-Two
+// runtime-classifier suites keep their arming shape: the enforcing suite
+// must keep web_fetch + run_command with no declared sensitivity and no
+// enforce override; the observe-only companion must keep enforce:false.
 func TestLoadSuiteHCL_RuleOfTwoSuitesParse(t *testing.T) {
 	enforcing, err := LoadSuiteHCL("../suites/ruleoftwo.hcl")
 	if err != nil {
@@ -628,10 +588,8 @@ func TestLoadSuiteHCL_RuleOfTwoSuitesParse(t *testing.T) {
 		t.Fatal("ruleoftwo.hcl must declare an inline run_config block")
 	}
 	// The factory auto-arms enforcing only when untrusted input and
-	// external comms both hold without a declared sensitivity. web_fetch
-	// supplies both legs; run_command supplies external comms. Pin the
-	// tool set and the absence of a sensitivity / enforce override so the
-	// suite cannot silently stop arming.
+	// external comms both hold without a declared sensitivity; web_fetch
+	// supplies both legs, run_command supplies external comms.
 	hasWebFetch, hasRunCommand := false, false
 	for _, name := range rc.Tools.BuiltIn {
 		switch name {
@@ -665,13 +623,8 @@ func TestLoadSuiteHCL_RuleOfTwoSuitesParse(t *testing.T) {
 }
 
 // TestLoadSuiteHCL_RunConfigDeepBlocks exercises a richer inline
-// run_config — nested blocks (executor, network, resources,
-// permission_policy, code_scanner, guard_rail with stages,
-// prompt_builder, context_strategy, edit_strategy, verifier with
-// recursive child, trace_emitter with headers) — to pin that the
-// recursive spec → types conversion preserves the full shape. The
-// intent is to catch field-mapping mistakes in runConfigSpecToType
-// without listing every leaf field in every test.
+// run_config with nested blocks to catch field-mapping mistakes in
+// runConfigSpecToType across the full recursive spec -> types shape.
 func TestLoadSuiteHCL_RunConfigDeepBlocks(t *testing.T) {
 	src := `
 suite "s" {
@@ -847,15 +800,10 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RejectsRawProviderAPIKey pins the parse-time
-// secret:// scheme guard on the inline run_config provider block.
-// Without this check a pasted-in literal API key would survive parse,
-// land in the merged run_config.json the harness receives, and the
-// retained redacted artifact would quietly rewrite it to "[REDACTED]"
-// — masking the misconfiguration from audit. ValidateRunConfig
-// catches the same shape at the types layer, but the parse-time
-// error names the offending field so authors see the diagnostic where
-// they wrote the value.
+// TestLoadSuiteHCL_RejectsRawProviderAPIKey asserts a pasted-in literal
+// API key on the inline run_config provider block is a parse-time error
+// naming the offending field, rather than surviving into the merged
+// config and being masked by redaction.
 func TestLoadSuiteHCL_RejectsRawProviderAPIKey(t *testing.T) {
 	src := `
 suite "s" {
@@ -888,9 +836,8 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RejectsRawVcsBackendAPIKey extends the parse-time
-// guard to the executor.vcs_backend nested block — same invariant,
-// different field, same reasoning.
+// TestLoadSuiteHCL_RejectsRawVcsBackendAPIKey extends the same guard to
+// the executor.vcs_backend nested block.
 func TestLoadSuiteHCL_RejectsRawVcsBackendAPIKey(t *testing.T) {
 	src := `
 suite "s" {
@@ -926,10 +873,9 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_RejectsRawAPIKeyInTaskOverrides pins the parse-time
-// guard on per-task run_config_overrides. The task-level overrides
-// produce a *types.RunConfigOverrides rather than a *types.RunConfig,
-// so the validator must walk both shapes.
+// TestLoadSuiteHCL_RejectsRawAPIKeyInTaskOverrides asserts the same guard
+// on per-task run_config_overrides, which produce a
+// *types.RunConfigOverrides rather than a *types.RunConfig.
 func TestLoadSuiteHCL_RejectsRawAPIKeyInTaskOverrides(t *testing.T) {
 	src := `
 suite "s" {

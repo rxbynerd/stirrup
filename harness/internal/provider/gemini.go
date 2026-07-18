@@ -30,17 +30,14 @@ const (
 	geminiAPIRegionalHost = "%s-aiplatform.googleapis.com"
 	geminiAPIGlobalHost   = "aiplatform.googleapis.com"
 	geminiAPIPathTemplate = "/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent?alt=sse"
-	// geminiModelsPathTemplate is the publisher-model collection route used
-	// only by the preflight probe (GeminiAdapter.Probe). It has no model
-	// segment and no :streamGenerateContent action, so a probe GET is a
-	// metadata read that never triggers a completion.
+	// geminiModelsPathTemplate has no model segment and no
+	// :streamGenerateContent action, so the preflight probe's GET never
+	// triggers a completion.
 	geminiModelsPathTemplate = "/v1/projects/%s/locations/%s/publishers/google/models"
 
-	// maxScannerBuffer caps the per-line buffer used for the SSE scanner.
-	// Vertex chunks are typically small, but a final chunk that bundles
-	// usage metadata with a long tool-call args blob can be sizeable.
-	// 16 MiB matches the upper bound the wire protocol could plausibly
-	// produce and keeps a single malformed line from OOMing the run.
+	// geminiMaxScannerBuffer caps the SSE per-line buffer; 16 MiB bounds
+	// a final chunk that bundles usage metadata with a long tool-call
+	// args blob, without letting a malformed line OOM the run.
 	geminiMaxScannerBuffer = 16 * 1024 * 1024
 )
 
@@ -56,16 +53,14 @@ type GeminiAdapter struct {
 	safety     []types.GeminiSafetySetting
 	httpClient *http.Client
 
-	// baseURLOverride is set by tests to point the adapter at an
-	// httptest.Server. Production runs leave it empty so the URL is
-	// derived from projectID + location every call.
+	// baseURLOverride points the adapter at an httptest.Server; empty in
+	// production, where the URL is derived from projectID + location.
 	baseURLOverride string
 
-	// streamCounter is incremented per Stream call to namespace the
-	// synthesised tool-call IDs across concurrent requests on the same
-	// adapter instance. Vertex does not echo tool-call IDs through
-	// functionResponse, so the harness fabricates IDs of the form
-	// "gemini-{streamN}-{partIdx}".
+	// streamCounter namespaces synthesised tool-call IDs
+	// ("gemini-{streamN}-{partIdx}") across concurrent Stream calls on
+	// the same adapter, since Vertex never echoes IDs through
+	// functionResponse.
 	streamCounter atomic.Int64
 
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
@@ -73,24 +68,16 @@ type GeminiAdapter struct {
 	AdapterDeps
 
 	// Registry resolves per-(provider, model) wire-shape and behaviour
-	// overrides at the top of every Stream call. The constructor seeds
-	// this with quirks.DefaultRegistry() so callers that ignore the
-	// field still get the built-in rule set. Tests overwrite it
-	// directly; the adapter's public API does not need a WithRegistry
-	// option. Mirrors the OpenAICompatibleAdapter pattern.
+	// overrides at the top of every Stream call. NewGeminiAdapter seeds
+	// it with quirks.DefaultRegistry(); tests overwrite it directly.
 	Registry *quirks.Registry
 }
 
 // NewGeminiAdapter creates an adapter for Vertex AI's
-// :streamGenerateContent endpoint. The HTTP client mirrors the
-// timeout shape used by the other adapters (120s overall, 10s TLS,
-// 30s response-header, 90s idle).
-//
-// bearer is invoked on every Stream call to fetch a fresh Google OAuth2
-// access token. The credential layer is responsible for caching and
-// refreshing (see credential.bearerFromTokenSource, which wraps an
-// oauth2.ReuseTokenSource); the adapter just forwards the resulting
-// string into the Authorization header.
+// :streamGenerateContent endpoint. bearer is invoked on every Stream
+// call to fetch a fresh Google OAuth2 access token; caching and
+// refreshing live in the credential layer
+// (credential.bearerFromTokenSource).
 func NewGeminiAdapter(
 	bearer credential.BearerTokenFunc,
 	projectID, location string,
@@ -113,27 +100,19 @@ func NewGeminiAdapter(
 	}
 }
 
-// buildURL renders the endpoint URL for one Stream call. baseURLOverride
-// short-circuits the host derivation when set (tests). For production
-// runs, "global" routes to aiplatform.googleapis.com; every other
-// location goes to the regional subdomain.
+// buildURL renders the endpoint URL for one Stream call. "global" routes
+// to aiplatform.googleapis.com; every other location goes to the
+// regional subdomain.
 func (g *GeminiAdapter) buildURL(model string) string {
-	// url.PathEscape every path component so a value containing slashes,
-	// percent signs, or other reserved bytes cannot rewrite the URL
-	// shape. projectID and location are validated by
-	// gcpProjectIDPattern / gcpLocationPattern (no slashes possible),
-	// but model arrives from RunConfig.ModelRouter.Model — its
-	// validation lives in validateGeminiProviderFields. Even with that
-	// validation in place we escape here too, so the URL builder is
-	// defence-in-depth and never relies on a callers-validate-everything
-	// invariant.
+	// Escape every path component as defence-in-depth: model comes from
+	// RunConfig.ModelRouter.Model and must not be able to rewrite the
+	// URL shape even though validateGeminiProviderFields already checks it.
 	projID := url.PathEscape(g.projectID)
 	loc := url.PathEscape(g.location)
 	mdl := url.PathEscape(model)
 
 	if g.baseURLOverride != "" {
-		// Tests inject a httptest server URL; we still substitute project
-		// and model so the test can assert the path was built correctly.
+		// Tests inject an httptest server URL here.
 		path := fmt.Sprintf(geminiAPIPathTemplate, projID, loc, mdl)
 		return strings.TrimRight(g.baseURLOverride, "/") + path
 	}
@@ -146,11 +125,8 @@ func (g *GeminiAdapter) buildURL(model string) string {
 }
 
 // modelsURL renders the publisher-model collection URL for a preflight
-// probe. It mirrors buildURL's host derivation (baseURLOverride for
-// tests, global vs regional subdomain otherwise) but targets the
-// list-models route .../publishers/google/models with no model segment
-// and no :streamGenerateContent action — a metadata GET that spends no
-// tokens.
+// probe: a metadata GET that spends no tokens. Mirrors buildURL's host
+// derivation.
 func (g *GeminiAdapter) modelsURL() string {
 	projID := url.PathEscape(g.projectID)
 	loc := url.PathEscape(g.location)
@@ -180,12 +156,10 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		attribute.String("provider.model", params.Model),
 	)
 
-	// Resolve quirks for this (provider, model) pair. Per design D4 the
-	// resolution is per-stream; per design D5 the same resolved value
-	// drives both send (BuildGenerateContentRequest) and parse
-	// (consumeSSE — Step 5 will consume the value via the captured
-	// closure). The nil-Registry guard tolerates callers that build the
-	// adapter outside the factory without going through NewGeminiAdapter.
+	// Quirks are resolved once per stream; the same value drives both
+	// send (BuildGenerateContentRequest) and parse (consumeSSE). The
+	// nil-Registry guard tolerates callers that build the adapter
+	// outside the factory without going through NewGeminiAdapter.
 	registry := g.Registry
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
@@ -196,25 +170,17 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// Debug-level log lists the descriptions of every rule that
-	// contributed to this resolution (design §5). Emitted even when
-	// the list is empty so an operator grepping for the line knows
-	// the resolution ran; an absent entry would be ambiguous between
-	// "no rule fired" and "the log line was suppressed".
+	// Emitted even when the rule list is empty so an operator grepping
+	// for the line can distinguish "no rule fired" from "suppressed".
 	logger.DebugContext(ctx, "gemini quirks resolved",
 		slog.String("provider.type", "gemini"),
 		slog.String("provider.model", params.Model),
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
-	// Mirror the applied-rules list onto the OTel span as a
-	// `provider.quirk.applied` attribute (design §5). Emitted in
-	// parallel with the slog DEBUG line above so log-only and
-	// trace-only consumers both observe which rules fired. The
-	// IsValid guard tolerates the no-tracer case: when no exporter
-	// is configured, SpanFromContext returns a non-recording span
-	// whose SetAttributes is a no-op anyway, but checking IsValid
-	// keeps the attribute slice allocation off the hot path.
+	// Mirrors the slog DEBUG line above so trace-only consumers also see
+	// which rules fired. IsValid keeps the attribute slice allocation
+	// off the hot path when no tracer is configured.
 	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
 	}
@@ -224,16 +190,11 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	// NOTE: BuildGenerateContentRequest returns a per-call id->name map for
-	// outbound tool_result correlation. The marshaller already populates
-	// functionResponse.name for the same call's outbound history, so the
-	// adapter does not need it. Future work that surfaces tool-call IDs
-	// across turns (e.g. issue #93 follow-up) would consume this map here.
+	// BuildGenerateContentRequest also returns a per-call id->name map
+	// for outbound tool_result correlation; the marshaller already
+	// populates functionResponse.name from it, so the adapter itself
+	// does not need it here.
 
-	// Acquire a fresh Google access token via the bearer closure. The
-	// credential layer wraps oauth2.ReuseTokenSource so a cached token is
-	// returned with no IO when still valid; only on expiry does the
-	// closure round-trip to the OAuth2 endpoint.
 	token, err := g.bearer(ctx)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
@@ -249,11 +210,8 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	// DoWithRetry retries only this pre-stream call (connection errors, or a
-	// 429/5xx on the initial response). It is never invoked again once the
-	// channel below is returned, so a failure after streaming has begun is
-	// never replayed — the same boundary the openai-compatible adapter
-	// relies on.
+	// DoWithRetry only covers the pre-stream call; a failure after
+	// streaming has begun is never replayed.
 	resp, err := DoWithRetry(ctx, g.httpClient, req, RetryOptions{
 		Policy:       g.RetryPolicy,
 		Logger:       g.Logger,
@@ -266,9 +224,8 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 
-	// Annotate the provider.stream span (created by the loop) with the
-	// HTTP status. The 429 add-event mirrors the Anthropic adapter so
-	// rate-limit retries surface uniformly across providers.
+	// The 429 add-event mirrors the Anthropic adapter so rate-limit
+	// retries surface uniformly across providers.
 	if g.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
@@ -285,13 +242,10 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		_ = resp.Body.Close()
 		g.recordLatency(ctx, start, metricAttrs)
 		if len(bodyBytes) > 0 {
-			// Scrub the error body at the point of construction.
-			// LogScrubber already runs downstream at the agentic loop's
-			// error boundary, but defence-in-depth: any future
-			// instrumentation between here and that boundary (test
-			// logging, retry wrapper, telemetry hook) would otherwise
-			// surface unscrubbed Vertex diagnostic strings (project IDs,
-			// quota identifiers, internal trace IDs).
+			// Scrub at construction time as defence-in-depth: the
+			// LogScrubber runs downstream at the loop's error boundary,
+			// but any instrumentation between here and there would
+			// otherwise see unscrubbed Vertex diagnostics.
 			safeBody := security.Scrub(string(bodyBytes))
 			return nil, fmt.Errorf("vertex AI returned status %d: %s", resp.StatusCode, safeBody)
 		}
@@ -318,16 +272,9 @@ func (g *GeminiAdapter) recordLatency(ctx context.Context, start time.Time, attr
 }
 
 // mapGeminiFinishReason translates Vertex's finishReason enum onto the
-// canonical stop-reason vocabulary the agentic loop's stop-reason switch
-// understands. STOP becomes "end_turn"; the caller is responsible for
-// remapping STOP → "tool_use" when functionCall parts were observed in
-// the same stream (Vertex sets STOP for both end-of-turn and
-// tool-dispatch turns). MAX_TOKENS maps to the loop's existing keyword.
-// SAFETY/RECITATION get explicit suffixes ("safety_blocked" /
-// "recitation_blocked") because they are operationally meaningful — an
-// operator looking at a run's outcome should be able to distinguish a
-// safety block from a generic refusal. Everything else passes through
-// lowercased so unknown future enums surface in the trace verbatim.
+// stop-reason vocabulary the agentic loop understands. The caller
+// remaps STOP → "tool_use" when functionCall parts were observed (see
+// docs/providers.md). Unknown reasons pass through lowercased.
 func mapGeminiFinishReason(in string) string {
 	switch in {
 	case "":
@@ -345,65 +292,25 @@ func mapGeminiFinishReason(in string) string {
 	}
 }
 
-// toolCallBuf tracks the in-flight functionCall at one part-index slot.
-// Vertex emits intermediate willContinue=true chunks carrying partialArgs
-// snapshots (each a complete JSON object representing the cumulative
-// argument state up to that point) and a finalising chunk with
-// willContinue=false carrying the full args (or, on a single-shot call,
-// just args directly). The adapter retains the most recently observed
-// non-empty argument blob and emits the tool_call when willContinue=false
-// (or when the stream terminates on a finishReason without a closing
-// chunk, in which case we treat the latest snapshot as final).
-//
-// The retained blob is bounded at maxToolInputSize (10 MB) to mirror the
-// Anthropic adapter's safety cap.
-//
-// thoughtSignature holds the latest non-empty `thoughtSignature` observed
-// on the part across the buffer's chunks. Vertex emits the signature on
-// the same part as the functionCall (it is a property of the part, not
-// the call), so the most recently received non-empty value is the one
-// associated with the call's final shape. Only the assistant's terminal
-// signature for the part is meaningful for round-trip.
+// toolCallBuf tracks the in-flight functionCall at one part-index slot;
+// see docs/providers.md for the willContinue/partialArgs accumulation
+// wire format. The retained blob is bounded at maxToolInputSize (10 MB)
+// to mirror the Anthropic adapter's safety cap. thoughtSignature holds
+// the latest non-empty value observed for the part, since Vertex treats
+// it as a property of the part rather than of the call.
 type toolCallBuf struct {
 	name             string
 	args             []byte
 	thoughtSignature string
 }
 
-// consumeSSE reads SSE events from the response body and emits StreamEvents
-// to the channel. It closes the channel and the response body when done.
-//
-// The Vertex wire format used here:
-//
-//   - Each non-empty `data: <json>` line is a generateContentChunk.
-//   - Candidates[*].Content.Parts hold either Text (text_delta) or
-//     FunctionCall (tool-call accumulation). Other part types are ignored.
-//   - FunctionCall parts arrive in two patterns:
-//     1) Streamed: one or more chunks with WillContinue=true and
-//     PartialArgs, then a final chunk with WillContinue=false and either
-//     Args or PartialArgs populated. Pattern 1 is handled defensively;
-//     with streamFunctionCallArguments=false the production path is
-//     always pattern 2.
-//     2) Single: one chunk with neither WillContinue nor partial markers,
-//     just Args.
-//   - finishReason on Candidates[0] terminates the turn — emit
-//     message_complete and exit.
-//   - usageMetadata, when present on the terminal chunk, supplies
-//     CandidatesTokenCount as the OutputTokens for the stop event.
-//
-// streamN is the per-stream counter used to namespace synthesised tool-call
-// IDs ("gemini-{streamN}-{partIdx}"). Vertex never echoes tool-call IDs
-// through functionResponse, so we generate IDs that only need to be unique
-// within this Stream call and the bookkeeping the marshaller does for
-// outbound tool_result correlation.
-//
-// q carries the resolved per-(provider, model) quirks for this stream
-// (design D5). The parser is the load-bearing consumer for Step 5
-// (ReplayFields parse-side recognition for Gemini 3.x), so q is
-// threaded here even though today's body does not yet branch on it —
-// the seam exists so Step 5's parse hook can read q.ReplayFields and
-// (eventually) q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape
-// without re-touching the Stream call site.
+// consumeSSE reads SSE events from the response body and emits
+// StreamEvents to the channel, closing both when done. See
+// docs/providers.md for the Vertex generateContentChunk wire format.
+// streamN namespaces synthesised tool-call IDs
+// ("gemini-{streamN}-{partIdx}"), since Vertex never echoes them
+// through functionResponse. q carries the resolved per-(provider,
+// model) quirks driving ReplayFields parse-side recognition.
 func (g *GeminiAdapter) consumeSSE(
 	ctx context.Context,
 	resp *http.Response,
@@ -417,13 +324,11 @@ func (g *GeminiAdapter) consumeSSE(
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
-	// ReplayFields capture (design D12, Wave 2 parse-side recognition).
-	// The accumulator collects every path matched across every chunk
-	// in this stream; the summary is emitted on any exit path via the
-	// deferred log so a stream that ends in an error still surfaces
-	// what was captured before the error. Length-only reporting per
-	// design §5 — captured values are provider-private (Gemini 3.x's
-	// thoughtSignature) and must not land in log sinks.
+	// The ReplayFields accumulator collects every path matched across
+	// every chunk in this stream; the deferred log below emits the
+	// summary on any exit path, including an error mid-stream. Length
+	// only — captured values (e.g. Gemini 3.x's thoughtSignature) are
+	// provider-private and must not land in log sinks.
 	logger := g.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -440,11 +345,8 @@ func (g *GeminiAdapter) consumeSSE(
 		if len(replayFieldsCapture) == 0 {
 			return
 		}
-		// Mirror the per-stream capture summary onto the OTel span
-		// (design §5): emit `replay_fields_captured.count` and
-		// `.total_len` so trace consumers see the rule fired without
-		// having to correlate with slog. Length-only — values stay
-		// off the trace just as they stay off the log.
+		// Mirrors the slog summary onto the OTel span so trace-only
+		// consumers see the rule fired without correlating with logs.
 		if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 			totalCount, totalLen := summarizeReplayCaptures(replayFieldsCapture)
 			span.SetAttributes(
@@ -467,38 +369,25 @@ func (g *GeminiAdapter) consumeSSE(
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), geminiMaxScannerBuffer)
 
-	// Tool-call accumulation slots, keyed by function name. Vertex
-	// includes the function name on every chunk of a streamed call, so
-	// keying by name lets two simultaneous calls with willContinue=true
-	// (interleaved chunks) accumulate into separate slots without
-	// colliding. A monotonic part-index counter would not work here:
-	// before either call closes both arrive at index 0 and the second
-	// call's partial args overwrite the first's.
+	// Slots are keyed by function name, not a monotonic part index:
+	// Vertex sends the name on every chunk of a streamed call, so two
+	// simultaneous willContinue=true calls accumulate into separate
+	// slots instead of colliding at index 0 before either closes.
 	//
-	// nextPartIdx is preserved purely for tool-call ID synthesis — it
-	// gives each emitted call a unique sequence number within this
-	// stream. It is not used to address slots in toolBufs.
+	// nextPartIdx is used only for tool-call ID synthesis, not to
+	// address slots in toolBufs.
 	toolBufs := make(map[string]*toolCallBuf)
 	nextPartIdx := 0
-	// sawFunctionCall flips true the first time a functionCall part is
-	// observed in this stream. The loop's stop-reason switch dispatches
-	// tools only when StopReason == "tool_use"; Vertex however reports
-	// finishReason=STOP even on tool-call turns. Remapping STOP → tool_use
-	// when at least one functionCall part was emitted bridges the two
-	// vocabularies.
+	// Vertex reports finishReason=STOP even on tool-call turns; remapping
+	// STOP → tool_use when a functionCall part was seen bridges Vertex's
+	// vocabulary to the loop's stop-reason switch.
 	sawFunctionCall := false
 
-	// emitToolCall finalises the buffer at the named slot (if present)
-	// and emits a tool_call StreamEvent. The slot is cleared so a
-	// follow-up chunk with the same name does not double-emit. The ID
-	// is synthesised from streamN and the monotonic nextPartIdx counter
-	// (incremented by the caller after a successful emit).
-	//
-	// thoughtSignature is the part-level Gemini 3.x reasoning blob. It is
-	// propagated onto the StreamEvent so the agentic loop can copy it
-	// onto the persisted assistant ContentBlock and the next request
-	// can round-trip it back to Vertex (issue #194). Empty for 2.x
-	// responses, where Vertex does not emit the field.
+	// emitToolCall finalises the named slot and emits a tool_call
+	// StreamEvent, clearing the slot so a follow-up chunk does not
+	// double-emit. thoughtSignature is the part-level Gemini 3.x
+	// reasoning blob, propagated so the loop can round-trip it back to
+	// Vertex; empty for 2.x responses.
 	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) bool {
 		var input map[string]any
 		argsBytes := fullArgs
@@ -558,21 +447,11 @@ func (g *GeminiAdapter) consumeSSE(
 			return
 		}
 
-		// ReplayFields capture (design D12, Wave 2 parse-side
-		// recognition). Decode the same chunk bytes a second time as
-		// a generic map so the path walker can descend through fields
-		// the typed chunk struct does not know about. The double
-		// decode is per-chunk only when at least one rule is active —
-		// zero overhead for non-Gemini-3 streams.
-		//
-		// Cost note: the typed decode into `generateContentChunk`
-		// above is the load-bearing one; CaptureFromJSON below
-		// re-decodes the same bytes into `any` for untyped path
-		// walking. The cost is one extra json.Unmarshal per chunk,
-		// bounded by the SSE scanner's per-line cap
-		// (geminiMaxScannerBuffer = 16 MiB, set above). Acceptable
-		// because the path is gated by len(q.ReplayFields) > 0 and
-		// only the gemini-3* rule registers ReplayFields today.
+		// Decode the same chunk bytes a second time as a generic map so
+		// the path walker can descend through fields the typed chunk
+		// struct does not know about. Gated by len(q.ReplayFields) > 0,
+		// so the extra json.Unmarshal is zero-overhead for non-Gemini-3
+		// streams.
 		if !replayFieldsCapped && len(q.ReplayFields) > 0 {
 			if captured := quirks.CaptureFromJSON([]byte(data), q.ReplayFields); len(captured) > 0 {
 				for k, v := range captured {
@@ -608,17 +487,12 @@ func (g *GeminiAdapter) consumeSSE(
 					switch {
 					case part.Text != "":
 						// TODO(#194): Gemini 3.x can also attach a
-						// thoughtSignature to text parts. Threading the
-						// signature onto the assembled text ContentBlock
-						// would require additional plumbing through
-						// streamEventsToResult (which currently
-						// concatenates text deltas into a single block
-						// at message_complete time). The tool_use case
-						// is the load-bearing one for multi-turn agentic
-						// loops, so the text-side signature is deferred.
-						// When a text-part signature does arrive, it
-						// will be silently dropped here — same behaviour
-						// as before this change for that specific case.
+						// thoughtSignature to text parts; threading it onto
+						// the assembled text ContentBlock needs plumbing
+						// through streamEventsToResult. Deferred — the
+						// tool_use case is load-bearing for multi-turn
+						// agentic loops, so a text-part signature is
+						// silently dropped here for now.
 						emitEvent(types.StreamEvent{
 							Type: "text_delta",
 							Text: part.Text,
@@ -626,14 +500,6 @@ func (g *GeminiAdapter) consumeSSE(
 					case part.FunctionCall != nil:
 						sawFunctionCall = true
 						fc := part.FunctionCall
-						// Slot key is the function name. Vertex sends the
-						// name on every chunk of a streamed call, so two
-						// simultaneous calls (e.g. tool_a / tool_b each
-						// with willContinue=true) accumulate cleanly into
-						// distinct slots — keying by a monotonic counter
-						// would collide them at index 0 until the first
-						// closes.
-						//
 						// A blank Name on a continuation chunk is a
 						// protocol violation; surface it rather than
 						// silently bucketing the chunk into a "" slot.
@@ -647,12 +513,9 @@ func (g *GeminiAdapter) consumeSSE(
 							toolBufs[fc.Name] = buf
 						}
 
-						// Each chunk's partialArgs (or args, on the final
-						// chunk) is a *cumulative* JSON object snapshot:
-						// later snapshots supersede earlier ones rather
-						// than concatenating onto them. Retain the most
-						// recent non-empty payload; the size cap guards
-						// against an oversized blob in any single chunk.
+						// Each chunk's args/partialArgs is a *cumulative*
+						// snapshot that supersedes earlier ones rather than
+						// concatenating onto them.
 						snapshot := fc.Args
 						if len(snapshot) == 0 {
 							snapshot = fc.PartialArgs
@@ -665,30 +528,19 @@ func (g *GeminiAdapter) consumeSSE(
 							buf.args = snapshot
 						}
 
-						// Gemini 3.x emits `thoughtSignature` alongside
-						// the functionCall part. The signature is a
-						// property of the part, not the call itself —
-						// retain the most recent non-empty value so we
-						// associate the buffer with the assistant's
-						// terminal reasoning blob for the part (#194).
+						// thoughtSignature is a property of the part, not
+						// the call; retain the most recent non-empty value.
 						if part.ThoughtSignature != "" {
 							buf.thoughtSignature = part.ThoughtSignature
 						}
 
 						// With streamFunctionCallArguments=false (the
-						// current default) WillContinue is never set,
-						// so every functionCall part falls directly
-						// into this branch — this is the only path
-						// through which production tool calls are
-						// emitted. The willContinue=true accumulation
-						// path above is retained defensively for
-						// compatibility if the flag is re-enabled.
+						// default) WillContinue is never set, so this is
+						// the only path production tool calls take; the
+						// willContinue=true accumulation above is kept
+						// defensively in case the flag is re-enabled.
 						if !fc.WillContinue {
-							// Final chunk for this call: emit, then
-							// advance the sequence counter used for ID
-							// synthesis. nextPartIdx is no longer the
-							// slot key — emitting deletes the named
-							// slot directly.
+							// Emit, then advance the ID-synthesis counter.
 							if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
 								return
 							}
@@ -699,13 +551,9 @@ func (g *GeminiAdapter) consumeSSE(
 			}
 
 			if cand.FinishReason != "" {
-				// Drain any still-open tool-call buffers as a defensive
-				// measure: a server that sets finishReason without first
-				// closing a willContinue buffer would otherwise leave
-				// the call invisible to the loop. Iteration order over
-				// a Go map is non-deterministic, but each buffer here
-				// represents a distinct tool name — order between
-				// drained calls is not load-bearing.
+				// Drain any still-open tool-call buffers: a server that
+				// sets finishReason without closing a willContinue buffer
+				// would otherwise leave the call invisible to the loop.
 				for _, buf := range toolBufs {
 					if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
 						return
@@ -714,11 +562,7 @@ func (g *GeminiAdapter) consumeSSE(
 				}
 
 				stop := mapGeminiFinishReason(cand.FinishReason)
-				// Vertex returns finishReason=STOP for both plain
-				// end-of-turn responses and tool-call turns. The agentic
-				// loop dispatches tools only when StopReason=="tool_use",
-				// so we promote STOP → tool_use whenever functionCall
-				// parts were emitted during the stream.
+				// Promote STOP → tool_use since Vertex uses STOP for both.
 				if stop == "end_turn" && sawFunctionCall {
 					stop = "tool_use"
 				}

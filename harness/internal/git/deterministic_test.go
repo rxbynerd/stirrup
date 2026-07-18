@@ -42,7 +42,6 @@ func TestSetup_CreatesBranch(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 
-	// Verify we are on the expected branch.
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = repo
 	out, err := cmd.Output()
@@ -64,7 +63,6 @@ func TestCheckpoint_CommitsChanges(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 
-	// Create a file so there is something to commit.
 	if err := os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -73,7 +71,6 @@ func TestCheckpoint_CommitsChanges(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	// Verify the commit message.
 	cmd := exec.Command("git", "log", "-1", "--format=%s")
 	cmd.Dir = repo
 	out, err := cmd.Output()
@@ -94,10 +91,8 @@ func TestCheckpoint_NoChanges_IsNoOp(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 
-	// Get the initial commit count.
 	before := commitCount(t, repo)
 
-	// Checkpoint with no changes should succeed silently.
 	if err := gs.Checkpoint(ctx, "nothing"); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
@@ -117,7 +112,6 @@ func TestFinalise_ReturnsBranchAndSHA(t *testing.T) {
 		t.Fatalf("Setup: %v", err)
 	}
 
-	// Make a commit so the SHA differs from the initial one.
 	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -134,7 +128,6 @@ func TestFinalise_ReturnsBranchAndSHA(t *testing.T) {
 		t.Errorf("branch = %q, want %q", result.Branch, "stirrup/task-3")
 	}
 
-	// Verify the SHA matches what git reports.
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = repo
 	out, err := cmd.Output()
@@ -147,7 +140,6 @@ func TestFinalise_ReturnsBranchAndSHA(t *testing.T) {
 	}
 }
 
-// commitCount returns the number of commits in the repo.
 func commitCount(t *testing.T, repo string) int {
 	t.Helper()
 	cmd := exec.Command("git", "rev-list", "--count", "HEAD")
@@ -163,7 +155,6 @@ func commitCount(t *testing.T, repo string) int {
 	return n
 }
 
-// trimOutput trims whitespace from command output.
 func trimOutput(b []byte) string {
 	return strings.TrimSpace(string(b))
 }

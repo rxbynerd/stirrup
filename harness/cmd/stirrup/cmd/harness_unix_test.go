@@ -9,23 +9,12 @@ import (
 	"testing"
 )
 
-// TestReadPromptFile_SpecialFile pins the !IsRegular() guard added
-// for the --prompt-file security fix. Named pipes (FIFOs) report
-// info.Size()==0 from os.Stat on both Linux and macOS, so without
-// this guard:
-//
-//   - An unwritten FIFO would block io.ReadAll forever (the
-//     harness hangs at startup with no diagnostic).
-//   - A FIFO pre-loaded with >10 MiB would slip the size cap and
-//     land entirely in cfg.Prompt — bypassing the documented
-//     10 MiB bound.
-//
-// syscall.Mkfifo is preferred over os.Pipe() here because Mkfifo
-// produces a real on-disk FIFO that we can hand to readPromptFile
-// by path, which is exactly how a real operator would trip this.
-// Linux + macOS + every BSD support Mkfifo; the build tag scopes
-// the test to those platforms so Windows CI does not fail on the
-// missing syscall.
+// TestReadPromptFile_SpecialFile pins the !IsRegular() guard on
+// --prompt-file: named pipes (FIFOs) report info.Size()==0 from
+// os.Stat, so without the guard an unwritten FIFO would block
+// io.ReadAll forever, and a FIFO pre-loaded with >10 MiB would slip
+// the size cap. The build tag scopes the test to platforms that
+// support syscall.Mkfifo.
 func TestReadPromptFile_SpecialFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fifo")

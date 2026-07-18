@@ -72,11 +72,11 @@ func TestIsLoopbackHost(t *testing.T) {
 	}
 }
 
-// TestLoopbackAwareDialContext_AdmitsLoopbackName pins the regression fixed in
-// review wave 1: a dial to the "localhost" NAME (which net.ParseIP cannot
-// resolve to a loopback IP) must be admitted, not refused by the SSRF guard.
-// The dial itself targets a closed port so a connection error is expected, but
-// it must be a dial error, never the "private host" rejection.
+// TestLoopbackAwareDialContext_AdmitsLoopbackName pins that a dial to the
+// "localhost" NAME (which net.ParseIP cannot resolve to a loopback IP) is
+// admitted, not refused by the SSRF guard. The dial itself targets a closed
+// port so a connection error is expected, but it must be a dial error, never
+// the "private host" rejection.
 func TestLoopbackAwareDialContext_AdmitsLoopbackName(t *testing.T) {
 	dial := LoopbackAwareDialContext(0)
 	_, err := dial(t.Context(), "tcp", "localhost:1")

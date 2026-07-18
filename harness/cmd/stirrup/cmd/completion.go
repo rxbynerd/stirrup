@@ -26,9 +26,8 @@ Examples:
 		out := cmd.OutOrStdout()
 		switch args[0] {
 		case "bash":
-			// GenBashCompletionV2 emits the modern (descriptions-aware)
-			// bash script; the legacy generator (GenBashCompletion) does
-			// not surface cobra's RegisterFlagCompletionFunc values.
+			// GenBashCompletionV2 surfaces RegisterFlagCompletionFunc
+			// values; the legacy GenBashCompletion does not.
 			return cmd.Root().GenBashCompletionV2(out, true)
 		case "zsh":
 			return cmd.Root().GenZshCompletion(out)

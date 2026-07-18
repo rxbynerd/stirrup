@@ -551,11 +551,10 @@ func hangingExecStartHandler(partialOutput string) http.HandlerFunc {
 	}
 }
 
-// TestContainerExecutor_Exec_Timeout is the #469/#473 regression: a genuine
-// per-call deadline expiry must be classified via errors.Is(err, ErrTimeout)
-// (not a substring match — #468) and must preserve whatever stdout was
-// captured before the deadline hit, matching local.go's pre-existing
-// behaviour (container.go used to discard it entirely).
+// TestContainerExecutor_Exec_Timeout verifies that a genuine per-call
+// deadline expiry classifies via errors.Is(err, ErrTimeout) (not a
+// substring match) and preserves whatever stdout was captured before the
+// deadline hit.
 func TestContainerExecutor_Exec_Timeout(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
@@ -584,11 +583,11 @@ func TestContainerExecutor_Exec_Timeout(t *testing.T) {
 	}
 }
 
-// TestContainerExecutor_Exec_CancelledContext_NotErrTimeout is the #469
-// regression on the container executor: a parent-context cancellation that
-// is not a deadline expiry must not be reported as (or satisfy
-// errors.Is against) ErrTimeout, even with a large configured timeout, and
-// partial output captured before the cancel must still be returned.
+// TestContainerExecutor_Exec_CancelledContext_NotErrTimeout verifies that a
+// parent-context cancellation that is not a deadline expiry must not be
+// reported as (or satisfy errors.Is against) ErrTimeout, even with a large
+// configured timeout, and that partial output captured before the cancel is
+// still returned.
 func TestContainerExecutor_Exec_CancelledContext_NotErrTimeout(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
@@ -620,16 +619,11 @@ func TestContainerExecutor_Exec_CancelledContext_NotErrTimeout(t *testing.T) {
 	}
 }
 
-// --- S2: Docker API client / file-I/O timeout tests ---
-//
-// These exercise the fix for "execInContainer ignores its timeout
-// parameter" and "the Docker Engine API client has no explicit timeout": a
-// wedged daemon (accepts the connection, never responds) must not hang the
-// executor forever, on any call class, while a slow-but-legitimate
+// Docker API client / file-I/O timeout tests: a wedged daemon must not
+// hang the executor forever on any call class, while a slow-but-legitimate
 // streaming exec must not be killed by a blanket short timeout. Each test
-// temporarily shrinks the relevant package-level timeout var so the
-// scenario completes in well under a second instead of the real 10-60s
-// production window.
+// shrinks the relevant package-level timeout var so the scenario completes
+// well under a second instead of the real 10-60s production window.
 
 // withShortTimeout sets *knob to short for the duration of the test and
 // restores the original value via t.Cleanup, so package-level timeout vars
@@ -642,15 +636,11 @@ func withShortTimeout(t *testing.T, knob *time.Duration, short time.Duration) {
 	t.Cleanup(func() { *knob = orig })
 }
 
-// TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline is
-// the S2 regression for control-plane calls (create/start/stop/ping/
-// exec-create/exec-inspect): a fake daemon that accepts the connection but
-// never responds must not hang the call forever even when the caller
-// supplies no context deadline of its own (context.Background()) — the
-// per-call containerControlPlaneTimeout must still bound it — and the
-// resulting error must classify via errors.Is(err, ErrTimeout), composing
-// with #489's sentinel rather than surfacing a bespoke "context deadline
-// exceeded" string.
+// TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline
+// verifies that a fake daemon accepting the connection but never
+// responding does not hang a control-plane call forever even with no
+// caller-supplied context deadline — containerControlPlaneTimeout must
+// still bound it, classifying via errors.Is(err, ErrTimeout).
 func TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline(t *testing.T) {
 	withShortTimeout(t, &containerControlPlaneTimeout, 150*time.Millisecond)
 
@@ -685,12 +675,9 @@ func TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline(t *tes
 
 // TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout
 // proves the connection-level backstop independently of any per-call
-// context deadline: even if containerControlPlaneTimeout were much larger
-// than the time the daemon takes to (never) respond, the Transport's
-// ResponseHeaderTimeout still bounds the wait for headers. This is the
-// "half-open TCP / wedged daemon" case called out in the task — it is a
-// pure connection-level bound, so (unlike the context-deadline path above)
-// it is not required to classify via ErrTimeout.
+// context deadline: even with a much larger containerControlPlaneTimeout,
+// the Transport's ResponseHeaderTimeout still bounds the wait for headers.
+// A pure connection-level bound, so it need not classify via ErrTimeout.
 func TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout(t *testing.T) {
 	withShortTimeout(t, &containerResponseHeaderTimeout, 150*time.Millisecond)
 	// Deliberately much larger than the header timeout above, so the
@@ -719,14 +706,10 @@ func TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout(t
 	}
 }
 
-// TestContainerExecutor_WriteFile_MkdirTimeout is the S2 regression for the
-// specific bug: execInContainer's timeout parameter was named `_` and
-// silently dropped, so WriteFile's "mkdir -p" call — which passes its own
-// 10s budget — actually ran under whatever deadline the caller's ctx
-// happened to carry (often none). With no caller deadline
-// (context.Background()) and a wedged daemon, this used to hang forever;
-// now containerMkdirTimeout (shrunk here for test speed) bounds it and the
-// error classifies via ErrTimeout.
+// TestContainerExecutor_WriteFile_MkdirTimeout verifies that WriteFile's
+// "mkdir -p" call is bounded by containerMkdirTimeout (shrunk here for
+// speed) even with no caller-supplied deadline and a wedged daemon, and
+// that the resulting error classifies via ErrTimeout.
 func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
 	withShortTimeout(t, &containerMkdirTimeout, 150*time.Millisecond)
 
@@ -744,9 +727,7 @@ func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
 	defer cleanup()
 
 	start := time.Now()
-	// No deadline at all on the caller's ctx — this is the exact gap S2
-	// closes: previously only execInContainer's ignored parameter stood
-	// between this call and an indefinite hang.
+
 	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "file content")
 	elapsed := time.Since(start)
 
@@ -1289,11 +1270,9 @@ func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
 // TestContainerExecutor_HardeningProfile asserts that the create-container
 // request carries the full sandbox-hardening profile: a read-only rootfs, a
 // sized /tmp tmpfs and /dev/shm, the nobody uid:gid, nosuid/nodev/noexec on
-// the tmpfs scratch mounts, and the retained PidsLimit. The /dev/shm size
-// rides on its tmpfs option string (size=…), not a separate ShmSize field, so
-// the size and noexec stay on one mount. The mock engine only captures the
-// request, so this proves what stirrup puts on the wire — not that a live
-// daemon honours every flag (see the report's end-to-end note).
+// the tmpfs scratch mounts, and the retained PidsLimit. The mock engine only
+// captures the request, so this proves what stirrup puts on the wire — not
+// that a live daemon honours every flag.
 func TestContainerExecutor_HardeningProfile(t *testing.T) {
 	var receivedBody containerCreateRequest
 	var rawBody []byte
@@ -1677,5 +1656,4 @@ func (m *mockSecurityEmitter) OutputTruncated(_ string, _, _ int) {
 	m.outputTruncCount++
 }
 
-// Ensure that mockSecurityEmitter satisfies the interface.
 var _ SecurityEventEmitter = (*mockSecurityEmitter)(nil)

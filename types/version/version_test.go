@@ -2,11 +2,9 @@ package version
 
 import "testing"
 
-// TestDefaults asserts the link-time-injected vars hold sensible defaults
-// when no -ldflags are passed (i.e. local `go build` / `go test`).
+// TestDefaults asserts sensible defaults when no -ldflags are passed.
 //
-// These tests mutate the package-level vars and therefore must NOT call
-// t.Parallel.
+// Mutates package-level vars; must NOT call t.Parallel.
 func TestDefaults(t *testing.T) {
 	if got := Version(); got != "dev" {
 		t.Fatalf("Version() = %q, want %q", got, "dev")
@@ -20,8 +18,7 @@ func TestDefaults(t *testing.T) {
 }
 
 // TestFull exercises the formatting branches by temporarily mutating the
-// package-level vars. t.Cleanup restores the originals so subsequent tests
-// (and parallel test binaries) see the unmodified defaults.
+// package-level vars; t.Cleanup restores the originals.
 func TestFull(t *testing.T) {
 	origV, origC := version, commit
 	t.Cleanup(func() { version, commit = origV, origC })

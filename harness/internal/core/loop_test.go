@@ -79,14 +79,11 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 }
 
 // buildTestLoopWithSecurity is identical to buildTestLoop but wires a
-// SecurityLogger writing to the provided sink. Pass nil to skip security
-// instrumentation. This is required for tests that assert security events
-// are emitted (e.g. PermissionDenied), which the production loop guards
-// behind a nil check.
+// SecurityLogger writing to the provided sink; pass nil to skip.
 func buildTestLoopWithSecurity(prov *mockProvider, securitySink io.Writer) *AgenticLoop {
 	var transportBuf bytes.Buffer
 	registry := tool.NewRegistry()
-	// Register a simple test tool.
+
 	registry.Register(&tool.Tool{
 		Name:              "test_tool",
 		Description:       "A test tool",
@@ -148,19 +145,11 @@ func TestLoop_SimpleTextResponse(t *testing.T) {
 	}
 }
 
-// TestLoop_ForwardsConfiguredTemperature exercises the three temperature
-// cases the loop must distinguish:
-//
-//   - unset RunConfig.Temperature falls back to the harness default
-//     (0.1). The "loop never silently forwards nil to the provider"
-//     property — historically guarded inline in
-//     TestLoop_SimpleTextResponse — lives in this case. A regression
-//     that drops the fallback re-introduces the silent-provider-default
-//     bug the original assertion was written to catch.
-//   - a non-zero override is forwarded verbatim.
-//   - an explicit 0.0 override (greedy decoding) is forwarded as 0.0,
-//     not coerced back to the default. This is the case the pointer
-//     indirection on RunConfig.Temperature exists to preserve.
+// TestLoop_ForwardsConfiguredTemperature pins that the loop never silently
+// forwards a nil temperature to the provider: unset RunConfig.Temperature
+// falls back to the harness default (0.1), a non-zero override is forwarded
+// verbatim, and an explicit 0.0 override (greedy decoding) is forwarded as
+// 0.0 rather than coerced back to the default.
 func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -233,8 +222,8 @@ func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.
 	}
 }
 
-// The loop must thread the resolved prompt model into PromptContext so
-// the mode templates render against it (#492): the promptModel override
+// TestLoop_ThreadsPromptModelIntoPromptContext pins that the loop threads
+// the resolved prompt model into PromptContext: the promptModel override
 // when set, otherwise the router's model.
 func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
 	tests := []struct {
@@ -270,8 +259,7 @@ func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
 }
 
 func TestLoop_ToolUseAndContinue(t *testing.T) {
-	// First call: model requests a tool call.
-	// Second call: model provides final text.
+
 	callCount := 0
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -326,8 +314,7 @@ func TestLoop_MaxTurns(t *testing.T) {
 
 // TestLoop_FinalAssistantText_Populated pins the happy path: a run whose
 // final assistant turn carries text lands that text on
-// RunTrace.FinalAssistantText, from where buildRunResult maps it onto the
-// RunResult the resultSink emits.
+// RunTrace.FinalAssistantText.
 func TestLoop_FinalAssistantText_Populated(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -353,9 +340,7 @@ func TestLoop_FinalAssistantText_Populated(t *testing.T) {
 }
 
 // TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns pins that the loop
-// captures the last non-empty assistant text across every turn: a
-// tool-use turn (text, then a tool call) followed by a final text turn
-// leaves the final turn's text on the trace.
+// captures the last non-empty assistant text across every turn.
 func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -388,9 +373,8 @@ func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
 }
 
 // TestLoop_FinalAssistantText_EmptyWhenNoText pins the omit path: a run
-// that never produces an assistant text block (here, hitting max_turns
-// with tool-only turns) leaves FinalAssistantText empty so the omitempty
-// tag drops it from the emitted RunResult.
+// that never produces an assistant text block leaves FinalAssistantText
+// empty so the omitempty tag drops it from the emitted RunResult.
 func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
 	prov := &infiniteToolCallProvider{}
 
@@ -413,10 +397,8 @@ func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
 
 // TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText pins
 // the guard-ordering invariant: when the PhasePostTurn guard denies a
-// turn's final text, that denied text must not appear on
-// RunTrace.FinalAssistantText. With no prior approved turn the field is
-// empty — never the just-denied content, which would otherwise flow out
-// the resultSink and bypass the guard's "do not forward" decision.
+// turn's final text, that text must not appear on
+// RunTrace.FinalAssistantText.
 func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testing.T) {
 	const deniedText = "The secret is ghp_shouldnotleak and here it is."
 	prov := &mockProvider{
@@ -447,10 +429,9 @@ func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testin
 }
 
 // TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText is
-// the two-turn variant of the guard-ordering invariant: turn 0 produces
-// text alongside a tool call (no PostTurn guard on a tool_use turn), turn
-// 1 produces a final answer the PostTurn guard denies. The run must
-// surface turn 0's prior, non-denied text — not turn 1's denied answer.
+// the two-turn variant of the guard-ordering invariant: when the PostTurn
+// guard denies the final turn's text, the run must surface the prior turn's
+// non-denied text, not the denied answer.
 func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *testing.T) {
 	const priorText = "Prior non-denied answer."
 	const deniedText = "Denied final answer."
@@ -493,11 +474,10 @@ func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *tes
 	}
 }
 
-// TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn pins the
-// `if finalText != ""` protective path: a text-bearing tool_use turn
-// followed by a terminal turn carrying no text blocks must not blank out
-// the earlier turn's text. Distinct from LastNonEmptyAcrossTurns, which
-// covers a later non-empty turn overwriting an earlier one.
+// TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn pins that a
+// terminal turn carrying no text blocks must not blank out an earlier
+// turn's text. Distinct from LastNonEmptyAcrossTurns, which covers a later
+// non-empty turn overwriting an earlier one.
 func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
 	const text0 = "Here is the result."
 	prov := &multiCallProvider{
@@ -508,7 +488,7 @@ func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
 			{
-				// Terminal turn with no text blocks.
+
 				{Type: "message_complete", StopReason: "end_turn"},
 			},
 		},
@@ -530,9 +510,7 @@ func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
 }
 
 // TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace proves the field
-// reaches the persisted trace, not merely the returned struct: it re-parses
-// the JSONL emitter's buffer and asserts the serialized run_finished event's
-// embedded RunTrace carries finalAssistantText.
+// reaches the persisted trace, not merely the returned struct.
 func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
 	const answer = "The persisted answer."
 	prov := &mockProvider{
@@ -577,9 +555,7 @@ func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
 
 // TestLoop_FinalAssistantText_ScrubbedBeforePersist pins that the final
 // assistant text is passed through security.Scrub before it reaches the
-// trace/resultSink: a secret-shaped substring the PhasePostTurn guard
-// (a sensitivity classifier, not a deterministic redactor) let through
-// must be redacted.
+// trace/resultSink.
 func TestLoop_FinalAssistantText_ScrubbedBeforePersist(t *testing.T) {
 	// ghp_ GitHub PAT shape is a known deterministic scrub pattern.
 	const secret = "ghp_0123456789abcdefghijABCDEFGHIJ0123"
@@ -614,7 +590,7 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 
 	loop := buildTestLoop(prov)
 	config := buildTestConfig()
-	// Budget is checked at the START of each turn with token budget of 0.
+
 	maxTokens := 0
 	config.MaxTokenBudget = &maxTokens
 
@@ -623,10 +599,9 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	// First turn proceeds because budget check happens at start when tokens are 0.
-	// Budget check: totalTokens (0) > maxTokenBudget (0) is false, so it passes.
-	// After the turn, we don't re-check. So outcome should be success.
-	// This is correct behaviour — a zero token budget is unusual.
+	// Budget is checked at the start of each turn; totalTokens(0) >
+	// maxTokenBudget(0) is false, so the first turn proceeds and there is
+	// no re-check afterward.
 	if runTrace.Outcome != "success" {
 		t.Errorf("expected outcome 'success' with zero token budget (check happens before first turn), got %q", runTrace.Outcome)
 	}
@@ -791,7 +766,7 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 
 // TestDispatchToolCall_LegacySearchFilesEmitsHint pins the migration error
 // emitted when a model (or a stale operator config) still calls the
-// pre-#225 search_files tool. The dispatcher must direct the caller to the
+// legacy search_files tool: the dispatcher must direct the caller to the
 // two replacement tools rather than emitting an opaque "Unknown tool".
 func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{})
@@ -815,11 +790,9 @@ func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	if !strings.Contains(output, "find_files") {
 		t.Errorf("expected output to suggest find_files, got %q", output)
 	}
-	// The parenthetical suffixes are load-bearing model-guidance text:
-	// they tell a confused model which of the two replacements maps to
-	// its original intent. A silent reword that drops either descriptor
-	// would degrade self-correction without failing the name-only checks
-	// above, so we pin them here.
+	// The parenthetical suffixes are load-bearing model-guidance text; a
+	// silent reword that drops either descriptor would degrade
+	// self-correction without failing the name-only checks above.
 	if !strings.Contains(output, "regex content search") {
 		t.Errorf("expected hint to describe grep_files as 'regex content search', got %q", output)
 	}
@@ -842,9 +815,8 @@ func TestRenamedToolHint(t *testing.T) {
 		t.Errorf("hint mismatch:\n got:  %q\n want: %q", got, want)
 	}
 
-	// Names that were never previously registered must return (\"\", false)
-	// so the caller falls through to the generic unknown-tool path. A
-	// future rename addition must explicitly land in the table.
+	// Unrecognised names must return ok=false so the caller falls through
+	// to the generic unknown-tool path.
 	if _, ok := renamedToolHint("not_a_tool"); ok {
 		t.Error("renamedToolHint must return ok=false for unrecognised names")
 	}
@@ -1094,11 +1066,9 @@ func TestLoop_StreamEventError(t *testing.T) {
 	}
 }
 
-// TestLoop_ProviderError_SurfacesViaTransport guards against a regression
-// where the loop swallowed provider/stream errors into OTel spans only,
-// leaving operators without an OTLP collector with no idea why a run
-// failed. The error string must be reachable on the transport stream and
-// the slog log output.
+// TestLoop_ProviderError_SurfacesViaTransport guards against the loop
+// swallowing provider/stream errors into OTel spans only; the error string
+// must also be reachable on the transport stream and the slog log output.
 func TestLoop_ProviderError_SurfacesViaTransport(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1171,8 +1141,8 @@ func TestLoop_ContextCancelled(t *testing.T) {
 	loop := buildTestLoop(prov)
 	config := buildTestConfig()
 
-	// Cancel the context before running. With no cause attached this is a
-	// plain/signal-style cancel and maps to outcome="cancelled".
+	// With no cause attached this is a plain/signal-style cancel and maps
+	// to outcome="cancelled".
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -1357,15 +1327,12 @@ func TestEstimateTokens_OverheadSignificance(t *testing.T) {
 	}
 }
 
-// TestEffectiveReserveForResponse pins the reserve-scaling boundary
-// introduced for #444: any maxTokens above defaultReserveForResponse
-// (including the unset/negative sentinels, which resolve through the
-// loop's own defaultMaxContextTokens fallback before reaching this
-// function) is untouched byte-for-byte, so this must never change
-// behaviour for a config that did not already hit the bug. At and below
-// the boundary the reserve scales down to smallContextReserveDivisor's
-// fraction of maxTokens, floored at 1 token so the provider is never
-// asked for a zero-token completion.
+// TestEffectiveReserveForResponse pins the reserve-scaling boundary: any
+// maxTokens above defaultReserveForResponse (including the unset/negative
+// sentinels) is untouched byte-for-byte. At and below the boundary the
+// reserve scales down to smallContextReserveDivisor's fraction of
+// maxTokens, floored at 1 token so the provider is never asked for a
+// zero-token completion.
 func TestEffectiveReserveForResponse(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1391,14 +1358,11 @@ func TestEffectiveReserveForResponse(t *testing.T) {
 	}
 }
 
-// TestLoop_SmallContextBudgetScalesProviderMaxTokens asserts the other
-// half of #444's root cause: the provider Stream() request's MaxTokens
-// (max_completion_tokens on the wire) was hardwired to the flat
-// defaultReserveForResponse regardless of ContextStrategy.MaxTokens, so
-// a small-context server was always asked to generate up to 64k
-// completion tokens — a request its own window cannot honour. The
-// provider must now see the same scaled-down reserve the context
-// strategy uses.
+// TestLoop_SmallContextBudgetScalesProviderMaxTokens pins that the provider
+// Stream() request's MaxTokens (max_completion_tokens on the wire) scales
+// down with ContextStrategy.MaxTokens instead of staying hardwired to the
+// flat defaultReserveForResponse, which a small-context server cannot
+// honour.
 func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -1422,13 +1386,10 @@ func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
 	}
 }
 
-// TestLoop_SmallContextBudgetWarnsOnce asserts item 3 of #444's fix: an
-// operator running a small-context config gets an actionable warning
-// (slog + a transport "warning" event, mirroring the provider-error
-// surfacing added by "core: surface provider errors via slog and
-// transport warning") instead of the silent truncation the issue
-// reports. maxTokens is constant for the life of a run, so the warning
-// must fire exactly once — a per-turn repeat would just be noise.
+// TestLoop_SmallContextBudgetWarnsOnce pins that an operator running a
+// small-context config gets an actionable warning (slog + a transport
+// "warning" event) instead of silent truncation, exactly once per run
+// since maxTokens is constant for the run's life.
 func TestLoop_SmallContextBudgetWarnsOnce(t *testing.T) {
 	var transportBuf, logBuf bytes.Buffer
 
@@ -1485,11 +1446,8 @@ func TestBuildLoop_InvalidConfig(t *testing.T) {
 }
 
 // TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock pins the
-// in-loop hop that carries the Gemini 3.x thoughtSignature from the
-// StreamEvent channel onto the persisted assistant ContentBlock
-// (#194). The assignment lives at a single point in streamEventsToResult
-// — without this regression test, deleting that one line is invisible
-// to the entire suite and silently drops cross-turn reasoning state.
+// in-loop hop that carries a provider's thoughtSignature from the
+// StreamEvent channel onto the persisted assistant ContentBlock.
 func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 
@@ -1545,11 +1503,10 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 }
 
 // TestStreamEventsToResult_ReplayFieldsStashedAndAttached pins the
-// in-loop hop for the message-level replay state (quirks ReplayFields,
-// design §9 risk 7): the message_complete event's ReplayFields must land
-// on the streamResult, and appendAssistantContent must attach it to the
-// persisted assistant Message so the next request can round-trip it.
-// Mirrors the ThoughtSignature test above for the message-level carrier.
+// in-loop hop for message-level replay state: the message_complete event's
+// ReplayFields must land on the streamResult, and appendAssistantContent
+// must attach it to the persisted assistant Message so the next request
+// can round-trip it. Mirrors the ThoughtSignature test above.
 func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 
@@ -1626,10 +1583,7 @@ func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
 // TestDispatchToolCall_EmitsPrototypePollutionBlocked confirms that when a
 // tool call's input contains __proto__ or constructor keys, dispatchToolCall
 // emits the PrototypePollutionBlocked security event before validation AND
-// passes a CLEANED input (without the dangerous keys) to the tool handler.
-// The handler-receives-cleaned-input assertion guards the production
-// contract: a refactor accidentally passing call.Input instead of
-// inputForCall would be caught here.
+// passes a cleaned input (without the dangerous keys) to the tool handler.
 func TestDispatchToolCall_EmitsPrototypePollutionBlocked(t *testing.T) {
 	registry := tool.NewRegistry()
 
@@ -1706,14 +1660,9 @@ func (r *recordingContextStrategy) Prepare(ctx context.Context, messages []types
 	out, err := r.inner.Prepare(ctx, messages, budget)
 	r.inputs = append(r.inputs, len(messages))
 	r.prepared = append(r.prepared, len(out))
-	// The loop stores lastContextTokens *after* Prepare returns, so
-	// snapshot via a deferred read-back at the start of the NEXT
-	// invocation. We do that by reading the previous value here BEFORE
-	// the loop has a chance to overwrite it again — but since this method
-	// returns to the loop which then calls .Store(), we must snapshot in
-	// a deferred goroutine. Instead: snapshot the current value here
-	// (which reflects the previous turn's Store), and rely on the test
-	// to read the final value from the atomic post-Run.
+	// The loop stores lastContextTokens *after* Prepare returns, so the
+	// value snapshotted here reflects the previous turn's Store; the test
+	// reads the final value from the atomic post-Run.
 	if r.loop != nil {
 		r.atomics = append(r.atomics, r.loop.lastContextTokens.Load())
 	}
@@ -1727,10 +1676,8 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 // TestLoop_ContextTokensGaugeReflectsCompaction asserts that when a
 // SlidingWindowStrategy compacts the message history, the lastContextTokens
 // atomic (which the ContextTokens gauge reads) DECREASES vs the
-// pre-compaction observation. This is the negative-delta semantic: a
-// successful compaction shrinks the absolute context-window estimate, the
-// observable gauge surfaces that drop, and downstream dashboards see a
-// downward step rather than an opaque negative delta on a counter.
+// pre-compaction observation, rather than surfacing an opaque negative
+// delta on a counter.
 //
 // The recordingContextStrategy snapshots loop.lastContextTokens at each
 // Prepare call. Because the loop stores into the atomic AFTER Prepare
@@ -1738,19 +1685,13 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 // (the snapshot for turn 0's Prepare is the pre-run zero). The final
 // post-Run atomic read gives the value stored after the LAST Prepare.
 func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
-	// We need a multi-turn run where the OLDEST messages dominate the
-	// token count and get dropped by compaction. Strategy: a heavy user
-	// prompt followed by short assistant turns. MaxTokens (50) is small
-	// enough that even effectiveReserveForResponse's quartered reserve
-	// (12) leaves only a 38-token available budget — nowhere near
-	// enough to hold the ~2000-token heavy prompt — so the sliding-
-	// window strategy still preserves only the last minPreservedMessages
-	// on every Prepare call where len(messages) > 2, and after enough
-	// short turns the heavy prompt falls off the kept window, shrinking
-	// the absolute count. This exercises the strategy's genuinely-
-	// impossible-budget path (see TestLoop_SmallContextBudgetRetainsHistory
-	// below for the case #444 fixed: a small-but-workable budget that
-	// must NOT collapse to 2 messages).
+	// A multi-turn run where the oldest messages (a heavy initial prompt)
+	// dominate the token count. MaxTokens (50) is small enough that even
+	// the quartered reserve leaves a budget nowhere near sufficient to
+	// hold the heavy prompt, so sliding-window still collapses to
+	// minPreservedMessages — the genuinely-impossible-budget path (see
+	// TestLoop_SmallContextBudgetRetainsHistory for the small-but-workable
+	// case, which must NOT collapse to 2 messages).
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -1772,11 +1713,6 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 
-	// Override the default test config's small prompt with a heavy one
-	// AFTER buildTestLoop returns; this lets us shape the message
-	// history so the heaviest message is the oldest, which compaction
-	// can then drop.
-
 	rec := &recordingContextStrategy{
 		inner: contextpkg.NewSlidingWindowStrategy(),
 		loop:  loop,
@@ -1788,22 +1724,18 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// heavy prompt dominates the early absolute count and gets dropped
 	// by sliding-window compaction once it falls off the preserved tail.
 	config.Prompt = strings.Repeat("a", 8000) // ~2000 tokens worth of chars
-	// effectiveReserveForResponse(50) = 50/4 = 12 (quartered, since 50 is
-	// far below defaultReserveForResponse). available = 50 - 12 = 38,
-	// still positive but far too small to hold the ~2000-token heavy
-	// prompt, so SlidingWindow still drops down to minPreservedMessages
-	// once len(messages) > minPreservedMessages — same observable
-	// behaviour as the pre-#444-fix flat reserve, because at this
-	// magnitude no split of the budget is workable.
+	// effectiveReserveForResponse(50) = 12 (quartered); available = 38,
+	// still far too small to hold the ~2000-token heavy prompt, so
+	// SlidingWindow drops down to minPreservedMessages.
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 50}
 
 	if _, err := loop.Run(context.Background(), config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// rec.atomics[i] reflects loop.lastContextTokens at the START of turn
-	// i's Prepare invocation — i.e. the value stored AFTER turn (i-1)'s
-	// Prepare. The very first entry is 0 (pre-run reset).
+	// rec.atomics[i] reflects loop.lastContextTokens at the start of turn
+	// i's Prepare invocation — the value stored after turn (i-1)'s
+	// Prepare. The first entry is 0 (pre-run reset).
 	if len(rec.atomics) < 2 {
 		t.Fatalf("expected at least 2 Prepare invocations, got %d (atomics=%v)", len(rec.atomics), rec.atomics)
 	}
@@ -1848,24 +1780,13 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	}
 }
 
-// TestLoop_SmallContextBudgetRetainsHistory is the regression test for
-// #444: with the harness's old flat 64k response reserve, ANY
-// ContextStrategy.MaxTokens at or below 64000 drove the sliding-window
-// budget (MaxTokens - ReserveForResponse) non-positive, so every
-// Prepare call past the first collapsed to the last minPreservedMessages
-// (2) — silently dropping the original user prompt from turn 2 onward,
-// every turn, regardless of how much of the real budget was actually
-// unused. 32768 matches the issue's own small-local-model reproduction
-// (LM Studio / Ollama commonly run 4k-32k windows).
-//
-// With effectiveReserveForResponse scaling the reserve down to a
-// quarter of maxTokens (8192) instead of leaving it flat, available
-// (32768-8192 = 24576) comfortably holds this test's modest message
-// history, so the fix under test is that NOTHING gets dropped — the
-// same scenario that used to force every Prepare call down to 2
-// messages (see TestLoop_ContextTokensGaugeReflectsCompaction, which
-// pins the still-genuinely-impossible-budget case) must now return the
-// history unchanged.
+// TestLoop_SmallContextBudgetRetainsHistory pins that a small-but-workable
+// context budget (32768, typical of local-model windows) must not silently
+// drop history: effectiveReserveForResponse scales the reserve down to a
+// quarter of maxTokens, leaving a budget that comfortably holds this test's
+// modest message history, so nothing gets dropped. Contrast with
+// TestLoop_ContextTokensGaugeReflectsCompaction's genuinely-impossible
+// budget, which does collapse to minPreservedMessages.
 func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -1895,9 +1816,9 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 	loop.Context = rec
 
 	config := buildTestConfig()
-	// Same heavy prompt as TestLoop_ContextTokensGaugeReflectsCompaction
-	// (~2000 tokens), but a realistic small-context-model window instead
-	// of a pathologically tiny one.
+	// Same heavy prompt as TestLoop_ContextTokensGaugeReflectsCompaction,
+	// but a realistic small-context-model window instead of a
+	// pathologically tiny one.
 	config.Prompt = strings.Repeat("a", 8000)
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
 
@@ -1925,15 +1846,9 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 // TestLoop_RecordsContextTokensGauge asserts that runInnerLoop publishes the
 // absolute (post-Prepare) context token estimate to the lastContextTokens
 // atomic, and that the registered observable gauge callback yields that
-// value to a ManualReader collection. We collect WHILE the run is still
-// active (via a synchronous Run that ends before Collect is called) so that
-// the registration is unwound by defer — but the SDK has the chance to
-// observe at least once via the ManualReader path because we collect after
-// Run completes BUT the gauge value is captured by the loop's stored value;
-// since unregister fires on defer at Run return, we must collect as the
-// callback is still registered. To exercise this we register our own
-// callback inside the loop's lifetime, asserting the absolute count
-// directly via the lastContextTokens atomic.
+// value to a ManualReader collection. A probe callback registered before
+// Run captures the loop's own callback output while it is still alive
+// (the loop unregisters its callback via defer at Run return).
 func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -1953,9 +1868,8 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 		observedAttrs  []attribute.Set
 	)
 	unregister, err := metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
-		// Return 0 here; the value we care about is whatever the loop's own
-		// callback reports. We use this only to force a Collect cycle to
-		// surface ALL registered callbacks (incl. the loop's).
+		// Only present to force a Collect cycle that surfaces every
+		// registered callback, including the loop's own.
 		return 0, nil
 	})
 	if err != nil {
@@ -1963,10 +1877,6 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 	}
 	defer unregister()
 
-	// Use a multi-call provider that drives 2 turns: first turn issues a
-	// tool call, second turn ends. After each turn, the inner loop calls
-	// Context.Prepare and stores the absolute token estimate, then we
-	// drive a Collect at the END of the run to assert the final value.
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -1983,10 +1893,8 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 	loop.Provider = prov
 	loop.Metrics = metrics
 
-	// Hook in a separate observer that captures whatever the loop's
-	// per-run callback reports during a Collect. We register this BEFORE
-	// Run so it is alive across Run; the loop registers its own callback
-	// at run start. The two callbacks yield independent observations.
+	// Registered before Run so it stays alive across Run; the loop
+	// registers its own independent callback at run start.
 	captureUnreg, err := metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
 		v := loop.lastContextTokens.Load()
 		observedMu.Lock()
@@ -2006,10 +1914,8 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// At this point the run has completed and unregistered its callback,
-	// but our probe callback is still active. Collect to drive an
-	// observation against the post-run lastContextTokens value (which the
-	// loop populated on the final turn).
+	// The run's own callback is now unregistered, but the probe is still
+	// active; Collect observes the post-run lastContextTokens value.
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("Collect: %v", err)

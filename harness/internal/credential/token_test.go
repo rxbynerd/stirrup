@@ -459,12 +459,10 @@ func TestGitHubActionsOIDCTokenSource_EmptyValue(t *testing.T) {
 }
 
 // TestGitHubActionsOIDCTokenSource_RejectsHTTPURL guards the HTTPS
-// invariant on the runner OIDC issuance URL. A self-hosted runner
-// where an attacker can persuade the harness to read
-// ACTIONS_ID_TOKEN_REQUEST_URL=http://attacker.lan/... captures the
-// runner bearer (sent as Authorization: Bearer) and exchanges it for
-// a valid OIDC JWT with the harness's audience claim. The constructor
-// must refuse non-https schemes and never reach the network.
+// invariant on the runner OIDC issuance URL: a self-hosted runner
+// where ACTIONS_ID_TOKEN_REQUEST_URL points at http://attacker.lan
+// would leak the runner bearer. The constructor must refuse non-https
+// schemes and never reach the network.
 func TestGitHubActionsOIDCTokenSource_RejectsHTTPURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("HTTP server should never have been hit; constructor must reject http scheme")
@@ -498,10 +496,9 @@ func TestGitHubActionsOIDCTokenSource_RejectsMalformedURL(t *testing.T) {
 	}
 }
 
-// TestGitHubActionsOIDCTokenSource_URLFixedAtConstruction asserts the
-// URL is captured at construction and not re-read on every Token()
-// call. This closes the env-mutation window an in-process malicious
-// sidecar could otherwise exploit between calls.
+// TestGitHubActionsOIDCTokenSource_URLFixedAtConstruction verifies the
+// URL is captured at construction, not re-read on every Token() call,
+// closing an env-mutation window a malicious sidecar could exploit.
 func TestGitHubActionsOIDCTokenSource_URLFixedAtConstruction(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

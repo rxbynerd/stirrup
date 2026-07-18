@@ -26,24 +26,16 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// podExecCore is the exec/file-I/O machinery shared by every executor that
-// drives a sandbox Pod over the pods/exec subresource. Both K8sExecutor and
-// the Agent Sandbox CRD executor embed it: they differ only in how the Pod is
-// provisioned (direct Pod create vs. CRD), not in how commands and file I/O
-// ride into the Pod once it is Ready.
-//
-// Command execution and file I/O both ride the pods/exec subresource: Exec
-// runs `/bin/sh -c`, while ReadFile/WriteFile stream a tar archive over exec
-// and ListDirectory runs `ls`. The image must therefore ship a shell, tar,
-// and ls — see the embedding executor's config for the image requirement.
+// podExecCore is the exec/file-I/O machinery shared by K8sExecutor and the
+// Agent Sandbox CRD executor; they differ only in how the Pod is
+// provisioned. See docs/executors/k8s.md.
 type podExecCore struct {
 	clientset  kubernetes.Interface
 	restConfig *rest.Config
 	namespace  string
 	podName    string
 	network    *types.NetworkConfig
-	// Security, when non-nil, receives structured security events. It is
-	// nil-checked at every call site so a zero-value core (used in
+	// Security is nil-checked at every call site; a zero-value core (used in
 	// unit tests) emits nothing.
 	Security SecurityEventEmitter
 	logger   *slog.Logger
@@ -103,11 +95,9 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 	stdout.limit = k8sMaxOutput
 	var stderr bytes.Buffer
 
-	// `tar -C / -cf - -- <abs-path-without-leading-slash>` archives the
-	// single file. Stripping the leading slash keeps tar from warning about
-	// "removing leading /" on stderr and yields a predictable archive name.
-	// The `--` terminator stops a path that ever starts with `-` from being
-	// parsed as a tar option (e.g. --checkpoint-action=exec).
+	// Stripping the leading slash avoids tar's "removing leading /" stderr
+	// warning; `--` stops a path starting with `-` from being parsed as a
+	// tar option.
 	arcPath := strings.TrimPrefix(resolved, "/")
 	execErr := e.streamExec(ctx, []string{"tar", "-C", "/", "-cf", "-", "--", arcPath}, nil, &stdout, &stderr)
 	if stdout.exceeded {
@@ -139,13 +129,8 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 	}
 
 	// Read one byte past the cap so an over-cap payload is detectable by
-	// length (a file of exactly k8sMaxOutput bytes is still allowed). The
-	// stdout streaming-cap branch above already caught the case where the
-	// whole archive overflowed; this guards a file whose tar header
-	// under-reported its size, where the read itself crosses the cap (and
-	// may surface as io.ErrUnexpectedEOF on the truncated buffer). Either
-	// signal maps to errK8sOutputCap so callers branch consistently with
-	// the other cap paths instead of on an opaque "unexpected EOF".
+	// length even when the tar header under-reported its size (that read
+	// may surface as io.ErrUnexpectedEOF).
 	data, err := io.ReadAll(io.LimitReader(tr, k8sMaxOutput+1))
 	if int64(len(data)) > k8sMaxOutput || (errors.Is(err, io.ErrUnexpectedEOF) && int64(len(data)) >= k8sMaxOutput) {
 		e.emitFileSizeLimit(filePath, int64(len(data)))
@@ -215,9 +200,8 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 // to fs.ErrNotExist.
 func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]string, error) {
 	// Unlike ReadFile/WriteFile, the workspace root is a legitimate listing
-	// target (it is what an agent enumerates first), so this uses the plain
-	// ResolvePath rather than resolveFilePath. This matches LocalExecutor,
-	// which lists "/workspace" for an empty argument.
+	// target, so this uses plain ResolvePath rather than resolveFilePath
+	// (matches LocalExecutor).
 	resolved, err := e.ResolvePath(dirPath)
 	if err != nil {
 		return nil, err
@@ -252,16 +236,12 @@ func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]stri
 	return entries, nil
 }
 
-// Exec runs `command` via `/bin/sh -c` inside the agent container over the
-// pods/exec subresource. stdout and stderr are captured into separate
-// 10 MB-capped buffers. A zero timeout uses the default; timeouts are
+// Exec runs `command` via `/bin/sh -c` in the agent container over the
+// pods/exec subresource. A zero timeout uses the default; timeouts are
 // clamped to MaxTimeout. On deadline or cancellation, classifyExecCtxErr
-// distinguishes the two (errors.Is against executor.ErrTimeout for a
-// genuine deadline, plain context.Canceled otherwise) and whatever
-// stdout/stderr streamExec had already captured is preserved on the
-// returned result rather than discarded (#473) — mirroring local.go and
-// container.go. The exit code is extracted from the remotecommand
-// CodeExitError; a clean exit yields code 0.
+// distinguishes a genuine deadline (errors.Is ErrTimeout) from a plain
+// cancellation, and any output already captured is preserved on the
+// returned result rather than discarded.
 func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -288,9 +268,8 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	}
 	if stdout.exceeded || stderr.exceeded {
 		if e.Security != nil {
-			// The exact overflow size is unknown (the cap stops buffering),
-			// so report the floor: cap+1 bytes were seen on the overflowing
-			// stream. clampInt avoids an int64->int wrap on 32-bit builds.
+			// Exact overflow size is unknown once the cap stops buffering, so
+			// report the floor: cap+1 bytes seen.
 			e.Security.OutputTruncated(command, clampInt(k8sMaxOutput+1), clampInt(k8sMaxOutput))
 		}
 		return nil, errK8sOutputCap
@@ -312,10 +291,9 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	}, nil
 }
 
-// streamExec builds and runs a pods/exec request against the agent
-// container, wiring the supplied stdin/stdout/stderr streams. It is the
-// single SPDY/remotecommand chokepoint shared by Exec and the tar-based
-// file I/O methods. A nil stdin omits the stdin stream from the request.
+// streamExec runs a pods/exec request against the agent container,
+// wiring the supplied stdin/stdout/stderr streams. A nil stdin omits the
+// stdin stream from the request.
 func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	req := e.clientset.CoreV1().RESTClient().
 		Post().
@@ -344,19 +322,10 @@ func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io
 	})
 }
 
-// newRemoteExecutor builds a remotecommand.Executor that negotiates the exec
-// streaming protocol the way kubectl does: WebSocket first, falling back to
-// SPDY only when the WebSocket upgrade fails. WebSocket exec is the modern
-// default (the API server has served the v5.channel.k8s.io subprotocol since
-// v1.29) and, unlike the legacy SPDY upgrade, survives an HTTP(S) proxy or the
-// GKE Connect Gateway sitting in front of the API server — both reject the
-// SPDY upgrade (the gateway returns a bare HTTP 400). SPDY is retained as the
-// fallback so the executor keeps working against API servers that predate the
-// WebSocket exec subprotocol. This mirrors k8s.io/kubectl's createExecutor.
-//
-// The WebSocket executor is constructed with method GET (it issues an HTTP GET
-// upgrade), the SPDY executor with POST; the fallback predicate fires only on
-// a genuine upgrade/proxy failure so a normal command error is not retried.
+// newRemoteExecutor builds a remotecommand.Executor that negotiates
+// WebSocket first, falling back to SPDY only on a genuine upgrade/proxy
+// failure. See docs/executors/k8s.md. The WebSocket executor issues an
+// HTTP GET upgrade; the SPDY executor uses POST.
 func newRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
 	spdyExec, err := remotecommand.NewSPDYExecutor(config, "POST", u)
 	if err != nil {
@@ -372,19 +341,11 @@ func newRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor,
 }
 
 // extractExitCode pulls the process exit code out of an error returned by
-// remotecommand.StreamWithContext. A non-zero command exit surfaces as a
-// utilexec.CodeExitError (matched here via the exported ExitError interface
-// to stay robust across client-go versions and value/pointer wrapping). The
-// boolean reports whether the error carried an exit status at all; a
-// transport-level error (no exit status) returns (0, false). A nil error is
-// treated as a clean exit (0, true). This helper is pure and unit-testable
-// without a cluster.
-//
-// Limitation: the v1/v2 streaming protocols do not carry a structured exit
-// status — a non-zero exit there arrives as a plain error string ("error
-// executing remote command: ..."), which has no ExitError and so returns
-// (0, false). Modern API servers negotiate v4/v5, which do carry the code;
-// callers that get (0, false) treat it as a transport/protocol error.
+// remotecommand.StreamWithContext. The boolean reports whether the error
+// carried an exit status at all; a transport-level error, or the legacy
+// v1/v2 streaming protocols (which report a non-zero exit as a plain error
+// string with no structured code), returns (0, false). A nil error is a
+// clean exit (0, true).
 func extractExitCode(err error) (int, bool) {
 	if err == nil {
 		return 0, true
@@ -404,9 +365,8 @@ func (e *podExecCore) emitFileSizeLimit(filePath string, size int64) {
 	}
 }
 
-// clampInt narrows an int64 to int without wrapping on 32-bit platforms,
-// saturating at math.MaxInt. The security emitter takes int sizes; the cap
-// fits in an int on 64-bit but the conversion is guarded for portability.
+// clampInt narrows an int64 to int, saturating at math.MaxInt to avoid
+// wrapping on 32-bit platforms.
 func clampInt(v int64) int {
 	if v > int64(math.MaxInt) {
 		return math.MaxInt
@@ -441,9 +401,8 @@ type writeCapBuffer struct {
 
 func (w *writeCapBuffer) Write(p []byte) (int, error) {
 	if w.exceeded {
-		// Claim the whole slice as written so the SPDY stream keeps
-		// draining rather than erroring mid-flight; the cap is reported
-		// to the caller via the exceeded flag after the stream closes.
+		// Claim the whole slice written so the stream keeps draining rather
+		// than erroring mid-flight; exceeded is reported after it closes.
 		return len(p), nil
 	}
 	remaining := w.limit - int64(w.buf.Len())
@@ -458,23 +417,9 @@ func (w *writeCapBuffer) Write(p []byte) (int, error) {
 func (w *writeCapBuffer) Bytes() []byte  { return w.buf.Bytes() }
 func (w *writeCapBuffer) String() string { return w.buf.String() }
 
-// Capabilities advertises the executor's capabilities. CanNetwork reflects
-// the egress NetworkPolicy installed alongside the Pod (#178): Mode=="none"
-// installs a deny-all policy (CanNetwork=false) and Mode=="allowlist"
-// installs a proxy-only egress policy (CanNetwork=true). The report is honest
-// against the installed object — with the standing CNI caveat that kindnet
-// accepts but does not enforce NetworkPolicy (see K8sExecutorConfig).
-//
-// A zero-value core (nil network, used in some unit tests) reports
-// CanNetwork=false; NewK8sExecutor never produces one because it fails-closed
-// on a nil network.
-//
-// MaxTimeout deliberately mirrors container.go and local.go (maxTimeout =
-// 30 min, raised from 5 min for lifecycle hooks — #461). Returning 0 would
-// silently disable timeout clamping in callers that compare against
-// MaxTimeout — and Exec clamps against it. The cap is identical across
-// executors so a caller written against the Executor interface clamps
-// uniformly regardless of which implementation is active.
+// Capabilities reports CanNetwork against the installed egress
+// NetworkPolicy (subject to the kindnet enforcement caveat, see
+// docs/executors/k8s.md) and a MaxTimeout shared with the other executors.
 func (e *podExecCore) Capabilities() ExecutorCapabilities {
 	canNetwork := e.network != nil && e.network.Mode != "none"
 	return ExecutorCapabilities{

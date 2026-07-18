@@ -26,27 +26,21 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// outcomeCtxDone is a sentinel outcome returned by runInnerLoop when the
-// loop observes ctx.Done(). The outer Run loop inspects context.Cause to
-// translate this into a user-visible outcome: "cancelled" (control plane
-// or plain/signal cancel), "timeout" (deadline), or "error" (non-nil but
-// unrecognised cause).
+// outcomeCtxDone is a sentinel outcome from runInnerLoop signalling
+// ctx.Done(); Run reclassifies it via context.Cause into
+// cancelled/timeout/error.
 const outcomeCtxDone = "_ctx_done"
 
-// batchModeAdapter is the duck-typed view of a batch-wrapping
-// ProviderAdapter the loop type-asserts against to populate
-// TurnTrace.Mode / BatchID (#138). The loop avoids importing
-// internal/provider here so the loop-as-pure-interfaces invariant
-// (CLAUDE.md) is preserved; any future wrapper that surfaces a batch
-// identifier need only implement this single method.
+// batchModeAdapter is the duck-typed view of a batch-wrapping provider
+// adapter used to populate TurnTrace.Mode / BatchID without importing
+// internal/provider, preserving the loop's pure-interfaces invariant.
 type batchModeAdapter interface {
 	LastBatchID() string
 }
 
 // turnModeInfo derives the TurnTrace.Mode / BatchID pair for the
-// selected provider. A nil or non-batch adapter resolves to
-// (TurnModeStreaming, "") so streaming-only paths take no extra
-// branches at the construction site.
+// selected provider, defaulting to (TurnModeStreaming, "") for a nil
+// or non-batch adapter.
 func turnModeInfo(selected any) (mode, batchID string) {
 	if ba, ok := selected.(batchModeAdapter); ok {
 		return types.TurnModeBatch, ba.LastBatchID()
@@ -55,90 +49,44 @@ func turnModeInfo(selected any) (mode, batchID string) {
 }
 
 const (
-	// maxVerificationRetries is the maximum number of times the verifier can
-	// request a retry before the run is terminated with verification_failed.
+	// maxVerificationRetries bounds retries before verification_failed terminates the run.
 	maxVerificationRetries = 3
 
-	// defaultMaxContextTokens is the assumed context window size when the
-	// RunConfig does not specify one explicitly.
+	// defaultMaxContextTokens is the assumed context window when RunConfig omits one.
 	defaultMaxContextTokens = 200_000
 
-	// defaultReserveForResponse is the number of tokens reserved for the
-	// model's response within the context window, for any budget large
-	// enough to absorb it. See effectiveReserveForResponse for the
-	// small-budget case.
+	// defaultReserveForResponse is the token reserve for the model's
+	// response; effectiveReserveForResponse scales it down for small budgets.
 	defaultReserveForResponse = 64_000
 
-	// smallContextReserveDivisor is the fraction of a small
-	// ContextStrategy.MaxTokens budget reserved for the model's response
-	// once the flat defaultReserveForResponse would consume the whole
-	// window (see effectiveReserveForResponse). Skewed toward history
-	// over completion length: an agentic coding turn's context is
-	// typically dominated by file contents and tool output, not the
-	// model's own response.
+	// smallContextReserveDivisor is the fraction of a small MaxTokens
+	// budget reserved for the response once the flat default would not fit.
 	smallContextReserveDivisor = 4
 
-	// defaultTemperature is the sampling temperature applied to every
-	// provider call when RunConfig.Temperature is nil. A low value
-	// biases for determinism on coding tasks — the historical
-	// hardcoded value, preserved as the harness default so unset
-	// configs see no behaviour change.
-	//
-	// Not every model accepts this value on the wire: Claude Opus 4.7+,
-	// Claude Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400
-	// on a non-default temperature rather than ignoring it (as do
-	// OpenAI's reasoning-class models, which already had this
-	// constraint). The loop still resolves defaultTemperature
-	// unconditionally for every provider — narrowing it here would
-	// need per-model knowledge this package deliberately does not
-	// have (CLAUDE.md: the loop is a pure function of its interfaces).
-	// The adapters suppress the field for those models via the
-	// per-(provider, model) quirks registry instead
-	// (quirks.AnthropicBehaviourFlags.OmitSamplingParams,
-	// quirks.OpenAIBehaviourFlags.OmitSamplingParams) — see
-	// docs/provider-quirks.md.
+	// defaultTemperature is the sampling temperature applied when
+	// RunConfig.Temperature is nil, biasing for determinism on coding
+	// tasks. Per-model suppression for providers that reject non-default
+	// values is handled by the quirks registry — see docs/provider-quirks.md.
 	defaultTemperature = 0.1
 
-	// tokenEstimationDivisor is the approximate character-to-token ratio
-	// used by token estimation functions (≈4 characters per token).
+	// tokenEstimationDivisor is the approximate character-to-token ratio (≈4 chars/token).
 	tokenEstimationDivisor = 4
 
-	// messageOverheadTokens accounts for the JSON structure around each
-	// message (role field, content array wrapper, separators).
+	// messageOverheadTokens accounts for the JSON structure around each message.
 	messageOverheadTokens = 4
 
-	// blockOverheadTokens accounts for the JSON structure around each
-	// content block (type field, object braces, separators).
+	// blockOverheadTokens accounts for the JSON structure around each content block.
 	blockOverheadTokens = 3
 
-	// toolDefinitionOverheadTokens accounts for the structural JSON
-	// wrapping each tool definition (type, function wrapper, field keys).
+	// toolDefinitionOverheadTokens accounts for the JSON structure wrapping each tool definition.
 	toolDefinitionOverheadTokens = 10
 )
 
 // effectiveReserveForResponse resolves the response-token reserve
-// subtracted from maxTokens before the context strategy packs message
-// history, and the max output tokens requested from the provider.
-//
-// Historically both call sites used the flat defaultReserveForResponse
-// (64k) unconditionally. For any config.ContextStrategy.MaxTokens at or
-// below that constant, `available := budget.MaxTokens -
-// budget.ReserveForResponse` (computed by every context strategy) goes
-// non-positive, and the strategy short-circuits to its
-// minimum-preserved-messages branch on every turn — silently dropping
-// the run's actual history, including the original user prompt on
-// turns after the first (#444). This is squarely in the small-context
-// local-model regime (LM Studio / Ollama commonly run 4k-32k windows).
-//
-// Below the flat-reserve threshold, scale the reserve down to a
-// quarter of maxTokens instead: the resulting budget is always
-// positive, and — because a quarter of even a very small window still
-// leaves the majority for history — the context strategy gets a real,
-// useful budget rather than a degenerate one. Configs whose maxTokens
-// is 0 (unset — the loop assumes defaultMaxContextTokens) or above
-// defaultReserveForResponse are untouched byte-for-byte, so this is
-// not a behaviour change for any config that did not already hit the
-// bug.
+// subtracted from maxTokens before packing message history. Below
+// defaultReserveForResponse it scales down to a quarter of maxTokens
+// instead of the flat default, keeping the budget positive for small
+// context windows; see docs/configuration.md for the full rationale.
 func effectiveReserveForResponse(maxTokens int) int {
 	if maxTokens <= 0 || maxTokens > defaultReserveForResponse {
 		return defaultReserveForResponse
@@ -160,34 +108,25 @@ func effectiveReserveForResponse(maxTokens int) int {
 //	  else → feed verifier feedback back into the loop as a user message
 //	}
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
-	// Derive a cancellable context so a "cancel" ControlEvent can abort the
-	// run within one turn boundary. WithCancelCause lets us disambiguate
-	// control-plane cancellation from deadline expiry and caller cancellation
-	// later via context.Cause().
+	// WithCancelCause lets Run later disambiguate control-plane
+	// cancellation, deadline expiry, and caller cancellation via
+	// context.Cause().
 	runCtx, cancelRun := context.WithCancelCause(ctx)
 	defer cancelRun(nil)
 
-	// Register a cancel handler on the transport. Fan-out OnControl is
-	// supported by all production transports (stdio, gRPC); sub-agents use
-	// NullTransport whose OnControl is a no-op, so this is a harmless no-op
-	// in the sub-agent case.
+	// OnControl fan-out is supported by all production transports;
+	// sub-agents use NullTransport whose OnControl is a no-op.
 	l.Transport.OnControl(func(event types.ControlEvent) {
 		if event.Type == "cancel" {
 			cancelRun(ErrCancelledByControlPlane)
 		}
 	})
 
-	// Start tracing.
 	l.Trace.Start(config.RunID, config)
 
-	// Extract the root trace context for child span parenting.
-	//
-	// If TraceContext was set by the caller before Run (notably by
-	// SpawnSubAgent, which threads the parent's tool.spawn_agent span ctx
-	// into the child loop), preserve it so child spans nest correctly. The
-	// parent run path leaves TraceContext nil at construction time, so this
-	// fall-through still establishes the OTel root or a plain ctx as the
-	// span parent for top-level runs.
+	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
+	// already set one so child spans nest correctly; otherwise establish
+	// the OTel root or a plain ctx as the span parent.
 	if l.TraceContext == nil {
 		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
 			l.TraceContext = otelEmitter.RootContext()
@@ -196,14 +135,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	// Start heartbeat emission so the control plane knows we are alive.
+	// Lets the control plane know the run is alive during long turns.
 	stopHeartbeat := l.startHeartbeat(runCtx, 30*time.Second)
 
-	// Build the system prompt. The Rule-of-Two-bearing entry shape
-	// (DynamicContextValue) carries a per-entry Sensitive flag the
-	// validator and any future GuardRail wiring read; downstream
-	// consumers (Sanitize, PromptBuilder) only need the string content,
-	// so we project to a values map here at the boundary.
+	// The Rule-of-Two-bearing entry shape (DynamicContextValue) carries a
+	// per-entry Sensitive flag the validator and future GuardRail wiring
+	// read; downstream consumers only need the string content, so this
+	// projects to a values map here at the boundary.
 	dynamicContext := config.DynamicContextValues()
 	if len(dynamicContext) > 0 {
 		var events []security.DynamicContextSanitizationEvent
@@ -228,12 +166,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		turnZeroTransition = true
 	}
 
-	// Turn-0 enforcement, applied before Prompt.Build: redact rewrites
-	// the dynamic-context values the model will see (the operator's
-	// prompt latches but is never rewritten — changing the task
-	// statement changes run semantics); abort short-circuits the whole
-	// run before the first provider call. block-external / ask-upstream
-	// are enforced later, in the permission gate.
+	// Turn-0 Rule-of-Two enforcement, before Prompt.Build; see
+	// docs/safety-rings.md for the redact/abort semantics.
 	turnZeroAbort := false
 	switch l.ruleOfTwoAction() {
 	case "redact":
@@ -259,32 +193,21 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		return l.finishWithError(runCtx, fmt.Errorf("build system prompt: %w", err))
 	}
 
-	// Forward the built system prompt to emitters that can record it
-	// (the otel emitter's opt-in gen_ai.system_instructions capture).
-	// The optional-capability assertion mirrors the *trace.OTelTraceEmitter
-	// assertions above and below: emitters without content capture do
-	// not implement the interface and the call disappears. The emitter
-	// owns the scrub-and-gate logic, so this is unconditional.
+	// The otel emitter's opt-in gen_ai.system_instructions capture; a
+	// no-op for emitters that don't implement this optional interface.
 	if recorder, ok := l.Trace.(trace.SystemInstructionsRecorder); ok {
 		recorder.RecordSystemInstructions(systemPrompt)
 	}
 
-	// Record which model identity the prompt rendered against and the
-	// guidance tier it selected (#492). Unlike system instructions this
-	// is config metadata, not content, so the emitter records it
-	// regardless of content capture.
+	// Config metadata (model identity + guidance tier), not content, so
+	// this is recorded regardless of content-capture settings.
 	if recorder, ok := l.Trace.(trace.PromptResolutionRecorder); ok {
 		recorder.RecordPromptResolution(promptModel, prompt.TierFor(promptModel))
 	}
 
-	// Pre-run lifecycle hooks (issue #461): operator-authored setup
-	// (clone, provision a runtime) that must complete before
-	// Git.Setup — the deterministic git strategy assumes an existing
-	// checkout, so a clone hook has to create it first. Runs under
-	// runCtx: it counts against the run's wall-clock timeout and
-	// heartbeats are already flowing (started above). A nil Hooks (no
-	// HooksConfig, or a hand-assembled loop that left it unset) is a
-	// no-op, mirroring GuardRail/RuleOfTwo.
+	// Runs before Git.Setup: the deterministic git strategy assumes an
+	// existing checkout, so a clone hook must create it first. A nil
+	// Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
 	if l.Hooks != nil {
 		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
 		preResults, preErr := l.Hooks.RunPre(runCtx)
@@ -295,10 +218,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 		preHookSpan.End()
 		if preErr != nil {
-			// A dead run ctx (timeout/cancel) wins over setup_failed:
-			// the hook almost certainly failed *because* the deadline
-			// hit or a control-plane cancel arrived mid-exec, and that
-			// is the more useful outcome to report.
+
 			outcome := "setup_failed"
 			if runCtx.Err() != nil {
 				outcome = classifyCtxOutcome(context.Cause(runCtx))
@@ -307,7 +227,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	// Set up git workspace.
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
 		gitSetupSpan.RecordError(err)
@@ -317,13 +236,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	gitSetupSpan.End()
 
-	// Initialize message history.
 	messages := buildMessages(config.Prompt)
 
 	// Token tracking (cost estimation is a control plane concern).
 	tokenTracker := &TokenTracker{}
 
-	// Emit ready event.
 	if l.emitReady {
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type: "ready",
@@ -344,10 +261,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
 
-	// Register the ContextTokens observable gauge callback. The callback
-	// returns the current absolute token estimate tagged with run.id and
-	// run.mode. Unregister at run end so the OTel SDK does not continue
-	// observing this run after it has finished.
+	// Tagged with run.id and run.mode; unregistered at run end so the
+	// OTel SDK does not keep observing this run after it finishes.
 	unregisterCtxTokens, err := l.Metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
 		attrs := make([]attribute.KeyValue, 0, 2+len(l.MetricAttrs))
 		attrs = append(attrs, l.MetricAttrs...)
@@ -362,11 +277,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	defer unregisterCtxTokens()
 
-	// Outer verification loop. A turn-0 Rule-of-Two abort skips it
-	// entirely: the latch tripped on the prompt / dynamic context
-	// before any provider call, so the run terminates with the
-	// rule_of_two_violation outcome through the same finish path as
-	// every other terminal outcome below.
+	// A turn-0 Rule-of-Two abort skips this loop entirely: the latch
+	// already tripped before any provider call, so it terminates via
+	// the same finish path as every other outcome below.
 	outcome := "success"
 	verificationAttempts := 0
 	// finalAssistantText accumulates the last non-empty assistant text across
@@ -377,7 +290,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
-		// Run the inner agentic loop.
+
 		var innerOutcome, innerFinalText string
 		messages, innerOutcome, innerFinalText = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
 		if innerFinalText != "" {
@@ -389,7 +302,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			break
 		}
 
-		// Run verifier.
 		l.Metrics.VerificationAttempts.Add(runCtx, 1, l.metricAttrs())
 		_, verifySpan := l.Tracer.Start(l.traceCtx(runCtx), "verifier.verify",
 			oteltrace.WithAttributes(
@@ -415,14 +327,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			break
 		}
 
-		// Verification failed.
 		verificationAttempts++
 		if verificationAttempts > maxVerificationRetries {
 			outcome = "verification_failed"
 			break
 		}
 
-		// Feed verifier feedback back into the loop as a user message.
 		feedback := vResult.Feedback
 		if feedback == "" {
 			feedback = "Verification failed. Please review and fix the issues."
@@ -436,28 +346,23 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 
-	// Cancellation wins over verification-path outcomes. A cancel arriving
-	// between the inner loop returning and Verify completing can otherwise
-	// cause Verify to return a ctx-cancelled error and set
-	// outcome="verification_error", masking the true termination reason on
-	// the wire. If the run context is done, reclassify so the cancel/timeout
+	// A cancel arriving between the inner loop returning and Verify
+	// completing can otherwise mask the true termination reason behind
+	// outcome="verification_error"; reclassify so the cancel/timeout
 	// path below runs.
 	if runCtx.Err() != nil && outcome != outcomeCtxDone {
 		outcome = outcomeCtxDone
 	}
 
-	// If the inner loop exited because the context was cancelled, inspect
-	// the cause to distinguish control-plane cancellation ("cancelled"),
-	// deadline expiry ("timeout"), plain/signal cancel ("cancelled"), and
-	// anything else ("error").
+	// See classifyCtxOutcome for the cause → outcome mapping.
 	if outcome == outcomeCtxDone {
 		cause := context.Cause(runCtx)
 		outcome = classifyCtxOutcome(cause)
 		l.setRootCancelAttribute(cause)
 	}
 
-	// Finalise git. Use the parent ctx here: if the run was cancelled, we
-	// still want git.Finalise to be able to persist whatever state exists.
+	// Uses the parent ctx (not runCtx): if the run was cancelled,
+	// git.Finalise should still be able to persist whatever state exists.
 	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
 	if _, err := l.Git.Finalise(ctx); err != nil {
 		finaliseSpan.RecordError(err)
@@ -469,33 +374,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	finaliseSpan.End()
 
-	// Post-run lifecycle hooks (issue #461): artifact submission, smoke
-	// tests. Runs after outcome classification and Git.Finalise, before
-	// the "done" event, on a ctx detached from the run's wall-clock
-	// timeout/cancellation (context.WithoutCancel) so a hook that
-	// outlives the deadline (e.g. uploading a large artifact) can still
-	// finish; bounded by the sum of the configured postRun timeouts
-	// plus a 30s margin so a misbehaving hook cannot hang the process
-	// forever. Skipped entirely when the pre-run phase already failed —
-	// Run() returned above in that case, so this point is never
-	// reached. A fatal post-hook failure overrides outcome to
-	// "hook_failed" only when outcome was "success": the primary
-	// failure cause must never be masked, and it stays visible via
-	// HookResults / RunResult.HookFailures regardless.
-	//
-	// context.WithoutCancel(ctx) detaches postCtx from the run's own
-	// wall-clock deadline / control-plane cancel ONLY — those are the
-	// signals a postRun hook is meant to survive. A genuine process
-	// shutdown (SIGTERM/SIGINT/pod deletion) must still cut it short:
-	// unconditionally surviving up to the full budget while the
-	// orchestrator's SIGKILL escalation counts down (10s on Cloud Run
-	// and `docker stop`, see docs/cloud-run-jobs.md) orphans the
-	// sandbox and drops the trace. l.Shutdown carries that distinct
-	// signal in from the cmd layer; racing postCancel against it keeps
-	// the loop itself free of any signal/env read (CLAUDE.md
-	// invariant) while still terminating promptly. Nil-safe: a
-	// hand-assembled loop (tests, embedders) with no Shutdown set
-	// keeps the budget-only behaviour.
+	// Runs on a ctx detached from the run's own deadline/cancellation
+	// (context.WithoutCancel) so a long-running hook can still finish;
+	// l.Shutdown still races a genuine process shutdown against that
+	// budget. See docs/configuration.md#lifecycle-hooks and
+	// docs/cloud-run-jobs.md for the outcome-override and SIGTERM detail.
 	if l.Hooks != nil {
 		postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), postHookBudget(config.Hooks))
 		if l.Shutdown != nil {
@@ -530,7 +413,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		),
 	)
 
-	// Emit done event.
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,
@@ -538,31 +420,22 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		l.Logger.Warn("transport emit failed", "event", "done", "error", err)
 	}
 
-	// Stop heartbeat before finishing the trace.
 	stopHeartbeat()
 
-	// Scrub the run's last non-empty assistant text before it reaches any
-	// external surface. The PhasePostTurn guard that cleared this text is a
-	// sensitivity classifier, not a deterministic secret redactor: content
-	// that clears the guard can still carry a secret-shaped substring (e.g. a
-	// credential echoed back from a tool result). This is the single scrub
-	// site for the field — downstream of the guard gate — so both the
-	// returned RunResult and the persisted trace carry the scrubbed form.
-	// Mirrors the scrubbedErr treatment at the provider/guard call sites.
+	// PhasePostTurn is a sensitivity classifier, not a deterministic
+	// secret redactor, so this is the single scrub site for the field —
+	// see docs/security.md.
 	finalAssistantText = security.Scrub(finalAssistantText)
 
-	// Hand the scrubbed, guard-approved text to the emitter BEFORE Finish so
-	// the persisted trace (JSONL run_finished line, GCS trace object) carries
-	// it: the concrete emitters build and serialise the RunTrace inside
-	// Finish, so a post-Finish assignment on the returned struct would never
-	// reach disk. Same optional-capability pattern as RecordSystemInstructions.
+	// Must run before Finish: emitters serialise RunTrace inside Finish,
+	// so a post-Finish assignment on the returned struct would never
+	// reach disk.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
 	}
 
-	// Finish trace using the parent ctx — the trace exporter's ForceFlush
-	// should still have a usable deadline even if the run-scoped ctx is
-	// already cancelled.
+	// Uses the parent ctx: the trace exporter's ForceFlush should still
+	// have a usable deadline even if the run-scoped ctx is cancelled.
 	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
 	if traceErr != nil {
 		return nil, fmt.Errorf("finish trace: %w", traceErr)
@@ -571,18 +444,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	return runTrace, nil
 }
 
-// classifyCtxOutcome maps a context cancellation cause onto the outcome
-// string reported on the "done" event and recorded in RunTrace.Outcome.
-//
-// A nil cause or a bare context.Canceled indicates the run was cancelled
-// via a plain cancel() without a cause attached — e.g. SIGINT/SIGTERM via
-// the root cobra signal handler, or a caller invoking context.WithCancel
-// on a parent and then cancel() (which propagates context.Canceled as the
-// cause of our WithCancelCause child). The spec treats this as a
-// user-initiated cancellation, distinct from a deadline-driven timeout or
-// an internal error. A non-nil cause that is neither a recognised cancel
-// sentinel nor a deadline is surfaced as "error" since we cannot attribute
-// it to a known cancel or timeout path.
+// classifyCtxOutcome maps a context cancellation cause onto the
+// outcome reported on "done" / RunTrace.Outcome: a nil cause or bare
+// context.Canceled is a user-initiated cancellation (SIGINT/SIGTERM,
+// or a caller's plain cancel()); ErrCancelledByControlPlane and
+// context.DeadlineExceeded map to their own outcomes; anything else
+// is "error".
 func classifyCtxOutcome(cause error) string {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
@@ -596,14 +463,10 @@ func classifyCtxOutcome(cause error) string {
 	}
 }
 
-// setRootCancelAttribute tags the root "run" OTel span with the reason for
-// context cancellation so operators can filter cancelled runs from timed-out
-// or errored runs in tracing backends. Only applied when the run actually
-// ended via ctx cancellation.
-//
-// The attribute is derived from the context cause so that a plain/signal
-// cancel and a control-plane cancel are distinguished on the span even
-// though both map to outcome="cancelled".
+// setRootCancelAttribute tags the root "run" OTel span with the
+// cancellation reason, distinguishing plain/signal cancel from
+// control-plane cancel even though both map to outcome="cancelled".
+// Only applied when the run ended via ctx cancellation.
 //
 //	run.cancelled_by="control_plane" — ErrCancelledByControlPlane cause
 //	run.cancelled_by="deadline"      — context.DeadlineExceeded cause
@@ -652,13 +515,11 @@ func (l *AgenticLoop) runInnerLoop(
 	var finalAssistantText string
 	stall := &stallDetector{}
 
-	// Tool-choice escalation state (#230). priorToolCalls tracks whether
-	// the model has dispatched any tool yet this inner-loop run;
-	// escalationsSoFar bounds the missed-tool recovery; pendingToolChoice
-	// carries a forced tool-choice mode onto the next turn's Stream call
-	// (set by the native escalation path, consumed once). All three stay
-	// at their zero values — and the escalation path is never taken — when
-	// the loop's EscalationPolicy is nil (the OFF-by-default case).
+	// Tool-choice escalation state: priorToolCalls tracks whether the
+	// model has dispatched any tool yet this run; escalationsSoFar
+	// bounds missed-tool recovery; pendingToolChoice forces a tool
+	// choice on the next turn's Stream call, consumed once. All three
+	// are inert when EscalationPolicy is nil (default off).
 	priorToolCalls := 0
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto
@@ -666,42 +527,29 @@ func (l *AgenticLoop) runInnerLoop(
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		l.Logger.Info("turn started", "turn", turn)
 
-		// Check budget before each turn.
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
 			return messages, "budget_exceeded", finalAssistantText
 		}
 
-		// Check context cancellation. Return a sentinel outcome so the
-		// outer Run loop can distinguish control-plane cancellation,
-		// deadline expiry, and caller-initiated cancellation via
-		// context.Cause().
+		// Sentinel outcome; see outcomeCtxDone.
 		select {
 		case <-ctx.Done():
 			return messages, outcomeCtxDone, finalAssistantText
 		default:
 		}
 
-		// PhasePreTurn guard. Classifies untrusted content that just
-		// entered the message history. On turn 0 the chunks include the
-		// initial user prompt and DynamicContext entries; on turn N>0
-		// the chunks are the contents of every tool_result block in the
-		// last user message. The chunks are concatenated under a "--- chunk i ---"
-		// envelope so the adapter sees a single batched request.
+		// See collectUntrustedChunks / docs/guardrails.md for what
+		// counts as untrusted content per turn.
 		var preTurnDynamic map[string]types.DynamicContextValue
 		if turn == 0 {
 			preTurnDynamic = config.DynamicContext
 		}
 		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
-			// Rule-of-Two scan of the just-arrived tool results,
-			// deterministic-first (before the guard so a later guard-deny
-			// scrub cannot un-trip the latch). Turn-0 chunks are the
-			// prompt and dynamic context, already observed in Run()
-			// under their own source labels — rescanning them here would
-			// double-emit warn-tier detections mislabelled "tool_result".
-			// The block-external / ask-upstream actions are enforced in
-			// the permission gate; abort and redact are loop-level and
-			// applied here from the Detection.
+			// Deterministic-first, before the guard (see
+			// docs/safety-rings.md). Turn 0 chunks were already scanned
+			// in Run() under their own labels, so only turn>0 is
+			// rescanned here.
 			if turn > 0 {
 				det := l.observeSensitive(ctx, config, "tool_result", turn, chunks)
 				switch l.ruleOfTwoAction() {
@@ -728,27 +576,17 @@ func (l *AgenticLoop) runInnerLoop(
 			l.ratchetRuleOfTwo(ctx, config, decision, turn)
 			switch {
 			case !allow:
-				// On turn 0 the user prompt itself is the untrusted
-				// content; replaceUntrustedChunks cannot rewrite the
-				// initial prompt (it has not been appended to the
-				// message history at this point). The only correct
-				// action is to abort the run before the model sees
-				// the offending input.
+				// Turn-0 vs later-turn deny handling differs; see
+				// docs/guardrails.md.
 				if turn == 0 {
 					return messages, "guardrail_blocked", finalAssistantText
 				}
-				// On later turns PreTurn deny scrubs the untrusted
-				// content rather than aborting: the just-arrived
-				// tool_result blocks are rewritten so the run continues
-				// and the model can refuse, while operators still see
-				// the deny event.
+
 				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
 			case spotlight:
 				if turn == 0 {
-					// Turn 0 has no tool_result blocks to rewrap —
-					// spotlightUntrustedChunks is a no-op. Skip the
-					// spotlight metric/event so dashboards reflect
-					// applied (not merely requested) spotlights.
+					// No-op on turn 0 (no tool_result blocks); skip the
+					// metric so dashboards reflect applied spotlights only.
 					break
 				}
 				spotlightUntrustedChunks(messages, turn)
@@ -756,7 +594,6 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 		}
 
-		// Select model for this turn.
 		selection := l.Router.Select(ctx, router.RouterContext{
 			Mode:           config.Mode,
 			Turn:           turn,
@@ -767,9 +604,8 @@ func (l *AgenticLoop) runInnerLoop(
 			},
 		})
 
-		// Prepare context (compact if needed). Token estimate includes
-		// system prompt and tool definitions — these consume context but
-		// aren't in the message history.
+		// Token estimate includes system prompt and tool definitions —
+		// these consume context but aren't in the message history.
 		toolDefs := l.Tools.List()
 		currentTokens := estimateCurrentTokens(messages) +
 			estimateSystemPromptTokens(systemPrompt) +
@@ -780,10 +616,8 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		responseReserve := effectiveReserveForResponse(maxTokens)
 		if turn == 0 && responseReserve < defaultReserveForResponse {
-			// One warning per run (turn 0 only): maxTokens is constant
-			// across turns, so re-emitting this every turn would just be
-			// noise. See effectiveReserveForResponse for why the reserve
-			// is scaled down instead of left at the flat default.
+			// Once per run (turn 0): maxTokens is constant, so
+			// re-emitting this every turn would be noise.
 			l.Logger.Warn("context response reserve scaled down for small context budget",
 				"maxTokens", maxTokens,
 				"reserve", responseReserve,
@@ -817,10 +651,8 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			return messages, "error", finalAssistantText
 		}
-		// Publish the post-Prepare absolute token estimate so the
-		// ContextTokens observable gauge callback (registered in Run)
-		// observes the live context window utilisation. A successful
-		// compaction shrinks the value; new messages grow it.
+		// Feeds the ContextTokens observable gauge registered in Run;
+		// compaction shrinks this value, new messages grow it.
 		tokensAfterPrepare := estimateCurrentTokens(preparedMessages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
@@ -844,18 +676,13 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		contextSpan.End()
 
-		// Stream model response.
 		turnStart := time.Now()
 		selectedProvider := l.Provider
 		if selection.Provider != "" && len(l.Providers) > 0 {
 			prov, ok := l.Providers[selection.Provider]
 			if !ok {
-				// Pre-resolution: no concrete provider selected yet, so
-				// Mode is honestly unknown. Empty string is the wire
-				// encoding the TurnTrace.Mode godoc reserves for this
-				// case; downstream consumers (lakehouse, mine-failures)
-				// already treat empty as streaming for legacy traces
-				// and route this turn through the same fallback.
+				// Pre-resolution: no provider selected yet; empty Mode is
+				// the documented "unknown" wire value (TurnTrace.Mode).
 				l.Trace.RecordTurn(types.TurnTrace{
 					Turn:       turn,
 					StopReason: "error",
@@ -868,7 +695,7 @@ func (l *AgenticLoop) runInnerLoop(
 			selectedProvider = prov
 		}
 		if selectedProvider == nil {
-			// See comment above: pre-resolution Mode is honestly empty.
+			// See above: pre-resolution Mode is empty.
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
@@ -892,23 +719,17 @@ func (l *AgenticLoop) runInnerLoop(
 			),
 		)
 
-		// Resolve sampling temperature. Forward an explicit override
-		// verbatim (including 0.0 for greedy decoding); fall back to
-		// the harness default when the config left it nil. The
-		// invariant — loop must never silently forward a nil
-		// temperature to providers that would otherwise fall through
-		// to their own (higher) service defaults — is preserved by
-		// the fallback branch.
+		// Forward an explicit override verbatim (including 0.0 for
+		// greedy decoding); otherwise fall back to defaultTemperature
+		// so the loop never silently sends a nil temperature and lets
+		// a provider fall through to its own (higher) service default.
 		temperature := config.Temperature
 		if temperature == nil {
 			temperature = types.Float64Ptr(defaultTemperature)
 		}
-		// Consume any forced tool choice the escalation path set on the
-		// previous iteration. Reset to auto immediately so the override
-		// applies to exactly one turn — a single bounded nudge, not a
-		// sticky mode. The zero value (ToolChoiceAuto) leaves the request
-		// byte-for-byte unchanged, so a run that never escalates is
-		// unaffected.
+		// Reset to auto immediately so a forced tool choice from the
+		// escalation path applies to exactly one turn, not a sticky
+		// mode. Zero value leaves non-escalating runs unaffected.
 		turnToolChoice := pendingToolChoice
 		pendingToolChoice = types.ToolChoiceAuto
 
@@ -922,27 +743,15 @@ func (l *AgenticLoop) runInnerLoop(
 			ToolChoice:  turnToolChoice,
 		})
 		if err != nil {
-			// Scrub the status string before it lands on the OTel span.
-			// On HTTP transport failures Go wraps the underlying error in
-			// *url.Error, which embeds the full request URL — including
-			// any query parameters configured via Provider.QueryParams.
-			// OTel spans bypass ScrubHandler (which only intercepts slog),
-			// so without scrubbing here a future sensitive QueryParams
-			// value would land in OTLP exports unredacted. RecordError
-			// keeps the raw error so the span retains type information;
-			// only the user-visible status message is scrubbed.
+			// ScrubHandler doesn't cover OTel spans; scrub explicitly
+			// before it reaches the span status. See docs/security.md.
 			scrubbedErr := security.Scrub(err.Error())
 			providerSpan.RecordError(err)
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
-			// Surface the failure outside of OTel: log it and emit a
-			// transport warning. Without this, operators running without
-			// an OTLP collector see only outcome=error with no detail.
-			// ScrubHandler only intercepts string-kind slog attrs, so a
-			// raw error value would slip through as KindAny — pass the
-			// pre-scrubbed string explicitly. Skip when the context is
-			// already cancelled: the cancel/timeout path below produces
-			// the user-visible message.
+			// Surfaces the failure outside OTel too (log + transport
+			// warning); skipped when ctx is already cancelled — the
+			// cancel/timeout path below reports instead.
 			if ctx.Err() == nil {
 				l.Logger.Error("provider stream failed",
 					"provider", selection.Provider,
@@ -956,11 +765,9 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
-			// Co-emit into the tool-failure series when the failed
-			// request carried tool definitions: from the model's
-			// perspective the harness asked it to use tools and the
-			// provider refused. A pure text-only request error is a
-			// provider failure but not a tool-use failure.
+			// Co-emit into tool-failure metrics only when tools were
+			// offered: a pure text-only request error isn't a
+			// tool-use failure from the model's perspective.
 			if len(toolDefs) > 0 {
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
 					attribute.String("tool.name", observability.ToolNameProviderScope),
@@ -979,30 +786,24 @@ func (l *AgenticLoop) runInnerLoop(
 				BatchID:    turnBatchID,
 				Model:      selection.Model,
 			})
-			// If the provider call failed because the run context was
-			// cancelled, surface that so the outer loop can classify the
-			// outcome as cancelled/timeout rather than a generic error.
+			// Lets the outer loop classify cancelled/timeout rather
+			// than a generic error.
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText
 			}
 			return messages, "error", finalAssistantText
 		}
 
-		// Consume stream events.
 		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.Logger)
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
-			// See the matching scrub above the Stream() call for rationale:
-			// stream errors can wrap *url.Error or other strings derived
-			// from HTTP transport state, and the OTel span status string
-			// is not covered by ScrubHandler.
+			// Same rationale as the Stream() scrub above; see docs/security.md.
 			scrubbedErr := security.Scrub(streamErr.Error())
 			providerSpan.RecordError(streamErr)
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
-			// Surface the failure outside of OTel — see the matching
-			// log + emit at the Stream() call above for rationale.
+			// Same as the Stream() log+emit above.
 			if ctx.Err() == nil {
 				l.Logger.Error("provider stream failed",
 					"provider", selection.Provider,
@@ -1016,12 +817,8 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
-			// Co-emit into the tool-failure series when this turn had
-			// tools attached: mid-stream parser/disconnect failures
-			// abort tool-call assembly. Distinguished from
-			// provider_request_failed by the category — a failure
-			// after the stream opened is a stream-side fault, not a
-			// rejected request.
+			// Distinguished from provider_request_failed: a fault after
+			// the stream opened is stream-side, not a rejected request.
 			if len(toolDefs) > 0 {
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
 					attribute.String("tool.name", observability.ToolNameProviderScope),
@@ -1040,8 +837,7 @@ func (l *AgenticLoop) runInnerLoop(
 				BatchID:    turnBatchID,
 				Model:      selection.Model,
 			})
-			// Distinguish stream-abort-due-to-ctx from other stream errors
-			// so the outer loop can classify the outcome correctly.
+			// Lets the outer loop classify a ctx-abort correctly.
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText
 			}
@@ -1055,14 +851,13 @@ func (l *AgenticLoop) runInnerLoop(
 
 		lastStopReason = sr.StopReason
 
-		// Track token usage. Output tokens come from the stream; input tokens
-		// are estimated from the messages sent plus system prompt and tools.
+		// Output tokens come from the stream; input is estimated from
+		// the messages sent plus system prompt and tools.
 		inputTokenEstimate := estimateCurrentTokens(preparedMessages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
 		tokenTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens)
 
-		// Record turn in trace.
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		l.Trace.RecordTurn(types.TurnTrace{
 			Turn: turn,
@@ -1077,16 +872,8 @@ func (l *AgenticLoop) runInnerLoop(
 			Model:      selection.Model,
 		})
 
-		// Snapshot the model input the provider just saw and the
-		// content blocks it produced. The full transcript is captured
-		// as a TurnRecord via RecordTurnRecord; recording emitters
-		// (streaming JSONLTraceEmitter) persist it for downstream
-		// replay / mine-failures, while summary-only emitters
-		// (OTel, GCS) ignore it.
-		//
-		// modelInput.Messages is the exact prepared-message slice the
-		// provider received this turn (pre-tool-result append).
-		// ModelOutput carries the assistant's content blocks. Tool
+		// Persisted as a TurnRecord (full transcript) by recording
+		// emitters (JSONL); summary-only emitters ignore it. Tool
 		// calls are filled in after planAndDispatch runs below.
 		turnRecord := types.TurnRecord{
 			Turn: turn,
@@ -1109,42 +896,25 @@ func (l *AgenticLoop) runInnerLoop(
 			"tokens.output", sr.OutputTokens,
 			"stopReason", sr.StopReason)
 
-		// Append assistant message, carrying any provider replay state
-		// from the stream so the next request can round-trip it.
+		// Carries provider replay state so the next request can
+		// round-trip it.
 		messages = appendAssistantContent(messages, sr.Blocks, sr.ReplayFields)
 
-		// Capture the assistant's text for this turn. The last non-empty
-		// value across all turns becomes RunTrace.FinalAssistantText; the
-		// end_turn path below reuses finalText for its PhasePostTurn guard.
-		//
-		// priorFinalText snapshots the accumulator BEFORE this turn's
-		// commit. The PhasePostTurn guard on the end_turn path below runs
-		// AFTER the commit, so on a guard deny the run must return this
-		// prior value — never the just-committed, denied text. Returning
-		// the denied text would forward it through RunTrace/RunResult and
-		// out the resultSink, bypassing the guard's explicit "do not
-		// forward this content" decision. This is the one new forwarding
-		// channel the FinalAssistantText field adds, so the guard contract
-		// must hold on it.
+		// finalText feeds RunTrace.FinalAssistantText and the end_turn
+		// PhasePostTurn guard below. priorFinalText is the pre-commit
+		// snapshot the guard must return on deny — see docs/guardrails.md.
 		finalText := lastAssistantText(sr.Blocks)
 		priorFinalText := finalAssistantText
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
 
-		// Extract tool calls.
 		toolCalls := collectToolCalls(sr.Blocks)
 
-		// Tool-choice escalation (#230). When the model returns a
-		// final/text answer (no tool calls) on a turn where the harness
-		// expected tool use, the injected EscalationPolicy decides whether
-		// this is a likely missed-tool failure and how to recover. The
-		// loop itself makes no judgement — it forwards the turn facts and
-		// acts on the decision. A nil policy (OFF by default) makes
-		// escalationDecision a no-op, so this block is inert on a bare run.
-		// The check runs before the terminal end_turn / non-tool-use
-		// returns so a recovered turn continues the loop instead of being
-		// accepted as the final answer.
+		// The loop makes no judgement — it forwards turn facts to
+		// EscalationPolicy (nil = inert, off by default) and acts on
+		// its decision, before the terminal end_turn/non-tool-use
+		// returns below so a recovery continues the loop.
 		if len(toolCalls) == 0 && sr.StopReason != "tool_use" {
 			decision := l.escalationDecision(EscalationInput{
 				Mode:             config.Mode,
@@ -1168,19 +938,12 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		if sr.StopReason == "end_turn" {
-			// Record the turn transcript with no tool calls before the
-			// success return. Even an end_turn carries a transcript
-			// worth preserving: replay needs the model's final answer,
-			// and mine-failures distinguishes "model declared end_turn
-			// at turn N" from "loop ran out of turns at N".
+			// Even a no-tool-call end_turn is worth preserving: replay
+			// needs the final answer, and mine-failures distinguishes
+			// end_turn from ran-out-of-turns.
 			l.Trace.RecordTurnRecord(turnRecord)
-			// PhasePostTurn guard: classify the assistant's final text
-			// before forwarding it. A deny terminates the run with the
-			// "guardrail_blocked" outcome. Spotlight is opt-in for
-			// future sub-agent contexts where the parent loop can safely
-			// rewrap the child's output; for v1 we log the request and
-			// forward the response unchanged because rewriting the
-			// user-visible text would break tool-protocol expectations.
+			// PhasePostTurn: a deny returns guardrail_blocked; spotlight
+			// is log-only in v1 — see docs/guardrails.md.
 			if finalText != "" {
 				in := guard.Input{
 					Phase:   guard.PhasePostTurn,
@@ -1192,17 +955,11 @@ func (l *AgenticLoop) runInnerLoop(
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
-					// Return the prior (non-denied) accumulated text, not
-					// this turn's just-committed text — see priorFinalText.
+
 					return messages, "guardrail_blocked", priorFinalText
 				}
 				if spotlight {
-					// PostTurn spotlight is intentionally a log-only
-					// no-op in v1: rewriting the user-visible
-					// assistant text would break tool-protocol
-					// expectations. The spotlight metric / event are
-					// NOT emitted for unapplied PostTurn spotlights —
-					// see recordSpotlightApplied.
+
 					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
@@ -1225,36 +982,28 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "error", finalAssistantText
 		}
 
-		// Dispatch tool calls. Sync calls run inline in assistant-message
-		// order; async calls (those with an AsyncHandler, e.g. deep-research
-		// spawn_agent invocations) fan out under a semaphore sized to
-		// config.EffectiveToolDispatchMaxParallel(). planAndDispatch preserves
-		// result order, stall-detector ordering, per-call timeouts, and ctx
-		// cancellation propagation; see harness/internal/core/dispatch.go.
-		// The router's provider/model selection is forwarded so per-call
-		// failure metrics (stirrup.harness.tool_failures) can be attributed
-		// back to the model that emitted the offending tool_use block.
+		// planAndDispatch preserves result/stall order, per-call
+		// timeouts, and ctx cancellation; see dispatch.go. Provider/
+		// model forwarded so tool_failures metrics attribute back to
+		// the emitting model.
 		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall, selection.Provider, selection.Model)
 		turnRecord.ToolCalls = toolRecords
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
-		// Record that the model has now used tools this run. The
-		// escalation trigger (#230) fires only on the first assistant
-		// turn with no prior tool calls; once this is non-zero a later
-		// no-tool answer is a legitimate judgement and is left alone.
+		// Escalation triggers only on the first assistant turn with
+		// no prior tool calls; once non-zero, a later no-tool answer
+		// is a legitimate judgement and left alone.
 		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
 			return messages, stallOutcome, finalAssistantText
 		}
 
-		// Re-check budget after tool results are appended. This prevents the
-		// next turn from sending an over-budget context to the provider.
+		// Prevents the next turn from sending an over-budget context.
 		budgetCheck = tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
 			return messages, "budget_exceeded", finalAssistantText
 		}
 
-		// Git checkpoint after tool use.
 		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
 			checkpointSpan.RecordError(err)
@@ -1267,26 +1016,16 @@ func (l *AgenticLoop) runInnerLoop(
 		checkpointSpan.End()
 	}
 
-	// Reached max turns.
 	return messages, "max_turns", finalAssistantText
 }
 
-// applyEscalation performs the recovery the EscalationPolicy chose for a
-// suspected missed-tool turn (#230) and records its observability. It
-// returns the (possibly extended) message history.
-//
-//   - EscalationNative sets *pendingToolChoice to ToolChoiceRequired so
-//     the next turn's Stream call forces a tool. The provider adapter only
-//     honours this when the resolved capability supports it; the policy has
-//     already confirmed support, but the prompt path is the safe fallback
-//     either way.
-//   - EscalationPrompt appends a user message stating the unmet
-//     requirement so the model is nudged to call a tool on the next turn.
-//
-// Both paths emit a stirrup.harness.tool_failures observation under the
-// no_tool_when_required category (bounded labels only — no model strings)
-// and an escalation OTel span tagged with the run mode, the chosen kind,
-// and the policy's reason, so operators can audit why a retry happened.
+// applyEscalation performs the recovery EscalationPolicy chose for a
+// suspected missed-tool turn, returning the (possibly extended)
+// message history. EscalationNative forces ToolChoiceRequired on the
+// next turn (only honoured if the provider supports it); EscalationPrompt
+// appends a user message nudging the model. Both emit a
+// stirrup.harness.tool_failures observation and an escalation span for
+// operator auditing.
 func (l *AgenticLoop) applyEscalation(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -1310,12 +1049,9 @@ func (l *AgenticLoop) applyEscalation(
 		}
 	}
 
-	// Co-emit into the tool-failure series so dashboards keyed on
-	// stirrup.harness.tool_failures see missed-tool recovery alongside the
-	// dispatch-site categories. tool.name is the empty bounded sentinel —
-	// no tool was involved — matching the provider_request/stream paths.
-	// Gate on IsValid() like every dispatch.go emit site so a future
-	// dynamic category can never widen label cardinality past the enum.
+	// tool.name is the bounded empty-sentinel — no tool was involved,
+	// matching the provider_request/stream failure paths. Gate on
+	// IsValid() so a future category can't widen label cardinality.
 	if observability.ToolFailureNoToolWhenRequired.IsValid() {
 		l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
 			attribute.String("tool.name", observability.ToolNameProviderScope),
@@ -1326,13 +1062,10 @@ func (l *AgenticLoop) applyEscalation(
 		))
 	}
 
-	// Scrub the policy reason before it lands on the OTel span and the
-	// slog line. The only built-in policy builds Reason from the validated
-	// mode enum (no secret can reach it), but EscalationPolicy is a public
-	// interface: a future policy interpolating in.StopReason or workspace
-	// content would otherwise leak past ScrubHandler, which covers neither
-	// span attributes nor this log path. Mirrors the scrubbedErr pattern at
-	// the provider.Stream call sites.
+	// EscalationPolicy is a public interface — a future policy could
+	// interpolate untrusted content into Reason, so scrub before it
+	// reaches the span/log (ScrubHandler doesn't cover either; see
+	// docs/security.md).
 	scrubbedReason := security.Scrub(decision.Reason)
 
 	_, span := l.Tracer.Start(l.traceCtx(ctx), "tool_choice.escalation",
@@ -1355,14 +1088,11 @@ func (l *AgenticLoop) applyEscalation(
 	return messages
 }
 
-// RunFollowUpLoop waits for follow-up user_response control events on the
-// transport after the primary run has completed. For each follow-up it
-// re-runs the agentic loop with the new prompt. The loop exits when the
-// grace period timer fires with no new request, the context is cancelled,
-// or a "cancel" control event arrives.
-//
-// graceSecs must be > 0. The transport must support fan-out OnControl
-// registration (both GRPCTransport and StdioTransport do).
+// RunFollowUpLoop waits for follow-up user_response control events
+// after the primary run completes, re-running the agentic loop with
+// each new prompt. Exits on grace-period timeout, ctx cancellation, or
+// a "cancel" control event. graceSecs must be > 0; the transport must
+// support fan-out OnControl (GRPCTransport and StdioTransport do).
 func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int) {
 	followUpCh := make(chan string, 1)
 	cancelCh := make(chan struct{}, 1)
@@ -1373,13 +1103,12 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			select {
 			case followUpCh <- event.UserResponse:
 			default:
-				// A follow-up is already queued. Drop this one; the control
-				// plane should wait for "done" before sending another request.
+				// Already queued; control plane should wait for "done"
+				// before sending another request.
 			}
 		case "cancel":
-			// Exit the grace window immediately on cancel. Any in-flight
-			// Run invocation has its own cancel handler and will terminate
-			// on the next turn boundary.
+			// In-flight Run has its own cancel handler and terminates on
+			// the next turn boundary.
 			select {
 			case cancelCh <- struct{}{}:
 			default:
@@ -1394,7 +1123,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 	for {
 		select {
 		case newPrompt := <-followUpCh:
-			// Reset the grace period for the next idle window.
+
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -1432,9 +1161,8 @@ func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			// Non-blocking pre-check biases the select toward cancellation:
-			// if ctx is already done, exit before racing the ticker. Narrows
-			// the common post-cancel-tick window described in issue #128.
+			// Non-blocking pre-check biases toward cancellation: exit
+			// before racing the ticker if ctx is already done.
 			select {
 			case <-ctx.Done():
 				return
@@ -1474,11 +1202,9 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		return true, &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "none"}, false
 	}
 	start := time.Now()
-	// Span parent: when the caller's ctx already carries an active span
-	// (PhasePreTool — tool.<name> via toolSpanCtx) use it directly so the
-	// guard span nests under the dispatch path (#55, B3). For PreTurn /
-	// PostTurn the caller's ctx carries no span, so fall back to the
-	// loop's run-root TraceContext to preserve existing trace shape.
+	// When the caller's ctx already carries an active span (PhasePreTool,
+	// via toolSpanCtx) nest the guard span under it; PreTurn/PostTurn carry
+	// no span, so fall back to the loop's run-root TraceContext.
 	spanParent := ctx
 	if !oteltrace.SpanFromContext(ctx).SpanContext().IsValid() {
 		spanParent = l.traceCtx(ctx)
@@ -1492,11 +1218,8 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	decision, err := l.GuardRail.Check(ctx, in)
 	elapsed := time.Since(start)
 	if err != nil {
-		// Scrub before surfacing: error strings can wrap *url.Error or
-		// classifier-side payloads that legitimately contain operator
-		// hostnames or query parameters. ScrubHandler covers slog but
-		// not OTel span statuses or security event data, so scrub here
-		// once and reuse the redacted string everywhere.
+		// Scrub once, reuse for span/log/security-event — see
+		// docs/security.md.
 		scrubbed := security.Scrub(err.Error())
 		span.RecordError(err)
 		span.SetStatus(codes.Error, scrubbed)
@@ -1525,9 +1248,8 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		return false, nil, false
 	}
 	if decision == nil {
-		// Defensive: a guard returning (nil, nil) is a contract
-		// violation. Record a synthetic allow rather than panicking
-		// downstream.
+		// Contract violation (nil, nil): record synthetic allow rather
+		// than panicking downstream.
 		decision = &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "unknown"}
 	}
 	span.SetAttributes(
@@ -1538,11 +1260,9 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	)
 	span.End()
 
-	// Skip detection — distinct from a regular allow. The granite-
-	// guardian adapter sets Reason==ReasonSkippedMinChunk when content
-	// is below the configured MinChunkChars threshold. We surface this
-	// as a separate metric and security event so dashboards do not
-	// confuse cost-saving skips with classifier-validated allows.
+	// Distinct from a regular allow — surfaced as its own metric/event
+	// so dashboards don't confuse skips with classifier-validated
+	// allows. See docs/guardrails.md.
 	isSkip := decision.Reason == guard.ReasonSkippedMinChunk
 	if l.Metrics != nil {
 		if isSkip {
@@ -1570,13 +1290,8 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		case decision.Verdict == guard.VerdictDeny:
 			l.Security.GuardDenied(string(in.Phase), decision.GuardID, decision.Criterion, decision.Reason)
 		case decision.Verdict == guard.VerdictAllowSpot:
-			// Spotlight events and the stirrup.guard.spotlights metric
-			// are emitted by the call site only after the spotlight is
-			// actually applied (recordSpotlightApplied). guardCheck
-			// returns spotlight=true to signal the request; whether
-			// the caller acts on it depends on the phase. Emitting
-			// here would over-count: PostTurn currently logs and
-			// forwards the response unchanged.
+			// Emitted by the call site only after the spotlight is
+			// actually applied (recordSpotlightApplied), not here.
 		default:
 			l.Security.GuardAllowed(string(in.Phase), decision.GuardID)
 		}
@@ -1609,15 +1324,11 @@ func (l *AgenticLoop) recordSpotlightApplied(ctx context.Context, phase guard.Ph
 }
 
 // observeSensitive runs the Rule-of-Two monitor over freshly-arrived
-// untrusted chunks and emits its telemetry: the sensitive_scan_ms
-// histogram on every scan, sensitive_data_detected +
-// rule_of_two_detections on any finding, and the once-per-run
-// rule_of_two_triggered + transport warning at the latch transition.
-// It only observes and records — the caller applies any enforcement
-// action (gate is in the permission layer; redact / abort are handled
-// at the call sites from the returned Detection). A nil monitor
-// (hand-assembled loops) no-ops, mirroring guardCheck's nil-GuardRail
-// branch.
+// untrusted chunks, recording sensitive_scan_ms and, on a finding,
+// sensitive_data_detected / rule_of_two_detections plus the
+// once-per-run rule_of_two_triggered warning at the latch transition.
+// It only observes; the caller applies enforcement from the returned
+// Detection. Nil monitor no-ops.
 func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunConfig, source string, turn int, chunks []string) ruleoftwo.Detection {
 	if l.RuleOfTwo == nil || len(chunks) == 0 {
 		return ruleoftwo.Detection{}
@@ -1625,9 +1336,8 @@ func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunCon
 	start := time.Now()
 	det := l.RuleOfTwo.ObserveChunks(ctx, source, turn, chunks)
 	if l.Metrics != nil {
-		// Fractional milliseconds: scans are routinely sub-millisecond
-		// and this histogram exists to keep regex cost observable —
-		// integer truncation would flatten the series to zero.
+		// Fractional ms: scans are routinely sub-millisecond, and integer
+		// truncation would flatten the histogram to zero.
 		elapsedMs := float64(time.Since(start)) / float64(time.Millisecond)
 		l.Metrics.SensitiveScan.Record(ctx, elapsedMs, l.metricAttrs(
 			attribute.String("source", source),
@@ -1679,11 +1389,8 @@ func (l *AgenticLoop) recordRuleOfTwoAction(ctx context.Context, action string) 
 }
 
 // ratchetRuleOfTwo forwards a guard decision's criterion to the
-// Rule-of-Two monitor's one-way ratchet. Every non-nil decision is
-// forwarded — the monitor filters against its configured guard-criteria
-// set internally, keeping the loop free of criteria logic. Telemetry
-// fires only on the false→true transition: the guard's own deny/allow
-// events already record the decision itself.
+// Rule-of-Two monitor's one-way ratchet. See docs/safety-rings.md
+// "The guard-criterion ratchet".
 func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunConfig, decision *guard.Decision, turn int) {
 	if l.RuleOfTwo == nil || decision == nil || decision.Criterion == "" {
 		return
@@ -1693,12 +1400,8 @@ func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunCon
 	}
 	source := "guard:" + decision.GuardID
 	action := l.RuleOfTwo.Action()
-	// The criterion is namespaced "guard:<criterion>" in the patterns
-	// field and the pattern metric label so guard-originated trips can
-	// never impersonate deterministic detector names: a coerced guard
-	// returning criterion "secret/aws_access_key_id" must not make
-	// telemetry (or alerting rules keyed on pattern names) read as if
-	// the detector fired.
+	// Namespaced "guard:<criterion>" so a guard-originated trip can never
+	// impersonate a deterministic detector; see docs/safety-rings.md.
 	pattern := "guard:" + decision.Criterion
 	if l.Security != nil {
 		l.Security.SensitiveDataDetected([]string{pattern}, security.TierLatch, source, turn, action, true)
@@ -1713,12 +1416,8 @@ func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunCon
 	l.emitRuleOfTwoTriggered(config, source, action)
 }
 
-// emitRuleOfTwoTriggered records the once-per-run latch transition: the
-// rule_of_two_triggered security event (key names mirror the run-start
-// audit events from emitRuleOfTwoEvents) and a one-time transport
-// warning so operators without a security-event pipeline still see the
-// posture change on the wire. scanning_suspended is false only for the
-// redact action, which keeps scanning every later tool result.
+// emitRuleOfTwoTriggered records the once-per-run rule_of_two_triggered
+// event/warning at the latch transition; see docs/safety-rings.md.
 func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, action string) {
 	untrusted, _, external := types.RuleOfTwoState(config)
 	scanningSuspended := action != "redact"
@@ -1779,30 +1478,21 @@ func guardFailOpen(config *types.RunConfig) bool {
 }
 
 // collectUntrustedChunks returns the chunks of untrusted content that
-// just entered the message history at the start of the given turn. On
-// turn 0 this includes the initial user prompt and any DynamicContext
-// entries (sorted by key for determinism). On subsequent turns it
-// returns the Content field of every tool_result block in the last
-// message — those entries arrived from external tool execution and
-// have not yet been classified — plus the Structured payload (issue
-// #231) when present: the Anthropic adapter forwards it to the model
-// as a second text block and the Gemini adapter embeds it under
-// functionResponse.response.structured, so a credential present only
-// in the structured JSON is model-visible and must be classified too.
-//
-// v1 keeps this conservative: we do not attempt to classify earlier
-// turns' content (already in history), nor model-emitted text (handled
-// at PhasePostTurn). Only freshly arrived untrusted material is sent
-// to the pre-turn guard, batched into a single classification call.
+// just entered the message history at the start of the given turn: on
+// turn 0, the initial prompt plus DynamicContext entries (sorted by
+// key); on later turns, every tool_result block's Content and
+// Structured payload in the last message — both are model-visible
+// (see docs/architecture.md "Structured tool results"), so both need
+// classification. v1 does not reclassify earlier-turn content already
+// in history, nor model-emitted text (handled at PhasePostTurn).
 func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]types.DynamicContextValue, prompt string) []string {
 	if turn == 0 {
 		chunks := make([]string, 0, 1+len(dynamicContext))
 		if prompt != "" {
 			chunks = append(chunks, prompt)
 		}
-		// Sort keys for deterministic batched ordering — the guard
-		// adapter assigns chunk indices to the batch and operators
-		// debugging a deny benefit from a stable ordering.
+		// Deterministic ordering: the guard adapter assigns chunk indices,
+		// and operators debugging a deny benefit from stability.
 		keys := make([]string, 0, len(dynamicContext))
 		for k := range dynamicContext {
 			keys = append(keys, k)
@@ -1819,9 +1509,8 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		return nil
 	}
 	last := messages[len(messages)-1]
-	// Synthetic messages are harness-controlled content (escalation prompts,
-	// verifier feedback); they are never untrusted external input and do not
-	// need pre-turn classification.
+	// Synthetic messages (escalation prompts, verifier feedback) are
+	// harness-controlled, not untrusted external input.
 	if last.Role != "user" || last.Synthetic {
 		return nil
 	}
@@ -1859,19 +1548,14 @@ func batchUntrustedChunks(chunks []string) string {
 	return sb.String()
 }
 
-// replaceUntrustedChunks replaces the content of every tool_result
-// block in the last message with the supplied placeholder. Used when
-// PhasePreTurn returns VerdictDeny to drop the untrusted content from
-// this turn rather than feed it to the model. Turn 0 is a no-op
-// because the user prompt itself is the untrusted content and is
-// not yet appended to the message history; turn 0 PreTurn denies
-// must be handled by the caller (the loop aborts the run with
-// outcome "guardrail_blocked").
+// replaceUntrustedChunks replaces every tool_result block's content in
+// the last message with placeholder, for a PhasePreTurn deny on turn
+// N>0. Turn 0 has no tool_result blocks yet (the prompt is the
+// untrusted content) — callers must abort instead; see
+// docs/guardrails.md.
 func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
 	if turn == 0 {
-		// Turn 0 has no tool_result blocks to rewrite. Callers must
-		// abort the run rather than calling into this helper, so this
-		// branch is a defensive no-op only.
+		// Defensive no-op; callers must abort on turn 0 instead.
 		return
 	}
 	if len(messages) == 0 {
@@ -1888,15 +1572,12 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 	}
 }
 
-// redactSensitiveSpans rewrites the latch-tier sensitive spans in every
-// just-arrived tool_result block of the last message, in BOTH the text
-// Content and the Structured payload — the Anthropic and Gemini
-// adapters both forward Structured to the model, so a scrub that
-// ignored it would leave an evasion seam (the wave-3 finding). Returns
-// the total number of spans replaced. Turn 0 is a no-op: its untrusted
-// content is the prompt and dynamic context, which Run() handles before
-// Prompt.Build (the prompt is never rewritten; dynamic context is
-// redacted in place). Modeled on replaceUntrustedChunks.
+// redactSensitiveSpans rewrites latch-tier sensitive spans in every
+// just-arrived tool_result block's Content AND Structured payload (both
+// are model-visible; see docs/architecture.md "Structured tool
+// results"). Returns the number of spans replaced. Turn 0 is a no-op —
+// its untrusted content is the prompt/dynamic context, handled by
+// redactDynamicContext before Prompt.Build.
 func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) int {
 	if turn == 0 || len(messages) == 0 || l.RuleOfTwo == nil {
 		return 0
@@ -1920,19 +1601,13 @@ func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) i
 		if len(last.Content[i].Structured) > 0 {
 			redacted, n := l.RuleOfTwo.Redact(string(last.Content[i].Structured))
 			if n > 0 {
-				// A placeholder inside a JSON string value keeps the
-				// document valid; a redaction that lands across JSON
-				// structure would not. Fall back to a whole-payload
-				// placeholder rather than emit malformed JSON to the
-				// provider.
+				// Keep the JSON valid: fall back to a whole-payload
+				// placeholder if the redaction broke JSON structure.
 				if json.Valid([]byte(redacted)) {
 					last.Content[i].Structured = json.RawMessage(redacted)
 				} else {
-					// json.Marshal of a Go string always yields a valid
-					// JSON string regardless of the placeholder's
-					// contents; the error is unreachable for a string
-					// argument. This avoids relying on RedactionPlaceholder
-					// never acquiring a quote, backslash, or control char.
+					// json.Marshal of a Go string never errors; avoids
+					// relying on RedactionPlaceholder staying quote-free.
 					b, _ := json.Marshal(ruleoftwo.RedactionPlaceholder)
 					last.Content[i].Structured = json.RawMessage(b)
 				}
@@ -1944,11 +1619,9 @@ func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) i
 }
 
 // redactDynamicContext rewrites latch-tier sensitive spans in every
-// dynamic-context value in place, before Prompt.Build folds them into
-// the system prompt. Returns the number of spans replaced. The
-// operator's config.Prompt is deliberately NOT redacted: rewriting the
-// task statement would change run semantics, so the prompt only latches
-// (for audit and the gate) and is forwarded verbatim.
+// dynamic-context value in place, before Prompt.Build. Returns the
+// number of spans replaced. config.Prompt is never redacted here —
+// see docs/safety-rings.md.
 func (l *AgenticLoop) redactDynamicContext(dynamicContext map[string]string) int {
 	if l.RuleOfTwo == nil {
 		return 0
@@ -2001,12 +1674,10 @@ func lastAssistantText(blocks []types.ContentBlock) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// recordHookExecutions forwards each lifecycle hook result (issue #461)
-// to the trace emitter's optional HookRecorder capability and surfaces a
-// transport "warning" event for any hook that failed but was configured
-// with continueOnError: true — visible to the control plane even though
-// the failure never touches the run's outcome. Mirrors the
-// git.Finalise-failure -> "warning" event precedent elsewhere in Run().
+// recordHookExecutions forwards each lifecycle hook result to the
+// trace emitter's optional HookRecorder capability and emits a
+// transport "warning" for any continueOnError failure — visible to
+// the control plane even though it never touches the run's outcome.
 func (l *AgenticLoop) recordHookExecutions(execs []types.HookExecution) {
 	recorder, hasRecorder := l.Trace.(trace.HookRecorder)
 	for _, exec := range execs {
@@ -2040,15 +1711,10 @@ func formatHookWarning(exec types.HookExecution) string {
 	return fmt.Sprintf("%s failed and continued: %s", label, exec.Error)
 }
 
-// postHookBudget returns the wall-clock budget granted to the detached
-// post-hook ctx (issue #461): the sum of every postRun hook's effective
-// timeout (the worst case where every hook actually runs to its own
-// timeout) plus a 30s margin, so artifact submission and smoke tests can
-// still complete even after the run's own wall-clock timeout has
-// expired. A nil or hookless config resolves to just the 30s margin so
-// the detached ctx is never unbounded. ValidateRunConfig bounds the sum
-// to types.MaxHookTimeoutSeconds, so this is bounded regardless of
-// operator input.
+// postHookBudget returns the wall-clock budget for the detached
+// post-hook ctx: the sum of every postRun hook's effective timeout
+// plus a 30s margin (see docs/configuration.md#lifecycle-hooks).
+// ValidateRunConfig bounds the sum, so this is always bounded.
 func postHookBudget(hooks *types.HooksConfig) time.Duration {
 	sum := 0
 	if hooks != nil {
@@ -2064,11 +1730,9 @@ func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.Ru
 	return l.finishWithOutcome(ctx, "error", err)
 }
 
-// finishWithOutcome is finishWithError's generalisation (issue #461): it
-// records the given outcome — rather than always "error" — and finishes
-// the trace. Used by the preRun hook fatal-failure path, which reports
-// "setup_failed" (or a ctx-cause outcome if the run's own wall-clock
-// timeout/cancel raced the hook failure) instead of the generic "error".
+// finishWithOutcome generalises finishWithError to a caller-supplied
+// outcome (e.g. "setup_failed" from a fatal preRun hook failure) and
+// finishes the trace.
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
@@ -2076,17 +1740,8 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 	}); emitErr != nil {
 		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
 	}
-	// Emit "done" with StopReason=outcome, matching the shape of the
-	// normal end-of-Run() emission (loop.go's Run(), immediately before
-	// stopHeartbeat) — this early-return path previously emitted only
-	// "error", so a control plane never saw the terminal "done" event
-	// documented as the definitive end-of-stream signal for a run this
-	// path terminates, and the CLI entrypoints' `if err != nil { return
-	// }` shortcut (see cmd/harness.go, cmd/job.go) meant an operator's
-	// preRun hook failure — outcome "setup_failed" — produced no
-	// structured RunResult at all despite a valid RunTrace existing.
-	// See finishWithOutcome's own doc comment and the cmd-layer fix
-	// this pairs with.
+	// Always emit "done" (not just "error") so control planes relying on
+	// it as the terminal signal see this early-return path too.
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,

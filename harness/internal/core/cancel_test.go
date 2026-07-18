@@ -74,15 +74,11 @@ func (p *cancellingProvider) Stream(ctx context.Context, _ types.StreamParams) (
 	ch := make(chan types.StreamEvent)
 	go func() {
 		defer close(ch)
-		// Fire cancel from the provider goroutine so the outer Run has
-		// already reached the streaming stage and has registered the
-		// transport's cancel handler.
+		// Fire from the provider goroutine so Run has already registered
+		// the transport's cancel handler.
 		p.fireOnce.Do(func() {
 			p.tr.FireControl(types.ControlEvent{Type: "cancel"})
 		})
-		// Block until the run context is cancelled — then exit the stream
-		// with a ctx.Err error event. runInnerLoop will map this to the
-		// ctx-done sentinel and the outer Run will classify it.
 		<-ctx.Done()
 		ch <- types.StreamEvent{Type: "error", Error: ctx.Err()}
 	}()
@@ -124,7 +120,6 @@ func TestLoop_CancelControlEvent_Cancelled(t *testing.T) {
 		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
 	}
 
-	// Verify the "done" HarnessEvent carries stop_reason="cancelled".
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
@@ -161,7 +156,6 @@ func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
 		t.Errorf("expected outcome 'timeout', got %q", runTrace.Outcome)
 	}
 
-	// Verify the "done" HarnessEvent carries stop_reason="timeout".
 	var gotStopReason string
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
@@ -195,12 +189,9 @@ func (p *cancellingProviderOnStream) Stream(ctx context.Context, _ types.StreamP
 }
 
 // TestLoop_CallerCancel_Cancelled verifies that a plain caller cancel()
-// (no cause attached, as would occur via the root cobra signal handler)
-// produces RunTrace.Outcome == "cancelled" and done.stop_reason == "cancelled".
-//
-// The cancel is fired from inside the provider's Stream call rather than
-// from a sleep-based timer goroutine, so this test deterministically
-// exercises the mid-stream cancel path regardless of CI scheduling jitter.
+// (no cause attached) produces outcome "cancelled" and done.stop_reason
+// "cancelled". The cancel fires from inside Stream so the test
+// deterministically hits the mid-stream cancel path.
 func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
@@ -213,11 +204,8 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 
 	loop.Provider = &cancellingProviderOnStream{
 		onStream: func() {
-			// Cancel from the provider goroutine so the outer Run has
-			// already entered the streaming stage and installed its
-			// cancel handler. The plain cancel() leaves context.Cause
-			// nil, mirroring SIGINT/SIGTERM delivery via the root
-			// signal handler.
+			// Plain cancel() leaves context.Cause nil, mirroring
+			// SIGINT/SIGTERM delivery via the root signal handler.
 			cancel()
 		},
 	}
@@ -233,15 +221,13 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 		t.Errorf("expected outcome 'cancelled' for caller cancellation, got %q", runTrace.Outcome)
 	}
 
-	// H1: also assert the wire "done" event carries the expected stop_reason.
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
 // TestLoop_CallerCancelWithCause_Error verifies that a caller-side cancel
 // with a custom non-nil cause (not control-plane, not deadline) maps to
-// outcome="error". This is the code path retained after B1: a non-nil,
-// unrecognised cause cannot be attributed to a known cancel/timeout
-// reason and is surfaced as an error.
+// outcome="error": an unrecognised cause cannot be attributed to a known
+// cancel/timeout reason.
 func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
@@ -274,10 +260,6 @@ func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
 }
 
 func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
-	// When the parent context is cancelled before Run starts, the first
-	// inner-loop ctx check trips. With no cause attached (plain cancel()),
-	// this now classifies as "cancelled" — matching the user intent of a
-	// signal-initiated or caller-initiated cancel.
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(&mockProvider{
 		events: []types.StreamEvent{
@@ -321,10 +303,8 @@ func assertDoneStopReason(t *testing.T, tr *cancellableTransport, want string) {
 }
 
 // cancelOnVerifyVerifier fires a cancel ControlEvent the first time Verify
-// is called, then sleeps briefly and returns an error. This reproduces the
-// race where a cancel arrives between the inner loop returning and Verify
-// completing: the naive implementation would set outcome="verification_error"
-// because Verify errored, masking the true cancel cause on the wire.
+// is called, then sleeps briefly and returns an error, reproducing a race
+// between a mid-Verify cancel and a verifier error.
 type cancelOnVerifyVerifier struct {
 	tr       *cancellableTransport
 	fireOnce sync.Once
@@ -334,10 +314,8 @@ func (v *cancelOnVerifyVerifier) Verify(ctx context.Context, _ verifier.VerifyCo
 	v.fireOnce.Do(func() {
 		v.tr.FireControl(types.ControlEvent{Type: "cancel"})
 	})
-	// Give the cancel handler a beat to set ctx.Err() on the run context
-	// before we return. We use a short timer rather than <-ctx.Done() so
-	// the test remains deterministic even if the verifier's own ctx is not
-	// wired to the run ctx in every implementation.
+	// A short timer, not <-ctx.Done(), so the test stays deterministic even
+	// if the verifier's ctx isn't wired to the run ctx.
 	select {
 	case <-time.After(25 * time.Millisecond):
 	case <-ctx.Done():
@@ -345,16 +323,12 @@ func (v *cancelOnVerifyVerifier) Verify(ctx context.Context, _ verifier.VerifyCo
 	return nil, errors.New("verifier failure triggered alongside cancel")
 }
 
-// TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError covers B3:
-// a cancel ControlEvent arriving while Verify is running must produce
-// RunTrace.Outcome == "cancelled" and done.stop_reason == "cancelled", not
-// "verification_error". Without the runCtx.Err() override in Run, the
-// verifier's error would be recorded as the outcome.
+// TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError verifies
+// that a cancel ControlEvent arriving while Verify is running produces
+// outcome "cancelled", not "verification_error".
 func TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError(t *testing.T) {
 	tr := &cancellableTransport{}
 
-	// A provider that returns one complete turn so the inner loop exits
-	// with outcome="success" and the outer loop proceeds to Verify.
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "All done."},
@@ -390,16 +364,9 @@ func TestClassifyCtxOutcome(t *testing.T) {
 		{"control_plane", ErrCancelledByControlPlane, "cancelled"},
 		{"wrapped_control_plane", fmt.Errorf("wrap: %w", ErrCancelledByControlPlane), "cancelled"},
 		{"deadline", context.DeadlineExceeded, "timeout"},
-		// context.Canceled (either directly via plain cancel(), or
-		// propagated from a parent's WithCancel into our
-		// WithCancelCause child) is the signal-handler / caller-side
-		// cancel path — user-initiated.
 		{"caller_canceled_as_cause", context.Canceled, "cancelled"},
 		{"wrapped_caller_canceled", fmt.Errorf("wrap: %w", context.Canceled), "cancelled"},
-		// No cause attached — plain cancel() on our own WithCancelCause.
 		{"nil", nil, "cancelled"},
-		// A non-nil cause that is neither a recognised cancel sentinel
-		// nor a deadline is an error.
 		{"other", errors.New("something else"), "error"},
 	}
 	for _, tc := range cases {

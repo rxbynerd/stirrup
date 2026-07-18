@@ -83,9 +83,9 @@ func anthropicBuilderCases() []struct {
 
 // TestBuildAnthropicRequest_MatchesStream pins the invariant that
 // buildAnthropicRequest produces the same wire body the Stream method
-// would emit. The batch path (phase 2 of #133) reuses the builder and
-// must be byte-identical to streaming for the same StreamParams modulo
-// the stream toggle.
+// would emit. The batch path reuses the builder and must be
+// byte-identical to streaming for the same StreamParams modulo the
+// stream toggle.
 func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 	for _, tc := range anthropicBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,7 +246,7 @@ func TestBuildAnthropicRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
 }
 
 // TestBuildAnthropicRequest_ToolChoice_PartialCapability exercises the
-// per-mode guard branch (B2) that the full-support builtin rule never
+// per-mode guard branch that the full-support builtin rule never
 // reaches: a capability with Supported=true but Required=false must omit
 // the field rather than fail open and emit {"type":"any"}.
 func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
@@ -267,16 +267,13 @@ func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
 }
 
 // TestBuildAnthropicRequest_ThoughtSignatureDropped pins the cross-provider
-// leakage invariant from issue #194 at the builder level. The Stream-path
-// equivalent (TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI in
-// anthropic_test.go) covers translateMessagesAnthropic transitively through
-// Stream; the phase-2 batch caller will invoke buildAnthropicRequest
-// directly, bypassing Stream entirely. If translateMessagesAnthropic were
-// accidentally refactored to embed types.ContentBlock instead of the
-// local anthropicContentBlock wire type, the Stream-level test would still
-// pass while the batch path silently forwarded Vertex's encrypted
-// chain-of-thought blob to Anthropic. Asserting the builder output here
-// closes that structural gap.
+// leakage invariant at the builder level: the batch path invokes
+// buildAnthropicRequest directly, bypassing the Stream-level equivalent
+// (TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI in
+// anthropic_test.go), so a refactor of translateMessagesAnthropic that
+// dropped the local anthropicContentBlock wire type could silently forward
+// Vertex's encrypted chain-of-thought blob to Anthropic without either test
+// catching it.
 func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
 	const sig = "AY89SIGBLOB=="
 	params := types.StreamParams{

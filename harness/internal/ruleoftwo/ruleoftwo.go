@@ -1,25 +1,6 @@
 // Package ruleoftwo defines the Monitor interface and supporting types
-// for the harness's Rule-of-Two runtime sensitive-data classifier.
-//
-// A Monitor watches untrusted content as it enters the conversation
-// (the operator prompt, dynamic context, tool results) and owns the
-// run-scoped one-way sensitive-data latch: once sensitive content is
-// observed, the run "holds sensitive data" for the rest of its life.
-// LLM guards participate through TripFromGuard — a guard decision whose
-// criterion matches the configured set tightens the latch but can never
-// loosen it, so a coerced guard stays fail-safe.
-//
-// Like the guard package, this package is deliberately leaf-level: its
-// only harness-internal import is security (for the deterministic
-// detector). The factory decides arming and injects a Monitor into the
-// agentic loop; the loop calls through the interface unconditionally
-// (Noop when unarmed).
-//
-// Interface note: TripFromGuard returns whether the call transitioned
-// the latch false→true. The plan sketched a void return, but the loop
-// needs the transition signal to emit rule_of_two_triggered exactly
-// once under concurrent observation, and only the monitor's atomic
-// latch can adjudicate the winner.
+// for the harness's Rule-of-Two runtime sensitive-data classifier. See
+// docs/safety-rings.md for the design.
 package ruleoftwo
 
 import "context"

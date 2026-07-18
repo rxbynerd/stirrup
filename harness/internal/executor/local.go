@@ -18,17 +18,10 @@ const (
 	maxOutputSize  = 1 * 1024 * 1024  // 1 MB
 	defaultTimeout = 30 * time.Second
 
-	// maxTimeout is the hard cap every Executor.Exec implementation
-	// clamps its caller-supplied timeout to. Raised from 5 to 30 minutes
-	// for lifecycle hooks (#461): a cold `bundle install` / dependency
-	// restore in a preRun hook routinely exceeds 5 minutes. Safe to
-	// raise because the *agent-reachable* path (run_command, via
-	// builtins/shell.go's independent 300s clamp) is unaffected — that
-	// clamp is enforced at the tool layer, not derived from this
-	// constant, so raising it does not hand the model any more exec
-	// budget. The test-runner verifier (verifier/testrunner.go) also
-	// gets the extra headroom since it calls Exec directly with its own
-	// timeout, uncapped except by this constant.
+	// maxTimeout is the hard cap every Executor.Exec implementation clamps
+	// its caller-supplied timeout to. The agent-reachable run_command tool
+	// clamps independently at 300s (builtins/shell.go), so raising this
+	// does not hand the model more exec budget. See docs/architecture.md.
 	maxTimeout = 30 * time.Minute
 
 	truncatedSuffix = "\n[output truncated at 1MB]"
@@ -227,27 +220,15 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.workspace
 	cmd.Env = filteredCommandEnv()
-	// WaitDelay bounds how long Wait() blocks on the stdout/stderr
-	// pipes after the process is killed on ctx cancellation. Without
-	// it, a compound command ("cmd1; sleep N; cmd2") whose later stage
-	// forks a child that inherits the pipe file descriptors leaves
-	// that child as an orphan holding the pipe open after "sh" itself
-	// is SIGKILLed — Wait() then blocks for EOF until the orphan exits
-	// on its own, defeating prompt cancellation entirely (issue #461:
-	// this is what let a postRun hook's shell script outlive a SIGTERM
-	// by the length of its own sleep, discovered via manual E2E
-	// verification of the shutdown-signal fix). shortCommandKillGrace
-	// forcibly closes the pipes shortly after the kill signal so Wait()
-	// returns promptly regardless of what an orphaned grandchild does.
+	// WaitDelay bounds how long Wait() blocks on the stdout/stderr pipes
+	// after the process is killed on ctx cancellation, so an orphaned
+	// grandchild holding a pipe open can't defeat cancellation by never
+	// exiting on its own.
 	cmd.WaitDelay = shortCommandKillGrace
 
-	// Stream into capped writers so peak memory is bounded to ~maxOutputSize
-	// per stream rather than buffering all output. This mirrors
-	// ContainerExecutor.demuxDockerStream's drain-on-cap behaviour: bytes past
-	// the cap are accepted (so the process never blocks on a full pipe) but not
-	// retained. Each writer still counts every byte it sees, so the true
-	// pre-truncation size and trigger condition reported to OutputTruncated
-	// match the container path byte-for-byte.
+	// Capped writers bound peak memory to ~maxOutputSize per stream: bytes
+	// past the cap are accepted (so the process never blocks on a full
+	// pipe) but not retained, mirroring ContainerExecutor.demuxDockerStream.
 	stdout := newCappedWriter(maxOutputSize)
 	stderr := newCappedWriter(maxOutputSize)
 	cmd.Stdout = stdout
@@ -396,14 +377,11 @@ func truncate(s string, maxLen int) string {
 // cappedWriter is an io.Writer that retains at most limit bytes. Writes past
 // the cap are accepted and reported as fully written — so a process streaming
 // into it never blocks on a full pipe — but their bytes are discarded rather
-// than buffered, bounding peak memory to ~limit. It counts every byte seen in
-// total so the true pre-truncation size can be reported, matching the
-// container path which buffers everything and reports its full length.
+// than buffered. It counts every byte seen so the true pre-truncation size
+// can still be reported.
 //
-// Not safe for concurrent use. exec.Cmd copies stdout and stderr on separate
-// goroutines that run concurrently, so each stream must use its own distinct
-// cappedWriter instance; sharing a single instance across both streams would
-// race.
+// Not safe for concurrent use: exec.Cmd copies stdout and stderr on separate
+// goroutines, so each stream needs its own instance.
 type cappedWriter struct {
 	limit int
 	buf   []byte

@@ -21,13 +21,12 @@ import (
 var errCustomCancelSentinel = errors.New("test custom cancel sentinel")
 
 // fireAndCloseProvider fires a pre-configured action on the first Stream
-// call and then returns a channel containing a single tool_use-stop-reason
-// event followed by channel close. This lets tests deliver a cancel
-// ControlEvent (or perform any other side effect) before the outer loop
-// re-enters runInnerLoop for the next turn boundary — without relying on
-// the provider's ctx being cancelled, which is needed for these OTel
-// tests because the provider sees the trace span context (derived from
-// context.Background) rather than the run context.
+// call and then returns a channel with a single tool_use-stop-reason event.
+// This lets tests deliver a cancel ControlEvent (or any other side effect)
+// before the outer loop re-enters runInnerLoop for the next turn boundary,
+// without relying on the provider's ctx being cancelled — these OTel tests
+// need that, since the provider sees the trace span context rather than
+// the run context.
 type fireAndCloseProvider struct {
 	onStream func()
 	fired    bool
@@ -39,9 +38,9 @@ func (p *fireAndCloseProvider) Stream(_ context.Context, _ types.StreamParams) (
 		p.onStream()
 	}
 	ch := make(chan types.StreamEvent, 2)
-	// Emit a tool_call so the loop completes the turn normally and loops
-	// back to the outer turn-boundary ctx check, where the cancel takes
-	// effect. Using a tool_use stop_reason ensures the loop iterates.
+	// A tool_use stop_reason lets the loop complete the turn normally and
+	// loop back to the outer turn-boundary ctx check, where the cancel
+	// takes effect.
 	ch <- types.StreamEvent{
 		Type:  "tool_call",
 		ID:    "tc_otel_test",
@@ -164,10 +163,9 @@ func TestLoop_CancelAttribute_Deadline(t *testing.T) {
 
 // TestSetRootCancelAttribute_NoStartedRunSpan covers the defensive
 // !span.SpanContext().IsValid() early-return branch: if the OTel emitter
-// has not yet been Started (no root span), calling setRootCancelAttribute
-// must be a safe no-op. This cannot happen on the Run() path (Start is
-// always called before any cancel classification), but the guard remains
-// for defence in depth.
+// has not yet been Started (no root span), setRootCancelAttribute must be
+// a safe no-op. Cannot happen on the Run() path; the guard is defence in
+// depth.
 func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))

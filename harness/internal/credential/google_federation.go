@@ -18,20 +18,15 @@ import (
 )
 
 // stsResponseLimit caps the response body when reading from the STS or
-// IAM Credentials endpoints. Real responses are well under 8 KiB; the
-// cap exists so a misconfigured proxy or hostile endpoint cannot
-// exhaust memory by streaming an unbounded payload into the JSON
-// parser. 64 KiB matches the bound used by other federation paths
-// (`metadataResponseLimit`, `maxServiceAccountKeyBytes`).
+// IAM Credentials endpoints, so a hostile endpoint cannot exhaust
+// memory streaming an unbounded payload into the JSON parser.
 const stsResponseLimit = 64 * 1024
 
 // stsErrorBodyLimit bounds how much of an error response body is
 // included verbatim in the wrapped error. Keeps log lines tractable.
 const stsErrorBodyLimit = 1024
 
-// gcpSTSURL is the public Google STS token-exchange endpoint. Exposed
-// as a package-level var (not const) so tests can swap in an
-// httptest.Server. Production code never mutates it.
+// gcpSTSURL is the public Google STS token-exchange endpoint.
 const gcpSTSURL = "https://sts.googleapis.com/v1/token"
 
 // gcpIAMCredURLTemplate is a printf template for the
@@ -39,44 +34,21 @@ const gcpSTSURL = "https://sts.googleapis.com/v1/token"
 // `%s` is filled with the URL-escaped target service-account email.
 const gcpIAMCredURLTemplate = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken"
 
-// federatedAudiencePattern is the Resolve-time guard that mirrors the
-// config-time guard in types.ValidateRunConfig. Compiled from
-// types.GCPWIFAudiencePatternString so the two layers cannot drift —
-// updating the regex in one place automatically keeps both checks
-// honest. Without the package-level dependency, two byte-identical
-// regex literals would risk diverging on a future change (regional
-// pools, additional segments) and silently letting one layer accept
-// what the other rejects.
+// federatedAudiencePattern mirrors the config-time guard in
+// types.ValidateRunConfig; compiled from types.GCPWIFAudiencePatternString
+// so the two layers cannot drift.
 var federatedAudiencePattern = regexp.MustCompile(types.GCPWIFAudiencePatternString)
 
 // GCPWorkloadIdentityFederationSource exchanges an OIDC identity token
-// (from any TokenSource — IRSA, Azure IMDS, GHA, file, env, …) for a
-// short-lived GCP access token via the Workload Identity Federation
-// flow. The result is suitable for Vertex AI Gemini auth on a non-GCP
-// runtime.
+// (from any TokenSource) for a short-lived GCP access token via
+// Workload Identity Federation, suitable for Vertex AI Gemini auth on
+// a non-GCP runtime. See docs/credential-federation.md for the STS
+// exchange and optional impersonation flow.
 //
-// Flow:
-//  1. Fetch the OIDC token from tokenSource.Token(ctx).
-//  2. POST JSON to https://sts.googleapis.com/v1/token to exchange it
-//     for a federated access token bound to the configured audience.
-//  3. (Optional) If serviceAccount is set, POST to
-//     https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{SA}:generateAccessToken
-//     to impersonate the target service account, allowing operators to
-//     grant narrower IAM than the federated identity itself holds.
-//  4. Wrap the result in oauth2.ReuseTokenSource so the access token
-//     is cached and refreshed lazily; the BearerToken closure can be
-//     invoked freely on every provider request without re-hitting STS.
-//
-// Audience MUST match the form
-//
-//	//iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
-//
-// Resolve rejects ill-formed audiences up front so an operator gets a
-// precise error rather than a 400 from STS at first use.
-//
-// No new SDK dependencies — STS and iamcredentials are plain HTTPS
-// endpoints; we hand-roll the requests to keep the dependency surface
-// small (consistent with the rest of the credential package).
+// Audience must match
+// //iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER};
+// Resolve rejects ill-formed audiences up front rather than letting
+// STS return a 400 at first use.
 type GCPWorkloadIdentityFederationSource struct {
 	tokenSource    TokenSource
 	audience       string
@@ -112,9 +84,8 @@ func NewGCPWorkloadIdentityFederationSource(ts TokenSource, audience, serviceAcc
 
 // Resolve validates the configured audience and returns a Resolved
 // whose BearerToken closure performs the STS exchange (and optional
-// impersonation) lazily on first invocation. The closure is wrapped
-// in oauth2.ReuseTokenSource so subsequent calls return the cached
-// access token until expiry.
+// impersonation) lazily, wrapped in oauth2.ReuseTokenSource so
+// subsequent calls return the cached access token until expiry.
 func (g *GCPWorkloadIdentityFederationSource) Resolve(_ context.Context) (*Resolved, error) {
 	if g.tokenSource == nil {
 		return nil, fmt.Errorf("GCP WIF: token source is required")
@@ -129,26 +100,21 @@ func (g *GCPWorkloadIdentityFederationSource) Resolve(_ context.Context) (*Resol
 		)
 	}
 
-	// Refresh runs on its own context (see ServiceAccountKeySource for
-	// the same B1-style rationale): a cancelled Resolve ctx must not
-	// poison subsequent token refreshes triggered by adapter calls
-	// inside the agentic loop.
+	// Refresh runs on its own context: a cancelled Resolve ctx must not
+	// poison subsequent token refreshes triggered by adapter calls.
 	inner := &federationTokenSource{src: g}
 	cached := oauth2.ReuseTokenSource(nil, inner)
 	return &Resolved{BearerToken: bearerFromTokenSource(cached)}, nil
 }
 
-// federationTokenSource implements oauth2.TokenSource. Token() runs
-// the full STS-exchange (+ optional impersonation) flow, returning a
-// token whose Expiry the ReuseTokenSource wrapper inspects to decide
-// whether to call us again.
+// federationTokenSource implements oauth2.TokenSource, running the
+// STS-exchange (+ optional impersonation) flow.
 type federationTokenSource struct {
 	src *GCPWorkloadIdentityFederationSource
 }
 
 // stsRequest is the JSON body shape documented at
 // https://cloud.google.com/iam/docs/reference/sts/rest/v1/TopLevel/token.
-// All fields are required for the token-exchange grant type.
 type stsRequest struct {
 	Audience           string `json:"audience"`
 	GrantType          string `json:"grantType"`
@@ -183,9 +149,8 @@ type iamCredResponse struct {
 }
 
 func (f *federationTokenSource) Token() (*oauth2.Token, error) {
-	// Internal context — the oauth2 contract has no caller ctx. A
-	// 30-second budget covers both the STS round-trip and the
-	// optional impersonation hop with comfortable headroom.
+	// Internal context: the oauth2 contract has no caller ctx. The
+	// budget covers both the STS round-trip and optional impersonation.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -270,10 +235,8 @@ func (f *federationTokenSource) exchangeAtSTS(ctx context.Context, oidc string) 
 		return "", time.Time{}, fmt.Errorf("GCP WIF: STS returned empty access_token")
 	}
 
-	// STS always returns expires_in in seconds (typically 3600). Fall
-	// back to a 1-hour assumption if the server omitted it for any
-	// reason, matching the documented default and keeping
-	// ReuseTokenSource able to refresh.
+	// Fall back to a 1-hour assumption if the server omitted expires_in,
+	// matching the documented default.
 	lifetime := time.Duration(parsed.ExpiresIn) * time.Second
 	if lifetime <= 0 {
 		lifetime = time.Hour

@@ -25,10 +25,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// validJudgeTypes mirrors the set accepted by eval/judge.Evaluate so
-// that authoring-time validation rejects misspelt types early. The
-// canonical list lives in eval/judge.KnownJudgeTypes; we materialise a
-// lookup map at package init so this stays trivially in sync.
+// validJudgeTypes mirrors eval/judge.KnownJudgeTypes as a lookup map so
+// authoring-time validation rejects misspelt judge types early.
 var validJudgeTypes = func() map[string]struct{} {
 	m := make(map[string]struct{}, len(judge.KnownJudgeTypes()))
 	for _, t := range judge.KnownJudgeTypes() {
@@ -37,15 +35,12 @@ var validJudgeTypes = func() map[string]struct{} {
 	return m
 }()
 
-// maxJudgeDepth caps recursive composite nesting in convertJudge so that
-// a pathologically nested fixture returns a clear validation error rather
-// than exhausting the goroutine stack and panicking.
+// maxJudgeDepth caps recursive composite nesting in convertJudge so a
+// pathologically nested fixture errors instead of exhausting the stack.
 const maxJudgeDepth = 10
 
 // MaxSuiteBytes is the upper bound for any single suite file the loader
-// will read. It mirrors the harness's loadRunConfigFile cap so a
-// misconfigured glob matching a build artefact returns a clear error
-// instead of OOMing the runner.
+// will read, mirroring the harness's loadRunConfigFile cap.
 const MaxSuiteBytes = 4 << 20 // 4 MiB
 
 // LoadSuiteHCL parses an HCL file at path and returns a types.EvalSuite.
@@ -90,9 +85,6 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 		return types.EvalSuite{}, formatDiagnostics(parser, diags)
 	}
 
-	// Walk the top-level body explicitly so we can reject anything that
-	// is not a `suite` block with a clear "reserved for future use"
-	// error rather than a generic gohcl complaint.
 	if err := rejectUnsupportedTopLevel(file.Body); err != nil {
 		return types.EvalSuite{}, err
 	}
@@ -116,11 +108,8 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 		return types.EvalSuite{}, err
 	}
 	// Resolve a suite-level run_config_file relative to the suite file's
-	// directory so authors can write intuitive relative paths
-	// (`configs/base.json` next to the suite) without depending on the
-	// caller's working directory. Absolute paths pass through unchanged.
-	// Done here rather than in the runner so the runner stays pure with
-	// respect to filesystem layout.
+	// directory (not the caller's working directory) so authors can write
+	// intuitive relative paths; absolute paths pass through unchanged.
 	if suite.RunConfigFile != "" && !filepath.IsAbs(suite.RunConfigFile) {
 		suite.RunConfigFile = filepath.Join(filepath.Dir(path), suite.RunConfigFile)
 	}
@@ -153,12 +142,9 @@ type taskSpec struct {
 	Judge              judgeSpec               `hcl:"judge,block"`
 }
 
-// fileSpec is a single workspace seed file. The label is the
-// workspace-relative path the runner writes to; content is the literal
-// file body (commonly a heredoc). Repeated `file` blocks within a task
-// populate EvalTask.Files. Using a labelled block mirrors the grammar's
-// other labelled blocks (task, call) and lets the path carry characters
-// — dots, slashes — that a native HCL attribute name cannot.
+// fileSpec is a single workspace seed file; the label is the
+// workspace-relative path, letting it carry characters (dots, slashes)
+// a native HCL attribute name cannot.
 type fileSpec struct {
 	Path    string `hcl:"path,label"`
 	Content string `hcl:"content"`
@@ -177,10 +163,6 @@ type judgeSpec struct {
 }
 
 // toolTraceSpec mirrors types.ToolTraceCriteria for the "tool-trace" judge.
-// sequence is the ordered list of internal tool names that must appear in
-// that relative order; each `call` block is a per-tool count / success
-// expectation. forbid_unknown asserts in-loop recovery from a renamed- or
-// unknown-tool miss.
 type toolTraceSpec struct {
 	Sequence      []string             `hcl:"sequence,optional"`
 	ForbidUnknown bool                 `hcl:"forbid_unknown,optional"`
@@ -194,19 +176,13 @@ type toolCallExpectSpec struct {
 	AllSucceeded bool   `hcl:"all_succeeded,optional"`
 }
 
-// rejectUnsupportedTopLevel inspects the file body and returns a clear
-// error if it contains any top-level construct other than `suite`
-// blocks. variable / locals / for_each are reserved for future use; we
-// reject them now so authors don't write suites that depend on a
-// grammar we haven't committed to.
-//
-// We use PartialContent with a wildcard schema rather than `,remain`
-// in rootSpec so the error message names the offending block precisely.
+// rejectUnsupportedTopLevel errors if the file body contains any
+// top-level construct other than `suite` blocks; variable / locals /
+// for_each are reserved for future use. Uses PartialContent with a
+// wildcard schema rather than `,remain` in rootSpec so the error names
+// the offending block precisely.
 func rejectUnsupportedTopLevel(body hcl.Body) error {
-	// We do a single PartialContent against `suite` plus a probe set of
-	// reserved-for-future-use block names. Whatever falls out of probe
-	// is then enumerated via the underlying hclsyntax.Body for a
-	// generic catch-all.
+
 	probe := []hcl.BlockHeaderSchema{
 		{Type: "suite", LabelNames: []string{"id"}},
 		{Type: "variable", LabelNames: []string{"name"}},
@@ -220,13 +196,10 @@ func rejectUnsupportedTopLevel(body hcl.Body) error {
 	}
 	content, leftover, diags := body.PartialContent(&hcl.BodySchema{Blocks: probe})
 	if diags.HasErrors() {
-		// A wrong label arity on `suite` etc. would surface here; bubble
-		// it up via the same diagnostics path as a parse error.
+
 		return fmt.Errorf("hcl: %s", diags.Error())
 	}
 
-	// Report the first probe-matched non-`suite` block with a "reserved
-	// for future use" hint.
 	for _, b := range content.Blocks {
 		if b.Type == "suite" {
 			continue
@@ -241,13 +214,9 @@ func rejectUnsupportedTopLevel(body hcl.Body) error {
 		return nil
 	}
 
-	// Catch-all for any block type outside the probe list (e.g.
-	// `output`, `resource`, `data`). The downstream gohcl.DecodeBody
-	// would surface a generic strict-mode error for these, but with no
-	// "reserved for future use" hint; this branch closes that gap with
-	// a uniform message and a precise file/line range. The hclsyntax
-	// Body type exposes its raw Blocks slice (including those already
-	// matched by PartialContent above), so we filter by name.
+	// Catch-all for block types outside the probe list (e.g. `output`,
+	// `resource`, `data`): gohcl.DecodeBody would reject these too but
+	// with no offending-block name, so filter the raw block list here.
 	if syntaxBody, ok := leftover.(*hclsyntax.Body); ok {
 		for _, b := range syntaxBody.Blocks {
 			if isProbedTopLevelBlock(b.Type) {
@@ -260,12 +229,9 @@ func rejectUnsupportedTopLevel(body hcl.Body) error {
 		}
 	}
 
-	// Check for any leftover top-level attributes (e.g. `name = "x"`
-	// floating outside a suite block). JustAttributes returns
-	// diagnostics whenever the body still contains blocks, so we
-	// ignore the gate and walk attrs directly. Iterating in sorted
-	// order keeps the error deterministic when more than one stray
-	// attribute is present.
+	// JustAttributes errors whenever the body still has blocks, so
+	// ignore the diagnostics and walk attrs directly; sort for a
+	// deterministic error when more than one is present.
 	attrs, _ := leftover.JustAttributes()
 	if len(attrs) > 0 {
 		names := make([]string, 0, len(attrs))
@@ -283,8 +249,7 @@ func rejectUnsupportedTopLevel(body hcl.Body) error {
 }
 
 // isProbedTopLevelBlock reports whether name was already handled by the
-// probe schema in rejectUnsupportedTopLevel. Used as a defensive belt
-// for the *hclsyntax.Body catch-all walk.
+// probe schema in rejectUnsupportedTopLevel.
 func isProbedTopLevelBlock(name string) bool {
 	switch name {
 	case "suite", "variable", "locals", "for_each", "task", "judge",
@@ -364,13 +329,9 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 }
 
 // convertSeedFiles materialises a task's `file` blocks into the
-// EvalTask.Files map, rejecting paths that are not safe workspace-relative
-// targets. The runner writes these into each task's temp workspace, so a
-// path that is absolute or escapes via `..` would let a suite author write
-// outside the sandbox; reject those at author time with a clear message
-// rather than relying solely on the runner's write-time guard. Returns nil
-// (not an empty map) when the task declares no files so the legacy shape is
-// unchanged for the common case.
+// EvalTask.Files map, rejecting absolute or `..`-escaping paths at author
+// time rather than relying solely on the runner's write-time guard.
+// Returns nil (not an empty map) when the task declares no files.
 func convertSeedFiles(specs []fileSpec, taskID string) (map[string]string, error) {
 	if len(specs) == 0 {
 		return nil, nil
@@ -414,11 +375,9 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		)
 	}
 
-	// gohcl decodes nested `judge` blocks into judgeSpec.Judges
-	// regardless of the parent type. Only composite consumes them; on
-	// any other type, silently dropping them would mask a common
-	// authoring mistake (forgetting to set `type = "composite"` after
-	// adding child judges). Reject the construct loudly instead.
+	// gohcl decodes nested `judge` blocks regardless of parent type;
+	// only composite consumes them. Reject rather than silently drop,
+	// since the likely cause is a forgotten `type = "composite"`.
 	if j.Type != "composite" && len(j.Judges) > 0 {
 		return types.EvalJudge{}, fmt.Errorf(
 			"%s: judge.type %q does not support nested judge blocks (use type \"composite\")",
@@ -426,10 +385,7 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		)
 	}
 
-	// Same reasoning for the tool_trace block: only the tool-trace judge
-	// consumes it. A tool_trace block on any other type is an authoring
-	// mistake (a misplaced block or a forgotten `type = "tool-trace"`),
-	// so reject it rather than silently dropping the assertions.
+	// Same reasoning for tool_trace: only the tool-trace judge consumes it.
 	if j.Type != "tool-trace" && j.ToolTrace != nil {
 		return types.EvalJudge{}, fmt.Errorf(
 			"%s: judge.type %q does not support a tool_trace block (use type \"tool-trace\")",
@@ -485,10 +441,8 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		out.Judges = children
 
 		if len(out.Judges) == 0 {
-			// A bare composite block (likely a typo where the author
-			// forgot to add child judges) would otherwise evaluate as
-			// vacuous-pass via the `all` of zero — producing misleading
-			// CI greens. Force at least one child.
+			// A bare composite would otherwise vacuous-pass via `all`
+			// of zero, producing misleading CI greens.
 			return types.EvalJudge{}, fmt.Errorf(
 				"%s: composite judge must have at least one nested judge block",
 				context,
@@ -500,15 +454,10 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 }
 
 // toolTraceSpecToType materialises a parsed toolTraceSpec into the
-// canonical types.ToolTraceCriteria. The HCL `call` blocks carry the
-// matched internal tool name as a block label; everything else is an
-// optional attribute.
-//
-// Two `call` blocks sharing a label are rejected: a per-tool expectation
-// keys on the tool name, so a duplicate is either a copy-paste mistake or
-// a silently-shadowed second expectation. The HCL grammar permits repeated
-// labels (the binding gathers them into a slice), so the constraint is
-// enforced here rather than by the decoder.
+// canonical types.ToolTraceCriteria, rejecting `call` blocks that share a
+// label — the HCL grammar permits repeated labels, but a per-tool
+// expectation keys on the tool name, so a duplicate would silently shadow
+// the first.
 func toolTraceSpecToType(s *toolTraceSpec, context string) (*types.ToolTraceCriteria, error) {
 	out := &types.ToolTraceCriteria{
 		Sequence:      s.Sequence,

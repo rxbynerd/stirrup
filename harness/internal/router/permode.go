@@ -12,7 +12,6 @@ type PerModeRouter struct {
 // NewPerModeRouter creates a router that selects a provider and model based on
 // the run mode. Modes not present in modeMap use defaultSelection.
 func NewPerModeRouter(defaultSelection ModelSelection, modeMap map[string]ModelSelection) *PerModeRouter {
-	// Copy the map to avoid aliasing the caller's slice.
 	m := make(map[string]ModelSelection, len(modeMap))
 	for k, v := range modeMap {
 		m[k] = v

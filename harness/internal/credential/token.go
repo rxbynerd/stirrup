@@ -14,26 +14,18 @@ import (
 
 const gkeMetadataDefaultBase = "http://metadata.google.internal"
 
-// azureIMDSDefaultBase is the link-local address of the Azure Instance
-// Metadata Service. It is fixed by the Azure platform and not
-// configurable per-VM; we expose baseURL only so tests can swap in an
-// httptest.Server.
+// azureIMDSDefaultBase is the fixed link-local address of the Azure
+// Instance Metadata Service; baseURL exists only so tests can swap in
+// an httptest.Server.
 const azureIMDSDefaultBase = "http://169.254.169.254"
 
-// azureIMDSAPIVersion pins the Azure IMDS identity API version. Azure
-// has shipped several IMDS versions over the years; 2018-02-01 is the
-// canonical, broadly-deployed version for the
-// /metadata/identity/oauth2/token endpoint and is the version Microsoft
-// uses in their official documentation and SDKs as of 2024. Newer
-// versions (e.g. 2019-08-15) add fields but are not universally
-// available across all Azure regions and managed-identity flavours, so
-// we pin the lowest-common-denominator that works everywhere.
+// azureIMDSAPIVersion pins the lowest-common-denominator IMDS identity
+// API version available across all Azure regions and managed-identity
+// flavours.
 const azureIMDSAPIVersion = "2018-02-01"
 
-// metadataResponseLimit caps the response body when reading from cloud
-// metadata services. IMDS in particular has been observed returning
-// large HTML error pages on misconfiguration; bounding the read prevents
-// a hostile or buggy metadata endpoint from exhausting memory.
+// metadataResponseLimit bounds reads from cloud metadata services so a
+// hostile or misconfigured endpoint cannot exhaust memory.
 const metadataResponseLimit = 64 * 1024 // 64 KiB
 
 // GKEMetadataTokenSource fetches OIDC identity tokens from the GKE
@@ -128,18 +120,12 @@ func (e *EnvTokenSource) Token(_ context.Context) ([]byte, error) {
 }
 
 // AWSIRSATokenSource resolves the projected token file that EKS Pod
-// Identity / IRSA mounts into pods at runtime. It is a thin convenience
-// wrapper over FileTokenSource that reads the path from the standard
-// AWS_WEB_IDENTITY_TOKEN_FILE environment variable. Reading the env var
-// in Token() rather than the constructor lets us produce a clear error
-// at credential-resolution time when the runtime is misconfigured (the
-// pod is running outside an IRSA-enabled service account).
+// Identity / IRSA mounts into pods, reading the path from
+// AWS_WEB_IDENTITY_TOKEN_FILE at call time so a misconfigured runtime
+// fails with a clear error at credential-resolution time.
 type AWSIRSATokenSource struct{}
 
-// Token reads the IRSA-projected service account token. The
-// AWS_WEB_IDENTITY_TOKEN_FILE env var is injected by the EKS Pod
-// Identity webhook; if it is unset we return an error that names the
-// var so operators have an obvious starting point for diagnosis.
+// Token reads the IRSA-projected service account token.
 func (a *AWSIRSATokenSource) Token(ctx context.Context) ([]byte, error) {
 	path := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
 	if path == "" {
@@ -148,11 +134,8 @@ func (a *AWSIRSATokenSource) Token(ctx context.Context) ([]byte, error) {
 	return (&FileTokenSource{path: path}).Token(ctx)
 }
 
-// AzureIMDSTokenSource fetches an Azure AD access token from the Azure
-// Instance Metadata Service (IMDS). The token is for the resource (an
-// Azure AD app registration URI) supplied at construction time;
-// downstream credential sources that perform cross-cloud federation can
-// use this token as the OIDC proof in their token-exchange step.
+// AzureIMDSTokenSource fetches an Azure AD access token for the
+// configured resource from the Azure Instance Metadata Service (IMDS).
 type AzureIMDSTokenSource struct {
 	resource   string // required: Azure AD resource URI (e.g. "https://management.azure.com/")
 	clientID   string // optional: client ID of a user-assigned managed identity
@@ -161,10 +144,8 @@ type AzureIMDSTokenSource struct {
 }
 
 // NewAzureIMDSTokenSource creates a token source that calls the Azure
-// IMDS identity endpoint. baseURL can be empty to use the default link-
-// local metadata address. clientID can be empty to use the system-
-// assigned managed identity; set it to the client ID of a user-assigned
-// managed identity if the VM has more than one identity attached.
+// IMDS identity endpoint. baseURL empty uses the default metadata
+// address; clientID empty uses the system-assigned managed identity.
 func NewAzureIMDSTokenSource(resource, clientID, baseURL string) *AzureIMDSTokenSource {
 	if baseURL == "" {
 		baseURL = azureIMDSDefaultBase
@@ -231,41 +212,21 @@ func (a *AzureIMDSTokenSource) Token(ctx context.Context) ([]byte, error) {
 }
 
 // GitHubActionsOIDCTokenSource fetches an OIDC identity token from the
-// GitHub Actions runner's token-issuance endpoint. The runner injects
-// two environment variables into every workflow step:
-//
-//   - ACTIONS_ID_TOKEN_REQUEST_URL: the issuance endpoint, already
-//     carrying an api-version query parameter.
-//   - ACTIONS_ID_TOKEN_REQUEST_TOKEN: a short-lived bearer that
-//     authenticates the request to the runner.
-//
-// Both env vars are only present when the workflow declares
-// `permissions: id-token: write`. The URL is read and validated at
-// construction time so a malicious sidecar that mutates the env after
-// the harness has started cannot redirect subsequent token refreshes
-// to an attacker-controlled host. The bearer token continues to be
-// read at call time (the runner refreshes it).
+// GitHub Actions runner's token-issuance endpoint. Both
+// ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN are
+// only present when the workflow declares `permissions: id-token:
+// write`. The request URL is captured and validated at construction
+// time (see docs/credential-federation.md); the bearer token is
+// re-read on each call since the runner rotates it.
 type GitHubActionsOIDCTokenSource struct {
 	audience   string
-	requestURL string // captured + validated at construction time
+	requestURL string
 	httpClient *http.Client
 }
 
 // NewGitHubActionsOIDCTokenSource creates a token source that requests
-// a JWT from the GitHub Actions runner, scoped to the given audience.
-// The audience is the value the downstream relying party (e.g. AWS STS,
-// GCP STS, an OIDC-enabled Anthropic/Azure exchange) expects to see in
-// the `aud` claim — choose it to match the policy on the relying party.
-//
-// ACTIONS_ID_TOKEN_REQUEST_URL is read and validated here rather than
-// in Token() to (a) fail fast with a clear error when the workflow is
-// misconfigured (`permissions: id-token: write` not set) and (b) close
-// the SSRF window where a process with write access to the runner's
-// environment can swap the URL between Token() calls. The URL must
-// parse and use the https scheme — sending the runner bearer token
-// over plain HTTP would let any on-path attacker on a self-hosted
-// runner exfiltrate it and exchange it for a valid OIDC JWT (CWE-319,
-// CWE-918).
+// a JWT from the GitHub Actions runner, scoped to audience — the value
+// the downstream relying party expects in the `aud` claim.
 func NewGitHubActionsOIDCTokenSource(audience string) (*GitHubActionsOIDCTokenSource, error) {
 	requestURL := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
 	if requestURL == "" {
@@ -295,10 +256,8 @@ type ghaOIDCResponse struct {
 }
 
 // Token fetches a fresh OIDC token from the runner. The request URL
-// already contains a `?api-version=...` query parameter (set by the
-// runner), so we append the audience with `&audience=...`. The URL was
-// validated and frozen at construction time; only the bearer token is
-// re-read on each call (the runner rotates it).
+// already carries a `?api-version=...` query parameter set by the
+// runner; the audience is appended with `&audience=...`.
 func (g *GitHubActionsOIDCTokenSource) Token(ctx context.Context) ([]byte, error) {
 	requestToken := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 	if requestToken == "" {

@@ -195,6 +195,17 @@ then removes the egress `NetworkPolicy`. Only the Sandbox is deleted — not
 the Pod — because the controller owns the Pod via owner references and
 cascade-GCs it; deleting the Pod directly would race that cascade.
 
+The egress `NetworkPolicy` is removed only after the Sandbox (and, via
+the foreground cascade, its Pod) is confirmed gone, so egress is never
+reopened for a still-running Pod — the teardown analogue of the
+constructor's policy-before-Pod ordering. The posture is fail-closed in
+three ways: if the Sandbox delete fails, the policy is left in place and
+the error returned (the TTL backstop still GCs the Sandbox eventually);
+if the Sandbox does not disappear within the close timeout, the policy
+is left in place and logged (inert once the Pod is gone, still
+confining it if it somehow lingers); a `NotFound` Sandbox is treated as
+already-gone, and the policy is then safe to remove.
+
 As a backstop against a crashed orchestrator that never calls `Close()`,
 the executor writes `spec.shutdownPolicy: Delete` and an absolute
 `spec.shutdownTime` into every Sandbox. The controller deletes the

@@ -28,27 +28,14 @@ const (
 )
 
 // AuthMode selects the authentication header sent on every /v1/messages
-// request. Anthropic's API accepts two header shapes that are NOT
-// interchangeable:
-//
-//   - x-api-key: <token>            for static API keys (sk-ant-api03-...).
-//   - Authorization: Bearer <token> for OAuth access tokens issued by the
-//     WIF token-exchange flow (sk-ant-oat01-...).
-//
-// Sending a WIF access token via x-api-key returns a 401 from Anthropic;
-// the discriminator is therefore load-bearing for issue #117 — the
-// credential source returns a Bearer token either way, but the adapter
-// must know which header to set.
+// request. See docs/providers.md for why the two header shapes are not
+// interchangeable.
 type AuthMode int
 
 const (
-	// AuthModeAPIKey sends the credential in the x-api-key header.
-	// Use for static API keys (sk-ant-api03-...). This is the default
-	// to preserve compatibility with the static-key code path.
+	// AuthModeAPIKey sends the credential in the x-api-key header (static keys).
 	AuthModeAPIKey AuthMode = iota
-	// AuthModeBearer sends the credential as Authorization: Bearer.
-	// Use for WIF OAuth access tokens (sk-ant-oat01-...) returned by
-	// the AnthropicWIFSource credential-exchange flow.
+	// AuthModeBearer sends the credential as Authorization: Bearer (WIF OAuth tokens).
 	AuthModeBearer
 )
 
@@ -64,33 +51,16 @@ type AnthropicAdapter struct {
 	AdapterDeps
 
 	// Registry resolves per-(provider, model) quirks at the top of every
-	// Stream call. The constructor seeds it with quirks.DefaultRegistry()
-	// so callers that ignore the field still get the built-in rule set;
-	// the nil-Registry guard in Stream tolerates direct construction. The
-	// Anthropic adapter reads the cross-provider ToolChoice,
-	// StructuredToolResults, and ParallelToolCalls capabilities plus the
-	// Anthropic-specific OmitSamplingParams behaviour flag (the newest
-	// Claude tier — Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 — rejects a
-	// non-default temperature outright); resolving through the registry
-	// keeps this consistent with the OpenAI and Gemini adapters.
+	// Stream call. Defaults to quirks.DefaultRegistry(); the nil-Registry
+	// guard in Stream tolerates direct construction.
 	Registry *quirks.Registry
 }
 
 // NewAnthropicAdapter creates an adapter for the Anthropic Messages API.
-// The HTTP client is configured with explicit timeouts to prevent unbounded
-// connections. The overall timeout is generous (120s) because streaming
-// responses can be long-lived; transport-level timeouts are tighter.
 //
-// bearer is invoked on every Stream call to fetch the current API key —
-// this lets refresh-aware credential sources (e.g. AnthropicWIFSource)
-// rotate the token without rebuilding the adapter. Static sources return
-// a captured value with no IO, so the per-request call is effectively
-// free.
-//
-// authMode selects which HTTP header carries the credential. The factory
-// passes AuthModeBearer when credential.type=anthropic-wif (the credential
-// source returns short-lived OAuth access tokens), and AuthModeAPIKey for
-// every other code path (static API key from secret://).
+// bearer is invoked on every Stream call to fetch the current API key,
+// letting refresh-aware credential sources (e.g. AnthropicWIFSource)
+// rotate the token without rebuilding the adapter.
 func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *AnthropicAdapter {
 	return &AnthropicAdapter{
 		bearer:   bearer,
@@ -108,38 +78,22 @@ func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *
 	}
 }
 
-// AuthMode returns the configured authentication header mode. Exported
-// for tests in adjacent packages (e.g. core/factory_test.go) that need
-// to assert the factory wires the correct mode for WIF vs static credentials.
+// AuthMode returns the configured authentication header mode.
 func (a *AnthropicAdapter) AuthMode() AuthMode {
 	return a.authMode
 }
 
 // anthropicRequest is the JSON body sent to the Anthropic Messages API.
 //
-// Temperature is *float64 with omitempty: a nil pointer omits the key
-// entirely (Anthropic treats an explicit "temperature":0 as a request for
-// greedy decoding rather than "use the service default", so a caller who
-// never set a temperature must not be pinned to greedy decoding via the
-// wire shape). A non-nil pointer transmits the dereferenced value
-// verbatim, including an explicit 0.0 for greedy decoding. This mirrors
-// the upstream StreamParams.Temperature pointer type so the
-// unset-vs-explicit-zero distinction survives marshalling. buildAnthropicRequest
-// forces this field back to nil when the resolved quirks set
-// BehaviourFlags.Anthropic.OmitSamplingParams, so the plain omitempty tag
-// is sufficient to suppress the wire key — no custom MarshalJSON needed
-// (contrast openaiRequest, which needs one for other reasons).
+// Temperature is *float64 with omitempty: nil omits the key entirely
+// (Anthropic treats an explicit "temperature":0 as greedy decoding, not
+// "use the service default"), while a non-nil pointer transmits the value
+// verbatim including 0.0. buildAnthropicRequest forces it back to nil when
+// BehaviourFlags.Anthropic.OmitSamplingParams is set.
 //
-// Messages is typed as []anthropicMessage, not []types.Message, to
-// enforce a cross-provider confidentiality invariant: each adapter owns
-// its egress wire type, so no field that another provider populates on
-// types.ContentBlock can be transmitted to Anthropic by accident.
-// types.ContentBlock is a shared carrier — fields accumulate on it as
-// providers need round-trip state — which means the egress shape must
-// be enforced at the adapter, not the carrier. #194 (Vertex's
-// thought_signature leaking via the model router) was the motivating
-// incident; the pattern generalises to any provider-private state added
-// later, and matches what every other adapter already does.
+// Messages is typed as []anthropicMessage, not []types.Message, to enforce
+// a cross-provider confidentiality invariant — see docs/architecture.md
+// (Provider adapters).
 type anthropicRequest struct {
 	Model       string                 `json:"model"`
 	System      string                 `json:"system,omitempty"`
@@ -148,10 +102,8 @@ type anthropicRequest struct {
 	MaxTokens   int                    `json:"max_tokens"`
 	Temperature *float64               `json:"temperature,omitempty"`
 	// ToolChoice is the Anthropic tool_choice object. A nil pointer omits
-	// the field entirely so a request that does not pin tool choice is
-	// byte-identical to the pre-#230 shape; this is the zero-value
-	// ToolChoiceAuto path. Populated only when the resolved quirks
-	// advertise native support for the requested mode.
+	// the field (the zero-value ToolChoiceAuto path). Populated only when
+	// the resolved quirks advertise native support for the requested mode.
 	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
 	Stream     bool                 `json:"stream"`
 }
@@ -162,26 +114,20 @@ type anthropicRequest struct {
 // omitting the tools array — so ToolChoiceNone never produces this
 // struct.
 //
-// DisableParallelToolUse carries the #222 parallel-tool-call control.
-// Anthropic has no top-level parallel field: forbidding parallel tool calls
-// is expressed only as this flag on the tool_choice object. A nil pointer
-// omits the key (parallel is Anthropic's default); applyAnthropicParallel sets
-// it true when the caller requested no-parallel, synthesising an auto
-// tool_choice when none was otherwise produced.
+// DisableParallelToolUse forbids parallel tool calls; Anthropic has no
+// top-level parallel field, so this rides on tool_choice instead. A nil
+// pointer omits the key (parallel is Anthropic's default).
 type anthropicToolChoice struct {
 	Type                   string `json:"type"`
 	Name                   string `json:"name,omitempty"`
 	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
 }
 
-// applyAnthropicParallel folds a requested parallel-disable (#222) onto the
+// applyAnthropicParallel folds a requested parallel-disable onto the
 // tool_choice object. Only the disable direction is expressible — Anthropic's
 // default is parallel-enabled — so a nil or =true StreamParams.ParallelToolCalls
-// is a no-op. When disable is requested and the capability supports it, the
-// flag rides on the tool_choice object, synthesising an auto object if the
-// tool-choice projection produced none. The structural "none" mode is left
-// untouched: there are no tool calls to parallelise and synthesising auto
-// would contradict the caller.
+// is a no-op. The structural "none" mode is left untouched: there are no tool
+// calls to parallelise and synthesising auto would contradict the caller.
 func applyAnthropicParallel(tc *anthropicToolChoice, params types.StreamParams, capability quirks.ParallelToolCallsCapability) *anthropicToolChoice {
 	if params.ParallelToolCalls == nil || *params.ParallelToolCalls {
 		return tc
@@ -201,15 +147,10 @@ func applyAnthropicParallel(tc *anthropicToolChoice, params types.StreamParams, 
 }
 
 // translateToolsAnthropic returns a fresh copy of the tool definitions with
-// each tool's worked examples (#222) folded into its input_schema when the
-// resolved capability supports it. It replaces a bare slices.Clone: the
-// Anthropic adapter serialises types.ToolDefinition onto the wire (Presentation
-// carries json:"-"), so examples must be merged into the schema explicitly.
-// The fresh slice preserves the no-aliasing guarantee buildAnthropicRequest
-// relies on. Anthropic has no strict-mode subset restriction, so examples fold
-// whenever the capability is on. Examples are advisory: a merge that cannot
-// marshal (not reachable for a map just unmarshalled) leaves the schema as-is
-// rather than failing the request — the description still carries the example.
+// each tool's worked examples folded into its input_schema when the resolved
+// capability supports it. The fresh slice preserves the no-aliasing guarantee
+// buildAnthropicRequest relies on. Examples are advisory: a merge that cannot
+// marshal leaves the schema as-is rather than failing the request.
 func translateToolsAnthropic(tools []types.ToolDefinition, examples bool) []types.ToolDefinition {
 	if len(tools) == 0 {
 		return nil
@@ -248,26 +189,21 @@ func anthropicToolChoiceFromParams(params types.StreamParams, cap quirks.ToolCho
 		if !cap.NamedTool || params.ToolChoiceName == "" {
 			return nil
 		}
-		// Defense-in-depth at the wire boundary (#230 B3): A2 will feed
-		// model-influenced names through ToolChoiceName, so reject any
-		// name outside the providers' shared grammar and degrade to auto.
+		// Defense-in-depth: ToolChoiceName may carry a model-influenced
+		// value, so reject any name outside the shared grammar and degrade
+		// to auto rather than forward it.
 		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
 			warnInvalidToolChoiceName("anthropic", params.Model, len(params.ToolChoiceName))
 			return nil
 		}
 		return &anthropicToolChoice{Type: "tool", Name: params.ToolChoiceName}
 	default:
-		// ToolChoiceAuto (zero value) and ToolChoiceNone both emit no
-		// tool_choice field: auto is the wire default, and Anthropic has
-		// no native none.
-		//
-		// Degradation of ToolChoiceNone: this adapter does not also strip
-		// the tools array, so a "none" turn still ships the tool
-		// definitions with no tool_choice field. Anthropic therefore
-		// treats it as auto and the model may emit a tool_use block the
-		// caller asked to suppress. Honouring none strictly would require
-		// dropping tools from the request body (a larger change in
-		// buildAnthropicRequest); until then "none" is best-effort.
+		// ToolChoiceAuto and ToolChoiceNone both emit no tool_choice field:
+		// auto is the wire default, and Anthropic has no native none. Since
+		// this adapter does not also strip the tools array for "none", the
+		// model may still emit a tool_use block; honouring none strictly
+		// would require dropping tools from the request body, so "none" is
+		// best-effort.
 		return nil
 	}
 }
@@ -283,22 +219,16 @@ type anthropicMessage struct {
 }
 
 // anthropicContentBlock is the allowlist of content-block fields the
-// Anthropic Messages API accepts. types.ContentBlock is the shared carrier
-// across providers and may grow new fields over time to hold opaque
-// per-provider state (e.g. ThoughtSignature, added for Vertex in #194);
-// any such field stays absent here by construction. The rule for
-// extending this struct is: add a field only if Anthropic's API
-// documents support for it. Provider-private state added to
-// types.ContentBlock by some other adapter is, by default, dropped on
-// egress to Anthropic.
+// Anthropic Messages API accepts. Add a field only if Anthropic's API
+// documents support for it; provider-private state on types.ContentBlock
+// (added by other adapters) is dropped on egress to Anthropic by
+// construction. See docs/architecture.md (Provider adapters).
+//
 // Content is a json.RawMessage rather than a string because the Messages
 // API accepts a tool_result block's `content` as either a JSON string or an
-// array of content blocks. The string form is the default (a JSON-encoded
-// string literal); the array form is emitted only when the resolved
+// array of content blocks; the array form is emitted only when the resolved
 // StructuredToolResults capability is on and the result carries a structured
-// envelope (issue #231 B2). A nil Content omits the key (omitempty), so a
-// text block or tool_use block — which never set Content — serialises
-// byte-identically to the pre-#231 shape.
+// envelope. A nil Content omits the key.
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -314,8 +244,7 @@ type anthropicContentBlock struct {
 // block's content. The Messages API's tool_result content array accepts
 // "text" (and "image") parts; the harness uses only "text", carrying the
 // structured envelope as a JSON-serialised text part alongside the canonical
-// text part. There is no native JSON content type for tool_result, so this
-// is the faithful representation of "structured data the model can read".
+// text part — there is no native JSON content type for tool_result.
 type anthropicToolResultPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -324,12 +253,8 @@ type anthropicToolResultPart struct {
 // translateMessagesAnthropic copies a slice of types.Message into the
 // adapter-local anthropicMessage shape. It is the structural guard that
 // enforces the cross-provider confidentiality invariant: any field on
-// types.ContentBlock that is not mirrored onto anthropicContentBlock is
-// dropped here, rather than relying on call sites to scrub egress.
-// #194 was the motivating incident (Vertex's thought_signature would
-// otherwise have been forwarded to api.anthropic.com via the model
-// router); the same mechanism covers any provider-private field added
-// to the shared carrier in the future.
+// types.ContentBlock not mirrored onto anthropicContentBlock is dropped
+// here, rather than relying on call sites to scrub egress.
 func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability) []anthropicMessage {
 	out := make([]anthropicMessage, len(messages))
 	for i, msg := range messages {
@@ -371,10 +296,8 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 		return nil
 	}
 	// The array form requires a non-empty canonical text: an empty first part
-	// ({"type":"text","text":""}) is meaningless and diverges from the
-	// pre-#231 shape for empty-content results (which omitted the content key
-	// entirely). When Content is empty, fall through to the nil-return below
-	// regardless of the structured payload.
+	// ({"type":"text","text":""}) is meaningless, so an empty Content falls
+	// through to the nil-return below regardless of the structured payload.
 	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" {
 		parts := []anthropicToolResultPart{
 			{Type: "text", Text: b.Content},
@@ -384,10 +307,7 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 			return raw
 		}
 	}
-	// Preserve the pre-#231 omitempty behaviour: an empty tool-result
-	// content omitted the `content` key entirely. Returning nil keeps that
-	// byte-for-byte. A non-empty string is emitted as a JSON string literal,
-	// identical to what the old `Content string` field produced.
+
 	if b.Content == "" {
 		return nil
 	}
@@ -436,17 +356,11 @@ type sseMessageDelta struct {
 
 // buildAnthropicRequest projects a StreamParams into the Anthropic Messages
 // wire body. The stream argument toggles the "stream" field so a future
-// non-streaming caller (batch submission, phase 2 of issue #133) can reuse
-// the same projection without duplicating field-by-field copying.
+// non-streaming (batch) caller can reuse the same projection.
 //
-// q carries the resolved per-(provider, model) quirks. Two cross-provider
-// capabilities are load-bearing on the Anthropic build path: ToolChoice gates
-// whether StreamParams.ToolChoice is projected onto the tool_choice object,
-// and StructuredToolResults gates whether a tool_result block carrying a
-// structured envelope is serialised as the content-block array form rather
-// than the plain string. A zero-value q (both Supported=false) emits no
-// tool_choice field and string-only tool results, so callers that do not
-// route through the registry produce the pre-#230/#231 wire shape.
+// q carries the resolved per-(provider, model) quirks. A zero-value q (both
+// Supported=false) emits no tool_choice field and string-only tool results,
+// so callers that do not route through the registry get the baseline shape.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
@@ -454,21 +368,14 @@ type sseMessageDelta struct {
 func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) anthropicRequest {
 	temperature := params.Temperature
 	if q.BehaviourFlags.Anthropic.OmitSamplingParams {
-		// Model families that reject a non-default temperature (Claude
-		// Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5) 400 on the field even
-		// when the loop's default-temperature resolution supplied it.
-		// Forcing the pointer to nil relies on the struct's existing
-		// omitempty tag to drop the wire key.
+
 		temperature = nil
 	}
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   params.System,
 		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
-		// translateToolsAnthropic allocates a fresh slice (so a caller mutating
-		// params.Tools cannot race the returned struct, as the phase-2 batch
-		// caller requires) and folds #222 worked examples into each tool's
-		// input_schema when the resolved capability supports it.
+
 		Tools:       translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
 		MaxTokens:   params.MaxTokens,
 		Temperature: temperature,
@@ -502,10 +409,8 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		logger = slog.Default()
 	}
 
-	// Debug-level log lists the descriptions of every rule that
-	// contributed to this resolution, mirroring the OpenAI adapter's
-	// equivalent line. Emitted even when the list is empty so an
-	// operator grepping for the line knows the resolution ran.
+	// Emitted even when the rules list is empty so an operator grepping
+	// for the line knows the resolution ran.
 	logger.DebugContext(ctx, "anthropic quirks resolved",
 		slog.String("provider.type", "anthropic"),
 		slog.String("provider.model", params.Model),
@@ -516,11 +421,8 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
 	}
 
-	// Warn-level log when a caller-supplied non-nil Temperature is
-	// suppressed by the OmitSamplingParams quirk (mirrors the OpenAI
-	// adapter's design-risk-2 signal). Without this, an operator who set
-	// RunConfig.Temperature explicitly would silently observe it dropped
-	// on Claude Opus 4.7+/Sonnet 5/Fable 5/Mythos 5. The suppressed value
+	// Without this warning, an operator who set RunConfig.Temperature
+	// explicitly would silently observe it dropped. The suppressed value
 	// itself is intentionally NOT logged.
 	if q.BehaviourFlags.Anthropic.OmitSamplingParams && params.Temperature != nil {
 		logger.WarnContext(ctx, "anthropic quirks suppressed caller temperature",
@@ -554,11 +456,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	// Header selection per AuthMode (issue #117 BLOCKING B2). Anthropic's
-	// /v1/messages accepts x-api-key for static API keys but requires
-	// Authorization: Bearer for WIF OAuth access tokens; sending a WIF
-	// token via x-api-key returns 401. Both modes pin the same
-	// anthropic-version header.
+
 	switch a.authMode {
 	case AuthModeBearer:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -587,8 +485,6 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 
-	// Record HTTP-level metadata on the span from context (the provider.stream
-	// span created by the loop), when OTel instrumentation is enabled.
 	if a.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
@@ -721,7 +617,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 
 		case "content_block_stop":
-			// Parse the index from the data to find which block stopped.
+
 			var stopData struct {
 				Index int `json:"index"`
 			}

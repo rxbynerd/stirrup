@@ -189,11 +189,11 @@ func TestDetectSensitive_ExampleKeyAllowlist(t *testing.T) {
 	}
 }
 
-// Wave-2 review bypass: greedy variable-length patterns absorb an
-// appended EXAMPLE into the match, so a within-match tail check let an
-// attacker suppress detection of a real key by suffixing it. The
-// exclusion is now exact-literal (plus the fixed-length AKIA tail
-// convention), so these must keep latching.
+// Greedy variable-length patterns absorb an appended EXAMPLE into the
+// match, so a within-match tail check let an attacker suppress
+// detection of a real key by suffixing it. The exclusion is now
+// exact-literal (plus the fixed-length AKIA tail convention), so
+// these must keep latching.
 func TestDetectSensitive_ExampleSuffixBypassPrevented(t *testing.T) {
 	realGHP := "ghp_" + "myrealtoken1234"
 	if fs := DetectSensitive("key: " + realGHP + "EXAMPLE"); !hasFinding(fs, "secret/github_pat") {
@@ -307,9 +307,9 @@ func TestDetectSensitive_APIKeyHeaderSecretRef(t *testing.T) {
 	}
 }
 
-// Wave-2 review bypass: suppressing any match followed by "://" let an
-// attacker drop api_key_header detection by appending "://anything" to
-// a real value. Only the bare secret://-reference shape may suppress.
+// Suppressing any match followed by "://" let an attacker drop
+// api_key_header detection by appending "://anything" to a real
+// value. Only the bare secret://-reference shape may suppress.
 func TestDetectSensitive_APIKeyHeaderURLSuffixBypassPrevented(t *testing.T) {
 	realKey := strings.Repeat("0123456789abcdef", 2)
 	fs := DetectSensitive("api-key: " + realKey + "://api.attacker.example/steal")

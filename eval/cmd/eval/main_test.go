@@ -417,12 +417,11 @@ func TestParseDuration_BadDays(t *testing.T) {
 
 // --- mineFailureTasks tests ---
 
-// TestMineFailureTasks_FiltersByEvalOutcome pins #273's mining filter:
-// by default only EvalOutcome==failed traces are mined; success traces
-// are excluded as before, and inconclusive traces (max_turns,
-// budget_exceeded, timeout, max_tokens, stalled, cancelled,
-// verification_error) are excluded too unless includeInconclusive is
-// set. The old "anything not success" semantics is gone.
+// TestMineFailureTasks_FiltersByEvalOutcome pins the mining filter:
+// by default only EvalOutcome==failed traces are mined; inconclusive
+// traces (max_turns, budget_exceeded, timeout, max_tokens, stalled,
+// cancelled, verification_error) are excluded too unless
+// includeInconclusive is set.
 func TestMineFailureTasks_FiltersByEvalOutcome(t *testing.T) {
 	recordings := []types.RunRecording{
 		{
@@ -536,10 +535,9 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 	}
 }
 
-// makeBatchRecording is the test helper for #138's --include-batch
-// branch: a recording whose RunConfig.Provider has Batch.Enabled=true.
-// Centralised so the BatchProviderConfig construction is not
-// scattered across multiple test cases.
+// makeBatchRecording builds a recording whose RunConfig.Provider has
+// Batch.Enabled=true, centralised so the construction is not
+// scattered across test cases.
 func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
 	cfg := types.RunConfig{
 		Prompt: prompt,
@@ -561,10 +559,8 @@ func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
 }
 
 // TestMineFailureTasksFiltered_ExcludesBatchByDefault pins the
-// default behaviour of --include-batch=false (the spec'd default):
-// batch failures stay out of the mined suite because their failure
-// modes are dominated by provider-side queue dynamics, not the
-// agent prompts mine-failures exists to surface (#138).
+// default behaviour of --include-batch=false: batch failures stay
+// out of the mined suite.
 func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 	recordings := []types.RunRecording{
 		{
@@ -639,10 +635,8 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 		if err := store.StoreRecording(context.Background(), rec); err != nil {
 			t.Fatalf("StoreRecording %s: %v", rec.RunID, err)
 		}
-		// As of #274 mine-failures reads QueryTraces first and
-		// hydrates recordings opportunistically — the fixture has
-		// to seed both stores so the new code path sees the
-		// candidates the old recording-only path saw.
+		// mine-failures reads QueryTraces first and hydrates
+		// recordings opportunistically, so the fixture seeds both.
 		if err := store.StoreTrace(context.Background(), rec.FinalOutcome); err != nil {
 			t.Fatalf("StoreTrace %s: %v", rec.RunID, err)
 		}
@@ -652,11 +646,6 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 // TestRun_MineFailures_DefaultExcludesBatch pins the CLI default at
 // the dispatch layer: invoking `eval mine-failures` without
 // --include-batch must drop batch failures from the emitted suite.
-// The unit tests on mineFailureTasksFiltered cover the helper, but
-// only this test exercises the FlagSet registration, the default
-// value, and the *includeBatch dereference into the helper — a
-// regression that inverted the flag default or wired !*includeBatch
-// would slip past every helper-level test (#138 spec B3).
 func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
@@ -686,10 +675,6 @@ func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
 // TestRun_MineFailures_IncludeBatchFlag pins the --include-batch
 // escape hatch at the dispatch layer: the flag must opt batch
 // failures back into the emitted suite alongside streaming ones.
-// Operators investigating batch-specific failure modes rely on this
-// flag, so a regression that ignored it or hardcoded the helper's
-// includeBatch argument to false would silently break the
-// documented opt-in (#138 spec B3).
 func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
@@ -842,11 +827,9 @@ func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestWriteSuiteHCL_QuarantineFlagsRoundTrip pins #115's wire-format
-// contract: a suite with QuarantineFlags survives HCL serialise +
-// parse with the same flags in the same order. The runner refuses
-// to execute a quarantined suite without --accept-quarantine, so
-// the load path must surface the flags verbatim.
+// TestWriteSuiteHCL_QuarantineFlagsRoundTrip pins that a suite with
+// QuarantineFlags survives HCL serialise + parse with the same flags
+// in the same order.
 func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "quarantined.hcl")
@@ -1092,9 +1075,7 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	}
 	// Pin the full delta surface: a sign-flip bug (baseline - current
 	// rather than current - baseline) would not be caught by the
-	// pass-rate or mean-turns assertions alone, since the streaming
-	// and batch percentile deltas were entirely unasserted prior to
-	// #138 review B4.
+	// pass-rate or mean-turns assertions alone.
 	if math.Abs(report.Deltas.MeanTokensDelta-100) > 0.001 {
 		t.Errorf("MeanTokensDelta = %f, want 100", report.Deltas.MeanTokensDelta)
 	}

@@ -22,14 +22,8 @@ import (
 	"github.com/rxbynerd/stirrup/types/version"
 )
 
-// OpenTelemetry GenAI semantic-convention attribute keys.
-//
-// These are the sole names emitted by the OTel trace emitter for any
-// concept that has a GenAI semconv counterpart.
-// Stirrup-specific attributes with no GenAI counterpart
-// (run.id, run.mode, run.outcome, run.turns, harness.version,
-// turn.number, turn.tool_calls, turn.duration_ms, tool.success,
-// tool.duration_ms) keep their stirrup-prefixed names alongside.
+// OpenTelemetry GenAI semantic-convention attribute keys. Stirrup-specific
+// attributes with no GenAI counterpart keep stirrup-prefixed names.
 //
 // Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 const (
@@ -47,51 +41,29 @@ const (
 	// observability.ToolFailureCategory vocabulary as its value.
 	errorTypeKey = "error.type"
 
-	// Message-content attributes, emitted only when CaptureContent is
-	// opted into. As of the pinned semconv (v1.40.0, matching
-	// observability/resource.go) these span attributes are the current
-	// form for recording content — the older gen_ai.{role}.message span
-	// events and gen_ai.prompt/gen_ai.completion attributes are
-	// deprecated in their favour. The Go attribute API has no structured
-	// "any" value, so the spec's "MAY be recorded as a JSON string if
-	// structured format is not supported" branch applies: each value is
-	// the JSON-serialised form of the schema in
-	// gen-ai-{input,output}-messages.json / gen-ai-system-instructions.json.
+	// Message-content attributes, emitted only when captureContent is on;
+	// values are JSON-serialised per the GenAI semconv message schemas
+	// (the Go attribute API has no structured "any" type).
 	genAIInputMessagesKey      = "gen_ai.input.messages"
 	genAIOutputMessagesKey     = "gen_ai.output.messages"
 	genAISystemInstructionsKey = "gen_ai.system_instructions"
 
-	// Tool-call content attributes, likewise capture-gated: the spec
-	// marks gen_ai.tool.call.arguments / .result Opt-In for the same
-	// PII reasons as message content. The call ID rides along so a tool
-	// span correlates with the tool_call / tool_call_response parts
-	// inside the surrounding turn's message attributes.
+	// Tool-call content attributes, capture-gated like message content.
+	// The call ID correlates the span with the turn's message attributes.
 	genAIToolCallIDKey        = "gen_ai.tool.call.id"
 	genAIToolCallArgumentsKey = "gen_ai.tool.call.arguments"
 	genAIToolCallResultKey    = "gen_ai.tool.call.result"
 
-	// Prompt-resolution attributes (#492), stirrup-specific (no GenAI
-	// counterpart). prompt.model is the model identity the system prompt
-	// templates rendered against — it differs from gen_ai.request.model
-	// when promptBuilder.promptModel pins a different prompt for a
-	// comparison run. prompt.tier is the guidance tier that identity
-	// selected ("frontier", "open-weight", or "default").
+	// Prompt-resolution attributes, stirrup-specific (no GenAI counterpart).
 	promptModelKey = "prompt.model"
 	promptTierKey  = "prompt.tier"
 )
 
 // genAIProviderName maps stirrup provider type strings to the OTel GenAI
-// `gen_ai.provider.name` enum values defined at
-// https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/.
-// Unknown stirrup types fall through to the raw value so future provider
-// types are still observable, even if dashboards don't recognise them.
-//
-// `openai-compatible` is intentionally NOT mapped to `openai`: it is the
-// generic Chat Completions adapter used by vLLM, Granite Guardian, Ollama,
-// Azure OpenAI, LiteLLM, and other vendors. Tagging those runs as
-// `gen_ai.provider.name = "openai"` would mislabel telemetry. It falls
-// through to the default branch and surfaces as the raw string until/unless
-// a more specific provider type is configured.
+// `gen_ai.provider.name` enum values. Unknown types (including
+// `openai-compatible`, the generic adapter for vLLM/Ollama/Azure
+// OpenAI/etc.) fall through to the raw value rather than mislabelling
+// telemetry as a specific vendor.
 func genAIProviderName(stirrupType string) string {
 	switch stirrupType {
 	case "anthropic":
@@ -114,12 +86,9 @@ type OTelTraceEmitter struct {
 	tracer   oteltrace.Tracer
 
 	// captureContent opts the emitter into recording prompt/completion
-	// content on turn spans via the GenAI semconv attributes
-	// (traceEmitter.captureContent, issue #413). Immutable after
-	// construction, so the off-path methods can read it without the
-	// mutex; when false every content path below is unreachable and the
-	// emitter's span output is byte-identical to the pre-capture
-	// behaviour.
+	// content on turn spans via the GenAI semconv attributes. Immutable
+	// after construction, so the off-path methods can read it without
+	// the mutex.
 	captureContent bool
 
 	mu                 sync.Mutex
@@ -134,45 +103,29 @@ type OTelTraceEmitter struct {
 	finalAssistantText string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
-	// pre-serialised to the gen_ai.system_instructions attribute encoding
-	// by RecordSystemInstructions. Serialising once at record time
-	// (rather than per turn span) keeps the per-turn cost to a string
-	// copy. Empty when capture is off or the loop has not (yet)
-	// forwarded a prompt.
+	// pre-serialised once by RecordSystemInstructions rather than per
+	// turn span. Empty when capture is off or no prompt was forwarded.
 	systemInstructionsJSON string
 
-	// rootInputMessagesJSON / rootOutputMessagesJSON are the run-level
-	// content stamped on the root span at Finish, making the root span a
-	// complete invoke_agent observation (the agent's input and final
-	// output) for backends that derive trace-level views from it. Both
-	// are retained from the parent run's own turn records (RunID == "");
-	// forwarded sub-agent records never contribute. Input is set-once —
-	// turn 0's input messages are exactly the seed prompt — and output
-	// is overwrite-always so the final assistant message wins. Empty
-	// when capture is off.
+	// rootInputMessagesJSON / rootOutputMessagesJSON are the parent run's
+	// own turn content (forwarded sub-agent records never contribute),
+	// stamped on the root span at Finish. Input is set-once (turn 0's
+	// seed prompt); output is overwrite-always so the final assistant
+	// message wins. Empty when capture is off.
 	rootInputMessagesJSON  string
 	rootOutputMessagesJSON string
 
-	// pendingTurns buffers turn summaries (and the span timestamps
-	// derived at RecordTurn time) between RecordTurn and the matching
-	// RecordTurnRecord while capture is on, so a single turn[N] span
-	// carries both the counter attributes and the content attributes.
-	// Keyed by (RunID, Turn): RunID is empty for the parent run's own
-	// turns and set on events forwarded from sub-agent loops, so a
-	// child's turn N never merges onto the parent's turn N. Entries
-	// whose record never arrives (e.g. the empty-stop-reason error
-	// return) are flushed as plain counter spans at Finish. Nil when
-	// capture is off.
+	// pendingTurns buffers turn summaries between RecordTurn and the
+	// matching RecordTurnRecord while capture is on, so one turn[N] span
+	// carries counters and content together. Keyed by (RunID, Turn) so a
+	// sub-agent's turn N never merges onto the parent's. Unmatched
+	// entries are flushed as plain spans at Finish. Nil when capture is
+	// off.
 	pendingTurns map[pendingTurnKey]pendingTurn
 
-	// pendingToolCalls is the tool-call analogue of pendingTurns: while
-	// capture is on, RecordToolCall buffers the summary (timestamps
-	// frozen) until the enclosing turn's RecordTurnRecord delivers the
-	// call's arguments and result, so one execute_tool span carries the
-	// counters and the content together. Keyed by (RunID, tool_use ID);
-	// calls without an ID are un-keyable and emit immediately as plain
-	// spans instead of buffering. Entries whose record never arrives are
-	// flushed as plain spans at Finish. Nil when capture is off.
+	// pendingToolCalls is the tool-call analogue of pendingTurns, keyed
+	// by (RunID, tool_use ID). Calls without an ID are un-keyable and
+	// emit immediately instead of buffering.
 	pendingToolCalls map[pendingToolKey]pendingToolCall
 }
 
@@ -219,35 +172,11 @@ type pendingToolCall struct {
 }
 
 // NewOTelTraceEmitter creates an OTel trace emitter that exports spans to
-// the given OTLP endpoint over the chosen wire protocol. The caller must
-// eventually call Finish to flush and shut down the exporter.
-//
-// protocol selects the OTLP wire protocol:
-//   - "" or "grpc": OTLP/gRPC. endpoint is host:port (default
-//     "localhost:4317" upstream of this constructor); on-the-wire frames
-//     are protobuf with gRPC framing.
-//   - "http/protobuf": OTLP/HTTP with binary protobuf bodies. endpoint
-//     is a full URL ending in the gateway base path
-//     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"); the
-//     SDK appends "/v1/traces". TLS is on by default; the constructor
-//     opts into WithInsecure() only when the endpoint scheme is plain
-//     "http://" or omitted entirely so a Grafana Cloud URL never falls
-//     back to an unencrypted POST.
-//
-// headers is forwarded to both transports unchanged. Resolve "secret://"
-// references upstream via observability.ResolveHeaders so the OTel SDK
-// only ever sees plaintext bearer tokens.
-//
-// resourceOpts threads the run-scoped resource attributes
-// (deployment.environment, service.namespace, harness.run.mode) so traces
-// emitted here share a consistent resource identity with metrics emitted
-// from the same run. Callers that don't have a config in hand can pass a
-// zero ResourceOptions and the resource builder will fall through to
-// env-var fallbacks and the documented defaults.
-//
-// captureContent opts the emitter into recording prompt/completion
-// content on turn spans (traceEmitter.captureContent). Default-off
-// upstream; see RecordTurnRecord for the scrubbing contract.
+// the given OTLP endpoint over the chosen wire protocol ("" or "grpc" for
+// OTLP/gRPC, "http/protobuf" for OTLP/HTTP; see docs/observability-cloud.md
+// for endpoint/TLS/header resolution). The caller must eventually call
+// Finish to flush and shut down the exporter. headers must already have
+// "secret://" references resolved to plaintext.
 func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent bool) (*OTelTraceEmitter, error) {
 	exporter, err := buildOTLPTraceExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
@@ -268,9 +197,7 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers
 }
 
 // buildOTLPTraceExporter dispatches on the configured wire protocol and
-// returns the matching OTel SDK trace exporter. Kept private so the
-// public NewOTelTraceEmitter signature stays stable while the dispatch
-// logic evolves (e.g. when otlploghttp lands per #96).
+// returns the matching OTel SDK trace exporter.
 func buildOTLPTraceExporter(ctx context.Context, endpoint, protocol string, headers map[string]string) (*otlptrace.Exporter, error) {
 	switch protocol {
 	case "", "grpc":
@@ -286,12 +213,9 @@ func buildOTLPTraceExporter(ctx context.Context, endpoint, protocol string, head
 		opts := []otlptracehttp.Option{
 			otlptracehttp.WithEndpoint(stripURLScheme(endpoint)),
 		}
-		// The SDK's WithEndpointURL would parse the full URL and pick
-		// up scheme+path in one call, but it is not available in
-		// v1.43.0; emulate by stripping the scheme for the host
-		// component and toggling WithInsecure based on the original
-		// scheme. Path is propagated below via WithURLPath when the
-		// endpoint carries one.
+		// WithEndpointURL would parse the full URL in one call but isn't
+		// available in v1.43.0; emulate by stripping the scheme for the
+		// host component and re-applying the path below.
 		if path := urlPath(endpoint); path != "" {
 			opts = append(opts, otlptracehttp.WithURLPath(joinTracesPath(path)))
 		}
@@ -355,11 +279,9 @@ func joinTracesPath(basePath string) string {
 	return strings.TrimRight(basePath, "/") + "/v1/traces"
 }
 
-// isInsecureEndpoint returns true when the endpoint URL uses plain
-// HTTP — the only case in which the constructor opts into
-// WithInsecure(). A bare "localhost:4318" or any other scheme-less
-// endpoint also gets WithInsecure() (the typical local-collector
-// case); a "https://" scheme always means TLS.
+// isInsecureEndpoint returns true when the endpoint should use plain
+// HTTP: an "http://" scheme or no scheme at all (the local-collector
+// case). "https://" always means TLS.
 func isInsecureEndpoint(endpoint string) bool {
 	if strings.HasPrefix(endpoint, "https://") {
 		return false
@@ -373,10 +295,7 @@ func isInsecureEndpoint(endpoint string) bool {
 
 // newOTelTraceEmitterForTest creates an OTel trace emitter backed by the
 // given TracerProvider, used in tests to capture spans in-memory.
-// captureContent is taken at construction time, like the production
-// constructor — it is documented as immutable afterwards (the off-path
-// methods read it without the mutex), so tests must not set the field
-// post-construction either.
+// captureContent must not be mutated post-construction, as in production.
 func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool) *OTelTraceEmitter {
 	return &OTelTraceEmitter{
 		provider:       tp,
@@ -385,12 +304,9 @@ func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool
 	}
 }
 
-// NewOTelTraceEmitterForTest is the exported wrapper of the test-only
-// constructor. It lets tests in other packages (notably core) build an
-// OTelTraceEmitter around an in-memory TracerProvider so they can assert
-// on emitted spans without spinning up an OTLP collector. Content
-// capture stays off, matching the default emitter shape those tests
-// exercise. Not intended for production use.
+// NewOTelTraceEmitterForTest lets tests in other packages build an
+// OTelTraceEmitter around an in-memory TracerProvider without an OTLP
+// collector. Content capture stays off. Not intended for production use.
 func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 	return newOTelTraceEmitterForTest(tp, false)
 }
@@ -415,14 +331,10 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.pendingToolCalls = nil
 
 	ctx := context.Background()
-	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
-	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
-	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
-	// emit when one exists. See follow-up issue (#127).
-	// The root span is the run-level agent invocation; the semconv
-	// "invoke_agent {gen_ai.agent.name}" span name is not adopted because
-	// stirrup has no named-agent concept (#127) and backends type
-	// observations from the operation-name attribute, not the span name.
+	// gen_ai.agent.id and the semconv "invoke_agent {gen_ai.agent.name}"
+	// span name are not emitted: stirrup has no first-class named-agent
+	// identity, and backends type observations from the operation-name
+	// attribute rather than the span name.
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
@@ -434,10 +346,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	if config != nil {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
-			// gen_ai.provider.name surfaces the spec enum value
-			// ("openai", "aws.bedrock", ...) translated from stirrup's
-			// internal Provider.Type vocabulary so vendor APM
-			// dashboards filter correctly.
+			// gen_ai.provider.name is the semconv enum value.
 			attribute.String(genAIProviderNameKey, genAIProviderName(config.Provider.Type)),
 		)
 		if config.ModelRouter.Model != "" {
@@ -446,9 +355,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 			)
 		}
 		if config.SessionName != "" {
-			// Set on the root span so child spans inherit access via context.
-			// Skipped when empty so we don't pollute traces with empty
-			// attributes for runs that did not specify a label.
+			// Skipped when empty so we don't stamp an empty attribute.
 			span.SetAttributes(
 				attribute.String(genAIConversationIDKey, config.SessionName),
 			)
@@ -477,7 +384,6 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 		return
 	}
 
-	// Derive explicit span timing from the turn duration.
 	spanEnd := time.Now()
 	spanStart := spanEnd.Add(-time.Duration(turn.DurationMs) * time.Millisecond)
 
@@ -506,13 +412,9 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 // non-nil content appends the GenAI message attributes after the
 // counter attributes. Must be called with e.mu held.
 //
-// TODO(#89): turn[N] is parented off e.rootCtx, which Start()
-// derives from context.Background(). For child sub-agent loops
-// (#55) this prevents turn[N] spans from nesting under the
-// parent's tool.spawn_agent span — the loop's TraceContext is not
-// visible to the emitter. The preferred fix is to add an
-// injected parentCtx for child emitter variants; tracked
-// separately in #89.
+// TODO(#89): turn[N] is parented off e.rootCtx (context.Background()),
+// so child sub-agent turn[N] spans don't nest under the parent's
+// tool.spawn_agent span. Fix: inject a parentCtx for child emitters.
 func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, spanEnd time.Time, content *turnContent) {
 	attrs := []attribute.KeyValue{
 		attribute.Int("turn.number", turn.Turn),
@@ -529,12 +431,8 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		// Per GenAI semconv, a turn is a chat completion.
 		attribute.String(genAIOperationNameKey, "chat"),
 	}
-	// gen_ai.request.model is Required on chat spans per semconv, and
-	// backends price generations from the span-level model — the
-	// root-span copy is not enough. Prefer the router's per-turn
-	// selection; fall back to the run-level configured model for legacy
-	// callers that predate TurnTrace.Model. Skipped when both are empty
-	// (matches the empty-attribute convention in Start).
+	// gen_ai.request.model is Required per semconv; prefer the per-turn
+	// selection, falling back to the run-level model for legacy callers.
 	model := turn.Model
 	if model == "" && e.config != nil {
 		model = e.config.ModelRouter.Model
@@ -564,23 +462,16 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 }
 
 // RecordTurnRecord attaches the turn's transcript to its span when
-// content capture is opted into, and is a no-op otherwise (the
-// pre-capture behaviour: the GenAI semconv marks message content
-// Opt-In, and transcript recording otherwise lives on the streamed
-// JSONLTraceEmitter).
+// content capture is opted into; a no-op otherwise, since the GenAI
+// semconv marks message content Opt-In.
 //
-// Scrubbing contract: the record passes through the same
-// scrubTurnRecord pass the JSONL emitter applies before its
-// turn_record lines, so a secret-shaped substring in message content,
-// model output, or tool I/O is replaced with [REDACTED] before any
-// span attribute is built. The serialised attributes follow the GenAI
-// semconv message schemas; see the genAI*MessagesJSON helpers.
+// The record passes through the same scrubTurnRecord pass the JSONL
+// emitter applies before any span attribute is built.
 //
-// The record is paired with the summary buffered by RecordTurn under
-// (RunID, Turn). A record with no pending summary (the loop always
-// summarises first; a forwarded sub-agent record could in principle
-// arrive unpaired) is emitted as a content-only turn[N] span rather
-// than silently dropped.
+// The record pairs with the summary buffered by RecordTurn under
+// (RunID, Turn); an unpaired record (a forwarded sub-agent record
+// arriving out of order) emits a content-only turn[N] span instead of
+// being dropped.
 func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 	// captureContent is immutable after construction: the off-path
 	// reads it without the mutex and preserves the historical no-op.
@@ -600,16 +491,11 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		inputMessages: genAIInputMessagesJSON(scrubbed.ModelInput.Messages),
 	}
 
-	// Key fields come from the scrubbed copy alongside the content so
-	// the pairing and the payload share one source — pairing must not
-	// silently depend on the scrubber never touching RunID/Turn.
 	key := pendingTurnKey{runID: scrubbed.RunID, turn: scrubbed.Turn}
 	if pending, ok := e.pendingTurns[key]; ok {
 		delete(e.pendingTurns, key)
-		// finish_reason comes from the paired summary so the in-message
-		// value matches the gen_ai.response.finish_reasons attribute on
-		// the same span (raw provider vocabulary, not the semconv enum,
-		// for consistency between the two surfaces).
+		// finish_reason comes from the paired summary so it matches the
+		// gen_ai.response.finish_reasons attribute on the same span.
 		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, pending.trace.StopReason)
 		e.retainRootContentLocked(scrubbed.RunID, content)
 		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, content)
@@ -620,11 +506,8 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 			attribute.Int("turn.number", scrubbed.Turn),
 			attribute.String(genAIOperationNameKey, "chat"),
 		}, content.attributes(e.systemInstructionsJSON)...)
-		// No summary means no duration to derive timing from: the span is
-		// pinned to the wall clock at delivery time (start == end). That is
-		// a deliberate degraded shape for a path the loop never takes — the
-		// content is preserved, the timing is honest about knowing only
-		// when the record arrived.
+		// No summary means no duration to derive timing from: pin the
+		// span to the wall clock at delivery time (start == end).
 		now := time.Now()
 		_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", scrubbed.Turn),
 			oteltrace.WithTimestamp(now),
@@ -635,23 +518,19 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 
 	// The record also carries the turn's tool transcript: pair each
 	// entry with its buffered summary and emit the execute_tool spans.
-	// Runs after the turn-span branch on both arms — a record that
-	// missed its turn summary can still complete its tool spans.
 	e.emitCapturedToolSpansLocked(scrubbed)
 }
 
 // emitCapturedToolSpansLocked emits execute_tool spans for a captured
-// turn record's tool calls, merging each with the summary RecordToolCall
-// buffered under (RunID, tool_use ID). The inputs are already scrubbed —
-// the caller passes the scrubTurnRecord output, which covers tool Input
-// and Output. Must be called with e.mu held.
+// turn record's tool calls, merging each with the summary buffered by
+// RecordToolCall under (RunID, tool_use ID). Must be called with e.mu
+// held.
 //
 // Entries without an ID are skipped: their plain span was already
 // emitted on RecordToolCall's immediate path, and a content span here
-// would double-count the call. Entries with no buffered summary (a
-// forwarded sub-agent record arriving unpaired) synthesise counters from
-// the record itself — unlike the unpaired-turn fallback, the record
-// carries a real duration, so span timing derives from it.
+// would double-count the call. Entries with no buffered summary
+// synthesise counters from the record itself, which carries a real
+// duration unlike the unpaired-turn fallback.
 func (e *OTelTraceEmitter) emitCapturedToolSpansLocked(scrubbed types.TurnRecord) {
 	for _, tc := range scrubbed.ToolCalls {
 		if tc.ID == "" {
@@ -684,14 +563,11 @@ func (e *OTelTraceEmitter) emitCapturedToolSpansLocked(scrubbed types.TurnRecord
 
 // retainRootContentLocked feeds a captured turn's content into the
 // run-level slots stamped on the root span at Finish. Only the parent
-// run's own records contribute (runID is empty exactly there; forwarded
-// sub-agent records carry the child's run ID) — a sub-agent's transcript
-// is its spawn_agent tool call's business, not the run's I/O. Input is
-// set-once: turn 0's input messages are the seed prompt verbatim, and if
-// that record never arrives, a later turn's history still embeds the
-// seed. Output overwrites so the final assistant message wins; an empty
-// serialisation (e.g. an aborted turn with no output blocks) never
-// clobbers earlier content. Must be called with e.mu held.
+// run's own records contribute (empty runID); forwarded sub-agent
+// records are the spawn_agent tool call's business, not the run's I/O.
+// Input is set-once (turn 0's seed prompt); output overwrites, and an
+// empty serialisation never clobbers earlier content. Must be called
+// with e.mu held.
 func (e *OTelTraceEmitter) retainRootContentLocked(runID string, content *turnContent) {
 	if runID != "" {
 		return
@@ -704,16 +580,9 @@ func (e *OTelTraceEmitter) retainRootContentLocked(runID string, content *turnCo
 	}
 }
 
-// RecordSystemInstructions stores the run's built system prompt for
-// emission as gen_ai.system_instructions on captured turn spans. The
-// loop forwards it via the SystemInstructionsRecorder assertion after
-// PromptBuilder.Build; with capture off nothing is stored, so the
-// emitter holds no prompt content it will never emit.
-//
-// The prompt is scrubbed at record time — the system prompt can carry
-// operator-supplied dynamic context, which is exactly the kind of
-// surface a secret-shaped substring leaks through — and serialised to
-// the attribute encoding once here rather than on every turn span.
+// RecordSystemInstructions stores the run's built system prompt,
+// scrubbed and serialised once, for emission as gen_ai.system_instructions
+// on captured turn spans. With capture off nothing is stored.
 func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	if !e.captureContent {
 		return
@@ -724,10 +593,8 @@ func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 }
 
 // RecordPromptResolution sets the resolved prompt model and tier on the
-// root span (#492). Always-on, unlike RecordSystemInstructions: the
-// values are config metadata, not message content, and a prompt/model
-// comparison run (promptBuilder.promptModel differing from the wire
-// model) must be attributable from its trace alone.
+// root span. Always-on, unlike RecordSystemInstructions: the values are
+// config metadata, not message content.
 func (e *OTelTraceEmitter) RecordPromptResolution(model, tier string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -741,12 +608,9 @@ func (e *OTelTraceEmitter) RecordPromptResolution(model, tier string) {
 }
 
 // RecordFinalAssistantText stores the run's final assistant text so the
-// RunTrace aggregate returned by Finish carries it for the in-process
-// caller (harness factory → RunResult). Unlike RecordSystemInstructions,
-// this is not gated on captureContent: the value feeds the RunResult, not
-// a span attribute, so it is retained regardless of content capture. The
-// loop forwards a value already scrubbed and gated by the PhasePostTurn
-// guard.
+// RunTrace aggregate returned by Finish carries it. Unlike
+// RecordSystemInstructions, this is not gated on captureContent: the
+// value feeds the RunResult, not a span attribute.
 func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -779,10 +643,8 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 		key := pendingToolKey{runID: call.RunID, id: call.ID}
 		if prev, ok := e.pendingToolCalls[key]; ok {
 			// A second summary under the same key without an intervening
-			// record. Provider IDs are unique within a stream, so this is
-			// defensive (mirroring the duplicate-summary handling in
-			// RecordTurn): flush the stale entry as a plain span rather
-			// than silently dropping it.
+			// record; defensive (mirroring RecordTurn). Flush the stale
+			// entry as a plain span rather than dropping it.
 			e.emitToolSpanLocked(prev.call, prev.spanStart, prev.spanEnd, nil)
 		}
 		if e.pendingToolCalls == nil {
@@ -795,20 +657,15 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.emitToolSpanLocked(call, spanStart, spanEnd, nil)
 }
 
-// emitToolSpanLocked creates and ends the execute_tool child span.
-// content is nil on the no-capture path (and for flushed unmatched
-// summaries), keeping the attribute set identical to the
-// capture-off emitter; non-nil content appends the gen_ai.tool.call.*
-// attributes after the counter attributes, mirroring
-// emitTurnSpanLocked's contract. Must be called with e.mu held.
+// emitToolSpanLocked creates and ends the execute_tool child span,
+// mirroring emitTurnSpanLocked's nil-content contract. Must be called
+// with e.mu held.
 //
 // The span name follows the semconv "execute_tool {gen_ai.tool.name}"
-// form so each tool reads distinctly in backend trace trees — except
-// for unknown-tool failures, where the name the model asked for is
-// model-controlled and unbounded; emitting it as a span name would be
-// the cardinality vector #309 bounded on the loop's tool.<name> spans.
-// Those calls use the bare operation name, and the raw requested name
-// still rides the bounded-cardinality-safe gen_ai.tool.name attribute.
+// form, except for unknown-tool failures: the model-requested name is
+// unbounded, so those spans use the bare operation name and carry the
+// raw name only in the bounded-cardinality-safe gen_ai.tool.name
+// attribute.
 func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStart, spanEnd time.Time, content *toolContent) {
 	name := "execute_tool " + call.Name
 	if call.ErrorCategory == string(observability.ToolFailureUnknownTool) {
@@ -834,8 +691,7 @@ func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStar
 	)
 	if !call.Success {
 		// ErrorReason is scrubbed at dispatch time; the second pass here
-		// is the same defence-in-depth posture the JSONL emitter applies
-		// — span status strings bypass ScrubHandler.
+		// is defence-in-depth since span status strings bypass ScrubHandler.
 		desc := security.Scrub(call.ErrorReason)
 		if desc == "" {
 			desc = "tool call failed"
@@ -860,38 +716,32 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 	now := time.Now()
 
-	// Flush turn summaries still waiting for a transcript record
-	// (capture mode only; e.g. the loop's empty-stop-reason error
-	// return records a summary but no record). They are emitted as
-	// plain counter spans with the timestamps frozen at RecordTurn
-	// time, so a missing record costs the content attributes, never
-	// the turn span itself. Emission order over the map is undefined;
-	// that is fine because each span carries explicit timestamps and
-	// consumers order by those, not by export sequence.
+	// Flush turn summaries still waiting for a transcript record (e.g.
+	// the loop's empty-stop-reason error return). Emitted as plain
+	// counter spans with timestamps frozen at RecordTurn time; a missing
+	// record costs the content attributes, never the span itself. Map
+	// emission order is fine because each span carries its own explicit
+	// timestamps.
 	for _, pending := range e.pendingTurns {
 		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, nil)
 	}
 	e.pendingTurns = nil
 
 	// Same flush for tool call summaries whose transcript entry never
-	// arrived: a missing record costs the content attributes, never the
-	// tool span itself.
+	// arrived.
 	for _, pending := range e.pendingToolCalls {
 		e.emitToolSpanLocked(pending.call, pending.spanStart, pending.spanEnd, nil)
 	}
 	e.pendingToolCalls = nil
 
-	// Set outcome on root span and end it.
 	if e.rootSpan != nil && e.rootSpan.SpanContext().IsValid() {
 		e.rootSpan.SetAttributes(
 			attribute.String("run.outcome", outcome),
 			attribute.Int("run.turns", len(e.turns)),
 			attribute.Int("run.permission_denials", e.permissionDenials),
 		)
-		// Stamp the run-level content retained from the parent run's
-		// turn records (see retainRootContentLocked), completing the
-		// root span as an invoke_agent observation. Must happen before
-		// End below — the SDK silently drops attributes set afterwards.
+		// Must happen before End below — the SDK silently drops
+		// attributes set afterwards.
 		if e.captureContent {
 			rootContent := turnContent{
 				inputMessages:  e.rootInputMessagesJSON,
@@ -901,11 +751,9 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 				e.rootSpan.SetAttributes(attrs...)
 			}
 		}
-		// Every non-success outcome — including cancelled — marks the
-		// root Error so backends expose one "didn't finish" predicate;
-		// the run.outcome attribute (and run.cancelled_by, when set by
-		// the loop) disambiguates operator-initiated cancellation from
-		// failure. The outcome vocabulary is a bounded enum, so the
+		// Every non-success outcome marks the root Error so backends
+		// expose one "didn't finish" predicate; run.outcome disambiguates
+		// cancellation from failure. Outcome is a bounded enum, so the
 		// status description needs no scrubbing.
 		if outcome != "success" {
 			e.rootSpan.SetStatus(codes.Error, outcome)
@@ -913,18 +761,11 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		e.rootSpan.End()
 	}
 
-	// Flush and shut down the trace provider.
 	if e.provider != nil {
 		if err := e.provider.ForceFlush(ctx); err != nil {
-			// Non-fatal: log but continue building the trace.
-			// A ForceFlush failure means the in-memory span batch
-			// could not be exported before the run ended; the
-			// RunTrace aggregate below is still valid for the
-			// caller, but downstream observers querying the OTel
-			// backend will be missing the tail of this run.
-			// ScrubHandler still runs over the message, so any
-			// secret-shaped substring in the wrapped error is
-			// redacted before it lands in stderr JSONL.
+			// Non-fatal: the RunTrace aggregate below is still valid for
+			// the caller even though the OTel backend will be missing
+			// the tail of this run.
 			slog.Default().Warn("OTel ForceFlush failed, spans may be lost", "error", err)
 		}
 	}
@@ -962,20 +803,10 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	return trace, nil
 }
 
-// Probe checks OTLP exporter reachability for a dry-run preflight. It
-// starts and immediately ends a throwaway span, then ForceFlushes the
-// provider so the configured exporter actually attempts a connection to
-// the collector. A flush error (unreachable endpoint, TLS failure, auth
-// rejection) is surfaced so the preflight step fails with the exporter's
-// diagnostic rather than discovering the misconfiguration only at
-// run-end when the first batch is dropped.
-//
-// The probe span carries no run data and is not the root span, so it does
-// not perturb the run trace; Start has not been called at preflight time.
-// It does, however, reach the operator's live OTLP collector — this is the
-// only way to confirm reachability — so it is tagged stirrup.preflight=true
-// so dashboards and alert rules can filter out the synthetic span.
-// Operators who want zero collector contact pass --no-probe-trace.
+// Probe checks OTLP exporter reachability for a dry-run preflight (see
+// docs/configuration.md#dry-run-preflight) by starting and ForceFlushing
+// a throwaway span tagged stirrup.preflight=true, so a flush error
+// surfaces the exporter's own diagnostic rather than only at run-end.
 func (e *OTelTraceEmitter) Probe(ctx context.Context) error {
 	if e.provider == nil {
 		return nil

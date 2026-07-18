@@ -11,15 +11,10 @@ import (
 )
 
 // metricRecorder wraps a ContextStrategy and records
-// stirrup.context.strategy_runs on every Prepare() call. The strategy
-// label ("sliding-window" / "summarise" / "offload-to-file") is
-// supplied at construction time because the wrapped strategy itself
-// doesn't carry one — the factory is the only place that knows the
+// stirrup.context.strategy_runs on every Prepare() call. strat is
+// supplied at construction because the wrapped strategy doesn't carry
+// a label itself — the factory is the only place that knows the
 // concrete type.
-//
-// The "kind" label distinguishes runs that produced a compaction event
-// from no-op runs (messages already fit within budget). It is read from
-// LastCompaction() after Prepare returns.
 type metricRecorder struct {
 	inner   ContextStrategy
 	metrics *observability.Metrics
@@ -65,10 +60,8 @@ func (r *metricRecorder) Prepare(ctx context.Context, messages []types.Message, 
 	return out, err
 }
 
-// LastCompaction delegates to the wrapped strategy. Without this
-// pass-through the loop's compaction-event reporting (which reads
-// LastCompaction directly) would always see nil after the wrapper
-// intercepted Prepare.
+// LastCompaction delegates to the wrapped strategy; without the
+// pass-through the loop's compaction reporting would always see nil.
 func (r *metricRecorder) LastCompaction() *CompactionEvent {
 	return r.inner.LastCompaction()
 }

@@ -114,7 +114,7 @@ func TestLintGeminiSchema_PassesCleanSchema(t *testing.T) {
 }
 
 // TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum pins the privacy
-// contract from #228 §5: the lint error must NOT carry the schema's
+// contract: the lint error must NOT carry the schema's
 // description or enum content into its message. Those fields may
 // contain operator- or model-supplied prose; surfacing them at error
 // level would leak them into trace and log sinks.

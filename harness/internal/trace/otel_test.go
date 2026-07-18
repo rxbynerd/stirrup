@@ -17,7 +17,7 @@ func newTestOTelEmitter() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 }
 
 // newTestOTelEmitterWithOpts mirrors NewOTelTraceEmitter's TracerProvider
-// construction with a caller-supplied ResourceOptions so issue #95 resource
+// construction with a caller-supplied ResourceOptions so resource
 // attributes (deployment.environment, service.namespace, harness.run.mode)
 // can be asserted end-to-end on emitted spans.
 func newTestOTelEmitterWithOpts(opts observability.ResourceOptions) (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
@@ -81,7 +81,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify trace fields.
 	if trace.ID != "run-otel-1" {
 		t.Errorf("ID: got %q, want %q", trace.ID, "run-otel-1")
 	}
@@ -97,18 +96,17 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	if trace.Outcome != "success" {
 		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "success")
 	}
-	// Verify config was redacted.
+
 	if trace.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)
 	}
 
-	// Verify OTel spans were created.
 	spans := exporter.GetSpans()
 	if len(spans) == 0 {
 		t.Fatal("expected OTel spans to be exported, got none")
 	}
 
-	// We expect: 2 turn spans + 2 tool spans + 1 root span = 5.
+	// 2 turn spans + 2 tool spans + 1 root span.
 	if len(spans) != 5 {
 		t.Errorf("expected 5 spans, got %d", len(spans))
 		for _, s := range spans {
@@ -116,7 +114,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		}
 	}
 
-	// Find spans by name.
 	spanNames := make(map[string]int)
 	for _, s := range spans {
 		spanNames[s.Name]++
@@ -137,7 +134,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Errorf("expected 1 'execute_tool write_file' span, got %d", spanNames["execute_tool write_file"])
 	}
 
-	// Verify root span has correct attributes.
 	var rootSpan tracetest.SpanStub
 	for _, s := range spans {
 		if s.Name == "run" {
@@ -151,9 +147,9 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	assertAttribute(t, rootSpan, "run.outcome", "success")
 	assertAttribute(t, rootSpan, "harness.version", "dev")
 
-	// GenAI semconv assertions (issue #108): provider and
-	// model surface under the GenAI namespace so vendor-shipped APM
-	// dashboards recognise the spans.
+	// GenAI semconv assertions: provider and model surface under the
+	// GenAI namespace so vendor-shipped APM dashboards recognise the
+	// spans.
 	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
 
@@ -192,7 +188,6 @@ func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
 		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "error")
 	}
 
-	// Should have just the root span.
 	spans := exporter.GetSpans()
 	if len(spans) != 1 {
 		t.Errorf("expected 1 span for empty run, got %d", len(spans))
@@ -335,9 +330,9 @@ func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 	}
 }
 
-// TestOTelTraceEmitter_ResourceAttributesOnSpan locks down the issue #95
-// acceptance criterion that operator-supplied ResourceOptions reach every
-// emitted span via the TracerProvider's Resource. The pre-existing
+// TestOTelTraceEmitter_ResourceAttributesOnSpan locks down that
+// operator-supplied ResourceOptions reach every emitted span via the
+// TracerProvider's Resource. The pre-existing
 // TestOTelTraceEmitter_ResourceAttributes covers only the default-value
 // path (service.name etc.); without this test, a regression that stopped
 // threading explicit ResourceOptions through to the TracerProvider would
@@ -468,7 +463,7 @@ func TestGenAIProviderName(t *testing.T) {
 }
 
 // TestOTelTraceEmitter_GenAIAttributes exhaustively pins the OTel
-// GenAI semantic-convention attribute set adopted by issue #108. The
+// GenAI semantic-convention attribute set. The
 // individual GenAI attributes are also asserted opportunistically by
 // FullLifecycle, ToolCallAttributes, and SessionName, but this test
 // exists so a regression in any single GenAI attribute fails loudly
@@ -610,8 +605,7 @@ func TestOTelTraceEmitter_TurnModelFallback(t *testing.T) {
 // TestOTelTraceEmitter_UnknownToolSpanNameBounded pins the cardinality
 // bound on tool span names: an unknown-tool failure carries a
 // model-controlled tool name, which must not become an unbounded span
-// name (the vector issue #309 bounded on the loop's tool.<name> spans).
-// The raw requested name still rides the gen_ai.tool.name attribute.
+// name. The raw requested name still rides the gen_ai.tool.name attribute.
 func TestOTelTraceEmitter_UnknownToolSpanNameBounded(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 

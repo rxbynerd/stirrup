@@ -81,10 +81,8 @@ func openaiBuilderCases() []struct {
 		},
 		{
 			// Pins the "Error: " prefix injection in translateMessages
-			// (openai.go) at the builder level. Covered by openai_test.go
-			// through Stream, but the batch path will call the builder
-			// directly; the MatchesStream harness extends that coverage
-			// here automatically.
+			// (openai.go) at the builder level, so the batch path (which
+			// calls the builder directly) inherits the same coverage.
 			name: "is_error_tool_result",
 			params: types.StreamParams{
 				Model:     "gpt-4o",
@@ -105,9 +103,8 @@ func openaiBuilderCases() []struct {
 
 // TestBuildOpenAIRequest_MatchesStream pins the invariant that
 // buildOpenAIRequest produces the same wire body the Stream method would
-// emit. The batch path (phase 6 of #133) reuses the builder and must be
-// byte-identical to streaming for the same StreamParams modulo the
-// stream toggle.
+// emit. The batch path reuses the builder and must be byte-identical to
+// streaming for the same StreamParams modulo the stream toggle.
 func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 	for _, tc := range openaiBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,7 +185,7 @@ func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
 		{"required emits required", types.ToolChoiceRequired, "", `"tool_choice":"required"`},
 		{"none emits none", types.ToolChoiceNone, "", `"tool_choice":"none"`},
 		// The typed openAINamedToolChoice fixes key order: "type" before
-		// "function", deterministic across processes (B1).
+		// "function", deterministic across processes.
 		{"tool emits typed function object", types.ToolChoiceTool, "read_file", `"tool_choice":{"type":"function","function":{"name":"read_file"}}`},
 		{"tool without name degrades to auto", types.ToolChoiceTool, "", ""},
 		{"tool with invalid name degrades to auto", types.ToolChoiceTool, "bad name!", ""},
@@ -220,7 +217,7 @@ func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
 	}
 }
 
-// TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder pins B1: the
+// TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder pins that the
 // named-tool object is a typed struct, not a map[string]any, so its JSON
 // key order is identical on every run. The map form produced
 // process-dependent ordering (Go's randomised map hash seed), which made
@@ -258,8 +255,8 @@ func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
 }
 
 // TestBuildOpenAIRequest_ToolChoice_PartialCapability exercises the
-// per-mode guard branches (B2) that today's full-support builtin rules
-// never reach: a capability with Supported=true but a specific mode
+// per-mode guard branches that today's full-support builtin rules never
+// reach: a capability with Supported=true but a specific mode
 // disabled must omit the field rather than fail open and emit the
 // disallowed mode on the wire.
 func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
@@ -285,7 +282,7 @@ func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
 	})
 }
 
-// TestToolChoiceName_InvalidEmitsWarn pins B3's observability half: an
+// TestToolChoiceName_InvalidEmitsWarn pins the observability half: an
 // invalid named-tool name degrades to auto AND emits a slog.Warn that
 // carries the grammar but NOT the offending name (which could carry
 // log-injection bytes). The shared warnInvalidToolChoiceName helper is

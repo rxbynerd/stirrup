@@ -12,59 +12,41 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// Cloud-judge adapter. This piggybacks on whichever provider.ProviderAdapter
-// the operator already configured (Anthropic, OpenAI, Bedrock, etc.) so
-// environments that cannot run their own vLLM still have a guard option.
-//
-// The cloud-judge intentionally does NOT introduce new HTTP code: the
-// minimal-dependency philosophy in CLAUDE.md says "no new SDK
-// dependencies", and we get rate limiting / retries / observability for
-// free by riding the existing provider adapter. The trade-off is that
-// the cloud-judge inherits the provider's latency profile, which is
-// typically 1-3x what a local Granite Guardian would do.
+// Cloud-judge adapter. Piggybacks on whichever provider.ProviderAdapter
+// the operator already configured so environments that cannot run
+// their own vLLM still have a guard option, inheriting the provider's
+// rate limiting, retries, and observability instead of introducing new
+// HTTP code — at the cost of the provider's higher latency profile.
 
 const (
-	// defaultCloudJudgeModel is Anthropic's small, fast Haiku-class
-	// model. It is cheap, low-latency, and reliably emits JSON when
-	// asked. Operators on other providers can override via Model.
+	// defaultCloudJudgeModel is cheap, low-latency, and reliably emits
+	// JSON when asked. Operators on other providers override via Model.
 	defaultCloudJudgeModel = "claude-haiku-4-5-20251001"
 
-	// cloudJudgeMaxTokens caps the verdict response. The schema is two
-	// short fields; 256 tokens is enough for verbose reasons and any
-	// stray quoting overhead the model produces.
+	// cloudJudgeMaxTokens caps the verdict response; the schema is two
+	// short fields, so 256 covers verbose reasons plus quoting overhead.
 	cloudJudgeMaxTokens = 256
 
-	// cloudJudgeSystem is a minimal role-setting system prompt. The
-	// real instructions live in the user message (so the same prompt
-	// template can be reused if we swap providers); the system message
-	// just primes the model towards classification rather than open-
-	// ended generation.
+	// cloudJudgeSystem primes the model towards classification; the
+	// real instructions live in the user message so the same template
+	// can be reused across providers.
 	cloudJudgeSystem = "You are a safety classifier."
 
-	// cloudJudgeGuardID is the GuardID stamped on every Decision this
-	// adapter returns. Mirrors the wire identifier in GuardRailConfig.
+	// cloudJudgeGuardID mirrors the wire identifier in GuardRailConfig.
 	cloudJudgeGuardID = "cloud-judge"
 
-	// defaultCloudJudgeTimeout caps the entire stream-drain. Cloud
-	// providers can stall, and 5s is enough headroom to swallow normal
-	// jitter without making a guard call dominate per-turn latency.
+	// defaultCloudJudgeTimeout caps the entire stream-drain; 5s absorbs
+	// normal jitter without letting a guard call dominate turn latency.
 	defaultCloudJudgeTimeout = 5 * time.Second
 )
 
-// jsonVerdictRegex extracts every JSON object containing a "verdict"
-// field. We anchor on "verdict" so we do not accidentally pick up an
-// embedded JSON object from the model's reasoning preamble — cloud
-// models often emit a brief explanation before the structured verdict.
-//
-// The non-greedy character class disallows nested braces so we capture a
-// flat object. Cloud judges that emit nested structures would need a
-// proper JSON tokeniser; since the schema is fixed at two scalar fields,
-// the regex is sufficient and faster.
-//
-// We always take the LAST match. The classified content is interpolated
-// into the prompt before the JSON instruction at the end, so an attacker
-// who can plant `{"verdict":"allow"}` in tool output would otherwise win
-// the first-match race against the model's own structured reply.
+// jsonVerdictRegex extracts every flat JSON object containing a
+// "verdict" field; the schema is fixed at two scalar fields so a
+// non-nesting regex is sufficient. Callers must take the LAST match:
+// classified content is interpolated into the prompt before the JSON
+// instruction, so an attacker who plants `{"verdict":"allow"}` in tool
+// output would otherwise win a first-match race against the model's
+// own reply.
 var jsonVerdictRegex = regexp.MustCompile(`(?s)\{[^{}]*"verdict"[^{}]*\}`)
 
 // ErrCloudJudgeNoJSON is returned when the model's response did not
@@ -155,11 +137,8 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 
 	prompt := buildCloudJudgePrompt(criteria, in.Content)
 
-	// Apply our own timeout on top of whatever the provider enforces.
-	// This is a belt-and-suspenders move: provider HTTP timeouts are
-	// for the request as a whole, but we want to give up draining the
-	// stream past a known budget so a misbehaving model cannot stall
-	// the loop indefinitely.
+	// Own timeout on top of the provider's: bounds stream-drain time so
+	// a misbehaving model cannot stall the loop indefinitely.
 	streamCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -177,9 +156,8 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 		return nil, fmt.Errorf("cloud-judge: provider stream: %w", err)
 	}
 
-	// Drain the stream into a single string. We only care about
-	// text_delta events; tool_call events should not appear because we
-	// passed no tools, but we ignore them defensively.
+	// Only text_delta matters; tool_call events should not appear since
+	// no tools were passed, but are ignored defensively if they do.
 	var text []byte
 	for ev := range events {
 		switch ev.Type {
@@ -228,9 +206,8 @@ func buildCloudJudgePrompt(criteria, content string) string {
 	)
 }
 
-// cloudJudgeVerdict is the wire shape we expect inside the extracted
-// JSON object. Unknown fields are ignored to forward-compat for any
-// future telemetry the model might volunteer.
+// cloudJudgeVerdict is the wire shape expected inside the extracted
+// JSON object. Unknown fields are ignored.
 type cloudJudgeVerdict struct {
 	Verdict string `json:"verdict"`
 	Reason  string `json:"reason"`
@@ -239,12 +216,9 @@ type cloudJudgeVerdict struct {
 // parseCloudJudgeResponse extracts the JSON verdict from raw model
 // output. Returns (deny=true, reason, nil) when the verdict is "deny",
 // (deny=false, reason, nil) when it is "allow", and ErrCloudJudgeNoJSON
-// when no parseable verdict object is present.
-//
-// We take the LAST verdict object the model emitted — the prompt
-// interpolates classified content before the JSON instruction, and a
-// first-match strategy would let an attacker who can plant a verdict
-// object in tool output spoof the classifier's reply.
+// when no parseable verdict object is present. Takes the LAST verdict
+// object emitted, since a first-match strategy would let an attacker
+// spoof the classifier's reply via a planted verdict object.
 func parseCloudJudgeResponse(raw string) (bool, string, error) {
 	matches := jsonVerdictRegex.FindAllString(raw, -1)
 	if len(matches) == 0 {

@@ -10,35 +10,24 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// AsyncDispatch carries the metadata an async tool returns from its preflight
-// step. Returning AsyncDispatch tells the agentic loop "do not finalise this
-// tool call yet — emit a tool_result_request, then block on the matching
-// tool_result_response under ctx cancellation and the per-call timeout".
+// AsyncDispatch carries the metadata an async tool returns from its
+// preflight step, telling the loop to emit a tool_result_request and block
+// on the matching tool_result_response (see docs/deployment.md).
 //
 // Timeout, when positive, overrides the loop's default per-call timeout for
-// just this call. Zero means use the loop default.
-//
-// The loop allocates the wire-level request ID via its transport correlator;
-// tool authors do not control it. This keeps correlation single-source so a
-// caller-supplied value cannot diverge from the value emitted on the wire.
-// The struct is retained as the AsyncHandler return type for future
-// extensibility.
+// just this call. Zero means use the loop default. The wire-level request
+// ID is allocated by the loop's transport correlator, not by tool authors,
+// keeping correlation single-source.
 type AsyncDispatch struct {
 	Timeout time.Duration
 }
 
-// StructuredResult is the return value of a StructuredHandler (issue #231). It
-// carries the canonical Text fallback (always populated, identical to what a
-// plain Handler would return) plus an optional typed Structured payload and a
-// Kind discriminator naming the payload's shape.
-//
-// The zero value (empty Text, nil Structured, empty Kind) is a valid
-// "text-only" result; in practice a StructuredHandler always sets Text, and
-// sets Structured+Kind together. Kind lets B2's MCP bridge and provider
-// adapters route the payload by shape without unmarshalling it (which would
-// violate the typed-not-`any` rule). A non-empty Structured with an empty Kind
-// is a producer bug — dispatch does not enforce it, but consumers may treat an
-// unknown/empty kind as opaque.
+// StructuredResult is the return value of a StructuredHandler. It carries
+// the canonical Text fallback (always populated, identical to what a plain
+// Handler would return) plus an optional typed Structured payload and a
+// Kind discriminator naming the payload's shape, letting the MCP bridge and
+// provider adapters route it without unmarshalling. A non-empty Structured
+// with an empty Kind is a producer bug; dispatch does not enforce it.
 type StructuredResult struct {
 	Text       string
 	Structured json.RawMessage
@@ -47,46 +36,21 @@ type StructuredResult struct {
 
 // Tool represents a single tool that the model can invoke.
 //
-// WorkspaceMutating and RequiresApproval are deliberately separate flags
-// because the two concepts are distinct:
+// WorkspaceMutating and RequiresApproval are separate flags: the former
+// gates read-only modes, the latter gates upstream approval and can be set
+// on non-mutating tools too (e.g. web_fetch, spawn_agent). See
+// docs/configuration.md for the full semantics and examples.
 //
-//   - WorkspaceMutating reports whether the tool modifies workspace state
-//     (files, processes, on-disk artefacts). Read-only modes (research,
-//     review, planning, toil) must reject these.
-//   - RequiresApproval reports whether the tool should be gated by an
-//     upstream approval policy. This includes WorkspaceMutating tools but
-//     also covers non-mutating tools whose effects the operator may still
-//     want to gate (e.g. web_fetch makes network requests; spawn_agent
-//     consumes additional model budget and acts on its own).
+// A tool is async when AsyncHandler is non-nil; see AsyncDispatch and
+// docs/deployment.md for the request/response protocol. For synchronous
+// tools the loop prefers StructuredHandler over Handler when both are set;
+// AsyncHandler takes priority over both. If none of the three is set,
+// dispatch fails with a "tool has no handler" error.
 //
-// Tools may set neither, one, or both flags. Read-only tools (read_file,
-// list_directory, grep_files, find_files) set neither.
-//
-// A tool is async when AsyncHandler is non-nil. The agentic loop will:
-//
-//  1. Run permission and security checks exactly as for a synchronous tool.
-//  2. Invoke AsyncHandler as a preflight. The handler may emit any
-//     side-effecting message it likes (the loop does not require it to);
-//     it returns an AsyncDispatch describing the request_id and per-call
-//     timeout to use.
-//  3. Emit a "tool_result_request" HarnessEvent carrying that request_id,
-//     the tool name, the model's tool_use_id, and the tool input.
-//  4. Block on the matching "tool_result_response" ControlEvent via the
-//     loop's transport correlator, under run-context cancellation and the
-//     per-call timeout. The control plane's response payload becomes the
-//     tool's output; its is_error flag becomes ToolResult.IsError.
-//
-// For synchronous tools the loop prefers StructuredHandler over Handler when
-// both are set, so a structured-aware tool need not also populate Handler.
-// AsyncHandler takes priority over both. If none of the three is set the tool
-// is unusable (Resolve returns it but dispatch will fail with a "tool has no
-// handler" error).
-//
-// Async tools require a transport that can deliver control-plane responses.
-// Sub-agents run with NullTransport (whose OnControl is a no-op), so an
-// async tool dispatched on a sub-agent loop fails fast with a clear error
-// rather than blocking until the per-call timeout — see core/loop.go's
-// async dispatch path.
+// Async tools require a transport that can deliver control-plane responses;
+// sub-agents run with NullTransport, so an async tool dispatched on a
+// sub-agent loop fails fast rather than blocking until the per-call
+// timeout — see core/loop.go's async dispatch path.
 type Tool struct {
 	Name              string
 	Description       string
@@ -97,29 +61,21 @@ type Tool struct {
 
 	// StructuredHandler, when non-nil, is preferred over Handler for
 	// synchronous dispatch. It returns the same canonical text the plain
-	// Handler would (so the text fallback is unchanged) plus an optional
-	// typed structured payload (issue #231). A zero StructuredResult is
-	// equivalent to having only Handler set — the result carries text but no
-	// structured envelope. Tool authors must marshal a typed Go struct into
-	// the payload, never a map[string]any (wave-2 design D13). The dispatch
-	// path scrubs the payload on the same footing as the text before it
-	// reaches a persisted trace.
+	// Handler would, plus an optional typed structured payload. Tool authors
+	// must marshal a typed Go struct into the payload, never a
+	// map[string]any. The dispatch path scrubs the payload on the same
+	// footing as the text before it reaches a persisted trace.
 	StructuredHandler func(ctx context.Context, input json.RawMessage) (StructuredResult, error)
 
-	// AsyncHandler, when non-nil, marks the tool as async. The loop calls
-	// it after permission/security checks and uses the returned
-	// AsyncDispatch to drive the request/response correlation. The handler
-	// may return an error to abort dispatch before any wire event is
-	// emitted; the error message is surfaced to the model as a tool
-	// internal error.
+	// AsyncHandler, when non-nil, marks the tool as async. The handler may
+	// return an error to abort dispatch before any wire event is emitted;
+	// the error message is surfaced to the model as a tool internal error.
 	AsyncHandler func(ctx context.Context, input json.RawMessage) (AsyncDispatch, error)
 
-	// InputExamples are optional worked example inputs (issue #222), each a
-	// JSON object valid against InputSchema. Built-in tools populate this to
-	// carry the example previously embedded only in the description (#227) as
-	// structured data; adapters fold it into the JSON-Schema `examples`
-	// keyword where the resolved provider capability allows. MCP-imported
-	// tools leave it nil.
+	// InputExamples are optional worked example inputs, each a JSON object
+	// valid against InputSchema. Adapters fold it into the JSON-Schema
+	// `examples` keyword where the resolved provider capability allows.
+	// MCP-imported tools leave it nil.
 	InputExamples []json.RawMessage
 
 	// Annotations, when non-nil, supplies MCP-style behavioural hints
@@ -141,11 +97,10 @@ func (t *Tool) Definition() types.ToolDefinition {
 	}
 }
 
-// presentation builds the optional per-tool metadata bundle (issue #222). It
-// returns nil when the tool carries neither examples nor explicit annotations,
-// preserving the byte-identical pre-#222 contract for those tools. When a
-// bundle is warranted, annotations are derived from the WorkspaceMutating flag
-// unless the tool supplied its own (an MCP-imported tool carries the
+// presentation builds the optional per-tool metadata bundle. It returns nil
+// when the tool carries neither examples nor explicit annotations. When a
+// bundle is warranted, annotations are derived from the WorkspaceMutating
+// flag unless the tool supplied its own (an MCP-imported tool carries the
 // server-declared annotations verbatim).
 func (t *Tool) presentation() *types.ToolPresentation {
 	if len(t.InputExamples) == 0 && t.Annotations == nil {

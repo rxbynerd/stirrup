@@ -368,6 +368,35 @@ The lakehouse is what `baseline`, `mine-failures`, `drift`, and
 range, outcome, mode, and model, and computes aggregate metrics
 including p50/p95 duration percentiles.
 
+**Manifest index.** The FileStore keeps an append-only JSONL manifest
+at `<lakehouse>/manifest.jsonl` alongside the trace and recording
+directories, so queries with a narrow filter can skip loading most
+JSON files. Each line is one event:
+
+```
+{"kind":"trace","id":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
+{"kind":"recording","runId":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
+```
+
+`StoreTrace`/`StoreRecording` append one entry per call; re-ingesting
+the same ID appends a duplicate, and the read path uses the last
+entry per ID (last-write-wins, matching the JSON-file write
+semantics). Writers append via a single `O_APPEND` file handle, which
+is atomic on POSIX for payloads under `PIPE_BUF` (manifest lines are
+well under that); concurrent writers only guarantee that an append
+which returned before another started precedes it in the file, and
+the read path tolerates any order since last-write-wins is symmetric.
+A missing or corrupt manifest is recoverable: the read path detects
+the failure, falls back to scanning every JSON file on disk, and
+rewrites the manifest as a side effect.
+
+Trace and recording JSON files are themselves written via a
+write-then-rename pattern (temp file in the target directory, then
+`os.Rename`), so a concurrent reader never observes a torn or
+zero-byte file, and two writers racing on the same ID never
+interleave bytes into a corrupt document — the last successful
+rename wins atomically.
+
 ### Outcome taxonomy
 
 `RunTrace.Outcome` records *why the loop stopped*: `success`,
@@ -511,6 +540,15 @@ drop interrupted captures.
 
 Re-ingesting the same file is idempotent (last-write-wins, atomic
 rename via #267) so retries do not corrupt the lakehouse.
+
+**Scrubbing posture.** Trace files written by the streaming JSONL
+emitter have already passed through the harness's log scrubber on
+the way to disk. The eval module does not import
+`harness/internal/security` to apply a second scrubbing pass — that
+package boundary is private (see `AGENTS.md`). Traces from older,
+single-blob-only binaries went through `RunConfig.Redact()` at write
+time instead. Ingest relies on this upstream scrubbing rather than
+re-scrubbing on read.
 
 ### `mine-failures` — turn production failures into tasks
 

@@ -196,8 +196,6 @@ func countNoToolWhenRequired(t *testing.T, reader *sdkmetric.ManualReader) int64
 	return total
 }
 
-// --- defaultEscalationPolicy.Decide unit tests ---
-
 // nativeCaps advertises native required tool choice; promptCaps does not.
 var (
 	nativeCaps = fakeCapabilityResolver{cap: quirks.ToolChoiceCapability{Supported: true, Required: true}}
@@ -260,10 +258,9 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 			wantKind: EscalationNone,
 		},
 		{
-			// Post-B1: Turn is no longer a guard. A later turn with no
-			// prior tool calls (e.g. after a compacted context reset the
-			// counter) is still a missed-tool failure and must escalate;
-			// only PriorToolCalls > 0 stops it.
+			// Turn is not a guard: a later turn with no prior tool calls
+			// is still a missed-tool failure and must escalate; only
+			// PriorToolCalls > 0 stops it.
 			name:     "escalates_on_later_turn_when_no_prior_tool_calls",
 			policy:   newDefaultEscalationPolicy(1, nativeCaps),
 			mutate:   func(in *EscalationInput) { in.Turn = 2 },
@@ -340,8 +337,6 @@ func TestEscalationKindString(t *testing.T) {
 		}
 	}
 }
-
-// --- loop integration tests ---
 
 // TestEscalation_NativeRetryOnMissedTool covers the acceptance criterion:
 // a first-turn no-tool answer on a workspace-dependent task with a
@@ -458,12 +453,8 @@ func TestEscalation_ResearchAllowsFetchTool(t *testing.T) {
 }
 
 // TestEscalation_MaxRetryCapEnforced is the unbounded-loop guard at the
-// default cap: a model that keeps answering without a tool must be
-// escalated at most once and the run must terminate rather than spin. The
-// scripted provider returns a no-tool answer on every call. With the
-// first-turn guard removed (B1), the EscalationsSoFar >= maxRetries cap is
-// the sole bound: after one escalation EscalationsSoFar == 1 == maxRetries,
-// so Decide returns none and the answer is accepted.
+// default cap: a model that keeps answering without a tool is escalated
+// at most once, bounded solely by EscalationsSoFar >= maxRetries.
 func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
@@ -482,12 +473,10 @@ func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 	}
 }
 
-// TestEscalation_MaxRetryCapEnforcedAtTwo proves the cap ceiling is now
-// reachable (B1): with maxRetries=2 and a model that never calls a tool,
-// escalation fires exactly twice — original answer + two forced retries =
-// 3 provider calls and 2 no_tool_when_required emissions — then the cap
-// stops it and the run terminates. Before B1 this behaved identically to
-// maxRetries=1 because the turn guard short-circuited the second retry.
+// TestEscalation_MaxRetryCapEnforcedAtTwo pins that the cap ceiling is
+// reachable: with maxRetries=2 and a model that never calls a tool,
+// escalation fires exactly twice (3 provider calls, 2 emissions) before
+// the cap stops it.
 func TestEscalation_MaxRetryCapEnforcedAtTwo(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
@@ -509,11 +498,9 @@ func TestEscalation_MaxRetryCapEnforcedAtTwo(t *testing.T) {
 	}
 }
 
-// TestEscalation_RecoveryStopsAfterToolCall pins the natural stop now that
-// PriorToolCalls — not Turn — is the gate: a model that answers with no
-// tool, is escalated, and then calls a tool on the retry must NOT be
-// escalated again even when the cap (2) would otherwise allow it. The
-// PriorToolCalls > 0 guard ends recovery the moment a tool is used.
+// TestEscalation_RecoveryStopsAfterToolCall pins that PriorToolCalls, not
+// Turn, gates escalation: once a retry calls a tool, recovery stops even
+// if the cap would otherwise allow another retry.
 func TestEscalation_RecoveryStopsAfterToolCall(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{
 		noToolAnswer(),

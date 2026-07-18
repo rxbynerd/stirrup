@@ -11,11 +11,10 @@ import (
 	"testing"
 )
 
-// TestClassifyExitCode pins the core mapping Execute() relies on: a nil
-// error is success (0), an *exitError carries its class code, an
-// *exitError reached through a wrapping fmt.Errorf chain is still found
-// via errors.As, and any other error preserves the historical default
-// of 1 so nothing previously unclassified changes its exit status.
+// TestClassifyExitCode pins the mapping Execute() relies on: a nil
+// error is success (0), an *exitError carries its class code even
+// through a wrapping fmt.Errorf chain, and any other error defaults
+// to 1.
 func TestClassifyExitCode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -414,32 +413,25 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			want: exitIO,
 		},
 		{
-			// #245 dry-run success: every component constructs and the only
-			// network-touching probe (provider) is suppressed, so all steps
-			// are ok/skip and Execute() returns nil → exit 0. Provider creds
-			// come from the secret:// env ref, which is unset here but never
-			// resolved on the --no-probe-provider path because credential
-			// resolution happens during provider construction... which still
-			// runs. So set the env var via the config's static ref instead:
-			// validConfig references ANTHROPIC_API_KEY; export it for the run.
+			// Provider creds must still resolve during construction even
+			// with --no-probe-provider, so export the env var
+			// validConfig's secret:// ref names.
 			name: "harness dry-run all-ok",
 			args: []string{"harness", "--config", validConfig, "--dry-run", "--no-probe-provider"},
 			want: 0,
 			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
 		},
 		{
-			// #245 invalid flag combination: a probe gate without --dry-run
-			// is meaningless and must classify as usage (exit 4), not be
-			// silently ignored.
+			// A probe gate without --dry-run is meaningless and must
+			// classify as usage (exit 4), not be silently ignored.
 			name: "harness probe gate without dry-run",
 			args: []string{"harness", "--config", validConfig, "--no-probe-provider"},
 			want: exitUsage,
 			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
 		},
 		{
-			// #245 dry-run probe failure: the provider probe hits a refused
-			// port, so one step fails and the process exits 1 (not 4 — the
-			// flags are valid; a probe found a real problem).
+			// The provider probe hits a refused port, so one step fails
+			// and the process exits 1 (not 4 — the flags are valid).
 			name: "harness dry-run probe failure",
 			args: []string{"harness", "--config", refusedProviderConfig, "--dry-run", "--dry-run-timeout", "5s"},
 			want: 1,
@@ -455,12 +447,10 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestCLIExitCodes_BareInvocationsStayZero pins that the #249 success
-// paths are not regressed by the exit-code mapping: a bare `stirrup`
+// TestCLIExitCodes_BareInvocationsStayZero pins that a bare `stirrup`
 // prints the orientation hint and exits 0. (`stirrup harness` with no
-// prompt exits non-zero under the non-TTY `go test` subprocess — its
-// interactive hint exit-0 path needs a PTY and is covered by the #249
-// suite plus the manual verification in the task report.)
+// prompt exits non-zero under the non-TTY `go test` subprocess; its
+// interactive hint exit-0 path needs a PTY and is not covered here.)
 func TestCLIExitCodes_BareInvocationsStayZero(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping binary build + exec in -short mode")
@@ -486,9 +476,8 @@ func buildStirrupBinary(t *testing.T) string {
 
 // runExit execs the binary with the given args and returns the process
 // exit code. Stdin is /dev/null — a character device, which isStdinPiped
-// treats as "not piped" (issue #249), so a --config <path> argument is
-// not rejected as ambiguous against a phantom piped base. A non-ExitError
-// failure (binary missing, signal) fails the test.
+// treats as "not piped" — so a --config <path> argument is not rejected
+// as ambiguous against a phantom piped base.
 func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 	t.Helper()
 	devNull, err := os.Open(os.DevNull)

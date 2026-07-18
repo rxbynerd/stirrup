@@ -93,12 +93,10 @@ func responsesWarnStubServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade pins #343: the
-// Responses request body carries no tool_choice field, so a non-auto
-// ToolChoice is silently downgraded to auto. The warn must fire (so the
-// downgrade is observable) and must NOT leak message content or any
-// secret-derived value — only the static mode integer and the adapter /
-// model identifiers.
+// TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade: the Responses
+// request body carries no tool_choice field, so a non-auto ToolChoice is
+// silently downgraded to auto. The warn must fire without leaking message
+// content or any secret-derived value.
 func TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	srv := responsesWarnStubServer(t)
 
@@ -208,23 +206,18 @@ func TestOpenAIResponsesAdapter_StreamToolCall(t *testing.T) {
 }
 
 func TestOpenAIResponsesAdapter_MultipleToolCalls(t *testing.T) {
-	// Two function calls in flight concurrently. Their argument-deltas
-	// arrive interleaved (bbb then aaa) but the .done events fire in
-	// output_index order, which is OpenAI's natural emission contract.
-	// The adapter must emit each tool_call at .done (no later, so the
-	// agentic loop can dispatch tools as soon as they're complete) AND
-	// preserve the output_index ordering across the resulting events.
+	// Argument-deltas for two concurrent calls arrive interleaved (bbb
+	// then aaa); the adapter must emit each tool_call at .done and
+	// preserve output_index ordering across the resulting events.
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_aaa","call_id":"call_aaa","name":"read_file"}}`),
 		makeResponsesEvent("response.output_item.added", `{"output_index":1,"item":{"type":"function_call","id":"fc_bbb","call_id":"call_bbb","name":"write_file"}}`),
-		// Interleaved deltas: server is still composing both calls.
+
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_bbb","output_index":1,"delta":"{\"path\":\"b.go\","}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_aaa","output_index":0,"delta":"{\"path\":"}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_bbb","output_index":1,"delta":"\"content\":\"x\"}"}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_aaa","output_index":0,"delta":"\"a.go\"}"}`),
-		// .done events fire in output_index order (the realistic OpenAI
-		// contract) so per-call emission already produces deterministic
-		// ordering.
+
 		makeResponsesEvent("response.output_item.done", `{"output_index":0,"item":{"type":"function_call","id":"fc_aaa","call_id":"call_aaa","name":"read_file"}}`),
 		makeResponsesEvent("response.output_item.done", `{"output_index":1,"item":{"type":"function_call","id":"fc_bbb","call_id":"call_bbb","name":"write_file"}}`),
 		makeResponsesEvent("response.completed", `{"response":{"id":"resp_3","status":"completed","output":[{"type":"function_call","id":"fc_aaa","call_id":"call_aaa","name":"read_file"},{"type":"function_call","id":"fc_bbb","call_id":"call_bbb","name":"write_file"}]}}`),
@@ -261,7 +254,7 @@ func TestOpenAIResponsesAdapter_MultipleToolCalls(t *testing.T) {
 	if len(toolCalls) != 2 {
 		t.Fatalf("expected 2 tool_call events, got %d", len(toolCalls))
 	}
-	// Sort by output_index ascending: a then b.
+
 	if toolCalls[0].ID != "call_aaa" || toolCalls[0].Name != "read_file" {
 		t.Errorf("toolCalls[0] = %+v, want call_aaa/read_file", toolCalls[0])
 	}
@@ -277,17 +270,16 @@ func TestOpenAIResponsesAdapter_MultipleToolCalls(t *testing.T) {
 }
 
 func TestOpenAIResponsesAdapter_DeferredFlushOrderedByOutputIndex(t *testing.T) {
-	// A defensive case: if no .done events fire for two concurrent
-	// function calls (e.g. server abbreviates the stream), the adapter
-	// must still flush them on response.completed in deterministic
-	// output_index ascending order. State map iteration in Go is
-	// randomised, so the explicit sort matters.
+	// If no .done events fire for two concurrent function calls, the
+	// adapter must still flush them on response.completed in
+	// deterministic output_index ascending order — state map iteration
+	// in Go is randomised, so the explicit sort matters.
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"write_file"}}`),
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"read_file"}}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_b","output_index":1,"delta":"{\"path\":\"b\"}"}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_a","output_index":0,"delta":"{\"path\":\"a\"}"}`),
-		// Note: no .done events. Calls are pending when completion arrives.
+
 		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[{"type":"function_call","id":"fc_a","call_id":"call_a","name":"read_file"},{"type":"function_call","id":"fc_b","call_id":"call_b","name":"write_file"}]}}`),
 	}, "")
 
@@ -679,8 +671,6 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 		t.Errorf("temperature = %v, want *=0.5", received.Temperature)
 	}
 
-	// Raw body must NOT contain a Chat Completions-style top-level "messages"
-	// field, and must NOT contain a Chat Completions "max_tokens" key.
 	if strings.Contains(string(rawBody), `"messages"`) {
 		t.Error("request body contains 'messages' field — Responses API uses 'input'")
 	}
@@ -740,11 +730,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 		t.Error("request body contains nested 'function' object — Responses API uses a flat tool shape")
 	}
 
-	// The default case above exercises ToolChoiceAuto (the zero value). Drive
-	// the same request shape with a non-auto ToolChoice and confirm the raw
-	// body still omits "tool_choice": the adapter downgrades to auto and must
-	// never serialise the field. This pins the omission inside the primary
-	// request-body test, independently of the warn-focused tests.
+	// A non-auto ToolChoice must still omit "tool_choice" from the raw
+	// body: the adapter downgrades to auto and never serialises the field.
 	t.Run("ToolChoiceRequired", func(t *testing.T) {
 		var rawBody []byte
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -778,12 +765,10 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	})
 }
 
-// TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField pins the
-// wire-level half of #343: even when a non-auto ToolChoice is requested, the
-// Responses request body must never carry a "tool_choice" field, because the
-// adapter does not support it and silently downgrades to auto. A regression
-// that accidentally serialised the field would be invisible to the warn tests
-// above, which only observe the log.
+// TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField: even
+// when a non-auto ToolChoice is requested, the Responses request body must
+// never carry a "tool_choice" field, because the adapter does not support
+// it and silently downgrades to auto.
 func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testing.T) {
 	var rawBody []byte
 
@@ -821,12 +806,10 @@ func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testi
 }
 
 func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
-	// End-to-end pin for #172: drives Stream() with an empty tool_result
-	// block and asserts on the raw HTTP body the adapter actually sends.
-	// Catches any future regression where intermediate processing between
-	// translateMessagesResponses and json.Marshal silently elides the
-	// "output" key — a gap that unit tests on translateMessagesResponses
-	// alone would not surface.
+	// Drives Stream() with an empty tool_result block and asserts on the
+	// raw HTTP body: catches any regression where intermediate processing
+	// between translateMessagesResponses and json.Marshal silently elides
+	// the "output" key.
 	var rawBody []byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -870,10 +853,9 @@ func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
 }
 
 // TestOpenAIResponsesAdapter_TemperatureWireShape pins the unset-vs-
-// explicit-zero semantics for StreamParams.Temperature (issue #200). The
-// Responses API rejects "temperature" outright on reasoning models, so a
-// nil pointer must omit the key; an explicit Float64Ptr(0.0) must transmit
-// "temperature":0 (preserving caller-requested greedy decoding).
+// explicit-zero semantics for StreamParams.Temperature: a nil pointer must
+// omit the key; an explicit Float64Ptr(0.0) must transmit "temperature":0
+// (preserving caller-requested greedy decoding).
 func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -1122,7 +1104,7 @@ func TestTranslateMessagesResponses(t *testing.T) {
 		t.Errorf("result[3] = %+v, want function_call_output(call_1,package main)", result[3])
 	}
 	// Marshal-roundtrip check: a future omitempty regression on the Output
-	// field would be invisible to the struct comparison above. See #172.
+	// field would be invisible to the struct comparison above.
 	raw, err := json.Marshal(result[3])
 	if err != nil {
 		t.Fatalf("marshal result[3]: %v", err)
@@ -1154,7 +1136,7 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 	}
 	// Marshal-roundtrip check: an omitempty regression on Output would not
 	// trip the struct assertions above for non-empty payloads, but the wire
-	// shape is what the API actually validates. See #172.
+	// shape is what the API actually validates.
 	raw, err := json.Marshal(result[0])
 	if err != nil {
 		t.Fatalf("marshal result[0]: %v", err)
@@ -1167,7 +1149,7 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
 	// Reproduces the wire-level failure where an empty tool_result content
 	// caused the openai-responses adapter to drop the required "output"
-	// field, yielding HTTP 400 from the Responses API. See #172.
+	// field, yielding HTTP 400 from the Responses API.
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{
 			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
@@ -1203,9 +1185,7 @@ func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
 	// a non-empty Output, so an omitempty regression on the Output field
 	// would NOT trip the marshal assertion in
 	// TestTranslateMessagesResponses_EmptyToolResultContent through this
-	// branch. The empty-Content error case is the structurally riskiest
-	// surface: a future contributor changing the prefix logic could land
-	// us back in the same HTTP 400 territory. See #172.
+	// branch.
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{
 			{Type: "tool_result", ToolUseID: "call_1", Content: "", IsError: true},
@@ -1231,12 +1211,11 @@ func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
 }
 
 func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T) {
-	// Reproduces the realistic production scenario for #172: a single user
-	// message carrying multiple tool_result blocks where one or more have
-	// empty Content. The original HTTP 400 occurred during multi-tool turns
-	// — TestTranslateMessagesResponses_EmptyToolResultContent covers the
-	// single-block case, this covers the multi-block case where any one
-	// block silently dropping its "output" key would still trigger the bug.
+	// A single user message carrying multiple tool_result blocks where one
+	// or more have empty Content — any one block silently dropping its
+	// "output" key would trigger the HTTP 400 that
+	// TestTranslateMessagesResponses_EmptyToolResultContent covers for the
+	// single-block case.
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{
 			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
@@ -1289,12 +1268,11 @@ func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
 	}
 }
 
-// TestResponsesInputMarshal_MessageOmitsOutput is the gh-199 wire-shape
-// regression: the original shared-struct shape emitted "output":"" on
-// every input item, including plain "message" items. Azure OpenAI's
-// stricter validator rejects the spurious key with HTTP 400 ("Unknown
-// parameter: 'input[0].output'"). The per-type marshaller must emit
-// only the keys valid for the message variant.
+// TestResponsesInputMarshal_MessageOmitsOutput: a shared-struct shape that
+// emits "output":"" on every input item, including plain "message" items,
+// fails Azure OpenAI's stricter validator with HTTP 400 ("Unknown
+// parameter: 'input[0].output'"). The per-type marshaller must emit only
+// the keys valid for the message variant.
 func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
 	item := responsesInput{
 		Type: "message",
@@ -1327,10 +1305,10 @@ func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
 	}
 }
 
-// TestResponsesInputMarshal_FunctionCallOmitsOutput pins the gh-199 fix
-// on the function_call variant: only type/call_id/name/arguments are
-// valid, so the spurious "output" key (and "role"/"content") must not
-// leak across the discriminant.
+// TestResponsesInputMarshal_FunctionCallOmitsOutput: on the function_call
+// variant only type/call_id/name/arguments are valid, so the spurious
+// "output" key (and "role"/"content") must not leak across the
+// discriminant.
 func TestResponsesInputMarshal_FunctionCallOmitsOutput(t *testing.T) {
 	item := responsesInput{
 		Type:      "function_call",
@@ -1359,11 +1337,11 @@ func TestResponsesInputMarshal_FunctionCallOmitsOutput(t *testing.T) {
 	}
 }
 
-// TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput preserves
-// the #172 invariant under the per-type marshaller: function_call_output
-// items must emit "output":"" even when the value is the empty string,
-// otherwise the Responses API rejects the request with HTTP 400
-// ("Missing required parameter: 'input[N].output'").
+// TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput: under the
+// per-type marshaller, function_call_output items must emit "output":""
+// even when the value is the empty string, otherwise the Responses API
+// rejects the request with HTTP 400 ("Missing required parameter:
+// 'input[N].output'").
 func TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput(t *testing.T) {
 	item := responsesInput{
 		Type:   "function_call_output",
@@ -1400,8 +1378,8 @@ func TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput(t *testing.T) 
 // TestResponsesInputMarshal_FunctionCallOutputNonEmpty pairs with the
 // empty-output pin: a function_call_output item carrying a real result
 // string must put it under the "output" key on the wire. Together the
-// two tests fence the field on both sides — required when empty
-// (#172), and faithfully transmitted when populated.
+// two tests fence the field on both sides — required when empty, and
+// faithfully transmitted when populated.
 func TestResponsesInputMarshal_FunctionCallOutputNonEmpty(t *testing.T) {
 	item := responsesInput{
 		Type:   "function_call_output",
@@ -1641,8 +1619,6 @@ func TestOpenAIResponsesAdapter_NoAPIKey(t *testing.T) {
 	}
 }
 
-// --- B1: backpressure / cancellation ---
-
 // TestOpenAIResponsesAdapter_BackpressureCancellation verifies that the
 // streaming goroutine does not leak when the consumer cancels context
 // while the producer is still trying to send. Pre-fix, emitEvent did an
@@ -1710,8 +1686,6 @@ func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
 	}
 }
 
-// --- B2: SSE record size cap ---
-
 // TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced verifies that when
 // a single SSE record's accumulated `data:` lines exceed the input cap,
 // the adapter emits a bounded error event and tears down the stream
@@ -1751,8 +1725,6 @@ func TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced(t *testing.T) {
 		t.Errorf("expected error citing byte limit, got: %v", events[0].Error)
 	}
 }
-
-// --- H1: latency recorded across context cancellation ---
 
 // TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel verifies
 // that provider_latency is recorded even when the caller cancels their
@@ -1808,8 +1780,6 @@ func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) 
 	t.Errorf("provider_latency count = %d, want 1 (latency must be recorded against background ctx)",
 		providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"))
 }
-
-// --- H2: malformed terminal event emits error ---
 
 // TestOpenAIResponsesAdapter_MalformedCompletedEvent verifies that a
 // malformed JSON payload on response.completed surfaces as an error
@@ -1892,8 +1862,6 @@ func TestOpenAIResponsesAdapter_MalformedDispatchEvents(t *testing.T) {
 		})
 	}
 }
-
-// --- H3: callKey fallback ---
 
 // TestCallKey_FallbackToIndex verifies the idx: fallback when item_id
 // is empty (some partner gateways omit the ID).
@@ -2196,19 +2164,15 @@ func TestOpenAIResponsesAdapter_429RetryAfterSpanEvent(t *testing.T) {
 	}
 }
 
-// Note: the dispatch-level arg cap on `.function_call_arguments.done`
-// (lines 559–563) and `.output_item.done` (lines 601–606) is defensive
-// only. The same byte limit is enforced by the SSE scanner's per-line
-// cap and by the B2 dataParts aggregate cap, both of which trip before
-// dispatch is reached. The brief flagged these as coverage gaps; they
-// are unreachable in production with the current cap configuration. We
-// keep the checks for defense-in-depth (so any future relaxation of the
-// scanner cap does not silently uncap tool arguments) but do not
-// fabricate tests for unreachable paths.
+// Note: the dispatch-level arg cap on `.function_call_arguments.done` and
+// `.output_item.done` is defensive only — the same byte limit is enforced
+// earlier by the SSE scanner's per-line cap and the dataParts aggregate
+// cap. Kept for defense-in-depth against a future relaxation of the
+// scanner cap; not exercised by a dedicated test since it is unreachable
+// with the current configuration.
 
 // TestOpenAIResponsesAdapter_UnknownEventSpanEvent verifies that an
-// unknown SSE event type emits a span event for production
-// observability (M1).
+// unknown SSE event type emits a span event for production observability.
 func TestOpenAIResponsesAdapter_UnknownEventSpanEvent(t *testing.T) {
 	body := strings.Join([]string{
 		// Unknown event type — must be ignored but tagged on the span.
@@ -2267,7 +2231,7 @@ func TestOpenAIResponsesAdapter_UnknownEventSpanEvent(t *testing.T) {
 // [text, tool_result, text]. The current contract is: function_call_output
 // items emit first (in their document order); user text is batched into
 // a single trailing input_text item. See the comment in
-// translateMessagesResponses for rationale (M4).
+// translateMessagesResponses for rationale.
 func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 	messages := []types.Message{
 		{
@@ -2295,9 +2259,9 @@ func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 }
 
 // TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam is the Azure OpenAI
-// regression guard for the Responses adapter. It pins the acceptance criteria
-// from issue #48: provider.type "openai-responses" with apiKeyHeader: "api-key"
-// and queryParams: {"api-version": "preview"} produces a request hitting
+// regression guard for the Responses adapter: provider.type
+// "openai-responses" with apiKeyHeader: "api-key" and queryParams:
+// {"api-version": "preview"} produces a request hitting
 // /openai/v1/responses?api-version=preview, carrying header api-key: <KEY>,
 // and NO Authorization header (Bearer fallback must not engage).
 func TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {

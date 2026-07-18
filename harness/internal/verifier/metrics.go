@@ -12,14 +12,8 @@ import (
 )
 
 // metricRecorder wraps a Verifier and records stirrup.verifier.runs and
-// stirrup.verifier.duration_ms on every Verify() call. The type label is
-// supplied at construction time because the wrapped verifier itself
-// doesn't carry one — it's the factory that knows whether a given Verify
-// implementation is "none" / "test-runner" / "llm-judge" / "composite".
-//
-// A nil Metrics or a nil inner is safe: nil metrics short-circuits the
-// recording, nil inner is rejected by NewMetricRecorder so callers cannot
-// accidentally double-wrap or mis-construct.
+// stirrup.verifier.duration_ms on every Verify() call. typeStr is supplied
+// at construction time because the wrapped verifier itself doesn't carry one.
 type metricRecorder struct {
 	inner   Verifier
 	metrics *observability.Metrics
@@ -28,15 +22,11 @@ type metricRecorder struct {
 
 // NewMetricRecorder wraps inner with metric recording. Returns inner
 // unchanged when metrics is nil so the wrapper has zero overhead in
-// no-metrics deployments. typeStr is the verifier type label
-// ("none" / "test-runner" / "llm-judge" / "composite") and is forwarded
-// on every metric observation.
+// no-metrics deployments.
 func NewMetricRecorder(inner Verifier, metrics *observability.Metrics, typeStr string) Verifier {
 	if inner == nil {
-		// Defensive: a nil inner would NPE at the first Verify call.
-		// Returning nil here would silently break the call site, so we
-		// return inner verbatim to make the misuse visible at the next
-		// nil dereference instead of much later.
+		// Return inner (nil) unchanged so misuse surfaces at the next nil
+		// dereference rather than being masked here.
 		return inner
 	}
 	if metrics == nil {

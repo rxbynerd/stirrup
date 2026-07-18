@@ -15,27 +15,9 @@ import (
 )
 
 // CedarSchemaVersion records the Cedar policy schema this implementation
-// targets. Bump this constant whenever the entity layout (principal/action/
-// resource/context shape) changes — it lets operators detect a stale
-// starter-policy bundle at runtime.
-//
-// Schema v1:
-//
-//	principal: User::"<runId>"
-//	    parents: { User::"any" }
-//	    attrs:   {
-//	        runId:        String
-//	        mode:         String
-//	        parentRunId:  String  (only set on sub-agents)
-//	        capabilities: Set<String>
-//	    }
-//	action:    Action::"tool:<toolName>"
-//	resource:  Tool::"<toolName>"
-//	context:   {
-//	    input:          Record  (the tool input, recursively translated)
-//	    workspace:      String
-//	    dynamicContext: Record  (string keys -> string values)
-//	}
+// targets. Bump whenever the entity layout changes. See
+// docs/safety-rings.md#ring-3--cedar-policy-engine-per-call-authorization
+// for the full request shape.
 const CedarSchemaVersion = "v1"
 
 // rootUserAlias is the parent EntityUID added to every principal so that
@@ -185,7 +167,7 @@ func (p *PolicyEnginePolicy) Check(ctx context.Context, tool types.ToolDefinitio
 		return &PermissionResult{Allowed: true}, nil
 
 	case decision == cedar.Deny && len(matched) > 0:
-		// Forbid policies matched.
+
 		reason := fmt.Sprintf("denied by Cedar policy: %s", strings.Join(matched, ", "))
 		p.emit("warn", "policy_denied", map[string]any{
 			"tool":            tool.Name,
@@ -210,17 +192,12 @@ func (p *PolicyEnginePolicy) Check(ctx context.Context, tool types.ToolDefinitio
 	}
 }
 
-// Probe validates the loaded Cedar policy set for a dry-run preflight.
-// The file was already read and parsed at construction (a malformed file
-// fails the build), so this confirms the parsed set is present and
-// exercises one cedar.Authorize evaluation against a synthetic request to
-// smoke-test the decision path. It deliberately calls cedar.Authorize
-// directly rather than Check: Check would delegate an unmatched decision
-// to the fallback policy, and for an ask-upstream fallback that means a
-// live transport approval prompt — a side effect a probe must never
-// trigger. A nil set (impossible via the normal constructor but reachable
-// for a hand-built policy) is reported so the preflight does not silently
-// pass a policy that would deny every call at run time.
+// Probe validates the loaded Cedar policy set for a dry-run preflight by
+// evaluating a synthetic request directly against the set. It
+// deliberately bypasses Check: Check would delegate an unmatched
+// decision to the fallback policy, and for an ask-upstream fallback that
+// means a live transport approval prompt — a side effect a probe must
+// never trigger.
 func (p *PolicyEnginePolicy) Probe(_ context.Context) error {
 	if p == nil || p.cedar == nil {
 		return errors.New("policy-engine: no Cedar policy set loaded")
@@ -230,25 +207,17 @@ func (p *PolicyEnginePolicy) Probe(_ context.Context) error {
 	if err != nil {
 		return fmt.Errorf("policy-engine: build probe request: %w", err)
 	}
-	// The decision itself is irrelevant — the probe only confirms the
-	// policy set evaluates without panicking or erroring on a well-formed
-	// request.
+
 	cedar.Authorize(p.cedar, entities, req)
 	return nil
 }
 
 // ForChildRun returns a shallow clone of the receiver bound to a new
-// child run identity. The Cedar policy set, fallback policy, and
-// security emitter are reused unchanged; runID is replaced with the
-// child's ID and parentRunID is set to the parent's ID. This is the
-// only supported way to populate Cedar's principal.parentRunId
-// attribute, which the subagent-capability-cap.cedar starter policy
-// keys off (M3).
-//
-// The receiver is not mutated. Capabilities and dynamicContext are
-// inherited from the parent — sub-agents do not currently downgrade
-// their capability set, but they do gain the parentRunId marker that
-// distinguishes them from top-level runs.
+// child run identity: runID becomes the child's ID and parentRunID is
+// set to the parent's ID. This is the only supported way to populate
+// Cedar's principal.parentRunId attribute, which
+// subagent-capability-cap.cedar keys off. The receiver is not mutated;
+// capabilities and dynamicContext are inherited unchanged.
 func (p *PolicyEnginePolicy) ForChildRun(childRunID string) *PolicyEnginePolicy {
 	if p == nil {
 		return nil
@@ -364,8 +333,8 @@ func jsonToCedarValue(raw json.RawMessage) (cedartypes.Value, error) {
 // to a Cedar Value. Go's encoding/json decoder allows ~10000 levels of
 // nesting, well past what fits on the goroutine stack for downstream
 // recursion; an attacker-controlled tool input can therefore reach
-// goValueToCedar with a depth that crashes the harness. Cap conservatively
-// — 64 levels is far deeper than any legitimate tool schema (M5).
+// goValueToCedar with a depth that crashes the harness. 64 is far
+// deeper than any legitimate tool schema.
 const maxCedarDepth = 64
 
 // goValueToCedar maps a decoded JSON value to a Cedar Value. JSON null

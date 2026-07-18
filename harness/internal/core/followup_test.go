@@ -39,8 +39,8 @@ func (t *controllableTransport) FireControl(event types.ControlEvent) {
 }
 
 // buildFollowUpTestLoop creates an AgenticLoop with a controllableTransport
-// and a provider that always returns a simple successful response. The
-// returned transport handle lets the caller inject control events.
+// (returned for injecting control events) and a provider that always
+// succeeds.
 func buildFollowUpTestLoop(t *testing.T) (*AgenticLoop, *controllableTransport) {
 	t.Helper()
 	tr := &controllableTransport{}
@@ -62,8 +62,6 @@ func TestRunFollowUpLoop_ZeroGracePeriod(t *testing.T) {
 	RunFollowUpLoop(context.Background(), loop, config, 0)
 	elapsed := time.Since(start)
 
-	// With graceSecs == 0 the timer fires immediately. The function should
-	// return in well under a second.
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("expected immediate return for zero grace period, took %v", elapsed)
 	}
@@ -73,19 +71,16 @@ func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
 	loop, tr := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
-	// Use a cancellable context so we can exit after verifying the follow-up
-	// was processed (otherwise the reset grace timer would block the test).
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Long grace period — the test exits via context cancellation, not
-		// the timer. This proves the follow-up path was taken.
+		// Long grace period: the test exits via context cancellation, not
+		// the timer, proving the follow-up path was taken.
 		RunFollowUpLoop(ctx, loop, config, 30)
 	}()
 
-	// Give OnControl registration a moment to take effect.
 	time.Sleep(50 * time.Millisecond)
 
 	// Fire a follow-up control event with a new prompt.
@@ -94,19 +89,14 @@ func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
 		UserResponse: "Please also add tests.",
 	})
 
-	// Wait briefly for the inner loop to complete and config to be mutated,
-	// then cancel so RunFollowUpLoop exits the reset grace window.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
 	select {
 	case <-done:
-		// RunFollowUpLoop returned. Verify the config was updated with the
-		// follow-up prompt (RunFollowUpLoop mutates config.Prompt).
 		if config.Prompt != "Please also add tests." {
 			t.Errorf("expected config.Prompt to be updated to follow-up prompt, got %q", config.Prompt)
 		}
-		// RunID should have been refreshed.
 		if config.RunID == "test-run-1" {
 			t.Error("expected config.RunID to be refreshed for follow-up run")
 		}

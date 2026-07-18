@@ -98,14 +98,8 @@ func run(args []string, stdout io.Writer) int {
 }
 
 // cmdCompletion writes a shell completion script for stirrup-eval to
-// stdout. The supported shells mirror those exposed by `stirrup
-// completion`; the underlying scripts are hand-rolled rather than
-// cobra-generated because the eval module does not depend on cobra
-// (see completion.go for the rationale).
-//
-// Returns the process exit code: 0 on success, 1 on a missing or
-// unsupported shell. A nil-writer error from the emit helper surfaces
-// via stderr and a non-zero exit.
+// stdout, returning the process exit code (0 on success, 1 on a
+// missing or unsupported shell).
 func cmdCompletion(args []string, stdout io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "completion requires a shell: bash | zsh | fish | powershell")
@@ -129,13 +123,9 @@ func cmdRun(args []string) {
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
 	model := fs.String("model", "", "Model to run every task with (forwarded to each harness invocation as --model). Overrides the harness default and any model pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
 	promptModel := fs.String("prompt-model", "", "Prompt model to render system prompts with (forwarded to each harness invocation as --prompt-model). The wire model is unchanged; combine with --model to compare a prompt tuned for one model against another. Empty (the default) derives the prompt model from the effective model.")
-	// Anthropic Workload Identity Federation flags. The runner forwards
-	// these verbatim to every `stirrup harness` invocation so the
+	// Forwarded verbatim to every `stirrup harness` invocation so the
 	// eval-gate CI job can authenticate via WIF instead of a static
-	// ANTHROPIC_API_KEY. The four identifiers are non-secret per
-	// Anthropic's WIF docs (see #130 and .github/workflows/smoke-anthropic.yml);
-	// the actual OIDC exchange happens inside the harness using the
-	// GitHub Actions runner environment.
+	// ANTHROPIC_API_KEY; the four identifiers are non-secret.
 	anthropicFederationRuleID := fs.String("anthropic-federation-rule-id", "", "Anthropic federation rule ID (`fdrl_...`). Forwarded to every harness invocation. Non-secret: identifies the federation rule but cannot itself authenticate.")
 	anthropicOrganizationID := fs.String("anthropic-organization-id", "", "Anthropic organisation UUID. Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
 	anthropicServiceAccountID := fs.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
@@ -191,11 +181,9 @@ func cmdRun(args []string) {
 		log.Fatalf("running suite: %v", err)
 	}
 
-	// Write the canonical per-suite result alongside the per-task artifact
-	// tree the runner already created. The top-level result.json is kept
-	// for backward compatibility with CI workflows and downstream tooling
-	// that currently read <outputDir>/result.json — duplicating it is
-	// cheap and keeps blast radius minimal.
+	// result.json is written both at the top level (legacy location CI
+	// workflows read) and per-suite (canonical location alongside the
+	// per-task artifact tree).
 	suiteResultPath := filepath.Join(*outputDir, result.SuiteID, "result.json")
 	if err := writeJSON(suiteResultPath, result); err != nil {
 		log.Fatalf("writing per-suite result: %v", err)
@@ -206,12 +194,10 @@ func cmdRun(args []string) {
 	}
 
 	if *junitPath != "" {
-		// JUnit XML is a secondary derived artifact; result.json has
-		// already been written. Demote a write failure to a warning so
-		// the CI loop's primary artifact survives even when the JUnit
-		// emit fails (e.g. read-only filesystem, exhausted inode quota).
-		// cmdConvert keeps log.Fatalf — it has no prior artifact to
-		// protect.
+		// A JUnit write failure is demoted to a warning so the CI
+		// loop's primary artifact (result.json, already written)
+		// survives. cmdConvert keeps log.Fatalf — it has no prior
+		// artifact to protect.
 		if err := writeJUnit(*junitPath, result); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: writing JUnit XML: %v\n", err)
 		} else {
@@ -308,10 +294,8 @@ func cmdCompare(args []string) {
 }
 
 // loadSuite reads a suite HCL file at path and returns the parsed
-// types.EvalSuite. HCL is the only accepted authoring format; the
-// legacy JSON loader was removed once HCL became canonical, so any
-// extension other than .hcl is rejected with a clear error rather
-// than silently accepted and parsed as JSON.
+// types.EvalSuite. .hcl is the only accepted extension; the legacy
+// JSON loader has been removed.
 func loadSuite(path string) (types.EvalSuite, error) {
 	if ext := strings.ToLower(filepath.Ext(path)); ext != ".hcl" {
 		return types.EvalSuite{}, fmt.Errorf("unsupported suite file extension %q (expected .hcl)", ext)
@@ -425,13 +409,13 @@ func cmdBaseline(args []string) {
 // cmdMineFailures queries production traces, hydrates recordings
 // opportunistically, and constructs an EvalSuite of regression tasks
 // that capture the failing-turn context an operator needs to write a
-// meaningful test (#274).
+// meaningful test.
 //
-// The data path switches from QueryRecordings to QueryTraces because
-// traces always exist (every harness run emits one) while recordings
-// are opportunistic (only the streaming JSONL emitter writes them).
-// Mining stays useful when no recording is available — the task just
-// carries less context and the description says so.
+// The candidate set comes from QueryTraces rather than
+// QueryRecordings because traces always exist (every harness run
+// emits one) while recordings are opportunistic (only the streaming
+// JSONL emitter writes them). Mining stays useful when no recording
+// is available — the task just carries less context.
 func cmdMineFailures(args []string) {
 	fs := flag.NewFlagSet("mine-failures", flag.ExitOnError)
 	lakehousePath := fs.String("lakehouse", "", "Path to lakehouse directory (required)")
@@ -482,11 +466,8 @@ func cmdMineFailures(args []string) {
 		log.Fatalf("querying traces: %v", err)
 	}
 
-	// Build a runId -> recording map opportunistically. Recordings are
-	// stored alongside traces in <root>/recordings/<runId>.json; a
-	// QueryRecordings call returns whatever is present. Missing
-	// recordings are absent from the map; the per-trace mining loop
-	// below detects that and emits a thin-trace task.
+	// Recordings are opportunistic; a trace missing from this map
+	// gets a thin-trace task from the mining loop below.
 	recordings, err := store.QueryRecordings(ctx, types.TraceFilter{})
 	if err != nil {
 		log.Fatalf("querying recordings: %v", err)
@@ -496,16 +477,12 @@ func cmdMineFailures(args []string) {
 		recByID[rec.RunID] = rec
 	}
 
-	// Filter traces by EvalOutcome and the batch / inconclusive
-	// switches, then optionally stratify across --sample-by before
-	// taking the top --limit. Pre-filter so a 50-trace cap on a
-	// 5,000-trace lakehouse doesn't waste the sampler's time on
-	// passing runs.
+	// Pre-filter before sampling so a 50-trace cap on a 5,000-trace
+	// lakehouse doesn't waste the sampler's time on passing runs.
 	target := types.EvalOutcome(*outcome)
 	filtered := filterTracesForMining(traces, target, *includeInconclusive, *includeBatch)
 	selected := sampleTraces(filtered, *sampleBy, *limit)
 
-	// Build tasks, hydrating from recordings when present.
 	var (
 		hydratedRecordings []types.RunRecording
 		tasks              []types.EvalTask
@@ -518,10 +495,9 @@ func cmdMineFailures(args []string) {
 		}
 	}
 
-	// Classify the recordings we actually used for hydration. Traces
-	// with no recording cannot trip the classifier (they carry no
-	// transcript content), so the flag set is a function of the
-	// hydrated subset.
+	// Only recordings actually used for hydration are classified —
+	// a bare trace carries no transcript content, so it cannot trip
+	// the quarantine classifier.
 	flags := types.ClassifyForQuarantine(hydratedRecordings)
 	if len(flags) > 0 && *output != "" && !*acceptQuarantine {
 		fmt.Fprintf(os.Stderr,
@@ -546,8 +522,7 @@ func cmdMineFailures(args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "Suite written to %s\n", *output)
 	} else {
-		// Dry-run: print a brief summary to stdout. Operators run
-		// without --output to preview before writing.
+		// Dry-run.
 		fmt.Fprintln(os.Stderr, "mine-failures: dry-run (no --output set); preview only:")
 		for _, t := range tasks {
 			fmt.Fprintf(os.Stderr, "  - %s: %s\n", t.ID, oneLine(t.Description))
@@ -558,9 +533,8 @@ func cmdMineFailures(args []string) {
 		len(tasks), len(filtered), len(hydratedRecordings))
 }
 
-// filterTracesForMining applies the (outcome, includeInconclusive,
-// includeBatch) predicates to a trace slice. Returns the subset that
-// should feed sampling + task generation.
+// filterTracesForMining applies the outcome, includeInconclusive,
+// and includeBatch predicates, returning the subset to sample from.
 func filterTracesForMining(traces []types.RunTrace, target types.EvalOutcome, includeInconclusive, includeBatch bool) []types.RunTrace {
 	out := make([]types.RunTrace, 0, len(traces))
 	for _, t := range traces {
@@ -579,15 +553,10 @@ func filterTracesForMining(traces []types.RunTrace, target types.EvalOutcome, in
 }
 
 // sampleTraces stratifies a candidate slice across the dimension
-// named by sampleBy. Empty sampleBy => take the top limit by
-// recency (the existing behaviour). limit=0 => return all.
-//
-// The proportional allocation uses largest-remainder rounding so a
-// limit smaller than the stratum count still surfaces at least one
-// trace per non-empty stratum (down to the smallest strata, which
-// may yield zero when limit < strata count). The trade-off favours
-// representativeness over strict per-stratum proportionality at the
-// very small end.
+// named by sampleBy. Empty sampleBy takes the top limit by recency;
+// limit=0 returns all. Allocation uses largest-remainder rounding so
+// a limit smaller than the stratum count still surfaces at least one
+// trace per non-empty stratum where possible.
 func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.RunTrace {
 	if limit <= 0 || len(traces) <= limit {
 		return traces
@@ -625,9 +594,6 @@ func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.R
 		byKey[k].members = append(byKey[k].members, t)
 	}
 
-	// Largest-remainder allocation: floor(limit * len(stratum) / total)
-	// for each stratum, then distribute the remaining slots to the
-	// strata with the highest fractional remainders.
 	type alloc struct {
 		key       string
 		quota     int
@@ -650,10 +616,8 @@ func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.R
 		})
 	}
 	for used < limit {
-		// Find the stratum with the largest remainder; on ties prefer
-		// the stratum with the lowest current quota (more
-		// representative across small strata), then alphabetically by
-		// key so the result is deterministic.
+		// Largest remainder wins; ties break by lowest quota, then key,
+		// for a deterministic result.
 		bestIdx := -1
 		for i := range allocs {
 			if allocs[i].quota >= len(allocs[i].members) {
@@ -691,12 +655,9 @@ func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.R
 }
 
 // buildMinedTask produces an EvalTask from a trace plus an optional
-// recording. When the recording is present, the task Description
-// includes the failing-turn context (last assistant message excerpt
-// and any failing tool call) so the operator reading the suite knows
-// what went wrong without re-running the trace. When only the thin
-// trace is present, the description says so and the operator decides
-// whether to keep the task or refine the prompt manually.
+// recording. When present, the recording contributes failing-turn
+// context to the description; otherwise the description flags the
+// trace as thin.
 func buildMinedTask(trace types.RunTrace, rec types.RunRecording, hasRecording bool) types.EvalTask {
 	desc := fmt.Sprintf("Mined from run %s (outcome: %s)", trace.ID, trace.Outcome)
 	if !hasRecording {
@@ -716,12 +677,10 @@ func buildMinedTask(trace types.RunTrace, rec types.RunRecording, hasRecording b
 	}
 }
 
-// summariseFailingTurn extracts a short, human-readable excerpt of
-// the failing turn from a recording: the last assistant text block
-// (truncated to keep the suite file readable) and the name + status
-// of any failing tool call. Sub-agent activity surfaces as a
-// dedicated line so multi-agent failures don't read as single-turn
-// ones.
+// summariseFailingTurn extracts a short excerpt of the last turn's
+// assistant text and any failing tool call. Sub-agent tool activity
+// gets its own line so multi-agent failures don't read as
+// single-turn ones.
 func summariseFailingTurn(rec types.RunRecording) string {
 	if len(rec.Turns) == 0 {
 		return "  recording present but no turns captured."
@@ -928,24 +887,11 @@ func cmdDrift(args []string) {
 	}
 }
 
-// mineFailureTasksFiltered filters recordings for non-passing outcomes
-// and converts them into EvalTasks with a default test-command judge.
-//
-// As of #273 the filter is `EvalOutcomeFor(rec.FinalOutcome) ==
-// EvalFailed` by default, replacing the previous `Outcome !=
-// "success"` predicate. Failed and inconclusive are distinct
-// categories: failed means the harness produced a wrong-direction
-// result; inconclusive means the harness ran out of room or was
-// interrupted. The latter is typically investigated manually rather
-// than codified as a regression, so it is excluded by default.
-// Pass includeInconclusive=true to mine both.
-//
-// When includeBatch is false (the documented default), recordings
-// whose RunConfig opted into batch provider submission are skipped:
-// their wall-clock duration is dominated by provider-side queue time,
-// not the harness's stall pattern, so including them inflates apparent
-// stall metrics and obscures the prompt patterns mine-failures is here
-// to surface (#138).
+// mineFailureTasksFiltered filters recordings for non-passing
+// outcomes and converts them into EvalTasks with a default
+// test-command judge. Failed and inconclusive are distinct
+// categories (see docs/eval.md); only failed is mined by default,
+// pass includeInconclusive=true to mine both.
 func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includeBatch bool, includeInconclusive bool) []types.EvalTask {
 	var tasks []types.EvalTask
 	for _, rec := range recordings {
@@ -981,19 +927,15 @@ func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includ
 }
 
 // isBatchRecording is a thin spelling of ProviderConfig.IsBatchEnabled
-// kept here only so existing tests can call it directly. Both this and
-// lakehouse.isBatchRun now route through the canonical
-// ProviderConfig.IsBatchEnabled predicate (#138) so a future change
-// to the batch posture rule lands in one place.
+// kept here so existing tests can call it directly.
 func isBatchRecording(rec types.RunRecording) bool {
 	return rec.Config.Provider.IsBatchEnabled()
 }
 
-// buildDriftReport computes deltas between current and baseline metrics.
-// The streaming and batch duration percentiles are differenced
-// separately so a drift signal compares like-for-like (#138) and a
-// run mix shift (more batch traffic) does not register as a
-// streaming-latency regression.
+// buildDriftReport computes deltas between current and baseline
+// metrics. Streaming and batch duration percentiles are differenced
+// separately so a run-mix shift toward batch traffic does not
+// register as a streaming-latency regression.
 func buildDriftReport(current, baseline types.TraceMetrics) types.DriftReport {
 	return types.DriftReport{
 		Current:  current,
@@ -1036,12 +978,10 @@ func printDriftReport(report types.DriftReport) bool {
 
 	var flags []string
 
-	// Pass rate drop > 5 percentage points
 	if report.Deltas.PassRateDelta < -0.05 {
 		flags = append(flags, fmt.Sprintf("pass rate dropped %.1fpp", report.Deltas.PassRateDelta*100))
 	}
 
-	// Turns increase > 20%
 	if report.Baseline.MeanTurns > 0 && report.Deltas.MeanTurnsDelta/report.Baseline.MeanTurns > 0.20 {
 		flags = append(flags, fmt.Sprintf("mean turns increased %.0f%%",
 			(report.Deltas.MeanTurnsDelta/report.Baseline.MeanTurns)*100))
@@ -1157,7 +1097,6 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 		SampleSize: prodMetrics.Count,
 	}
 
-	// Compute lab variant metrics from the SuiteResult.
 	var totalTurns int
 	tracedTasks := 0
 	for _, task := range result.Tasks {
@@ -1179,8 +1118,7 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 		},
 	}
 
-	// MedianTurns is an int field; use the truncated mean as an approximation
-	// when we don't have enough data points for a proper median.
+	// MedianTurns is an int field; the truncated mean approximates it.
 	variant.Results.MedianTurns = int(meanTurns)
 
 	return types.LabVsProductionReport{
@@ -1236,12 +1174,11 @@ func parseDate(s string) (time.Time, error) {
 // parseDuration parses a duration string supporting Go's standard format plus
 // a "d" suffix for days (e.g. "7d" = 168h).
 func parseDuration(s string) (time.Duration, error) {
-	// Try Go's built-in parser first.
+	// Go's format first.
 	if d, err := time.ParseDuration(s); err == nil {
 		return d, nil
 	}
 
-	// Handle "Nd" suffix for days.
 	if trimmed, ok := strings.CutSuffix(s, "d"); ok {
 		days, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {

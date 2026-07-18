@@ -102,7 +102,6 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify the in-memory trace summary.
 	if trace.ID != "run-123" {
 		t.Errorf("ID: got %q, want %q", trace.ID, "run-123")
 	}
@@ -125,8 +124,6 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)
 	}
 
-	// Verify the on-disk stream is well-formed and carries the events
-	// the streaming-trace contract promises.
 	events := readEvents(t, buf.Bytes())
 	if len(events) < 4 {
 		t.Fatalf("expected at least 4 events (started, 2 tool_call_record, finished), got %d", len(events))
@@ -231,10 +228,8 @@ func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 		t.Error("expected output to be written")
 	}
 
-	// An empty run still produces a valid two-line stream: run_started
-	// (with a nil config — the trace_emitter accepts a nil config so
-	// callers that fail validation before constructing a full RunConfig
-	// can still record telemetry) followed by run_finished.
+	// A nil config is accepted, so callers that fail validation before
+	// constructing a full RunConfig can still record telemetry.
 	events := readEvents(t, buf.Bytes())
 	if len(events) != 2 {
 		t.Fatalf("empty run events: got %d, want 2 (started + finished)", len(events))
@@ -306,8 +301,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 }
 
 // TestScrubTurnRecord_ToolCallRecord_FieldCompleteness guards
-// scrubTurnRecord's explicit field-by-field ToolCallRecord rebuild
-// (issue #423). Because the rebuild names each field individually
+// scrubTurnRecord's explicit field-by-field ToolCallRecord rebuild.
+// Because the rebuild names each field individually
 // rather than copying the source struct wholesale, a future field
 // added to types.ToolCallRecord compiles cleanly but is silently
 // dropped from every persisted trace unless a matching copy line is
@@ -477,8 +472,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.
 // the scrub of ContentBlock.Content — the tool_result text rendering
 // that rides the message history into the next turn's ModelInput. The
 // same payload is scrubbed as ToolCallRecord.Output on its other route
-// into the trace; this covers the message-history route, which was
-// found unscrubbed while building the OTel content-capture path (#413).
+// into the trace; this covers the message-history route.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T) {
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf)
@@ -515,7 +509,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T
 	}
 }
 
-// TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured pins the issue #231
+// TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured pins the
 // requirement that the structured tool-result payload is scrubbed on the same
 // footing as the text Output: a command transcript or file excerpt carried in
 // ToolCallRecord.Structured must never reach disk with a secret in the clear.
@@ -565,7 +559,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured pins the
-// issue #231 B2 requirement that a structured tool-result envelope carried on a
+// requirement that a structured tool-result envelope carried on a
 // message-history ContentBlock is scrubbed before persistence. This is the
 // route MCP-derived structured content (untrusted server output) takes into the
 // trace: it lands on the tool_result block of the NEXT turn's ModelInput, not
@@ -619,7 +613,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic pins the requirement
 // that scrubModelInput forwards the Synthetic marker to the on-disk trace so the
 // replay/mining toolchain can distinguish harness-injected turns from genuine
-// user content (#340).
+// user content.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf)
@@ -668,7 +662,6 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 		t.Error("second message should have Synthetic:true preserved through scrubModelInput")
 	}
 
-	// Also verify the on-disk JSON contains the synthetic field explicitly.
 	onDisk := buf.String()
 	if !strings.Contains(onDisk, `"synthetic":true`) {
 		t.Errorf("expected on-disk JSON to contain synthetic:true, got:\n%s", onDisk)

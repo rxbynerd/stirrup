@@ -85,7 +85,7 @@ func captureTurnRecord() types.TurnRecord {
 }
 
 // TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture pins the
-// default-off contract (issue #413 AC): with captureContent unset, a
+// default-off contract: with captureContent unset, a
 // RecordTurnRecord and a RecordSystemInstructions change nothing — the
 // span count and the turn span's attribute set are identical to the
 // pre-capture emitter, and no gen_ai content key appears anywhere.
@@ -132,9 +132,8 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 	assertAttribute(t, turn, genAIOperationNameKey, "chat")
 }
 
-// TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages pins the
-// issue #413 Part A acceptance criterion: with the toggle on, the
-// turn span carries non-empty gen_ai.input.messages /
+// TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages pins that
+// with the toggle on, the turn span carries non-empty gen_ai.input.messages /
 // gen_ai.output.messages / gen_ai.system_instructions alongside its
 // existing counter attributes, and each value is valid JSON in the
 // semconv message shape.
@@ -252,7 +251,7 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 }
 
 // TestOTelTraceEmitter_RecordTurnRecord_Scrubs is the OTel counterpart
-// of TestJSONLTraceEmitter_RecordTurnRecord_Scrubs (issue #413 AC):
+// of TestJSONLTraceEmitter_RecordTurnRecord_Scrubs:
 // secret-shaped substrings in message content, model output, tool
 // arguments, or the system prompt must never reach an exported span
 // attribute in raw form. The scrubber runs before any attribute is
@@ -526,8 +525,8 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	}
 }
 
-// TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO pins the W3
-// acceptance criterion: with capture on, a tool call's counters
+// TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO pins that
+// with capture on, a tool call's counters
 // (buffered at RecordToolCall time, timestamps frozen) and its
 // arguments/result (delivered by the enclosing turn's record) land on
 // one execute_tool span carrying gen_ai.tool.call.{id,arguments,result}.

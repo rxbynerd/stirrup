@@ -15,10 +15,8 @@ import (
 )
 
 // newTestRunConfigCommand returns a fresh cobra command preloaded with
-// the run-config flag surface. The real runConfigCmd is process-global
-// and a test that calls SetArgs / ParseFlags on it would pollute
-// neighbour tests; a per-test command keeps the Changed() state
-// scoped.
+// the run-config flag surface, scoped per test so Changed() state does
+// not leak into the process-global runConfigCmd.
 func newTestRunConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "run-config"}
 	addRunConfigFlags(cmd)
@@ -30,9 +28,7 @@ func newTestRunConfigCommand() *cobra.Command {
 
 // runRunConfigForTest invokes the run-config command through its real
 // runRunConfigWithIO entry point so the cobra flag-reading wiring
-// (validate, redact, compact) is exercised end-to-end. The previous
-// implementation replicated the function body inline, which left the
-// production glue at 0% coverage.
+// (validate, redact, compact) is exercised end-to-end.
 func runRunConfigForTest(t *testing.T, args []string, stdin string) (string, error) {
 	t.Helper()
 	cmd := newTestRunConfigCommand()
@@ -50,7 +46,7 @@ func runRunConfigForTest(t *testing.T, args []string, stdin string) (string, err
 	return buf.String(), nil
 }
 
-// TestRunRunConfig_FlagOnlyEmitsValidJSON pins acceptance criterion 1:
+// TestRunRunConfig_FlagOnlyEmitsValidJSON pins that
 // `stirrup run-config --mode execution --provider anthropic` produces
 // a parseable RunConfig.
 func TestRunRunConfig_FlagOnlyEmitsValidJSON(t *testing.T) {
@@ -73,10 +69,9 @@ func TestRunRunConfig_FlagOnlyEmitsValidJSON(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_Idempotency pins acceptance criterion 3: piping a
-// config through `stirrup run-config` twice produces byte-identical
-// output the second time. The first pass may apply default mutations;
-// the second pass must not move the document any further.
+// TestRunRunConfig_Idempotency pins that piping a config through
+// `stirrup run-config` twice produces byte-identical output the second
+// time: the first pass may apply default mutations, the second must not.
 func TestRunRunConfig_Idempotency(t *testing.T) {
 	pass1, err := runRunConfigForTest(t, []string{
 		"--mode", "execution",
@@ -94,12 +89,10 @@ func TestRunRunConfig_Idempotency(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_ValidateRejectsInvalidConfig pins acceptance
-// criterion 2: --validate causes the subcommand to exit non-zero on a
-// config the validator rejects. We pick a contradiction the validator
-// flags reliably: bedrock + the CLI-default `claude-sonnet-4-6` is
-// the issue #65 trap, which validateBedrockProviderFields rejects
-// with an inference-profile remediation hint.
+// TestRunRunConfig_ValidateRejectsInvalidConfig pins that --validate
+// exits non-zero on a config the validator rejects: bedrock + the
+// CLI-default `claude-sonnet-4-6`, which validateBedrockProviderFields
+// rejects with an inference-profile remediation hint.
 func TestRunRunConfig_ValidateRejectsInvalidConfig(t *testing.T) {
 	_, err := runRunConfigForTest(t, []string{
 		"--validate",
@@ -136,14 +129,11 @@ func TestRunRunConfig_ValidateAcceptsValidConfig(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError pins the
-// fix for the run-config sentinel leak (issue #249 review): the
-// interactive harness usage-hint must NOT fire for run-config. When
-// `stirrup run-config --validate` reaches the prompt-required gate on a
-// TTY with no prompt, resolvePromptForRun returns errPromptHintRequested
-// — runRunConfigWithIO must substitute the actionable plain
-// "prompt is required: ..." error rather than leaking the sentinel's
-// internal "interactive prompt hint requested" string to the operator.
+// TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError pins that
+// the interactive harness usage-hint must NOT fire for run-config: when
+// resolvePromptForRun returns errPromptHintRequested,
+// runRunConfigWithIO must substitute the actionable "prompt is
+// required: ..." error rather than leaking the sentinel string.
 func TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
@@ -166,9 +156,8 @@ func TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_CompactProducesSingleLine pins acceptance of the
-// --compact flag: the body is a single JSON line (no indentation),
-// still terminated by a newline so shell pipelines see a clean EOF.
+// TestRunRunConfig_CompactProducesSingleLine pins that --compact emits
+// a single JSON line (no indentation), still newline-terminated.
 func TestRunRunConfig_CompactProducesSingleLine(t *testing.T) {
 	out, err := runRunConfigForTest(t, []string{
 		"--compact",
@@ -208,9 +197,8 @@ func TestRunRunConfig_RedactScrubsSecretRefs(t *testing.T) {
 }
 
 // TestRunRunConfig_MalformedStdinJSONErrors pins the parse-error
-// surface. The DisallowUnknownFields decoder reports unknown fields
-// by name; the test asserts on that name to catch a regression that
-// swallows the underlying error.
+// surface: a regression that swallows the underlying error would drop
+// the "parsing config" message.
 func TestRunRunConfig_MalformedStdinJSONErrors(t *testing.T) {
 	_, err := runRunConfigForTest(t, nil, `{"this is not valid JSON`)
 	if err == nil {
@@ -221,11 +209,9 @@ func TestRunRunConfig_MalformedStdinJSONErrors(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_RoundTripFromExample is the spec's acceptance
-// criterion 3 against a real example file. It picks the smallest
-// example to keep the diff window narrow if the test breaks; the
-// `cat config.json | stirrup run-config | stirrup run-config | diff -
-// config.json` shape is what the spec calls out for the smoke suite.
+// TestRunRunConfig_RoundTripFromExample pins idempotency against a real
+// example file, mirroring the `cat config.json | stirrup run-config |
+// stirrup run-config | diff - config.json` smoke-suite shape.
 func TestRunRunConfig_RoundTripFromExample(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "examples", "runconfig", "openai_responses.json"))
 	if err != nil {
@@ -244,11 +230,9 @@ func TestRunRunConfig_RoundTripFromExample(t *testing.T) {
 	}
 }
 
-// TestRunRunConfig_WrapperThreadsOSIO pins MF-3's residual line: the
-// runRunConfig cobra RunE thunk threads os.Stdin / os.Stdout into the
-// testable runRunConfigWithIO helper. Without this assertion the
-// one-liner thunk stays at 0% coverage and a future regression that
-// swaps the wiring (e.g. passes nil for stdout) would land silently.
+// TestRunRunConfig_WrapperThreadsOSIO pins that the runRunConfig cobra
+// RunE thunk threads os.Stdin / os.Stdout into the testable
+// runRunConfigWithIO helper.
 func TestRunRunConfig_WrapperThreadsOSIO(t *testing.T) {
 	cmd := newTestRunConfigCommand()
 	if err := cmd.ParseFlags([]string{"--mode", "planning"}); err != nil {
@@ -290,12 +274,9 @@ func TestRunRunConfig_WrapperThreadsOSIO(t *testing.T) {
 	}
 }
 
-// TestRunRunConfigWithIO_TableDriven pins MF-3: every cobra
-// flag-reading branch inside runRunConfigWithIO (validate, redact,
-// compact, plain) reaches a passing assertion through the real entry
-// point. Before the WithIO refactor, runRunConfigForTest replicated
-// the function body inline, so a `f.GetBool("compact")` rename would
-// have passed every test. The table exercises one branch per row.
+// TestRunRunConfigWithIO_TableDriven exercises every cobra flag-reading
+// branch inside runRunConfigWithIO (validate, redact, compact, plain)
+// through the real entry point, one branch per row.
 func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -381,13 +362,10 @@ func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 }
 
 // TestRunRunConfig_EmptyEditStrategyDefaultsToMulti pins the
-// stirrup run-config subcommand's edit-strategy default behaviour.
-// With --validate (ResolveAll), the emitted document must carry
-// EditStrategy.Type = "multi" because the validation layer is the
-// single normalization point. Without --validate (ResolveBase), the
-// emitted document deliberately preserves the empty value so chained
-// `run-config | run-config | ...` stages remain idempotent and a
-// later stage can layer one more override on top.
+// edit-strategy default behaviour: --validate (ResolveAll) fills
+// EditStrategy.Type = "multi", while without it (ResolveBase) the
+// empty value is preserved so chained `run-config | run-config | ...`
+// stages stay idempotent.
 func TestRunRunConfig_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
 	t.Run("validate fills default", func(t *testing.T) {
 		out, err := runRunConfigForTest(t, []string{

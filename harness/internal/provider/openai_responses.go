@@ -24,29 +24,8 @@ import (
 )
 
 // OpenAIResponsesAdapter implements ProviderAdapter for the OpenAI Responses
-// API (POST /v1/responses). The Responses API is a separate endpoint from
-// Chat Completions with a different request/response shape: a top-level
-// "instructions" field replaces the system message, conversation history is
-// expressed as a typed "input" array (message / function_call /
-// function_call_output items), tools use a flatter schema, and the streaming
-// SSE protocol uses named events such as "response.output_text.delta" and
-// "response.function_call_arguments.delta".
-//
-// The two adapters are kept separate (rather than auto-detecting) because
-// users who have explicitly opted into one or the other shape want it to be
-// honoured deterministically — silent fallback would mask configuration
-// errors and complicate observability.
-//
-// Azure Foundry's "/openai/v1/responses" endpoint is wire-compatible with
-// the OpenAI Responses request/response body, SSE event names, tool schema,
-// and previous_response_id semantics. It is supported by pointing BaseURL
-// at the Azure resource ("https://<resource>.openai.azure.com/openai/v1"),
-// setting APIKeyHeader to "api-key" when authenticating with a plain Azure
-// OpenAI key (Entra ID bearer tokens still work with the empty default),
-// and adding the required api-version through QueryParams (e.g.
-// {"api-version": "preview"}). Azure-only Responses extensions such as
-// server-side state and content_part lifecycle events ride the same
-// forward-compatible "unknown SSE event" path implemented in dispatchEvent.
+// API (POST /v1/responses) — a distinct wire format from Chat Completions,
+// including Azure Foundry's wire-compatible endpoint. See docs/providers.md.
 type OpenAIResponsesAdapter struct {
 	bearer       credential.BearerTokenFunc
 	httpClient   *http.Client
@@ -59,31 +38,18 @@ type OpenAIResponsesAdapter struct {
 	AdapterDeps
 
 	// Registry resolves per-(provider, model) quirks at the top of
-	// every Stream call. No rules target openai-responses in v1; the
-	// field exists so the integration point is in place when a
-	// Responses-specific divergence is added (design §7 Step 4). The
-	// constructor defaults it to quirks.DefaultRegistry().
+	// every Stream call. Defaults to quirks.DefaultRegistry().
 	Registry *quirks.Registry
 
 	// strictSchemas memoises strict-mode schema rewrites within this
-	// adapter's lifetime. See OpenAICompatibleAdapter.strictSchemas
-	// for the full rationale; the Responses path shares the same cache
-	// shape because the underlying schema rewrite is identical.
+	// adapter's lifetime. See OpenAICompatibleAdapter.strictSchemas.
 	strictSchemas *strictSchemaCache
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
-// The baseURL should be the API root (e.g. "https://api.openai.com/v1");
-// the /responses path is appended automatically. Pass an empty string for
-// the default OpenAI URL — kept consistent with NewOpenAICompatibleAdapter
-// so callers can switch the provider type without re-deriving the URL. The
-// auth argument carries optional header-name and query-parameter overrides;
-// pass a zero value for OpenAI-default behaviour.
-//
-// bearer is invoked on every Stream call to fetch the current API key.
-// See NewOpenAICompatibleAdapter for the closure contract; both adapters
-// share the same auth shape so swapping provider.type does not require
-// reconfiguring credentials.
+// baseURL is the API root (e.g. "https://api.openai.com/v1"); the /responses
+// path is appended automatically, and an empty string defaults to OpenAI's
+// URL. bearer is invoked on every Stream call to fetch the current API key.
 func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig) *OpenAIResponsesAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
@@ -115,37 +81,26 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 // JSON struct tag (json:"-"): MarshalJSON is the single point that projects
 // the struct into the wire body the resolved quirks selected. The resolved
 // Responses behaviour flags (TokenField / StoreMode / InputItemShape) steer
-// that projection — they are the single source of truth for the Responses
-// send path (the Codec invariant), replacing the hard-coded field tags this
-// struct previously carried.
+// that projection and are the single source of truth for the Responses send
+// path.
 type responsesRequest struct {
 	Model        string           `json:"-"`
 	Instructions string           `json:"-"`
 	Input        []responsesInput `json:"-"`
 	Tools        []responsesTool  `json:"-"`
 	MaxTokens    int              `json:"-"`
-	// Temperature is *float64: a nil pointer omits the key entirely (the
-	// Responses API rejects "temperature" outright on reasoning models —
-	// the same class-wide rejection that motivated #200 on the Chat
-	// Completions adapter). A non-nil pointer transmits the dereferenced
-	// value verbatim, including an explicit 0.0 for greedy decoding. This
-	// mirrors the upstream StreamParams.Temperature pointer type so the
-	// unset-vs-explicit-zero distinction survives marshalling.
+	// Temperature is *float64: nil omits the key entirely (the Responses API
+	// rejects "temperature" outright on reasoning models). A non-nil pointer
+	// transmits the value verbatim, including an explicit 0.0.
 	Temperature *float64 `json:"-"`
-	// Stream is omitted from the wire body when false so buildResponsesRequest,
-	// which leaves it at its zero value, produces a body with no "stream" key
-	// at all. The streaming caller sets reqBody.Stream = true after the builder
-	// returns, which serialises "stream":true. A future batch caller can
-	// marshal the helper output directly and be sure the field is absent — the
-	// Anthropic Messages Batches API explicitly rejects the field; the
-	// Responses batch endpoint's contract is unverified but omission is the
-	// safer default until that verification lands.
+	// Stream is omitted from the wire body when false; the streaming caller
+	// sets reqBody.Stream = true after the builder returns. Omission is the
+	// safer default for a future batch caller until that endpoint's contract
+	// is verified.
 	Stream bool `json:"-"`
-	// ParallelToolCalls carries the top-level parallel_tool_calls bool (#222),
-	// shared with the Chat Completions API. A nil pointer omits the key so the
-	// body is byte-identical to the pre-#222 shape; buildResponsesRequest sets
-	// it only when the caller requested the control and the resolved capability
-	// advertises support.
+	// ParallelToolCalls carries the top-level parallel_tool_calls bool,
+	// shared with the Chat Completions API. A nil pointer omits the key;
+	// buildResponsesRequest sets it only when requested and supported.
 	ParallelToolCalls *bool `json:"-"`
 
 	// TokenField / StoreMode / InputItemShape carry the resolved Responses
@@ -373,17 +328,11 @@ func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
 // discriminated-union shape OpenAI publishes for typed input items.
 //
 // The struct keeps an ergonomic flat shape so construction-site code
-// (translateMessagesResponses and friends) can build items without
-// branching on type. MarshalJSON below switches on Type and emits only
-// the keys valid for that variant, via per-type wire structs. This is
-// the structural fix for #199: stricter validators (Azure OpenAI's
-// Responses endpoint) reject "output":"" on message / function_call
-// items even though upstream OpenAI tolerates it.
-//
-// The per-variant wire shapes preserve the #172 invariant: the
-// function_call_output wire struct's Output field has no omitempty, so
-// the "output" key is always present on function_call_output items
-// even when the value is the empty string.
+// can build items without branching on type. MarshalJSON below switches
+// on Type and emits only the keys valid for that variant, via per-type
+// wire structs — stricter validators (e.g. Azure OpenAI's Responses
+// endpoint) reject an empty "output" on message / function_call items.
+// See docs/provider-quirks.md for the function_call_output invariant.
 type responsesInput struct {
 	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output"
 	Role      string                  `json:"-"` // for "message"
@@ -396,13 +345,9 @@ type responsesInput struct {
 
 // MarshalJSON emits only the wire fields valid for the input item's Type
 // discriminant. Each Type maps to a dedicated wire struct so a future
-// edit cannot accidentally leak a field across variants — the original
-// shared-struct shape silently emitted "output":"" on every variant,
-// which #199 surfaced as an Azure OpenAI HTTP 400.
-//
-// function_call_output is the variant that requires the "output" key
-// even when its value is the empty string (see #172). Its wire struct's
-// Output field therefore has no omitempty.
+// edit cannot accidentally leak a field across variants. function_call_output
+// requires the "output" key even when empty, so its wire struct's Output
+// field has no omitempty.
 func (r responsesInput) MarshalJSON() ([]byte, error) {
 	switch r.Type {
 	case "message":
@@ -496,8 +441,7 @@ type responsesFunctionCallInputWire struct {
 // responsesFunctionCallOutputInputWire is the wire shape for
 // type=="function_call_output". Output deliberately lacks omitempty: the
 // Responses API rejects function_call_output items missing the "output"
-// key with HTTP 400 (Missing required parameter: 'input[N].output'),
-// even when the value is the empty string. See #172.
+// key with HTTP 400, even when the value is the empty string.
 type responsesFunctionCallOutputInputWire struct {
 	Type   string `json:"type"`
 	CallID string `json:"call_id,omitempty"`
@@ -640,18 +584,12 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 			out = append(out, calls...)
 
 		case "user":
-			// User message emission order is deliberate and contract-pinned:
-			// function_call_output items are emitted first in document order
-			// as they appear in msg.Content, and any text blocks are batched
-			// into a single trailing input_text message item. This ordering
-			// is documented (rather than fixed to strict document order)
-			// because the harness's own message construction never produces
-			// mixed user messages — text-then-tool_result-then-text inputs
-			// only arise from external callers, and reordering text after
-			// tool results matches the Responses API's preference for
-			// function_call_output items to precede the next user turn's
-			// instructions. See TestTranslateMessagesResponses_UserTextAndToolResultOrder
-			// for the pinned behaviour.
+			// function_call_output items are emitted in document order; text
+			// blocks are batched into a single trailing input_text item
+			// rather than kept in strict document order, since the harness's
+			// own message construction never mixes text and tool results in
+			// one user message and the Responses API prefers
+			// function_call_output items ahead of the next turn's text.
 			var textParts []string
 			for _, block := range msg.Content {
 				switch block.Type {
@@ -716,7 +654,7 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 			truthy := true
 			entry.Strict = &truthy
 		} else if examples {
-			// Fold worked examples (#222) into the schema, but only for
+			// Fold worked examples into the schema, but only for
 			// non-strict tools: the structured-outputs subset rejects the
 			// `examples` keyword, identical to the Chat Completions side.
 			merged, err := mergeSchemaExamples(entry.Parameters, toolInputExamples(t))
@@ -732,16 +670,13 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
 // body. The Stream field is set by the streaming caller after this returns;
-// the builder leaves it false so batch callers get an omitted field (MarshalJSON
-// omits "stream" when false). Phase-0 refactor for issue #133.
+// the builder leaves it false so batch callers get an omitted field.
 //
-// q carries the resolved quirks for the (provider, model) pair. The Responses
-// behaviour flags (TokenField / StoreMode / InputItemShape) are threaded onto
-// the request struct so MarshalJSON projects the body the resolved quirks
-// selected — the single source of truth for the Responses send path. The
-// OpenAI strict-mode flag (if set by a future openai-responses rule) drives
-// strict-mode schema normalisation through cache; lint errors surface here so
-// the caller can fail-closed before any HTTP request is issued.
+// q carries the resolved quirks for the (provider, model) pair; the
+// Responses behaviour flags are threaded onto the request struct so
+// MarshalJSON projects the body they selected. A schema that fails strict-mode
+// lint surfaces as an error here so the caller can fail-closed before any
+// HTTP request is issued.
 //
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
@@ -774,10 +709,6 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		attribute.String("provider.model", params.Model),
 	)
 
-	// Resolve quirks for this (provider, model) pair. No rule
-	// targets openai-responses in v1, but the resolution is wired
-	// here so a future rule (e.g. a Responses-specific sampling-param
-	// omission) lands without re-shaping the Stream method.
 	registry := o.Registry
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
@@ -793,11 +724,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		// unscrubbable.
 		logger = slog.Default()
 	}
-	// Debug-level log mirrors the chat adapter so an operator gets the
-	// same trace surface regardless of which OpenAI endpoint is in
-	// use. Empty rules list today (no openai-responses rule); the line
-	// fires anyway so a future rule landing here is immediately
-	// visible in debug output.
+
 	logger.DebugContext(ctx, "openai-responses quirks resolved",
 		slog.String("provider.type", "openai-responses"),
 		slog.String("provider.model", params.Model),
@@ -807,11 +734,9 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	// The Responses request body carries no tool_choice field, so a
 	// non-auto ToolChoice requested against this adapter is silently
 	// downgraded to auto. Warn once per Stream call so the downgrade is
-	// observable (#343). Only the static mode integer and the adapter /
-	// model identifiers are logged — never message content or any
-	// secret-derived value. q.ToolChoice.Supported is always false today
-	// (no openai-responses tool-choice rule), but the flag is checked so a
-	// future rule that adds native support suppresses the warning.
+	// observable. Only the static mode integer and the adapter / model
+	// identifiers are logged — never message content or any secret-derived
+	// value.
 	if params.ToolChoice != types.ToolChoiceAuto && !q.ToolChoice.Supported {
 		logger.WarnContext(ctx, "openai-responses tool-choice downgraded to auto: adapter does not support tool-choice",
 			slog.String("provider.type", "openai-responses"),
@@ -821,13 +746,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	}
 
 	if q.BehaviourFlags.OpenAI.StrictMode {
-		// Dormant in v1: no built-in rule currently sets
-		// StrictMode=true for any openai-responses model, so this
-		// branch is forward-compat scaffolding. It runs in tests that
-		// inject a synthetic registry (see
-		// TestResponsesStrictMode_WireBodyShape in
-		// openai_responses_builder_test.go) and would activate the
-		// moment a builtin rule targets openai-responses.
+
 		logger.DebugContext(ctx, "openai-responses strict mode applied",
 			slog.String("provider.type", "openai-responses"),
 			slog.String("provider.model", params.Model),

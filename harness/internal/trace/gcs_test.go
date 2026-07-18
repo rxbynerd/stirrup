@@ -141,8 +141,7 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 	}
 
 	// Body must be a single valid JSON line that decodes back to a
-	// RunTrace with the same ID. Equally — even a zero-turn run would
-	// have produced a JSONL line, the contract pin from JSONLTraceEmitter.
+	// RunTrace with the same ID.
 	body := strings.TrimRight(string(got.Body), "\n")
 	if body == "" {
 		t.Fatal("uploaded body is empty")

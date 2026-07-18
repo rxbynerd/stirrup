@@ -19,11 +19,9 @@ import (
 	"time"
 )
 
-// boundLoopbackListener opens a listener on an ephemeral 127.0.0.1 port and
-// returns it. Passing this listener straight into serveEgressProxy (via
-// egressProxyOptions.listener) avoids the close-and-rebind TOCTOU that a
-// free-port-then-rebind helper would carry, so the tests stay stable under
-// parallel runs.
+// boundLoopbackListener opens a listener on an ephemeral 127.0.0.1 port.
+// Passing it straight into serveEgressProxy avoids the close-and-rebind
+// TOCTOU a free-port-then-rebind helper would carry.
 func boundLoopbackListener(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -35,10 +33,8 @@ func boundLoopbackListener(t *testing.T) net.Listener {
 
 // startTestEgressProxy runs serveEgressProxy in a goroutine against a
 // pre-bound loopback listener, waits for it to accept connections, and
-// registers cleanup that cancels the context and waits for a clean shutdown.
-// The returned addr is the bound host:port. This drives the real subcommand
-// serve path end to end without a never-returning blocking call on the global
-// rootCmd.
+// registers cleanup that cancels the context and waits for a clean
+// shutdown. The returned addr is the bound host:port.
 func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 	t.Helper()
 	listener := boundLoopbackListener(t)
@@ -86,10 +82,8 @@ func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 	}
 }
 
-// TestEgressProxy_DeniesNonAllowlisted drives a CONNECT for a host that is not
-// on the allowlist through the real serve path and asserts a 403. This is the
-// cluster-free proof that the subcommand wires the allowlist gate: the proxy
-// refuses an un-allowlisted destination.
+// TestEgressProxy_DeniesNonAllowlisted drives a CONNECT for a host that
+// is not on the allowlist through the real serve path and asserts a 403.
 func TestEgressProxy_DeniesNonAllowlisted(t *testing.T) {
 	addr := startTestEgressProxy(t, []string{"allowed.example.com"})
 
@@ -114,12 +108,11 @@ func TestEgressProxy_DeniesNonAllowlisted(t *testing.T) {
 }
 
 // TestEgressProxy_AllowsCONNECT drives a CONNECT for an allowlisted host
-// through the real serve path and asserts the proxy returns 200 and splices a
-// bidirectional tunnel to the upstream. A ClientHello carrying an SNI that
-// matches the CONNECT host is sent before reading the 200 (the proxy verifies
-// SNI before establishing the tunnel); the upstream echoes the bytes back, so
-// reading them confirms the splice. This is the cluster-free proof the
-// subcommand proxies a CONNECT to an allowlisted destination.
+// through the real serve path and asserts the proxy returns 200 and
+// splices a bidirectional tunnel to the upstream. A ClientHello carrying
+// an SNI matching the CONNECT host is sent before reading the 200 (the
+// proxy verifies SNI before establishing the tunnel); the upstream
+// echoes the bytes back, confirming the splice.
 func TestEgressProxy_AllowsCONNECT(t *testing.T) {
 	upstream := startEchoServer(t)
 	upstreamHost, upstreamPort := hostPort(t, "http://"+upstream.Addr().String())
@@ -164,11 +157,10 @@ func TestEgressProxy_AllowsCONNECT(t *testing.T) {
 	}
 }
 
-// TestEgressProxy_AllowsAllowlisted drives a plain-HTTP proxy request for an
-// allowlisted host through the real serve path and asserts it is forwarded to
-// the upstream (200). Plain HTTP is used rather than CONNECT so the test needs
-// no TLS ClientHello/SNI handshake; the allowlist gate is identical for both
-// paths, so this proves the allow side of the subcommand wiring.
+// TestEgressProxy_AllowsAllowlisted drives a plain-HTTP proxy request for
+// an allowlisted host through the real serve path and asserts it is
+// forwarded to the upstream (200). Plain HTTP avoids the TLS
+// ClientHello/SNI handshake; the allowlist gate is identical for both.
 func TestEgressProxy_AllowsAllowlisted(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("upstream-ok"))

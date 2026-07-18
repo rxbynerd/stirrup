@@ -7,23 +7,10 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// runConfigSpec mirrors types.RunConfig for HCL decoding. Field names
-// here use snake_case to match the codebase's convention; tag-based
-// gohcl decoding rejects unknown attributes so typos surface at parse
-// time rather than as silent zero values.
-//
-// Not every RunConfig field is exposed yet. The following are
-// deliberately omitted from chunk 2 and tracked for follow-up:
-//
-//   - Providers map[string]ProviderConfig (named multi-provider lineup)
-//   - DynamicContext map[string]DynamicContextValue
-//   - GuardRailConfig.CustomCriteria map[string]string
-//   - TransportConfig (the eval runner is stdio-only)
-//   - ToolsConfig.MCPServers (slice of structs)
-//
-// Maps-of-structs and slices-of-structs are awkward to express in
-// gohcl's attribute model; they need either an hcl block or a
-// dedicated cty path. Adding them is purely additive.
+// runConfigSpec mirrors types.RunConfig for HCL decoding. Field names use
+// snake_case; gohcl rejects unknown attributes so typos surface at parse
+// time. Not every RunConfig field is exposed — see docs/eval.md's
+// "Currently unsupported" section.
 type runConfigSpec struct {
 	RunID                string                `hcl:"run_id,optional"`
 	Mode                 string                `hcl:"mode,optional"`
@@ -57,14 +44,7 @@ type runConfigSpec struct {
 
 // runConfigOverridesSpec mirrors types.RunConfigOverrides. Every field
 // is a pointer / optional so a sparse overlay is the natural shape.
-//
-// Note: Mode is intentionally absent from the HCL surface. Per-task mode
-// is controlled by the task block's own `mode` attribute; the runner
-// always passes that on as the harness's --mode flag, which would
-// silently override anything written here. The Go type
-// RunConfigOverrides retains Mode for the experiment runner path,
-// which writes its own merged config and does not pass --mode on the
-// command line.
+// Mode is intentionally absent from the HCL surface; see docs/eval.md.
 type runConfigOverridesSpec struct {
 	MaxTurns        *int                 `hcl:"max_turns,optional"`
 	Provider        *providerSpec        `hcl:"provider,block"`
@@ -255,24 +235,12 @@ type observabilitySpec struct {
 	ServiceNamespace string `hcl:"service_namespace,optional"`
 }
 
-// validateInlineAPIKeyRefs rejects any inline api_key_ref value that
-// is not a secret:// reference. The check duplicates the rule already
-// enforced by types.ValidateRunConfig so authors see the diagnostic
-// at HCL parse time — with the field path named — rather than as a
-// downstream validation error after the runner has already merged the
-// config. Without this layer the parse path silently accepts a
-// pasted-in literal API key; the merged run_config.json the harness
-// receives would carry the raw value (and the redacted artifact would
-// hide the misconfiguration from audit by rewriting it to
-// "secret://[REDACTED]"). Apply to every secret-bearing field
-// surfaced by the HCL grammar today: Provider.APIKeyRef on both the
-// inline run_config and per-task run_config_overrides, and
-// Executor.VcsBackend.APIKeyRef on the inline run_config.
-//
-// The set of fields here must stay in lockstep with the surface the
-// HCL grammar accepts. Adding a new secret-bearing field to
-// providerSpec / runConfigOverridesSpec / executorSpec without
-// extending this validator would create a parse-time hole.
+// validateInlineAPIKeyRefs rejects any inline api_key_ref value that is
+// not a secret:// reference, duplicating the types.ValidateRunConfig rule
+// so authors see the diagnostic at HCL parse time with the field path
+// named. Must stay in lockstep with every secret-bearing field the HCL
+// grammar accepts (providerSpec / runConfigOverridesSpec / executorSpec)
+// or a new field creates a parse-time hole.
 func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOverrides) error {
 	checkRef := func(path, ref string) error {
 		if ref == "" {

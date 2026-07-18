@@ -1,17 +1,9 @@
 package core
 
-// Tool-use reliability regression suite (issue #233), driven entirely by the
-// in-process ReplayProvider + a real LocalExecutor over a synthetic temp
-// workspace. No network, no provider credentials: the ProviderAdapter is a
-// scripted sequence of recorded turns, so `go test ./harness/...` exercises
-// the full agentic-loop tool-dispatch path with zero external dependencies.
-//
-// Each test covers one tool-use behaviour from the redesign delivered across
-// Waves 1-5 and asserts BOTH the resulting workspace state AND the tool-call
-// trace the run produced (the same two surfaces the eval suite's file-state
-// and tool-trace judges check). The declarative HCL form of this suite lives
-// at eval/suites/tooluse.hcl for the opt-in live-provider path; this file is
-// the no-credential executable regression that runs in CI.
+// Tool-use reliability regression suite, driven entirely by the in-process
+// ReplayProvider + a real LocalExecutor over a synthetic temp workspace —
+// no network, no provider credentials. See docs/eval.md for how this
+// relates to eval/suites/tooluse.hcl.
 
 import (
 	"bytes"
@@ -53,16 +45,16 @@ type toolUseScenario struct {
 	// real built-in schemas — the loop validates them.
 	turns []types.TurnRecord
 	// editStrategy selects the edit tool. "multi" yields edit_file with the
-	// operation enum (#225); empty defaults to whole-file (write_file).
+	// operation enum; empty defaults to whole-file (write_file).
 	editStrategy string
 	// providerType, when set, wraps the replay provider in a
-	// NormalizingAdapter under that provider's tool-name policy (#223).
+	// NormalizingAdapter under that provider's tool-name policy.
 	providerType string
 	// extraTools are registered alongside the built-ins (e.g. a synthetic
 	// MCP-named tool) before the profile presenter is applied.
 	extraTools []*tool.Tool
 	// escalationRetries, when > 0, injects the default tool-choice
-	// escalation policy with that cap (#230). nil caps means the policy
+	// escalation policy with that cap. nil caps means the policy
 	// always picks the prompt fallback.
 	escalationRetries int
 	// mode overrides the run mode (default "execution" from buildTestConfig).
@@ -242,8 +234,7 @@ func finalText(text string) types.TurnRecord {
 
 // TestToolUse_ReadSearchEditBuildLoop covers the core coding loop: the model
 // searches for a symbol, reads the matching file, edits it, then a final
-// answer. Regression-covers the #225 grep_files/read_file/edit_file split and
-// the read→edit→answer arc the whole redesign serves.
+// answer.
 func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
@@ -268,7 +259,7 @@ func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
 }
 
 // TestToolUse_ReadBeforeEdit asserts the trace records read_file before
-// edit_file — the read-before-edit discipline #225's schema encourages.
+// edit_file.
 func TestToolUse_ReadBeforeEdit(t *testing.T) {
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
@@ -289,9 +280,8 @@ func TestToolUse_ReadBeforeEdit(t *testing.T) {
 }
 
 // TestToolUse_LineRangeReading exercises read_file with start_line + limit
-// (#225 line-range reading) and asserts the returned tool result carries the
-// requested line window — lines 5-7 of the fixture and nothing outside it.
-// Regression-covers the #231 structured result line arithmetic for read_file.
+// and asserts the returned tool result carries the requested line window —
+// lines 5-7 of the fixture and nothing outside it.
 func TestToolUse_LineRangeReading(t *testing.T) {
 	// Distinct, greppable line contents so an off-by-one window leak is
 	// detectable: "line-05", "line-06", ... "line-20".
@@ -328,12 +318,11 @@ func TestToolUse_LineRangeReading(t *testing.T) {
 }
 
 // TestToolUse_BoundedSearch asserts a broad grep with max_results=2 caps the
-// returned matches end-to-end (#225 bounded results) over a workspace with
-// twenty hits: the rendered tool result the model sees must carry exactly two
-// match lines, not all twenty. The bounded count is the observable effect of
-// the searchResult.Truncated flag; the structured flag itself is pinned at
-// the builtin level in TestGrepFilesTool_StructuredTruncated (#231), and the
-// grep text rendering carries no truncation marker, so this test asserts the
+// returned matches end-to-end over a workspace with twenty hits: the
+// rendered tool result the model sees must carry exactly two match lines,
+// not all twenty. The grep text rendering carries no truncation marker
+// (the structured flag is pinned separately in
+// TestGrepFilesTool_StructuredTruncated), so this test asserts the
 // behavioural cap rather than the flag.
 func TestToolUse_BoundedSearch(t *testing.T) {
 	files := map[string]string{}
@@ -367,9 +356,8 @@ func TestToolUse_BoundedSearch(t *testing.T) {
 }
 
 // TestToolUse_InvalidArgRecovery drives an edit_file with a missing required
-// field (the schema/operation contract from #225), then a corrected call.
-// Asserts the first call failed, the second succeeded, and the file ended in
-// the corrected state — the invalid-argument recovery loop.
+// field, then a corrected call. Asserts the first call failed, the second
+// succeeded, and the file ended in the corrected state.
 func TestToolUse_InvalidArgRecovery(t *testing.T) {
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
@@ -395,9 +383,9 @@ func TestToolUse_InvalidArgRecovery(t *testing.T) {
 	}
 }
 
-// TestToolUse_AmbiguousEdit covers the "ambiguous edit request" behaviour
-// named in #233's goal list: the first edit_file 'replace' uses an old_string
-// that matches multiple locations, which the search-replace strategy rejects
+// TestToolUse_AmbiguousEdit covers the ambiguous-edit-request behaviour: the
+// first edit_file 'replace' uses an old_string that matches multiple
+// locations, which the search-replace strategy rejects
 // with an exactly-one-match error; the model recovers with a more specific
 // old_string. This is a distinct failure mode from invalid-arg recovery
 // (missing field) — here the arguments are well-formed but not unique.
@@ -438,9 +426,9 @@ func TestToolUse_AmbiguousEdit(t *testing.T) {
 }
 
 // TestToolUse_UnknownToolRecovery calls the retired search_files name, gets
-// the directional renamed-tool hint (#225), then recovers with grep_files.
-// Asserts the failed call's error names the replacements and that the
-// recovery call succeeded.
+// the directional renamed-tool hint, then recovers with grep_files. Asserts
+// the failed call's error names the replacements and that the recovery
+// call succeeded.
 func TestToolUse_UnknownToolRecovery(t *testing.T) {
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
@@ -502,13 +490,11 @@ func TestToolUse_MultiToolTurn(t *testing.T) {
 	}
 }
 
-// TestToolUse_NoToolAnswerEscalates exercises tool-choice escalation (#230):
-// in execution mode the model first answers with text only, having called no
+// TestToolUse_NoToolAnswerEscalates exercises tool-choice escalation: in
+// execution mode the model first answers with text only, having called no
 // tool. With the escalation policy enabled the loop forces a retry; the
-// retried turn calls read_file and the run then completes. Asserts the
-// recovery actually happened — read_file was called and the run reached the
-// "success" outcome (not max_turns or a crash), so a regression that fires
-// escalation but never recovers is caught.
+// retried turn calls read_file and the run then completes with outcome
+// "success", not max_turns or a crash.
 func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		escalationRetries: 1,
@@ -555,8 +541,8 @@ func TestToolUse_NoToolAnswerAcceptedWhenEscalationOff(t *testing.T) {
 
 // TestToolUse_MCPNameNormalization registers a tool under an MCP-style
 // internal name containing a hyphen and wraps the replay provider in a
-// NormalizingAdapter under the Gemini policy (which forbids hyphens, #223).
-// The replay emits a tool_call under the EXTERNAL (sanitized) name; the
+// NormalizingAdapter under the Gemini policy (which forbids hyphens). The
+// replay emits a tool_call under the EXTERNAL (sanitized) name; the
 // normalizer must reverse it to the internal name so dispatch resolves and
 // the tool runs. Asserts the trace records the internal MCP name and success.
 func TestToolUse_MCPNameNormalization(t *testing.T) {
@@ -597,7 +583,7 @@ func TestToolUse_MCPNameNormalization(t *testing.T) {
 }
 
 // TestToolUse_StreamingToolCallParsing exercises provider-specific streaming
-// tool-call parsing (#233) through the real openai-compatible adapter's SSE
+// tool-call parsing through the real openai-compatible adapter's SSE
 // parser, driven by a loopback httptest server — no network, no live key
 // (the credential is a dummy resolved from the test env). The server streams
 // an OpenAI-style tool_calls delta whose arguments arrive split across two

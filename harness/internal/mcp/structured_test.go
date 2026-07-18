@@ -57,8 +57,8 @@ func connectAndResolve(t *testing.T, srv *httptest.Server, serverName, toolName 
 }
 
 // TestMCP_PreservesStructuredContent pins that a tools/call response carrying
-// structuredContent is preserved into the #231 envelope under the
-// mcp_tool_result kind, with the text content kept as the canonical fallback.
+// structuredContent is preserved into the envelope under the mcp_tool_result
+// kind, with the text content kept as the canonical fallback.
 func TestMCP_PreservesStructuredContent(t *testing.T) {
 	raw := `{
 		"content": [{"type": "text", "text": "42 rows"}],
@@ -214,8 +214,7 @@ func TestMCP_BoundsEmbeddedResourceText(t *testing.T) {
 }
 
 // TestMCP_TextOnlyResultHasNoStructured pins the no-regression path: a
-// text-only tools/call result produces no structured envelope and no kind, so
-// the result is byte-identical to the pre-#231 text-only shape downstream.
+// text-only tools/call result produces no structured envelope and no kind.
 func TestMCP_TextOnlyResultHasNoStructured(t *testing.T) {
 	raw := `{"content": [{"type": "text", "text": "plain"}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "echo", raw), "srv", "echo")
@@ -235,12 +234,8 @@ func TestMCP_TextOnlyResultHasNoStructured(t *testing.T) {
 	}
 }
 
-// TestMCP_NullStructuredContentIsAbsent (BLK-2) pins that an explicit
-// "structuredContent": null does NOT fabricate a structured turn. A non-nil
-// json.RawMessage("null") would otherwise pass the len>0 guard and, since
-// omitempty does not omit a non-nil slice, serialise "structured_content":null
-// onto the wire — a spurious structured result for a server that signalled it
-// has none.
+// TestMCP_NullStructuredContentIsAbsent pins that an explicit
+// "structuredContent": null does NOT fabricate a structured turn.
 func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
 	raw := `{"content":[{"type":"text","text":"x"}],"structuredContent":null}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "nullsc", raw), "srv", "nullsc")
@@ -260,12 +255,10 @@ func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
 	}
 }
 
-// TestMCP_CapsContentItemCount (BLK-3) pins that the content item-count cap
-// fires BEFORE the descriptor slice is fully built: the envelope retains at
-// most maxMCPContentItems descriptors plus a truncation marker, stays within
-// the size bound, and the overflow is marked rather than silently dropped.
-// Calling buildMCPStructured directly keeps the assertion on the allocation
-// boundary the cap protects.
+// TestMCP_CapsContentItemCount pins that the content item-count cap fires
+// BEFORE the descriptor slice is fully built: the envelope retains at most
+// maxMCPContentItems descriptors plus a truncation marker, stays within the
+// size bound, and the overflow is marked rather than silently dropped.
 func TestMCP_CapsContentItemCount(t *testing.T) {
 	items := make([]contentItem, maxMCPContentItems+200)
 	for i := range items {
@@ -297,10 +290,10 @@ func TestMCP_CapsContentItemCount(t *testing.T) {
 	}
 }
 
-// TestMCP_OversizedAssembledEnvelopeIsMarked (REC-2) pins that when many
-// individually-valid non-text descriptors push the assembled envelope past the
-// size bound, the bridge returns a marker envelope rather than silently
-// dropping everything — preserving the represent-or-mark contract.
+// TestMCP_OversizedAssembledEnvelopeIsMarked pins that when many
+// individually-valid non-text descriptors push the assembled envelope past
+// the size bound, the bridge returns a marker envelope rather than silently
+// dropping everything.
 func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 	// Each resource_link carries a long URI; enough of them (under the item
 	// count cap) exceed maxMCPStructuredSize once assembled.
@@ -326,9 +319,10 @@ func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 	}
 }
 
-// TestMCP_BinaryBlobResourceNotInlined (REC-4) pins that an embedded resource
-// carrying a binary blob (not text) is flagged Truncated with no inlined body
-// — the bridge never forwards untrusted binary bytes, only the URI handle.
+// TestMCP_BinaryBlobResourceNotInlined pins that an embedded resource
+// carrying a binary blob (not text) is flagged Truncated with no inlined
+// body — the bridge never forwards untrusted binary bytes, only the URI
+// handle.
 func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
 	raw := `{"content":[{"type":"text","text":"ok"},{"type":"resource","resource":{"uri":"file:///img.png","mimeType":"image/png","blob":"BASE64DATA=="}}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "blobres", raw), "files", "blobres")
@@ -359,10 +353,10 @@ func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
 	}
 }
 
-// TestSanitizeMCPToolName_RuneSafe (BLK-1) pins that truncation is rune-safe:
-// a name of 65 three-byte runes (195 bytes) truncates to exactly
-// maxMCPToolNameLen runes and stays valid UTF-8 — a byte-slice cut would split
-// a codepoint and emit an invalid string into the tool.name metric attribute.
+// TestSanitizeMCPToolName_RuneSafe pins that truncation is rune-safe: a name
+// of 65 three-byte runes (195 bytes) truncates to exactly maxMCPToolNameLen
+// runes and stays valid UTF-8 — a byte-slice cut would split a codepoint and
+// emit an invalid string into the tool.name metric attribute.
 func TestSanitizeMCPToolName_RuneSafe(t *testing.T) {
 	// "世" is a 3-byte UTF-8 rune.
 	long := strings.Repeat("世", maxMCPToolNameLen+20)

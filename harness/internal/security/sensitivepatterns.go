@@ -379,9 +379,8 @@ var docExampleLiterals = []string{
 // end in "EXAMPLE": the secret patterns have greedy variable-length
 // tails, so an appended EXAMPLE is absorbed into the match and a
 // tail check would let an attacker suppress detection of a real key
-// by suffixing it (wave-2 review bypass). The EXAMPLE-tail
-// convention is handled per-pattern where it is sound — see
-// validAWSAccessKeyID.
+// by suffixing it. The EXAMPLE-tail convention is handled per-pattern
+// where it is sound — see validAWSAccessKeyID.
 func notDocExample(content string, start, end int) bool {
 	m := content[start:end]
 	for _, lit := range docExampleLiterals {
@@ -400,8 +399,7 @@ func notDocExample(content string, start, end int) bool {
 // key lands after the 20-char match — the regex cannot absorb it —
 // so the match tail, and detection, are unchanged. Variable-length
 // patterns must keep using notDocExample alone; their greedy classes
-// absorb the suffix into the match, which is exactly the wave-2
-// review bypass.
+// absorb the suffix into the match, defeating a tail check.
 func validAWSAccessKeyID(content string, start, end int) bool {
 	if !notDocExample(content, start, end) {
 		return false
@@ -467,8 +465,8 @@ func validBasicAuth(content string, start, end int) bool {
 // "://" immediately after the match. The value must be exactly the
 // scheme word "secret" — suppressing on a bare "://" suffix would let
 // an attacker drop detection of any real key by appending
-// "://anything" to it (wave-2 review bypass), and a value that merely
-// ends in "secret" could still be key material.
+// "://anything" to it, and a value that merely ends in "secret"
+// could still be key material.
 func validAPIKeyHeader(content string, start, end int) bool {
 	if !notDocExample(content, start, end) {
 		return false

@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestToolResult_StructuredOmitemptyByteIdentical pins the issue #231
-// invariant that the additive Structured field is invisible on the wire when
-// unset: a text-only ToolResult must serialise byte-for-byte the way it did
-// before the field existed.
+// TestToolResult_StructuredOmitemptyByteIdentical pins that the
+// additive Structured field is invisible on the wire when unset: a
+// text-only ToolResult serialises byte-for-byte as before the field
+// existed.
 func TestToolResult_StructuredOmitemptyByteIdentical(t *testing.T) {
 	r := ToolResult{ToolUseID: "tu_1", Content: "hello", IsError: false}
 	got, err := json.Marshal(r)
@@ -66,12 +66,10 @@ func TestToolCallRecord_StructuredOmitempty(t *testing.T) {
 	}
 }
 
-// TestToolCall_InternalNameOmittedOnWire pins the issue #234 back-compat
-// guarantee at the WIRE level (not just in memory): under the default
-// profile InternalName is empty and the "internalName" key must be
-// physically absent from the marshalled JSON of every tool-call trace
-// shape, so a default-profile trace is byte-compatible with pre-profile
-// consumers. The positive case confirms the key appears when set.
+// TestToolCall_InternalNameOmittedOnWire pins that under the default
+// profile InternalName is empty and the "internalName" key is
+// physically absent from marshalled JSON across every tool-call trace
+// shape. The positive case confirms the key appears when set.
 func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
 	t.Run("summary", func(t *testing.T) {
 		b, err := json.Marshal(ToolCallSummary{Name: "grep_files", Success: true})
@@ -111,13 +109,12 @@ func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
 	})
 }
 
-// TestToolDefinition_PresentationByteIdentical pins the issue #222 invariant
-// that the additive Presentation bundle is invisible on the default JSON
-// encoding: a tool definition with no Presentation must serialise byte-for-byte
-// the way it did before the field existed, and a tool WITH Presentation must
-// still omit it (json:"-") so the Anthropic verbatim path never leaks unknown
-// keys onto the wire. Adapters surface Presentation by reading it explicitly,
-// never via the default encoding.
+// TestToolDefinition_PresentationByteIdentical pins that the additive
+// Presentation bundle is invisible on the default JSON encoding: a
+// tool definition with no Presentation serialises byte-for-byte as
+// before the field existed, and a tool WITH Presentation still omits
+// it (json:"-") so the Anthropic verbatim path never leaks unknown
+// keys onto the wire.
 func TestToolDefinition_PresentationByteIdentical(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	bare := ToolDefinition{Name: "demo", Description: "d", InputSchema: schema}

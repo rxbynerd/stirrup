@@ -10,10 +10,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestRunConfigFromProto_SessionNamePropagates ensures that a SessionName set
-// on the proto RunConfig (the wire format used by the gRPC / K8s job path) is
-// copied into the internal types.RunConfig. Without this, every job dispatched
-// via the control plane would silently lose its session label.
+// TestRunConfigFromProto_SessionNamePropagates ensures SessionName set on
+// the proto RunConfig is copied into the internal types.RunConfig.
 func TestRunConfigFromProto_SessionNamePropagates(t *testing.T) {
 	name := "nightly-eval"
 	pc := &pb.RunConfig{
@@ -27,10 +25,9 @@ func TestRunConfigFromProto_SessionNamePropagates(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_PromptBuilderFieldsPreserved covers the prompt
-// templating surface (#492): a control plane that tunes prompts via
-// prompt_builder.template or pins a prompt model for comparison runs
-// must not have either silently dropped on the job path.
+// TestRunConfigFromProto_PromptBuilderFieldsPreserved confirms
+// prompt_builder.template and prompt_builder.prompt_model survive
+// translation.
 func TestRunConfigFromProto_PromptBuilderFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		PromptBuilder: &pb.PromptBuilderConfig{
@@ -77,8 +74,6 @@ func TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement(t *testing.T) {
 			t.Fatalf("expected Enforce nil for empty message, got %v", *decoded.Enforce)
 		}
 
-		// Confirm runConfigFromProto preserves the nil pointer so the
-		// validator's secure default (enforce) applies.
 		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &decoded})
 		if rc.RuleOfTwo == nil {
 			t.Fatal("expected types.RunConfig.RuleOfTwo to be non-nil when proto sub-message is present")
@@ -183,10 +178,8 @@ func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
 		if len(rt.GuardCriteria) != 2 || rt.GuardCriteria[0] != "sensitive_data" || rt.GuardCriteria[1] != "pii" {
 			t.Errorf("GuardCriteria: got %v", rt.GuardCriteria)
 		}
-		// Mutation isolation: the proto message owns its backing array; on
-		// a long-lived gRPC server a shared slice would let writes to one
-		// decoded payload corrupt another run's criteria list. Modifying
-		// the source after translation must not reach the translated copy.
+		// GuardCriteria must be copied, not aliased, so mutating the
+		// source after translation cannot reach the translated copy.
 		src.RuleOfTwo.Runtime.GuardCriteria[0] = "mutated"
 		if rt.GuardCriteria[0] != "sensitive_data" {
 			t.Error("GuardCriteria shares backing array with proto source")
@@ -194,11 +187,9 @@ func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
 	})
 }
 
-// TestRunConfigFromProto_TranslatesNewSafetyFields confirms that proto
-// fields added in #42 (executor.runtime, ruleOfTwo, codeScanner,
-// permissionPolicy.policy_file/fallback) are populated on the internal
-// RunConfig. Without this, a control plane that sets these fields gets
-// no visible behaviour change because the translate layer drops them.
+// TestRunConfigFromProto_TranslatesNewSafetyFields confirms
+// executor.runtime, ruleOfTwo, codeScanner, and
+// permissionPolicy.policy_file/fallback populate the internal RunConfig.
 func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 	enforceFalse := false
 	pc := &pb.RunConfig{
@@ -246,9 +237,7 @@ func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 
 // TestRunConfigFromProto_TranslatesK8sExecutorFields pins that the k8s
 // executor's namespace, kubeconfig, nodeSelector, and serviceAccount
-// fields survive the gRPC translate layer. Without this, a control plane
-// that dispatches a k8s run gets a Pod with no namespace and validation
-// fails downstream with no visible cause on the wire.
+// fields survive the gRPC translate layer.
 func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
 	pc := &pb.RunConfig{
 		Executor: &pb.ExecutorConfig{
@@ -284,13 +273,8 @@ func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins the M1 fix:
-// the gRPC RunConfig path used by `stirrup job` must carry the gcs
-// trace emitter's Bucket and ObjectPrefix into the internal RunConfig.
-// Without these fields the runtime either falls through to the jsonl
-// fallback (Type=="" after copy) or hits a "bucket is required"
-// construction error at the factory — both silently wrong on the
-// Cloud Run dispatch path.
+// TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins that the
+// gcs trace emitter's Bucket and ObjectPrefix survive translation.
 func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		TraceEmitter: &pb.TraceEmitterConfig{
@@ -324,8 +308,6 @@ func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
 		t.Fatalf("SessionName should be empty when proto field is nil, got %q", rc.SessionName)
 	}
 
-	// Cross-check: when the proto sub-message is omitted entirely,
-	// types fields stay nil so ValidateRunConfig applies its defaults.
 	rcEmpty := runConfigFromProto(&pb.RunConfig{})
 	if rcEmpty.RuleOfTwo != nil {
 		t.Error("RuleOfTwo should be nil when proto field absent")
@@ -334,9 +316,6 @@ func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
 		t.Error("CodeScanner should be nil when proto field absent")
 	}
 
-	// Validator-level coupling: an unset proto Enforce must be treated
-	// as "enforce" (the secure default). Add a separate types-level
-	// assertion to defend against accidental sentinel-pointer rewrites.
 	pcUnset := &pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}}
 	rcUnset := runConfigFromProto(pcUnset)
 	if rcUnset.RuleOfTwo == nil {
@@ -347,13 +326,9 @@ func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
 	}
 }
 
-// TestRunConfigProtoRoundTrip_GuardRail asserts that every field on
-// the proto GuardRailConfig is preserved by runConfigFromProto. A
-// missing translation block for guard_rail (proto field 27) silently
-// drops guard configuration on the K8s job path, leaving operators
-// running a guardless harness even when their wire payload says
-// otherwise. The composite stage exercises the recursion path so
-// nested configurations also survive.
+// TestRunConfigProtoRoundTrip_GuardRail asserts that every field on the
+// proto GuardRailConfig is preserved by runConfigFromProto, including
+// the recursive Stages case.
 func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	think := true
 	pc := &pb.RunConfig{
@@ -455,14 +430,9 @@ func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_ObservabilityPropagates ensures that an
-// ObservabilityConfig set on the proto RunConfig (the wire format used by
-// the gRPC / K8s job path) is copied into the internal types.RunConfig.
-// Without this translation block, every K8s job dispatched via the control
-// plane would silently land in deployment.environment=local because the
-// resource builder would only see the empty fallback after the proto value
-// was dropped on the floor — the same class of bug as the prior SessionName
-// (issue #50) and GuardRail (issue #43) regressions.
+// TestRunConfigFromProto_ObservabilityPropagates ensures an
+// ObservabilityConfig set on the proto RunConfig is copied into the
+// internal types.RunConfig.
 func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 	pc := &pb.RunConfig{
 		Observability: &pb.ObservabilityConfig{
@@ -484,10 +454,7 @@ func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 // TestRunConfigFromProto_ObservabilityAbsentWhenNil documents the safe
 // default: when the proto omits the Observability sub-message, the internal
 // RunConfig surfaces a zero-value ObservabilityConfig rather than panicking
-// on a nil dereference. The resource builder then falls through to env-var
-// fallbacks and finally to the documented defaults, which is exactly the
-// path a no-config K8s job (operator pinning environment via OTEL_*
-// variables on the pod spec) takes.
+// on a nil dereference.
 func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{})
 
@@ -499,16 +466,9 @@ func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_AzureWIFFieldsPreserved guards the three
-// Azure Workload Identity Federation fields (azure_tenant_id,
-// azure_client_id, azure_scope) against silent drop in
-// credentialConfigFromProto. Without this coverage, a control plane
-// dispatching an Azure WIF run via the K8s job path would have its
-// credential block stripped to type+tokenSource on the harness side,
-// and the run would fail with a misleading "azureTenantId is required"
-// validation error — the wire payload was correct but the translation
-// layer dropped it on the floor. Mirrors the GCP federation coverage in
-// TestRunConfigFromProto_CredentialWIFFieldsPreserved.
+// TestRunConfigFromProto_AzureWIFFieldsPreserved guards the Azure
+// Workload Identity Federation fields (azure_tenant_id, azure_client_id,
+// azure_scope) against silent drop in credentialConfigFromProto.
 func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		Provider: &pb.ProviderConfig{
@@ -552,13 +512,9 @@ func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_CredentialWIFFieldsPreserved guards the
-// credential federation proto fields against silent drop on the
-// control-plane / K8s-job path. Without coverage here, a future edit
-// to credentialConfigFromProto could omit one of the four fields
-// (audience, serviceAccount on CredentialConfig; resource, clientId
-// on the nested TokenSourceConfig) and operators would only discover
-// it as a 401 from the federation endpoint at first run.
+// TestRunConfigFromProto_CredentialWIFFieldsPreserved guards the GCP
+// credential federation proto fields (audience, serviceAccount, and the
+// nested TokenSourceConfig's resource/clientId) against silent drop.
 func TestRunConfigFromProto_CredentialWIFFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		Provider: &pb.ProviderConfig{
@@ -608,13 +564,7 @@ func TestRunConfigFromProto_CredentialWIFFieldsPreserved(t *testing.T) {
 
 // TestRunConfigFromProto_AnthropicWIFFieldsPreserved guards the four
 // Anthropic Workload Identity Federation proto fields against silent
-// drop on the control-plane / K8s-job path (issue #117 BLOCKING B1).
-// Without coverage here, an operator delivering a RunConfig with
-// credential.type=anthropic-wif via gRPC receives a CredentialConfig
-// with all four required fields as empty strings — validation then
-// rejects the config and the K8s job fails to start. Mirrors the GCP
-// WIF round-trip test above; uses the generated getters in the
-// translate layer to stay nil-safe.
+// drop in credentialConfigFromProto.
 func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		Provider: &pb.ProviderConfig{
@@ -655,14 +605,9 @@ func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_OpenAIWIFFieldsPreserved guards the three OpenAI
-// Workload Identity Federation proto fields against silent drop on the
-// control-plane / K8s-job path. Without coverage here, an operator
-// delivering a RunConfig with credential.type=openai-wif via gRPC receives
-// a CredentialConfig with the two required fields empty, validation rejects
-// it, and the K8s job fails to start. Mirrors the Anthropic WIF round-trip
-// test above; uses the generated getters in the translate layer to stay
-// nil-safe.
+// TestRunConfigFromProto_OpenAIWIFFieldsPreserved guards the three
+// OpenAI Workload Identity Federation proto fields against silent drop
+// in credentialConfigFromProto.
 func TestRunConfigFromProto_OpenAIWIFFieldsPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		Provider: &pb.ProviderConfig{
@@ -703,19 +648,8 @@ func TestRunConfigFromProto_OpenAIWIFFieldsPreserved(t *testing.T) {
 }
 
 // TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved guards
-// the two new TraceEmitterConfig fields added by gh-100 (Protocol,
-// Headers) against silent drop in runConfigFromProto. Without this
-// coverage, a control plane dispatching a Grafana-Cloud-bound run via
-// the K8s job path would have its protocol and Authorization header
-// stripped on the harness side, falling back to the gRPC default with
-// no exporter able to reach the gateway. The translation layer at
-// grpc_translate.go:171-180 has caused this exact class of regression
-// in prior PRs (#50 SessionName, #95/#117/#118 federation fields), and
-// three reviewers independently flagged the gap on this PR — making
-// it a recurring pattern this test pins shut.
-//
-// Mirrors TestRunConfigFromProto_ObservabilityPropagates above. Per
-// synthesis MF-5 (3-reviewer consensus).
+// TraceEmitterConfig's Protocol and Headers fields against silent drop
+// in runConfigFromProto.
 func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		TraceEmitter: &pb.TraceEmitterConfig{
@@ -746,16 +680,10 @@ func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T
 }
 
 // TestRunConfigFromProto_ProviderRetryConfigPreserved guards the
-// ProviderRetryConfig wire fields against the same silent-drop class of
-// regression that occurred in gh-95 (SessionName), gh-117 (Anthropic
-// WIF), gh-118 (Azure WIF), and gh-100 (TraceEmitter Protocol/Headers).
-// Without this coverage, an operator who dispatches a tuned retry
-// policy over gRPC would have it stripped on the harness side and
-// silently replaced with the documented defaults — no log, no error.
-// The non-nil case checks all four fields round-trip; the nil case
-// checks that the wire-absent retry block produces a nil pointer on
-// the Go side so the validator's defaulter runs (rather than the
-// translate layer cross-binding "field unset" to "explicit zero").
+// ProviderRetryConfig wire fields against silent drop. The non-nil case
+// checks all four fields round-trip; the nil case checks that a
+// wire-absent retry block produces a nil pointer so the validator's
+// defaulter runs.
 func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 	t.Run("non-nil retry round-trips all four fields", func(t *testing.T) {
 		pc := &pb.RunConfig{
@@ -806,11 +734,7 @@ func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 
 // TestRunConfigFromProto_ToolDispatchMaxParallelPreserved guards the
 // translate hop that copies tool_dispatch.max_parallel from the wire
-// format into types.RunConfig.ToolDispatch.MaxParallel (issue #184).
-// The miss-pattern flagged by issues #117 and #118 is "new
-// grpc_translate.go field added without a round-trip test then later
-// drops on the floor"; this test pins the field so a future field
-// reshuffle cannot silently regress the dispatch knob.
+// format into types.RunConfig.ToolDispatch.MaxParallel.
 func TestRunConfigFromProto_ToolDispatchMaxParallelPreserved(t *testing.T) {
 	pc := &pb.RunConfig{
 		ToolDispatch: &pb.ToolDispatchConfig{MaxParallel: 8},
@@ -826,22 +750,15 @@ func TestRunConfigFromProto_ToolDispatchMaxParallelPreserved(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_BatchProviderConfigPreserved pins the phase-1
-// review fix for the silent K8s-job batch drop: the proto's
-// ProviderConfig.batch (field 14) must round-trip into the internal
+// TestRunConfigFromProto_BatchProviderConfigPreserved pins that the
+// proto's ProviderConfig.batch round-trips into the internal
 // types.ProviderConfig.Batch with every field preserved and the
-// nil/non-nil distinction on MaxWaitSeconds intact. Without the
-// translation block any TaskAssignment with batch.enabled=true was
-// silently degraded to a streaming run with no log entry — the same
-// failure mode that caused gh-95, gh-117, gh-118, and gh-100.
+// nil/non-nil distinction on MaxWaitSeconds intact.
 func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 	t.Run("non-nil batch round-trips all six fields", func(t *testing.T) {
 		var maxWait int32 = 3600
-		// Use protobuf marshal/unmarshal so we exercise the actual wire
-		// format and not just an in-memory pointer copy. The phase-1
-		// reviewer specifically called out that the gap is on the gRPC
-		// path, so the test should cover Marshal -> Unmarshal as well as
-		// the Go-side translate call.
+		// Marshal/unmarshal to exercise the actual wire format, not just
+		// an in-memory pointer copy.
 		original := &pb.RunConfig{
 			Provider: &pb.ProviderConfig{
 				Type: "anthropic",
@@ -937,23 +854,11 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 }
 
 // TestRunConfigFromProto_CompatProfileRoundTrip pins the wire-to-
-// internal copy of ProviderConfig.CompatProfile (issue #221 Wave 2).
-// The translate hop is forward-only — operators set CompatProfile on
-// the wire and the harness consumes it; there is no symmetric Go-to-
-// proto path for this field. The same silent-drop class of regression
-// that bit SessionName (gh-95), Anthropic WIF (gh-117), Azure WIF
-// (gh-118), and TraceEmitter (gh-100) is the failure mode this test
-// guards against: a future ProviderConfig field reshuffle could drop
-// CompatProfile from the translate block and a Z.ai-targeted run
-// would silently fall back to the openai-compatible defaults — a
-// HTTP 400 on the first turn rather than a clean validation error.
-//
-// Three sub-cases cover the wire→internal contract:
-//   - explicit "zai-glm" round-trips verbatim
-//   - empty string round-trips as empty (default profile)
-//   - unrecognised string round-trips verbatim; ValidateRunConfig is
-//     responsible for rejecting it — the translate layer must not
-//     silently coerce unknown values
+// internal copy of ProviderConfig.CompatProfile. The translate hop is
+// forward-only — operators set CompatProfile on the wire and the
+// harness consumes it, with no symmetric Go-to-proto path. An
+// unrecognised value must round-trip verbatim; ValidateRunConfig is
+// responsible for rejecting it, not the translate layer.
 func TestRunConfigFromProto_CompatProfileRoundTrip(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -981,13 +886,9 @@ func TestRunConfigFromProto_CompatProfileRoundTrip(t *testing.T) {
 }
 
 // TestRunConfigFromProto_TemperatureRoundTrip pins the pointer-vs-nil
-// distinction across the wire boundary for RunConfig.Temperature
-// (issue #217). The control plane must be able to (a) leave the field
-// unset and inherit the harness default, (b) request a non-zero
-// temperature, and (c) request greedy decoding by sending an explicit
-// 0.0. Without the optional-double field on the proto side, case (c)
-// is wire-indistinguishable from case (a) — exactly the failure mode
-// the proto's `optional` keyword exists to prevent.
+// distinction across the wire boundary for RunConfig.Temperature: unset
+// must inherit the harness default, while an explicit 0.0 (greedy
+// decoding) must stay distinguishable from unset.
 func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1014,14 +915,11 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRunTraceToProto_OutcomePopulated pins #141: the canonical Outcome must
-// land on the proto outcome field verbatim, and stop_reason must mirror it so
-// pre-outcome consumers keep the value they have always read. The case set is
-// the full 11-value types.RunTrace.Outcome superset of the loop's stop reasons
-// — including the proto-stop_reason-foreign "success", "verification_failed",
-// "verification_error", and "max_tokens" — plus the empty zero value. The
-// proto.Marshal/Unmarshal round-trip pins the field's wire tag (outcome = 8),
-// which a struct-copy assertion alone would not catch.
+// TestRunTraceToProto_OutcomePopulated pins that the canonical Outcome
+// lands on the proto outcome field verbatim, and stop_reason mirrors it
+// for consumers predating the outcome field. The proto.Marshal/Unmarshal
+// round-trip pins the field's wire tag, which a struct-copy assertion
+// alone would not catch.
 func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1091,8 +989,7 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 
 // TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
 // a TaskAssignment with no hooks sub-message must not synthesise a
-// non-nil types.HooksConfig (issue #461) — matching the GuardRail
-// nil-stays-nil precedent (TestRunConfigProtoRoundTrip_GuardRailNilStaysNil).
+// non-nil types.HooksConfig.
 func TestRunConfigFromProto_HooksAbsentStaysNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{})
 	if rc.Hooks != nil {
@@ -1117,11 +1014,7 @@ func TestRunConfigFromProto_HooksEmptyStaysNonNil(t *testing.T) {
 
 // TestRunConfigFromProto_HooksFieldsPreserved guards the translate hop
 // that copies every HookConfig field from the wire format into
-// types.HookConfig, across both phases (issue #461). Exercises the
-// actual Marshal -> Unmarshal wire path (not just an in-memory pointer
-// copy), matching the pattern
-// TestRunConfigFromProto_BatchProviderConfigPreserved established for
-// the analogous gh-95/gh-117/gh-118/gh-100 silent-drop failure class.
+// types.HookConfig, exercising the actual Marshal -> Unmarshal wire path.
 func TestRunConfigFromProto_HooksFieldsPreserved(t *testing.T) {
 	original := &pb.RunConfig{
 		Hooks: &pb.HooksConfig{
@@ -1171,11 +1064,7 @@ func TestRunConfigFromProto_HooksFieldsPreserved(t *testing.T) {
 
 // TestRunConfigFromProto_HooksNotAliased pins that mutating the source
 // *pb.RunConfig after translation does not reach the translated
-// types.RunConfig — hookConfigFromProto copies every field by value
-// (see its doc comment), so there is no proto-owned slice/map for this
-// hop to alias, unlike guardRailConfigFromProto's Stages/CustomCriteria.
-// This test would catch a future refactor that starts sharing the
-// proto's []*pb.HookConfig backing array instead of copying.
+// types.RunConfig.
 func TestRunConfigFromProto_HooksNotAliased(t *testing.T) {
 	pc := &pb.RunConfig{
 		Hooks: &pb.HooksConfig{
@@ -1193,15 +1082,10 @@ func TestRunConfigFromProto_HooksNotAliased(t *testing.T) {
 	}
 }
 
-// TestRunConfigFromProto_MCPTrustFieldsPreserved guards the gRPC / K8s job
-// path for the MCP trust fields added in #393 (AllowedTools,
-// AllowedMCPHosts). Without an explicit translation, toolsConfigFromProto
-// silently drops both fields, so a gRPC-submitted RunConfig would register
-// every advertised tool from an MCP server and apply no host pinning
-// regardless of what the caller specified. Marshal/Unmarshal through the
-// actual wire format (not just an in-memory pointer copy) so a future
-// field-number collision or renumbering on MCPServerConfig (fields 4/5)
-// shows up here rather than only at runtime.
+// TestRunConfigFromProto_MCPTrustFieldsPreserved guards the MCP trust
+// fields (AllowedTools, AllowedMCPHosts) against silent drop in
+// toolsConfigFromProto. Marshal/Unmarshal through the actual wire format
+// so a future field-number collision on MCPServerConfig shows up here.
 func TestRunConfigFromProto_MCPTrustFieldsPreserved(t *testing.T) {
 	original := &pb.RunConfig{
 		Tools: &pb.ToolsConfig{
@@ -1254,12 +1138,9 @@ func TestRunConfigFromProto_MCPTrustFieldsPreserved(t *testing.T) {
 }
 
 // TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil documents the
-// backward-compatible default from #393: an MCP server config that omits
-// the trust fields entirely must translate to nil/empty slices on the
-// types side, not a spurious default allowlist or host pin. Round-tripped
-// through Marshal/Unmarshal for the same reason as the populated case
-// above — proto3 zero-value (absent repeated field) behaviour is only
-// truly exercised on the wire, not on an in-memory struct literal.
+// backward-compatible default: an MCP server config that omits the
+// trust fields entirely must translate to nil/empty slices, not a
+// spurious default allowlist or host pin.
 func TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil(t *testing.T) {
 	original := &pb.RunConfig{
 		Tools: &pb.ToolsConfig{

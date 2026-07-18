@@ -1,28 +1,6 @@
 // Package trace provides offline parsers for the JSONL trace files
-// stirrup writes via traceEmitter.type=jsonl.
-//
-// Two on-wire shapes are supported, and Reader transparently handles
-// both:
-//
-//   - The legacy single-blob shape: one types.RunTrace per line, with
-//     a complete run emitting one line at Finish.
-//   - The streaming event shape (since #270): line-delimited events
-//     with a "kind" discriminator — run_started, turn_record,
-//     tool_call_record, run_finished. The legacy shape is treated as
-//     an implicit run_finished event with no preceding events.
-//
-// For backward compatibility, Reader.Next continues to yield
-// types.RunTrace values; on a streaming-format file it surfaces the
-// trace embedded in the run_finished event and skips the other event
-// kinds. Consumers that want full transcript reassembly use
-// ReadRecording, which walks the stream and returns a
-// *types.RunRecording.
-//
-// Reader is the single-pass streaming entry point. Tail consumes the
-// same scanner shape but polls the underlying file for appended data
-// so operators can watch an in-progress run. Both helpers skip
-// malformed lines with a slog.Debug log — a truncated tail of an
-// in-flight JSONL file must not fail the surrounding command.
+// stirrup writes via traceEmitter.type=jsonl. See docs/trace-inspection.md
+// for the on-wire shapes and CLI usage.
 package trace
 
 import (
@@ -39,23 +17,16 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// MaxLineBytes is the per-record line cap the reader honours. Matches
-// the trace emitter's own cap so a record that fit on write also fits
-// on read. A line larger than the cap is skipped with a slog.Debug log
-// (consistent with the malformed-line policy) rather than aborting the
-// scan.
+// MaxLineBytes is the per-record line cap the reader honours, matching
+// the trace emitter's own cap.
 const MaxLineBytes = 4 * 1024 * 1024
 
-// initialScanBuf is the bufio.Scanner starting buffer. It grows up to
-// MaxLineBytes when a single record is larger than 256 KiB. The choice
-// matches eval/runner/runner.go's prior local copy so the
-// extracted reader preserves the same memory footprint for the common
-// "small line" case.
+// initialScanBuf is the bufio.Scanner starting buffer; it grows up to
+// MaxLineBytes for larger records.
 const initialScanBuf = 256 * 1024
 
-// defaultTailPollInterval is the poll cadence Tail uses when the
-// caller does not override it. 100 ms keeps a live `tail -f` view
-// responsive without burning CPU on a quiet file.
+// defaultTailPollInterval is Tail's poll cadence when the caller does
+// not override it.
 const defaultTailPollInterval = 100 * time.Millisecond
 
 // Reader streams RunTrace records from a JSONL source.
@@ -126,30 +97,20 @@ func (r *Reader) Close() error {
 	return r.closer.Close()
 }
 
-// resetScanner discards any cached EOF on the underlying scanner so a
-// follower can resume past the previous end of file once new bytes
-// have been appended. The file offset is preserved by the underlying
-// io.Reader, so a fresh scanner picks up exactly at the previous
-// stopping point.
+// resetScanner discards any cached EOF so a follower can resume past
+// the previous end of file once new bytes have been appended.
 func (r *Reader) resetScanner() {
 	r.scanner = bufio.NewScanner(r.src)
 	r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
 }
 
-// Next returns the next RunTrace record in the stream.
+// Next returns the next RunTrace record in the stream. Both wire
+// shapes are accepted (docs/trace-inspection.md); on a streaming file
+// it yields only run_finished events, skipping the rest.
 //
-// Both wire shapes are accepted: a legacy single-blob line is decoded
-// as a types.RunTrace directly; a streaming-event line is decoded as
-// an event and yields a *RunTrace only when its kind is run_finished
-// (other event kinds — run_started, turn_record, tool_call_record —
-// are silently skipped so legacy consumers see one RunTrace per
-// completed run regardless of the on-disk format).
-//
-// Malformed JSON lines and lines exceeding MaxLineBytes are skipped
-// with a slog.Debug log; Next continues past them to the next
-// well-formed record. An io.EOF is returned when the stream is
-// exhausted with no further well-formed records to yield. Any other
-// I/O error from the underlying scanner is surfaced verbatim.
+// Malformed lines and lines exceeding MaxLineBytes are skipped with a
+// slog.Debug log. Returns io.EOF when exhausted; other scanner errors
+// are surfaced verbatim.
 func (r *Reader) Next() (*types.RunTrace, error) {
 	for r.scanner.Scan() {
 		line := r.scanner.Bytes()
@@ -165,18 +126,11 @@ func (r *Reader) Next() (*types.RunTrace, error) {
 			continue
 		}
 		if !ok {
-			// Streaming event with no embedded RunTrace (run_started,
-			// turn_record, tool_call_record). Legacy consumers see
-			// only run_finished records; skip the rest.
 			continue
 		}
 		return trace, nil
 	}
 	if err := r.scanner.Err(); err != nil {
-		// bufio.ErrTooLong is the cap-exceeded signal; surface it as a
-		// debug-skipped record and reset the scanner so the next Next
-		// can resume past the offending line. The reader's contract
-		// promises a single oversized record never aborts the scan.
 		if errors.Is(err, bufio.ErrTooLong) {
 			r.logger.Debug("trace.Reader: skip oversized line",
 				"cap", MaxLineBytes,
@@ -236,7 +190,6 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 		return nil, false, err
 	}
 	if probe.Kind == "" {
-		// Legacy single-blob shape.
 		var trace types.RunTrace
 		if err := json.Unmarshal(line, &trace); err != nil {
 			return nil, false, err
@@ -260,22 +213,13 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 }
 
 // ReadRecording walks the stream and reassembles a *types.RunRecording
-// from a streaming-event trace file. A complete recording requires a
-// run_started event (for RunID and Config) plus zero or more
-// turn_record events (for the transcript) plus a run_finished event
-// (for FinalOutcome). An interrupted run with no run_finished event
-// is returned with FinalOutcome zero-valued; the caller can detect
-// this via FinalOutcome.ID == "".
+// from run_started, turn_record, and run_finished events. An
+// interrupted run with no run_finished is returned with
+// FinalOutcome.ID == "". A legacy single-blob trace is treated as a
+// recording with no transcript turns.
 //
-// A legacy single-blob trace (no kind discriminator) is treated as a
-// recording with no transcript turns: RunID and Config come from the
-// embedded RunTrace, FinalOutcome is the trace itself, and Turns is
-// nil. This lets a single consumer accept both wire shapes without
-// branching on the format.
-//
-// Malformed and oversized lines are skipped with a slog.Debug log per
-// the policy that governs Next. The reader is consumed end-to-end;
-// the caller does not call Next afterwards.
+// The reader is consumed end-to-end; the caller does not call Next
+// afterwards.
 func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 	recording := &types.RunRecording{}
 	seenStarted := false
@@ -293,7 +237,6 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			continue
 		}
 		if probe.Kind == "" {
-			// Legacy: one RunTrace blob is the entire recording.
 			var trace types.RunTrace
 			if err := json.Unmarshal(line, &trace); err != nil {
 				r.logger.Debug("trace.Reader: skip malformed legacy line",
@@ -336,18 +279,12 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			if ev.Trace != nil {
 				recording.FinalOutcome = *ev.Trace
 				if !seenStarted {
-					// No run_started observed (e.g. a legacy stream
-					// that prefixed a single blob with the new wire
-					// shape, or a recording that lost its preamble).
-					// Fall back to fields on the embedded trace.
 					recording.RunID = ev.Trace.ID
 					recording.Config = ev.Trace.Config
 				}
 			}
 		default:
-			// Unknown kind: skip. Forward compatibility — a future
-			// event kind added to the wire must not abort old
-			// readers.
+			// unknown kind: skip.
 		}
 	}
 	if err := r.scanner.Err(); err != nil {
@@ -357,10 +294,6 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			)
 			r.scanner = bufio.NewScanner(r.src)
 			r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
-			// Re-enter the loop to consume any remaining lines past
-			// the oversized one. ReadRecording returns whatever it
-			// accumulated; a single bad line should not lose the
-			// surrounding context.
 			return r.ReadRecording()
 		}
 		return recording, fmt.Errorf("reading trace file: %w", err)
@@ -386,9 +319,7 @@ func (r *Reader) All() ([]types.RunTrace, error) {
 }
 
 // Last reads the stream to completion and returns the last well-formed
-// RunTrace, or an error if no records were present. Matches the
-// historical semantics the eval runner's parseTraceFile exposed: the
-// trailing line is the authoritative summary of a completed run.
+// RunTrace, or an error if no records were present.
 func (r *Reader) Last() (*types.RunTrace, error) {
 	var last *types.RunTrace
 	for {
@@ -425,21 +356,8 @@ type TailOptions struct {
 // Tail reads path and invokes handle for every well-formed RunTrace
 // record, returning when ctx is cancelled, the stream is exhausted
 // (Follow=false), or handle returns a non-nil error. The special path
-// "-" reads from os.Stdin and ignores Follow (stdin already has the
-// "block until appended" semantics built in).
-//
-// Tail uses a polling loop — no fsnotify or platform-specific file
-// notification — because the JSONL trace files are append-only and a
-// 100 ms poll is sufficient to keep an operator's `tail -f` view
-// responsive without inflating the dependency tree.
-//
-// Truncation and rotation are NOT followed: Tail keeps the same file
-// handle open across polls, so if the file is truncated or rotated
-// out from under it, the kernel offset stays past the new EOF and
-// the follow loop appears to stall with no further output and no
-// error. Restart the command to pick up the rotated file. Full
-// inode-tracking semantics (`tail --follow=name`) are intentionally
-// out of scope; trace files are written append-only by stirrup.
+// "-" reads from os.Stdin and ignores Follow. Truncation and rotation
+// are not followed; see docs/trace-inspection.md.
 func Tail(ctx context.Context, path string, opts TailOptions, handle func(*types.RunTrace) error) error {
 	logger := opts.Logger
 	if logger == nil {
@@ -470,11 +388,6 @@ func Tail(ctx context.Context, path string, opts TailOptions, handle func(*types
 		if !opts.Follow {
 			return nil
 		}
-		// bufio.Scanner caches the EOF it returned, so a second pass
-		// over the same scanner would short-circuit even after new
-		// bytes land on disk. Re-attach a fresh scanner to the same
-		// open file: the file's offset is preserved, so we resume
-		// exactly where the previous pass stopped.
 		select {
 		case <-ctx.Done():
 			return nil

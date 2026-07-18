@@ -53,7 +53,7 @@ func TestGeminiAdapter_StreamSingleText(t *testing.T) {
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify URL path embeds project + location + model.
+
 		if !strings.Contains(r.URL.Path, "/projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent") {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
@@ -181,8 +181,7 @@ func TestGeminiAdapter_StreamedToolCall(t *testing.T) {
 	if stop == nil {
 		t.Fatal("expected message_complete event")
 	}
-	// finishReason=STOP with a functionCall present must remap to tool_use
-	// so the loop dispatches the call.
+	// STOP with a functionCall present remaps to tool_use.
 	if stop.StopReason != "tool_use" {
 		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
 	}
@@ -298,7 +297,7 @@ func TestGeminiAdapter_ContextCancellationMidStream(t *testing.T) {
 		if ok {
 			flusher.Flush()
 		}
-		// Hold the connection open until the client disconnects.
+
 		<-r.Context().Done()
 	}))
 	defer srv.Close()
@@ -371,10 +370,7 @@ func TestGeminiAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 // argument blob does not exhaust memory: when a single snapshot
 // exceeds maxToolInputSize the adapter emits an error and exits cleanly.
 func TestGeminiAdapter_ToolInputSizeCap(t *testing.T) {
-	// One chunk with an oversized args blob — embed a string
-	// padding inside a valid JSON object so the snapshot exceeds the
-	// 10 MB cap. The scanner buffer (16 MiB) is large enough to
-	// receive the line; the cap test is on the per-snapshot byte count.
+
 	huge := strings.Repeat("a", maxToolInputSize+10)
 	payload := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"explode","args":{"x":%q},"willContinue":false}}]}}]}`, huge)
 	body := makeGeminiData(payload)
@@ -579,11 +575,10 @@ func TestGeminiAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_DataPrefixVariants pins the SSE `data:` framing
-// parser. Three cases — the canonical `"data: {...}"` form, the
-// no-space `"data:{...}"` form (also spec-legal), and the pathological
-// `"data: data:{...}"` case where the JSON value itself starts with
-// "data:" — must all parse to the same JSON payload. Verifies B2.
+// TestGeminiAdapter_DataPrefixVariants pins the SSE `data:` framing parser:
+// the canonical `"data: {...}"` form, the no-space `"data:{...}"` form, and
+// the pathological case where the JSON value itself starts with "data:"
+// must all parse to the same JSON payload.
 func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 	cases := []struct {
 		name string
@@ -600,11 +595,8 @@ func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 				"data:{\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
 		},
 		{
-			// Payload deliberately contains a JSON value starting with
-			// "data:". Under the old double-TrimPrefix, the second pass
-			// would strip the inner "data:" off the value and corrupt
-			// the JSON shape. With the single CutPrefix this is
-			// preserved.
+			// The payload value itself starts with "data:"; a naive
+			// double-TrimPrefix would corrupt it.
 			name: "value-starts-with-data",
 			body: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"data:image/png;base64,abcd\"}]}}]}\n\n" +
 				"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
@@ -650,12 +642,9 @@ func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_SimultaneousInterleavedToolCalls verifies B3: two
-// concurrent tool calls each streamed across willContinue=true chunks
-// must accumulate into separate slots and produce two distinct
-// tool_call events with their respective arguments. Under the old
-// part-index keying both calls landed at index 0 and the second
-// overwrote the first.
+// TestGeminiAdapter_SimultaneousInterleavedToolCalls asserts two concurrent
+// tool calls streamed across willContinue=true chunks accumulate into
+// separate slots and produce two distinct tool_call events.
 func TestGeminiAdapter_SimultaneousInterleavedToolCalls(t *testing.T) {
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_a","partialArgs":{},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_b","partialArgs":{},"willContinue":true}}]}}]}`) +
@@ -702,9 +691,8 @@ func TestGeminiAdapter_SimultaneousInterleavedToolCalls(t *testing.T) {
 
 // TestGeminiAdapter_PromptFeedbackBlock verifies B4: a chunk with
 // promptFeedback.blockReason set and no candidates must surface as a
-// message_complete with StopReason=safety_blocked rather than an
-// empty stream. Without this branch the agentic loop sees no events
-// and reports a generic stall.
+// message_complete with StopReason=safety_blocked rather than an empty
+// stream.
 func TestGeminiAdapter_PromptFeedbackBlock(t *testing.T) {
 	body := makeGeminiData(`{"promptFeedback":{"blockReason":"SAFETY"}}`)
 
@@ -733,12 +721,9 @@ func TestGeminiAdapter_PromptFeedbackBlock(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_BuildURLEscapesModel verifies B5: a model name
-// containing a slash percent-encodes into the URL rather than rewriting
-// the path shape. The example in the brief — "gemini-pro/../../evil" —
-// was malformed input that the validator now rejects, but the adapter
-// also escapes defensively so a future caller that bypasses validation
-// still cannot redirect the request.
+// TestGeminiAdapter_BuildURLEscapesModel asserts a model name containing a
+// slash percent-encodes into the URL rather than rewriting the path shape,
+// a defensive check independent of upstream validation.
 func TestGeminiAdapter_BuildURLEscapesModel(t *testing.T) {
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "test-project", "global", nil)
 	got := a.buildURL("model/with/slashes")
@@ -779,12 +764,10 @@ func TestGeminiAdapter_MalformedSSEChunk(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_BlankFunctionCallName pins the empty-name guard in
-// the functionCall branch: a chunk whose functionCall part lacks a name
-// must surface as a single error event and abort the stream without
-// emitting a tool_call or message_complete. A blank Name was the bucket
-// key that motivated the explicit guard (#193); regressing it would
-// silently coalesce the chunk into a "" slot rather than failing fast.
+// TestGeminiAdapter_BlankFunctionCallName pins the empty-name guard: a
+// chunk whose functionCall part lacks a name must surface as a single
+// error event and abort the stream, rather than silently coalescing into
+// a "" slot.
 func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"args":{"path":"x"}}}]}}]}`)
 
@@ -970,11 +953,8 @@ func TestGeminiAdapter_HasTimeout(t *testing.T) {
 // the wire format Gemini 3.x emits when streamFunctionCallArguments is
 // false: one SSE chunk carrying a functionCall part with both `name` and
 // `args` populated, alongside finishReason="STOP" on the same candidate.
-// This is the shape both 2.5-pro and 3.x converge on with the flag off,
-// and is the shape the adapter must continue to handle after the
-// streamed-args feature was disabled (see gemini_request.go) to dodge
-// 3.x's new JSON-path delta format. The shape is derived from a real
-// captured Vertex AI response against gemini-3.1-pro-preview.
+// Derived from a real captured Vertex AI response against
+// gemini-3.1-pro-preview.
 func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}}}]},"finishReason":"STOP"}]}`)
 
@@ -1021,21 +1001,15 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 	if stop == nil {
 		t.Fatal("expected message_complete event")
 	}
-	// STOP must be promoted to tool_use because a functionCall was emitted
-	// during the stream — otherwise the agentic loop would terminate
-	// without dispatching the tool.
+
 	if stop.StopReason != "tool_use" {
 		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
 	}
 }
 
-// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall pins the receive
-// side of the issue #194 fix: when Vertex emits a functionCall part with a
-// `thoughtSignature` blob attached, the adapter must surface that blob on
-// the emitted tool_call StreamEvent so the agentic loop can persist it
-// onto the ContentBlock for next-turn round-trip. The fixture is the
-// 3.x non-streamed shape captured from Vertex against
-// `gemini-3.1-pro-preview`.
+// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall asserts a
+// `thoughtSignature` blob on a functionCall part surfaces on the emitted
+// tool_call StreamEvent for next-turn round-trip.
 func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`)
@@ -1073,12 +1047,9 @@ func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_ThoughtSignatureMissingIsEmpty confirms that a
-// pre-3.x response (no `thoughtSignature` on the part) leaves the
-// StreamEvent's ThoughtSignature empty. This is the negative case that
-// protects the `omitempty` invariant on the send side: an empty
-// signature must round-trip to a request body that does NOT include
-// the field.
+// TestGeminiAdapter_ThoughtSignatureMissingIsEmpty confirms a pre-3.x
+// response (no `thoughtSignature` on the part) leaves the StreamEvent's
+// ThoughtSignature empty, so it round-trips via `omitempty`.
 func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"x"}}}]},"finishReason":"STOP"}]}`)
 
@@ -1112,14 +1083,9 @@ func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
 }
 
 // TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath pins the drain
-// branch of the SSE consumer (gemini.go around the finishReason-triggered
-// drain): a tool call left open with willContinue=true is flushed when
-// finishReason arrives, and the buffered thoughtSignature must travel
-// with it onto the emitted StreamEvent. The existing drain test
-// (TestGeminiAdapter_ToolCallBufferDrainOnFinishReason) does not set a
-// signature on the willContinue chunk, so a regression that dropped
-// buf.thoughtSignature from the drain emit call would not be caught
-// there. (#194; synthesis B3 / test-coverage Gap 2.)
+// branch of the SSE consumer: a tool call left open with willContinue=true
+// is flushed when finishReason arrives, and the buffered thoughtSignature
+// must travel with it onto the emitted StreamEvent.
 func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
 	const sig = "DRAINABLE=="
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"x.go"},"willContinue":true},"thoughtSignature":"`+sig+`"}]}}]}`) +
@@ -1156,13 +1122,10 @@ func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins documents and pins
-// the deliberate multi-chunk accumulation policy: across willContinue=true
-// chunks the buffer retains the most recent NON-EMPTY thoughtSignature
-// value. The `if part.ThoughtSignature != ""` guard in gemini.go encodes
-// the "absent field on a continuation chunk does not clobber a prior
-// signature" semantic; removing that guard would break sub-case B.
-// (#194; synthesis B4 / test-coverage Gap 3.)
+// TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins pins the deliberate
+// multi-chunk accumulation policy: across willContinue=true chunks the
+// buffer retains the most recent NON-EMPTY thoughtSignature value; an
+// absent field on a continuation chunk must not clobber a prior signature.
 func TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins(t *testing.T) {
 	t.Run("later_non_empty_supersedes_earlier", func(t *testing.T) {
 		body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"a"},"willContinue":true},"thoughtSignature":"FIRST=="}]}}]}`) +

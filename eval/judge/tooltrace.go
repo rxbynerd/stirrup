@@ -8,18 +8,11 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// evaluateToolTrace inspects the run's RunTrace.ToolCalls rather than the
-// workspace filesystem (issue #233). It is the trace-side counterpart to
-// the file-state judges: where file-exists / file-contains confirm the
-// agent reached the right end state, tool-trace confirms it got there by
-// the expected tool-use path.
-//
-// A nil JudgeContext.Trace is a hard error rather than a silent pass: a
-// tool-trace judge that cannot see the trace has nothing to assert, and
-// treating that as a pass would mask a misconfigured runner (e.g. a suite
-// that forgot to retain the trace, or a replay path that did not thread it
-// through). The runner always parses the trace before judging, so a nil
-// here means the wiring is broken.
+// evaluateToolTrace inspects the run's RunTrace.ToolCalls: where
+// file-exists / file-contains confirm the agent reached the right end
+// state, tool-trace confirms it got there via the expected tool-use path.
+// A nil JudgeContext.Trace is a hard error, not a silent pass, so a
+// misconfigured runner (trace not threaded through) is not masked.
 func evaluateToolTrace(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	if j.ToolTrace == nil {
 		return eval.JudgeVerdict{}, fmt.Errorf("tool-trace judge requires a toolTrace block")
@@ -52,11 +45,9 @@ func evaluateToolTrace(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict,
 }
 
 // internalName returns the canonical internal tool ID for a recorded call.
-// Under a toolset profile (issue #234) the model-facing Name is an alias and
-// InternalName carries the resolved ID; under the default profile
-// InternalName is empty and Name is already canonical. Matching on the
-// internal ID means a trace assertion written against the canonical name
-// holds regardless of the active profile.
+// Under a toolset profile the model-facing Name is an alias and
+// InternalName carries the resolved ID; matching on the internal ID means a
+// trace assertion holds regardless of the active profile.
 func internalName(c types.ToolCallSummary) string {
 	if c.InternalName != "" {
 		return c.InternalName
@@ -81,11 +72,8 @@ func checkSequence(want []string, calls []types.ToolCallSummary) (eval.JudgeVerd
 	if idx == len(want) {
 		return eval.JudgeVerdict{}, true
 	}
-	// Everything from idx onward failed to match in order: idx is the first
-	// element with no in-order occurrence, and the greedy scan above could
-	// not advance past it, so the whole tail is unsatisfied. Naming only
-	// want[idx] hides the rest and makes a multi-step gap look like a
-	// single missing call.
+	// Report the whole unmatched tail, not just want[idx], so a multi-step
+	// gap does not read as a single missing call.
 	return eval.JudgeVerdict{
 		Passed: false,
 		Reason: fmt.Sprintf(
@@ -121,13 +109,9 @@ func checkExpectation(exp types.ToolCallExpectation, calls []types.ToolCallSumma
 			Reason: fmt.Sprintf("tool %q called %d time(s), expected at most %d", exp.Name, matched, *exp.MaxCalls),
 		}, false
 	}
-	// Fail closed when all_succeeded is asserted but no call matched and no
-	// lower bound forces one to exist. Without this guard the predicate is
-	// vacuously true (zero failures among zero matches), so a run where the
-	// model never called the tool would silently pass an expectation that
-	// was meant to gate on the tool succeeding (CWE-754). Authors who want
-	// to allow zero calls should not set all_succeeded; authors who want to
-	// require the tool set min_calls >= 1, which this branch points them to.
+	// Fail closed: without this, all_succeeded is vacuously true when the
+	// tool was never called, silently passing an expectation meant to gate
+	// on success (CWE-754).
 	if exp.AllSucceeded && matched == 0 && exp.MinCalls == 0 {
 		return eval.JudgeVerdict{
 			Passed: false,
@@ -143,20 +127,15 @@ func checkExpectation(exp types.ToolCallExpectation, calls []types.ToolCallSumma
 	return eval.JudgeVerdict{}, true
 }
 
-// checkNoUnresolvedUnknown fails when the run recorded a failed call that was
-// not followed *later in the trace* by a successful call to the same tool —
-// an unresolved unknown-tool / renamed-tool miss. Recovery is positional: a
-// failure is resolved only by a success that occurs strictly after it, so
-// `[edit_file:fail, edit_file:success]` is acceptable recovery while
-// `[edit_file:success, edit_file:fail]` is a trailing failure that nothing
-// recovered and must FAIL. A set-membership test over "ever succeeded" would
-// wrongly pass the latter — masking exactly the recovery regressions this
-// check exists to catch — so the scan is forward-only.
+// checkNoUnresolvedUnknown fails when the run recorded a failed call not
+// followed *later in the trace* by a successful call to the same tool.
+// Recovery is positional and forward-only: `[fail, success]` is acceptable
+// recovery, `[success, fail]` is a trailing failure and must FAIL. A
+// set-membership "ever succeeded" test would wrongly pass the latter.
 func checkNoUnresolvedUnknown(calls []types.ToolCallSummary) (eval.JudgeVerdict, bool) {
-	// Fail closed on an empty trace: forbid_unknown is meant to gate on the
-	// recovery path having run, and a run with no tool calls (harness crash,
-	// early exit, no model output) cannot demonstrate recovery. A vacuous
-	// pass here would make the judge useless as a gate (CWE-754).
+	// Fail closed on an empty trace: a run with no tool calls cannot
+	// demonstrate recovery, and a vacuous pass would make this check
+	// useless as a gate (CWE-754).
 	if len(calls) == 0 {
 		return eval.JudgeVerdict{
 			Passed: false,

@@ -7,17 +7,11 @@ import (
 	"testing"
 )
 
-// TestToolCallSummary_StructuralParityWithTrace guards the four
-// types.ToolCallSummary(tc) conversions the harness performs on a
-// ToolCallTrace. The cast is a struct conversion: it only compiles while
-// the two types have identical underlying field shapes, but Go permits
-// the conversion to silently ignore differing struct *tags* and, more
-// dangerously, a future field added to ToolCallTrace without a matching
-// addition to ToolCallSummary would either break the conversion (caught
-// at build) or — if added to ToolCallSummary first — leave the trace
-// struct missing data with no signal. This reflection check fails loudly
-// the moment the field set (name + type + json tag) diverges, so the
-// next person editing one struct is forced to mirror the other (#314).
+// TestToolCallSummary_StructuralParityWithTrace guards the
+// ToolCallSummary(tc) struct-conversion cast: Go permits the
+// conversion to silently ignore differing struct tags or a field added
+// to one type but not the other. This reflection check fails loudly
+// the moment the field set (name + type + json tag) diverges.
 func TestToolCallSummary_StructuralParityWithTrace(t *testing.T) {
 	type fieldShape struct {
 		Name string
@@ -50,15 +44,12 @@ func TestToolCallSummary_StructuralParityWithTrace(t *testing.T) {
 }
 
 // TestToolCallTrace_ErrorCategoryRoundTrip decodes a JSONL trace record
-// and asserts the ErrorCategory field is either empty or a member of the
-// bounded observability.ToolFailureCategory enum's wire-string set.
-// ErrorCategory is a plain string in types because types cannot import
-// harness/internal/observability (the layering is intentional — see
-// docs/architecture.md), so there is no compile-time guard that a write
-// site used a valid member. The valid set is hard-coded here to preserve
-// that layering boundary: if the enum gains a member, this list must be
-// updated in lockstep, which is the explicit reminder the test exists to
-// provide.
+// and asserts ErrorCategory is either empty or a member of the bounded
+// observability.ToolFailureCategory wire-string set. ErrorCategory is a
+// plain string in types (types cannot import
+// harness/internal/observability; see docs/architecture.md), so there
+// is no compile-time guard on valid members — the set is hard-coded
+// here and must be updated in lockstep if the enum gains a member.
 func TestToolCallTrace_ErrorCategoryRoundTrip(t *testing.T) {
 	// Mirror of observability.ToolFailureCategory wire strings. NOT
 	// imported — types must not depend on harness/internal/observability.
@@ -115,10 +106,8 @@ func TestToolCallTrace_ErrorCategoryRoundTrip(t *testing.T) {
 }
 
 // TestTurnTrace_MarshalRoundTrip pins the wire shape of TurnTrace.Mode
-// and TurnTrace.BatchID added in #138. The omitempty contract is
-// load-bearing: streaming traces continue to omit both fields, and
-// batch traces carry the provider-assigned batch identifier so an
-// operator can cross-reference a TurnTrace with the provider's console.
+// and TurnTrace.BatchID: streaming traces omit both fields, and batch
+// traces carry the provider-assigned batch identifier.
 func TestTurnTrace_MarshalRoundTrip(t *testing.T) {
 	tt := TurnTrace{
 		Turn:       3,
@@ -154,9 +143,7 @@ func TestTurnTrace_MarshalRoundTrip(t *testing.T) {
 }
 
 // TestTurnTrace_StreamingOmitsBatchFields confirms that a streaming
-// TurnTrace serialises without the mode/batchId keys, so legacy
-// pipelines that parse the JSON in a non-strict mode (or schema-match
-// on key presence) keep the same byte sequence they had pre-#138.
+// TurnTrace serialises without the mode/batchId keys.
 func TestTurnTrace_StreamingOmitsBatchFields(t *testing.T) {
 	tt := TurnTrace{
 		Turn:       1,
@@ -179,15 +166,10 @@ func TestTurnTrace_StreamingOmitsBatchFields(t *testing.T) {
 }
 
 // TestTurnTrace_EmptyModeOmittedFromJSON pins the omitempty contract
-// on TurnTrace.Mode directly. The companion
-// TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode test exercises
-// the reader side; this test exercises the writer side. Without
-// omitempty, a freshly-zeroed TurnTrace would carry "mode":"" on
-// the wire and any consumer schema-matching on key presence would
-// treat the new field as load-bearing for every trace, regressing
-// the pre-#138 wire shape.
+// on TurnTrace.Mode: a zero-valued TurnTrace must not carry "mode":""
+// on the wire.
 func TestTurnTrace_EmptyModeOmittedFromJSON(t *testing.T) {
-	tt := TurnTrace{} // Mode is the empty string by default.
+	tt := TurnTrace{}
 	data, err := json.Marshal(tt)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -197,12 +179,8 @@ func TestTurnTrace_EmptyModeOmittedFromJSON(t *testing.T) {
 	}
 }
 
-// TestTurnTrace_IsBatch pins the empty-mode-means-streaming contract
-// as a method rather than a per-call-site string compare. Empty must
-// resolve to false (legacy / pre-resolution failure path), "streaming"
-// to false, and "batch" to true. A future third mode that consumers
-// must distinguish from batch lands here so the helper can grow a
-// switch rather than every consumer learning a new literal.
+// TestTurnTrace_IsBatch pins that empty and "streaming" resolve to
+// false, and "batch" resolves to true.
 func TestTurnTrace_IsBatch(t *testing.T) {
 	cases := []struct {
 		name string
@@ -223,12 +201,9 @@ func TestTurnTrace_IsBatch(t *testing.T) {
 	}
 }
 
-// TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode pins the backward-
-// compatibility contract for traces written before #138: a JSON
-// document without the "mode" field must deserialise to Mode: "",
-// not error or coerce to a non-empty default. Downstream consumers
-// (lakehouse bucketing, mine-failures filter) treat empty mode as
-// streaming so legacy traces continue to flow through unchanged.
+// TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode pins that a JSON
+// document without the "mode" field deserialises to Mode: "" rather
+// than erroring or coercing to a non-empty default.
 func TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode(t *testing.T) {
 	legacy := `{"turn":2,"tokens":{"input":0,"output":0},"toolCalls":0,"stopReason":"end_turn","durationMs":500}`
 	var tt TurnTrace
@@ -247,11 +222,9 @@ func TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode(t *testing.T) {
 }
 
 // TestToolCallTrace_IDOmittedWhenEmpty pins the omitempty contract on
-// the tool_use ID mirrored onto ToolCallTrace/ToolCallSummary: legacy
-// traces and providers without call identifiers keep the pre-ID wire
-// shape, and a populated ID round-trips. The OTel content-capture path
-// keys tool-span pairing on this field, so silent loss here downgrades
-// captured tool spans to plain counter spans.
+// the tool_use ID: providers without call identifiers keep the pre-ID
+// wire shape, and a populated ID round-trips. The OTel content-capture
+// path keys tool-span pairing on this field.
 func TestToolCallTrace_IDOmittedWhenEmpty(t *testing.T) {
 	bare, err := json.Marshal(ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true})
 	if err != nil {
@@ -279,8 +252,8 @@ func TestToolCallTrace_IDOmittedWhenEmpty(t *testing.T) {
 }
 
 // TestTurnTrace_ModelOmittedWhenEmpty pins the omitempty contract on
-// the per-turn model added for gen_ai.request.model stamping: legacy
-// traces keep their wire shape, and the router's selection round-trips.
+// the per-turn model: legacy traces keep their wire shape, and the
+// router's selection round-trips.
 func TestTurnTrace_ModelOmittedWhenEmpty(t *testing.T) {
 	bare, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn"})
 	if err != nil {

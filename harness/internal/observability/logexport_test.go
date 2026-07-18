@@ -106,11 +106,10 @@ func TestNewLoggerWithExport_FansOutToBothSinks(t *testing.T) {
 
 	logger.Info("fanned out", "k", "v")
 
-	// Stderr sink.
 	if !strings.Contains(buf.String(), "fanned out") {
 		t.Errorf("message missing from stderr sink: %s", buf.String())
 	}
-	// Export sink.
+
 	records := cap.snapshot()
 	if len(records) != 1 {
 		t.Fatalf("export sink received %d records, want 1", len(records))
@@ -131,7 +130,6 @@ func TestNewLoggerWithExport_ScrubsOnExportPath(t *testing.T) {
 
 	logger.Info("auth", slog.String("token", anthropicKeyFixture))
 
-	// Stderr path.
 	if strings.Contains(buf.String(), anthropicKeyFixture) {
 		t.Errorf("secret leaked into stderr sink: %s", buf.String())
 	}

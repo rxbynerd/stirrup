@@ -26,9 +26,8 @@ const (
 	testAzureClientID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 )
 
-// newAzureSource is the test-side counterpart to
-// NewAzureWorkloadIdentitySource: it patches tokenURL so requests
-// land at an httptest server instead of login.microsoftonline.com.
+// newAzureSource patches tokenURL so requests land at an httptest
+// server instead of login.microsoftonline.com.
 func newAzureSource(t *testing.T, ts TokenSource, scope, tokenURL string) *AzureWorkloadIdentitySource {
 	t.Helper()
 	src := NewAzureWorkloadIdentitySource(ts, testAzureTenantID, testAzureClientID, scope)
@@ -115,7 +114,6 @@ func TestAzureWIFSource_SuccessExchange(t *testing.T) {
 		t.Errorf("Accept = %q, want application/json", capturedAccept)
 	}
 
-	// Assert all five required fields with their expected values.
 	checks := map[string]string{
 		"grant_type":            "client_credentials",
 		"client_id":             testAzureClientID,
@@ -143,7 +141,6 @@ func TestAzureWIFSource_DefaultScope(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Empty scope must default to azureDefaultScope.
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
 	if err != nil {
@@ -186,10 +183,7 @@ func TestAzureWIFSource_CustomScope(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_RefreshUsesCache verifies that
-// oauth2.ReuseTokenSource caches the access token until expiry: a
-// non-zero expires_in must keep the second BearerToken call from
-// hitting the wire.
+// Verifies oauth2.ReuseTokenSource caches the access token until expiry.
 func TestAzureWIFSource_RefreshUsesCache(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -221,10 +215,7 @@ func TestAzureWIFSource_RefreshUsesCache(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_ZeroExpiresInFallback exercises the documented
-// 1-hour fallback when expires_in is missing or zero. Without it
-// ReuseTokenSource would treat each issued token as already expired
-// and burn through Entra's rate limits.
+// Exercises the 1-hour fallback when expires_in is missing or zero.
 func TestAzureWIFSource_ZeroExpiresInFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -240,11 +231,10 @@ func TestAzureWIFSource_ZeroExpiresInFallback(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 
-	// First call hits the server.
 	if _, err := cred.BearerToken(context.Background()); err != nil {
 		t.Fatalf("BearerToken (first): %v", err)
 	}
-	// Second call within the 1-hour fallback window should hit cache.
+
 	if _, err := cred.BearerToken(context.Background()); err != nil {
 		t.Fatalf("BearerToken (second): %v", err)
 	}
@@ -253,15 +243,12 @@ func TestAzureWIFSource_ZeroExpiresInFallback(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_SingleFlightUnderConcurrency proves that 10
-// concurrent BearerToken callers see exactly one Entra exchange.
-// oauth2.ReuseTokenSource provides the serialisation; this test
-// guards against a future refactor that strips the wrapper.
+// Proves 10 concurrent BearerToken callers see exactly one Entra
+// exchange, guarding against a future refactor that drops
+// oauth2.ReuseTokenSource's serialisation.
 func TestAzureWIFSource_SingleFlightUnderConcurrency(t *testing.T) {
 	var calls int32
-	// Do not block the handler — we just want to count how often it
-	// is invoked. ReuseTokenSource's mutex elides duplicate calls
-	// before they reach the network.
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
@@ -303,11 +290,9 @@ func TestAzureWIFSource_SingleFlightUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_JWTReReadBetweenExchanges proves the JWT is
-// fetched fresh on each refresh, not cached at construction. With
-// expires_in=0 the 1-hour fallback caches the issued access token,
-// but a fresh Resolve forces a new exchange — and the second
-// exchange must use the second JWT yielded by the rotating source.
+// Proves the JWT is fetched fresh on each refresh: a fresh Resolve
+// forces a new exchange, which must use the second JWT the rotating
+// source yields.
 func TestAzureWIFSource_JWTReReadBetweenExchanges(t *testing.T) {
 	var capturedAssertions []string
 	var mu sync.Mutex
@@ -328,7 +313,6 @@ func TestAzureWIFSource_JWTReReadBetweenExchanges(t *testing.T) {
 
 	rot := &rotatingTokenSource{tokens: [][]byte{[]byte("jwt-1"), []byte("jwt-2")}}
 
-	// First exchange, first source.
 	src1 := newAzureSource(t, rot, "", srv.URL)
 	cred1, err := src1.Resolve(context.Background())
 	if err != nil {
@@ -338,9 +322,6 @@ func TestAzureWIFSource_JWTReReadBetweenExchanges(t *testing.T) {
 		t.Fatalf("BearerToken #1: %v", err)
 	}
 
-	// Second exchange via a fresh ReuseTokenSource wrapper. The
-	// rotating source yields a different JWT this time; the wire
-	// must reflect that.
 	src2 := newAzureSource(t, rot, "", srv.URL)
 	cred2, err := src2.Resolve(context.Background())
 	if err != nil {
@@ -390,14 +371,13 @@ func TestAzureWIFSource_HTTPErrorWithCorrelationID(t *testing.T) {
 	if !strings.Contains(msg, "AADSTS70021") {
 		t.Errorf("error should include body excerpt, got: %v", err)
 	}
-	// Defence against regression: the JWT must NEVER appear in error output.
+
 	if strings.Contains(msg, "jwt") {
 		t.Errorf("error must not leak the subject JWT, got: %v", err)
 	}
 }
 
-// TestAzureWIFSource_HTTPErrorWithCorrelationIDAlt covers the
-// camelCase variant Microsoft sometimes returns for the same field.
+// Covers the camelCase correlationId variant Microsoft sometimes returns.
 func TestAzureWIFSource_HTTPErrorWithCorrelationIDAlt(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -443,9 +423,7 @@ func TestAzureWIFSource_HTTPErrorWithoutCorrelationID(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_HTTPErrorNonJSONBody guards correlationIDSuffix
-// against panicking on non-JSON bodies (e.g. a fronting proxy that
-// returns text/plain on 5xx).
+// Guards correlationIDSuffix against panicking on non-JSON bodies.
 func TestAzureWIFSource_HTTPErrorNonJSONBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -506,8 +484,7 @@ func TestAzureWIFSource_EmptyClientID(t *testing.T) {
 }
 
 func TestAzureWIFSource_TokenSourceReturnsEmpty(t *testing.T) {
-	// httptest server isn't reached because the empty-JWT guard fires
-	// before the HTTP call; an unreachable URL keeps the test honest.
+
 	src := newAzureSource(t, &stubTokenSource{token: []byte{}}, "", "http://unused.invalid")
 	cred, err := src.Resolve(context.Background())
 	if err != nil {
@@ -573,11 +550,7 @@ func TestAzureWIFSource_EmptyAccessToken(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_ErrorBodyTruncated exercises the shared
-// truncateForError cap on the error path. A 4 KiB body must be
-// trimmed to 1 KiB + ellipsis when surfaced through the wrapped
-// error — without the cap, hostile endpoints could push large
-// payloads through every error handler into slog and OTel.
+// Exercises the shared truncateForError cap on the error path.
 func TestAzureWIFSource_ErrorBodyTruncated(t *testing.T) {
 	bigBody := strings.Repeat("X", stsErrorBodyLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -597,25 +570,17 @@ func TestAzureWIFSource_ErrorBodyTruncated(t *testing.T) {
 	if !strings.Contains(msg, "…") {
 		t.Errorf("error excerpt should be truncated with ellipsis, got: %q", lastN(msg, 40))
 	}
-	// The full bigBody (4 KiB of X) must NOT appear verbatim — that
-	// would mean the cap was bypassed.
+
 	if strings.Contains(msg, bigBody) {
 		t.Errorf("error must not include the full %d-byte body verbatim", len(bigBody))
 	}
 }
 
-// TestAzureWIFSource_SuccessBodyLimitEnforced exercises the 64 KiB
-// LimitReader on the success path. A 200 KiB body must be capped at
-// stsResponseLimit before json.Unmarshal sees it; with the cap, a
-// payload large enough to overflow the limiter cuts the JSON object
-// off mid-string and surfaces as a parse error rather than driving
-// allocator pressure.
+// Exercises the LimitReader on the success path: a body larger than
+// stsResponseLimit is truncated mid-JSON, so json.Unmarshal must fail
+// rather than the parse silently succeeding with a truncated token.
 func TestAzureWIFSource_SuccessBodyLimitEnforced(t *testing.T) {
-	// Build a 200 KiB JSON object whose `access_token` value alone
-	// is larger than the read cap. After truncation the JSON is
-	// invalid, so json.Unmarshal must fail — which proves the
-	// LimitReader is in effect (without it the parse would succeed
-	// and we'd return a 200 KiB access token).
+
 	huge := strings.Repeat("A", stsResponseLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -642,14 +607,8 @@ func lastN(s string, n int) string {
 	return s[len(s)-n:]
 }
 
-// TestAzureWIFSource_CustomTokenURL exercises the sovereign-cloud
-// override path: when a non-empty tokenURLOverride is supplied to the
-// constructor, the exchange must POST to that URL instead of the
-// global-cloud authority at login.microsoftonline.com. The override
-// path is the only way Azure Government / China / Germany workloads
-// reach their authority — without coverage here, a regression that
-// silently re-derives the global URL would break sovereign-cloud
-// deployments without a single failing test.
+// Exercises the sovereign-cloud tokenURLOverride path: the exchange
+// must POST to the override, not the global-cloud authority.
 func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -661,9 +620,8 @@ func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Construct directly (not via the test helper, which patches
-	// tokenURL after the fact) so the variadic override path is
-	// exercised end-to-end.
+	// Construct directly so the variadic override path is exercised
+	// end-to-end, rather than via the test helper's post-hoc patch.
 	src := NewAzureWorkloadIdentitySource(
 		&stubTokenSource{token: []byte("jwt")},
 		testAzureTenantID,
@@ -683,17 +641,13 @@ func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
 		t.Errorf("override URL hit %d times, want 1", got)
 	}
 
-	// Defensive cross-check: src.tokenURL must be the override, not a
-	// derived login.microsoftonline.com URL.
 	if src.tokenURL != srv.URL {
 		t.Errorf("tokenURL = %q, want %q (override should win over global default)", src.tokenURL, srv.URL)
 	}
 }
 
-// TestAzureWIFSource_EmptyTokenURLOverrideFallsBack confirms that an
-// empty override leaves the constructor at its default global-cloud
-// URL. This pins the variadic-arg semantics: empty means "use the
-// default" rather than "use the empty string".
+// Pins the variadic-arg semantics: an empty override means "use the
+// default", not "use the empty string".
 func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
 	src := NewAzureWorkloadIdentitySource(
 		&stubTokenSource{token: []byte("jwt")},
@@ -709,22 +663,13 @@ func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
 	}
 }
 
-// TestAzureWIFSource_CorrelationIDSanitised guards correlationIDSuffix
-// against a hostile / malfunctioning Entra-shaped endpoint that returns
-// a correlation_id containing ANSI escape sequences, control bytes, or
-// an oversized payload. These values would otherwise land verbatim in
-// slog attributes, OTel span events, and the terminal — a scrubber
-// further downstream would have to know to clean them up. Since the
-// correlation_id is end-user-rendered (operators paste it into
-// Microsoft support tickets), bounding it at the source is the
-// cheapest fix.
+// Guards correlationIDSuffix against a hostile endpoint returning a
+// correlation_id with ANSI escapes, control bytes, or an oversized
+// payload — bounding it at the source before it reaches slog/OTel/terminal.
 func TestAzureWIFSource_CorrelationIDSanitised(t *testing.T) {
 	t.Run("ANSI escape and control bytes stripped", func(t *testing.T) {
-		// A real-world hostile body: a 401 with an "id" containing an
-		// ANSI red sequence (ESC + [31m), an embedded carriage return,
-		// and a NUL byte. Use json.Marshal so the wire-format escapes
-		// are correct (a hand-typed raw string literal can't carry the
-		// 0x1b control byte through the JSON parser).
+		// json.Marshal (not a raw string literal) carries the 0x1b
+		// control byte through the JSON parser correctly.
 		raw := "abc\x1b[31m\rde\x00f"
 		jsonBody, err := json.Marshal(map[string]string{
 			"error":          "x",
@@ -734,10 +679,8 @@ func TestAzureWIFSource_CorrelationIDSanitised(t *testing.T) {
 			t.Fatalf("marshal: %v", err)
 		}
 		got := correlationIDSuffix(jsonBody)
-		// Bytes < 0x20 (ESC, CR, NUL) must all be dropped. The "[31m"
-		// printable tail of the ANSI sequence is permitted because in
-		// isolation it's just brackets and digits — the danger is the
-		// ESC byte that turns it into a control sequence.
+		// Bytes < 0x20 (ESC, CR, NUL) are dropped; the printable "[31m"
+		// tail survives since only the ESC byte was the control sequence.
 		want := " (correlation_id=abc[31mdef)"
 		if got != want {
 			t.Errorf("correlationIDSuffix = %q, want %q", got, want)

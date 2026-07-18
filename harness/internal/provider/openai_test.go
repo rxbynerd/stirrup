@@ -391,12 +391,11 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 }
 
 // TestOpenAIAdapter_RawBodyShape captures the raw JSON request body and
-// asserts on the exact key set seen by the upstream API. It exists as a
-// regression guard against silently reviving the legacy "max_tokens" field
-// (rejected by reasoning models — gpt-5.x / o-series — with HTTP 400) or
-// dropping the omitempty on "temperature" (also rejected by reasoning
-// models when transmitted), and pins the unset-vs-explicit-zero semantics
-// on Temperature introduced by the *float64 migration. See issue #200.
+// asserts on the exact key set seen by the upstream API. It guards
+// against reviving the legacy "max_tokens" field (rejected by reasoning
+// models — gpt-5.x / o-series — with HTTP 400) or dropping the
+// omitempty on "temperature" (also rejected by reasoning models), and
+// pins the unset-vs-explicit-zero semantics on Temperature.
 func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -458,13 +457,9 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
-			// Use gpt-4o so the test exercises the no-quirk default
-			// path: the openai-compatible reasoning-class rules apply to
-			// gpt-5* and o[1-9]-*, which would suppress temperature
-			// (the intended new behaviour). The shape pins the
-			// max_completion_tokens default and the nil-vs-pointer
-			// Temperature semantics, both of which must survive on
-			// non-reasoning models exactly as before #200.
+			// Use gpt-4o so the test exercises the no-quirk default path:
+			// the openai-compatible reasoning-class rules (which would
+			// suppress temperature) apply only to gpt-5* and o[1-9]-*.
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:       "gpt-4o",
 				MaxTokens:   tc.maxTokens,
@@ -1053,23 +1048,10 @@ func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
 	}
 }
 
-// TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL pins the #395 follow-up
-// remediation. When httpClient.Do fails, Go wraps the transport error in a
-// *url.Error whose Error() string embeds the full request URL — including any
-// QueryParams the operator configured. Go redacts userinfo but NOT the query
-// string, so an arbitrary user-controlled QueryParams value (the harness now
-// accepts these) would leak verbatim wherever the error is logged or returned.
-//
-// The earlier issue #48 mitigation relied on security.Scrub stripping known
-// secret patterns from the error before it reached an OTel span; that left
-// arbitrary, non-pattern secrets (Azure SAS signatures, opaque gateway tokens)
-// exposed. The Stream adapter now unwraps the *url.Error to its transport cause
-// at the Do site, so the credentialed URL never enters the error chain at all —
-// a stronger guarantee that does not depend on pattern matching.
-//
-// This test seeds an unmistakable secret into QueryParams and asserts it is
-// absent from the returned error string, and that the error no longer wraps a
-// *url.Error.
+// TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL asserts the *url.Error
+// unwrapping documented in docs/security.md: it seeds an unmistakable
+// secret into QueryParams and asserts it is absent from the returned
+// error string, and that the error no longer wraps a *url.Error.
 func TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL(t *testing.T) {
 	// httptest.Server with a Hijack handler that closes the underlying
 	// TCP connection mid-request. http.Client.Do returns a *url.Error
@@ -1135,12 +1117,9 @@ func testRetryPolicy() RetryPolicy {
 }
 
 // TestOpenAIAdapter_RetriesOnce429ThenSucceeds verifies the end-to-end
-// retry path on the openai-compatible adapter: a single 429 from the
-// upstream is retried once, the second attempt's SSE stream succeeds,
-// and the events delivered to the caller match the no-retry baseline.
-// The provider_retry_attempt span event fires exactly once on the
-// intermediate 429; rate_limited does NOT fire on terminal success
-// because the final response was a 200.
+// retry path: a single 429 is retried once, the second attempt
+// succeeds, and provider_retry_attempt fires once while rate_limited
+// does not fire (the final response was a 200).
 func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
@@ -1216,14 +1195,11 @@ func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestOpenAIAdapter_429ExhaustedSurfacesTerminalError verifies that when
-// the upstream returns 429 on every attempt, the adapter exhausts its
-// retries and surfaces the boundary error format unchanged. The
-// rate_limited span event fires exactly once on the terminal attempt
-// — this is the dashboard-facing signal that an operator-visible
-// failure occurred (intermediate retries are kept off the
-// rate_limited event to avoid double-counting against alerts that key
-// off it).
+// TestOpenAIAdapter_429ExhaustedSurfacesTerminalError verifies that
+// when every attempt returns 429, the adapter exhausts retries and the
+// rate_limited span event fires exactly once, on the terminal attempt
+// only (kept off intermediate retries to avoid double-counting against
+// alerts keyed on it).
 func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1238,10 +1214,9 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	tracer := tp.Tracer("test")
 
-	// Metrics reader exercises the recordLatency-on-terminal-429 invariant
-	// (issue #197 remediation N-2): without a non-nil Metrics, the histogram
-	// branch executes as a no-op, leaving the "terminal error always records
-	// latency" invariant verified only for 401 (TestOpenAIAdapter_RecordsLatencyOnHTTPError).
+	// Without a non-nil Metrics, the histogram branch executes as a
+	// no-op; this test verifies the "terminal error always records
+	// latency" invariant on a 429, not just the 401 case.
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
@@ -1261,9 +1236,8 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected terminal error after retry exhaustion, got nil")
 	}
-	// Pin the full prefix so log scrapers / orchestrators that pattern-match
-	// on the error string break loudly if the wrap format changes (issue #197
-	// remediation N-1). strings.Contains hides format drift.
+	// Pin the full prefix so log scrapers that pattern-match on the
+	// error string break loudly if the wrap format changes.
 	//
 	// On the exhausted-MaxAttempts path the helper returns (lastResp, nil),
 	// so the adapter formats from resp.StatusCode + errResp.Error.Message
@@ -1299,7 +1273,7 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	if rateLimited != 1 {
 		t.Errorf("rate_limited events = %d, want 1 on terminal 429", rateLimited)
 	}
-	// N-2: a terminal 429 with non-nil Metrics must still record a
+	// A terminal 429 with non-nil Metrics must still record a
 	// provider_latency observation.
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got < 1 {
 		t.Errorf("provider_latency count = %d, want >= 1 (terminal 429 must still record latency)", got)
@@ -1307,13 +1281,10 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 }
 
 // TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError covers the
-// `retryOutcomeBudgetExhausted` branch in DoWithRetry. The previous
-// test exhausts via MaxAttempts; this one exhausts via WallClockBudget.
-// The server returns a deterministic Retry-After-Ms hint that exceeds
-// the budget — using the hint path (rather than backoff) avoids the
-// full-jitter randomness in backoffDelay, which can produce a delay
-// smaller than the budget and skip the budget check. The rate_limited
-// span event still fires on the resulting terminal 429.
+// `retryOutcomeBudgetExhausted` branch: exhaustion via WallClockBudget
+// rather than MaxAttempts. Uses a deterministic Retry-After-Ms hint
+// (rather than backoff) so the delay reliably exceeds the budget
+// despite full-jitter randomness.
 func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

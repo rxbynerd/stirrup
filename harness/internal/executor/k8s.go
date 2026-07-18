@@ -33,21 +33,16 @@ const (
 	k8sCloseTimeout     = 30 * time.Second
 	k8sAPITimeout       = 30 * time.Second
 	k8sPodNameRandBytes = 6
-	// k8sRunAsUserUID is the non-root UID enforced for the agent container.
-	// 65532 matches the distroless "nonroot" convention and lets RunAsNonRoot
-	// be enforced without requiring the image to declare its own USER.
+	// k8sRunAsUserUID matches the distroless "nonroot" convention (65532),
+	// letting RunAsNonRoot be enforced without the image declaring its own USER.
 	k8sRunAsUserUID int64 = 65532
-	// k8sMaxOutput caps both exec output and file I/O at 10 MB. This mirrors
-	// the container executor (maxDockerFrameSize / maxFileSize), NOT the
-	// local executor's tighter 1 MB limit: a sandboxed Pod, like a
-	// container, is the boundary that justifies the larger budget, whereas
-	// the local executor shares the host filesystem and stays conservative.
+	// k8sMaxOutput mirrors the container executor's 10 MB cap, not the
+	// local executor's tighter 1 MB limit: a sandboxed Pod justifies the
+	// larger budget the way a container does.
 	k8sMaxOutput int64 = 10 * 1024 * 1024
-	// k8sFileIOTimeout bounds a single ReadFile/WriteFile/ListDirectory
-	// operation. Exec clamps its own deadline; file I/O has no caller-supplied
-	// timeout, and an established SPDY stream is not bounded by
-	// rest.Config.Timeout, so a hung Pod would otherwise wedge a goroutine
-	// indefinitely.
+	// k8sFileIOTimeout bounds ReadFile/WriteFile/ListDirectory: an established
+	// SPDY stream is not bounded by rest.Config.Timeout, so a hung Pod would
+	// otherwise wedge a goroutine indefinitely.
 	k8sFileIOTimeout = 60 * time.Second
 )
 
@@ -56,34 +51,13 @@ const (
 // without string comparison.
 var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 
-// K8sExecutorConfig configures a K8sExecutor. The type is wired through
-// the executor factory under ExecutorConfig.Type == "k8s": ValidateRunConfig
-// enforces the required Image and Namespace and rejects a non-empty
-// workspace, and buildExecutor maps the run's ExecutorConfig onto these
-// fields. RuntimeClassName maps from the shared Runtime field and Resources
-// is applied to the Pod container (CPU/memory requests+limits, ephemeral
-// storage limit; see resourcesToPodResources).
-//
-// Network is REQUIRED (fail-closed): NewK8sExecutor rejects a nil Network
-// at construction, mirroring the container executor's explicit network
-// posture. Mode=="none" installs a deny-all egress NetworkPolicy alongside
-// the Pod; Mode=="allowlist" installs a policy permitting egress only to the
-// egress proxy (plus DNS) and injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY pointing
-// at EgressProxyURL. Capabilities().CanNetwork reflects the installed policy.
-//
-// CAVEAT: NetworkPolicy enforcement depends on the cluster CNI. kindnet (the
-// default kind CNI) accepts the policy object but does NOT enforce it, so on
-// a stock kind cluster the deny/allowlist is inert and the Pod retains
-// cluster-default egress. A NetworkPolicy-enforcing CNI (Cilium, Calico) is
-// required for the posture to hold — see examples/k8s/egress-proxy/README.md.
-// This is the k8s analogue of the container executor's honest fail-open note
-// around host.docker.internal.
+// K8sExecutorConfig configures a K8sExecutor, wired through the executor
+// factory under ExecutorConfig.Type == "k8s". See docs/executors/k8s.md for
+// the network/egress posture and the kindnet enforcement caveat.
 type K8sExecutorConfig struct {
-	// Image is the container image for the agent Pod. It must ship a
-	// POSIX shell at /bin/sh plus the `tar` and `ls` utilities on PATH:
-	// command execution runs `/bin/sh -c`, and file I/O streams `tar`
-	// over the pods/exec subresource (directory listings use `ls -A1`).
-	// Distroless static images without a shell will not work.
+	// Image must ship a POSIX shell at /bin/sh plus `tar` and `ls` on PATH:
+	// command execution runs `/bin/sh -c`, and file I/O streams `tar` over
+	// the pods/exec subresource.
 	Image              string
 	Namespace          string
 	Kubeconfig         string
@@ -92,47 +66,33 @@ type K8sExecutorConfig struct {
 	ServiceAccountName string
 	Resources          *types.ResourceLimits
 	Network            *types.NetworkConfig
-	// EgressProxyURL is the URL the sandbox container's HTTP_PROXY /
-	// HTTPS_PROXY point at when Network.Mode == "allowlist". It is required
-	// in that mode (a Pod with an enforced allowlist NetworkPolicy can reach
-	// the network only via the proxy) and ignored for Mode == "none". The
-	// proxy itself runs as a separate Deployment — see
-	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand.
-	//
-	// The egress proxy Deployment MUST run in the same namespace as the
-	// sandbox Pod: the allowlist NetworkPolicy selects the proxy by
-	// PodSelector with no NamespaceSelector, so a cross-namespace proxy is
-	// denied (more restrictive, not a bypass) and a confusing misconfig.
+	// EgressProxyURL is required when Network.Mode == "allowlist" and
+	// ignored otherwise. The proxy Deployment MUST run in the same
+	// namespace as the sandbox Pod (see docs/executors/k8s.md).
 	EgressProxyURL string
-	// Security, when non-nil, receives structured security events
-	// (path-traversal blocks, file-size-limit and output-cap hits) so they
+	// Security, when non-nil, receives structured security events so they
 	// reach the same monitoring surface as the container and local
-	// executors. The factory (issue #16) passes the run's emitter through.
+	// executors.
 	Security SecurityEventEmitter
 }
 
 // K8sExecutor implements Executor by running operations inside a sandbox
-// Pod. The Pod is created on construction and deleted on Close().
-//
-// Command execution and file I/O both ride the pods/exec subresource:
-// Exec runs `/bin/sh -c`, while ReadFile/WriteFile stream a tar archive
-// over exec and ListDirectory runs `ls`. The image must therefore ship a
-// shell, tar, and ls — see K8sExecutorConfig.Image.
+// Pod, created on construction and deleted on Close(). Command execution
+// and file I/O both ride the pods/exec subresource — see
+// K8sExecutorConfig.Image for the required shell/tar/ls.
 type K8sExecutor struct {
 	podExecCore
-	// networkPolicyName is the name of the egress NetworkPolicy installed
-	// alongside the Pod. Empty only on a zero-value executor (unit tests);
-	// NewK8sExecutor always installs one. Close() deletes it best-effort.
+	// networkPolicyName is empty only on a zero-value executor (unit
+	// tests); NewK8sExecutor always installs one. Close() deletes it
+	// best-effort.
 	networkPolicyName string
 }
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
-// NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready
-// before returning. The policy is installed BEFORE the Pod so the Pod never
-// runs with unrestricted egress (the Pod name is client-side deterministic,
-// so the policy can target it ahead of time). On any failure the partially
-// created objects (policy and/or Pod) are deleted best-effort before the
-// error is returned, so callers do not have to reason about partial state.
+// NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready.
+// The policy is installed BEFORE the Pod so the Pod never runs with
+// unrestricted egress. On any failure the partially created objects are
+// deleted best-effort before the error is returned.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
@@ -140,16 +100,12 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	if cfg.Namespace == "" {
 		return nil, fmt.Errorf("k8s executor requires a namespace")
 	}
-	// Fail-closed: a nil Network leaves egress posture undefined. Rejecting
-	// it here (rather than defaulting to "deny" or "open") forces the caller
-	// to declare intent, matching the container executor's explicit network
-	// handling and keeping CanNetwork honest against an installed policy.
+	// Fail-closed: a nil Network leaves egress posture undefined.
 	if cfg.Network == nil {
 		return nil, fmt.Errorf("k8s executor requires a network config (set executor.network.mode to \"none\" or \"allowlist\")")
 	}
-	// Compute the proxy env and validate the allowlist→URL requirement BEFORE
-	// creating any cluster objects, so a misconfigured allowlist run fails
-	// without leaving an orphaned Pod behind.
+	// Validate the allowlist→URL requirement before creating any cluster
+	// objects, so a misconfigured run fails without an orphaned Pod.
 	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
 	if err != nil {
 		return nil, err
@@ -167,11 +123,9 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	logger := slog.Default()
 
-	// An empty RuntimeClassName leaves RuntimeClassName=nil on the Pod,
-	// which selects the cluster-default RuntimeClass. That default may be
-	// plain runc with no user-space-kernel or VM isolation, so the operator
-	// is silently running unsandboxed. Warn so the opt-out is visible; a
-	// caller wanting isolation must set executor.runtime explicitly.
+	// An empty RuntimeClassName selects the cluster-default RuntimeClass,
+	// which may be plain runc with no sandbox isolation. Warn so the
+	// opt-out is visible.
 	if cfg.RuntimeClassName == "" {
 		logger.Warn(
 			"k8s executor running with the cluster-default RuntimeClass; sandbox isolation is not guaranteed — set executor.runtime (e.g. gvisor) for a sandboxed RuntimeClass",
@@ -193,18 +147,10 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		Spec: buildSandboxPodSpec(cfg, proxyEnv),
 	}
 
-	// Install the egress NetworkPolicy BEFORE creating the Pod. The Pod name
-	// is client-side deterministic (generatePodName sets ObjectMeta.Name, not
-	// GenerateName) and the policy selects on the stirrup.dev/pod=<name> +
-	// stirrup-sandbox=true labels, both known here — so the policy can be in
-	// place before the Pod exists. Installing AFTER readiness would leave a
-	// Running Pod with cluster-default (unrestricted) egress in the
-	// Ready→policy window, defeating the deny-all/allowlist posture. A failure
-	// to install is fatal: a Pod whose egress is meant to be denied/allowlisted
-	// but is not must never be created.
-	//
-	// proxyEnvFor already validated the mode above, so egressPolicyFor cannot
-	// hit its default arm here.
+	// Install the egress NetworkPolicy BEFORE creating the Pod: installing
+	// after readiness would leave a Running Pod with unrestricted egress in
+	// the window between creation and policy install, defeating the
+	// deny-all/allowlist posture. A failure to install is fatal.
 	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, podName)
 	if err != nil {
 		return nil, err
@@ -215,8 +161,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		// The policy is already installed; remove it so a failed construction
-		// leaves no orphaned policy behind.
+
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		return nil, classifyPodCreateError(cfg.RuntimeClassName, err)
 	}
@@ -224,10 +169,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
 		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
-		// The duration is intentionally omitted: readiness can end on either
-		// k8sReadyTimeout or a shorter caller-context deadline, and a
-		// hardcoded "after 1m0s" would misreport the latter. The wrapped
-		// error (context.DeadlineExceeded or a Get failure) carries the cause.
+
 		return nil, fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, created.Name, err)
 	}
 
@@ -256,32 +198,20 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar) corev1
 	return corev1.PodSpec{
 		RestartPolicy:      corev1.RestartPolicyNever,
 		ServiceAccountName: serviceAccount,
-		// AutomountServiceAccountToken is always false in the scaffold:
-		// issue #77 forbids token automount until later issues introduce
-		// an explicit opt-in. This applies even when ServiceAccountName
-		// was caller-provided.
+		// AutomountServiceAccountToken is always false, even when
+		// ServiceAccountName is caller-provided.
 		AutomountServiceAccountToken: ptr.To(false),
 		NodeSelector:                 cfg.NodeSelector,
 		RuntimeClassName:             optionalRuntimeClassName(cfg.RuntimeClassName),
-		// FSGroup makes the /workspace emptyDir (below) group-owned by and
-		// group-writable for the non-root UID the agent runs as. Without
-		// it, a workspace directory the kubelet/runtime auto-creates is
-		// root-owned and the UID-65532 container cannot write to it — every
-		// WriteFile/mkdir would fail with EACCES. This is the k8s analogue
-		// of the container executor's writable host bind mount.
+		// FSGroup makes the /workspace emptyDir group-writable for the
+		// non-root UID the agent runs as; otherwise a kubelet-auto-created
+		// workspace dir is root-owned and every WriteFile/mkdir fails EACCES.
 		SecurityContext: &corev1.PodSecurityContext{
 			FSGroup: ptr.To(k8sRunAsUserUID),
 		},
-		// An ephemeral, writable workspace mounted at /workspace. The
-		// executor provides this rather than requiring every sandbox image
-		// to pre-create a /workspace owned by UID 65532: a minimal image
-		// (busybox, distroless-with-shell) has no such directory, and one
-		// auto-created at the mount point would be root-owned. Mounting an
-		// emptyDir (wiped per Pod, good sandbox hygiene) with FSGroup above
-		// guarantees the workspace is writable for any image that merely
-		// ships a shell. This mirrors the container executor, which
-		// bind-mounts a writable host directory at /workspace — both hide
-		// any content an image happens to bake at that path.
+		// An ephemeral, writable workspace: a minimal sandbox image has no
+		// pre-created /workspace, and one auto-created at the mount point
+		// would be root-owned without FSGroup above.
 		Volumes: []corev1.Volume{
 			{
 				Name:         k8sWorkspaceVolume,
@@ -315,18 +245,13 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar) corev1
 }
 
 // Close deletes the sandbox Pod with zero grace period, then the egress
-// NetworkPolicy. It uses its own background context so cleanup proceeds even
-// if the caller's context is already cancelled — matching the Docker
-// executor's Close discipline. A NotFound result is treated as success
-// (idempotent).
+// NetworkPolicy, using its own background context so cleanup proceeds even
+// if the caller's context is already cancelled. A NotFound result is
+// treated as success (idempotent).
 //
-// Ordering matters: the Pod is deleted FIRST so kubelet begins terminating it
-// immediately, then the policy is removed. Deleting the policy first would
-// reopen unrestricted egress for the still-running Pod during termination —
-// the same Ready→policy window the constructor closes by installing the
-// policy first. The policy delete is best-effort: a leftover policy is inert
-// once the Pod it selects is gone (its podSelector matches nothing), so a
-// failed policy delete must not surface as a Close error or block Pod removal.
+// The Pod is deleted first so the policy isn't removed while it is still
+// terminating (which would reopen unrestricted egress); the policy delete
+// is best-effort and never blocks Pod removal.
 func (e *K8sExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
@@ -387,18 +312,10 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 }
 
 // classifyPodCreateError wraps a Pod-create failure with a friendlier
-// message when the API server rejects the spec AND a non-empty
-// RuntimeClass was requested. Two rejection shapes are covered:
-//   - apierrors.IsInvalid — the built-in admission check for an
-//     unregistered RuntimeClass ("...RuntimeClass.node.k8s.io \"gvisor\"
-//     not found...").
-//   - apierrors.IsForbidden — an admission webhook (OPA/Gatekeeper, or a
-//     RuntimeClass-restricting policy) returning 403 for a RuntimeClass
-//     the operator may not use.
-//
-// Both raw texts are opaque to an operator who simply typed a runtime name
-// the cluster does not have or does not allow. The original error is
-// wrapped (not replaced) so callers can still errors.As / errors.Is it.
+// message when the API server rejects the spec (IsInvalid or IsForbidden)
+// AND a non-empty RuntimeClass was requested — the raw admission error is
+// opaque to an operator who mistyped a runtime name. The original error is
+// wrapped, not replaced, so callers can still errors.As / errors.Is it.
 func classifyPodCreateError(runtimeClass string, err error) error {
 	if runtimeClass != "" && (apierrors.IsInvalid(err) || apierrors.IsForbidden(err)) {
 		return fmt.Errorf(
@@ -430,26 +347,9 @@ func optionalRuntimeClassName(name string) *string {
 }
 
 // resourcesToPodResources maps the harness-neutral ResourceLimits onto a
-// Pod container's ResourceRequirements. A nil limits (or an all-zero one)
-// yields an empty requirements block so the Pod inherits namespace
-// defaults rather than pinning a tiny request.
-//
-// Mapping rationale:
-//   - CPUs go on BOTH requests and limits so the scheduler reserves what
-//     the workload may use (no burst beyond the declared share). Fractional
-//     cores render as milli-CPU ("500m" for 0.5); whole cores render as a
-//     plain integer ("2") for readability.
-//   - MemoryMB goes on both requests and limits (Mi) for the same reason:
-//     a memory limit without a matching request lets the scheduler
-//     over-commit the node.
-//   - DiskMB maps to limits.ephemeral-storage ONLY. A request would force
-//     the scheduler to find a node with that much free scratch space even
-//     when the workload never fills it; the limit alone is the eviction
-//     ceiling, which is the behaviour operators expect from a disk cap.
-//   - PIDs is intentionally NOT enforced here. Pod-level PID limits are a
-//     kubelet setting (--pod-max-pids / SupportPodPidsLimit), not a
-//     per-container resource field, so the value is logged-and-ignored
-//     rather than silently dropped.
+// Pod container's ResourceRequirements; see docs/executors/k8s.md for the
+// field-by-field mapping. A nil or all-zero limits yields an empty
+// requirements block so the Pod inherits namespace defaults.
 func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequirements {
 	req := corev1.ResourceRequirements{}
 	if limits == nil {
@@ -489,18 +389,10 @@ func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequir
 	return req
 }
 
-// cpuQuantity renders a CPU share as a Kubernetes quantity. Whole cores
-// become a plain integer ("2") and fractional cores become milli-CPU
-// ("500m" for 0.5) so the emitted Pod spec is readable rather than an
-// opaque scaled value. The milli-CPU rounding matches Kubernetes' own
-// internal CPU granularity (1m = 0.001 core).
-//
-// A positive but sub-millicore share (e.g. 0.0004 core) rounds to zero
-// millis. "0m" is rejected by resource.MustParse (Kubernetes forbids an
-// explicitly-zero milli quantity), which would panic, so any positive
-// input is clamped to a 1m floor. Callers only reach this with cpus > 0
-// (resourcesToPodResources guards the zero/negative case), so the floor
-// turns a would-be panic into the smallest representable reservation.
+// cpuQuantity renders a CPU share as a Kubernetes quantity: whole cores as
+// a plain integer ("2"), fractional cores as milli-CPU ("500m" for 0.5). A
+// positive sub-millicore share rounds to zero millis, which resource.MustParse
+// rejects (panics on "0m"), so any positive input is clamped to a 1m floor.
 func cpuQuantity(cpus float64) resource.Quantity {
 	if cpus == math.Trunc(cpus) {
 		return resource.MustParse(fmt.Sprintf("%d", int64(cpus)))

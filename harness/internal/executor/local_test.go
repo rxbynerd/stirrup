@@ -253,21 +253,18 @@ func TestExec_Timeout(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 	// A genuine deadline expiry must satisfy errors.Is against the shared
-	// executor sentinel (#468: hook.isTimeoutErr keys off this instead of
-	// matching the formatted text).
+	// executor sentinel, not a match on the formatted text.
 	if !errors.Is(err, ErrTimeout) {
 		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
 	}
 }
 
-// TestExec_CancelledContext_NotErrTimeout is the #469 regression: a
-// context cancellation that is NOT a deadline expiry (e.g. a SIGTERM-driven
-// parent-context cancel) must not be reported as a timeout, and it must not
+// TestExec_CancelledContext_NotErrTimeout verifies that a context
+// cancellation that is NOT a deadline expiry (e.g. a SIGTERM-driven
+// parent-context cancel) must not be reported as a timeout, and must not
 // satisfy errors.Is(err, ErrTimeout) — even though a large configured
 // timeout (60s) is in play, only 200ms actually elapsed. Output already
-// captured before the cancel must still be returned (matches local's
-// pre-existing partial-output behaviour; container.go and k8s_execcore.go
-// previously discarded it — see #473).
+// captured before the cancel must still be returned.
 func TestExec_CancelledContext_NotErrTimeout(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
@@ -295,17 +292,13 @@ func TestExec_CancelledContext_NotErrTimeout(t *testing.T) {
 	}
 }
 
-// TestExec_KillsOrphanedGrandchildPromptly is a regression test for
-// issue #461's finding #1 remediation: a compound command
-// ("cmd1; sleep N; cmd2") runs its later stages as children the shell
-// forks and waits on, not an exec-replaced process. Without
-// cmd.WaitDelay, killing only the direct "sh" child on ctx cancellation
-// leaves the still-running "sleep" grandchild holding the stdout pipe
-// open, so Exec blocks until the grandchild exits on its own — the
-// exact bug a manual end-to-end SIGTERM test surfaced (a postRun hook
-// outlived its process-shutdown signal by the length of its own
-// sleep). A single-command "sleep N" (see TestExec_Timeout) does not
-// reproduce this: sh execs directly into it with no fork.
+// TestExec_KillsOrphanedGrandchildPromptly verifies that a compound
+// command ("cmd1; sleep N; cmd2") — whose later stages run as children the
+// shell forks and waits on, not an exec-replaced process — does not block
+// Exec on ctx cancellation: without cmd.WaitDelay, killing only the direct
+// "sh" child leaves the still-running "sleep" grandchild holding the
+// stdout pipe open. A single-command "sleep N" (see TestExec_Timeout) does
+// not reproduce this: sh execs directly into it with no fork.
 func TestExec_KillsOrphanedGrandchildPromptly(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
@@ -590,13 +583,11 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
-// TestMaxTimeout_Is30Minutes pins the literal cap value itself (issue
-// #461 raised it from 5 to 30 minutes so a cold `bundle install` in a
-// preRun hook has headroom). The other Capabilities() tests across
-// local/container/k8s only compare caps.MaxTimeout against this same
-// package-level maxTimeout constant, which would pass even if the raise
-// were silently reverted; this test is the actual regression tripwire
-// for the cap value.
+// TestMaxTimeout_Is30Minutes pins the literal cap value itself. The other
+// Capabilities() tests across local/container/k8s only compare
+// caps.MaxTimeout against this same package-level maxTimeout constant,
+// which would pass even if the value were silently changed; this test is
+// the actual regression tripwire for the cap value.
 func TestMaxTimeout_Is30Minutes(t *testing.T) {
 	if maxTimeout != 30*time.Minute {
 		t.Errorf("maxTimeout = %v, want 30m (issue #461 raised the shared executor cap from 5m)", maxTimeout)

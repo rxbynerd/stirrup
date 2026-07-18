@@ -8,49 +8,29 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// Profile is a model-facing presentation for a set of registered tools
-// (issue #234). It remaps internal tool IDs to provider-friendly aliases
-// and optional alternate descriptions without touching dispatch
-// identities: a tool aliased to "grep" still resolves to grep_files and
-// runs the same handler. Tools absent from the table are presented under
-// their internal name unchanged.
-//
-// A Profile carries presentation data only. It cannot add, remove, or
-// re-gate tools — the presenter applies a Profile over whatever the
-// underlying registry already holds, so a tool a read-only mode declined
-// to register has no alias and cannot be smuggled in via a profile.
+// Profile is a model-facing presentation for a set of registered tools:
+// it remaps internal tool IDs to provider-friendly aliases and optional
+// alternate descriptions without changing dispatch identity. A tool
+// absent from the table presents under its internal name. Profile data
+// is presentation only — it cannot add, remove, or re-gate tools.
 type Profile struct {
-	// Name is the closed-set RunConfig.Tools.Profile value this table
-	// implements ("default", "coding-classic", …). Stored for diagnostics
-	// and so a presenter can report which profile produced an alias.
+	// Name is the RunConfig.Tools.Profile value this table implements.
 	Name string
-	// aliases maps internal tool ID → model-facing alias. An entry whose
-	// alias equals the key is allowed (an explicit identity) but pointless;
-	// omit it instead. An internal ID with no entry is presented under its
-	// own name.
+	// aliases maps internal tool ID → model-facing alias. An internal ID
+	// with no entry is presented under its own name.
 	aliases map[string]string
 	// descriptions maps internal tool ID → an alternate model-facing
-	// description. Empty for a tool means "present the registered
-	// description unchanged". Kept separate from aliases so a profile can
-	// re-describe a tool without renaming it (and vice versa).
+	// description. Empty means present the registered description unchanged.
 	descriptions map[string]string
 }
 
 // defaultProfile is the identity presentation: no aliases, no description
-// overrides. ProfileFor("") and ProfileFor("default") both return it, so
-// a bare run presents tools exactly as registered.
+// overrides.
 var defaultProfile = &Profile{Name: "default"}
 
-// codingClassicProfile presents the terse coding-CLI names that models
-// with strong shell/coding priors call by reflex. The targets are the
-// canonical Unix tool names (grep, find) plus "bash" for the shell, which
-// several model families bias toward over "run_command". read_file,
-// list_directory, and write_file/edit_file keep their internal names —
-// they are already the idiomatic descriptive forms and renaming them
-// would lose more recognition than it gains.
-//
-// Only the built-in coding primitives are remapped; MCP tools (namespaced
-// mcp_*) and any tool absent from this table present unchanged.
+// codingClassicProfile presents terse coding-CLI names some models call by
+// reflex (grep, find, bash). Other built-ins keep their internal names;
+// MCP tools and anything absent from the table present unchanged.
 var codingClassicProfile = &Profile{
 	Name: "coding-classic",
 	aliases: map[string]string{
@@ -58,34 +38,20 @@ var codingClassicProfile = &Profile{
 		"find_files":  "find",
 		"run_command": "bash",
 	},
-	// Renames only — the registered descriptions already read well under
-	// the terser names, so no override is needed. Initialised empty (not
-	// left nil) to match aliases and to signal the omission is deliberate
-	// rather than a forgotten field.
 	descriptions: map[string]string{},
 }
 
 // NewProfile constructs a Profile from an internal-ID→alias map and an
-// internal-ID→description map. Either map may be nil (no aliases / no
-// description overrides). The maps are used directly, not copied, so the
-// caller must not mutate them after construction.
-//
-// The built-in profiles are package-private values; this constructor is
-// the supported way to build a custom presentation (e.g. an embedder
-// wiring a provider-native profile, or a test exercising a collision the
-// built-in profiles do not produce). It does not register the profile
-// with ProfileFor — a custom profile is passed straight to NewPresenter.
+// internal-ID→description map; either may be nil. The maps are used
+// directly, not copied — callers must not mutate them after construction.
+// It does not register the profile with ProfileFor.
 func NewProfile(name string, aliases, descriptions map[string]string) *Profile {
 	return &Profile{Name: name, aliases: aliases, descriptions: descriptions}
 }
 
 // ProfileFor returns the Profile table for a RunConfig.Tools.Profile
-// value. The empty string and "default" both select the identity
-// presentation. An unknown name returns the default profile and false;
-// callers that have already passed ValidateRunConfig will never see
-// false, but the factory checks it defensively so a name added to the
-// validator's closed set without a matching table here fails loudly
-// rather than silently presenting no aliases.
+// value. "" and "default" both select the identity presentation. An
+// unknown name returns the default profile and false.
 func ProfileFor(name string) (*Profile, bool) {
 	switch name {
 	case "", "default":
@@ -124,54 +90,40 @@ func (p *Profile) describe(internal, registered string) string {
 }
 
 // Presenter wraps a ToolRegistry and applies a Profile so the loop and
-// the provider adapters see model-facing aliases while dispatch keeps
-// resolving to internal tool IDs (issue #234).
+// provider adapters see model-facing aliases while dispatch keeps
+// resolving to internal tool IDs. Alias collisions are resolved with the
+// same toolname.Build disambiguation the provider function-name
+// normalizer uses.
 //
-// Construction builds a single toolname.Mapping over the *alias targets*
-// of the wrapped registry's current tool set. Reusing toolname.Build is
-// deliberate: alias collisions (two internal tools whose profile aliases
-// land on the same string) are resolved by exactly the same deterministic
-// hash-suffix disambiguation that provider function-name normalization
-// uses (#223), so there is no second collision algorithm to keep in sync.
-// The mapping's external side is the presented name; its internal side is
-// recovered for Resolve.
-//
-// The presented name set is computed once at construction. The registry a
-// Presenter wraps is the post-MCP-discovery registry the factory builds,
-// which is not mutated after the loop starts, so a snapshot is correct.
+// The presented name set is computed once at construction, over the
+// registry snapshot at that time — safe because the wrapped registry is
+// not mutated after the loop starts.
 type Presenter struct {
 	inner   ToolRegistry
 	profile *Profile
 
 	// presentedFor maps internal name → presented (alias, collision-
-	// resolved) name. Used by List to rename definitions and by callers
-	// that need the model-facing name for a known internal tool (trace).
+	// resolved) name.
 	presentedFor map[string]string
-	// internalFor maps presented name → internal name. The Resolve
-	// reverse lookup. Internal names are also inserted as identity keys so
-	// a config or model that calls a tool by its internal name still
-	// resolves — this is the config-compatibility guarantee.
+	// internalFor maps presented name → internal name (the Resolve reverse
+	// lookup). Internal names are also inserted as identity keys so a
+	// config or model that calls a tool by its internal name still
+	// resolves.
 	internalFor map[string]string
 }
 
-// Compile-time assertion that Presenter satisfies ToolRegistry. Kept in
-// the (*Impl)(nil) form rather than the concrete-value form the linter
-// suggests so the guard cannot be silently weakened — see CLAUDE.md
-// "Known false positives".
+// Compile-time assertion that Presenter satisfies ToolRegistry. Kept as
+// (*Impl)(nil), not the concrete-value form golangci-lint suggests.
 var _ ToolRegistry = (*Presenter)(nil)
 
-// NewPresenter wraps inner with the named profile's presentation. The
-// default profile (and an empty name) produces an identity presenter:
-// List and Resolve behave exactly as the wrapped registry, so the
-// presenter is safe to install unconditionally.
+// NewPresenter wraps inner with the named profile's presentation. A nil
+// profile is treated as the default (identity) profile, safe to install
+// unconditionally.
 //
-// Returns an error only when alias-target collision resolution fails
-// inside toolname.Build (e.g. a pathological alias that cannot be made
-// unique under the policy). The policy used is the permissive ASCII set
-// (hyphen and leading digit allowed) because alias targets are author-
-// controlled clean names defined in this package, not arbitrary MCP
-// strings; per-provider wire normalization still runs downstream in the
-// NormalizingAdapter, so this build's only job is collision resolution.
+// Returns an error only when alias-target collision resolution fails in
+// toolname.Build. Per-provider wire normalization still runs downstream
+// in the NormalizingAdapter; this build's only job is collision
+// resolution.
 func NewPresenter(inner ToolRegistry, profile *Profile) (*Presenter, error) {
 	if profile == nil {
 		profile = defaultProfile
@@ -185,20 +137,10 @@ func NewPresenter(inner ToolRegistry, profile *Profile) (*Presenter, error) {
 
 	defs := inner.List()
 
-	// Resolve alias collisions through toolname.BuildFromCandidates, the
-	// shared collision core (#223). The keys are the internal tool IDs
-	// (unique, the registry contract), and the candidate for each key is
-	// its profile alias target. Keying disambiguation off the internal ID
-	// — not the alias — is what lets two tools alias to the same target:
-	// the IDs are distinct, so Build sees a candidate collision (not a
-	// duplicate-key error) and disambiguates one alias with the same
-	// deterministic SHA-suffix a provider name collision would get. No
-	// second collision algorithm exists.
-	// Sort by internal ID before resolving so the collision disambiguation
-	// is independent of registration order: two runs of the same tool set
-	// pin the same alias to the same internal ID regardless of the order
-	// the registry happened to list them in. Mirrors the BuildSorted
-	// rationale in the provider normalizer.
+	// Keys are internal tool IDs (unique); the alias is the candidate, so
+	// two tools aliasing to the same target hit BuildFromCandidates'
+	// collision path rather than a duplicate-key error. Sorted by internal
+	// ID first so disambiguation is independent of registration order.
 	sortedDefs := make([]types.ToolDefinition, len(defs))
 	copy(sortedDefs, defs)
 	sort.Slice(sortedDefs, func(i, j int) bool { return sortedDefs[i].Name < sortedDefs[j].Name })
@@ -220,12 +162,8 @@ func NewPresenter(inner ToolRegistry, profile *Profile) (*Presenter, error) {
 		presented := mapping.Translate(internal) // internal ID → collision-resolved alias
 		p.presentedFor[internal] = presented
 		p.internalFor[presented] = internal
-		// Insert the internal name as an identity key too so a model or
-		// config that calls the tool by its internal ID still resolves.
-		// Skip when it would clobber a distinct mapping (a presented alias
-		// equal to some *other* tool's internal name): the alias mapping
-		// wins, and the colliding internal-name call falls through to the
-		// renamed-tool / unknown-tool path, which is the safe outcome.
+		// Also insert the internal name as an identity key, skipping when
+		// it would clobber a distinct alias mapping — the alias wins.
 		if _, taken := p.internalFor[internal]; !taken {
 			p.internalFor[internal] = internal
 		}
@@ -234,11 +172,10 @@ func NewPresenter(inner ToolRegistry, profile *Profile) (*Presenter, error) {
 	return p, nil
 }
 
-// aliasPolicy is the toolname.Policy used to resolve alias-target
-// collisions. Alias targets are clean author-controlled ASCII, so the
-// permissive set (hyphen + leading digit allowed, 64-char cap) suffices;
-// the strict per-provider normalization that turns a presented name into
-// a wire-safe function name runs later in the NormalizingAdapter.
+// aliasPolicy is the permissive policy for alias-target collisions; alias
+// targets are author-controlled clean ASCII, not arbitrary MCP strings, so
+// strict per-provider wire normalization runs later in NormalizingAdapter,
+// not here.
 var aliasPolicy = toolname.Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
 
 // List returns the wrapped registry's definitions with names (and
@@ -257,12 +194,10 @@ func (p *Presenter) List() []types.ToolDefinition {
 	return out
 }
 
-// Resolve looks up a tool by its model-facing presented name or by its
-// internal ID, returning the underlying *Tool from the wrapped registry.
-// Returns nil when neither resolves. The returned tool's Name is the
-// internal identity — dispatch, permission checks, and the security guard
-// all key on it, so aliasing changes only the name the model uses, never
-// the tool that runs.
+// Resolve looks up a tool by its model-facing presented name or its
+// internal ID, returning nil if neither resolves. The returned tool's
+// Name is the internal identity — permission checks and the security
+// guard key on it, so aliasing changes only the name the model uses.
 func (p *Presenter) Resolve(name string) *Tool {
 	if internal, ok := p.internalFor[name]; ok {
 		return p.inner.Resolve(internal)
@@ -270,31 +205,21 @@ func (p *Presenter) Resolve(name string) *Tool {
 	return p.inner.Resolve(name)
 }
 
-// Unwrap returns the ToolRegistry the presenter wraps. It exists so a
-// caller that holds the loop's Tools (a *Presenter) can reach the
-// underlying registry for operations the presentation layer does not
-// expose (e.g. a test swapping a tool's handler via *Registry.Register).
-// Production dispatch should go through Resolve so the alias→internal
-// binding is honoured; Unwrap is an escape hatch, not the common path.
+// Unwrap returns the wrapped ToolRegistry. It is an escape hatch (e.g. a
+// test swapping a handler via *Registry.Register) — production dispatch
+// should go through Resolve so aliasing is honoured.
 func (p *Presenter) Unwrap() ToolRegistry {
 	return p.inner
 }
 
-// Profile returns the Profile this presenter applies. It is never nil —
-// NewPresenter substitutes the default profile for a nil argument. Exposed
-// so a caller assembling an AgenticLoop outside the factory can assert the
-// loop's ToolProfile matches the profile baked into its Tools presenter,
-// the consistency invariant documented on AgenticLoop.
+// Profile returns the Profile this presenter applies. Never nil —
+// NewPresenter substitutes the default profile for a nil argument.
 func (p *Presenter) Profile() *Profile {
 	return p.profile
 }
 
 // InternalName returns the internal tool ID for a model-facing name,
-// falling back to the input when the name is not a known alias. Used by
-// the dispatch trace path to record the internal identity alongside the
-// model-facing alias (issue #234 acceptance criterion). The fallback
-// keeps the call site terse: a name that is already an internal ID, or an
-// unknown tool name the model invented, round-trips unchanged.
+// falling back to the input when the name is not a known alias.
 func (p *Presenter) InternalName(name string) string {
 	if internal, ok := p.internalFor[name]; ok {
 		return internal

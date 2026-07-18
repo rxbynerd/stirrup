@@ -37,15 +37,11 @@ func (c *CompositeScanner) Scan(ctx context.Context, path string, content []byte
 	return &ScanResult{Findings: all}, nil
 }
 
-// newComposite is the helper invoked by New() when the config selects
-// "composite". It looks up each named scanner from the closed set
-// supported by ValidateRunConfig (none, patterns, semgrep) and bundles
-// them. Composite-of-composite is intentionally not supported here — the
-// types validator rejects it earlier — but we defend against it again to
-// keep this constructor usable from tests or future callers. The
-// semgrepConfigPath argument is threaded through to any semgrep child;
-// it is shared rather than per-child because v1 supports a single
-// composite config object.
+// newComposite looks up each named scanner from the closed set supported
+// by ValidateRunConfig (none, patterns, semgrep) and bundles them.
+// Composite-of-composite is rejected defensively even though the types
+// validator already rejects it. semgrepConfigPath is shared across any
+// semgrep children.
 func newComposite(names []string, semgrepConfigPath string) (CodeScanner, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("codescanner: composite requires at least one scanner")

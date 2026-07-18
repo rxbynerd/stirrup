@@ -24,16 +24,12 @@ var rootCmd = &cobra.Command{
 	Short:   "A coding agent harness",
 	Long:    "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
 	Version: version.Full(),
-	// Args is NoArgs so a mistyped subcommand (`stirrup harnes`) still
-	// errors via Cobra's unknown-command path rather than silently
-	// printing the orientation hint. A bare `stirrup` (no args, no
-	// --help / --version, which Cobra intercepts before Run) lands here.
+	// NoArgs so a mistyped subcommand errors via Cobra's unknown-command
+	// path rather than silently printing the orientation hint.
 	Args: cobra.NoArgs,
-	// Run (not RunE) so a bare invocation prints the short two-subcommand
-	// orientation hint to stdout and exits 0. Returning an error would
-	// make Cobra append its full usage block — the opposite of the terse
-	// hint issue #249 asks for. --help still reaches Cobra's full help
-	// because the flag is handled before Run fires.
+	// Run (not RunE) so a bare invocation prints the short orientation
+	// hint and exits 0; RunE would make Cobra append its full usage
+	// block on error instead.
 	Run: func(cmd *cobra.Command, _ []string) {
 		printRootUsageHint(cmd.OutOrStdout())
 	},
@@ -41,18 +37,12 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the root command. Called from main().
 //
-// SilenceErrors + SilenceUsage are set so a RunE failure prints the
-// error message alone — Execute() owns the stderr line below, and the
-// 80-flag usage block Cobra would otherwise append on every error is
-// noise on a one-line "prompt is required" or "invalid config" failure
-// (the #249 review called this out). --help still prints the full usage
-// because SilenceUsage only suppresses the usage-on-error path, not an
-// explicit help request.
+// SilenceErrors + SilenceUsage are set so a RunE failure prints only
+// the error message below, not Cobra's full usage block. --help is
+// unaffected since SilenceUsage only suppresses usage-on-error.
 //
-// The exit code follows the four-level CLI scheme (issue #253): an
-// error wrapped in an *exitError carries its class code (1 validation /
-// 2 parse / 3 I/O); any other error preserves the historical default of
-// 1. classifyExitCode encodes the mapping so it is unit-testable without
+// Exit codes follow the scheme in docs/configuration.md#exit-codes;
+// classifyExitCode encodes the mapping so it is unit-testable without
 // reaching os.Exit.
 func Execute() {
 	rootCmd.SilenceErrors = true
@@ -68,32 +58,22 @@ func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
 
-// postRunEmitTimeout bounds the fresh context used for emitRunOutput
-// after the agentic loop returns. The loop's primary context is already
-// cancelled by the time we reach here when a signal triggered the run
-// to stop, so future remote sinks (gcp-pubsub, gcs) would otherwise
-// silently fail to emit their STIRRUP_RESULT — emitRunResult
-// logs-and-discards sink errors, hiding the loss. 10 s is the same
-// shape as the bestEffortCancel deadline in batchpoll.go: enough for a
-// single remote RPC, short enough that operators see process exit
-// without an apparent hang.
+// postRunEmitTimeout bounds the fresh context for emitRunOutput after
+// the loop returns, since the loop's own context may already be
+// cancelled by a stop signal. 10s mirrors bestEffortCancel in
+// batchpoll.go: enough for one remote RPC, short enough to avoid an
+// apparent hang.
 const postRunEmitTimeout = 10 * time.Second
 
-// postRunExportTimeout bounds the fresh context used for
-// exportWorkspace after the agentic loop returns. Larger than
-// postRunEmitTimeout because the upload carries a tarball that can run
-// into the tens of MB; the GCS exporter's per-request HTTP client
-// already enforces a 5-minute upload ceiling, so this context only
-// gates the orchestration around the call. 6 minutes leaves room for
-// the exporter's internal 5 m and a small amount of setup overhead.
+// postRunExportTimeout bounds the fresh context for exportWorkspace
+// after the loop returns. Larger than postRunEmitTimeout to leave room
+// for the GCS exporter's internal 5-minute upload ceiling plus setup.
 const postRunExportTimeout = 6 * time.Minute
 
-// printRunSummary writes a brief run summary to stderr. Mirrors the nil
-// guard in buildRunResult: a nil RunTrace means the loop produced no
-// trace at all, and dereferencing the fields below would panic before
-// any structured output is emitted. The "no trace" line is the
-// stderr-side counterpart to the "internal-error" sentinel buildRunResult
-// returns so operators see a diagnostic on whichever surface they watch.
+// printRunSummary writes a brief run summary to stderr. A nil RunTrace
+// (loop produced no trace at all) prints a "no trace" line instead of
+// dereferencing fields — the stderr counterpart to buildRunResult's
+// "internal-error" sentinel.
 func printRunSummary(runTrace *types.RunTrace) {
 	if runTrace == nil {
 		fmt.Fprintf(os.Stderr, "\n--- Run complete (no trace) ---\n")
@@ -111,14 +91,10 @@ func printRunSummary(runTrace *types.RunTrace) {
 	}
 }
 
-// hookSummaryCounts reports how many lifecycle hooks (issue #461)
-// actually ran and how many of those failed, for printRunSummary and
-// buildRunResult. "Ran" excludes entries with Skipped=true — a hook
-// skipped by a postRun runOn filter or after a prior fatal failure in
-// the same phase never executed, so it should not count toward either
-// number. Skipped entries never set Error (see hook.ExecRunner), so
-// counting Failed() alone is sufficient for "failed" without a second
-// Skipped check.
+// hookSummaryCounts reports how many lifecycle hooks actually ran and
+// how many of those failed. Entries with Skipped=true count toward
+// neither: they never executed, and never set Error (see
+// hook.ExecRunner), so counting Failed() alone is sufficient.
 func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
 	for _, r := range results {
 		if r.Skipped {
@@ -133,32 +109,18 @@ func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
 }
 
 // buildRunResult constructs the small RunResult payload from the
-// completed RunTrace. The mapping is straightforward; see
-// types/result.go for the schema's stability rules.
-//
-// VerifierVerdict is populated from the most recent VerificationResult
-// when one exists. Treating an empty Feedback string as "no verifier
-// ran" would conflate "verifier passed silently" with "verifier was
-// not configured"; the wire shape uses presence of the optional
-// VerifierResult pointer to disambiguate.
-//
-// maxFinalAssistantTextBytes caps FinalAssistantText on the returned
-// RunResult (issue #463) — resolve it via
-// (*types.ResultSinkConfig).ResolvedMaxFinalAssistantTextBytes before
-// calling. This bounds only the RunResult copy: rt.FinalAssistantText
-// itself is left untouched, and the trace emitters (which record the
-// full text independently via RecordFinalAssistantText) never see the
-// cap.
+// completed RunTrace; see types/result.go for the schema's stability
+// rules. VerifierVerdict uses the optional pointer's presence to
+// disambiguate "verifier passed silently" from "not configured".
+// maxFinalAssistantTextBytes bounds only the returned RunResult copy —
+// rt.FinalAssistantText and the trace emitters are untouched.
 func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.RunResult {
 	if rt == nil {
-		// A nil RunTrace means the loop produced no trace at all —
-		// every other code path returns a structurally valid one,
-		// even on cancellation. Returning RunResult{SchemaVersion: 1}
-		// would surface an empty Outcome/RunID/Turns combination that
-		// a downstream consumer cannot distinguish from a real run
-		// that completed with an empty outcome. The "internal-error"
-		// sentinel is documented on RunResult.Outcome and lets
-		// consumers detect the no-trace case explicitly.
+		// Every other code path returns a structurally valid trace, even
+		// on cancellation, so nil means the loop produced none at all.
+		// The "internal-error" sentinel (documented on RunResult.Outcome)
+		// lets consumers detect this case explicitly rather than seeing
+		// an empty Outcome/RunID/Turns combination.
 		return types.RunResult{SchemaVersion: 1, Outcome: "internal-error"}
 	}
 	finalText, truncated := types.CapFinalAssistantText(rt.FinalAssistantText, maxFinalAssistantTextBytes)
@@ -179,51 +141,24 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 			Feedback: last.Feedback,
 		}
 	}
-	// HookFailures (issue #461): hookSummaryCounts is nil-safe (ranges
-	// over a nil/empty HookResults are no-ops), so this is always safe
-	// to compute and naturally resolves to 0 for a hookless run.
+	// hookSummaryCounts is nil-safe, resolving to 0 for a hookless run.
 	_, res.HookFailures = hookSummaryCounts(rt.HookResults)
 	return res
 }
 
 // runSuccessOutcomes is the closed set of RunTrace.Outcome values that
-// count as a successful run for process exit-code purposes (issue
-// #101, v0.1 release blocker B4). "success" is the only member: every
-// other documented value on types.RunTrace.Outcome — "error",
-// "tool_failures", "verification_failed", "verification_error",
-// "max_turns", "max_tokens", "budget_exceeded", "stalled",
-// "cancelled", "timeout", "setup_failed", "hook_failed" — means the
-// run did not complete its task, whether via a hard failure, an
-// exhausted resource limit, or an interruption. docs/configuration.md
-// draws the same line ("a failed or cancelled run still exits
-// non-zero"); the Cloud Run / K8s Jobs failure-signalling story this
-// feeds needs the same binary classification so an orchestrator
-// retries or alerts on any run that was not a genuine success, not
-// only the ones that hit a hard error.
-//
-// Deliberately not reusing EvalOutcomeFor's passed/failed/inconclusive
-// split (types/evaloutcome.go): that taxonomy answers "was the change
-// any good", which folds limit-hit and cancelled runs into a distinct
-// "inconclusive" bucket so eval aggregates don't punish a run that
-// never got a fair shot. Process exit code answers a narrower
-// question — "did this invocation produce a usable result" — where
-// inconclusive and failed both mean no.
+// count as a successful run for process exit-code purposes. See
+// docs/configuration.md#exit-codes for why this is a binary
+// success/non-success split, distinct from the eval suite's
+// passed/failed/inconclusive taxonomy.
 var runSuccessOutcomes = map[string]bool{
 	"success": true,
 }
 
 // runOutcomeError reports whether rt's outcome falls outside
 // runSuccessOutcomes, returning a descriptive error if so. Called at
-// the tail of runWithConfig and runJob once every non-fatal post-run
-// step (result emission, workspace export, follow-up grace) has run,
-// so a non-success outcome always yields a non-zero process exit via
-// classifyExitCode's untyped-error default (exit 1) — the same code
-// docs/configuration.md documents for "a failed or cancelled run".
-//
-// A nil trace returns nil: both call sites already return a dedicated
-// error for runTrace == nil before reaching this check, so this branch
-// only exists as a defensive default against a future caller that
-// skips that guard.
+// the tail of runWithConfig and runJob after every non-fatal post-run
+// step has run, so a non-success outcome always yields a non-zero exit.
 func runOutcomeError(rt *types.RunTrace) error {
 	if rt == nil || runSuccessOutcomes[rt.Outcome] {
 		return nil
@@ -231,21 +166,14 @@ func runOutcomeError(rt *types.RunTrace) error {
 	return fmt.Errorf("run outcome %q is not success", rt.Outcome)
 }
 
-// newResultSink is the seam tests use to inject a stub ResultSink so
-// the forward-compatibility branches in emitRunOutput (non-stdout-json
-// sink paths under --output=json and --output=none) can be exercised
-// before the gcp-pubsub / gcs sinks ship. Production code retains the
-// resultsink.NewResultSink factory; tests overwrite the variable for
-// the duration of a test and restore it on cleanup.
+// newResultSink is the seam tests use to inject a stub ResultSink.
+// Production code keeps the resultsink.NewResultSink factory.
 var newResultSink = resultsink.NewResultSink
 
 // emitRunResult builds and emits a RunResult through the configured
-// resultSink. Failures are logged but never fatal — the trace and the
-// stderr summary already carry the run's outcome, so a transient sink
-// error must not mask a successful run. Called from runWithConfig (via
-// emitRunOutput) and runJob after the stderr summary so the structured
-// line is the last thing on stdout (per the issue's Cloud Logging
-// extraction contract).
+// resultSink. Failures are logged but never fatal — a transient sink
+// error must not mask a successful run already reflected in the trace
+// and stderr summary.
 func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 	sink, err := newResultSink(cfg.ResultSink)
 	if err != nil {
@@ -258,52 +186,18 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 }
 
 // emitRunOutput dispatches the post-run summary surfaces selected by
-// --output (issue #242). Three modes are supported:
-//
-//   - "text": print the human-readable stderr summary AND emit through
-//     the configured resultSink. This matches the pre-#242 behaviour
-//     exactly. The empty string "" is also accepted and treated as
-//     "text" for backward compatibility — runJob historically called
-//     this path with mode unset, and while runJob today calls
-//     printRunSummary + emitRunResult directly, accepting "" here
-//     keeps the function safe for a future caller that copies the
-//     runWithConfig shape without threading outputMode.
-//   - "json": skip the stderr summary; emit a single STIRRUP_RESULT line
-//     on stdout. When resultSink.type=stdout-json is also configured,
-//     the line is emitted once — the flag wins because it is the more
-//     explicit signal. When the configured sink targets a different
-//     surface (a future gcp-pubsub or gcs adapter), that sink also fires
-//     because it represents a separate channel with its own intent.
-//   - "none": suppress the stderr summary AND any emission that would
-//     write to stdout. The configured sink still fires when it targets a
-//     non-stdout surface, on the same "different channel, different
-//     intent" rationale.
-//
-// All emissions go through buildRunResult so a partial RunResult (e.g.
-// a cancelled run) round-trips identically through every mode. Sink
-// failures are logged via emitRunResult and never fatal.
-//
-// An unrecognised mode reached here is treated as "text" but logs a
-// slog.Warn — runHarness validates the closed set at the CLI layer, so
-// reaching the default arm indicates either a new caller or a new mode
-// that did not update both switches. The warning surfaces the
-// regression in process logs without dropping the run's summary.
+// --output; see docs/configuration.md's `--output` flag entry for the
+// text/json/none semantics. All emissions go through buildRunResult so
+// a partial RunResult round-trips identically through every mode.
 func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace, mode string) {
 	if rt == nil {
-		// buildRunResult maps this case to an "internal-error" RunResult
-		// sentinel. Operators consuming --output=json alone would
-		// otherwise see a structurally valid line with no diagnostic
-		// linking the outcome back to "the loop produced no trace at
-		// all". Emit a slog.Warn so the diagnostic lands in process
-		// logs regardless of which output mode suppresses stderr.
+		// Surfaces the no-trace case even when the output mode suppresses stderr.
 		slog.Warn("emitRunOutput: nil RunTrace, RunResult will carry the internal-error sentinel", "mode", mode)
 	}
 	switch mode {
 	case "json":
-		// Always emit a STIRRUP_RESULT line to stdout. When the
-		// configured sink is also stdout-json, swap it out for "none"
-		// before delegating so emitRunResult does not produce a second
-		// line. Any non-stdout sink stays untouched (different channel).
+		// A configured stdout-json sink is swapped for "none" below so
+		// emitRunResult does not produce a second STIRRUP_RESULT line.
 		stdoutSink := resultsink.NewStdoutJSONSink()
 		if err := stdoutSink.Emit(ctx, buildRunResult(rt, cfg.ResultSink.ResolvedMaxFinalAssistantTextBytes())); err != nil {
 			slog.Warn("emit --output=json", "err", err)
@@ -313,10 +207,7 @@ func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 		}
 		emitRunResult(ctx, cfg, rt)
 	case "none":
-		// Skip the stderr summary. The configured sink is invoked only
-		// when it targets a non-stdout destination so --output=none
-		// genuinely suppresses every stdout / stderr summary surface
-		// regardless of which sink the run config selected.
+		// The configured sink still fires for a non-stdout destination.
 		if cfg.ResultSink == nil || cfg.ResultSink.Type == "" || cfg.ResultSink.Type == "none" || cfg.ResultSink.Type == "stdout-json" {
 			return
 		}
@@ -332,43 +223,25 @@ func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 }
 
 // newWorkspaceExporter is the seam tests use to inject a stub
-// Exporter. Production code keeps the default factory; tests overwrite
-// the variable for the duration of a test and restore it on cleanup.
-// Returning an Exporter (not *GCSExporter) keeps the type usable by
-// future S3 / Azure implementations without further indirection.
+// Exporter. Returning an Exporter (not *GCSExporter) keeps the type
+// usable by future S3 / Azure implementations.
 var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 	return workspaceexport.NewGCSExporter(workspaceexport.GCSExporterOptions{
-		// Default credential source: gcp-workload-identity against
-		// the runtime metadata server (the Cloud Run / GKE shape
-		// this targets). Future work: thread an explicit
-		// CredentialConfig through ExecutorConfig if non-GCP
-		// runtimes need to export.
+		// gcp-workload-identity against the runtime metadata server.
 		CredentialSource: credential.NewGoogleWorkloadIdentitySource(),
 	})
 }
 
 // exportWorkspace tars + gzips the executor's workspace dir and
-// uploads it to config.Executor.WorkspaceExportTo via the workspace
-// exporter. No-op when the export field is empty.
-//
-// exportRequired controls error semantics: when true, the caller
-// surfaces the export failure (a deployment that demands the artifact
-// for downstream automation should exit non-zero so the operator
-// notices); when false, the failure is logged with slog and the
-// caller's exit code is unchanged (the trace and stderr summary still
-// reflect the run's actual outcome).
-//
-// Returns nil when the workspace dir is missing or empty — the
-// exporter treats those as silent skips, and that semantic is
-// inherited here so a no-op executor (e.g. an api executor that
-// reports nothing on disk) doesn't fail a run that opted into export.
+// uploads it to config.Executor.WorkspaceExportTo. No-op when the
+// export field is empty. exportRequired controls error semantics: when
+// true, an export failure is surfaced to the caller; when false, it is
+// logged and the caller's exit code is unchanged.
 func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired bool) error {
 	if cfg.Executor.WorkspaceExportTo == "" {
 		return nil
 	}
-	// v1 supports only the GCS exporter; the field is validated at
-	// config load to be a gs:// URI, so reaching this code path with
-	// any other scheme indicates a logic regression in the validator.
+	// v1 supports only the GCS exporter.
 	exp, err := newWorkspaceExporter()
 	if err != nil {
 		if exportRequired {
@@ -380,8 +253,7 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired b
 
 	workspaceDir := cfg.Executor.Workspace
 	if workspaceDir == "" {
-		// An unset Workspace field means "current working directory" —
-		// mirrors the local executor's defaulting in factory.go.
+		// Mirrors the local executor's defaulting in factory.go.
 		wd, _ := os.Getwd()
 		workspaceDir = wd
 	}
@@ -408,32 +280,21 @@ func setupSignalHandler(cancel context.CancelFunc) {
 }
 
 // shutdownCloseGrace bounds how long armShutdownWatchdog waits after a
-// process shutdown signal (SIGINT/SIGTERM/pod deletion) before
-// proactively closing the loop, even if Run() has not returned yet —
-// e.g. because a detached postRun lifecycle hook (issue #461) is still
-// winding down after its ctx was cancelled. Chosen comfortably under
-// the shortest documented orchestrator SIGKILL escalation (10s on
-// Cloud Run and `docker stop`; see docs/cloud-run-jobs.md) so the
-// executor's sandbox (container, or K8s Pod + egress NetworkPolicy)
-// has a real chance to be torn down before the process is killed
-// outright, which bypasses every deferred cleanup entirely.
+// process shutdown signal before proactively closing the loop, even if
+// Run() has not returned yet (e.g. a detached postRun lifecycle hook is
+// still winding down). Chosen comfortably under the shortest documented
+// orchestrator SIGKILL escalation (10s on Cloud Run and `docker stop`;
+// see docs/cloud-run-jobs.md) so the executor's sandbox has a real
+// chance to be torn down before the process is killed outright.
 const shutdownCloseGrace = 5 * time.Second
 
 // armShutdownWatchdog starts a background goroutine that proactively
-// closes loop grace after shutdownCtx is done, unless the returned
-// stop function is called first (Run() already returned through the
-// normal path, so the caller's own `defer loop.Close()` handles
-// teardown). This exists because relying solely on `defer` is not
-// enough: if the orchestrator's SIGKILL escalation fires before Run()
-// returns — e.g. while a postRun hook is still being killed via ctx
-// cancellation, or a slow trace flush is in flight — the deferred
-// Close() never runs at all, orphaning the executor's sandbox.
-// Close() is safe to invoke more than once: every executor's Close()
-// is either explicitly idempotent (K8sExecutor: a NotFound pod delete
-// is treated as success) or a harmless no-op whose error the normal
-// `defer func() { _ = loop.Close() }()` already discards. Production
-// call sites pass shutdownCloseGrace; tests pass a short duration to
-// exercise the fire path without a real multi-second sleep.
+// closes loop after shutdownCtx is done, unless the returned stop
+// function is called first (Run() already returned; the caller's own
+// `defer loop.Close()` handles teardown). Guards against the
+// orchestrator's SIGKILL escalation firing before Run() returns, which
+// would otherwise skip the deferred Close() entirely and orphan the
+// executor's sandbox. Close() is safe to invoke more than once.
 func armShutdownWatchdog(shutdownCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
 	runDone := make(chan struct{})
 	go func() {

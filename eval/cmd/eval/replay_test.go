@@ -11,10 +11,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// seedRecordings populates a FileStore with N recordings, returning
-// the lakehouse path and the recording IDs in order. The shape is
-// minimal: each recording carries an Outcome that the outcome filter
-// can target plus a workspace-independent file-exists judge target.
+// seedRecordings populates a FileStore with N recordings, returning the
+// lakehouse path. Each recording carries an Outcome the outcome filter can
+// target.
 func seedRecordings(t *testing.T, runIDs []string, outcomes []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -42,10 +41,8 @@ func seedRecordings(t *testing.T, runIDs []string, outcomes []string) string {
 	return dir
 }
 
-// TestSelectRecordings_ByID pins explicit --recording selection: the
-// returned slice preserves the input order and a missing ID is a
-// fatal error so an operator's typo doesn't silently swallow the
-// targeted recording.
+// TestSelectRecordings_ByID pins that explicit --recording selection
+// preserves input order.
 func TestSelectRecordings_ByID(t *testing.T) {
 	dir := seedRecordings(t,
 		[]string{"r1", "r2", "r3"},
@@ -69,8 +66,8 @@ func TestSelectRecordings_ByID(t *testing.T) {
 	}
 }
 
-// TestSelectRecordings_MissingIDIsError pins the informative-failure
-// AC of #272: a missing ID is fatal, not silently skipped.
+// TestSelectRecordings_MissingIDIsError pins that a missing ID is fatal,
+// not silently skipped.
 func TestSelectRecordings_MissingIDIsError(t *testing.T) {
 	dir := seedRecordings(t,
 		[]string{"r1"},
@@ -88,10 +85,9 @@ func TestSelectRecordings_MissingIDIsError(t *testing.T) {
 	}
 }
 
-// TestSelectRecordings_OutcomeFilter pins the --outcome bulk-replay
-// path: with no explicit IDs and a non-empty outcome filter, the
-// returned set matches every recording whose Outcome equals the
-// filter.
+// TestSelectRecordings_OutcomeFilter pins that with no explicit IDs and a
+// non-empty outcome filter, the returned set matches every recording whose
+// Outcome equals the filter.
 func TestSelectRecordings_OutcomeFilter(t *testing.T) {
 	dir := seedRecordings(t,
 		[]string{"r1", "r2", "r3"},
@@ -117,10 +113,9 @@ func TestSelectRecordings_OutcomeFilter(t *testing.T) {
 	}
 }
 
-// TestCompletion_ReplayAndIngestFlagsRegistered pins that the new
+// TestCompletion_ReplayAndIngestFlagsRegistered pins that these
 // subcommands are wired into the completion table so tab-completion
-// surfaces their flags. The lookup is keyed by subcommand name and
-// returns the flag set the subcommand accepts.
+// surfaces their flags.
 func TestCompletion_ReplayAndIngestFlagsRegistered(t *testing.T) {
 	for _, sub := range []string{"replay", "ingest"} {
 		flags, ok := evalCompletionFlags[sub]
@@ -146,12 +141,9 @@ func TestCompletion_ReplayAndIngestFlagsRegistered(t *testing.T) {
 	}
 }
 
-// TestReplay_WorkspaceCaveat documents the workspace-dependency
-// behaviour expected by judges that need file state. With an empty
-// --workspace flag and a file-exists judge that references a
-// concrete path, the judge fails informatively rather than
-// crashing — which is the v0.1 contract per #272's "informative
-// error" AC.
+// TestReplay_WorkspaceCaveat pins that with an empty --workspace flag and a
+// file-exists judge referencing a concrete path, the judge fails
+// informatively rather than crashing.
 func TestReplay_WorkspaceCaveat(t *testing.T) {
 	dir := seedRecordings(t, []string{"r1"}, []string{"success"})
 	store, err := lakehouse.NewFileStore(dir)
@@ -165,8 +157,6 @@ func TestReplay_WorkspaceCaveat(t *testing.T) {
 		t.Fatalf("selectRecordings: %v", err)
 	}
 
-	// A workspace dir that does not exist on disk → file-exists
-	// judge yields Passed=false, not a process-level error.
 	task := types.EvalTask{
 		ID: "task-1",
 		Judge: types.EvalJudge{
@@ -174,8 +164,7 @@ func TestReplay_WorkspaceCaveat(t *testing.T) {
 			Paths: []string{"output.txt"},
 		},
 	}
-	// Sanity: with an empty workspace dir, the file-exists judge
-	// returns a verdict-only fail rather than crashing.
+
 	emptyDir := t.TempDir()
 	_, err = os.Stat(filepath.Join(emptyDir, "output.txt"))
 	if !os.IsNotExist(err) {

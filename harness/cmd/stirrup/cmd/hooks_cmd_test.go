@@ -43,14 +43,9 @@ func fatalPreRunHookConfig(t *testing.T) *types.RunConfig {
 }
 
 // TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult pins
-// issue #461 finding #2's cmd-layer half: runWithConfig previously
-// short-circuited on any non-nil error from loop.Run(), skipping
-// emitRunOutput entirely — so a preRun hook failure (outcome
-// "setup_failed", a RunResult.HookFailures-bearing case) produced no
-// STIRRUP_RESULT line at all despite loop.Run() having returned a
-// valid RunTrace. runWithConfig must still emit it, and must still
-// return a non-nil error (the CLI's own exit-status contract is
-// unchanged).
+// that a fatal preRun hook failure (outcome "setup_failed") still
+// emits a STIRRUP_RESULT line despite loop.Run() returning a non-nil
+// error, while runWithConfig itself still returns that error.
 func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) {
 	config := fatalPreRunHookConfig(t)
 
@@ -63,9 +58,8 @@ func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) 
 	}
 
 	// stdout also carries the default stdio transport's own JSON event
-	// stream (the "error"/"done" HarnessEvents finding #2 also fixed —
-	// see TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent), so the
-	// STIRRUP_RESULT line is not necessarily the first line; find it.
+	// stream, so the STIRRUP_RESULT line is not necessarily the first
+	// line; find it.
 	var resultLine string
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.HasPrefix(line, "STIRRUP_RESULT ") {

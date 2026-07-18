@@ -8,10 +8,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// These tests pin the wire behaviour of the #222 reliability controls
-// (parallel-tool-call policy and input examples) per provider, gated on the
-// resolved quirks capability. They exercise the builders directly — no live
-// calls — mirroring the existing *_builder_test.go contract pattern.
+// These tests pin the wire behaviour of the parallel-tool-call policy and
+// input-examples reliability controls per provider, gated on the resolved
+// quirks capability. They exercise the builders directly, no live calls.
 
 func toolWith222Example() types.ToolDefinition {
 	return types.ToolDefinition{
@@ -67,7 +66,7 @@ func TestOpenAIChat_222_ParallelAndExamples_NonStrict(t *testing.T) {
 	if string(top["parallel_tool_calls"]) != "false" {
 		t.Errorf("parallel_tool_calls = %s, want false", top["parallel_tool_calls"])
 	}
-	// tools[0].function.parameters must carry the folded examples.
+
 	var tools []json.RawMessage
 	if err := json.Unmarshal(top["tools"], &tools); err != nil {
 		t.Fatalf("tools: %v", err)
@@ -106,8 +105,8 @@ func TestOpenAIChat_222_StrictModelOmitsExamples(t *testing.T) {
 	if string(fnObj["strict"]) != "true" {
 		t.Errorf("strict model should emit strict:true, got %s", fnObj["strict"])
 	}
-	// The structured-outputs subset rejects `examples`, so a strict tool must
-	// NOT carry it; the description text remains the example carrier.
+	// Structured-outputs strict mode rejects `examples`; the description
+	// text remains the example carrier.
 	if schemaHasExamples(t, fnObj["parameters"]) {
 		t.Errorf("strict tool schema must not carry examples: %s", fnObj["parameters"])
 	}
@@ -119,7 +118,6 @@ func TestOpenAIChat_222_DefaultsOmitParallel(t *testing.T) {
 		Messages:  userTurn(),
 		Tools:     []types.ToolDefinition{toolWith222Example()},
 		MaxTokens: 100,
-		// ParallelToolCalls unset.
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
@@ -174,7 +172,7 @@ func TestAnthropic_222_ExamplesAndDisableParallel(t *testing.T) {
 		Messages:          userTurn(),
 		Tools:             []types.ToolDefinition{toolWith222Example()},
 		MaxTokens:         100,
-		ParallelToolCalls: &disable, // request no-parallel
+		ParallelToolCalls: &disable,
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
@@ -265,8 +263,8 @@ func TestGemini_222_NoParallelNoExamples(t *testing.T) {
 			t.Errorf("Gemini request must not carry %q (no native control)", k)
 		}
 	}
-	// Gemini's ToolExamples capability is zero, so examples are never folded
-	// into the function-declaration schema; the description text carries them.
+	// Gemini's ToolExamples capability is zero, so examples never fold into
+	// the function-declaration schema.
 	var tools []json.RawMessage
 	if err := json.Unmarshal(top["tools"], &tools); err != nil {
 		t.Fatalf("tools: %v", err)

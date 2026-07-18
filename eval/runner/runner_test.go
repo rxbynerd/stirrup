@@ -72,12 +72,11 @@ func TestRunSuite_DryRun(t *testing.T) {
 }
 
 func TestRunSuite_WithFakeHarness(t *testing.T) {
-	// Create a fake harness script that writes a trace file.
 	harnessDir := t.TempDir()
 	harnessPath := filepath.Join(harnessDir, "fake-harness")
 
-	// The fake harness reads --trace from args and writes a JSONL trace there.
-	// The first argument is the "harness" subcommand, which we skip.
+	// Reads --trace from args and writes a JSONL trace there; the first
+	// argument (the "harness" subcommand) is skipped.
 	script := `#!/bin/sh
 shift
 TRACE=""
@@ -95,7 +94,6 @@ fi
 		t.Fatal(err)
 	}
 
-	// Create a workspace with a file for the judge to check.
 	workspaceContent := t.TempDir()
 	targetFile := filepath.Join(workspaceContent, "output.txt")
 	if err := os.WriteFile(targetFile, []byte("hello world"), 0o644); err != nil {
@@ -125,26 +123,18 @@ fi
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The fake harness runs in a temp dir, so the workspace won't have output.txt.
-	// The task will produce a result (possibly error/fail) but should not crash.
 	if len(result.Tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
 	}
-	// We mainly verify the runner doesn't panic and produces a result.
 	t.Logf("task outcome: %s, verdict: %s", result.Tasks[0].Outcome, result.Tasks[0].JudgeVerdict.Reason)
 }
 
-// TestRunSuite_RelativeHarnessPath guards against the regression where a
-// relative, separator-bearing harness path (e.g. "./stirrup", as the CI
-// eval gate passes) was execed against each task's temp workspace
-// (cmd.Dir) rather than the caller's CWD, failing every task with
-// "fork/exec ./stirrup: no such file or directory". RunSuite now anchors
-// such a path to absolute before invoking the harness.
+// TestRunSuite_RelativeHarnessPath pins that RunSuite anchors a relative,
+// separator-bearing harness path (e.g. "./stirrup") to absolute before
+// invoking it, since it execs against each task's temp workspace rather
+// than the caller's CWD.
 func TestRunSuite_RelativeHarnessPath(t *testing.T) {
 	dir := t.TempDir()
-	// Fake harness: create the judged file in its CWD (the per-task
-	// workspace, since runTask sets cmd.Dir) and write the trace the
-	// runner parses.
 	script := `#!/bin/sh
 shift
 TRACE=""
@@ -163,10 +153,8 @@ fi
 		t.Fatal(err)
 	}
 
-	// Run with CWD = dir so "./fake-harness" resolves the way the CI
-	// workflow's "./stirrup" does relative to GITHUB_WORKSPACE. t.Chdir
-	// restores the original working directory on cleanup (before the
-	// TempDir is removed, since cleanups run LIFO).
+	// CWD = dir so "./fake-harness" resolves the way "./stirrup" does
+	// relative to GITHUB_WORKSPACE in CI.
 	t.Chdir(dir)
 
 	suite := types.EvalSuite{
@@ -201,14 +189,10 @@ fi
 	}
 }
 
-// TestRunSuite_SeedsFilesAndHidesTrace asserts two coupled behaviours:
-// (1) task.Files are written into the workspace before the harness runs,
-// so the agent operates on pre-existing content; and (2) the per-task
-// trace file is NOT in the workspace, so the agent cannot list/read
-// harness internals (the hermeticity bug that let a "summarise README"
-// task pass by summarising the leaked trace). The fake harness lists its
-// working directory to stdout; the retained harness.stdout.txt is then
-// asserted to contain the seed file and not the trace.
+// TestRunSuite_SeedsFilesAndHidesTrace pins two coupled behaviours: (1)
+// task.Files are written into the workspace before the harness runs, and
+// (2) the per-task trace file is NOT in the workspace, so the agent cannot
+// list/read harness internals.
 func TestRunSuite_SeedsFilesAndHidesTrace(t *testing.T) {
 	harnessDir := t.TempDir()
 	harnessPath := filepath.Join(harnessDir, "fake-harness")
@@ -272,7 +256,6 @@ fi
 
 func TestReplayRecording_Passing(t *testing.T) {
 	workspace := t.TempDir()
-	// Create the file the judge will look for.
 	if err := os.WriteFile(filepath.Join(workspace, "result.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +294,6 @@ func TestReplayRecording_Passing(t *testing.T) {
 
 func TestReplayRecording_Failing(t *testing.T) {
 	workspace := t.TempDir()
-	// Do NOT create the file — the judge should fail.
 
 	recording := types.RunRecording{
 		RunID: "replay-2",
@@ -462,12 +444,9 @@ func TestValidateSuite(t *testing.T) {
 	}
 }
 
-// writeFakeHarness writes a POSIX-shell harness double that records its
-// invocation order, optionally sleeps for a per-task amount, optionally
-// exits non-zero, and writes a minimal trace file. It returns the harness
-// path and an "order log" path the caller can inspect to see which task
-// the harness was last called with. Skips on non-Unix runners since
-// /bin/sh is not portable to Windows.
+// writeFakeHarness writes body as a POSIX-shell harness double and returns
+// its path. Skips on non-Unix runners since /bin/sh is not portable to
+// Windows.
 func writeFakeHarness(t *testing.T, body string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -481,22 +460,16 @@ func writeFakeHarness(t *testing.T, body string) string {
 	return path
 }
 
-// TestRunSuite_ConcurrencyOrdersDeterministically verifies the worker pool
+// TestRunSuite_ConcurrencyOrdersDeterministically pins that the worker pool
 // preserves suite task order in the returned SuiteResult.Tasks slice
-// regardless of which workers actually finished first. The fake harness
-// records a completion-order log keyed by task ID; the assertion is on
-// (a) the result-slice order matching the input order, and (b) the
-// completion-order log being a non-input order — i.e. concurrency
-// genuinely happened. We avoid wall-clock thresholds because they're
-// notoriously flaky under load (issue #31 review).
+// regardless of which workers actually finished first, using a
+// completion-order log to confirm concurrency genuinely happened.
 func TestRunSuite_ConcurrencyOrdersDeterministically(t *testing.T) {
 	logDir := t.TempDir()
 	completionLog := filepath.Join(logDir, "completion.log")
 
-	// Per-task sleep is decoded from the prompt; the harness appends the
-	// task ID to completionLog atomically (using a tempfile rename trick is
-	// unnecessary because we only need the *finishing order* of distinct
-	// IDs, and POSIX guarantees small (<= PIPE_BUF) appends are atomic).
+	// POSIX guarantees small (<= PIPE_BUF) appends are atomic, so the
+	// harness can append the task ID directly without a tempfile-rename.
 	script := fmt.Sprintf(`#!/bin/sh
 PROMPT=""
 TRACE=""
@@ -517,10 +490,8 @@ echo "$TASK_ID" >> %q
 `, completionLog)
 	harness := writeFakeHarness(t, script)
 
-	// Sleeps are chosen so that finishing order strictly differs from input
-	// order under any realistic concurrency level: the longest sleep is on
-	// the first task so a sequential run would put t1 first in the
-	// completion log, but a concurrent run will not.
+	// The longest sleep is on the first task, so a sequential run would put
+	// t1 first in the completion log, but a concurrent run will not.
 	tasks := []types.EvalTask{
 		{ID: "t1", Prompt: "300:t1", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
 		{ID: "t2", Prompt: "20:t2", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
@@ -549,10 +520,6 @@ echo "$TASK_ID" >> %q
 		}
 	}
 
-	// Concurrency must have actually happened — the completion order must
-	// differ from the input order. With concurrency=4 and t1 sleeping
-	// longest, t1 cannot be first in the completion log on any machine
-	// that's not pathologically slow.
 	logBytes, err := os.ReadFile(completionLog)
 	if err != nil {
 		t.Fatalf("reading completion log: %v", err)
@@ -564,13 +531,9 @@ echo "$TASK_ID" >> %q
 	if completionOrder[0] == "t1" {
 		t.Errorf("first task to finish was t1 (longest sleep): suggests sequential execution. log=%v", completionOrder)
 	}
-	// Stronger assertion: with a 300ms sleep on t1 and 10–200ms on the
-	// others, t1 must finish *last* under concurrency=4. A non-last t1
-	// would mean a faster task got dispatched after t1 yet still finished
-	// later — which is impossible without contention we don't introduce.
-	// This catches regressions where the scheduler drops to effective
-	// concurrency=1 but the first dispatch still happened to be a fast
-	// task (which would satisfy the not-first check).
+	// t1 (300ms sleep) must finish last under concurrency=4; a non-last t1
+	// would mean a faster task got dispatched after it yet finished later,
+	// which is impossible without contention this test doesn't introduce.
 	last := completionOrder[len(completionOrder)-1]
 	if last != "t1" {
 		t.Errorf("expected t1 (300ms sleep) to finish last under concurrency=4; got %q; full order: %v",
@@ -578,10 +541,8 @@ echo "$TASK_ID" >> %q
 	}
 }
 
-// TestRunSuite_ConcurrencyZeroDefaultsToOne pins the documented behaviour
-// that Concurrency<=0 collapses to a sequential run. The test passes when
-// the run completes successfully; a regression that, for example, blocked
-// on a zero-buffered channel with no workers would deadlock here.
+// TestRunSuite_ConcurrencyZeroDefaultsToOne pins that Concurrency<=0
+// collapses to a sequential run rather than deadlocking.
 func TestRunSuite_ConcurrencyZeroDefaultsToOne(t *testing.T) {
 	script := `#!/bin/sh
 TRACE=""
@@ -617,18 +578,16 @@ done
 
 	select {
 	case <-done:
-		// expected
 	case <-time.After(10 * time.Second):
 		t.Fatal("RunSuite with Concurrency=0 deadlocked")
 	}
 }
 
-// TestRunSuite_FailureDoesNotAbortSiblings verifies the per-task error
-// containment invariant: if one task's harness returns non-zero (or its
-// trace is malformed), the other tasks still produce TaskResults and the
-// suite result still surfaces all of them.
+// TestRunSuite_FailureDoesNotAbortSiblings pins that if one task's harness
+// returns non-zero, the other tasks still produce TaskResults and the
+// suite result surfaces all of them.
 func TestRunSuite_FailureDoesNotAbortSiblings(t *testing.T) {
-	// The fake harness fails iff prompt == "boom", otherwise writes a valid trace.
+	// Fails iff prompt == "boom", otherwise writes a valid trace.
 	script := `#!/bin/sh
 PROMPT=""
 TRACE=""
@@ -735,12 +694,10 @@ echo "stderr chatter" >&2
 			}
 		}
 
-		// Trace content should be the harness's last JSON line.
 		traceData, err := os.ReadFile(filepath.Join(base, "trace.jsonl"))
 		if err == nil && !strings.Contains(string(traceData), `"id":"trace-1"`) {
 			t.Errorf("trace.jsonl for %s did not contain expected payload: %q", taskID, string(traceData))
 		}
-		// Stdout/stderr files should contain the chatter we emitted.
 		stdout, _ := os.ReadFile(filepath.Join(base, "harness.stdout.txt"))
 		if !strings.Contains(string(stdout), "stdout chatter") {
 			t.Errorf("harness.stdout.txt for %s = %q, want to contain %q", taskID, string(stdout), "stdout chatter")
@@ -752,13 +709,10 @@ echo "stderr chatter" >&2
 	}
 }
 
-// TestRunSuite_RejectsTraversalIDs is the load-bearing security test: any
-// suite/task ID that would resolve outside <OutputDir>/<suiteID>/<taskID>/
-// must be rejected at validation time so the runner never attempts the
-// MkdirAll. We pick the rejection strategy (over silent sanitisation)
-// because silently rewriting an attacker-controlled ID into a different
-// path would shadow legitimate IDs and produce nondeterministic artifact
-// trees.
+// TestRunSuite_RejectsTraversalIDs pins that any suite/task ID that would
+// resolve outside <OutputDir>/<suiteID>/<taskID>/ is rejected at
+// validation time, rather than silently sanitised (which would shadow
+// legitimate IDs and produce nondeterministic artifact trees).
 func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -771,10 +725,8 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 		{name: "task absolute path", suiteID: "ok", taskID: "/etc/passwd", wantSub: "task ID"},
 		{name: "task with separator", suiteID: "ok", taskID: "sub/dir", wantSub: "task ID"},
 		{name: "task dot segment", suiteID: "ok", taskID: "..", wantSub: "task ID"},
-		// `..`-prefixed IDs that are not exactly ".." must still be rejected,
-		// otherwise an attacker could land artifacts in directories the runner
-		// never intended (e.g. "..foo" on a hostile filesystem). These cover
-		// the HasPrefix(id, "..") branch of validatePathSegment specifically.
+		// `..`-prefixed IDs that are not exactly ".." must also be rejected
+		// (validatePathSegment's HasPrefix(id, "..") branch).
 		{name: "task dotdot prefix short", suiteID: "ok", taskID: "..foo", wantSub: "task ID"},
 		{name: "task triple dot prefix", suiteID: "ok", taskID: "...evil", wantSub: "task ID"},
 		{name: "task dotdot prefix hidden", suiteID: "ok", taskID: "..hidden", wantSub: "task ID"},
@@ -792,9 +744,7 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("error = %q, want it to mention %q", err.Error(), tc.wantSub)
 			}
-			// Belt-and-braces: the error must come back BEFORE any directory
-			// creation under OutputDir. We verify the error payload does not
-			// leak a path that escaped the sandbox.
+			// The error payload must not leak a path that escaped the sandbox.
 			if strings.Contains(err.Error(), fmt.Sprintf("%c..%c", os.PathSeparator, os.PathSeparator)) {
 				t.Errorf("error contains escaped path traversal: %q", err.Error())
 			}
@@ -802,24 +752,14 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 	}
 }
 
-// TestRunSuite_ContextCancellation exercises the dispatcher's ctx.Done()
-// drain branch: when the context is cancelled mid-suite, the runner must
-// (a) return promptly without deadlocking, (b) return a result slice with
-// every slot populated (no zero-value TaskResults), and (c) record at
-// least the un-dispatched tasks as outcome="error" carrying the
-// ctx.Err() message. In-flight workers continue writing into their own
-// disjoint slots, so all slots end up populated by exactly one writer
-// (drain or worker) — confirming the ownership invariant the
-// implementation comment relies on.
-//
-// Without this test the goroutine-leak prevention path has zero coverage
-// and a regression that, for example, miscounted the drain start index
-// (leaving zero-value slots) or dropped wg.Wait() (leaking workers
-// writing into a returned slice) would not be caught.
+// TestRunSuite_ContextCancellation pins the dispatcher's ctx.Done() drain
+// branch: when the context is cancelled mid-suite, the runner returns
+// promptly, every result slot is populated (no zero-value TaskResults),
+// and un-dispatched tasks are recorded as outcome="error" carrying the
+// ctx.Err() message.
 func TestRunSuite_ContextCancellation(t *testing.T) {
-	// A harness that sleeps 500ms so the dispatcher is guaranteed to be
-	// blocked on `jobs <-` for the un-dispatched tail when cancellation
-	// fires.
+	// Sleeps 500ms so the dispatcher is guaranteed to be blocked on
+	// `jobs <-` for the un-dispatched tail when cancellation fires.
 	script := `#!/bin/sh
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -844,9 +784,8 @@ sleep 0.5
 	suite := types.EvalSuite{ID: "cancel-suite", Tasks: tasks}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Fire cancellation 50ms after start. With concurrency=2 and a 500ms
-	// per-task sleep, only the first 2 tasks have a chance to dispatch
-	// before cancel; the remaining 6 must take the drain branch.
+	// With concurrency=2 and a 500ms per-task sleep, only the first 2
+	// tasks dispatch before cancel; the remaining 6 take the drain branch.
 	time.AfterFunc(50*time.Millisecond, cancel)
 
 	type runOutcome struct {
@@ -917,11 +856,9 @@ func collectOutcomes(results []eval.TaskResult) []string {
 	return out
 }
 
-// TestAppendAnthropicWIFArgs pins the on-the-wire flag spellings the
-// runner forwards to `stirrup harness`. The flag names MUST match the
-// harness side (harness/cmd/stirrup/cmd/runconfigflags.go) — a drift
-// here would silently break CI auth, since the harness would treat an
-// unrecognised flag name as a fatal error.
+// TestAppendAnthropicWIFArgs pins the on-the-wire flag spellings the runner
+// forwards to `stirrup harness`; these must match the harness side
+// (harness/cmd/stirrup/cmd/runconfigflags.go).
 func TestAppendAnthropicWIFArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -979,11 +916,9 @@ func TestAppendAnthropicWIFArgs(t *testing.T) {
 }
 
 // TestRunSuite_ForwardsAnthropicWIFFlags exercises the runner end-to-end
-// with a fake harness that captures its argv to disk. This is the
-// load-bearing test for issue #293: it pins that a configured
-// AnthropicWIFConfig actually reaches the subprocess argv (and not
-// merely the RunConfig struct). If this test goes green but CI auth
-// fails, the regression is in the harness flag parser, not the runner.
+// with a fake harness that captures its argv to disk, pinning that a
+// configured AnthropicWIFConfig reaches the subprocess argv (and not merely
+// the RunConfig struct).
 func TestRunSuite_ForwardsAnthropicWIFFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
@@ -992,9 +927,8 @@ func TestRunSuite_ForwardsAnthropicWIFFlags(t *testing.T) {
 	harnessPath := filepath.Join(harnessDir, "fake-harness")
 	argvCapture := filepath.Join(harnessDir, "argv.txt")
 
-	// The fake harness records its argv (one arg per line) to a
-	// predetermined path and writes a minimal success trace so the
-	// runner reaches the artifact-retention path without errors.
+	// Records argv (one arg per line) to a predetermined path and writes a
+	// minimal success trace so the runner reaches artifact-retention.
 	script := fmt.Sprintf(`#!/bin/sh
 for a in "$@"; do printf '%%s\n' "$a"; done > %q
 TRACE=""
@@ -1012,11 +946,8 @@ fi
 		t.Fatal(err)
 	}
 
-	// The judge type is irrelevant to this test: the fake harness
-	// captures argv before the runner ever invokes a judge. Using
-	// file-exists against an unused path produces a fail/error
-	// outcome, but the assertion below cares only about the captured
-	// argv.
+	// The judge type is irrelevant: the harness captures argv before the
+	// runner invokes a judge; only the captured argv is asserted on.
 	suite := types.EvalSuite{
 		ID: "wif-suite",
 		Tasks: []types.EvalTask{
@@ -1066,10 +997,7 @@ fi
 }
 
 // TestRunSuite_ForwardsModelFlag pins that RunConfig.Model reaches the
-// harness argv as --model. CI relies on this to run the same suite
-// against different models (cheap gate on push, stronger models at
-// release); a silent drop here would leave every gated run on the
-// harness default model with no visible failure.
+// harness argv as --model.
 func TestRunSuite_ForwardsModelFlag(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
@@ -1129,10 +1057,8 @@ fi
 	}
 }
 
-// TestRunSuite_NoModelFlagWhenUnset pins the legacy invocation shape:
-// an empty RunConfig.Model must not emit --model at all, so suites
-// keep resolving their model from the suite run_config or the harness
-// default exactly as before the flag existed.
+// TestRunSuite_NoModelFlagWhenUnset pins that an empty RunConfig.Model does
+// not emit --model at all.
 func TestRunSuite_NoModelFlagWhenUnset(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
@@ -1189,9 +1115,7 @@ fi
 }
 
 // TestRunSuite_ForwardsPromptModelFlag pins that RunConfig.PromptModel
-// reaches the harness argv as --prompt-model (#492). Prompt/model
-// comparison sweeps rely on this; a silent drop would leave every run
-// rendering its native prompt while reporting a comparison.
+// reaches the harness argv as --prompt-model.
 func TestRunSuite_ForwardsPromptModelFlag(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")

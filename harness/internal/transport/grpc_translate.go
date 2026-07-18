@@ -62,9 +62,7 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 // runTraceToProto translates the internal RunTrace to a simplified proto
 // wire format suitable for streaming back to the control plane.
 func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
-	// Outcome is the canonical analytics field (#141). StopReason has always
-	// carried t.Outcome too; it keeps doing so for consumers predating the
-	// outcome field.
+	// StopReason mirrors Outcome for consumers predating the outcome field.
 	return &pb.RunTrace{
 		RunId:        t.ID,
 		Turns:        int32(t.Turns),
@@ -152,14 +150,11 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		}
 	}
 	if pc.RuleOfTwo != nil {
-		// Enforce is proto3 `optional bool`, generated as *bool. Preserve
-		// the unset/false distinction here — the validator depends on it
-		// to apply the secure default (enforce) when the field is omitted.
+		// Enforce is `optional bool`; preserve unset/false so the validator
+		// applies the secure default (enforce) when omitted.
 		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: pc.RuleOfTwo.Enforce}
-		// Runtime mirrors the same nil-vs-present distinction: an absent
-		// sub-message stays nil so the factory's default arming applies,
-		// rather than a synthesised empty block masquerading as an
-		// operator declaration.
+		// Runtime keeps the same nil-vs-present distinction: absent stays
+		// nil so the factory's default arming applies.
 		if pc.RuleOfTwo.Runtime != nil {
 			rc.RuleOfTwo.Runtime = &types.RuleOfTwoRuntimeConfig{
 				Classifier:    pc.RuleOfTwo.Runtime.Classifier,
@@ -169,10 +164,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		}
 	}
 	if pc.SensitiveData != nil {
-		// proto3 `optional bool`, generated as *bool. Preserve the
-		// unset/false distinction so the validator's secure default
-		// ("not sensitive unless declared") applies when the field is
-		// omitted on the wire.
+		// `optional bool`; preserve unset/false so the validator's secure
+		// default ("not sensitive unless declared") applies when omitted.
 		v := *pc.SensitiveData
 		rc.SensitiveData = &v
 	}
@@ -188,15 +181,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.GitStrategy = types.GitStrategyConfig{Type: pc.GitStrategy.Type}
 	}
 	if pc.TraceEmitter != nil {
-		// Bucket and ObjectPrefix carry the GCS trace-emitter routing
-		// data. Dropping them here would silently fall back to the
-		// jsonl emitter (when Type=="" after the zero-value copy) or
-		// produce a "bucket is required" construction error at the
-		// factory — both invisible to a control plane that just sent
-		// a Type=="gcs" config. Credential is intentionally not on the
-		// proto yet (see harness.proto TraceEmitterConfig comment); a
-		// proto field and matching translation will land alongside
-		// the broader ResultSinkConfig wiring follow-up.
+		// Credential is intentionally not on the proto yet; see
+		// harness.proto TraceEmitterConfig.
 		rc.TraceEmitter = types.TraceEmitterConfig{
 			Type:            pc.TraceEmitter.Type,
 			FilePath:        pc.TraceEmitter.FilePath,
@@ -216,13 +202,10 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		gr := guardRailConfigFromProto(pc.GuardRail)
 		rc.GuardRail = &gr
 	}
-	// Observability is a value-typed sub-config in types.RunConfig but a
-	// pointer-typed message on the wire; the nil-guard here is mandatory
-	// to keep an absent proto sub-message from synthesising a zero-value
-	// types.ObservabilityConfig. Same pattern as SessionName / GuardRail
-	// translation: silently dropping this would make a K8s job land in
-	// deployment.environment=local even when the control plane sent a
-	// staging label, which is the exact regression issue #95 fixed.
+	// Observability is value-typed internally but pointer-typed on the
+	// wire; the nil-guard keeps an absent sub-message from synthesising
+	// a zero-value ObservabilityConfig (which would silently resolve to
+	// deployment.environment=local).
 	if pc.Observability != nil {
 		rc.Observability = types.ObservabilityConfig{
 			Environment:      pc.Observability.GetEnvironment(),
@@ -230,13 +213,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		}
 	}
 	if pc.ToolDispatch != nil {
-		// Preserve the unset/zero distinction the validator depends on:
-		// an empty proto sub-message carries MaxParallel == 0, which is
-		// legal and resolves to DefaultToolDispatchMaxParallel via
-		// EffectiveToolDispatchMaxParallel. Constructing the internal
-		// struct only when the proto sub-message is present keeps a nil
-		// types.RunConfig.ToolDispatch wire-distinguishable from an
-		// explicit ToolDispatchConfig{}.
+		// Only construct when present, so nil ToolDispatch stays
+		// wire-distinguishable from an explicit ToolDispatchConfig{}
+		// (MaxParallel==0 resolves via EffectiveToolDispatchMaxParallel).
 		rc.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: int(pc.ToolDispatch.GetMaxParallel())}
 	}
 	if pc.Hooks != nil {
@@ -252,10 +231,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 }
 
 // guardRailConfigFromProto recursively translates a proto GuardRailConfig
-// to the internal types form. Stages are walked recursively so a
-// composite payload survives the round-trip; the validator (run in the
-// factory) still rejects composite-of-composite, so only one level of
-// recursion is operationally meaningful.
+// to the internal types form. The validator rejects composite-of-composite,
+// so only one level of recursion is operationally meaningful.
 func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
 	cfg := types.GuardRailConfig{
 		Type:          pc.Type,
@@ -276,10 +253,8 @@ func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
 			cfg.CustomCriteria[k] = v
 		}
 	}
-	// Think is `optional bool`, generated as *bool. Preserve the
-	// unset/false distinction so the validator and adapter constructor
-	// can apply the documented default ("false") when the field is
-	// omitted on the wire.
+	// Think is `optional bool`; preserve unset/false so the documented
+	// default ("false") applies when omitted.
 	if pc.Think != nil {
 		v := *pc.Think
 		cfg.Think = &v
@@ -318,16 +293,10 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 		cfg.Credential = credentialConfigFromProto(pc.Credential)
 	}
 	if pc.Retry != nil {
-		// Nil-guarded: a wire-absent retry block must produce a nil
-		// types.ProviderRetryConfig so ValidateRunConfig's defaulter
-		// allocates and populates a fresh struct. Mapping into an
-		// always-allocated zero value would cross-bind the wire's
-		// "field unset" semantics into the harness's "explicit zero"
-		// semantics and silently override the documented defaults.
-		// This is the recurring control-plane translation gap (gh-95,
-		// gh-117, gh-118, gh-100): every operator-supplied policy
-		// would otherwise be dropped silently, with no log and no
-		// error.
+		// Nil-guarded: a wire-absent retry block must stay nil so
+		// ValidateRunConfig's defaulter allocates and populates it,
+		// rather than cross-binding "field unset" to "explicit zero"
+		// and silently overriding the documented defaults.
 		cfg.Retry = &types.ProviderRetryConfig{
 			MaxAttempts:       int(pc.Retry.GetMaxAttempts()),
 			InitialDelayMs:    int(pc.Retry.GetInitialDelayMs()),
@@ -337,16 +306,10 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 	}
 	if pc.Batch != nil {
 		// Nil-guarded for the same reason as Retry above: a wire-absent
-		// batch block must produce a nil types.BatchProviderConfig so
-		// ValidateRunConfig's per-mode invariants stay quiet and the
-		// run executes as a streaming turn. Allocating a zero value
-		// here would also collapse the "operator did not configure"
-		// vs. "explicit Enabled=false" distinction the phase-2 adapter
-		// wiring (#135) depends on. MaxWaitSeconds is wire-`optional`
-		// so the int32 pointer is unset when absent; preserve the
-		// nil/non-nil distinction in the *int translation so the
-		// validator's default-apply path still owns "filled by harness"
-		// vs. "explicit value".
+		// batch block must stay nil, distinguishing "operator did not
+		// configure" from "explicit Enabled=false". MaxWaitSeconds is
+		// wire-`optional`, so its nil/non-nil distinction is preserved
+		// separately below.
 		batch := &types.BatchProviderConfig{
 			Enabled:                 pc.Batch.GetEnabled(),
 			HarnessSidePolling:      pc.Batch.GetHarnessSidePolling(),
@@ -370,25 +333,18 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 		SessionName:    pc.SessionName,
 		Audience:       pc.Audience,
 		ServiceAccount: pc.ServiceAccount,
-		// Anthropic Workload Identity Federation fields (issue #117).
-		// Use the generated getters so a future change to the proto
-		// (e.g. promoting these to a oneof) keeps the translate layer
-		// nil-safe; without copying these here, every K8s job that
-		// ships an `anthropic-wif` credential over the wire fails
-		// validation because all four required fields arrive empty.
+		// Getters keep the translate layer nil-safe against future proto
+		// changes (e.g. promoting a field group to a oneof).
 		FederationRuleID: pc.GetFederationRuleId(),
 		OrganizationID:   pc.GetOrganizationId(),
 		ServiceAccountID: pc.GetServiceAccountId(),
 		WorkspaceID:      pc.GetWorkspaceId(),
-		// Azure Entra ID Workload Identity Federation fields (issue #118).
+
 		AzureTenantID: pc.GetAzureTenantId(),
 		AzureClientID: pc.GetAzureClientId(),
 		AzureScope:    pc.GetAzureScope(),
 		AzureTokenURL: pc.GetAzureTokenUrl(),
-		// OpenAI Workload Identity Federation fields. Use the generated
-		// getters so a K8s job that ships an `openai-wif` credential over the
-		// wire keeps its identity_provider_id / service_account_id rather than
-		// arriving empty and failing validation.
+
 		OpenAIIdentityProviderID: pc.GetOpenaiIdentityProviderId(),
 		OpenAIServiceAccountID:   pc.GetOpenaiServiceAccountId(),
 		OpenAISubjectTokenType:   pc.GetOpenaiSubjectTokenType(),
@@ -460,9 +416,9 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 }
 
 // hooksConfigFromProto translates a proto HooksConfig to the internal
-// types form (issue #461). Called only when pc.Hooks is non-nil; the
-// caller wraps the returned value in a fresh pointer so an absent proto
-// sub-message stays wire-distinguishable from an explicit-but-empty one.
+// types form. Called only when pc.Hooks is non-nil; the caller wraps the
+// returned value in a fresh pointer so an absent proto sub-message stays
+// wire-distinguishable from an explicit-but-empty one.
 func hooksConfigFromProto(pc *pb.HooksConfig) types.HooksConfig {
 	hc := types.HooksConfig{}
 	for _, h := range pc.PreRun {

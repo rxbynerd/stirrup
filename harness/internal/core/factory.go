@@ -40,17 +40,17 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// BuildLoop constructs an AgenticLoop from a RunConfig. It validates the config,
-// resolves secrets, and instantiates all components. This is the composition root.
-// Transport is built from config.Transport; use BuildLoopWithTransport to inject
-// a pre-established transport (e.g. from the K8s job entrypoint).
+// BuildLoop constructs an AgenticLoop from a RunConfig: it validates the
+// config, resolves secrets, and instantiates all components. This is the
+// composition root.
 func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, error) {
 	return BuildLoopWithTransport(ctx, config, nil)
 }
 
-// BuildLoopWithTransport is like BuildLoop but accepts an optional pre-built
-// Transport. When tp is non-nil it is used directly, skipping buildTransport.
-// This allows the K8s job binary to reuse its already-connected gRPC stream.
+// BuildLoopWithTransport is like BuildLoop but accepts an optional
+// pre-built Transport; a non-nil tp is used directly, skipping
+// buildTransport, so a caller (e.g. the K8s job binary) can reuse an
+// already-connected transport.
 func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport) (*AgenticLoop, error) {
 	var ownedClosers []io.Closer
 	emitReady := tp == nil
@@ -60,32 +60,23 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// Construct the security logger before config validation so we can emit
-	// a config_validation_failed event when the invariants check fails.
-	// Only runID and an io.Writer are needed at this point; the metric
-	// counter is wired further down once Metrics is available.
+	// secLogger is constructed before ValidateRunConfig so a validation
+	// failure can still emit config_validation_failed.
 	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
 
-	// Validate RunConfig security invariants.
 	if err := types.ValidateRunConfig(config); err != nil {
 		secLogger.ConfigValidationFailed([]string{err.Error()})
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
-	// Emit Rule-of-Two audit events. The validator already accepted the
-	// config, so any all-three case here implies an explicit operator
-	// override (RuleOfTwo.Enforce: false) or the ask-upstream policy.
-	// Recording the event keeps the override auditable; the two-of-three
-	// warning surfaces a heads-up that future capability creep would
-	// trip the invariant. The arming decision for the runtime
-	// sensitive-data monitor is computed once here — it feeds both the
-	// rule_of_two_runtime_armed audit event and the monitor built in
-	// step 10b below.
+	// Rule-of-Two arming/audit; see docs/safety-rings.md. The arming
+	// decision feeds both the audit event here and the monitor built
+	// in step 10b below.
 	ruleOfTwoArmingState := resolveRuleOfTwoArming(config)
 	emitRuleOfTwoEvents(config, secLogger, ruleOfTwoArmingState)
 
-	// Secret store for resolving credential references. AutoSecretStore routes
-	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
+	// AutoSecretStore routes "secret://ssm:///..." refs to SSM, falling
+	// back to env/file otherwise.
 	secrets, err := security.NewAutoSecretStore(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("build secret store: %w", err)
@@ -102,10 +93,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	// 3. Executor (built early because context strategy may need it).
-	// Thread the security logger into the container executor so the
-	// in-process egress proxy (started when network.mode == "allowlist")
-	// can emit egress_allowed / egress_blocked events through the same
-	// SecurityLogger used for path/file events.
+	// secLogger is threaded into the container executor so its in-process
+	// egress proxy can emit egress_allowed/egress_blocked events.
 	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
@@ -114,13 +103,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
-	// 4. Tool registry.
-	// The base edit strategy is constructed first, then optionally wrapped
-	// with a CodeScanner pass when one is configured. ValidateRunConfig
-	// fills CodeScanner with a sensible default per mode (patterns for
-	// execution, none for read-only) so cfg.CodeScanner is never nil at
-	// this point — but defend in depth in case a non-CLI caller passes a
-	// raw RunConfig that bypasses that defaulting.
+	// 4. Tool registry. ValidateRunConfig fills CodeScanner with a
+	// per-mode default so it's never nil here, but defend in depth
+	// against a caller that bypasses the validator.
 	es := buildEditStrategy(config.EditStrategy)
 	es, err = wrapWithCodeScanner(es, config.CodeScanner, secLogger)
 	if err != nil {
@@ -129,14 +114,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	registry := buildToolRegistry(exec, es, config.Tools)
 
-	// resourceOpts captures the run-scoped OTel Resource attributes
-	// (deployment.environment, service.namespace, harness.run.mode) shared by
-	// all three signals. resolvedHeaders dereferences any "secret://" values
-	// in TraceEmitter.Headers once, here, so the log / trace / metric
-	// exporters authenticate identically. Both are computed before the logger
-	// is built because the optional OTLP log exporter (wired into the logger
-	// below) needs them; the trace and metric blocks further down reuse these
-	// same values rather than re-resolving.
+	// resourceOpts and resolvedHeaders are shared by the log, trace, and
+	// metric exporters below so all three signals carry a consistent
+	// resource identity and authenticate identically; computed once here
+	// rather than re-resolved per signal.
 	resourceOpts := resourceOptionsFromConfig(config)
 	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
 	if err != nil {
@@ -144,13 +125,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
 	}
 
-	// Optional OTLP log export (issue #96). Stderr is always the default
-	// sink; this adds a second one only when the operator opts in via
-	// observability.logsExport.type == "otlp". The endpoint falls back to the
-	// trace emitter's endpoint so a single --otel-endpoint covers all three
-	// signals. The returned handler is fanned out beneath the shared
-	// Scrub / SpanContext layers inside NewLoggerWithExport, so the OTLP path
-	// is scrubbed and trace-correlated identically to stderr.
+	// Optional second log sink alongside stderr, opted into via
+	// observability.logsExport.type == "otlp"; falls back to the trace
+	// emitter's endpoint so one --otel-endpoint covers all three signals.
 	var logExportHandler slog.Handler
 	if config.Observability.LogsExport.Type == "otlp" {
 		logEndpoint := config.Observability.LogsExport.Endpoint
@@ -166,41 +143,25 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, logExporter)
 	}
 
-	// secLogger was constructed above (before ValidateRunConfig) so it can
-	// emit config_validation_failed before we know whether we have a
-	// MeterProvider. Wire it into the structured logger here so log-side
-	// secret redactions also produce SecretRedactedInOutput events; the
-	// metric counter is set once Metrics is available further below.
-	//
-	// Build logger early so MCP connection warnings go through the ScrubHandler.
+	// Wiring secLogger here means log-side secret redactions also produce
+	// SecretRedactedInOutput events; built early so MCP connection
+	// warnings below go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
 	logger := observability.NewLoggerWithExport(config.RunID, logLevel, os.Stderr, secLogger, logExportHandler)
 	if config.SessionName != "" {
-		// Attach SessionName as a default log attribute so every line
-		// emitted from this loop (and any sub-loop sharing this logger)
-		// carries the operator-supplied label. Reassigned, not shadowed,
-		// so the value propagates into AgenticLoop.Logger below — a local
-		// copy would be discarded.
+		// Reassigned (not shadowed) so the label propagates into
+		// AgenticLoop.Logger below.
 		logger = logger.With("sessionName", config.SessionName)
 	}
 
-	// 5. MCP tool discovery — connect to remote MCP servers and register
-	// their tools into the registry alongside the built-in tools.
-	// Connection failures are non-fatal: the server's tools are skipped
-	// so the harness can still operate with its built-in tools.
-	//
-	// The MCP client's Metrics field is wired further below once the
-	// run's *observability.Metrics is constructed; the Connect() loop
-	// above only performs tools/list (no callTool yet), so the absence
-	// of Metrics during Connect is acceptable. We retain a reference to
-	// the client here so we can field-inject Metrics after metrics
-	// construction.
+	// 5. MCP tool discovery. Connection failures are non-fatal: the
+	// server's tools are skipped so the harness still runs with its
+	// built-in tools. mcpClient is retained so Metrics can be
+	// field-injected once the run's metrics instance exists below.
 	var mcpClient *mcp.Client
 	if len(config.Tools.MCPServers) > 0 {
 		mcpClient = mcp.NewClient(registry, nil)
-		// Wire the logger before Connect so the per-server tool-count cap
-		// warning (emitted during tools/list) reaches operators. Metrics is
-		// field-injected later, after the run's metrics instance exists.
+		// Metrics is field-injected later, once the run's metrics instance exists.
 		mcpClient.Logger = logger
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
@@ -210,8 +171,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 6. Transport — use the injected one if provided, otherwise build from
-	// config. Built before buildComponents because the ask-upstream
+	// 6. Transport — use the injected one if provided, otherwise build
+	// from config; built before buildComponents because the ask-upstream
 	// permission policy needs it.
 	if tp == nil {
 		tp, err = buildTransport(ctx, config.Transport)
@@ -231,29 +192,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	}
 
-	// 7. Probe-eligible components — providers, permission policy, trace
-	// emitter — through the SHARED construction path buildComponents, which
-	// Preflight also calls. This is the structural parity seam (issue #356):
-	// a probe-eligible component cannot be added to a real run without also
-	// surfacing in the dry-run, because both paths construct the set here.
-	// See builtComponents.probeSteps and TestPreflightParity.
-	//
-	// resourceOpts and resolvedHeaders were computed above (before the logger
-	// build) so the optional OTLP log exporter could share them; they are
-	// reused here for the trace emitter and metrics provider so all three
-	// signals carry a consistent resource identity and authenticate
-	// identically.
-	//
-	// exec was built (and its closer registered) above; wrap it so
-	// buildComponents threads it onto the component set. The nil sink means
-	// no per-component construction steps are emitted (those are a dry-run
-	// concern only).
+	// 7. Probe-eligible components (providers, permission policy, trace
+	// emitter) via the shared buildComponents path — also used by
+	// Preflight; see docs/architecture.md. A nil sink here means no
+	// per-component construction steps are emitted.
 	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, resolvedHeaders, resourceOpts, nil)
 	if err != nil {
 		cleanup()
-		// buildComponents already prefixes the failing component
-		// ("build providers" / "build permission policy" / "build trace
-		// emitter"), matching BuildLoop's historical inline messages.
+		// buildComponents already prefixes the failing component.
 		return nil, err
 	}
 	prov := components.defaultProvider
@@ -268,40 +214,27 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// "summarise" strategy needs the default provider adapter.
 	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
 
-	// 9. Verifier. Declared here so later steps can reference it, but actual
-	// construction is deferred to step 13 (line ~296) once the run's
-	// metrics instance exists. buildVerifier wraps its result in a
-	// metric-recorder when metrics is non-nil, so calling it twice (once
-	// without metrics here, once with) would discard the first build —
-	// hence the deferred single construction.
+	// 9. Verifier. Construction is deferred to step 13, once metrics
+	// exists — buildVerifier wraps in a metric-recorder when metrics is
+	// non-nil, so building it twice would discard the first build.
 	var v verifier.Verifier
 
-	// 10. GuardRail. Constructed AFTER providers are built so cloud-judge
-	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
-	// no guard is configured, so the loop's call sites are unconditional.
+	// 10. GuardRail, built after providers so cloud-judge can reuse the
+	// default ProviderAdapter.
 	gr, err := buildGuardRail(config.GuardRail, providers, prov)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
 	}
 
-	// 10b. Rule-of-Two runtime monitor, from the arming decision
-	// computed alongside the run-start audit events above. Noop when
-	// unarmed so the loop's call sites are unconditional. Enforcement
-	// is delivered by the permission gate wrapped below (block-external
-	// / ask-upstream) and the loop's redact / abort actions; escape
-	// hatches are ruleOfTwo.runtime.classifier "none" and
-	// ruleOfTwo.enforce: false.
+	// 10b. Rule-of-Two runtime monitor from the arming decision above.
 	rot := buildRuleOfTwoMonitor(ruleOfTwoArmingState)
 
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
 
-	// 11b. Lifecycle hook runner (issue #461). Noop when the run has no
-	// HooksConfig so the loop's Hooks field is never a bare nil
-	// interface and a bare run pays no cost — the same pattern as
-	// GuardRail. Shares the run's Executor so hooks run inside the same
-	// sandbox and network egress posture as every agent tool call.
+	// 11b. Lifecycle hook runner; shares the run's Executor so hooks run
+	// under the same sandbox and egress posture as every tool call.
 	hooksRunner := buildHookRunner(config.Hooks, exec, logger)
 
 	// 13. OTel metrics.
@@ -321,20 +254,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		metrics = observability.NewNoopMetrics()
 	}
 
-	// 14. Wire the SecurityEvents counter into the security logger so every
-	// Emit increments OTel metrics with an "event" attribute. The
-	// EventCounter interface is satisfied by metric.Int64Counter, which is
-	// the concrete type of metrics.SecurityEvents.
+	// 14. Wire the SecurityEvents counter so every Emit increments OTel
+	// metrics tagged by "event".
 	if metrics != nil {
 		secLogger.SetEventCounter(metrics.SecurityEvents)
 	}
 
-	// Field-inject Metrics into the MCP client so subsequent tools/call
-	// dispatches record stirrup.mcp.calls / stirrup.mcp.duration_ms.
-	// Done here (not at NewClient time) because the run's metrics
-	// instance is built after MCP discovery — if we waited until then
-	// to construct the client, callers would lose initial connection
-	// telemetry. A nil mcpClient (no servers configured) is a no-op.
+	// Field-inject Metrics into the MCP client (built before metrics
+	// existed, so it can't take it at construction). Nil mcpClient is a
+	// no-op.
 	if mcpClient != nil {
 		mcpClient.Metrics = metrics
 	}
@@ -351,37 +279,19 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// in buildVerifier sees a non-nil metrics on the only call site.
 	v = buildVerifier(config.Verifier, prov, metrics)
 
-	// Rule-of-Two enforcement gate, applied BEFORE the metrics wrapper
-	// so gate denials are recorded by stirrup.permission.decisions
-	// under the configured policy label (true attribution rides
-	// stirrup.ruleoftwo.actions, emitted by the gate itself). No-op
-	// unless the monitor is armed and enforcing with a gate-delivered
-	// action.
+	// Applied before the metrics wrapper so gate denials still land in
+	// stirrup.permission.decisions under the policy label (true
+	// attribution rides stirrup.ruleoftwo.actions from the gate itself).
 	pp = wrapRuleOfTwoGate(pp, rot, ruleOfTwoArmingState, registry, config, tp, metrics)
 
-	// Wrap the previously-built permission policy with metrics so
-	// each Check call records stirrup.permission.decisions tagged
-	// with the policy class label. The wrapper is composition-only:
-	// it does not re-construct the policy, so the policy-engine
-	// branch's Cedar file is loaded exactly once.
+	// Composition-only: does not re-construct the policy, so a
+	// policy-engine's Cedar file is loaded exactly once.
 	pp = wrapPermissionPolicyMetrics(pp, config.PermissionPolicy, metrics)
 
-	// Wrap the context strategy with a metric recorder so each
-	// Prepare() call records stirrup.context.strategy_runs tagged
-	// with the strategy name and a kind label ("compaction"/"noop").
-	// The strategy name is the configured type rather than the Go
-	// type to keep dashboards consistent with the existing
-	// context.compactions counter (which tags by Strategy field of
-	// the CompactionEvent).
 	cs = wrapContextStrategy(cs, config.ContextStrategy, metrics)
 
-	// Wire security logger into executor if it supports it.
-	//
-	// K8sExecutor is intentionally absent: its Security emitter is set at
-	// construction (buildExecutor passes secLogger into K8sExecutorConfig),
-	// not re-wired here. If executor construction ever splits into a
-	// separate init phase that defers Security wiring, add a *K8sExecutor
-	// case here too.
+	// K8sExecutor is intentionally absent: its Security emitter is set
+	// at construction (buildExecutor), not re-wired here.
 	switch e := exec.(type) {
 	case *executor.LocalExecutor:
 		e.Security = secLogger
@@ -389,7 +299,6 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		e.Security = secLogger
 	}
 
-	// Extract tracer for deeper span instrumentation.
 	var tracer oteltrace.Tracer
 	if otelEmitter, ok := te.(*trace.OTelTraceEmitter); ok {
 		tracer = otelEmitter.Tracer()
@@ -397,7 +306,6 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
-	// Set tracer + metrics on provider adapters for HTTP-level instrumentation.
 	for _, p := range providers {
 		switch pa := p.(type) {
 		case *provider.AnthropicAdapter:
@@ -423,25 +331,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 14b. Optional BatchAdapter wrapping. Only the top-level provider is
-	// wrapped — entries in config.Providers are streaming-only in v1, per
-	// the BatchProviderConfig docstring. The streaming inner is retained
-	// so cfg.FallbackOnTimeout can delegate to it without a second build.
-	//
-	// Two batch client implementations exist:
-	//   - controlPlaneBatchClient (transport=grpc): the control plane
-	//     owns the provider-side batch lifecycle.
-	//   - harnessPollingBatchClient (transport=stdio): the harness polls
-	//     the provider's batch API directly. Supports Anthropic and the
-	//     two OpenAI dialects as of phase 6 (#139).
-	//
-	// ValidateRunConfig already enforces the transport/HarnessSidePolling
-	// pairing — the stdio branch trusts that contract.
+	// 14b. Optional BatchAdapter wrapping; see docs/batch.md. Only the
+	// top-level provider is wrapped — entries in config.Providers are
+	// streaming-only in v1. The streaming inner is retained so
+	// cfg.FallbackOnTimeout can delegate to it without a second build.
 	if config.Provider.Batch != nil && config.Provider.Batch.Enabled {
-		// MaxWaitSeconds is filled with the documented default
-		// (86_400) by ValidateRunConfig when batch.enabled is true, so
-		// the nil check below is defence-in-depth for callers bypassing
-		// the validator.
+		// Defence-in-depth: ValidateRunConfig fills this default when
+		// batch.enabled is true, for callers that bypass the validator.
 		maxWaitSec := 86_400
 		if config.Provider.Batch.MaxWaitSeconds != nil {
 			maxWaitSec = *config.Provider.Batch.MaxWaitSeconds
@@ -453,12 +349,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case "grpc":
 			batchClient = provider.NewControlPlaneBatchClient(tp, maxWait, config.Provider.Batch.CancelBundleOnRunCancel)
 		case "stdio":
-			// Phase 6 (#139) extends the stdio polling path to OpenAI
-			// Chat Completions and Responses. Bedrock and Gemini are
-			// still out of scope (validBatchProviderTypes rejects them
-			// in ValidateRunConfig); defence-in-depth this dispatch
-			// matches that closed set so a misconfigured run fails at
-			// build time rather than the first turn.
+			// Bedrock and Gemini are out of scope (validBatchProviderTypes
+			// rejects them in ValidateRunConfig); this dispatch mirrors
+			// that closed set so a misconfigured run fails at build time.
 			switch config.Provider.Type {
 			case "anthropic", "openai-compatible", "openai-responses":
 				// supported
@@ -469,12 +362,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 					config.Provider.Type,
 				)
 			}
-			// The credential source is rebuilt here (rather than
-			// captured from buildProviders) because buildProviders
-			// resolves the source once and hands the BearerToken
-			// closure to the adapter; the polling client needs the
-			// Source itself so each poll can re-resolve credentials
-			// for forward compatibility with rotating sources.
+			// Rebuilt here (rather than captured from buildProviders)
+			// because the polling client needs the Source itself so
+			// each poll can re-resolve rotating credentials.
 			credSrc, err := credential.BuildSource(config.Provider, secrets)
 			if err != nil {
 				cleanup()
@@ -490,61 +380,41 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 				Logger:       logger,
 			})
 		default:
-			// validateBatchConfig already rejects any transport that
-			// isn't grpc or stdio (transport.type itself is closed-set
-			// validated), but defend in depth.
+			// Defence in depth: validateBatchConfig already rejects any
+			// transport that isn't grpc or stdio.
 			cleanup()
 			return nil, fmt.Errorf("batch is not supported for transport type %q", config.Transport.Type)
 		}
 
 		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
-		// Thread the streaming inner adapter's quirks registry into
-		// the BatchAdapter so the batch body-marshal path produces the
-		// same wire shape the streaming path would have produced for
-		// the same (provider, model) pair. Without this, a future
-		// batch allow-list expansion that admits a compat-profile
-		// provider (e.g. Z.ai) would silently use the default
-		// registry and miss the compat rule's extras. v1's
-		// validateBatchConfig allow-list does not include any compat-
-		// profile provider today, but the wiring is unconditional so
-		// the gap cannot reappear.
+		// Thread the streaming inner adapter's quirks registry through so
+		// the batch marshal path matches the streaming wire shape,
+		// including any compat-profile extras.
 		if compatible, ok := prov.(*provider.OpenAICompatibleAdapter); ok {
 			batchAdapter.Registry = compatible.Registry
 		}
 		prov = batchAdapter
-		// Replace the entry in the providers map so model-router lookups
-		// route to the batched wrapper rather than the raw streaming
-		// adapter (#194-style cross-routing risk: a router that picks
-		// the default provider by type would otherwise bypass batching
-		// entirely).
+		// Replace the map entry so model-router lookups route to the
+		// batched wrapper rather than the raw streaming adapter.
 		providers[config.Provider.Type] = prov
 	}
 
 	// 14c. Wrap every loop-facing provider adapter with the tool-name
-	// normalizer. Applied as the outermost wrap (after batch and any
-	// fallback wraps) so the loop's inbound tool_call reverse-mapping
-	// reaches the wire-event stream before any consumer touches the
-	// name. Skipping a provider that already happens to use only
-	// well-formed names is intentional: every adapter goes through the
-	// wrapper so the invariant ("provider never sees an invalid name")
-	// holds for any future MCP server or operator-defined tool. See
-	// issue #223.
+	// normalizer, applied outermost (after batch/fallback wraps) so the
+	// invariant "provider never sees an invalid tool name" holds for any
+	// MCP server or operator-defined tool.
 	prov = provider.NewNormalizingAdapter(prov, config.Provider.Type)
 	wrappedProviders := make(map[string]provider.ProviderAdapter, len(providers))
 	for name, p := range providers {
 		if name == config.Provider.Type {
-			// The default-provider entry was just rebuilt above; reuse
-			// that exact wrapper so identity is preserved across the
-			// loop.Provider and loop.Providers[default] references —
-			// some call sites (router fallback, guardrail) compare by
-			// pointer.
+			// Reuse the exact wrapper just built above so identity is
+			// preserved across loop.Provider and loop.Providers[default]
+			// — some call sites compare by pointer.
 			wrappedProviders[name] = prov
 			continue
 		}
-		// Additional providers declared in config.Providers: their map
-		// key is unique by name but the policy must come from their
-		// declared Type, not the key (which may differ from the type
-		// discriminator). Fall back to the key when no entry is found.
+		// The map key may differ from the declared Type discriminator;
+		// fall back to the key when no config entry is found.
 		providerType := name
 		if cfg, ok := config.Providers[name]; ok {
 			providerType = cfg.Type
@@ -553,14 +423,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	providers = wrappedProviders
 
-	// Tool-choice escalation policy (#230). OFF by default: when the
-	// operator did not opt in via RunConfig.ToolChoiceEscalation,
-	// EffectiveToolChoiceEscalationMaxRetries returns 0 and
-	// buildEscalationPolicy returns nil, so the loop's escalation path is
-	// inert and a bare run is unchanged. The capability resolver is the
-	// quirks registry the default provider adapter resolves against, so
-	// the native-vs-prompt choice matches the wire shape the adapter would
-	// actually serialise (including a compat profile's registry).
+	// Tool-choice escalation policy: off by default (nil) unless the
+	// operator opts in via RunConfig.ToolChoiceEscalation.
 	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
 
 	loop := &AgenticLoop{
@@ -607,28 +471,20 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 		registry.Register(builtins.SpawnAgentTool(spawner))
 
-		// The ask-upstream policy snapshots the approval-required tool
-		// set at construction time, but spawn_agent is registered
-		// after the policy is built. Refresh it here so spawn_agent
-		// calls are gated by the control plane rather than silently
-		// auto-allowed. (See TestApprovalRequiredToolSet which asserts
-		// the load-bearing absence of spawn_agent in the unrefreshed
-		// set.) The policy may be wrapped in a metric recorder, so try
-		// the wrapper's pass-through first before falling back to a
-		// direct type assertion.
+		// The ask-upstream policy snapshots the approval-required tool set
+		// at construction time, before spawn_agent is registered; refresh
+		// it here so spawn_agent is gated rather than auto-allowed. See
+		// TestApprovalRequiredToolSet.
 		addApprovalTool(pp, "spawn_agent")
 	}
 
-	// Apply the toolset-profile presentation (issue #234) last, after every
-	// tool (built-ins, MCP, spawn_agent) is registered, so the alias mapping
-	// covers the complete tool set. The presenter wraps the registry for the
-	// loop's List/Resolve seam only; the permission policy, mutating-tool
-	// set, and MCP registration above all keep operating on the raw registry
-	// and the internal tool IDs, so aliasing changes the model-facing name
-	// without touching dispatch gating. The profile name passed ValidateRunConfig
-	// already; ProfileFor returning false here would mean a profile in the
-	// validator's closed set has no table, which is a build-time bug we fail
-	// loudly on rather than silently presenting no aliases.
+	// Apply the toolset-profile presentation last, after every tool
+	// (built-ins, MCP, spawn_agent) is registered, so the alias mapping
+	// covers the complete set. The presenter wraps only the loop's
+	// List/Resolve seam — permission policy and dispatch keep operating
+	// on the raw registry and internal tool IDs. ValidateRunConfig
+	// already validated the profile name, so a false here is a
+	// build-time bug worth failing loudly on.
 	profile, ok := tool.ProfileFor(config.Tools.Profile)
 	if !ok {
 		cleanup()
@@ -646,20 +502,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 }
 
 // buildEscalationPolicy constructs the tool-choice escalation policy
-// (#230) injected into the loop. A maxRetries <= 0 returns nil — the
-// OFF-by-default case where the loop's escalation path is a no-op — so the
-// only way to enable escalation is an explicit RunConfig.ToolChoiceEscalation
-// with Enabled:true (which makes EffectiveToolChoiceEscalationMaxRetries
-// positive).
-//
-// The capability resolver is quirks.DefaultRegistry(): tool-choice support
-// is a cross-provider capability declared by each provider type's base
-// rule, and no compat profile overrides it, so the default registry is the
-// authoritative source for the native-vs-prompt fallback decision and
-// matches what every adapter resolves against. The _ provider argument is
-// reserved so a future per-provider registry (e.g. a compat profile that
-// disables required tool choice for a specific gateway) can be threaded in
-// without changing the call site.
+// injected into the loop. maxRetries <= 0 returns nil (off by default);
+// the resolver is quirks.DefaultRegistry() since tool-choice support is
+// a cross-provider capability no compat profile overrides. The _
+// provider argument is reserved for a future per-provider registry.
 func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) EscalationPolicy {
 	if maxRetries <= 0 {
 		return nil
@@ -696,15 +542,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return nil, fmt.Errorf("resolve credentials: %w", err)
 	}
 
-	// ValidateRunConfig guarantees cfg.Retry is populated with the
-	// defaulted ProviderRetryConfig — RetryPolicyFromConfig handles a nil
-	// pointer defensively in case a non-CLI caller bypasses the validator.
-	// Computed once here so every adapter branch below wires the same
-	// operator-configured providerRetry knob through DoWithRetry (or, for
-	// bedrock, the closest SDK-native equivalent) — this is the single
-	// point where RunConfig's retry config becomes a provider-level
-	// RetryPolicy, so a new adapter type inherits the knob just by reading
-	// this value instead of re-deriving its own.
+	// Single point where RunConfig's retry config becomes a provider-level
+	// RetryPolicy; RetryPolicyFromConfig handles a nil cfg.Retry
+	// defensively for callers that bypass ValidateRunConfig.
 	retry := provider.RetryPolicyFromConfig(cfg.Retry)
 
 	switch cfg.Type {
@@ -712,11 +552,8 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("anthropic provider requires a bearer credential but the credential source produced none")
 		}
-		// Anthropic accepts two auth header shapes (issue #117 BLOCKING
-		// B2). Static API keys (sk-ant-api03-...) ride x-api-key; WIF
-		// OAuth access tokens (sk-ant-oat01-...) require Authorization:
-		// Bearer. The credential source produces a Bearer token either
-		// way; only the adapter knows which header to set.
+		// Static API keys (sk-ant-api03-...) ride x-api-key; WIF OAuth
+		// access tokens (sk-ant-oat01-...) require Authorization: Bearer.
 		authMode := provider.AuthModeAPIKey
 		if cfg.Credential != nil && cfg.Credential.Type == "anthropic-wif" {
 			authMode = provider.AuthModeBearer
@@ -733,20 +570,15 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			QueryParams:  cfg.QueryParams,
 		}
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
-		// Inject the compat rules into the adapter's registry when the
-		// operator selected a compatProfile. The default registry is
-		// already attached by the constructor; we replace it with a
-		// new registry containing the compat rules appended after
-		// BuiltinRules so their specificity ordering wins against any
-		// first-party glob they overlap.
+		// Compat rules are appended after BuiltinRules so their
+		// specificity ordering wins against any overlapping glob.
 		if cfg.CompatProfile != "" {
 			extra, err := resolveCompatProfile(cfg.CompatProfile)
 			if err != nil {
 				return nil, fmt.Errorf("resolve compat profile: %w", err)
 			}
-			// BuiltinRules() returns a fresh slice on every call, so
-			// appending the compat rules here cannot mutate the shared
-			// builtin catalogue used by every other adapter.
+			// BuiltinRules() returns a fresh slice each call, so this
+			// cannot mutate the shared catalogue other adapters use.
 			rules := append(quirks.BuiltinRules(), extra...)
 			adapter.Registry = quirks.NewRegistry(rules)
 		}
@@ -819,7 +651,7 @@ func buildPerModeRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 		if p, m, ok := strings.Cut(spec, "/"); ok {
 			modeMap[mode] = router.ModelSelection{Provider: p, Model: m}
 		} else {
-			// No slash: use default provider with the given model name.
+			// No slash: use the default provider.
 			modeMap[mode] = router.ModelSelection{Provider: defaultProvider, Model: spec}
 		}
 	}
@@ -977,13 +809,11 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			EgressSecurity:    secLogger,
 		})
 	case "k8s", "k8s-sandbox":
-		// ValidateRunConfig already enforces Image and K8sNamespace for the
-		// k8s family; the guards here keep buildExecutor self-contained for
-		// callers that construct a RunConfig without going through the
-		// validator (gRPC translate, embedding). Both types share the K8s*
-		// config surface and differ only in how the sandbox Pod is created:
-		// "k8s" manages the Pod directly, "k8s-sandbox" provisions it via the
-		// Agent Sandbox CRD (gVisor-only — the executor forces "gvisor").
+		// Both types share the K8s* config surface and differ only in
+		// how the sandbox Pod is created: "k8s" manages the Pod
+		// directly, "k8s-sandbox" provisions it via the Agent Sandbox
+		// CRD (gVisor-only). The guards below are defence-in-depth for
+		// callers that bypass ValidateRunConfig.
 		if cfg.Image == "" {
 			return nil, fmt.Errorf("%s executor requires image", cfg.Type)
 		}
@@ -1035,29 +865,21 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
-	// grep_files and find_files replace the old search_files tool. Both
-	// tools are filesystem-read primitives — find_files is pure Go and
-	// never shells out; grep_files's native walker only needs read
-	// access, and the ripgrep fast path checks CanExec internally before
-	// invoking exec.Exec. Gating on CanRead therefore matches semantics:
-	// a future read-only sandboxed executor (CanRead=true, CanExec=false)
-	// gets working content/name search instead of silently losing both.
+	// find_files is pure Go and never shells out; grep_files's native
+	// walker only needs read access (its ripgrep fast path checks
+	// CanExec internally). Gating on CanRead means a read-only sandboxed
+	// executor still gets working content/name search.
 	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanRead {
 		registry.Register(builtins.GrepFilesTool(exec))
 	}
 	if toolEnabled(cfg.BuiltIn, "find_files") && caps.CanRead {
 		registry.Register(builtins.FindFilesTool(exec))
 	}
-	// The four git_* tools are read-only (WorkspaceMutating: false,
-	// RequiresApproval: false) and are part of DefaultReadOnlyBuiltInTools(),
-	// so they are gated on CanRead like the read-only tools above rather
-	// than CanExec like run_command below. Unlike grep_files/find_files
-	// they have no CanRead-only fallback: every call shells out via
-	// exec.Exec (builtins/git.go:runGit). On a CanRead-but-not-CanExec
-	// executor (e.g. api.APIExecutor backing a VcsBackend review run)
-	// they still register, but return a clear "git is not available"
-	// error at invocation instead of silently disappearing from a tool
-	// list the model was told to expect.
+	// The four git_* tools are gated on CanRead (they're read-only) even
+	// though every call shells out via exec.Exec: on a CanRead-but-not-
+	// CanExec executor they still register but fail with a clear "git is
+	// not available" error rather than silently disappearing from the
+	// tool list the model was told to expect.
 	if toolEnabled(cfg.BuiltIn, "git_status") && caps.CanRead {
 		registry.Register(builtins.GitStatusTool(exec))
 	}
@@ -1175,20 +997,9 @@ type ruleOfTwoArming struct {
 	staticSensitive bool
 }
 
-// resolveRuleOfTwoArming computes the arming matrix. With u =
-// holdsUntrusted, e = canCommExternal, s = static sensitive declaration:
-//
-//   - runtime.classifier "none" disarms entirely.
-//   - u && e && !s with a non-ask-upstream policy and enforce != false
-//     arms enforcing (the dangerous two-of-three where a mid-run
-//     sensitive sighting completes the triad).
-//   - u && e otherwise (ask-upstream, enforce:false, or s already
-//     declared) arms observe-only: ask-upstream already gates egress,
-//     an explicit override must stay an override, and a declared-
-//     sensitive run was already adjudicated by the validator.
-//   - !u || !e stays unarmed — the triad cannot complete — unless the
-//     operator explicitly selected classifier "patterns" (observe-only
-//     detection telemetry on request).
+// resolveRuleOfTwoArming computes the arming matrix (u = holdsUntrusted,
+// e = canCommExternal, s = static sensitive declaration). See "When the
+// classifier arms" in docs/safety-rings.md for the full decision table.
 func resolveRuleOfTwoArming(config *types.RunConfig) ruleOfTwoArming {
 	if config == nil {
 		return ruleOfTwoArming{}
@@ -1225,15 +1036,11 @@ func resolveRuleOfTwoArming(config *types.RunConfig) ruleOfTwoArming {
 			staticSensitive: s,
 		}
 	case classifier == "patterns":
-		// Explicit classifier:"patterns" with !u||!e is observe-only by
-		// construction (no enforcement consumer reads the latch here),
-		// so the monitor must NOT start pre-tripped even when the
-		// operator also declared sensitiveData: pre-tripping would skip
-		// every scan and yield zero detection telemetry — the opposite
-		// of what an operator who explicitly asked for pattern scanning
-		// wants. staticSensitive stays meaningful only on the enforcing
-		// u&&e path above, where a pre-tripped latch is the audited
-		// posture.
+		// staticSensitive stays false here even if sensitiveData was
+		// declared: a pre-tripped latch would skip scanning and yield
+		// zero detection telemetry, defeating an explicit request for
+		// pattern scanning. It's only meaningful on the enforcing
+		// u&&e path above.
 		return ruleOfTwoArming{
 			armed:           true,
 			enforcing:       false,
@@ -1256,24 +1063,9 @@ func buildRuleOfTwoMonitor(arming ruleOfTwoArming) ruleoftwo.Monitor {
 	return ruleoftwo.NewPatternMonitor(arming.enforcing, arming.action, arming.criteria, arming.staticSensitive)
 }
 
-// emitRuleOfTwoEvents records the Rule-of-Two security events at run
-// start:
-//
-//   - rule_of_two_runtime_armed whenever the runtime monitor is armed,
-//     recording the resolved classifier, the effective on-detect action
-//     (the monitor reports "warn" when observe-only, so the event never
-//     promises an action that cannot fire), and the enforcing bit.
-//   - rule_of_two_disabled when all three Rule-of-Two flags hold AND the
-//     operator explicitly disabled enforcement via RuleOfTwo.Enforce:false.
-//     This is the audit trail for the override; the validator would
-//     otherwise have rejected the config.
-//   - rule_of_two_warning when exactly two of the three flags hold. The
-//     run is legal, but any added capability would tip it into all-three.
-//     The event names which two so reviewers can spot capability creep.
-//
-// The event names "untrusted-input", "sensitive-data", and
-// "external-communication" mirror the validator's rejection message so
-// downstream tooling can grep for the same identifiers in both places.
+// emitRuleOfTwoEvents records the Rule-of-Two security audit events at
+// run start (rule_of_two_runtime_armed, rule_of_two_disabled,
+// rule_of_two_warning); see docs/safety-rings.md.
 func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger, arming ruleOfTwoArming) {
 	if sec == nil || config == nil {
 		return
@@ -1292,10 +1084,8 @@ func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger, 
 	u, s, e := types.RuleOfTwoState(config)
 
 	if u && s && e {
-		// All three hold: validator only accepted because of the
-		// ask-upstream policy or an explicit Enforce:false override.
-		// Only the override case is interesting for audit — the
-		// ask-upstream path is the documented happy case.
+		// All three hold only via ask-upstream or an explicit override;
+		// only the override case is interesting for audit.
 		if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
 			sec.Emit("warn", "rule_of_two_disabled", map[string]any{
 				"reason":                "operator override via RuleOfTwo.Enforce: false",
@@ -1347,10 +1137,7 @@ func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, 
 // addApprovalTool routes an approval-tool registration to the
 // underlying *AskUpstreamPolicy, walking through any metric-recorder
 // wrapper via permission.Unwrap. Returns true when the registration
-// landed on an ask-upstream policy. Centralising the unwrap means the
-// metric wrapper does not need its own AddApprovalTool delegation —
-// the wrapper preserves Check() semantics; reaching the concrete
-// policy is the caller's job.
+// landed on an ask-upstream policy.
 func addApprovalTool(pp permission.PermissionPolicy, name string) bool {
 	if ask, ok := permission.Unwrap(pp).(*permission.AskUpstreamPolicy); ok {
 		ask.AddApprovalTool(name)
@@ -1393,15 +1180,10 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	if cfg.FuzzyThreshold != nil {
 		fuzzyThreshold = *cfg.FuzzyThreshold
 	}
-	// Same defence-in-depth rationale as the unknown-Type fallback below:
-	// types.ValidateRunConfig rejects fuzzyThreshold outside (0, 1], but a
-	// caller that bypasses validation (gRPC / embedders constructing a
-	// RunConfig directly) can still reach here with a value <= 0. That
-	// defeats the udiff fuzzy-match "no match found" sentinel check
-	// (harness/internal/edit/udiff.go: findFuzzyMatch's bestSim=0/bestPos=-1
-	// zero value passes an unguarded `>= 0` comparison) and panics on a
-	// negative slice index. Clamp to the documented default instead of
-	// letting a bad config take the run down mid-edit.
+	// A caller that bypasses ValidateRunConfig can reach here with a
+	// value <= 0, which defeats udiff's fuzzy-match sentinel check
+	// (findFuzzyMatch's zero value passes an unguarded `>= 0` comparison)
+	// and panics on a negative slice index. Clamp instead.
 	if fuzzyThreshold <= 0 || fuzzyThreshold > 1 {
 		slog.Default().Warn("edit strategy fuzzyThreshold out of range; falling back to default",
 			slog.Float64("attempted_fuzzy_threshold", fuzzyThreshold),
@@ -1421,15 +1203,9 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	case "multi":
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	default:
-		// Reached only by callers that bypass types.ValidateRunConfig (e.g.
-		// gRPC / embedders constructing a RunConfig directly). The fallback
-		// to multi is intentional defence-in-depth, but a typo'd or
-		// future-but-unwired type silently degrading is worth surfacing so
-		// the mis-configuration is detectable. Uses slog.Default() rather
-		// than threading a logger: this is a should-never-happen path and
-		// the call site (factory.go:123) precedes structured-logger
-		// construction, so the value of run correlation does not justify
-		// widening the signature.
+		// Reached only by callers that bypass ValidateRunConfig. Uses
+		// slog.Default() rather than a threaded logger: this call site
+		// precedes structured-logger construction.
 		slog.Default().Warn("unknown edit strategy type; falling back to multi",
 			slog.String("attempted_type", cfg.Type),
 			slog.String("selected_type", "multi"),
@@ -1439,14 +1215,10 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 }
 
-// buildVerifier constructs a Verifier from cfg. Each leaf verifier (and
-// the composite at every level) is wrapped with verifier.NewMetricRecorder
-// when metrics is non-nil, so dashboards can see runs and durations
-// attributed to the specific verifier type — including individual
-// children of a composite. Passing metrics=nil skips wrapping entirely
-// (used during the first construction pass before the run's Metrics
-// instance is built; the factory rebuilds the verifier with metrics
-// once it's available).
+// buildVerifier constructs a Verifier from cfg. Each leaf (and the
+// composite at every level) is wrapped with verifier.NewMetricRecorder
+// when metrics is non-nil; metrics=nil skips wrapping (used before the
+// run's Metrics instance exists, ahead of a later rebuild).
 func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metrics *observability.Metrics) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
@@ -1561,30 +1333,16 @@ func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
 	return &guard.PhaseGated{Phases: parsed, Inner: g}
 }
 
-// buildPermissionPolicy constructs the configured PermissionPolicy.
+// buildPermissionPolicy constructs the configured PermissionPolicy. The
+// returned policy is raw — callers wanting metric instrumentation
+// compose it through wrapPermissionPolicyMetrics — so the policy-engine
+// arm's Cedar file is read exactly once rather than re-read on a second
+// build call, which previously opened a TOCTOU window on
+// workspace-relative paths (CWE-367).
 //
-// The returned policy is raw: it is never wrapped in a metric recorder
-// here. Callers that want metric instrumentation should compose the
-// result through wrapPermissionPolicyMetrics — splitting the steps lets
-// the factory build the policy once (which, for the policy-engine arm,
-// involves a Cedar file read and parse) and wrap it with metrics
-// afterwards without re-reading the file. The previous design called
-// this function twice — once before metrics was constructed, once after
-// — and the second call re-loaded the policy file from disk, opening a
-// TOCTOU window on workspace-relative paths (CWE-367).
-//
-// The policy-engine arm requires loading a Cedar policy file from disk
-// and wiring a fallback policy in case Cedar returns "no decision". The
-// FallbackBuilder closure is the seam between the permission package
-// (which doesn't know about the registry / transport / secLogger) and
-// the factory (which has all of those in scope) — it maps a fallback
-// type name back to the same construction logic the non-policy-engine
-// arms use, so a policy-engine config with fallback="ask-upstream"
+// The FallbackBuilder closure re-routes a policy-engine's declared
+// fallback type through this same switch, so e.g. fallback="ask-upstream"
 // behaves identically to top-level ask-upstream when Cedar abstains.
-//
-// Errors are bubbled because policy-engine construction can fail on a
-// missing or malformed policy file; the legacy arms cannot fail and
-// could remain non-error-returning, but a single signature is simpler.
 func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger) (permission.PermissionPolicy, error) {
 	cfg := config.PermissionPolicy
 	switch cfg.Type {
@@ -1607,24 +1365,14 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 			RunID:     config.RunID,
 			Mode:      config.Mode,
 			Workspace: config.Executor.Workspace,
-			// Project DynamicContext entries → values map: the Cedar
-			// engine exposes context.dynamicContext as a Record of
-			// String → String. Per-entry sensitivity is carried on the
-			// RunConfig.DynamicContext map but is not wired into Cedar
-			// today — a follow-up may surface it as
-			// `context.sensitive_dynamic_context` for policies that
-			// want to reason about it.
+			// Cedar exposes context.dynamicContext as a Record of
+			// String → String; per-entry sensitivity is not wired in yet.
 			DynamicContext: config.DynamicContextValues(),
 			Security:       secLogger,
 			// ParentRunID and Capabilities are reserved for sub-agent
-			// wiring and capability propagation respectively; both
-			// are populated by the spawn_agent path in a future wave.
+			// wiring, populated by the spawn_agent path in a future wave.
 		}
-		// The fallback closure maps a fallback type name to the same
-		// constructor the non-policy-engine arms use. We deliberately
-		// re-route through this switch (via a recursive nested call)
-		// so any future change to a fallback policy's construction
-		// (e.g. a new ask-upstream timeout default) lands in one place.
+		// fallback re-routes a fallback type name through this same switch.
 		fallback := func(typeName string) (permission.PermissionPolicy, error) {
 			if typeName == "policy-engine" {
 				return nil, fmt.Errorf("policy-engine fallback may not itself be policy-engine")
@@ -1650,21 +1398,14 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		}
 		return policy, nil
 	default:
-		// Pre-fix this returned NewAllowAll() — silent permission
-		// bypass for any unknown type when callers skipped
-		// ValidateRunConfig. Match the rest of buildExecutor /
-		// buildVerifier and surface an explicit error (S2).
+		// Explicit error, not an allow-all fallback.
 		return nil, fmt.Errorf("unsupported permissionPolicy.type %q", cfg.Type)
 	}
 }
 
 // wrapPermissionPolicyMetrics wraps an already-built PermissionPolicy
 // with a metric recorder labelled with the configured policy type. A
-// nil metrics argument or an empty cfg.Type returns pp unchanged so the
-// no-metrics deployment has zero overhead. Splitting the wrap from
-// buildPermissionPolicy means the factory can construct the policy once
-// (avoiding a second Cedar policy file read) and add metric
-// instrumentation afterwards.
+// nil metrics argument or an empty cfg.Type returns pp unchanged.
 func wrapPermissionPolicyMetrics(pp permission.PermissionPolicy, cfg types.PermissionPolicyConfig, metrics *observability.Metrics) permission.PermissionPolicy {
 	if pp == nil || metrics == nil || cfg.Type == "" {
 		return pp
@@ -1770,12 +1511,10 @@ func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	}
 }
 
-// buildHookRunner constructs the lifecycle hook runner (issue #461).
-// Returns hook.Noop when cfg is nil or configures no hooks in either
-// phase, so a bare run pays no cost and AgenticLoop.Hooks is never a
-// bare nil interface. exec is the run's own Executor — hooks run
-// through it so they share the run's sandbox and network egress posture
-// with every agent tool call.
+// buildHookRunner constructs the lifecycle hook runner. Returns
+// hook.Noop when cfg is nil or configures no hooks in either phase.
+// exec is the run's own Executor, so hooks share its sandbox and
+// egress posture with every agent tool call.
 func buildHookRunner(cfg *types.HooksConfig, exec executor.Executor, logger *slog.Logger) hook.Runner {
 	if cfg == nil || (len(cfg.PreRun) == 0 && len(cfg.PostRun) == 0) {
 		return hook.NewNoop()
@@ -1783,12 +1522,9 @@ func buildHookRunner(cfg *types.HooksConfig, exec executor.Executor, logger *slo
 	return &hook.ExecRunner{Hooks: cfg, Exec: exec, Logger: logger}
 }
 
-// resourceOptionsFromConfig assembles the OTel ResourceOptions for this run
-// from the RunConfig. The precedence chain (explicit RunConfig field ->
-// env var -> default) is implemented inside observability.BuildResource;
-// this helper just plumbs the explicit values through and pins the run
-// mode (which is always available from the config and has no env-var
-// fallback).
+// resourceOptionsFromConfig assembles the OTel ResourceOptions for this
+// run. The env-var/default precedence chain lives in
+// observability.BuildResource; this just plumbs explicit values through.
 func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptions {
 	if cfg == nil {
 		return observability.ResourceOptions{}
@@ -1809,11 +1545,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 		}
 		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent)
 	case "gcs":
-		// CredentialConfig is optional — the documented default is
-		// gcp-workload-identity against the runtime's metadata server,
-		// which is the canonical Cloud Run / GKE Workload Identity
-		// shape. An explicit Credential block overrides this (e.g. for
-		// a service-account JSON key file on a non-GCP host).
+		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.
 		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("gcs trace emitter credential: %w", err)
@@ -1832,7 +1564,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 			}
 			w = f
 		} else {
-			// Write to a discard buffer if no path specified.
+			// No path: discard.
 			w = &bytes.Buffer{}
 		}
 		return trace.NewJSONLTraceEmitter(w), nil
@@ -1842,17 +1574,10 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 }
 
 // buildGCSTraceCredentialSource resolves the credential.Source for the
-// gcs trace emitter. The default — used when TraceEmitterConfig.Credential
-// is nil — is gcp-workload-identity, which matches the Cloud Run / GKE
-// runtime contract this emitter targets. An explicit Credential block
-// supports the broader cross-cloud federation surface (e.g.
-// gcp-service-account from a mounted key file).
-//
-// The accepted credential types are intentionally narrower than the
-// general provider.credential set: only GCP-shaped sources make sense
-// here because the target is GCS. AWS / Azure / Anthropic-WIF flavours
-// are rejected with a clear error rather than reaching a 401 from the
-// GCS API at run-end.
+// gcs trace emitter; see docs/cloud-run-jobs.md. Defaults to
+// gcp-workload-identity when TraceEmitterConfig.Credential is nil. Only
+// GCP-shaped credential types are accepted — AWS/Azure/Anthropic-WIF
+// are rejected with a clear error rather than a 401 from the GCS API.
 func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Source, error) {
 	if cfg == nil {
 		return credential.NewGoogleWorkloadIdentitySource(), nil
@@ -1866,12 +1591,9 @@ func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Sour
 		// account JSON key.
 		return &credential.GoogleADCSource{}, nil
 	case "gcp-service-account":
-		// The provider-side validation enforces that a service-account
-		// path is set on Provider.GCPCredentialsFile. The trace emitter
-		// has no equivalent field today, so the operator must fall
-		// through to ADC (via GOOGLE_APPLICATION_CREDENTIALS) or use
-		// workload-identity. Surface the gap explicitly rather than
-		// silently no-opping.
+		// The trace emitter has no field equivalent to
+		// Provider.GCPCredentialsFile; surface the gap explicitly
+		// rather than silently no-opping.
 		return nil, fmt.Errorf(
 			"credential.type=%q is not supported for the gcs trace emitter today; "+
 				"use \"gcp-workload-identity\" on GCP runtimes or \"gcp-default\" with "+

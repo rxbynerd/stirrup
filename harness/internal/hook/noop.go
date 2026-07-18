@@ -7,8 +7,8 @@ import (
 )
 
 // Noop is a Runner that executes no hooks. Injected for sub-agent loops
-// (hooks are parent-run-only) and for any run with no HooksConfig, so
-// AgenticLoop.Hooks is never a bare nil interface in production.
+// and any run with no HooksConfig, so AgenticLoop.Hooks is never a bare
+// nil interface in production.
 type Noop struct{}
 
 // NewNoop returns a Runner that never dispatches a hook.

@@ -177,11 +177,8 @@ func TestToolTrace_ForbidUnknownRecovers(t *testing.T) {
 	}
 }
 
-// TestToolTrace_ForbidUnknownTrailingFailureFails pins the B-1 forward-scan
-// semantics: a success EARLIER in the trace must not resolve a LATER failure
-// of the same tool. `[edit_file:success, edit_file:fail]` is a trailing
-// failure nothing recovered and must FAIL — a set-membership "ever succeeded"
-// test would wrongly pass it.
+// TestToolTrace_ForbidUnknownTrailingFailureFails pins that a success
+// EARLIER in the trace must not resolve a LATER failure of the same tool.
 func TestToolTrace_ForbidUnknownTrailingFailureFails(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
@@ -218,9 +215,8 @@ func TestToolTrace_ForbidUnknownFailThenSuccessPasses(t *testing.T) {
 	}
 }
 
-// TestToolTrace_ForbidUnknownEmptyTraceFails pins the R-1 fail-closed guard:
-// forbid_unknown against a zero-call trace cannot demonstrate recovery and
-// must FAIL rather than pass vacuously.
+// TestToolTrace_ForbidUnknownEmptyTraceFails pins that forbid_unknown
+// against a zero-call trace must FAIL rather than pass vacuously.
 func TestToolTrace_ForbidUnknownEmptyTraceFails(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
@@ -234,9 +230,8 @@ func TestToolTrace_ForbidUnknownEmptyTraceFails(t *testing.T) {
 	}
 }
 
-// TestToolTrace_AllSucceededZeroCallsFails pins the R-1 fail-closed guard on
-// the all_succeeded axis: a tool absent from the trace with all_succeeded set
-// and no min_calls must FAIL rather than pass vacuously.
+// TestToolTrace_AllSucceededZeroCallsFails pins that a tool absent from the
+// trace with all_succeeded set and no min_calls must FAIL, not pass vacuously.
 func TestToolTrace_AllSucceededZeroCallsFails(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", AllSucceeded: true}},
@@ -251,8 +246,7 @@ func TestToolTrace_AllSucceededZeroCallsFails(t *testing.T) {
 	}
 }
 
-// TestToolTrace_AllSucceeded_Pass is the R-2 pass-direction counterpart to
-// TestToolTrace_AllSucceeded: two successful calls with all_succeeded pass.
+// TestToolTrace_AllSucceeded_Pass: two successful calls with all_succeeded pass.
 func TestToolTrace_AllSucceeded_Pass(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 1, AllSucceeded: true}},
@@ -267,8 +261,6 @@ func TestToolTrace_AllSucceeded_Pass(t *testing.T) {
 	}
 }
 
-// TestToolTrace_CallMinCalls_Pass is the R-2 pass-direction counterpart to
-// TestToolTrace_CallMinCalls.
 func TestToolTrace_CallMinCalls_Pass(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 2}},
@@ -283,8 +275,7 @@ func TestToolTrace_CallMinCalls_Pass(t *testing.T) {
 	}
 }
 
-// TestToolTrace_CallMaxCalls_Pass is the R-2 coverage for a non-zero upper
-// bound being respected (neither direction was tested before).
+// TestToolTrace_CallMaxCalls_Pass covers a non-zero upper bound being respected.
 func TestToolTrace_CallMaxCalls_Pass(t *testing.T) {
 	two := 2
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{

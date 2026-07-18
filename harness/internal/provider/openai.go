@@ -44,25 +44,13 @@ const (
 	openaiDefaultBaseURL   = "https://api.openai.com/v1"
 	openaiMaxToolInputSize = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
 
-	// maxSSEScannerBuffer caps the per-line buffer for the openai and
-	// anthropic SSE scanners (bufio.Scanner's default is 64 KB). A single
-	// SSE line can legitimately exceed that — large reasoning_content or a
-	// big write_file tool-call args blob, worst on the local-model path —
-	// and without this the scanner errors and aborts the turn. 16 MiB
-	// matches geminiMaxScannerBuffer's precedent in gemini.go.
+	// maxSSEScannerBuffer raises bufio.Scanner's 64 KB default: a single SSE
+	// line (large reasoning_content, a big tool-call args blob) can exceed it.
 	maxSSEScannerBuffer = 16 * 1024 * 1024
 
-	// maxReplayFieldBytes bounds the per-stream ReplayFields capture
-	// accumulator across all paths — 512 kB is generous for any real
-	// chain-of-thought field. Without a cap, a malicious or
-	// misconfigured provider could stream tens of thousands of
-	// captured chunks within the request timeout and balloon the
-	// accumulator (plus the flatten-time copies) to hundreds of MB.
-	// Same precedent as openaiMaxToolInputSize above; shared by the
-	// openai and gemini capture sites. Overflow truncates — the
-	// accumulated prefix is kept, every later capture is dropped so
-	// the flattened value stays a clean prefix — and logs one WARN
-	// per stream. The values themselves are never logged.
+	// maxReplayFieldBytes caps the per-stream ReplayFields accumulator so a
+	// malicious or misconfigured provider cannot balloon memory usage.
+	// Overflow truncates to a clean prefix and logs one WARN per stream.
 	maxReplayFieldBytes = 512 * 1024
 )
 
@@ -70,12 +58,9 @@ const (
 // Completions API. It works with any OpenAI-compatible endpoint: OpenAI,
 // LiteLLM, Azure OpenAI, vLLM, Ollama, llama.cpp server.
 //
-// Azure OpenAI deployments accept either Entra ID bearer tokens (default
-// behaviour: empty APIKeyHeader → "Authorization: Bearer <token>") or a
-// plain API key (set APIKeyHeader: "api-key"). Required api-version pins
-// (and similar gateway parameters) are conveyed through OpenAIAuthConfig's
-// QueryParams; values supplied there override any duplicate keys present
-// in baseURL's query string.
+// Azure OpenAI deployments accept either Entra ID bearer tokens (default:
+// empty APIKeyHeader) or a plain API key (APIKeyHeader: "api-key");
+// required api-version pins go through OpenAIAuthConfig.QueryParams.
 type OpenAICompatibleAdapter struct {
 	bearer       credential.BearerTokenFunc
 	httpClient   *http.Client
@@ -88,42 +73,31 @@ type OpenAICompatibleAdapter struct {
 	AdapterDeps
 
 	// Registry resolves per-(provider, model) wire-shape and behaviour
-	// overrides at the top of every Stream call. The constructor seeds
-	// this with quirks.DefaultRegistry() so callers that ignore the
-	// field still get the built-in rule set. Tests and the factory's
-	// compat-profile injection path overwrite it directly; the public
-	// API of the adapter does not need a WithRegistry option.
+	// overrides at the top of every Stream call. Seeded by the
+	// constructor with quirks.DefaultRegistry().
 	Registry *quirks.Registry
 
 	// strictSchemas memoises strict-mode schema rewrites within this
-	// adapter's lifetime so repeated turns in the same run do not
-	// re-walk the same JSON schema. Keyed by (model, tool-name,
-	// schema-hash) so a model switch inside a run still hits the
-	// normaliser. nil → no caching (NormalizeStrictSchema runs on
-	// every turn); the constructor initialises a non-nil instance.
+	// adapter's lifetime, keyed by (model, tool-name, schema-hash). nil
+	// disables caching; the constructor initialises a non-nil instance.
 	strictSchemas *strictSchemaCache
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
-// Chat Completions endpoint. The baseURL should be the API root
-// (e.g. "https://api.openai.com/v1"); the /chat/completions path is appended
-// automatically. Pass an empty string for the default OpenAI URL. The auth
-// argument carries optional header-name and query-parameter overrides; pass
-// a zero value for OpenAI-default behaviour. The retry argument is the
-// resolved retry policy; pass a zero RetryPolicy to disable retries (one
-// attempt with no backoff).
+// Chat Completions endpoint. baseURL is the API root (e.g.
+// "https://api.openai.com/v1"); "/chat/completions" is appended
+// automatically, and an empty string defaults to the OpenAI URL. auth
+// carries optional header-name and query-parameter overrides. retry is the
+// resolved retry policy; a zero RetryPolicy disables retries.
 //
-// bearer is invoked on every Stream call to fetch the current API key. For
-// Azure Entra ID and other refresh-aware credentials this lets the
-// underlying credential.Source rotate tokens transparently; static keys
-// return a captured value with no IO. A nil bearer or one returning an
-// empty string is treated as "no auth header" (some local gateways accept
-// anonymous requests).
+// bearer is invoked on every Stream call to fetch the current API key,
+// letting refresh-aware credentials (e.g. Azure Entra ID) rotate tokens
+// transparently. A nil bearer or empty-string return means no auth header.
 func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig, retry RetryPolicy) *OpenAICompatibleAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
-	// Trim trailing slash so we get a clean URL join.
+
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
 		bearer: bearer,
@@ -144,33 +118,11 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 	}
 }
 
-// --- OpenAI wire format types ---
-
 // openaiRequest is the JSON body sent to the Chat Completions API.
 //
-// The token-limit field is serialised as "max_completion_tokens" rather than
-// the legacy "max_tokens" because reasoning models (o1/o3/o4-mini and the
-// gpt-5.x family) reject "max_tokens" with HTTP 400 on both OpenAI and
-// Azure OpenAI Chat Completions endpoints; "max_completion_tokens" is
-// required there and accepted by every non-reasoning model, so the rename
-// is strictly safer than feature-detecting per model.
-//
-// Temperature is *float64 with omitempty: a nil pointer omits the key
-// entirely (reasoning models reject "temperature" outright); a non-nil
-// pointer transmits the dereferenced value verbatim, including an
-// explicit 0.0 for greedy decoding. This mirrors the upstream
-// StreamParams.Temperature pointer type so the unset-vs-explicit-zero
-// distinction survives marshalling. See issue #200.
-//
-// TokenField and OmitSamplingParams carry the resolved quirks for
-// this request and drive MarshalJSON, which is the single point that
-// translates the canonical struct into the wire-shape selected by the
-// rule. The field name mirrors quirks.OpenAIBehaviourFlags.OmitSamplingParams
-// so a search for either form finds both sides of the projection.
-// ExtraBodyFields carries provider-specific top-level keys (e.g.
-// Z.ai's "tool_stream") that are merged after the canonical fields.
-// None of these three are serialised under their own JSON keys —
-// they steer the MarshalJSON projection only.
+// TokenField, OmitSamplingParams, and ExtraBodyFields carry the resolved
+// quirks (see docs/provider-quirks.md) for this request; none is serialised
+// under its own JSON key, all three steer MarshalJSON's projection instead.
 type openaiRequest struct {
 	Model              string          `json:"-"`
 	Messages           []openaiMessage `json:"-"`
@@ -183,46 +135,19 @@ type openaiRequest struct {
 	ExtraBodyFields    map[string]any
 	// ToolChoice is the wire value for the OpenAI "tool_choice" field:
 	// a string ("auto"/"required"/"none") or an object naming a function.
-	// A nil interface omits the field entirely so the zero-value
-	// ToolChoiceAuto request is byte-identical to the pre-#230 shape.
-	// Populated by buildOpenAIRequest only when the resolved capability
-	// advertises support for the requested mode; steers MarshalJSON, it
-	// has no JSON struct tag of its own.
+	// A nil interface omits the field entirely; steers MarshalJSON only.
 	ToolChoice any
 	// ParallelToolCalls is the wire value for the top-level
-	// "parallel_tool_calls" bool (#222). A nil pointer omits the field so
-	// the request is byte-identical to the pre-#222 shape; buildOpenAIRequest
-	// populates it only when the caller set StreamParams.ParallelToolCalls and
-	// the resolved capability advertises support. Steered by MarshalJSON, no
-	// struct tag of its own.
+	// "parallel_tool_calls" bool. A nil pointer omits the field; steers
+	// MarshalJSON only.
 	ParallelToolCalls *bool
 }
 
-// MarshalJSON projects the canonical openaiRequest into the wire body
-// the resolved quirks selected. The projection rules are:
-//
-//   - "model", "messages", "stream" — always emitted.
-//   - "tools" — emitted only when non-empty (matches the prior
-//     omitempty behaviour).
-//   - The token-budget field uses the key selected by TokenField:
-//     "max_completion_tokens" (default) or "max_tokens" (Z.ai compat
-//     and similar legacy gateways). The value is always emitted, even
-//     at zero, matching the prior struct-tag behaviour.
-//   - "temperature" — emitted only when both OmitSamplingParams is
-//     false AND Temperature is non-nil. OmitSamplingParams = true
-//     guarantees the field is suppressed even when the caller supplied
-//     a non-nil value (per design risk 2, the adapter's Stream call
-//     logs a warning when this suppression fires).
-//   - Other sampling params (top_p, presence_penalty,
-//     frequency_penalty, logprobs, top_logprobs, logit_bias) are not
-//     yet first-class struct fields; they will be omitted by default
-//     once added if OmitSamplingParams is true. The flag's contract is
-//     declared in OpenAIBehaviourFlags doc comments.
-//   - ExtraBodyFields — merged into the body after canonical fields.
-//     Key collision with a canonical key is rejected as an error
-//     (a misconfigured rule should fail loudly rather than silently
-//     overwrite a struct field). The collision set is the canonical
-//     OpenAI Chat Completions field surface this adapter emits.
+// MarshalJSON projects the canonical openaiRequest into the wire body the
+// resolved quirks selected: the token-budget key follows TokenField,
+// "temperature" is suppressed when OmitSamplingParams is set, and
+// ExtraBodyFields are merged in after the canonical fields (a key collision
+// with a canonical field is an error).
 func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	tokenKey := openAIWireTokenKey(r.TokenField)
 	out := map[string]any{
@@ -231,14 +156,8 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 		"stream":   r.Stream,
 		tokenKey:   r.MaxTokens,
 	}
-	// Streaming responses carry no usage block unless the request opts in
-	// via stream_options.include_usage. Without it, OpenAI itself and
-	// every spec-compliant compatible server (LM Studio, vLLM, DeepSeek)
-	// stream only content/tool deltas and omit token counts, so output
-	// accounting resolves to zero. The usage rides in a trailing chunk
-	// with an empty choices array — see the SSE parse loop. Gated on
-	// Stream because the field is meaningless (and rejected by some
-	// servers) on a non-streaming request.
+	// Without stream_options.include_usage, streaming responses carry no
+	// usage block; it rides in a trailing chunk with an empty choices array.
 	if r.Stream {
 		out["stream_options"] = map[string]any{"include_usage": true}
 	}
@@ -258,10 +177,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 		if _, exists := out[k]; exists {
 			return nil, fmt.Errorf("openai quirk extra body field %q collides with canonical request field", k)
 		}
-		// Also reject collisions against canonical fields we elide
-		// above (temperature when suppressed, tools when empty): the
-		// rule author shouldn't be able to sneak a field past via the
-		// extras map.
+		// Also reject collisions against canonical fields elided above
+		// (e.g. temperature when suppressed) so a rule cannot sneak a
+		// field past via the extras map.
 		if isCanonicalOpenAIField(k) {
 			return nil, fmt.Errorf("openai quirk extra body field %q collides with canonical request field", k)
 		}
@@ -281,7 +199,7 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	// Canonical fields with simple types.
+
 	if v, ok := raw["model"]; ok {
 		if err := json.Unmarshal(v, &r.Model); err != nil {
 			return fmt.Errorf("openaiRequest.model: %w", err)
@@ -336,11 +254,8 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
-	// both simultaneously. If both are present the input is a caller
-	// error (likely a hand-crafted body or a misconfigured rule) and
-	// is rejected here rather than silently letting one overwrite the
-	// other; without this guard the second decode would clobber the
-	// first depending on decode order.
+	// both simultaneously; if both are present, reject rather than let one
+	// silently clobber the other depending on decode order.
 	_, hasMCT := raw["max_completion_tokens"]
 	_, hasMT := raw["max_tokens"]
 	if hasMCT && hasMT {
@@ -360,7 +275,7 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		r.TokenField = quirks.TokenFieldMaxTokens
 		delete(raw, "max_tokens")
 	}
-	// Remaining keys are provider-specific extras.
+
 	if len(raw) > 0 {
 		extra := make(map[string]any, len(raw))
 		for k, v := range raw {
@@ -376,9 +291,7 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 }
 
 // openAIWireTokenKey returns the wire JSON key for the resolved token
-// field. Defaults to "max_completion_tokens" — the zero value of
-// OpenAITokenField — to preserve the established behaviour of openai.go
-// on main. TestNoRegressionMaxCompletionTokensDefault pins this.
+// field, defaulting to "max_completion_tokens" for the zero value.
 func openAIWireTokenKey(f quirks.OpenAITokenField) string {
 	if f == quirks.TokenFieldMaxTokens {
 		return "max_tokens"
@@ -387,13 +300,9 @@ func openAIWireTokenKey(f quirks.OpenAITokenField) string {
 }
 
 // summarizeReplayCaptures sums per-path piece counts and the string-or-
-// JSON-encoded length of every captured value across the whole map. The
-// same length proxy logReplayFieldsCapture uses (raw string length for
-// string values, json.Marshal length otherwise) so the span attribute
-// and the slog summary agree. Returned as totals only — never per-path,
-// never per-value — so callers can attach the summary to an OTel span
-// without enumerating field names that would balloon attribute count
-// on a multi-rule stream.
+// JSON-encoded length of every captured value, returned as totals only (not
+// per-path) so callers can attach it to an OTel span without leaking field
+// names.
 func summarizeReplayCaptures(capture map[string][]any) (totalCount, totalLen int) {
 	for _, values := range capture {
 		totalCount += len(values)
@@ -412,34 +321,21 @@ func summarizeReplayCaptures(capture map[string][]any) (totalCount, totalLen int
 	return totalCount, totalLen
 }
 
-// logReplayFieldsCapture emits a debug-level summary of the per-stream
-// ReplayFields capture (design §5, design D12). Length-only reporting:
-// the captured values themselves are provider-private blobs (DeepSeek's
-// reasoning_content, Gemini's thoughtSignature) that the harness must
-// not echo into any log sink. Operators get presence + size; the rule
-// fired observably without leaking the content.
-//
-// Shared by both adapters so the log shape stays uniform; the helper
-// lives in openai.go because that is its only non-test caller besides
-// gemini.go.
+// logReplayFieldsCapture emits a debug-level, length-only summary of the
+// per-stream ReplayFields capture: the captured values are provider-private
+// blobs (DeepSeek's reasoning_content, Gemini's thoughtSignature) that must
+// never reach a log sink. Shared by both the openai and gemini adapters.
 func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerType, model string, capture map[string][]any) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// Sort the path keys so the log output is deterministic across
-	// runs even though Go map iteration order is not. Stable ordering
-	// makes the line greppable across runs and easier to test against.
+	// Sort so output is deterministic despite Go's random map order.
 	paths := make([]string, 0, len(capture))
 	for k := range capture {
 		paths = append(paths, k)
 	}
 	sort.Strings(paths)
-	// Per-path summary: count of captured pieces and sum of stringified
-	// lengths. The string length is a proxy for "size of what was
-	// captured" that does not require knowing the underlying type; for
-	// non-string values, the JSON encoding's length is the natural
-	// proxy. Errors marshalling a value back to JSON degrade to a
-	// zero length rather than failing the log line.
+
 	summaries := make([]any, 0, len(paths))
 	for _, p := range paths {
 		values := capture[p]
@@ -486,27 +382,11 @@ func replayCaptureByteLen(v any) int {
 }
 
 // flattenReplayCapture projects the per-stream ReplayFields accumulator
-// onto the map a "message_complete" StreamEvent carries (the flattening
-// rule documented on types.StreamEvent.ReplayFields):
-//
-//   - when every captured value for a path is a string, the pieces are
-//     concatenated in arrival order and marshalled as one JSON string —
-//     the streamed-string-field case (DeepSeek's reasoning_content
-//     arrives across many chunks);
-//   - otherwise the LAST captured value is marshalled verbatim
-//     (snapshot semantics for object-shaped fields).
-//
-// JSON nulls (Go nil after decode) are stripped before the
-// all-strings check: a provider that opens the stream with
-// `"reasoning_content": null` before the string chunks must not flip
-// the path onto the last-value snapshot arm and silently drop every
-// intermediate piece.
-//
-// A value that fails to re-marshal is skipped: every entry in the
-// accumulator was decoded from provider JSON, so the arm is
-// defence-in-depth, and dropping one path must not poison the rest.
-// Returns nil when nothing was captured so the StreamEvent field stays
-// omitted.
+// onto the map a "message_complete" StreamEvent carries (see
+// docs/provider-quirks.md §3.1 for the flattening rule). JSON nulls are
+// stripped before the all-strings check so a provider that opens the
+// stream with a null placeholder does not flip the path onto the
+// last-value snapshot arm. Returns nil when nothing was captured.
 func flattenReplayCapture(capture map[string][]any) map[string]json.RawMessage {
 	if len(capture) == 0 {
 		return nil
@@ -551,10 +431,8 @@ func flattenReplayCapture(capture map[string][]any) map[string]json.RawMessage {
 	return out
 }
 
-// canonicalOpenAIFields enumerates the top-level Chat Completions
-// request fields the adapter knows how to emit. ExtraBodyFields rules
-// must not collide with any of these — the registry self-test guards
-// the relationship at build time.
+// canonicalOpenAIFields enumerates the top-level Chat Completions request
+// fields the adapter emits. ExtraBodyFields rules must not collide with any.
 var canonicalOpenAIFields = map[string]struct{}{
 	"model":                 {},
 	"messages":              {},
@@ -574,10 +452,8 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"parallel_tool_calls":   {},
 }
 
-// isCanonicalOpenAIField reports whether the given top-level request
-// key is owned by the canonical openaiRequest projection. The check
-// gates ExtraBodyFields merges to prevent a rule from overriding a
-// struct-mediated field by way of the extras map.
+// isCanonicalOpenAIField gates ExtraBodyFields merges to prevent a rule
+// from overriding a struct-mediated field by way of the extras map.
 func isCanonicalOpenAIField(k string) bool {
 	_, ok := canonicalOpenAIFields[k]
 	return ok
@@ -585,19 +461,11 @@ func isCanonicalOpenAIField(k string) bool {
 
 // openaiMessage is a single message in OpenAI's Chat Completions format.
 //
-// ReplayFields carries provider-opaque round-trip state (quirks
-// ReplayFields, design D12) to emit as additional top-level keys on an
-// assistant message — e.g. DeepSeek thinking mode's reasoning_content,
-// which the API requires replayed on tool-call turns (400 otherwise).
-// Keyed by the rule's verbatim single-segment path; values are the
-// flattened JSON captured on a prior turn. The `json:"-"` tag keeps
-// the map out of the default (un)marshalling — MarshalJSON merges the
-// entries after the canonical fields, mirroring the openaiRequest
-// ExtraBodyFields pattern. Populated by translateMessages only for
-// paths the resolved quirks name for THIS stream, so stale state from
-// a different model never leaks onto the wire. The decode side
-// deliberately ignores non-canonical message keys: replay state is
-// produced by the harness, never parsed back out of a request body.
+// ReplayFields carries provider-opaque round-trip state (see
+// docs/provider-quirks.md) emitted as additional top-level keys on an
+// assistant message, keyed by the rule's single-segment path. Populated by
+// translateMessages only for paths the resolved quirks name for THIS
+// stream, so stale state from a different model never leaks onto the wire.
 type openaiMessage struct {
 	Role         string                     `json:"role"` // "system" | "user" | "assistant" | "tool"
 	Content      any                        `json:"content,omitempty"`
@@ -607,13 +475,9 @@ type openaiMessage struct {
 }
 
 // canonicalOpenAIMessageFields enumerates the top-level Chat Completions
-// message keys the adapter owns. A ReplayFields path that collides with
-// any of these is never emitted as an extra key: translateMessages skips
-// it silently at runtime, the quirks registry's build-time test
-// (TestBuiltinRulesReplayFieldsSuffix) rejects first-party rules that
-// declare one, and MarshalJSON errors as defence-in-depth. "name" is in
-// the set even though the struct does not carry it — it is a documented
-// optional key on the OpenAI message schema.
+// message keys the adapter owns; a ReplayFields path colliding with one of
+// these is never emitted as an extra key. "name" is included even though
+// the struct does not carry it — it is a documented optional message key.
 var canonicalOpenAIMessageFields = map[string]struct{}{
 	"role":         {},
 	"content":      {},
@@ -629,18 +493,11 @@ func isCanonicalOpenAIMessageField(k string) bool {
 	return ok
 }
 
-// threadableOpenAIReplayPath reports whether a quirks ReplayFields path
-// can be echoed back as a top-level key on an assistant wire message.
-// Only single-segment paths qualify: a captured value from a nested or
-// array-iterated path (e.g. Gemini's candidates[].content.parts[]
-// shape) has no faithful flat representation on a Chat Completions
-// message, and emitting a guess would be worse than emitting nothing.
-// Canonical message keys are excluded so a rule cannot overwrite
-// role/content/tool_calls via the replay side-channel.
-//
-// Non-qualifying paths are silently skipped here (safe at runtime);
-// the quirks registry's build-time test fails loudly on any first-party
-// openai-compatible rule that declares one.
+// threadableOpenAIReplayPath reports whether a quirks ReplayFields path can
+// be echoed back as a top-level key on an assistant wire message. Only
+// single-segment, non-canonical paths qualify — a nested or array-iterated
+// path (e.g. Gemini's candidates[].content.parts[]) has no faithful flat
+// representation, and canonical keys must not be overwritten via replay.
 func threadableOpenAIReplayPath(path string) bool {
 	segments, err := quirks.ParseReplayPath(path)
 	if err != nil || len(segments) != 1 || segments[0].IsArray {
@@ -650,15 +507,10 @@ func threadableOpenAIReplayPath(path string) bool {
 }
 
 // MarshalJSON emits the canonical message fields in struct order, then
-// appends the ReplayFields entries (sorted by key for determinism).
-// The two-pass shape mirrors openaiChunkChoice.UnmarshalJSON: the alias
-// preserves the canonical typed path and the extras are spliced into
-// the trailing bytes, matching the ExtraBodyFields merge concept in
-// openaiRequest.MarshalJSON. A ReplayFields key that collides with a
-// canonical message field, or a value that is not valid JSON, is an
-// error — translateMessages filters both cases, so reaching either arm
-// means a non-quirks caller populated the map by hand and should fail
-// loudly before any wire bytes are sent.
+// appends the ReplayFields entries (sorted by key for determinism). A
+// ReplayFields key that collides with a canonical field, or carries invalid
+// JSON, is an error: translateMessages filters both cases, so reaching
+// either arm means a caller populated the map by hand.
 func (m openaiMessage) MarshalJSON() ([]byte, error) {
 	type alias openaiMessage
 	base, err := json.Marshal(alias(m))
@@ -719,10 +571,9 @@ type openaiTool struct {
 
 // openAINamedToolChoice is the object form of OpenAI's tool_choice that
 // forces a specific function. Typed (rather than a map[string]any) so the
-// marshalled key order is deterministic — "type" before "function" — and
-// to honour the project's anti-`any` rule (wave-2 design D13). The string
-// forms ("required"/"none") are emitted directly as a string value, so
-// only the named form needs a struct.
+// marshalled key order is deterministic — "type" before "function". The
+// string forms ("required"/"none") are emitted directly as a string value,
+// so only the named form needs a struct.
 type openAINamedToolChoice struct {
 	Type     string                    `json:"type"` // "function"
 	Function openAINamedToolChoiceFunc `json:"function"`
@@ -737,18 +588,14 @@ type openAINamedToolChoiceFunc struct {
 // openaiToolDefinition is the function definition inside an openaiTool.
 //
 // Strict is a *bool so the zero-value request body omits the field
-// entirely (matching the pre-#228 behaviour) and a quirks rule that
-// pins strict mode emits an explicit `"strict": true`. A pointer keeps
-// the wire shape from accidentally regressing for adapters that do
-// not opt in.
+// entirely; a quirks rule that pins strict mode emits an explicit
+// `"strict": true`.
 type openaiToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
 	Strict      *bool           `json:"strict,omitempty"`
 }
-
-// --- SSE chunk types ---
 
 // openaiChunk is a single SSE chunk from the streaming Chat Completions API.
 type openaiChunk struct {
@@ -759,13 +606,10 @@ type openaiChunk struct {
 
 // openaiChunkChoice is a single choice within a streaming chunk.
 //
-// RawDelta is the un-decoded JSON bytes of the same delta object that
-// Delta carries — captured so ReplayFields rules (design D12) can walk
-// non-canonical assistant-message fields (e.g. DeepSeek's
-// `reasoning_content`) without the adapter declaring them as typed
-// fields on openaiDelta. Populated by openaiChunkChoice.UnmarshalJSON;
-// the field is on the struct rather than computed lazily so the SSE
-// parse loop accesses it at zero cost when no rule is active.
+// RawDelta is the un-decoded JSON bytes of the same delta object Delta
+// carries, captured so ReplayFields rules can walk non-canonical fields
+// (e.g. DeepSeek's `reasoning_content`) without a typed field on
+// openaiDelta. Populated by openaiChunkChoice.UnmarshalJSON.
 type openaiChunkChoice struct {
 	Index        int             `json:"index"`
 	Delta        openaiDelta     `json:"delta"`
@@ -791,15 +635,8 @@ func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
 	if len(helper.Delta) > 0 {
 		c.RawDelta = append(c.RawDelta[:0], helper.Delta...)
 		if err := json.Unmarshal(helper.Delta, &c.Delta); err != nil {
-			// No security.Scrub on the wrapped error: stdlib json
-			// decode errors (UnmarshalTypeError, SyntaxError) carry
-			// only the Go type name and field path — never the
-			// offending value. The gemini adapter does scrub its
-			// HTTP error-body branch (gemini.go around the
-			// resp.StatusCode != 200 path) because that branch
-			// holds the provider's diagnostic prose, which can
-			// contain quota identifiers and trace IDs; the per-
-			// chunk JSON decode here has no such payload.
+			// No security.Scrub here: stdlib json decode errors carry
+			// only the Go type name and field path, never the value.
 			return fmt.Errorf("openaiChunkChoice.delta: %w", err)
 		}
 	}
@@ -848,8 +685,6 @@ type openaiToolCallState struct {
 	argsBuf strings.Builder
 }
 
-// --- Message translation ---
-
 // translateMessages converts stirrup's internal Message/ContentBlock format
 // to OpenAI's chat message format. The system prompt is prepended as a
 // system message.
@@ -858,10 +693,9 @@ type openaiToolCallState struct {
 // each assistant message carrying Message.ReplayFields, the entries
 // whose path is (a) named by replayPaths, (b) single-segment, and (c)
 // not a canonical message key are emitted as top-level keys on the
-// assistant wire message — the outbound half of the quirks ReplayFields
-// round-trip (design §9 risk 7). Gating on replayPaths keeps the
-// registry the single source of truth: state captured under a different
-// model's rules (e.g. after a mid-run model switch) is not replayed to
+// assistant wire message. Gating on replayPaths keeps the registry the
+// single source of truth: state captured under a different model's rules
+// (e.g. after a mid-run model switch) is not replayed to
 // a provider whose resolved rules never asked for it.
 func translateMessages(system string, messages []types.Message, replayPaths []string) []openaiMessage {
 	var out []openaiMessage
@@ -923,7 +757,6 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 			out = append(out, oai)
 
 		case "user":
-			// User messages can contain text blocks or tool_result blocks.
 			// Tool results must be sent as separate "tool" role messages.
 			var textParts []string
 			for _, block := range msg.Content {
@@ -931,7 +764,7 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 				case "text":
 					textParts = append(textParts, block.Text)
 				case "tool_result":
-					// Each tool result is its own message with role "tool".
+
 					content := block.Content
 					if block.IsError {
 						content = "Error: " + content
@@ -957,13 +790,10 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 
 // translateTools converts stirrup ToolDefinitions to OpenAI's function
 // format. When strict is true, every tool's Parameters is rewritten by
-// NormalizeStrictSchema and the Strict flag is set on the wire entry;
-// the cache memoises rewrites by (model, tool-name, schema-hash) so
-// repeated turns in the same run skip the recursive walk.
-//
-// Returns an error when strict-mode normalisation rejects a tool's
-// schema — the request must not be sent in that case (design §5
-// fail-closed contract).
+// NormalizeStrictSchema and the Strict flag is set on the wire entry; the
+// cache memoises rewrites by (model, tool-name, schema-hash). Returns an
+// error when strict-mode normalisation rejects a tool's schema — the
+// request must not be sent in that case (fail-closed).
 func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
 	if len(tools) == 0 {
 		return nil, nil
@@ -984,12 +814,10 @@ func translateTools(tools []types.ToolDefinition, strict, examples bool, model s
 			truthy := true
 			def.Strict = &truthy
 		} else if examples {
-			// Fold worked examples (#222) into the schema's `examples`
-			// keyword — but only for non-strict tools. OpenAI's
-			// structured-outputs subset rejects `examples`, so strict tools
-			// must rely on the description text (which carries the same
-			// example) instead. The strict branch above therefore never
-			// folds; this else-if guarantees the two are mutually exclusive.
+			// Fold worked examples into the schema's `examples` keyword —
+			// only for non-strict tools, since OpenAI's structured-outputs
+			// subset rejects `examples`; strict tools rely on the
+			// description text instead.
 			merged, err := mergeSchemaExamples(def.Parameters, toolInputExamples(t))
 			if err != nil {
 				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
@@ -1005,19 +833,12 @@ func translateTools(tools []types.ToolDefinition, strict, examples bool, model s
 }
 
 // openAIToolChoiceFromParams projects the provider-neutral
-// StreamParams.ToolChoice onto the OpenAI tool_choice wire value, gated
-// on the resolved capability. Returns nil — meaning "emit no field" — for
-// the auto mode and for any unsupported mode, leaving the request
-// byte-identical to the pre-#230 shape.
-//
-// OpenAI accepts a string ("auto"/"required"/"none") or an object naming
-// a specific function. The named-tool form degrades to nil when the tool
-// name is empty or fails ValidateToolChoiceName (not expressible / unsafe)
-// rather than emitting an invalid object.
-//
-// The return type is `any` because OpenAI's tool_choice is a sum type
-// (string OR object); the named-tool object is the typed
-// openAINamedToolChoice so its key order is deterministic on the wire.
+// StreamParams.ToolChoice onto the OpenAI tool_choice wire value, gated on
+// the resolved capability. Returns nil ("emit no field") for auto mode and
+// any unsupported mode. The named-tool form degrades to nil when the tool
+// name is empty or fails ValidateToolChoiceName rather than emitting an
+// invalid object. The return type is `any` because tool_choice is a sum
+// type (string OR object).
 func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) any {
 	if !capability.Supported {
 		return nil
@@ -1053,10 +874,9 @@ func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 }
 
 // openAIParallelFromParams projects StreamParams.ParallelToolCalls onto the
-// OpenAI top-level parallel_tool_calls bool, gated on the resolved capability.
-// Returns nil — meaning "emit no field" — when the caller did not set the
-// control or the provider does not advertise support, leaving the request
-// byte-identical to the pre-#222 shape. Shared by the Chat and Responses
+// OpenAI top-level parallel_tool_calls bool, gated on the resolved
+// capability. Returns nil when the caller did not set the control or the
+// provider does not advertise support. Shared by the Chat and Responses
 // adapters, which use the identical top-level wire field.
 func openAIParallelFromParams(params types.StreamParams, capability quirks.ParallelToolCallsCapability) *bool {
 	if params.ParallelToolCalls == nil || !capability.Supported {
@@ -1068,17 +888,12 @@ func openAIParallelFromParams(params types.StreamParams, capability quirks.Paral
 // warnInvalidToolChoiceName logs a single warn when a ToolChoiceTool
 // request carried a name that failed ValidateToolChoiceName, so the
 // degradation to auto is observable. Shared by all three adapters'
-// projection helpers. Uses slog.Default() rather than threading the
-// per-adapter logger: this is a should-never-happen defensive path (A1
-// has no caller that feeds model-influenced names through ToolChoiceName),
-// so the value of trace correlation does not justify widening every
-// builder signature.
+// projection helpers.
 //
-// The offending name is NOT logged. It is caller/model-influenced input
-// that could carry log-injection bytes (newlines, control chars), and the
-// fixed grammar in the message is enough for an operator to understand
-// the rejection. The name's length is the only quantitative signal, which
-// is safe to surface.
+// The offending name is NOT logged: it is caller/model-influenced input
+// that could carry log-injection bytes. The fixed grammar in the message
+// and the name's length are enough for an operator to understand the
+// rejection without the value.
 func warnInvalidToolChoiceName(providerType, model string, nameLen int) {
 	slog.Default().Warn("tool choice name failed validation; degrading to auto",
 		slog.String("provider.type", providerType),
@@ -1104,20 +919,14 @@ func mapFinishReason(reason string) string {
 
 // buildOpenAIRequest projects a StreamParams into the Chat Completions wire
 // body. The stream argument toggles the "stream" field so a future
-// non-streaming caller (batch submission, phase 2 of issue #133) can reuse
-// the same projection without duplicating field-by-field copying.
+// non-streaming caller (batch submission) can reuse the same projection.
 //
-// q carries the resolved quirks for the (provider, model) pair. The zero
-// value reproduces today's behaviour: max_completion_tokens emitted,
-// temperature handled by Temperature *float64 omitempty semantics, no
-// extra body fields. Pass quirks.DefaultRegistry().Resolve(...) at call
-// sites that have access to a registry; the zero-value path remains
-// valid for callers that intentionally skip resolution.
-//
-// strictCache memoises strict-mode schema rewrites across turns. Pass nil
-// to disable caching (test/one-shot callers); the per-adapter cache is
-// the production path. Returns an error when a tool's schema fails the
-// strict-mode lint — the caller must NOT send a request in that case.
+// q carries the resolved quirks for the (provider, model) pair; the zero
+// value reproduces today's default behaviour for callers that skip
+// resolution. strictCache memoises strict-mode schema rewrites across
+// turns; pass nil to disable caching. Returns an error when a tool's
+// schema fails the strict-mode lint — the caller must NOT send a request
+// in that case.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
@@ -1152,12 +961,8 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		attribute.String("provider.model", params.Model),
 	)
 
-	// Resolve quirks for this (provider, model) pair. The registry is
-	// per-stream by design (D4): the same run can switch models turn
-	// to turn under a dynamic router. The zero-value Registry shouldn't
-	// happen for adapters built through the factory, but tolerate it
-	// for callers that construct the adapter directly without going
-	// through NewOpenAICompatibleAdapter.
+	// Resolved per-stream so the same run can switch models turn to turn
+	// under a dynamic router.
 	registry := o.Registry
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
@@ -1169,42 +974,22 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		logger = slog.Default()
 	}
 
-	// Debug-level log lists the descriptions of every rule that
-	// contributed to this resolution (design §5). Emitted even when
-	// the list is empty so an operator grepping for the line knows
-	// the resolution ran; an absent entry would be ambiguous between
-	// "no rule fired" and "the log line was suppressed". The list is
-	// in apply order — the last entry is the rule that won on
-	// overlapping fields.
+	// Emitted even when the rule list is empty so an operator grepping the
+	// line knows resolution ran; list is in apply order (last entry wins).
 	logger.DebugContext(ctx, "openai quirks resolved",
 		slog.String("provider.type", "openai-compatible"),
 		slog.String("provider.model", params.Model),
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
-	// Mirror the applied-rules list onto the OTel span as a
-	// `provider.quirk.applied` attribute (design §5). The slog DEBUG
-	// line and the span attribute are emitted together so log-only
-	// (Cloud Logging) and trace-only (Jaeger, Honeycomb, Datadog)
-	// consumers both observe which rules fired. The IsValid guard
-	// tolerates the no-tracer case: when no exporter is configured,
-	// SpanFromContext returns a non-recording span whose
-	// SetAttributes is a no-op anyway, but checking IsValid keeps the
-	// attribute slice allocation off the hot path when no tracer is
-	// attached.
+	// Mirrors the slog line onto the span so trace-only consumers also see
+	// which rules fired; IsValid keeps the allocation off the no-tracer path.
 	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
 	}
 
-	// Warn-level log when a caller-supplied non-nil Temperature is
-	// suppressed by a quirk rule (design risk 2, §9). The reasoning-
-	// class rules omit temperature outright; without this signal an
-	// operator who set --temperature would silently observe greedy
-	// decoding. The rule descriptions are attached so the operator
-	// can name the rule that fired without grepping the source. The
-	// suppressed value itself is intentionally NOT logged — it is the
-	// caller's input and surfacing it here would leak the value into
-	// any log sink that captures warn-level records.
+	// Without this signal an operator who set --temperature would silently
+	// observe greedy decoding. The suppressed value itself is not logged.
 	if q.BehaviourFlags.OpenAI.OmitSamplingParams && params.Temperature != nil {
 		logger.WarnContext(ctx, "openai quirks suppressed caller temperature",
 			slog.String("provider.type", "openai-compatible"),
@@ -1213,12 +998,8 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		)
 	}
 
-	// Debug-level log when strict-mode normalisation fires for this
-	// stream — paired with the rules list so an operator grepping for
-	// the line can name the rule that turned the flag on. The log is
-	// emitted before buildOpenAIRequest so a fail-closed lint error
-	// surfaces against a context that already shows strict-mode was
-	// active.
+	// Emitted before buildOpenAIRequest so a fail-closed lint error surfaces
+	// against a context that already shows strict-mode was active.
 	if q.BehaviourFlags.OpenAI.StrictMode {
 		logger.DebugContext(ctx, "openai strict mode applied",
 			slog.String("provider.type", "openai-compatible"),
@@ -1276,13 +1057,8 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 
-	// Record HTTP-level metadata on the span from context when OTel is enabled.
-	// The rate_limited event fires when DoWithRetry returns a terminal 429
-	// response (retries exhausted, budget exhausted, or retries disabled via
-	// MaxAttempts=1). DoWithRetry records provider_retry_attempt for any
-	// intermediate retries; the user-visible "request failed with 429" signal
-	// remains here so existing dashboards and alerts that key off rate_limited
-	// continue to function.
+	// rate_limited fires on a terminal 429 (retries exhausted or disabled);
+	// DoWithRetry records provider_retry_attempt for intermediate retries.
 	if o.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
@@ -1324,28 +1100,17 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 // consumeSSE reads SSE lines from the response body and sends StreamEvents
 // to the channel. It closes the channel and the response body when done.
 //
-// streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
-// first non-empty stream event observed marks "time to first byte" for this
-// request. TTFB is recorded at most once per stream.
+// streamStart and metricAttrs are forwarded for ProviderTTFB measurement:
+// the first non-empty stream event observed marks "time to first byte".
 //
-// q carries the resolved per-(provider, model) quirks for this stream
-// (design D5). The parser reads q.ReplayFields and captures the named
-// paths from each chunk's delta object — design D12. The captured set
-// surfaces in a per-stream debug log emitted at the end of the stream
-// (length-only) and, flattened, on the message_complete event's
-// ReplayFields so the loop can round-trip it on the next turn (§9
-// risk 7 outbound threading).
-//
-// logger and model are threaded purely so the per-stream replay-fields
-// debug summary names the model and stays on the same logger the
-// caller-side debug/warn logs use.
+// q carries the resolved per-(provider, model) quirks for this stream; the
+// parser reads q.ReplayFields and captures the named paths from each
+// chunk's delta object (see docs/provider-quirks.md), surfacing them in a
+// per-stream debug log and, flattened, on the message_complete event.
 func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, q quirks.ProviderQuirks, logger *slog.Logger, model string) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
-	// emitEvent sends an event on the output channel and records TTFB on the
-	// first non-empty event observed. flushToolCalls invokes this via the
-	// closure passed in.
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
 		if !ttfbRecorded && o.Metrics != nil {
@@ -1355,46 +1120,28 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		ch <- ev
 	}
 
-	// Track in-flight tool calls by index for argument accumulation.
 	toolCalls := make(map[int]*openaiToolCallState)
 
-	// replayFieldsCapture is the per-stream accumulator for the
-	// ReplayFields-captured values across every chunk's delta. Keyed by
-	// the rule's path string (verbatim from q.ReplayFields). Stored as
-	// a slice per path so a multi-chunk delta (e.g. DeepSeek's
-	// reasoning_content streamed across multiple chunks) records each
-	// piece in arrival order rather than only the last value. The
-	// terminal log line summarises lengths, not values.
-	//
-	// replayFieldsTotalBytes tracks the accumulator's byte budget
-	// (replayCaptureByteLen proxy, across all paths) against
-	// maxReplayFieldBytes. Once the cap is hit, replayFieldsCapped
-	// flips and every later capture is dropped, so the flattened value
-	// stays a clean prefix of the stream rather than gaining holes
-	// from selectively skipped chunks.
+	// Per-stream ReplayFields accumulator, keyed by path; stored as a slice
+	// per path so a multi-chunk delta (e.g. DeepSeek's reasoning_content)
+	// records each piece in arrival order rather than only the last value.
+	// replayFieldsTotalBytes tracks the accumulator against
+	// maxReplayFieldBytes; once capped, later captures are dropped so the
+	// flattened value stays a clean prefix rather than gaining holes.
 	replayFieldsCapture := map[string][]any{}
 	replayFieldsTotalBytes := 0
 	replayFieldsCapped := false
-	// messageCompleted records whether a finish_reason chunk produced a
-	// message_complete event, so the bare-[DONE] fallback below knows
-	// whether the stream still owes one.
+	// Whether a finish_reason chunk already produced a message_complete, so
+	// the bare-[DONE] fallback below knows if the stream still owes one.
 	messageCompleted := false
-	// streamUsage holds the most recent usage block seen on any chunk.
-	// With stream_options.include_usage requested, compatible servers
-	// (LM Studio, vLLM, OpenAI) send token counts in a trailing chunk
-	// whose choices array is empty, arriving AFTER the finish_reason chunk
-	// that already produced message_complete; a few attach usage to the
-	// finish chunk instead. Captured here irrespective of position.
+	// Most recent usage block seen on any chunk: compatible servers may send
+	// it in a trailing empty-choices chunk after finish_reason, or attach it
+	// to the finish chunk itself.
 	var streamUsage *openaiUsage
-	// outputTokensEmitted guards against double-counting: once any
-	// message_complete carries the output-token count, the trailing-usage
-	// flush is a no-op.
+	// Guards against double-counting once a message_complete already
+	// carried the output-token count.
 	outputTokensEmitted := false
-	// flushTrailingUsage emits the captured output-token count as a
-	// usage-only message_complete. Empty StopReason and ReplayFields keep
-	// streamEventsToResult's last-write merge from clobbering the values
-	// the real completion event set earlier (the trailing usage chunk
-	// always follows it). Idempotent via outputTokensEmitted.
+
 	flushTrailingUsage := func() {
 		if streamUsage == nil || outputTokensEmitted {
 			return
@@ -1405,20 +1152,13 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		})
 		outputTokensEmitted = true
 	}
-	// Emit the per-stream ReplayFields summary on any exit path
-	// (normal end, early return on error, ctx cancel). Length-only
-	// reporting per design §5: avoid leaking captured content into
-	// any log sink that consumes DEBUG records.
+	// Emit the per-stream ReplayFields summary on any exit path. Length-only:
+	// captured content must never reach a log or trace sink.
 	defer func() {
 		if len(replayFieldsCapture) == 0 {
 			return
 		}
-		// Mirror the per-stream capture summary onto the OTel span
-		// (design §5): emit `replay_fields_captured.count` and
-		// `.total_len` so trace consumers see the rule fired without
-		// having to correlate with slog. Length-only — values stay
-		// off the trace just as they stay off the log. The IsValid
-		// guard keeps the marshal cost off the no-tracer path.
+
 		if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 			totalCount, totalLen := summarizeReplayCaptures(replayFieldsCapture)
 			span.SetAttributes(
@@ -1452,20 +1192,16 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 
 		data := strings.TrimPrefix(line, "data: ")
 
-		// The stream terminator.
 		if data == "[DONE]" {
-			// Flush any remaining tool calls before ending.
+
 			o.flushToolCallsVia(toolCalls, emitEvent)
-			// Some gateways terminate with a bare [DONE] and never send
-			// a finish_reason chunk. If replay state accumulated and no
-			// message_complete was emitted, synthesise one so the
-			// captured state still reaches the persisted assistant
-			// message — otherwise the next turn 400s against DeepSeek
-			// v4 thinking mode. Gated on messageCompleted: a stream
-			// that already completed normally must not get a second
-			// event, which would clobber the real stop reason (e.g.
-			// "tool_use") in streamEventsToResult's last-write-wins
-			// merge.
+			// Some gateways terminate with a bare [DONE] and never send a
+			// finish_reason chunk; synthesise message_complete so captured
+			// replay state still reaches the persisted assistant message
+			// (otherwise the next turn 400s against DeepSeek v4 thinking
+			// mode). Gated on messageCompleted so an already-completed
+			// stream does not get a second event that clobbers the real
+			// stop reason.
 			if !messageCompleted && len(replayFieldsCapture) > 0 {
 				emitEvent(types.StreamEvent{
 					Type:         "message_complete",
@@ -1490,14 +1226,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		}
 
 		for _, choice := range chunk.Choices {
-			// ReplayFields capture (design D12). Walk the raw delta
-			// object once per chunk and merge any matching paths into
-			// the per-stream accumulator, subject to the
-			// maxReplayFieldBytes budget. The path walker is a no-op
-			// when q.ReplayFields is empty so the cost in the
-			// zero-rules case is one slice-length check; once the cap
-			// is hit, the walk is skipped entirely for the rest of the
-			// stream.
+
 			if !replayFieldsCapped && len(q.ReplayFields) > 0 && len(choice.RawDelta) > 0 {
 				if captured := quirks.CaptureFromJSON(choice.RawDelta, q.ReplayFields); len(captured) > 0 {
 					for k, v := range captured {
@@ -1551,23 +1280,17 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				state.argsBuf.WriteString(tc.Function.Arguments)
 			}
 
-			// finish_reason signals the end of this choice.
 			if choice.FinishReason != nil {
-				// Flush accumulated tool calls when the model is done.
+
 				o.flushToolCallsVia(toolCalls, emitEvent)
 
 				stopReason := mapFinishReason(*choice.FinishReason)
 				ev := types.StreamEvent{
 					Type:       "message_complete",
 					StopReason: stopReason,
-					// The flattened ReplayFields capture rides on the
-					// message_complete event so the agentic loop can
-					// attach it to the assistant Message it persists —
-					// the outbound half of the round-trip threads it
-					// back via translateMessages on the next turn. The
-					// length-only slog/OTel summary in the deferred
-					// block above is unchanged; the values themselves
-					// are never logged.
+					// Rides on message_complete so the agentic loop persists
+					// it on the assistant Message and threads it back via
+					// translateMessages on the next turn.
 					ReplayFields: flattenReplayCapture(replayFieldsCapture),
 				}
 				// Attach usage only when it has already arrived (servers
@@ -1673,7 +1396,7 @@ func (o *OpenAICompatibleAdapter) flushToolCallsVia(toolCalls map[int]*openaiToo
 			Input: input,
 		})
 	}
-	// Clear the map.
+
 	for k := range toolCalls {
 		delete(toolCalls, k)
 	}

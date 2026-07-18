@@ -94,9 +94,9 @@ func TestRunDryRun_FailReportExit1(t *testing.T) {
 	}
 }
 
-// TestRunDryRun_ComposeWithOutputRunConfig is the explicit AC4 check:
-// --dry-run --output-runconfig=<path> BOTH renders the report AND writes
-// the captured config in one success run.
+// TestRunDryRun_ComposeWithOutputRunConfig checks that
+// --dry-run --output-runconfig=<path> both renders the report and
+// writes the captured config in one success run.
 func TestRunDryRun_ComposeWithOutputRunConfig(t *testing.T) {
 	stubPreflight(t, okReport())
 	cmd, _, errBuf := dryRunTestCmd()

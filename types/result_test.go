@@ -6,9 +6,8 @@ import (
 	"unicode/utf8"
 )
 
-// TestCapFinalAssistantText_UnderCapPassesThrough pins the fast path:
-// a string shorter than (or equal to) the cap is returned unmodified
-// with truncated=false, and no marker is appended.
+// TestCapFinalAssistantText_UnderCapPassesThrough pins that a string
+// at or under the cap is returned unmodified with truncated=false.
 func TestCapFinalAssistantText_UnderCapPassesThrough(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -33,9 +32,8 @@ func TestCapFinalAssistantText_UnderCapPassesThrough(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_ASCIIBoundary pins the simple case: an
-// ASCII string longer than the cap is cut exactly at the byte boundary
-// (every ASCII byte is a rune boundary) and the marker is appended.
+// TestCapFinalAssistantText_ASCIIBoundary pins that an ASCII string
+// longer than the cap is cut at the byte boundary and marked.
 func TestCapFinalAssistantText_ASCIIBoundary(t *testing.T) {
 	s := "0123456789"
 	got, truncated := CapFinalAssistantText(s, 4)
@@ -54,18 +52,16 @@ func TestCapFinalAssistantText_ASCIIBoundary(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_MultibyteRuneStraddlesCap is the load-
-// bearing case: the cap lands in the middle of a multibyte rune, so
-// the helper must back off to the start of that rune rather than
-// splitting it (which would corrupt the UTF-8 encoding and, downstream,
-// the STIRRUP_RESULT JSON line).
+// TestCapFinalAssistantText_MultibyteRuneStraddlesCap pins that a cap
+// landing mid-rune backs off to the start of that rune instead of
+// splitting it.
 func TestCapFinalAssistantText_MultibyteRuneStraddlesCap(t *testing.T) {
-	// "a" (1 byte) + "€" (3 bytes, U+20AC) + "b" (1 byte) = 5 bytes total.
+	// "a" (1 byte) + "€" (3 bytes) + "b" (1 byte) = 5 bytes total.
 	s := "a€b"
 	if len(s) != 5 {
 		t.Fatalf("test fixture len(s) = %d, want 5", len(s))
 	}
-	// Cap at 2 bytes lands inside the 3-byte € encoding (bytes 1-3).
+	// Cap at 2 bytes lands inside the 3-byte € encoding.
 	got, truncated := CapFinalAssistantText(s, 2)
 	if !truncated {
 		t.Fatal("truncated = false, want true")
@@ -79,13 +75,10 @@ func TestCapFinalAssistantText_MultibyteRuneStraddlesCap(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_MultibyteRuneExactlyAtCap pins the other
-// edge of the same boundary logic: when the cap lands exactly on the
-// end of a multibyte rune (a valid rune-start boundary for the next
-// rune), the cut must include the full preceding rune rather than
-// backing off further than necessary.
+// TestCapFinalAssistantText_MultibyteRuneExactlyAtCap pins that a cap
+// landing exactly on a rune boundary keeps the full preceding rune.
 func TestCapFinalAssistantText_MultibyteRuneExactlyAtCap(t *testing.T) {
-	s := "a€b" // a(1) + €(3) + b(1)
+	s := "a€b"
 	got, truncated := CapFinalAssistantText(s, 4)
 	if !truncated {
 		t.Fatal("truncated = false, want true")
@@ -99,9 +92,8 @@ func TestCapFinalAssistantText_MultibyteRuneExactlyAtCap(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_CapSmallerThanSingleRune pins the extreme
-// case: a cap of 0 (or one that cannot fit even the first rune) drops
-// the entire straddled rune and returns just the marker.
+// TestCapFinalAssistantText_CapSmallerThanSingleRune pins that a cap
+// too small for even the first rune drops it entirely.
 func TestCapFinalAssistantText_CapSmallerThanSingleRune(t *testing.T) {
 	s := "€" // a single 3-byte rune
 	got, truncated := CapFinalAssistantText(s, 1)
@@ -116,9 +108,8 @@ func TestCapFinalAssistantText_CapSmallerThanSingleRune(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_ZeroCapOnNonEmptyString pins maxBytes==0
-// against non-empty input: the entire string is dropped and only the
-// marker remains.
+// TestCapFinalAssistantText_ZeroCapOnNonEmptyString pins that
+// maxBytes==0 drops the entire string, leaving only the marker.
 func TestCapFinalAssistantText_ZeroCapOnNonEmptyString(t *testing.T) {
 	got, truncated := CapFinalAssistantText("hello", 0)
 	if !truncated {
@@ -129,9 +120,8 @@ func TestCapFinalAssistantText_ZeroCapOnNonEmptyString(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_NegativeCapTreatedAsZero pins the
-// documented negative-cap behaviour: a negative maxBytes must not
-// panic or index out of range, and behaves identically to maxBytes==0.
+// TestCapFinalAssistantText_NegativeCapTreatedAsZero pins that a
+// negative maxBytes behaves identically to maxBytes==0.
 func TestCapFinalAssistantText_NegativeCapTreatedAsZero(t *testing.T) {
 	got, truncated := CapFinalAssistantText("hello", -5)
 	if !truncated {
@@ -142,12 +132,9 @@ func TestCapFinalAssistantText_NegativeCapTreatedAsZero(t *testing.T) {
 	}
 }
 
-// TestCapFinalAssistantText_StringShorterThanMarker pins a case that
-// could confuse an implementation that compares the input length
-// against the marker length instead of maxBytes: a short string that
-// still needs truncation (cap smaller than the string) must still get
-// the full marker appended even though the marker itself is longer
-// than the truncated prefix.
+// TestCapFinalAssistantText_StringShorterThanMarker pins that
+// truncation still appends the full marker even when the marker is
+// longer than the truncated prefix.
 func TestCapFinalAssistantText_StringShorterThanMarker(t *testing.T) {
 	s := "hello world" // 11 bytes, well under len(marker)
 	got, truncated := CapFinalAssistantText(s, 3)
@@ -160,11 +147,9 @@ func TestCapFinalAssistantText_StringShorterThanMarker(t *testing.T) {
 	}
 }
 
-// TestResolvedMaxFinalAssistantTextBytes pins the default-resolution
-// rules: a nil ResultSinkConfig, an unset (zero) field, and a
-// negative-would-be-invalid field (rejected by validation, but the
-// resolver is defensive) all fall back to the documented default; a
-// positive override is passed through unchanged.
+// TestResolvedMaxFinalAssistantTextBytes pins that a nil config or
+// unset field falls back to the default, and a positive override
+// passes through unchanged.
 func TestResolvedMaxFinalAssistantTextBytes(t *testing.T) {
 	var nilCfg *ResultSinkConfig
 	if got := nilCfg.ResolvedMaxFinalAssistantTextBytes(); got != DefaultMaxFinalAssistantTextBytes {

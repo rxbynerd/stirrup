@@ -13,10 +13,10 @@ import (
 )
 
 // This file covers the outbound half of the quirks ReplayFields
-// round-trip (design §9 risk 7): flattening the per-stream capture onto
-// the message_complete event, attaching it to assistant wire messages,
-// and the cross-provider leakage guards that keep the state from
-// reaching a provider that does not own it.
+// round-trip: flattening the per-stream capture onto the
+// message_complete event, attaching it to assistant wire messages, and
+// the cross-provider leakage guards that keep the state from reaching a
+// provider that does not own it.
 
 // TestFlattenReplayCapture pins the flattening rule documented on
 // types.StreamEvent.ReplayFields: all-string captures concatenate in
@@ -677,7 +677,7 @@ func replayLeakageMessages(withReplay bool) []types.Message {
 // Anthropic wire body must be byte-identical with and without
 // Message.ReplayFields populated, the same invariant
 // anthropicContentBlock already enforces for the block-level
-// ThoughtSignature (#194).
+// ThoughtSignature.
 func TestTranslateMessagesAnthropic_IgnoresMessageReplayFields(t *testing.T) {
 	without, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(false), quirks.StructuredToolResultCapability{}))
 	if err != nil {

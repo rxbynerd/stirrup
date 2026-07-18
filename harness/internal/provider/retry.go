@@ -22,12 +22,8 @@ import (
 )
 
 // RetryPolicy is the resolved, validated retry configuration passed
-// into the helper. Constructed from types.ProviderRetryConfig by the
-// factory in Wave 3.
-//
-// A zero RetryPolicy makes exactly one attempt with no backoff and
-// no wall-clock budget — useful for tests and as a safe default
-// when retry configuration is unavailable.
+// into the helper. A zero RetryPolicy makes exactly one attempt with
+// no backoff and no wall-clock budget.
 type RetryPolicy struct {
 	MaxAttempts     int
 	InitialDelay    time.Duration
@@ -44,13 +40,9 @@ func RetryPolicyFromConfig(cfg *types.ProviderRetryConfig) RetryPolicy {
 	}
 	initialDelay := time.Duration(cfg.InitialDelayMs) * time.Millisecond
 	if cfg.InitialDelayMs == 0 {
-		// Defence-in-depth: a zero InitialDelay would cause
-		// backoffDelay to return zero on every attempt, producing a
-		// tight retry loop bounded only by MaxAttempts.
-		// ValidateRunConfig normally substitutes the canonical 500ms
-		// default for a zero input, but RetryPolicyFromConfig may be
-		// called by direct embedders that bypass validation — keep
-		// the safe behaviour reachable in either path.
+		// A zero InitialDelay would make backoffDelay return zero on
+		// every attempt, producing a tight retry loop. Embedders that
+		// bypass ValidateRunConfig still get the safe default here.
 		initialDelay = defaultInitialDelayFallback
 	}
 	return RetryPolicy{
@@ -62,11 +54,7 @@ func RetryPolicyFromConfig(cfg *types.ProviderRetryConfig) RetryPolicy {
 }
 
 // defaultInitialDelayFallback mirrors types.defaultProviderRetryInitialDelayMs
-// (500ms). Duplicated as a private constant rather than imported because
-// types/runconfig.go keeps the millisecond defaults unexported, and the
-// invariant we are protecting — "a zero InitialDelay produces a tight retry
-// loop" — is local to this package. If the types package ever exports the
-// constants this should switch to importing them.
+// (500ms), duplicated because that constant is unexported.
 const defaultInitialDelayFallback = 500 * time.Millisecond
 
 // retryableStatus reports whether status code s warrants a retry.
@@ -98,21 +86,10 @@ func transientErr(err error, attempt int) bool {
 	return false
 }
 
-// maxRetryAfterHint is an absolute ceiling applied to Retry-After
-// and Retry-After-Ms values before they are converted to a
-// time.Duration. It defends against two failure modes:
-//
-//   - Integer overflow: strconv.Atoi returns int (64-bit on 64-bit
-//     hosts). Multiplying by time.Millisecond (1e6) or time.Second
-//     (1e9) wraps int64 for very large inputs and the wrapped value
-//     could satisfy (0, MaxDelay) and silently bypass the cap.
-//   - Defence-in-depth against a hostile upstream advertising an
-//     absurd value to monopolise client time; the cap forces all
-//     hints into a bounded range before MaxDelay clamping runs.
-//
-// The caller still clamps against policy.MaxDelay; this is the
-// upper-bound on what parseRetryAfter is willing to consider in
-// the first place.
+// maxRetryAfterHint ceilings Retry-After/-Ms values before conversion to
+// time.Duration, guarding against int64 overflow on the ms multiplication
+// and against a hostile upstream advertising an absurd delay. The caller
+// still clamps against policy.MaxDelay separately.
 const maxRetryAfterHint = 60 * time.Second
 
 // parseRetryAfter returns a delay derived from response headers and
@@ -122,12 +99,10 @@ const maxRetryAfterHint = 60 * time.Second
 // retry-after (HTTP-date against now). The caller caps at
 // policy.MaxDelay.
 //
-// A malformed or non-positive Retry-After-Ms (zero, negative, or
-// non-numeric) is treated as "ignore this hint and fall through to
-// Retry-After" rather than "retry immediately" — interpreting a
-// zero/garbage ms value as a zero-delay retry signal would risk tight
-// loops against misbehaving upstreams. Values above maxRetryAfterHint
-// fall through to the next header for the same reason.
+// A malformed, non-positive, or above-ceiling Retry-After-Ms value
+// falls through to Retry-After rather than being treated as a
+// zero-delay retry signal, to avoid tight loops against misbehaving
+// upstreams.
 func parseRetryAfter(h http.Header, now time.Time) (time.Duration, string) {
 	if v := h.Get("Retry-After-Ms"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
@@ -175,20 +150,8 @@ func backoffDelay(n int, policy RetryPolicy, r *rand.Rand) time.Duration {
 	return time.Duration(r.Int64N(int64(upper)))
 }
 
-// retry outcome attribute values. This is a closed set: every code
-// path through DoWithRetry that reaches recordOutcome must use one
-// of these constants.
-//
-//   - succeeded:        terminal 2xx response (with or without retries).
-//   - exhausted:        retries exhausted by MaxAttempts on a retryable
-//     status; the last response is returned to caller.
-//   - non_retryable:    terminal non-retryable status or transport error.
-//   - budget_exhausted: wall-clock budget would be exceeded by the next
-//     sleep; the last response is returned to caller.
-//   - context_done:     ctx.Done() fired during the inter-attempt sleep.
-//   - rewind_failed:    req.GetBody() returned an error on attempt > 0;
-//     no further attempt could be made even though
-//     MaxAttempts had not been reached.
+// retry outcome attribute values. Closed set: every DoWithRetry path
+// that reaches recordOutcome uses one of these constants.
 const (
 	retryOutcomeSucceeded       = "succeeded"
 	retryOutcomeExhausted       = "exhausted"
@@ -206,26 +169,13 @@ const (
 )
 
 // RetryOptions bundles the non-request configuration DoWithRetry
-// needs. The struct shape keeps the call site readable as more
-// adapters need optional knobs (e.g. Anthropic's x-should-retry
-// header support via ShouldRetry) without churning every caller.
-//
-// Fields:
-//   - Policy:       resolved retry configuration; a zero value
-//     produces single-attempt behaviour.
-//   - Logger:       optional; nil falls back to slog.Default().
-//   - Metrics:      optional; nil disables outcome recording.
-//   - ProviderType: provider identity for log/metric/span attribution
-//     (e.g. "openai", "anthropic"). Free-form string.
-//   - Model:        model identity for log/metric/span attribution.
-//   - ShouldRetry:  optional adapter-specific retry classifier. When
-//     non-nil it is consulted before the default status
-//     heuristic. It receives the response and returns
-//     (retryable, consumed). If consumed=true, retryable
-//     is the final answer for that response. If
-//     consumed=false, the default retryableStatus
-//     heuristic applies. Transport errors bypass this
-//     classifier — they are routed through transientErr.
+// needs. Policy zero value produces single-attempt behaviour; Logger
+// nil falls back to slog.Default(); Metrics nil disables outcome
+// recording. ShouldRetry, when non-nil, is consulted before the
+// default retryableStatus heuristic: consumed=true makes its
+// retryable value final, consumed=false falls through to the
+// heuristic. Transport errors always bypass ShouldRetry and are
+// routed through transientErr.
 type RetryOptions struct {
 	Policy       RetryPolicy
 	Logger       *slog.Logger
@@ -238,16 +188,13 @@ type RetryOptions struct {
 // DoWithRetry issues req using client, retrying on retryable statuses
 // and transient transport errors per opts.Policy. The caller MUST
 // set req.GetBody so the body is rewindable; the helper panics if
-// GetBody is nil (programmer error, 100% internal contract).
+// GetBody is nil.
 //
 // On terminal failure (non-retryable status, attempts exhausted,
-// budget exhausted, ctx cancelled, rewind failure), returns the
-// last response or error. Caller owns closing the returned response
-// body whenever resp != nil — including on terminal non-success
-// statuses (4xx, 5xx) returned without an error.
-//
-// The current OTel span is read from ctx via oteltrace.SpanFromContext;
-// intermediate-attempt events are added to that span when present.
+// budget exhausted, ctx cancelled, rewind failure), returns the last
+// response or error. Caller owns closing the returned response body
+// whenever resp != nil, including on terminal non-success statuses
+// returned without an error.
 func DoWithRetry(
 	ctx context.Context,
 	client *http.Client,
@@ -255,24 +202,16 @@ func DoWithRetry(
 	opts RetryOptions,
 ) (*http.Response, error) {
 	if req.GetBody == nil && req.Body != nil {
-		// Internal contract: every caller is expected to set GetBody so
-		// the helper can rewind the body before each retry. A nil
-		// GetBody with a non-nil Body indicates a wiring bug, not a
-		// runtime condition — fail loudly instead of silently consuming
-		// the body on the first attempt and sending an empty payload on
-		// the next.
+		// A nil GetBody with a non-nil Body is a caller wiring bug, not
+		// a runtime condition — fail loudly instead of silently sending
+		// an empty payload on retry.
 		panic("DoWithRetry: req.GetBody must be set (internal contract violation)")
 	}
 
 	logger := opts.Logger
 	if logger == nil {
 		// Wrap the process-wide slog default with a ScrubHandler so a
-		// direct embedder who does not set Logger still gets retry
-		// warnings redacted. The factory-constructed path sets Logger
-		// to a ScrubHandler-backed slog already, so this fallback only
-		// runs on integration tests, the deferred peer-adapter call
-		// sites, and bare embedder code — exactly where the scrub
-		// invariant would otherwise quietly break.
+		// caller that omits Logger still gets retry warnings redacted.
 		logger = slog.New(observability.NewScrubHandler(slog.Default().Handler()))
 	}
 	policy := opts.Policy
@@ -281,11 +220,6 @@ func DoWithRetry(
 	model := opts.Model
 	shouldRetry := opts.ShouldRetry
 
-	// Per-call PRNG. math/rand/v2 has no global lock, but a per-call
-	// source still avoids contention if a future change moves to a
-	// pool-of-sources model. Seeded from wall clock — the consequences
-	// of a predictable jitter sequence here are negligible (the
-	// downside would be marginally less effective storm-avoidance).
 	seed := uint64(time.Now().UnixNano())
 	prng := rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15))
 
@@ -311,10 +245,7 @@ func DoWithRetry(
 					// Rewind failure is distinct from exhaustion: retries
 					// were not used up, the body just cannot be replayed.
 					// Drain and close the previous response so the
-					// connection can be reused (caller receives nil resp
-					// and cannot do this itself). Bound the drain at 4 KB
-					// — matches the M3 drain limit at the retry-loop
-					// site.
+					// connection can be reused.
 					if lastResp != nil {
 						_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
 						_ = lastResp.Body.Close()
@@ -375,33 +306,25 @@ func DoWithRetry(
 		}
 
 		if !retryable {
-			// Transport error with no transient classification: surface
-			// immediately as non-retryable.
+
 			recordOutcome(ctx, metrics, providerType, model, retryOutcomeNonRetryable)
 			return nil, err
 		}
 
-		// We have a retryable outcome. If this was the final attempt,
-		// surface the last response/error and record exhaustion without
-		// emitting an attempt event (the caller's existing rate_limited
-		// event covers the user-visible failure).
 		if attempt == maxAttempts-1 {
 			recordOutcome(ctx, metrics, providerType, model, retryOutcomeExhausted)
 			return lastResp, lastErr
 		}
 
-		// Wall-clock budget check: if sleeping now would push us past
-		// the deadline, abort.
 		if policy.WallClockBudget > 0 && time.Now().Add(delay).After(deadline) {
 			recordOutcome(ctx, metrics, providerType, model, retryOutcomeBudgetExhausted)
 			return lastResp, lastErr
 		}
 
 		attemptNum := attempt + 1
-		// Transport errors from http.Client.Do are *url.Error values
-		// whose Error() string embeds the full request URL (including
-		// any sensitive query parameters). Unwrap before logging so
-		// the URL never reaches the slog handler or the OTel span.
+		// *url.Error's Error() embeds the full request URL, including
+		// sensitive query parameters. Unwrap before logging so the URL
+		// never reaches the slog handler or the OTel span.
 		var unwrappedErrStr string
 		if err != nil {
 			unwrappedErrStr = err.Error()
@@ -434,11 +357,8 @@ func DoWithRetry(
 				attribute.String("delay_source", delaySource),
 			}
 			if err != nil {
-				// Mirror the slog scrubbing applied at line above so the
-				// OTel span exporter does not receive a raw value that
-				// the slog handler would have redacted. The scrubber is
-				// a no-op for clean strings; the consistency invariant
-				// across log and span sinks is the load-bearing piece.
+				// Mirror the slog scrubbing above so the OTel span
+				// exporter never receives an unredacted value.
 				spanAttrs = append(spanAttrs, attribute.String("error", security.Scrub(unwrappedErrStr)))
 			} else if lastResp != nil {
 				spanAttrs = append(spanAttrs, attribute.Int("status", lastResp.StatusCode))
@@ -446,21 +366,16 @@ func DoWithRetry(
 			span.AddEvent("provider_retry_attempt", oteltrace.WithAttributes(spanAttrs...))
 		}
 
-		// Drain the previous response body before retrying so the
-		// connection can be reused. Skip for transport errors where
-		// resp is nil. Bound the drain at 4 KB so a hostile upstream
-		// cannot stall progress by streaming an unbounded body on a
-		// 429/503 response — the wall-clock budget check runs after
-		// the drain returns and cannot help if the drain blocks.
+		// Bound the drain at 4 KB so a hostile upstream cannot stall
+		// progress by streaming an unbounded body.
 		if lastResp != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
 			_ = lastResp.Body.Close()
 			lastResp = nil
 		}
 
-		// time.NewTimer + Stop drains the underlying timer if the
-		// context is cancelled mid-sleep — avoids leaking the
-		// goroutine spawned by time.After.
+		// Stop drains the timer on cancellation, avoiding a leaked
+		// goroutine (time.After would not allow this).
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:

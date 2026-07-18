@@ -1,17 +1,14 @@
 package builtins
 
 // The structured result types in this file are the typed envelopes built-in
-// tools marshal into ToolResult.Structured (issue #231). They are deliberately
-// concrete Go structs rather than map[string]any: the project's no-`any` rule
-// (wave-2 design D13) requires every structured producer to declare its shape
-// so the JSON contract is reviewable and stable. The text rendering each tool
-// already produced is unchanged and remains the canonical fallback; these
-// structs are purely additive.
+// tools marshal into ToolResult.Structured. They are deliberately concrete Go
+// structs rather than map[string]any so the JSON contract is reviewable and
+// stable. The text rendering each tool already produced remains the canonical
+// fallback; these structs are purely additive.
 
 // Kind discriminators identify which struct a ToolResult.Structured payload
-// carries (issue #231). B2's MCP bridge and provider adapters route by these
-// stable values rather than JSON-sniffing the payload, which would violate the
-// typed-not-`any` rule. Each StructuredHandler returns the matching kind.
+// carries. Consumers route by these stable values rather than JSON-sniffing
+// the payload. Each StructuredHandler returns the matching kind.
 const (
 	kindCommandResult   = "command_result"
 	kindSearchResult    = "search_result"
@@ -23,17 +20,15 @@ const (
 	kindGitShow         = "git_show"
 )
 
-// commandResult is the structured payload for run_command. timedOut reports
+// commandResult is the structured payload for run_command. TimedOut reports
 // whether the command was killed by its timeout: every executor wraps
-// executor.ErrTimeout into the error it returns on a genuine deadline expiry
-// while still returning whatever partial stdout/stderr it captured (#489), so
+// executor.ErrTimeout into the returned error on a genuine deadline expiry
+// while still returning whatever partial stdout/stderr it captured, so
 // RunCommandTool classifies that case via errors.Is and reports it as a soft
-// outcome — timedOut true, no handler error — rather than discarding the
-// output. exitCode is executor-dependent when timedOut is true (local.go
-// leaves it 0; container.go and k8s_execcore.go set -1), so it carries no
-// meaningful status in that case — callers must gate on timedOut and never
-// read exitCode as a real exit code when it is true. timeoutSeconds records
-// the bound that was in effect either way.
+// outcome — TimedOut true, no handler error — rather than discarding the
+// output. ExitCode is executor-dependent when TimedOut is true (local.go
+// leaves it 0; container.go and k8s_execcore.go set -1), so callers must gate
+// on TimedOut and never read ExitCode as a real exit code when it is true.
 type commandResult struct {
 	Stdout         string `json:"stdout"`
 	Stderr         string `json:"stderr"`

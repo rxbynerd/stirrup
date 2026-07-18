@@ -1,32 +1,7 @@
 // Package trace — events.go defines the on-disk JSONL event shape the
 // streaming JSONLTraceEmitter writes and the reader in
-// types/trace/reader.go consumes.
-//
-// Each line in a streaming trace file is one JSON object with a "kind"
-// discriminator. A complete run produces:
-//
-//	{"kind":"run_started",      "schemaVersion":"1","runId":"...","config":{...redacted...},"startedAt":"..."}
-//	{"kind":"hook_record",      "hook":{"phase":"preRun","index":0,"command":"..."}}
-//	{"kind":"turn_record",      "turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
-//	{"kind":"tool_call_record", "turn":1,"name":"read_file","input":{...},"output":"..."}
-//	...
-//	{"kind":"hook_record",      "hook":{"phase":"postRun","index":0,"command":"..."}}
-//	{"kind":"run_finished",     "trace":{...RunTrace summary...},"completedAt":"..."}
-//
-// turn_record carries the full transcript a sub-agent / replay path needs.
-// tool_call_record is emitted in addition to the inline toolCalls inside
-// turn_record so a strict event-by-event consumer (e.g. future gRPC fan-out)
-// sees each call as soon as it lands rather than waiting for the enclosing
-// turn to flush. Both views are scrubbed for known secret patterns by the
-// emitter before the line is written.
-//
-// An interrupted run (SIGKILL, crash, OOM) may end without run_finished;
-// the on-disk file is still parseable up to the last completed event.
-//
-// Backward compatibility: pre-streaming traces emitted a single
-// json.Marshal(types.RunTrace) line with no "kind" field. The reader
-// (types/trace/reader.go) treats a kindless line as an implicit
-// run_finished event with the trace payload embedded.
+// types/trace/reader.go consumes. See docs/trace-inspection.md for the
+// wire schema and backward-compatibility notes.
 package trace
 
 import (
@@ -53,11 +28,8 @@ const (
 	// Carries the canonical RunTrace summary; backward-compatible with
 	// pre-streaming single-blob traces.
 	EventKindRunFinished EventKind = "run_finished"
-	// EventKindHookRecord captures one lifecycle hook's result (issue
-	// #461). Emitted as each PreRun/PostRun hook completes, in addition
-	// to the accumulated ToolCalls inside the embedded RunTrace at
-	// run_finished, so a live consumer sees each hook as soon as it
-	// lands (mirrors tool_call_record).
+	// EventKindHookRecord captures one lifecycle hook's result, emitted
+	// as each PreRun/PostRun hook completes (mirrors tool_call_record).
 	EventKindHookRecord EventKind = "hook_record"
 )
 

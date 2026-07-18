@@ -13,22 +13,19 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// maxOutputTailBytes caps the trace-recorded tail of a hook's combined
-// stdout+stderr. Bounded because hook results are trace-only and
-// persisted verbatim; "tail" (not head) because a failing command's most
-// useful diagnostic — the error summary — is usually printed last.
+// maxOutputTailBytes caps the trace-recorded tail (not head, since a
+// failing command's diagnostic is usually last) of a hook's combined
+// stdout+stderr.
 const maxOutputTailBytes = 4 * 1024
 
 // ExecRunner is the production hook.Runner: it executes every configured
 // hook via the run's Executor, in order, honouring per-hook timeout
 // resolution, continueOnError, and (for postRun) the RunOn outcome
-// filter. Mirrors the GitStrategy injection pattern: constructed and
-// owned by the factory, held on AgenticLoop.Hooks as the Runner
-// interface.
+// filter.
 type ExecRunner struct {
 	// Hooks is the run's configured HooksConfig. Must be non-nil; the
 	// factory only constructs an ExecRunner when at least one hook is
-	// configured (see buildHookRunner), otherwise it injects Noop.
+	// configured, otherwise it injects Noop.
 	Hooks *types.HooksConfig
 
 	// Exec is the run's Executor. Hooks dispatch through it so they
@@ -59,13 +56,11 @@ func (r *ExecRunner) RunPost(ctx context.Context, outcome string) ([]types.HookE
 }
 
 // run executes hooks in order against ctx, applying the RunOn filter
-// (postRun only — applyRunOnFilter is false for preRun, where RunOn is
-// always empty per ValidateRunConfig) and skip-and-mark once a fatal
-// (non-continueOnError) failure occurs. Every hook produces exactly one
-// types.HookExecution — including runOn-filtered and post-fatal-failure
-// entries, marked Skipped — so Index always stays aligned with the
+// (postRun only) and skip-and-mark once a fatal (non-continueOnError)
+// failure occurs. Every hook produces exactly one types.HookExecution,
+// including filtered/skipped entries, so Index stays aligned with the
 // configured list. Returns a non-nil error the instant a fatal failure
-// occurs; RunPre/RunPost callers treat that as phase failure.
+// occurs.
 func (r *ExecRunner) run(ctx context.Context, phase string, hooks []types.HookConfig, outcome string, applyRunOnFilter bool) ([]types.HookExecution, error) {
 	results := make([]types.HookExecution, 0, len(hooks))
 	var fatalErr error
@@ -96,9 +91,8 @@ func (r *ExecRunner) run(ctx context.Context, phase string, hooks []types.HookCo
 }
 
 // runOne dispatches a single hook through the Executor and builds its
-// types.HookExecution result. Never returns an error directly — failure
-// is reported via the result's Error/TimedOut fields so run's
-// skip-and-mark bookkeeping has a uniform shape to inspect.
+// types.HookExecution result. Never returns an error directly; failure
+// is reported via the result's Error/TimedOut fields.
 func (r *ExecRunner) runOne(ctx context.Context, phase string, index int, h types.HookConfig) types.HookExecution {
 	result := types.HookExecution{
 		Phase:   phase,
@@ -163,17 +157,13 @@ func hookRuns(runOn, outcome string) bool {
 	case "failure":
 		return outcome != "success"
 	default:
-		// "" and "always"; ValidateRunConfig rejects any other value,
-		// but default-to-run is the safe interpretation for an
-		// unrecognised value reaching here regardless.
 		return true
 	}
 }
 
 // hookLabel returns the identifier used in fatalErr messages: the
 // operator-supplied Name when present, otherwise a positional fallback
-// (the full Command can be up to 16KB and is not suitable for an error
-// string).
+// (Command can be up to 16KB, unsuitable for an error string).
 func hookLabel(h types.HookConfig) string {
 	if h.Name != "" {
 		return h.Name
@@ -181,26 +171,19 @@ func hookLabel(h types.HookConfig) string {
 	return "unnamed"
 }
 
-// isTimeoutErr reports whether err represents a hook execution that was
-// killed by its timeout rather than failing on its own. Every executor
-// implementation (local.go, container.go, k8s_execcore.go — and, via its
-// embedded podExecCore, the k8s-sandbox executor) wraps executor.ErrTimeout
-// into the error it returns on a genuine deadline expiry, so a single
-// errors.Is check classifies all of them uniformly. This replaces a
-// substring match on the formatted error text, which coupled the hook
-// package to exact executor wording and — more seriously — misclassified
-// any other context cancellation (e.g. a SIGTERM-driven parent-context
-// cancel) as a timeout too, since local.go/container.go used to report
-// *every* ctx cancellation as "command timed out ..." (#468, #469).
+// isTimeoutErr reports whether err represents a hook killed by its
+// timeout rather than failing on its own. Every executor wraps
+// executor.ErrTimeout on a genuine deadline expiry, so a single
+// errors.Is check classifies all of them uniformly (and doesn't
+// misclassify a plain context cancellation as a timeout).
 func isTimeoutErr(err error) bool {
 	return errors.Is(err, executor.ErrTimeout)
 }
 
-// scrubbedTail returns the scrubbed (security.Scrub), 4KB-tail-capped
-// combined stdout+stderr for a hook result, along with whether the
-// persisted (scrubbed) output exceeded the cap. Scrubbing runs over the
-// full combined text before truncation so a secret pattern straddling
-// the truncation boundary is still matched.
+// scrubbedTail returns the scrubbed (security.Scrub), tail-capped
+// combined stdout+stderr for a hook result. Scrubbing runs before
+// truncation so a secret straddling the truncation boundary is still
+// matched.
 func scrubbedTail(stdout, stderr string) (tail string, truncated bool) {
 	combined := stdout
 	if stderr != "" {
@@ -213,19 +196,14 @@ func scrubbedTail(stdout, stderr string) (tail string, truncated bool) {
 	if len(scrubbed) <= maxOutputTailBytes {
 		return scrubbed, false
 	}
-	// The byte-index cut below can land mid-rune when a multi-byte UTF-8
-	// character straddles the boundary; trimToRuneBoundary drops the
-	// resulting leading continuation bytes so OutputTail is always valid
-	// UTF-8 rather than json.Marshal silently substituting U+FFFD at the
-	// start of the persisted tail.
+	// A byte-index cut can land mid-rune; trim so OutputTail is always
+	// valid UTF-8.
 	return trimToRuneBoundary(scrubbed[len(scrubbed)-maxOutputTailBytes:]), true
 }
 
-// trimToRuneBoundary drops any leading bytes of s that are UTF-8
-// continuation bytes (i.e. cannot start a rune), so a caller that
-// sliced s at an arbitrary byte offset gets back a string that starts
-// on a rune boundary. Bounded to at most utf8.UTFMax-1 bytes dropped —
-// the longest a valid rune's continuation-byte run can be.
+// trimToRuneBoundary drops leading UTF-8 continuation bytes from s so a
+// caller that sliced s at an arbitrary byte offset gets back a string
+// starting on a rune boundary.
 func trimToRuneBoundary(s string) string {
 	i := 0
 	for i < len(s) && i < utf8.UTFMax && !utf8.RuneStart(s[i]) {

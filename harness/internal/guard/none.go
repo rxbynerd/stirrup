@@ -2,10 +2,8 @@ package guard
 
 import "context"
 
-// Noop is the default GuardRail: it allows everything. The agentic
-// loop unconditionally calls through to the configured guard so this
-// type is what we wire in when no guard is configured, avoiding a
-// nil-check on every call site.
+// Noop is the default GuardRail: it allows everything. Wired in when
+// no guard is configured, avoiding a nil-check on every call site.
 type Noop struct{}
 
 // NewNoop returns a GuardRail that always allows content through. The

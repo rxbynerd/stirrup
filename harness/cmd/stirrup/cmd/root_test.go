@@ -15,13 +15,6 @@ import (
 )
 
 // TestRootCmd_Version pins the format of the harness `--version` output.
-// The wiring in root.go (`rootCmd.Version = version.Full()`) is exercised
-// here so a refactor that drops or rewrites the link-time version plumbing
-// fails this test rather than silently shipping a binary whose --version
-// flag prints "stirrup " or panics.
-//
-// The eval CLI has the equivalent guard in TestRun_Version
-// (eval/cmd/eval/main_test.go); this test is its harness counterpart.
 func TestRootCmd_Version(t *testing.T) {
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
@@ -49,21 +42,16 @@ func TestRootCmd_Version(t *testing.T) {
 	}
 }
 
-// TestRootCmd_BareInvocationPrintsHint pins issue #249's root behaviour:
-// a bare `stirrup` (no subcommand, no --help / --version) prints the
-// short two-subcommand orientation hint to stdout and exits 0 — not
-// Cobra's full usage block. The hint is plain text: no ANSI so it reads
-// identically in a terminal, a pager, or a captured file.
+// TestRootCmd_BareInvocationPrintsHint pins the root behaviour: a bare
+// `stirrup` (no subcommand, no --help / --version) prints the short
+// orientation hint to stdout and exits 0 — not Cobra's full usage block.
 func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs([]string{})
-	// SetArgs does not clear flag values parsed by a prior Execute() on
-	// the shared package-level rootCmd. TestRootCmd_Version leaves the
-	// auto-registered --version bool marked Changed=true, and Cobra
-	// short-circuits to the version output before Run fires. Reset it so
-	// this test observes the bare-invocation Run path regardless of
-	// execution order.
+	// SetArgs doesn't clear flag values from a prior Execute() on the
+	// shared rootCmd; a --version Changed=true from another test would
+	// make Cobra short-circuit before Run fires.
 	if vf := rootCmd.Flags().Lookup("version"); vf != nil {
 		_ = vf.Value.Set("false")
 		vf.Changed = false
@@ -101,21 +89,17 @@ func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
 	}
 }
 
-// fakeExporter is a workspaceexport.Exporter that returns a fixed
-// error. Used by the exportWorkspace tests to exercise the required /
-// optional error-handling branches without standing up a real GCS
-// endpoint or credential source.
+// fakeExporter is a workspaceexport.Exporter that returns a fixed error,
+// avoiding a real GCS endpoint in the exportWorkspace tests.
 type fakeExporter struct {
 	err error
 }
 
 func (f fakeExporter) Export(_ context.Context, _, _ string) error { return f.err }
 
-// TestBuildRunResult_NilTrace pins the M5 fix: a nil RunTrace must
-// surface the "internal-error" sentinel rather than a structurally
-// valid but semantically incoherent RunResult{SchemaVersion: 1}.
-// Consumers parsing the stdout-json line distinguish a no-trace path
-// from an empty-Outcome run on this sentinel.
+// TestBuildRunResult_NilTrace pins that a nil RunTrace surfaces the
+// "internal-error" sentinel rather than a structurally valid but
+// semantically incoherent RunResult.
 func TestBuildRunResult_NilTrace(t *testing.T) {
 	got := buildRunResult(nil, types.DefaultMaxFinalAssistantTextBytes)
 	if got.SchemaVersion != 1 {
@@ -132,12 +116,8 @@ func TestBuildRunResult_NilTrace(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_WithVerificationResult pins the verifier-verdict
-// propagation: when the trace carries at least one VerificationResult,
-// buildRunResult exposes the most recent entry as VerifierVerdict on
-// the wire shape. Empty VerificationResults means VerifierVerdict is
-// absent (presence of the optional pointer disambiguates "no verifier
-// ran" from "verifier passed silently").
+// TestBuildRunResult_WithVerificationResult pins that buildRunResult
+// exposes the most recent VerificationResult as VerifierVerdict.
 func TestBuildRunResult_WithVerificationResult(t *testing.T) {
 	started := time.Now()
 	rt := &types.RunTrace{
@@ -172,10 +152,9 @@ func TestBuildRunResult_WithVerificationResult(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_NoVerificationResultsLeavesVerdictNil pins the
-// disambiguation rule: an empty VerificationResults slice must leave
-// VerifierVerdict nil so consumers see "no verifier ran" rather than
-// a Passed=false default that would conflate with a real failure.
+// TestBuildRunResult_NoVerificationResultsLeavesVerdictNil pins that an
+// empty VerificationResults slice leaves VerifierVerdict nil, distinct
+// from a Passed=false default.
 func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	rt := &types.RunTrace{
 		ID:      "run-2",
@@ -186,11 +165,9 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_FinalAssistantText pins the RunTrace →
-// RunResult mapping of the run's last assistant text: a populated
-// RunTrace.FinalAssistantText carries through verbatim, and an empty
-// one leaves RunResult.FinalAssistantText empty so the omitempty tag
-// drops it from the wire.
+// TestBuildRunResult_FinalAssistantText pins that a populated
+// FinalAssistantText carries through verbatim and an empty one is
+// omitted from the wire via the omitempty tag.
 func TestBuildRunResult_FinalAssistantText(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -232,12 +209,9 @@ func TestBuildRunResult_FinalAssistantText(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_FinalAssistantTextCappedAndFlagged pins issue
-// #463: a RunTrace.FinalAssistantText longer than the resolved cap is
-// truncated on the RunResult copy, the truncation marker is appended,
-// and FinalAssistantTextTruncated is set — while rt itself (the
-// RunTrace the trace emitters read via RecordFinalAssistantText) is
-// left untouched by buildRunResult.
+// TestBuildRunResult_FinalAssistantTextCappedAndFlagged pins that text
+// longer than the resolved cap is truncated with a marker appended and
+// FinalAssistantTextTruncated set, while rt itself is left untouched.
 func TestBuildRunResult_FinalAssistantTextCappedAndFlagged(t *testing.T) {
 	longText := strings.Repeat("a", 100)
 	rt := &types.RunTrace{
@@ -262,9 +236,7 @@ func TestBuildRunResult_FinalAssistantTextCappedAndFlagged(t *testing.T) {
 		t.Errorf("capped FinalAssistantText len = %d, want > cap %d (marker must still be present)", len(got.FinalAssistantText), maxBytes)
 	}
 
-	// buildRunResult must not mutate the RunTrace it was given: trace
-	// emitters record the full text independently via
-	// RecordFinalAssistantText and must see the untruncated value.
+	// buildRunResult must not mutate the RunTrace it was given.
 	if rt.FinalAssistantText != longText {
 		t.Errorf("rt.FinalAssistantText was mutated to %q, want untouched %q", rt.FinalAssistantText, longText)
 	}
@@ -278,10 +250,8 @@ func TestBuildRunResult_FinalAssistantTextCappedAndFlagged(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_FinalAssistantTextUnderCapUntouched pins the
-// non-truncation path with an explicit small cap: text at or under the
-// cap passes through unmodified and FinalAssistantTextTruncated stays
-// false.
+// TestBuildRunResult_FinalAssistantTextUnderCapUntouched pins that text
+// at or under the cap passes through unmodified.
 func TestBuildRunResult_FinalAssistantTextUnderCapUntouched(t *testing.T) {
 	rt := &types.RunTrace{
 		ID:                 "run-under-cap",
@@ -297,9 +267,8 @@ func TestBuildRunResult_FinalAssistantTextUnderCapUntouched(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_HookFailuresCounted pins the issue #461 field: a
-// non-zero HookFailures count when the trace carries failed (but not
-// skipped) lifecycle hook executions, computed across both phases.
+// TestBuildRunResult_HookFailuresCounted pins that HookFailures counts
+// failed (but not skipped) lifecycle hook executions across both phases.
 func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 	rt := &types.RunTrace{
 		ID:      "run-hooks",
@@ -316,9 +285,8 @@ func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 	}
 }
 
-// TestBuildRunResult_NoHookResultsLeavesHookFailuresZero pins the
-// hookless-run default: an empty/nil HookResults must not panic and
-// must resolve HookFailures to zero.
+// TestBuildRunResult_NoHookResultsLeavesHookFailuresZero pins that a
+// nil HookResults resolves HookFailures to zero without panicking.
 func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	rt := &types.RunTrace{ID: "run-no-hooks", Outcome: "success"}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
@@ -327,8 +295,8 @@ func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	}
 }
 
-// fakeCloser is an io.Closer test double that records whether/how many
-// times Close was called, for armShutdownWatchdog tests.
+// fakeCloser is an io.Closer test double recording Close call count,
+// for armShutdownWatchdog tests.
 type fakeCloser struct {
 	mu    sync.Mutex
 	calls int
@@ -348,11 +316,9 @@ func (f *fakeCloser) callCount() int {
 	return f.calls
 }
 
-// TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns pins the
-// proactive-teardown path (issue #461 finding #1): if shutdownCtx fires
-// and the caller never calls stop() (simulating Run() still blocked
-// past the grace window — e.g. the orchestrator's SIGKILL is about to
-// land), the watchdog closes the loop on its own.
+// TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns pins that
+// if shutdownCtx fires and stop() is never called (Run() still blocked
+// past the grace window), the watchdog closes the loop on its own.
 func TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns(t *testing.T) {
 	closer := &fakeCloser{}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
@@ -374,11 +340,9 @@ func TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns(t *testing.T) {
 	}
 }
 
-// TestArmShutdownWatchdog_StopPreventsClose pins the normal-return path:
-// calling stop() before the grace window elapses (Run() returned
-// through the ordinary path) must prevent the watchdog from ever
-// calling Close — the caller's own `defer loop.Close()` owns teardown
-// in that case.
+// TestArmShutdownWatchdog_StopPreventsClose pins that calling stop()
+// before the grace window elapses prevents the watchdog from calling
+// Close — the caller's own `defer loop.Close()` owns teardown instead.
 func TestArmShutdownWatchdog_StopPreventsClose(t *testing.T) {
 	closer := &fakeCloser{}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
@@ -394,9 +358,8 @@ func TestArmShutdownWatchdog_StopPreventsClose(t *testing.T) {
 	}
 }
 
-// TestArmShutdownWatchdog_NoShutdownNeverCloses pins the no-signal path:
-// a watchdog whose shutdownCtx never fires must never close the loop,
-// regardless of how long it runs.
+// TestArmShutdownWatchdog_NoShutdownNeverCloses pins that a watchdog
+// whose shutdownCtx never fires never closes the loop.
 func TestArmShutdownWatchdog_NoShutdownNeverCloses(t *testing.T) {
 	closer := &fakeCloser{}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
@@ -411,12 +374,8 @@ func TestArmShutdownWatchdog_NoShutdownNeverCloses(t *testing.T) {
 	}
 }
 
-// TestExportWorkspace_NoopWhenEmpty pins the WorkspaceExportTo=="" path:
-// no exporter is constructed and no HTTP call is made. Tested by
-// asserting the factory closure is never invoked, so a regression that
-// flipped the order of the early return and the factory call would
-// surface as a failed test rather than a surprising metadata-server
-// timeout on a workstation.
+// TestExportWorkspace_NoopWhenEmpty pins that WorkspaceExportTo=="" skips
+// exporter construction entirely, asserted via the factory closure.
 func TestExportWorkspace_NoopWhenEmpty(t *testing.T) {
 	called := false
 	orig := newWorkspaceExporter
@@ -435,11 +394,9 @@ func TestExportWorkspace_NoopWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestExportWorkspace_RequiredPropagatesError pins the
-// exportRequired=true contract: any failure from Export must surface
-// as a non-nil error so the caller exits non-zero. A Cloud Run
-// deployment that demands the workspace tarball for downstream
-// automation depends on this signalling.
+// TestExportWorkspace_RequiredPropagatesError pins that with
+// exportRequired=true, any failure from Export surfaces as a non-nil
+// error so the caller exits non-zero.
 func TestExportWorkspace_RequiredPropagatesError(t *testing.T) {
 	sentinel := errors.New("simulated GCS upload failure")
 	orig := newWorkspaceExporter
@@ -461,11 +418,9 @@ func TestExportWorkspace_RequiredPropagatesError(t *testing.T) {
 	}
 }
 
-// TestExportWorkspace_OptionalLogsError pins the exportRequired=false
-// contract: an Export failure is logged with slog but does not
-// propagate. A run that opted into best-effort export must still
-// surface its real outcome rather than being masked by a transient
-// GCS upload error.
+// TestExportWorkspace_OptionalLogsError pins that with
+// exportRequired=false, an Export failure is logged but does not
+// propagate.
 func TestExportWorkspace_OptionalLogsError(t *testing.T) {
 	orig := newWorkspaceExporter
 	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {

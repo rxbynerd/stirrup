@@ -76,10 +76,10 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 const maxEditFileDescriptionLen = 2000
 
 // TestMultiStrategy_DescriptionEnrichedShape asserts that the edit_file
-// description carries the #227 contract — when-to-use guidance, an
-// example labelled "Example", and a bounded length. The example is
-// extracted by finding the rightmost "Example" marker and walking the
-// brace balance to capture the JSON object, matching the helper in
+// description carries when-to-use guidance, an example labelled
+// "Example", and a bounded length. The example is extracted by finding
+// the rightmost "Example" marker and walking the brace balance to
+// capture the JSON object, matching the helper in
 // harness/internal/tool/builtins/builtins_test.go.
 func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 	m := NewMultiStrategy(defaultFuzzyThreshold)
@@ -104,10 +104,9 @@ func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
 	}
 
-	// #222: the structured InputExamples must mirror the description example
-	// byte-for-byte. editStrategyTool propagates this onto the registered
-	// edit_file tool, where adapters fold it into the schema `examples`
-	// keyword for providers that support it.
+	// The structured InputExamples must mirror the description example
+	// byte-for-byte; adapters fold it into the schema `examples` keyword
+	// for providers that support it.
 	if def.Presentation == nil || len(def.Presentation.InputExamples) != 1 {
 		t.Fatalf("ToolDefinition().Presentation = %+v, want exactly one InputExample", def.Presentation)
 	}
@@ -147,12 +146,10 @@ func hasPositiveUseThis(desc string) bool {
 // quoted values cannot terminate the scan early.
 //
 // Contract: descriptions must contain at least one capital-`E` "Example"
-// marker followed by a valid JSON object. The rightmost such marker is
-// the one parsed. A future #222 migration that extracts examples into a
-// structured InputExamples []any field on types.ToolDefinition relies on
-// this contract — the helper here is the seam it would replace. The
-// duplicate of this helper in harness/internal/tool/builtins/builtins_test.go
-// carries the same contract.
+// marker followed by a valid JSON object; the rightmost marker is parsed.
+// The duplicate of this helper in
+// harness/internal/tool/builtins/builtins_test.go carries the same
+// contract.
 func extractEditFileJSONExample(desc string) (string, bool) {
 	marker := strings.LastIndex(desc, "Example")
 	if marker < 0 {
@@ -197,13 +194,11 @@ func extractEditFileJSONExample(desc string) (string, bool) {
 }
 
 // TestExtractEditFileJSONExample locks the contract of the
-// extractEditFileJSONExample helper directly. The helper duplicates the
-// extractJSONExample helper in harness/internal/tool/builtins; the two
-// suites run independently so the duplication is intentional. The #222
-// migration has landed — edit_file now carries structured InputExamples on
-// its ToolDefinition.Presentation — and this helper is the oracle
-// TestMultiStrategy_DescriptionEnrichedShape uses to pin that example to the
-// description.
+// extractEditFileJSONExample helper, the oracle
+// TestMultiStrategy_DescriptionEnrichedShape uses to pin the description's
+// example. It duplicates the extractJSONExample helper in
+// harness/internal/tool/builtins intentionally, so the two suites run
+// independently.
 func TestExtractEditFileJSONExample(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -469,11 +464,8 @@ func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
 	}
 }
 
-// TestMultiStrategy_ReplaceMissingOldString covers the validateOperationFields
-// branch at multi.go:225 — operation=replace with new_string set but
-// old_string absent. The pre-existing tests covered missing new_string
-// and the unknown-operation paths, leaving this one reachable production
-// branch unexercised.
+// TestMultiStrategy_ReplaceMissingOldString covers operation=replace with
+// new_string set but old_string absent.
 func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
@@ -497,10 +489,8 @@ func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
 	}
 }
 
-// TestMultiStrategy_DeleteMissingOldString covers the branch at multi.go:233
-// — operation=delete with both old_string and new_string absent. The
-// pre-existing delete tests covered the wrong-direction case (new_string
-// supplied) but not the missing-required-field case.
+// TestMultiStrategy_DeleteMissingOldString covers operation=delete with
+// both old_string and new_string absent.
 func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
@@ -704,8 +694,6 @@ func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
 		t.Errorf("primary patch should have applied, got content: %q", content)
 	}
 }
-
-// helpers
 
 func newTestExecutor(t *testing.T, dir string) executor.Executor {
 	t.Helper()

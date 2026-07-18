@@ -6,10 +6,9 @@ import (
 )
 
 // geminiSchemaLintError carries a tool name plus the field path of the
-// rejected keyword. The exported message names the tool, the keyword,
-// and the path only — never the schema's description or enum content
-// — so a fail-closed log line cannot leak operator-supplied prose at
-// error level (#228 §5).
+// rejected keyword. The message names the tool, keyword, and path only —
+// never the schema's description or enum content — so a fail-closed log
+// line cannot leak operator-supplied prose at error level.
 type geminiSchemaLintError struct {
 	tool    string
 	path    string
@@ -29,34 +28,18 @@ func (e *geminiSchemaLintError) Error() string {
 
 // LintGeminiSchema reports the first JSON Schema keyword in `in` that
 // matches any entry in `unsupported`, walking the document recursively
-// through `properties` and `items`. Returns nil when the schema uses
-// only keywords the resolved Gemini model accepts.
+// through `properties` and `items`. Returns nil when the schema uses only
+// keywords the resolved Gemini model accepts.
 //
-// Caller precondition (design §5.1): the schemas this function walks
-// must originate from first-party tool registrations
-// (harness/internal/tool/builtins/) or the structured MCP import path.
-// Operator-authored schemas are not accepted in v1; the recursion has
-// no depth cap because the canonical schema surface is bounded by
-// design. A future operator-facing surface (e.g. the deferred
-// quirkOverrides hook on provider.Registry) must add a depth cap here
-// before exposing untrusted nesting.
+// Callers must only pass schemas originating from first-party tool
+// registrations or the structured MCP import path — the recursion has no
+// depth cap because that surface is bounded by design; see
+// docs/provider-quirks.md before exposing operator-authored schemas here.
 //
-// The lint runs BEFORE ConvertSchema so the operator sees one clear
-// error (the policy rejection) rather than the structural rewrite
-// reasons ConvertSchema would surface for the same shape (e.g. an
-// oneOf branch list). When ConvertSchema would also reject the
-// keyword on a structural basis, this linter takes precedence so the
-// error message names the model-scoped policy.
-//
-// The match is keyword-presence at any nesting depth. A keyword listed
-// in `unsupported` triggers as soon as it appears as a key in any
-// schema-shaped object — the linter does not inspect the value, only
-// the key. This is the conservative behaviour: if a quirks rule lists
-// "pattern" the linter rejects any schema with a `pattern` key, even
-// inside a nested array's items.
-//
-// Empty `unsupported` returns nil immediately so the lint cost on the
-// default Gemini path is one slice-length check.
+// The lint runs BEFORE ConvertSchema so the operator sees the policy
+// rejection rather than ConvertSchema's structural rewrite reasons for the
+// same shape. Matching is keyword-presence at any nesting depth — the
+// value is never inspected, only the key.
 func LintGeminiSchema(toolName string, in json.RawMessage, unsupported []string) error {
 	if len(unsupported) == 0 || len(in) == 0 {
 		return nil
@@ -91,11 +74,9 @@ func walkLintNode(toolName string, node any, path string, unsupported map[string
 			}
 		}
 	}
-	// Recurse into known schema-walking keys. Per the existing
-	// ConvertSchema convention we descend into `properties` (each
-	// child a schema) and `items` (one schema, or an array of
-	// schemas for tuple-style validation — we handle both forms so
-	// the linter does not silently miss a tuple's `pattern`).
+	// Descend into `properties` (each child a schema) and `items` (one
+	// schema, or an array for tuple-style validation — handle both so a
+	// tuple's forbidden keyword isn't missed).
 	if rawProps, has := obj["properties"]; has {
 		if props, ok := rawProps.(map[string]any); ok {
 			for k, v := range props {

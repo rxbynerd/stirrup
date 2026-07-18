@@ -179,17 +179,15 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 	if registry.Resolve("run_command") != nil {
 		t.Fatal("did not expect run_command without exec capability")
 	}
-	// grep_files and find_files are filesystem-read primitives; a
-	// CanRead-only executor must still get both. grep_files's rg fast path
-	// gates on CanExec internally and falls back to the native walker.
+	// grep_files's rg fast path gates on CanExec internally and falls back
+	// to the native walker, so a CanRead-only executor must still get both
+	// grep_files and find_files.
 	if registry.Resolve("grep_files") == nil {
 		t.Fatal("expected grep_files to register on a CanRead-only executor")
 	}
 	if registry.Resolve("find_files") == nil {
 		t.Fatal("expected find_files to register on a CanRead-only executor")
 	}
-	// The legacy search_files name must remain absent — the dispatcher
-	// emits a directional error rather than silently aliasing it.
 	if registry.Resolve("search_files") != nil {
 		t.Fatal("search_files must not be registered (split into grep_files/find_files)")
 	}
@@ -217,12 +215,9 @@ func buildOpenAIConfig(t *testing.T, baseURL string) *types.RunConfig {
 	t.Helper()
 	timeout := 30
 	workspace := t.TempDir()
-	// Tests in this file exercise the factory and the agentic loop, not
-	// the Rule-of-Two security invariant. The default tool list (nil =
-	// all built-ins) combined with a TEST_*_KEY APIKeyRef and the
-	// allow-all permission policy is exactly the all-three case the
-	// validator rejects, so we explicitly disable enforcement here.
-	// Rule-of-Two semantics are covered in types/runconfig_test.go.
+	// This config is the all-three case the Rule-of-Two validator rejects
+	// (default tool list + TEST_*_KEY + allow-all); disable enforcement
+	// since this file exercises the factory and loop, not that invariant.
 	enforce := false
 	config := &types.RunConfig{
 		RunID:    "integration-provider",
@@ -279,15 +274,11 @@ func openAIChunk(payload string) string {
 	return "data: " + payload + "\n\n"
 }
 
-// TestBuildLoop_ResearchModeWebFetchEndToEnd is the WP1 end-to-end
-// regression. With deny-side-effects active, a research-mode run that
-// asks the model to call web_fetch must not record any
-// "Permission denied" tool result. Before the WP1 fix the conflated
-// SideEffects flag caused every web_fetch to be denied.
-//
-// We replace the real web_fetch handler with a stub after the loop is
-// built so the test does not need network access; the permission gate
-// runs *before* the handler, so this still exercises the policy path.
+// TestBuildLoop_ResearchModeWebFetchEndToEnd: with deny-side-effects
+// active, a research-mode run that calls web_fetch must not record any
+// "Permission denied" tool result. The real web_fetch handler is replaced
+// with a stub so the test needs no network access; the permission gate
+// runs before the handler, so the policy path is still exercised.
 func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
@@ -305,10 +296,8 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 
 	timeout := 30
 	// Research mode + web_fetch + a TEST_*_KEY APIKeyRef triggers the
-	// Rule-of-Two invariant. This test predates the invariant and is
-	// asserting permission-policy behaviour, not Rule-of-Two — disable
-	// enforcement here. Rule-of-Two coverage lives in
-	// types/runconfig_test.go.
+	// Rule-of-Two invariant; disable it since this test asserts
+	// permission-policy behaviour, not Rule-of-Two.
 	enforce := false
 	config := &types.RunConfig{
 		RunID:            "integration-research-webfetch",
@@ -337,12 +326,9 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	// Replace web_fetch with a stub so the test does not depend on
-	// network access. The permission policy runs *before* the handler,
-	// so this still exercises the WP1 gating path. loop.Tools is the
-	// profile Presenter (issue #234); unwrap to the underlying registry
-	// to swap a handler — web_fetch is unaliased under the default
-	// profile, so the presented name is unchanged by the re-registration.
+	// loop.Tools is the profile Presenter; unwrap to the underlying
+	// registry to swap the handler. web_fetch is unaliased under the
+	// default profile, so the presented name is unchanged.
 	presenter, ok := loop.Tools.(*tool.Presenter)
 	if !ok {
 		t.Fatalf("expected *tool.Presenter, got %T", loop.Tools)
@@ -374,8 +360,6 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	if runTrace.Outcome != "success" {
 		t.Fatalf("expected research run to succeed, got outcome %q", runTrace.Outcome)
 	}
-	// At least one web_fetch call should have been recorded, and none
-	// of the recorded calls should report a permission denial.
 	var sawWebFetch bool
 	for _, call := range runTrace.ToolCalls {
 		if call.Name == "web_fetch" {
@@ -396,7 +380,7 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 // aborted and RunTrace.Outcome should be "cancelled".
 func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 	// Two-turn recording: turn 0 calls a read-only tool, turn 1 ends the
-	// run. We inject a cancel between them.
+	// run; a cancel is injected between them.
 	turns := []types.TurnRecord{
 		{
 			Turn: 0,
@@ -433,7 +417,6 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 	fireCancel := func() {
 		tr.FireControl(types.ControlEvent{Type: "cancel"})
 	}
-	// Replace the tool handler to fire cancel on completion.
 	if tool := loop.Tools.Resolve("test_tool"); tool != nil {
 		prev := tool.Handler
 		tool.Handler = func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -456,9 +439,6 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
 	}
 
-	// H1: the wire-level contract is that done.stop_reason matches the
-	// RunTrace outcome. Assert the transport received exactly one done
-	// event carrying stop_reason="cancelled".
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
@@ -472,8 +452,6 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 		t.Errorf("expected done.stop_reason 'cancelled', got %q", doneEvents[0].StopReason)
 	}
 
-	// Sanity: the replay provider should have been consumed at most once.
-	// The second turn must not have been executed.
 	if runTrace.Turns > 1 {
 		t.Errorf("expected at most 1 recorded turn, got %d", runTrace.Turns)
 	}

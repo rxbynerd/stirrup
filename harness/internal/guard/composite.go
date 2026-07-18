@@ -51,9 +51,8 @@ func (s Sequential) Check(ctx context.Context, in Input) (*Decision, error) {
 
 	var last *Decision
 	for _, g := range s.Guards {
-		// Honour cancellation between sub-guards; downstream RPCs may
-		// be expensive and we do not want to dispatch one after the
-		// caller's deadline has fired.
+		// Honour cancellation between sub-guards so an expired deadline
+		// stops the chain instead of dispatching another RPC.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -67,9 +66,7 @@ func (s Sequential) Check(ctx context.Context, in Input) (*Decision, error) {
 		last = d
 	}
 	if last == nil {
-		// All guards returned nil decisions without erroring. Treat as
-		// a tagged allow rather than panicking — adapter authors should
-		// never do this, but the composite's job is to stay sane.
+
 		return &Decision{Verdict: VerdictAllow, GuardID: id}, nil
 	}
 	return last, nil
@@ -85,22 +82,16 @@ func (s Sequential) Check(ctx context.Context, in Input) (*Decision, error) {
 // every non-error guard allows and at least one guard errored, the
 // first error is returned.
 //
-// CompositeMode reservation: v1's `buildGuardRailNode` always wires a
-// Sequential composite. Parallel is exported and tested against direct
-// callers (embedders, future config switches), but no
-// GuardRailConfig.CompositeMode field exists yet — adding one is a
-// backward-compatible extension reserved for a follow-up issue. Until
-// then, operators who want parallel composition must construct the
-// Parallel directly via the harnessapi.
+// Config-driven composites always wire Sequential; operators who want
+// Parallel must construct it directly via the harnessapi.
 type Parallel struct {
 	Guards []GuardRail
 	ID     string
 }
 
 // Check fans out across all guards, waits for every one to settle,
-// then aggregates. We do not cancel siblings on the first deny: each
-// guard's verdict is interesting for traces and metrics, and adapter
-// authors expect Check to either run to completion or honour ctx.
+// then aggregates. Siblings are not cancelled on the first deny: every
+// guard's verdict is retained for traces and metrics.
 func (p Parallel) Check(ctx context.Context, in Input) (*Decision, error) {
 	id := p.ID
 	if id == "" {
@@ -163,8 +154,8 @@ func (p Parallel) Check(ctx context.Context, in Input) (*Decision, error) {
 		}
 	}
 
-	// A deny outranks any error: the safest action is to stop the run,
-	// and we already have a structured reason from the denying guard.
+	// A deny outranks any error: it carries a structured reason and the
+	// safest action is to stop the run regardless of sibling errors.
 	if !anyDeny && firstErr != nil {
 		return nil, firstErr
 	}

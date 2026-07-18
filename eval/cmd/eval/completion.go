@@ -12,34 +12,16 @@ func init() {
 	evalCompletionRunModes = types.ValidRunModeValues()
 }
 
-// stirrup-eval uses the stdlib `flag` package rather than cobra, so the
-// completion scripts below are hand-rolled rather than generated. The
-// flag surface is small (seven subcommands, fewer than thirty distinct
-// flags total) and stable enough that maintaining hand-rolled scripts
-// is cheaper than dragging cobra into the eval module.
-//
-// Each script offers:
-//   - subcommand completion at position 1 (run, compare, …)
-//   - flag-name completion within a subcommand
-//   - filesystem path completion for path-shaped flags (-suite, -output,
-//     -junit, -harness, -from, -to-junit, -current, -baseline,
-//     -lakehouse, -results)
-//   - dynamic value completion for -mode (the closed set lives in
-//     types/runconfig.go, exposed via types.ValidRunModeValues())
-//
-// The Go flag package accepts both `-flag` and `--flag`; the scripts
-// emit single-dash forms to match the rest of the eval CLI's
-// documentation.
+// stirrup-eval uses the stdlib `flag` package rather than cobra, so
+// the completion scripts below are hand-rolled. The Go flag package
+// accepts both `-flag` and `--flag`; the scripts emit single-dash
+// forms to match the rest of the eval CLI's documentation.
 
-// evalCompletionSubcommands enumerates the top-level subcommands. It
-// is reused across every script so a new subcommand only needs to be
-// added in one place. The "completion" entry is included so
-// `stirrup-eval completion <TAB>` itself offers completions — the
-// shell-name suggestions land in the flag-completion path rather than
-// the positional-argument path because the hand-rolled scripts route
-// non-dash tokens through evalCompletionFlags. A structural fix that
-// honours positional arguments would require reshaping every emit*
-// helper; the current routing is a deliberate trade-off.
+// evalCompletionSubcommands enumerates the top-level subcommands,
+// reused across every script. The "completion" entry's shell-name
+// suggestions route through evalCompletionFlags rather than a
+// positional-argument path, since the hand-rolled scripts have no
+// such path.
 var evalCompletionSubcommands = []string{
 	"baseline",
 	"compare",
@@ -54,12 +36,9 @@ var evalCompletionSubcommands = []string{
 }
 
 // evalCompletionFlags maps each subcommand to the flag names it
-// accepts. The ordering matches the flag declarations in cmdRun /
-// cmdCompare / etc. so a reader can cross-reference at a glance.
-// Flag names omit the leading dash. The "completion" entry holds the
-// supported shell names rather than true flag names — the hand-rolled
-// scripts have no positional-argument completion path, so the shells
-// are surfaced through the flag-name lookup so they remain reachable.
+// accepts (leading dash omitted). The "completion" entry holds
+// supported shell names rather than true flags, surfaced through
+// this lookup for the same reason noted above.
 var evalCompletionFlags = map[string][]string{
 	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit", "accept-quarantine", "model"},
 	"compare":               {"current", "baseline"},
@@ -74,19 +53,12 @@ var evalCompletionFlags = map[string][]string{
 }
 
 // evalCompletionRunModes is the closed-set value list for the -mode
-// filter flag on baseline / drift / compare-to-production. Sourced
-// from types.ValidRunModeValues() at script-generation time so the
-// completion surface tracks the validator.
-//
-// Bound at package init rather than embedded literally so a future
-// addition to validRunModes flows through automatically. The slice is
-// joined into shell array literals when each script is rendered.
+// filter flag on baseline / drift / compare-to-production. Bound at
+// package init from types.ValidRunModeValues() so the completion
+// surface tracks the validator automatically.
 var evalCompletionRunModes []string
 
-// emitEvalCompletion writes the requested shell's completion script
-// to w. The supported shells mirror those exposed by `stirrup
-// completion`; a future shell only needs a new emit* helper and an
-// added switch arm.
+// emitEvalCompletion writes the requested shell's completion script to w.
 func emitEvalCompletion(shell string, w io.Writer) error {
 	switch shell {
 	case "bash":
@@ -229,13 +201,9 @@ function __stirrup_eval_using_subcommand
 end
 
 `)
-	// Subcommand and mode values are wrapped in fish single-quotes
-	// before being passed to `complete -a`. Fish single-quote literals
-	// interpret no escape sequences, so a future value that contains a
-	// space or fish-special character (`$`, `*`, `~`) cannot break the
-	// generated script. Today every value sourced from
-	// evalCompletionSubcommands and types.ValidRunModeValues() is a safe
-	// bare word; the quoting is defensive against future additions.
+	// Values are wrapped in fish single-quotes, which interpret no
+	// escape sequences, so a future value containing a space or
+	// fish-special character cannot break the generated script.
 	for _, sub := range evalCompletionSubcommands {
 		fmt.Fprintf(&b, "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a '%s'\n", sub)
 	}
@@ -246,7 +214,7 @@ end
 			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -o %s\n", sub, flag)
 		}
 	}
-	// -mode value completion.
+	// -mode values.
 	b.WriteString("\n")
 	for _, sub := range []string{"baseline", "drift", "compare-to-production"} {
 		for _, m := range evalCompletionRunModes {
@@ -325,10 +293,8 @@ Register-ArgumentCompleter -Native -CommandName stirrup-eval -ScriptBlock {
 	return err
 }
 
-// dashPrefix joins a slice of bare flag names into a space-separated
-// list of dash-prefixed forms suitable for embedding in a bash case
-// arm. Centralised so a future change to the dash convention (e.g.
-// double-dash) touches one helper rather than every Builder concat.
+// dashPrefix joins bare flag names into a space-separated list of
+// dash-prefixed forms for a bash case arm.
 func dashPrefix(flags []string) string {
 	out := make([]string, 0, len(flags))
 	for _, f := range flags {
@@ -337,8 +303,8 @@ func dashPrefix(flags []string) string {
 	return strings.Join(out, " ")
 }
 
-// zshFlagArray renders a slice of flag names as a parenthesised zsh
-// array of dash-prefixed entries. Used by emitEvalZshCompletion.
+// zshFlagArray renders flag names as a parenthesised zsh array of
+// dash-prefixed entries.
 func zshFlagArray(flags []string) string {
 	out := make([]string, 0, len(flags))
 	for _, f := range flags {

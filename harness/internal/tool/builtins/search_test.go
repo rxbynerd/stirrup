@@ -319,8 +319,7 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		t.Errorf("expected reconstructed rg text 'x.go:1:hit', got %q", out)
 	}
 	// Each include glob must be passed to rg as --glob 'pattern' and each
-	// exclude glob as --glob '!pattern' — the two for-loops in
-	// grepViaRipgrep that wire these were previously unobserved.
+	// exclude glob as --glob '!pattern'.
 	if !strings.Contains(capturedCmd, "--glob '*.go'") {
 		t.Errorf("expected --glob '*.go' in rg invocation, got %q", capturedCmd)
 	}
@@ -614,10 +613,9 @@ func TestGrepFilesTool_EmptyPattern(t *testing.T) {
 }
 
 // TestFindFilesTool_SchemaBasenameSemantics pins the name-field description
-// to make basename-only matching explicit. The pre-fix description included
-// `**/handler_*.ts` as an example, but filepath.Match does not understand
-// `**` and the matcher is basename-only, so models taking the example at
-// face value got silent zero-match results.
+// to make basename-only matching explicit: filepath.Match does not
+// understand `**` and the matcher is basename-only, so an example implying
+// otherwise would lead models to silent zero-match results.
 func TestFindFilesTool_SchemaBasenameSemantics(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	schema := string(find.InputSchema)
@@ -666,13 +664,11 @@ func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
 	}
 }
 
-// TestDoubleStarMatch_EscapesMetacharacters pins the regex-injection fix:
-// the previous implementation escaped only `.`, so any other regex
-// metacharacter in the glob produced either a malformed regex (the
-// regexp.Compile error was silently swallowed, so the filter failed open
-// — CWE-185) or a regex with unintended semantics (capturing groups,
-// quantifiers). It also iterated by byte, splitting multi-byte UTF-8 across
-// the default branch. This table covers both shapes.
+// TestDoubleStarMatch_EscapesMetacharacters pins the regex-injection guard: a
+// glob containing a regex metacharacter must translate to a regex matching
+// it literally rather than a malformed pattern (CWE-185, filter fails open)
+// or unintended semantics (capturing groups, quantifiers). It also covers
+// rune-safe iteration over multi-byte UTF-8 path segments.
 func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -681,8 +677,7 @@ func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
 		want    bool
 	}{
 		// Square brackets in the glob must be treated as literal, not as a
-		// regex character class. Pre-fix this either compiled into a class
-		// or threw an "[" parse error swallowed by the helper.
+		// regex character class.
 		{"literal brackets match", "src/[abc].go", "src/[abc].go", true},
 		{"literal brackets no match", "src/[abc].go", "src/a.go", false},
 
@@ -701,8 +696,7 @@ func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
 		{"dollar literal", "src/$var.go", "src/$var.go", true},
 		{"caret literal", "src/^a.go", "src/^a.go", true},
 
-		// Non-ASCII path: pre-fix the byte-indexed loop garbled the
-		// multi-byte rune into invalid regex fragments.
+		// Non-ASCII path: iteration must be rune-safe, not byte-indexed.
 		{"utf8 match", "café/**/x.go", "café/sub/x.go", true},
 		{"utf8 prefix mismatch", "café/**/x.go", "cafe/sub/x.go", false},
 
@@ -755,7 +749,7 @@ func TestFindFilesTool_DoubleStarGlob(t *testing.T) {
 	}
 }
 
-// --- Truncated boundary coverage (issue #341) ---
+// --- Truncated boundary coverage ---
 
 // decodeSearchResult pulls the structured searchResult envelope out of a grep
 // invocation, asserting the Kind is the search-result kind.
@@ -799,7 +793,7 @@ func rgMatchEvents(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {
 		// Distinct path per event so n > 26 cannot collapse onto duplicate
-		// paths the way an 'a'+i%26 rune cycle would (issue #367).
+		// paths the way an 'a'+i%26 rune cycle would.
 		fmt.Fprintf(&b, `{"type":"match","data":{"path":{"text":"f%d.go"},"lines":{"text":"hit\n"},"line_number":1}}`+"\n", i)
 	}
 	return b.String()
@@ -808,7 +802,7 @@ func rgMatchEvents(n int) string {
 // TestGrepFilesTool_TruncatedBoundary_Native exercises the look-ahead probe on
 // the Go-native walker: a count landing exactly on max_results must report
 // Truncated:false, one past must report true and trim the probe element, and a
-// count below the cap must report false (issue #341).
+// count below the cap must report false.
 func TestGrepFilesTool_TruncatedBoundary_Native(t *testing.T) {
 	withRipgrepProbe(t, false)
 	const maxResults = 3
@@ -877,8 +871,7 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 			sr := decodeSearchResult(t, grep, input)
 			// The look-ahead probe lives in --max-count: rg must be asked for
 			// maxResults+1 so a count landing exactly on the cap stays
-			// distinguishable from genuine truncation. Pinning the literal
-			// catches a revert to plain maxResults (issue #366).
+			// distinguishable from genuine truncation.
 			wantMaxCount := fmt.Sprintf("--max-count %d", maxResults+1)
 			if !strings.Contains(gotCmd, wantMaxCount) {
 				t.Errorf("rg command = %q, want it to contain %q", gotCmd, wantMaxCount)
@@ -894,7 +887,7 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 }
 
 // TestFindFilesTool_TruncatedBoundary exercises the look-ahead probe on the
-// find walker across the same three boundary cases (issue #341).
+// find walker across the same three boundary cases.
 func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
 	const maxResults = 3
 	cases := []struct {

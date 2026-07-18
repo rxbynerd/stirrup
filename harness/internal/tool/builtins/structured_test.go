@@ -12,9 +12,9 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
-// These tests cover issue #231 B1: every structured built-in must populate a
-// correct, typed structured payload with the right Kind discriminator AND leave
-// the text fallback byte-identical to the pre-#231 rendering.
+// These tests assert every structured built-in populates a correct, typed
+// structured payload with the right Kind discriminator, while leaving the
+// text fallback rendering unchanged.
 
 func TestRunCommandTool_StructuredAndText(t *testing.T) {
 	mock := &mockExecutor{
@@ -52,8 +52,8 @@ func TestRunCommandTool_StructuredAndText(t *testing.T) {
 	}
 }
 
-// TestRunCommandTool_StructuredDefaultTimeout exercises the params.Timeout==nil
-// branch (R2): omitting timeout must default TimeoutSeconds to 30.
+// TestRunCommandTool_StructuredDefaultTimeout: omitting timeout must default
+// TimeoutSeconds to 30.
 func TestRunCommandTool_StructuredDefaultTimeout(t *testing.T) {
 	mock := &mockExecutor{
 		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
@@ -180,10 +180,9 @@ func TestGrepFilesTool_StructuredMatches(t *testing.T) {
 	}
 }
 
-// TestGrepFilesTool_ColonInPathAndText is the [B1] regression: a path AND a
-// matched line that both contain colons must round-trip into searchMatch
-// fields exactly, with the rendered text still byte-identical. The old
-// re-parse-the-text approach silently dropped or corrupted such matches.
+// TestGrepFilesTool_ColonInPathAndText: a path AND a matched line that both
+// contain colons must round-trip into searchMatch fields exactly, with the
+// rendered text still byte-identical.
 func TestGrepFilesTool_ColonInPathAndText(t *testing.T) {
 	withRipgrepProbe(t, false) // exercise the native walker explicitly
 	dir := t.TempDir()
@@ -307,8 +306,8 @@ func TestFindFilesTool_StructuredPaths(t *testing.T) {
 	}
 }
 
-// TestFindFilesTool_StructuredTruncated (R1): mirror the grep truncation test
-// for find_files.
+// TestFindFilesTool_StructuredTruncated mirrors the grep truncation test for
+// find_files.
 func TestFindFilesTool_StructuredTruncated(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"one.go", "two.go"} {

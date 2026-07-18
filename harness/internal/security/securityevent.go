@@ -87,8 +87,6 @@ func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
 	}
 }
 
-// Convenience methods for the 7 spec-defined security events.
-
 // PathTraversalBlocked emits when a path traversal attempt is rejected.
 func (sl *SecurityLogger) PathTraversalBlocked(path, workspace string) {
 	sl.Emit("warn", "path_traversal_blocked", map[string]any{

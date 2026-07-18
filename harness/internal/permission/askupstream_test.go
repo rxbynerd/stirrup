@@ -82,9 +82,9 @@ func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 	}
 }
 
-// TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot pins
-// the Wave-4 fix: an mcp_-prefixed tool absent from the construction-time
-// approvalTools snapshot must still be forwarded for approval, matching
+// TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot: an
+// mcp_-prefixed tool absent from the construction-time approvalTools
+// snapshot must still be forwarded for approval, matching
 // ruleOfTwoGate.isExternal. Without the prefix fallback the call would
 // auto-allow, bypassing the upstream approval the rule-of-two gate routes
 // it here to obtain.

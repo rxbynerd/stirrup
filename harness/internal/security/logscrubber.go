@@ -40,9 +40,7 @@ var secretPatterns = []namedPattern{
 	// format is `Basic <base64(instanceID:apiToken)>` (see
 	// docs/observability-cloud.md), and the bearer_token pattern below
 	// would not match this prefix. Without this entry, a resolved
-	// Basic token leaking into slog output would land unscrubbed —
-	// defeating the defence-in-depth contract the ScrubHandler
-	// promises for the OTLP/HTTP feature added in gh-100.
+	// Basic token leaking into slog output would land unscrubbed.
 	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
 	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
 	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},

@@ -61,7 +61,7 @@ func (f *fakeOTLPHTTPServer) snapshot() []capturedRequest {
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces is the core
-// happy-path test for issue #100: setting protocol="http/protobuf"
+// happy-path test: setting protocol="http/protobuf"
 // against an HTTP test server and running a Start/RecordTurn/Finish
 // cycle must POST to /v1/traces with the configured Authorization
 // header. We use httptest.NewServer (plain HTTP) and rely on the
@@ -182,36 +182,23 @@ func TestNewOTelTraceEmitter_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
 	if isInsecureEndpoint(gatewayURL) {
 		t.Errorf("isInsecureEndpoint(%q) = true; an https:// URL must use TLS", gatewayURL)
 	}
-	// Per SF-5: the no-scheme endpoint shape (`localhost:4318`) is the
-	// typical local-collector flow and must be classified as insecure
-	// so the exporter applies WithInsecure(). Without this assertion
-	// the no-scheme branch in isInsecureEndpoint had count=0 in the
-	// trace package; the metrics package already covers the same case
-	// in TestNewMetrics_HTTPProtocol_PreservesGatewayPath.
+	// The no-scheme endpoint shape (`localhost:4318`) is the typical
+	// local-collector flow and must be classified as insecure so the
+	// exporter applies WithInsecure().
 	if !isInsecureEndpoint("localhost:4318") {
 		t.Error("scheme-less endpoint should be treated as insecure")
 	}
 }
 
-// TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders is the trace-side
-// smoke test for the gRPC arm of buildOTLPTraceExporter. The metrics
-// package has TestNewMetrics_GRPCProtocol_AcceptsHeaders covering the
-// `if len(headers) > 0 { append WithHeaders }` conditional; the trace
-// package had no counterpart, leaving that branch at count=0 in
-// coverage. Per synthesis SF-4.
-//
-// This is a constructor-level test, not a factory-level test. The
-// validator added in MF-2 rejects the gRPC + non-empty headers
-// combination at config-load time (see
-// TestValidateRunConfig_HeadersOnGRPCProtocolRejected in the types
-// package), but the constructor itself is not a validation surface —
-// it's called from factory.go *after* validation. So a constructor
-// test exercising "gRPC with non-empty headers does not error on
-// option construction" still pins the previously-uncovered branch
-// without contradicting the validator's contract: the validator
-// prevents ever reaching this code path with non-empty headers in
-// production, but a future refactor that drops the WithHeaders
-// option from the slice would still surface here.
+// TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders is a
+// constructor-level test, not a factory-level test: ValidateRunConfig
+// rejects the gRPC + non-empty headers combination at config-load
+// time (see TestValidateRunConfig_HeadersOnGRPCProtocolRejected in
+// the types package), but the constructor itself is not a validation
+// surface — it's called from factory.go *after* validation, so this
+// pins that a future refactor dropping the WithHeaders option from
+// the slice would surface here even though production never reaches
+// this path with non-empty headers.
 func TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders(t *testing.T) {
 	// Direct exporter construction so we exercise the option-
 	// stitching path without paying the OTel SDK's connection
@@ -255,7 +242,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog is
-// the slog-scrubbing assertion mandated by issue #100. The harness
+// a slog-scrubbing assertion. The harness
 // resolves secret:// references upstream and passes plaintext bearer
 // tokens to the SDK; the SDK must not log header values. This test
 // captures slog output during the full Start/RecordTurn/Close cycle

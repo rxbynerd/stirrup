@@ -22,19 +22,11 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestBuildHarnessRunConfig_AllModesValidate is the regression test for the
-// bug where --mode research (and every other read-only mode) failed
-// ValidateRunConfig because the CLI left Tools.BuiltIn empty while the
-// validator required an explicit non-empty list for read-only modes. The
-// test guards against a whole class of bug: any future change to the set
-// of read-only modes, the validator rules, or the CLI's defaulting logic
-// that causes a shipped --mode value to fail validation will trip here
-// before it reaches a user.
+// TestBuildHarnessRunConfig_AllModesValidate pins that every --mode value
+// produces a RunConfig that passes ValidateRunConfig.
 func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
-	// These are every --mode value advertised in the CLI help text and the
-	// harnessCmd flag description. If a new mode is added to the CLI, this
-	// list must be updated — and it will fail loudly if a mode ships
-	// without a valid config-building path.
+	// Every --mode value advertised in the CLI help text; update when a
+	// mode is added.
 	modes := []string{"execution", "planning", "review", "research", "toil"}
 
 	baseOpts := harnessCLIOptions{
@@ -50,14 +42,6 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 		LogLevel:      "info",
 	}
 
-	// Rule of Two: every CLI default combination here carries
-	// untrusted-input (web_fetch enabled) and external-communication
-	// (web_fetch + run_command), which is two of the three legs. The
-	// sensitive-data leg is unset by default — operational secret
-	// references like ANTHROPIC_API_KEY no longer trip it (see
-	// ruleOfTwoSensitiveData rationale). So a bare CLI invocation now
-	// validates cleanly without a RuleOfTwo override; that is exactly
-	// the regression this test guards against.
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			opts := baseOpts
@@ -71,9 +55,6 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 				t.Fatalf("buildHarnessRunConfig produced an invalid RunConfig for --mode %q: %v", mode, err)
 			}
 
-			// Belt-and-braces: read-only modes must actually get the
-			// restrictive policy and a non-empty tool list, not just
-			// "pass validation somehow".
 			if types.IsReadOnlyMode(mode) {
 				if cfg.PermissionPolicy.Type != "deny-side-effects" {
 					t.Errorf("read-only mode %q should use deny-side-effects, got %q", mode, cfg.PermissionPolicy.Type)
@@ -86,14 +67,8 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 	}
 }
 
-// TestHarnessCmd_DefaultModeIsPlanning pins the CLI-surface default for
-// --mode after #74: a bare `stirrup harness` invocation lands in the
-// read-only `planning` mode, not the editable `execution` mode, so the
-// first-touch posture is safe by default and operators must explicitly
-// opt in to write/shell capabilities via --mode execution. The pin is
-// against the flag registration on harnessCmd itself rather than the
-// helper command, so a regression that flips the default in only one
-// of the two places fails this test.
+// TestHarnessCmd_DefaultModeIsPlanning pins that harnessCmd's --mode flag
+// defaults to the read-only "planning" mode, not "execution".
 func TestHarnessCmd_DefaultModeIsPlanning(t *testing.T) {
 	flag := harnessCmd.Flags().Lookup("mode")
 	if flag == nil {
@@ -104,16 +79,9 @@ func TestHarnessCmd_DefaultModeIsPlanning(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning proves the
-// safe-by-default property end-to-end: a flag-only invocation with only
-// the documented CLI defaults (no --mode override) produces a RunConfig
-// that has Mode == "planning" and passes ValidateRunConfig — including
-// the read-only-mode invariants (deny-side-effects policy, non-empty
-// Tools.BuiltIn that excludes write_file/edit_file/run_command).
-//
-// This pins acceptance criterion (a) from #74: "Validate cleanly
-// (already true after #73)" — but specifically through the new default
-// rather than relying on a caller passing --mode planning explicitly.
+// TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning proves that a
+// flag-only invocation with no --mode override lands in "planning" and
+// passes ValidateRunConfig, including the read-only-mode invariants.
 func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
 	defaultMode := harnessCmd.Flags().Lookup("mode").DefValue
 
@@ -153,8 +121,7 @@ func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
 
 // TestBuildHarnessRunConfig_OpenAIResponsesProvider verifies that the
 // openai-responses provider type is accepted by both the CLI option-to-
-// RunConfig path and ValidateRunConfig. Before this case existed, picking
-// --provider openai-responses would crash at validation.
+// RunConfig path and ValidateRunConfig.
 func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -183,18 +150,9 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation pins
-// the fail-fast guard added for #65. Running `stirrup harness
-// --provider bedrock` without overriding --model would otherwise send
-// the Anthropic-API alias "claude-sonnet-4-6" to Bedrock, which
-// rejects it with an opaque ValidationException only after IAM/SigV4
-// setup and a network round-trip. The validator catches the shape
-// at config-load time and points the operator at the inference-
-// profile path.
-//
-// The test asserts that ValidateRunConfig (not the provider) is the
-// thing that complains, so the failure mode is "no network call, with
-// an actionable error" — the explicit acceptance criterion in #65.
+// TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation pins that
+// ValidateRunConfig (not the provider) rejects the Anthropic-API model
+// alias on Bedrock, before any network round-trip.
 func TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -274,23 +232,16 @@ func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
 	}
 
-	// The default path should populate exactly the documented
-	// read-only tool list.
 	want := types.DefaultReadOnlyBuiltInTools()
 	if len(cfg.Tools.BuiltIn) != len(want) {
 		t.Fatalf("expected default read-only tool list of length %d, got %d: %v", len(want), len(cfg.Tools.BuiltIn), cfg.Tools.BuiltIn)
 	}
 }
 
-// TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools
-// reproduces the boot-time defect coord-none found: the CLI defaults
-// --mode to "planning", so a bare `stirrup harness --executor none`
-// invocation goes through this exact path. Before the fix,
-// applyModeDefaults injected the full DefaultReadOnlyBuiltInTools()
-// (including read_file et al.), which the none-executor fail-fast then
-// rejected — making --executor none dead on arrival for every read-only
-// mode. It must resolve to exactly the capability-ungated subset instead,
-// and the result must pass ValidateRunConfig.
+// TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools pins
+// that a read-only mode with executor.type=none resolves Tools.BuiltIn to
+// exactly the capability-ungated subset, and the result passes
+// ValidateRunConfig.
 func TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -325,11 +276,8 @@ func TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools(t *tes
 	}
 }
 
-// TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools exercises
-// applyModeDefaults directly (rather than through buildHarnessRunConfig)
-// for both the flag path and the --config path (BuildRunConfig calls the
-// same function at runconfigbuilder.go's ResolveAll step), pinning the
-// exact tool list coord-none's fix must produce.
+// TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools pins the exact
+// tool list applyModeDefaults produces for executor.type=none.
 func TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools(t *testing.T) {
 	cfg := &types.RunConfig{
 		Mode:     "planning",
@@ -350,8 +298,8 @@ func TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools(t *testing.T) {
 
 // TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty confirms
 // applyModeDefaults never applies the read-only default outside a
-// read-only mode, none executor or not — an empty Tools.BuiltIn in
-// execution mode means "all built-ins" and must stay empty.
+// read-only mode: an empty Tools.BuiltIn in execution mode means "all
+// built-ins" and must stay empty.
 func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.T) {
 	timeout := 600
 	cfg := &types.RunConfig{
@@ -370,11 +318,10 @@ func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.
 	}
 }
 
-// TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected is the key
-// regression guard coord-none called out: the fix must filter only the
-// mode-INJECTED default, never an operator's EXPLICIT tools.builtIn
-// entry. planning + none + an explicit ["read_file"] must still fail
-// ValidateRunConfig's fail-fast exactly as before this fix.
+// TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected pins that
+// applyModeDefaults filters only the mode-injected tool default, never an
+// operator's explicit tools.builtIn entry: planning + none + an explicit
+// ["read_file"] must still fail ValidateRunConfig's fail-fast.
 func TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected(t *testing.T) {
 	cfg := &types.RunConfig{
 		Mode:             "planning",
@@ -395,11 +342,9 @@ func TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected(t *testing.T) {
 	}
 }
 
-// TestApplyModeDefaults_RespectsExplicitTools is the inverse of the
-// fills-default test: when a caller (e.g. a config file or future flag)
-// supplies an explicit Tools.BuiltIn list, applyModeDefaults must NOT
-// clobber it with the read-only defaults. The `len(... ) == 0` guard is
-// what makes this safe; this test pins it.
+// TestApplyModeDefaults_RespectsExplicitTools pins that applyModeDefaults
+// must not clobber an explicit Tools.BuiltIn list with the read-only
+// defaults.
 func TestApplyModeDefaults_RespectsExplicitTools(t *testing.T) {
 	cfg := &types.RunConfig{
 		Mode:  "research",
@@ -411,11 +356,9 @@ func TestApplyModeDefaults_RespectsExplicitTools(t *testing.T) {
 	}
 }
 
-// TestApplyModeDefaults_RespectsExplicitPolicy verifies that an
-// explicit PermissionPolicy survives applyModeDefaults — even one that
-// will later fail validation (allow-all on a read-only mode). Auto-
-// rewriting would hide a user's mistake; the validator's clear error
-// is the better UX.
+// TestApplyModeDefaults_RespectsExplicitPolicy verifies that an explicit
+// PermissionPolicy survives applyModeDefaults, even one that will later
+// fail validation: applyModeDefaults never rewrites an operator's choice.
 func TestApplyModeDefaults_RespectsExplicitPolicy(t *testing.T) {
 	cfg := &types.RunConfig{
 		Mode:             "research",
@@ -447,12 +390,7 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 		GitStrategyType:  "deterministic",
 		TraceEmitterType: "otel",
 		OTelEndpoint:     "localhost:4317",
-		// Per synthesis SF-6: pin that the gh-100 OTelProtocol field
-		// flows through buildHarnessRunConfig into TraceEmitter.Protocol.
-		// Without this, the assignment at harness.go:164 has count=0
-		// and a future refactor that drops it would silently fall back
-		// to the SDK default ("grpc") for any operator who passes
-		// --otel-protocol on the CLI.
+
 		OTelProtocol: "http/protobuf",
 	})
 	if err != nil {
@@ -480,22 +418,17 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 	if cfg.TraceEmitter.Protocol != "http/protobuf" {
 		t.Errorf("expected otel protocol 'http/protobuf', got %q", cfg.TraceEmitter.Protocol)
 	}
-	// jsonl FilePath should not be populated when emitter type is otel.
+
 	if cfg.TraceEmitter.FilePath != "" {
 		t.Errorf("expected empty FilePath for otel emitter, got %q", cfg.TraceEmitter.FilePath)
 	}
 }
 
-// TestBuildHarnessRunConfig_EmptyComponentDefaults exercises the
-// fallback values for component-selection fields. These defaults are the
-// shipped CLI behaviour; tests pin them explicitly so a refactor that
-// changes them by accident fails loudly.
-//
-// EditStrategy.Type is deliberately not asserted here: it is defaulted
-// by types.ValidateRunConfig (via applyEditStrategyDefault), not by the
-// CLI-layer buildHarnessRunConfig path, so empty in / empty out at this
-// layer is the correct behaviour. End-to-end CLI defaulting is covered
-// by TestBuildRunConfig_EmptyEditStrategyResolvesToMulti.
+// TestBuildHarnessRunConfig_EmptyComponentDefaults pins the fallback
+// values buildHarnessRunConfig applies for empty component-selection
+// fields. EditStrategy.Type is not asserted here: it is defaulted by
+// types.ValidateRunConfig, not by this layer (see
+// TestBuildRunConfig_EmptyEditStrategyResolvesToMulti).
 func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -508,7 +441,6 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 		Timeout:       600,
 		TransportType: "stdio",
 		LogLevel:      "info",
-		// All component-selection fields deliberately left empty.
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
@@ -527,16 +459,9 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv pins the K8s
-// production path: the operator pins OTEL_DEPLOYMENT_ENVIRONMENT in the
-// pod spec rather than threading the value through a CLI flag. The test
-// proves that buildHarnessRunConfig leaves Observability empty when no
-// flag is set, and that observability.BuildResource then picks the env
-// var up via its fallback chain. Without this end-to-end coverage at the
-// harness layer, REC-2's guard ("only assign when at least one flag is
-// non-empty") could be reverted by accident and the env-var fallback
-// would silently lose to an empty-string Observability value passed
-// through to the resource builder.
+// TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv pins that
+// buildHarnessRunConfig leaves Observability empty when no flag is set,
+// so observability.BuildResource's env-var fallback chain applies.
 func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "production-eu")
 	t.Setenv("OTEL_SERVICE_NAMESPACE", "")
@@ -552,16 +477,11 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 		Timeout:       600,
 		TransportType: "stdio",
 		LogLevel:      "info",
-		// Observability flags deliberately empty: this is the K8s pod-spec
-		// path where the operator only sets OTEL_DEPLOYMENT_ENVIRONMENT.
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
 	}
 
-	// The flag-only path leaves Observability at its zero value when both
-	// flags are empty (REC-2 guard). The env-var fallback is delegated
-	// to BuildResource so it stays a single, validated entry point.
 	if cfg.Observability.Environment != "" {
 		t.Errorf("Observability.Environment should remain empty when flag is unset; got %q", cfg.Observability.Environment)
 	}
@@ -695,11 +615,9 @@ func TestLoadRunConfigFile_InvalidJSON(t *testing.T) {
 }
 
 // newTestHarnessCommand builds a cobra command with the same flag surface
-// as the real harnessCmd. Used to exercise applyOverrides under realistic
-// conditions where Changed() reflects only what the test sets. Delegates
-// the RunConfig-producing flag surface to addRunConfigFlags so a flag
-// added to the shared registry is automatically picked up here — this
-// is the same factory the run-config subcommand uses.
+// as the real harnessCmd, so applyOverrides sees realistic Changed()
+// behaviour. Delegates the RunConfig-producing flag surface to
+// addRunConfigFlags, the same factory the run-config subcommand uses.
 func newTestHarnessCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "harness"}
 	addRunConfigFlags(cmd)
@@ -709,8 +627,8 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("export-workspace-required", false, "")
 	f.String("output-runconfig", "", "")
 	f.StringP("output", "o", "text", "")
-	// Dry-run flags (issue #245). Mirrors the registration in harness.go
-	// init() so flag-combination tests can exercise validateDryRunFlags.
+	// Dry-run flags. Mirrors the registration in harness.go init() so
+	// flag-combination tests can exercise validateDryRunFlags.
 	f.Bool("dry-run", false, "")
 	f.Bool("no-probe-provider", false, "")
 	f.Bool("no-probe-mcp", false, "")
@@ -1003,9 +921,8 @@ func TestApplyOverrides_OTelHeaderFilePreserved(t *testing.T) {
 }
 
 // TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint pins the
-// override wiring for the two scalar otel flags added with #413: an
-// explicitly-set flag clobbers the file value, and the unset default
-// does not (captureContent=true in a file must survive a bare CLI run).
+// override wiring for the two scalar otel flags: an explicitly-set flag
+// clobbers the file value, and the unset default does not.
 func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 	t.Run("explicit flags override", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
@@ -1169,11 +1086,7 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 
 // TestBuildHarnessRunConfig_ObservabilityPropagates pins that the
 // --deployment-environment / --service-namespace flags propagate into
-// RunConfig.Observability without further translation. The fields then
-// drive the OTel resource attributes via the factory's
-// resourceOptionsFromConfig helper, so a regression here would silently
-// break operator dashboards (Grafana group-by-environment would fall
-// back to the default "local" tile).
+// RunConfig.Observability without further translation.
 func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                 "test-run",
@@ -1234,13 +1147,10 @@ func TestApplyOverrides_ObservabilityFlags(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_ObservabilityServiceNamespaceFlag pins the second
-// branch of applyOverrides for the observability flags. The pre-existing
-// TestApplyOverrides_ObservabilityFlags exercises only the
-// deployment-environment branch; the service-namespace branch was
-// untouched in tests, so a typo in the flag name or a negated guard
-// (changed("environment") instead of changed("service-namespace")) would
-// silently drop the flag override and the test suite would never notice.
+// TestApplyOverrides_ObservabilityServiceNamespaceFlag pins the
+// service-namespace branch of applyOverrides for the observability flags,
+// complementing TestApplyOverrides_ObservabilityFlags which only exercises
+// deployment-environment.
 func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -1462,10 +1372,8 @@ func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
 }
 
 // repoRootForTests returns the absolute repo root by walking up from this
-// test file's path. Using runtime.Caller(0) makes the lookup independent of
-// the test working directory and the package's depth in the tree, so a move
-// of harness_test.go (or the examples directory) fails the test loudly
-// rather than silently t.Skipping.
+// test file's path via runtime.Caller(0), independent of the working
+// directory.
 func repoRootForTests(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -1477,11 +1385,9 @@ func repoRootForTests(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
 }
 
-// TestExampleFullJSONLoadsAndValidates is the integration test for the
-// shipped examples/runconfig/full.json: it must round-trip through
-// loadRunConfigFile and pass ValidateRunConfig without modification. If
-// the example drifts out of sync with the schema, this test fails before
-// users hit the same error.
+// TestExampleFullJSONLoadsAndValidates pins that examples/runconfig/full.json
+// round-trips through loadRunConfigFile and passes ValidateRunConfig
+// unmodified.
 func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "full.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1504,9 +1410,7 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	if cfg.TraceEmitter.Type != "otel" {
 		t.Errorf("example should demonstrate otel trace emitter, got %q", cfg.TraceEmitter.Type)
 	}
-	// Spot-check nested fields so a JSON-key rename or type change in the
-	// dynamic-router / executor-resources / mcp-servers sub-trees can't
-	// silently deserialise to zero-value while the top-level still validates.
+
 	if cfg.ModelRouter.Type != "dynamic" {
 		t.Errorf("example should demonstrate dynamic model router, got %q", cfg.ModelRouter.Type)
 	}
@@ -1523,10 +1427,8 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 
 // TestExampleNoneMCPOnlyJSONLoadsAndValidates pins the shipped
 // none-mcp-only.json fixture: the MCP-only, no-execution-surface use case
-// executor.type="none" exists for. It must round-trip through
-// loadRunConfigFile and pass ValidateRunConfig, and it demonstrates the
-// none executor paired with a read-only mode plus an MCP server and only
-// the (capability-ungated) web_fetch built-in tool.
+// executor.type="none" exists for, pairing a read-only mode with an MCP
+// server and only the capability-ungated web_fetch built-in tool.
 func TestExampleNoneMCPOnlyJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "none-mcp-only.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1554,11 +1456,8 @@ func TestExampleNoneMCPOnlyJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleAzureOpenAIJSONLoadsAndValidates pins the shipped Azure
-// OpenAI fixture: the file must round-trip through loadRunConfigFile,
-// pass ValidateRunConfig, and demonstrate the three new fields populated
-// (apiKeyHeader, queryParams, and the Azure-shaped baseUrl). If any of
-// these drift out of sync with the schema, this test fails before users
-// hit the same error.
+// OpenAI fixture: it must round-trip and validate, demonstrating
+// apiKeyHeader, queryParams, and the Azure-shaped baseUrl.
 func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1585,16 +1484,11 @@ func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
-// TestExampleVertexGeminiJSONLoadsAndValidates pins the shipped Vertex
-// AI fixture: the file must round-trip through loadRunConfigFile, pass
-// ValidateRunConfig, and demonstrate execution-mode-consistent
-// permissionPolicy / built-in tool combinations.
-//
-// Specifically guards B6: prior to the fix the example shipped with
-// permissionPolicy=deny-side-effects on an execution-mode config that
-// listed run_command and edit_file in tools.builtIn. The combination
-// validated, but at runtime every side-effecting tool would have been
-// blocked by the permission layer — silently breaking the example.
+// TestExampleVertexGeminiJSONLoadsAndValidates pins the shipped Vertex AI
+// fixture: it must round-trip and validate, and its permissionPolicy /
+// built-in tool combination must be execution-mode-consistent — a
+// deny-side-effects policy paired with a side-effecting tool would pass
+// validation but silently block the example at runtime.
 func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1613,9 +1507,7 @@ func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	if cfg.Provider.GCPProject == "" || cfg.Provider.GCPLocation == "" {
 		t.Errorf("Provider must set gcpProject and gcpLocation, got %+v", cfg.Provider)
 	}
-	// Execution-mode + side-effecting tools must not be paired with
-	// deny-side-effects: every workspace-mutating call would be denied
-	// at runtime and the example would silently fail to do anything.
+
 	if cfg.Mode == "execution" {
 		hasSideEffectTool := false
 		for _, name := range cfg.Tools.BuiltIn {
@@ -1631,11 +1523,10 @@ func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
-// TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates pins the shipped
-// AKS Azure-WIF fixture: the file must round-trip through
-// loadRunConfigFile, pass ValidateRunConfig, and demonstrate the
+// TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates pins the shipped AKS
+// Azure-WIF fixture: it must round-trip and validate, demonstrating the
 // azure-workload-identity credential type with a file-projected token
-// source. Drift fails this test before users hit the same error.
+// source.
 func TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-aks.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1660,9 +1551,8 @@ func TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the
-// shipped GitHub-Actions Azure-WIF fixture. Same shape as the AKS test
-// above but with a github-actions-oidc token source. Validates the
-// audience field reaches the schema cleanly.
+// shipped GitHub-Actions Azure-WIF fixture: same shape as the AKS test
+// above but with a github-actions-oidc token source.
 func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-github-actions.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1689,14 +1579,10 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
-// TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates pins the
-// pre-wired smoke-test fixture consumed by
-// .github/workflows/smoke-azure-openai.yml. Unlike the generic
-// github-actions example, this fixture hardcodes the stirrup test
-// tenant's tenant/client IDs and pins the provider to
-// openai-responses with the AI Foundry (cognitiveservices.azure.com)
-// host. Drift in any of those fields breaks the live CI smoke run
-// silently — the workflow only fails on a real Azure API call.
+// TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// smoke-test fixture consumed by .github/workflows/smoke-azure-openai.yml,
+// which hardcodes the stirrup test tenant's IDs and the AI Foundry
+// (cognitiveservices.azure.com) host.
 func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-smoke.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1733,10 +1619,9 @@ func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the shipped
-// OpenAI-WIF GitHub-Actions fixture: it must round-trip through
-// loadRunConfigFile and pass ValidateRunConfig, demonstrating the openai-wif
-// credential type on an openai-responses provider with a github-actions-oidc
-// token source carrying the OpenAI API audience.
+// OpenAI-WIF GitHub-Actions fixture, demonstrating the openai-wif
+// credential type with a github-actions-oidc token source carrying the
+// OpenAI API audience.
 func TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-github-actions.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1790,13 +1675,10 @@ func TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
-// smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml.
-// The fixture hardcodes the stirrup sandbox AWS account's role ARN
-// (the 12-digit account ID is non-secret per AWS docs — the role's
-// trust policy is what gates access) and pins us-west-2 as the source
-// region alongside the us. cross-region inference profile for Haiku 4.5.
-// Drift in any of those fields breaks the live CI smoke run silently —
-// the workflow only fails on a real Bedrock API call.
+// smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml,
+// which hardcodes the stirrup sandbox AWS account's role ARN and the
+// us-west-2 source region for the Haiku 4.5 cross-region inference
+// profile.
 func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "bedrock-wif-smoke.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1836,17 +1718,11 @@ func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates pins the pre-wired
-// smoke-test fixture consumed by .github/workflows/smoke-vertex-gemini.yml.
-// Unlike the generic vertex-gemini-wif example (which surfaces an
-// aws-irsa token source against placeholder identifiers), this fixture
-// hardcodes the rubynerd-net project + project-number + the shared
-// stirrup-gha WIF pool's audience + the dedicated stirrup-testing SA.
-// The double-slash audience is required (single-slash fails STS with an
-// opaque 400 INVALID_ARGUMENT) and the two audience strings must match
-// because the GHA OIDC `aud` claim must equal the WIF provider's
-// expected audience for the exchange to succeed. Drift in any of these
-// fields breaks the live CI smoke run silently — the workflow only
-// fails on a real Vertex API call.
+// smoke-test fixture consumed by .github/workflows/smoke-vertex-gemini.yml,
+// which hardcodes the rubynerd-net project, the shared stirrup-gha WIF
+// pool's double-slash audience, and the stirrup-testing SA. The
+// Credential.Audience and TokenSource.Audience must match, since the GHA
+// OIDC `aud` claim must equal the WIF provider's expected audience.
 func TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini-wif-smoke.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1893,13 +1769,9 @@ func TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 }
 
 // TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
-// Cloud Run fixture: the file must round-trip through loadRunConfigFile,
-// pass ValidateRunConfig, and exercise the three new surface areas that
-// Chunks A and B introduced — resultSink.type=stdout-json,
-// traceEmitter.type=gcs, and executor.workspaceExportTo on a gs:// URI.
-//
-// Drift in any of the three fields fails this test before an operator
-// hits the same error on a Cloud Run dispatch.
+// Cloud Run fixture: it must round-trip and validate, exercising
+// resultSink.type=stdout-json, traceEmitter.type=gcs, and
+// executor.workspaceExportTo on a gs:// URI.
 func TestExampleCloudRunVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "cloud-run-vertex-gemini.json")
 	if _, err := os.Stat(path); err != nil {
@@ -1932,10 +1804,9 @@ func TestExampleCloudRunVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_SafetyRingFlags verifies that the three new
-// safety-ring flags (issue #42) propagate to the matching RunConfig
-// fields. Each is independently exercised so a future refactor that
-// drops one wiring without dropping the others is caught.
+// TestBuildHarnessRunConfig_SafetyRingFlags verifies that the safety-ring
+// flags propagate to the matching RunConfig fields, independently
+// exercised.
 func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                "test-run",
@@ -2242,15 +2113,10 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_TemperatureChangedDisambiguatesZero exercises the
-// unset-vs-explicit-zero distinction for --temperature. The flag store
-// is a plain Float64, so cobra cannot represent "absence" — the
-// override path must rely on flags.Changed() instead, or every run
-// that omits the flag silently rewrites a file-provided non-zero
-// value to greedy decoding.
-// --prompt-model must follow the Changed() discipline: a config file's
+// TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
+// follows the Changed() discipline: a config file's
 // promptBuilder.promptModel survives when the flag is unset, and an
-// explicit flag overrides it (#492).
+// explicit flag overrides it.
 func TestApplyOverrides_PromptModelChangedGated(t *testing.T) {
 	t.Run("unset leaves file value alone", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
@@ -2282,6 +2148,10 @@ func TestApplyOverrides_PromptModelChangedGated(t *testing.T) {
 	})
 }
 
+// TestApplyOverrides_TemperatureChangedDisambiguatesZero exercises the
+// unset-vs-explicit-zero distinction for --temperature: cobra cannot
+// represent flag absence for a plain Float64, so the override path relies
+// on flags.Changed() instead.
 func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
 	t.Run("unset leaves file value alone", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
@@ -2337,13 +2207,8 @@ func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
 }
 
 // TestBuildHarnessRunConfig_Temperature pins the temperature propagation
-// inside buildHarnessRunConfig itself. The applyOverrides tests cover the
-// --config-path branch, but buildHarnessRunConfig has its own three-line
-// "if opts.Temperature != nil { copy }" block on the flag-only path —
-// a regression there (e.g. unconditional assignment, or always
-// dereferencing) would be invisible to the applyOverrides suite because
-// the two code paths never intersect. Mirrors the shape of
-// TestBuildHarnessRunConfig_SessionNamePropagates.
+// inside buildHarnessRunConfig's flag-only path, distinct from the
+// --config-path coverage in the applyOverrides tests.
 func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 	base := func() harnessCLIOptions {
 		return harnessCLIOptions{
@@ -2409,9 +2274,7 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildHarnessRunConfig: %v", err)
 		}
-		// Mutating opts.Temperature post-build must not bleed through
-		// into the constructed RunConfig — the harness contract is that
-		// buildHarnessRunConfig snapshots the value.
+
 		*opts.Temperature = 1.5
 		if cfg.Temperature == nil || *cfg.Temperature != 0.4 {
 			t.Errorf("cfg.Temperature should be a copy snapshot of 0.4, got %v", cfg.Temperature)
@@ -2419,15 +2282,11 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 	})
 }
 
-// TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the
-// STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace
-// in the --config code path when the file omits the field. The
-// env-var resolution now lives inside BuildRunConfig's ResolveAll
-// branch (runconfigbuilder.go), so the test drives that path through
-// the shared builder rather than re-implementing the resolution
-// inline. The pre-refactor version called loadRunConfigFile and
-// manually applied the env var — that test would have passed even if
-// BuildRunConfig's branch were deleted.
+// TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that
+// STIRRUP_FOLLOWUP_GRACE populates FollowUpGrace in the --config path
+// when the file omits the field, driven through BuildRunConfig's
+// ResolveAll branch rather than the resolution logic reimplemented
+// inline.
 func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -2475,12 +2334,10 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 	}
 }
 
-// TestApplyModeDefaults_FillsAfterModeOverride is the regression test for
-// the H1 finding: when --config sets a sparse RunConfig (no policy/tools)
-// and --mode is then overridden, the post-override defaulting step must
-// fill in the new mode's defaults. Without this, a sparse file + a
-// --mode planning override would fail validation because
-// PermissionPolicy.Type is empty.
+// TestApplyModeDefaults_FillsAfterModeOverride pins that when --config
+// sets a sparse RunConfig (no policy/tools) and --mode is then
+// overridden, the post-override defaulting step fills in the new mode's
+// defaults.
 func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := &types.RunConfig{
@@ -2594,14 +2451,10 @@ func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_QueryParamMalformedReturnsError pins the must-fix
-// behaviour from the issue #48 review: when --config is used alongside
-// a malformed --query-param entry, applyOverrides returns a non-nil
-// error rather than warning-and-continuing. Without this guard the
-// --config and flag-only paths would diverge — the flag-only path in
-// runHarness fails hard for the same input — and a request would reach
-// the provider with a parameter silently dropped (e.g. an Azure call
-// with no api-version, surfacing as an opaque HTTP 400).
+// TestApplyOverrides_QueryParamMalformedReturnsError pins that a
+// malformed --query-param entry on the --config path returns a non-nil
+// error rather than warning-and-continuing, matching the flag-only
+// path's hard failure for the same input.
 func TestApplyOverrides_QueryParamMalformedReturnsError(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -2703,11 +2556,9 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_GuardRailFlags verifies that the three
-// GuardRail flags (issue #43) propagate from harnessCLIOptions into the
-// RunConfig.GuardRail block. The block is only constructed when at
-// least one of the flags is non-zero so the flag-only build path
-// matches the documented "default == nil == no guardrails" behaviour.
+// TestBuildHarnessRunConfig_GuardRailFlags verifies that the GuardRail
+// flags propagate from harnessCLIOptions into RunConfig.GuardRail, which
+// is only constructed when at least one flag is non-zero.
 func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
@@ -2741,10 +2592,9 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_GuardRailDefaultNil verifies the documented
-// "no flags set means no guardrails" behaviour: the flag-only build
-// path leaves config.GuardRail as nil so the factory installs the
-// no-op "none" guard with zero behaviour change vs the pre-#43 path.
+// TestBuildHarnessRunConfig_GuardRailDefaultNil verifies that the
+// flag-only build path leaves config.GuardRail nil when no GuardRail
+// flags are set, so the factory installs the no-op "none" guard.
 func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -2757,7 +2607,6 @@ func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 		Timeout:       600,
 		TransportType: "stdio",
 		LogLevel:      "info",
-		// All GuardRail fields deliberately left at their zero values.
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
@@ -2767,10 +2616,9 @@ func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean exercises the
-// fail-open flag in isolation: setting only --guardrail-fail-open is
-// enough to materialise a GuardRail config (with the default empty
-// type) so an operator can flip the posture without restating the rest.
+// TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean pins that
+// --guardrail-fail-open alone is enough to materialise a GuardRail
+// config, without requiring the other flags.
 func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
@@ -2797,11 +2645,8 @@ func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
 }
 
 // TestApplyOverrides_GuardRailFlagsOverride verifies the override path
-// for the GuardRail flags. Each flag set on the command line clobbers
-// the corresponding file-provided field; flags left unset preserve the
-// file's value. This is the same precedence rule as every other
-// override flag, but the multi-field GuardRailConfig means the test
-// covers each component independently.
+// for the GuardRail flags: each component is exercised independently
+// since GuardRailConfig has multiple fields.
 func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -2838,10 +2683,6 @@ func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 
 // TestApplyOverrides_GuardRailEndpointPreservesStages verifies that
 // overriding only the endpoint leaves a composite stage list intact.
-// This is the central "fine-tune one field" invariant: an operator who
-// loaded a composite config from --config and then passes
-// --guardrail-endpoint to retarget the inner adapter must not
-// inadvertently drop the rest of the layering.
 func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -2876,11 +2717,7 @@ func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
 
 // TestApplyOverrides_GuardRailModelOverride verifies that
 // --guardrail-model overrides a file-provided model without disturbing
-// other GuardRail fields. This is the path operators on Bedrock take
-// when the cloud-judge default Anthropic-API model ID
-// (claude-haiku-4-5-20251001) is rejected by Bedrock and must be
-// replaced with a Bedrock-format identifier such as
-// us.anthropic.claude-haiku-4-5-20251001-v1:0.
+// other GuardRail fields.
 func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -3010,10 +2847,8 @@ func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
 }
 
 // TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef ensures the
-// flag-only path drops APIKeyRef when the provider is gemini. The CLI
-// default for --api-key-ref is "secret://ANTHROPIC_API_KEY", so a user
-// switching only --provider would otherwise carry that ref through and
-// trip the validator (which forbids apiKeyRef on gemini runs).
+// flag-only path drops APIKeyRef when the provider is gemini, since the
+// validator forbids apiKeyRef on gemini runs.
 func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -3044,8 +2879,7 @@ func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 // TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType verifies
 // that --gcp-credentials-file implies credential.type=gcp-service-account
 // in the flag-only path, mirroring how --permission-policy-file implies
-// type=policy-engine. This is the convenience shortcut documented on
-// the flag's help string.
+// type=policy-engine.
 func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:              "test-run",
@@ -3076,11 +2910,9 @@ func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType pins the
-// safety invariant: GCP fields supplied while --provider is not gemini
-// must NOT leak into the resulting RunConfig (the validator would reject
-// them anyway, but we want clean configs to keep --provider switching
-// ergonomic).
+// TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType pins that
+// GCP fields supplied while --provider is not gemini must not leak into
+// the resulting RunConfig.
 func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -3093,9 +2925,7 @@ func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
 		Timeout:       600,
 		TransportType: "stdio",
 		LogLevel:      "info",
-		// These flags are at their default values when the user is not
-		// running a gemini provider, but the harness still threads them
-		// through opts. The flag-only path must drop them.
+
 		GCPProject:  "leaked-project",
 		GCPLocation: "global",
 	})
@@ -3157,20 +2987,14 @@ func TestApplyOverrides_GeminiFlags(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile verifies B7:
-// switching providers to gemini via --provider must clear an APIKeyRef
-// the config file inherited from a previous (non-gemini) configuration.
-// Without this clear, validateGeminiProviderFields rejects the run with
-// a confusing error about an apiKeyRef the operator never set
-// intentionally on this invocation. The flag-only path
-// (buildHarnessRunConfig) already does this; the --config path must
-// match for parity.
+// TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile verifies that
+// switching providers to gemini via --provider clears an APIKeyRef the
+// config file inherited from a previous (non-gemini) configuration,
+// matching the flag-only path's behaviour.
 func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	// Simulate a config file that originally targeted Anthropic and
-	// carries the matching APIKeyRef. The operator now flips the
-	// provider to gemini at the CLI.
+
 	cfg.Provider = types.ProviderConfig{
 		Type:      "anthropic",
 		APIKeyRef: "secret://ANTHROPIC_API_KEY",
@@ -3198,12 +3022,10 @@ func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef pins the inverse
-// invariant: if the operator explicitly passes --api-key-ref alongside
-// --provider gemini, that value wins. This shape is wrong on its face
-// (validateGeminiProviderFields will reject it later with a clear
-// error), but the CLI layer must not silently drop an explicit operator
-// choice.
+// TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef pins that an
+// operator explicitly passing --api-key-ref alongside --provider gemini
+// wins: the CLI layer must not silently drop an explicit choice, even
+// though the validator later rejects the combination.
 func TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -3228,12 +3050,9 @@ func TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_GeminiDefaultLocationFallback verifies H3:
-// a config file that omits gcpLocation and a CLI invocation that does
-// not pass --gcp-location must end up with the documented default
-// ("global") rather than failing validation with "gcpLocation is
-// required". The flag-only path gets this for free via cobra defaulting;
-// the --config path must explicitly fall back when the file omits it.
+// TestApplyOverrides_GeminiDefaultLocationFallback verifies that a
+// config file that omits gcpLocation, with no --gcp-location passed,
+// falls back to the documented default ("global") on the --config path.
 func TestApplyOverrides_GeminiDefaultLocationFallback(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -3270,10 +3089,8 @@ func TestApplyOverrides_GeminiDefaultFlagsDoNotOverride(t *testing.T) {
 	cfg.ModelRouter.Provider = "gemini"
 	cfg.ModelRouter.Model = "gemini-2.5-pro"
 
-	// Note: NOT calling Flags().Set on any gcp-* flag — they remain at
-	// their cobra-registered defaults (empty / "global"). With H3's
-	// fallback only applying when GCPLocation is empty, the file's
-	// "us-central1" must be preserved.
+	// gcp-* flags stay at their cobra-registered defaults; the fallback
+	// only applies when GCPLocation is empty, so "us-central1" survives.
 	if err := applyOverrides(cmd, cfg, nil); err != nil {
 		t.Fatalf("applyOverrides: %v", err)
 	}
@@ -3288,8 +3105,7 @@ func TestApplyOverrides_GeminiDefaultFlagsDoNotOverride(t *testing.T) {
 
 // TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential
 // verifies that --gcp-credentials-file does NOT clobber a Credential
-// type that the --config file already set explicitly. The "imply only
-// when unset" rule mirrors how --permission-policy-file behaves.
+// type that the --config file already set explicitly.
 func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -3297,8 +3113,7 @@ func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testi
 		Type:        "gemini",
 		GCPProject:  "p",
 		GCPLocation: "global",
-		// User has explicitly chosen workload-identity in --config; the
-		// flag must not silently downgrade them to a service-account file.
+
 		Credential: &types.CredentialConfig{Type: "gcp-workload-identity"},
 	}
 	cfg.ModelRouter.Provider = "gemini"
@@ -3322,7 +3137,7 @@ func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testi
 	}
 }
 
-// --- Anthropic Workload Identity Federation (issue #117) ---
+// --- Anthropic Workload Identity Federation ---
 
 // anthropicWIFBaseConfig produces a RunConfig stand-in for tests in this
 // section. Anthropic provider, no federation block — each test layers on
@@ -3359,8 +3174,7 @@ func clearAnthropicWIFEnv(t *testing.T) {
 
 // TestApplyAnthropicWIF_EnvVarFallback verifies that ANTHROPIC_*_ID env
 // vars fill in the four federation fields when no flag is set, and that
-// the inferred credential type is anthropic-wif. This is the primary
-// integration point with the documented Anthropic SDK env-var contract.
+// the inferred credential type is anthropic-wif.
 func TestApplyAnthropicWIF_EnvVarFallback(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_envrule")
@@ -3443,8 +3257,7 @@ func TestApplyAnthropicWIF_ExplicitFlagBeatsEnv(t *testing.T) {
 // audience, regardless of any env vars present.
 func TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
 	clearAnthropicWIFEnv(t)
-	// GHA env vars are present (as on a real runner), but they alone
-	// must not select the OIDC source. Only the flag opts in.
+
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 
@@ -3476,12 +3289,10 @@ func TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
 	}
 }
 
-// TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource is the
-// negative test for issue #117 risk #5: presence of
-// ACTIONS_ID_TOKEN_REQUEST_URL in the env is NOT a green light to
-// auto-select github-actions-oidc. The operator must explicitly opt in
-// via --anthropic-from-github-actions. Silent IdP selection makes
-// credential bugs unfixable.
+// TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource pins that
+// ACTIONS_ID_TOKEN_REQUEST_URL alone is not a green light to auto-select
+// github-actions-oidc; the operator must explicitly opt in via
+// --anthropic-from-github-actions.
 func TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
@@ -3546,11 +3357,10 @@ func TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
 	}
 }
 
-// TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected is the issue #117
-// risk #4 enforcement: when --api-key-ref is explicitly passed alongside
-// the WIF flags, the override layer must hard-fail rather than silently
-// dropping one or the other. A leftover API key would silently shadow
-// federation in the SDK precedence chain.
+// TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected pins that when
+// --api-key-ref is explicitly passed alongside the WIF flags, the
+// override layer hard-fails rather than silently dropping one or the
+// other.
 func TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 
@@ -3579,10 +3389,8 @@ func TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
 
 // TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared documents the
 // other half of the apiKeyRef guard: the default flag value
-// "secret://ANTHROPIC_API_KEY" is structurally non-meaningful under
-// WIF (no operator intent expressed), so the override layer clears it
-// silently rather than failing loudly. This mirrors the gemini
-// pattern at applyOverrides line ~477.
+// "secret://ANTHROPIC_API_KEY" carries no operator intent under WIF, so
+// the override layer clears it silently rather than failing loudly.
 func TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 
@@ -3610,11 +3418,9 @@ func TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
 	}
 }
 
-// TestApplyAnthropicWIF_NoIntentNoOp guards the no-op early return: if
-// the operator has set neither WIF flags nor env vars, and the
-// credential block does not already name anthropic-wif, the helper
-// must leave the config untouched. This protects every non-WIF code
-// path from accidental mutation.
+// TestApplyAnthropicWIF_NoIntentNoOp guards the no-op early return: with
+// no WIF flags, env vars, or an existing anthropic-wif credential, the
+// helper leaves the config untouched.
 func TestApplyAnthropicWIF_NoIntentNoOp(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 
@@ -3658,13 +3464,10 @@ func TestApplyAnthropicWIF_ConflictingExplicitTypeRejected(t *testing.T) {
 	}
 }
 
-// TestApplyAnthropicWIF_ExistingStaticTypePromoted documents the
-// "static" sub-path of the type-inference branch: when a --config file
-// names credential.type="static" (the documented synonym for the
-// default key-based path) and the operator layers WIF flags on top,
-// applyAnthropicWIFOverrides must promote the type to anthropic-wif
-// rather than rejecting the run as a conflict. This is the upgrade
-// path from a key-based config to a federated one.
+// TestApplyAnthropicWIF_ExistingStaticTypePromoted pins that when a
+// --config file names credential.type="static" and the operator layers
+// WIF flags on top, applyAnthropicWIFOverrides promotes the type to
+// anthropic-wif rather than rejecting the run as a conflict.
 func TestApplyAnthropicWIF_ExistingStaticTypePromoted(t *testing.T) {
 	clearAnthropicWIFEnv(t)
 
@@ -4012,8 +3815,7 @@ func TestApplyOpenAIWIF_StaticCredentialTypePromoted(t *testing.T) {
 
 // TestApplyOpenAIWIF_SubjectTokenTypeApplied pins that the
 // OPENAI_SUBJECT_TOKEN_TYPE env var (and the flag) is written onto the
-// credential once the WIF flow is established by a required ID — but never
-// triggers the flow on its own (see TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp).
+// credential once the WIF flow is established by a required ID.
 func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
@@ -4031,10 +3833,10 @@ func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
 	}
 }
 
-// TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp pins the fix for the
-// reviewer-flagged trap: a lone OPENAI_SUBJECT_TOKEN_TYPE (no required ID,
-// no GHA opt-in) must NOT flip a plain openai-compatible run into the WIF
-// path. The optional modifier is not a WIF discriminator.
+// TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp pins that a lone
+// OPENAI_SUBJECT_TOKEN_TYPE (no required ID, no GHA opt-in) must not
+// flip a plain openai-compatible run into the WIF path: the optional
+// modifier is not a WIF discriminator.
 func TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp(t *testing.T) {
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
@@ -4124,29 +3926,15 @@ func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
 	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
 		t.Errorf("AzureScope = %q", cfg.Provider.Credential.AzureScope)
 	}
-	// APIKeyRef must be cleared for an Azure WIF run: the validator
-	// rejects the combination because the bearer is fetched via OAuth2
-	// token exchange. The cobra default for --api-key-ref is
-	// secret://ANTHROPIC_API_KEY, so without the gemini-style clear in
-	// buildHarnessRunConfig a flag-only Azure WIF run would fail
-	// validation with a confusing error about a value the operator
-	// never set.
+
 	if cfg.Provider.APIKeyRef != "" {
 		t.Errorf("APIKeyRef should be cleared for Azure WIF, got %q", cfg.Provider.APIKeyRef)
 	}
 }
 
-// TestBuildHarnessRunConfig_AzureWIFPassesValidation is the regression
-// guard that the rest of the WIF flag-only-path tests cannot provide
-// on their own. It runs buildHarnessRunConfig with the minimum WIF
-// shape that the validator accepts (tenant + client + tokenSource via
-// CLI options the way runHarness wires them), then hands the result
-// directly to types.ValidateRunConfig and asserts the run is valid.
-// The pre-remediation buildHarnessRunConfig left APIKeyRef set to the
-// cobra default secret://ANTHROPIC_API_KEY; ValidateRunConfig would
-// then reject the run with "azure-workload-identity does not use
-// apiKeyRef". The test pins that an Azure WIF flag-only run is valid
-// end-to-end so the regression cannot recur.
+// TestBuildHarnessRunConfig_AzureWIFPassesValidation pins that an Azure
+// WIF flag-only run (tenant + client + tokenSource) is accepted by
+// types.ValidateRunConfig end-to-end.
 func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -4168,9 +3956,7 @@ func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
 	}
 	// buildHarnessRunConfig only assembles the flag-implied Credential
-	// shell — TokenSource still has to come from --config in the real
-	// CLI, but the validator needs one to accept the run. Wire a file
-	// source by hand so the validation path actually runs end-to-end.
+	// shell; wire a TokenSource by hand so validation runs end-to-end.
 	if cfg.Provider.Credential == nil {
 		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
 	}
@@ -4246,8 +4032,6 @@ func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
 		Timeout:       600,
 		TransportType: "stdio",
 		LogLevel:      "info",
-		// All AzureWIF fields empty — no Credential block should be
-		// constructed for a vanilla openai-compatible run.
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
@@ -4307,12 +4091,8 @@ func TestApplyOverrides_AzureWIFFlags(t *testing.T) {
 // TestApplyOverrides_AzureWIFRespectsExplicitCredential pins that an
 // explicit Credential block in --config (e.g. credential.type=static)
 // is NOT silently upgraded to azure-workload-identity by a stray
-// --azure-tenant-id flag. The override fills the Azure-named fields on
-// the existing block (so a config that already says
-// credential.type=azure-workload-identity can still be fine-tuned at
-// the CLI), but the type is preserved. Mirrors how
-// --gcp-credentials-file leaves a non-gcp-service-account Credential
-// alone.
+// --azure-tenant-id flag; the Azure-named fields are still filled in on
+// the existing block, but the type is preserved.
 func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -4340,10 +4120,7 @@ func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 	if cfg.Provider.Credential.Type != "static" {
 		t.Errorf("Credential.Type silently upgraded: got %q, want static", cfg.Provider.Credential.Type)
 	}
-	// The Azure tenant field is still populated on the existing block —
-	// the validator will then reject the combination (static type with
-	// azureTenantId set), which is the correct outcome: the operator's
-	// intent is ambiguous and should fail loudly.
+
 	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
 		t.Errorf("AzureTenantID not propagated to existing Credential: %q", cfg.Provider.Credential.AzureTenantID)
 	}
@@ -4351,12 +4128,8 @@ func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 
 // TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential pins
 // that --azure-client-id without --azure-tenant-id leaves the Credential
-// untouched. Only --azure-tenant-id is the discriminator that
-// materialises an azure-workload-identity Credential block (mirroring
-// --gcp-credentials-file). Without this guard, a stray --azure-client-id
-// would produce a Credential block missing tenantID and surface as a
-// confusing "azure-workload-identity requires azureTenantId" validation
-// error the operator never asked for.
+// untouched: only --azure-tenant-id is the discriminator that
+// materialises an azure-workload-identity Credential block.
 func TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -4402,11 +4175,9 @@ func TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential(t *testing.T) 
 	}
 }
 
-// TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride pins the central
-// precedence rule for the --azure-* family: when none of the three
-// flags is passed, an existing Credential block from --config must
-// survive untouched. This is the file-wins-over-default check the rest
-// of the override surface enforces; the WIF flags are no exception.
+// TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride pins that when
+// none of the --azure-* flags is passed, an existing Credential block
+// from --config survives untouched.
 func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -4439,20 +4210,10 @@ func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
 	}
 }
 
-// writePromptResolutionConfig writes a JSON RunConfig that is valid in
-// every respect EXCEPT it carries an empty prompt and a deliberately
-// out-of-range MaxTurns. That shape lets the prompt-resolution tests
-// distinguish three outcomes from a single runHarness invocation:
-//
-//  1. Prompt did not resolve → "prompt is required" error.
-//  2. Prompt resolved → ValidateRunConfig fires next and rejects on
-//     "maxTurns exceeds maximum of 100" — a deterministic, prompt-
-//     independent signal that the resolution chain populated cfg.Prompt.
-//  3. File-read error from --prompt-file → the helper's error wins
-//     before the resolution chain reaches validation.
-//
-// Using a config-only invalidation point keeps the tests purely
-// in-process: no harness boot, no provider HTTP, no API key juggling.
+// writePromptResolutionConfig writes a JSON RunConfig with an empty
+// prompt and an out-of-range MaxTurns, so callers can distinguish
+// "prompt is required" (resolution never filled cfg.Prompt) from a
+// deterministic "maxTurns exceeds maximum" validation failure (it did).
 func writePromptResolutionConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -4487,12 +4248,8 @@ func writePromptResolutionConfig(t *testing.T) string {
 }
 
 // TestRunHarness_PromptFromEnvVar pins the STIRRUP_PROMPT fallback: when
-// no higher-priority source (flag, positional, --prompt-file, file
-// prompt) is set, the env var must populate cfg.Prompt. We assert by
-// invoking runHarness against a config that fails validation downstream
-// of prompt resolution — the validator's specific error tells us the
-// prompt was filled in, since the "prompt is required" path would have
-// short-circuited earlier.
+// no higher-priority source is set, the env var must populate
+// cfg.Prompt, observed via the downstream maxTurns validation error.
 func TestRunHarness_PromptFromEnvVar(t *testing.T) {
 	path := writePromptResolutionConfig(t)
 	t.Setenv("STIRRUP_PROMPT", "hello from env")
@@ -4553,9 +4310,6 @@ func TestRunHarness_PromptFromPromptFile(t *testing.T) {
 		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
 	}
 
-	// Direct trim-contract assertion: readPromptFile must strip the
-	// trailing newline so downstream prompt-equality checks (in eval
-	// suites, recordings, etc.) are not silently off-by-one-byte.
 	got, err := readPromptFile(promptPath)
 	if err != nil {
 		t.Fatalf("readPromptFile: %v", err)
@@ -4565,14 +4319,10 @@ func TestRunHarness_PromptFromPromptFile(t *testing.T) {
 	}
 }
 
-// TestRunHarness_PromptFlagBeatsLowerPrecedence is the precedence
-// regression test: --prompt is rank 1, --prompt-file is rank 3,
-// STIRRUP_PROMPT is rank 4. When all three are set, --prompt must win
-// and runHarness must reach validation without ever reading the file
-// or consulting the env. We assert this by setting --prompt-file to a
-// path that DOES NOT EXIST: if the resolution chain ever fell through
-// to it, readPromptFile would error out before validation, and we'd
-// see "reading --prompt-file" rather than the maxTurns failure.
+// TestRunHarness_PromptFlagBeatsLowerPrecedence pins the prompt-source
+// precedence: --prompt outranks --prompt-file and STIRRUP_PROMPT, so
+// runHarness must reach validation without ever reading the file (set
+// to a nonexistent path) or consulting the env.
 func TestRunHarness_PromptFlagBeatsLowerPrecedence(t *testing.T) {
 	path := writePromptResolutionConfig(t)
 	t.Setenv("STIRRUP_PROMPT", "from env (should lose)")
@@ -4635,12 +4385,9 @@ func TestReadPromptFile_Empty(t *testing.T) {
 	}
 }
 
-// TestReadPromptFile_Directory pins the IsDir() guard. Passing a
-// directory used to return an opaque "is a directory" error from
-// os.ReadFile; today the guard surfaces the same shape with the
-// path baked in so the operator can see the typo. Without this
-// test, a future refactor could silently drop the guard and let
-// readPromptFile try to read the directory contents as a stream.
+// TestReadPromptFile_Directory pins the IsDir() guard: a directory path
+// surfaces a clear "is a directory" error with the path baked in,
+// rather than the opaque error os.ReadFile would return.
 func TestReadPromptFile_Directory(t *testing.T) {
 	dir := t.TempDir()
 	_, err := readPromptFile(dir)
@@ -4652,12 +4399,9 @@ func TestReadPromptFile_Directory(t *testing.T) {
 	}
 }
 
-// TestReadPromptFile_OversizeRejected pins the 10 MiB cap. A
-// regression that dropped either the stat-time check or the
-// io.LimitReader post-read check would let an arbitrarily-large
-// file land in cfg.Prompt and burn through the provider's input-
-// token budget on the very first turn. Writing exactly cap+1
-// bytes is enough to trip either guard.
+// TestReadPromptFile_OversizeRejected pins the maxPromptFileBytes cap,
+// which guards both the stat-time check and the post-read
+// io.LimitReader check.
 func TestReadPromptFile_OversizeRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.txt")
@@ -4674,26 +4418,18 @@ func TestReadPromptFile_OversizeRejected(t *testing.T) {
 	}
 }
 
-// newPath2HarnessCommand mirrors newTestHarnessCommand but is shaped
-// for Path 2 (flag-only) tests: --config is left unset so runHarness
-// enters the buildHarnessRunConfig branch, and --max-turns is
-// pre-deformed to 9999 so a successful prompt resolution surfaces a
-// deterministic, prompt-independent "maxTurns exceeds maximum"
-// validator error. Keeping the helper next to its callers (rather
-// than threading a parameter through newTestHarnessCommand) avoids
-// risk to the existing Path 1 tests that all rely on the current
-// defaults.
+// newPath2HarnessCommand mirrors newTestHarnessCommand but for Path 2
+// (flag-only) tests: --config is left unset so runHarness enters the
+// buildHarnessRunConfig branch, and --max-turns is pre-deformed to 9999
+// so a successful prompt resolution surfaces a deterministic
+// "maxTurns exceeds maximum" validator error.
 func newPath2HarnessCommand(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("max-turns", "9999"); err != nil {
 		t.Fatalf("set max-turns: %v", err)
 	}
-	// Path 2 needs an APIKeyRef pointing at an env var that resolves;
-	// the validator's downstream secret-store lookup happens after
-	// the MaxTurns check, but a missing env in CI would otherwise
-	// muddy the error message. We assert against "maxTurns" only,
-	// so this is purely defensive.
+
 	t.Setenv("STIRRUP_PATH2_TEST_KEY", "x")
 	if err := cmd.Flags().Set("api-key-ref", "env://STIRRUP_PATH2_TEST_KEY"); err != nil {
 		t.Fatalf("set api-key-ref: %v", err)
@@ -4702,11 +4438,7 @@ func newPath2HarnessCommand(t *testing.T) *cobra.Command {
 }
 
 // TestRunHarness_Path2_PromptFromEnvVar covers the flag-only path's
-// STIRRUP_PROMPT fallback. Path 1 already has this coverage; the
-// flag-only path (the common "stirrup harness --prompt-file brief.txt"
-// production invocation) had no runHarness-level test, so a regression
-// that broke either source on Path 2 — e.g. an accidental early
-// `prompt is required` return — would not be caught.
+// STIRRUP_PROMPT fallback.
 func TestRunHarness_Path2_PromptFromEnvVar(t *testing.T) {
 	t.Setenv("STIRRUP_PROMPT", "hello from env")
 
@@ -4729,8 +4461,7 @@ func TestRunHarness_Path2_PromptFromEnvVar(t *testing.T) {
 // readPromptFile directly; this test only confirms the file reached
 // the resolution chain in the flag-only path.
 func TestRunHarness_Path2_PromptFromPromptFile(t *testing.T) {
-	// Belt and braces — make sure no ambient STIRRUP_PROMPT shadows
-	// the --prompt-file we're trying to exercise.
+
 	t.Setenv("STIRRUP_PROMPT", "")
 
 	promptDir := t.TempDir()
@@ -4759,9 +4490,6 @@ func TestRunHarness_Path2_PromptFromPromptFile(t *testing.T) {
 // TestRunHarness_Path2_AllSourcesEmpty asserts that the "prompt is
 // required" error on Path 2 names every prompt source so an operator
 // hitting this error sees the full chain without grepping the source.
-// Doubles as the regression test for N1 — the previous message
-// omitted "positional argument" entirely and listed --config first
-// despite its being the lowest-priority source.
 func TestRunHarness_Path2_AllSourcesEmpty(t *testing.T) {
 	t.Setenv("STIRRUP_PROMPT", "")
 
@@ -4782,13 +4510,11 @@ func TestRunHarness_Path2_AllSourcesEmpty(t *testing.T) {
 	}
 }
 
-// --- B-2 / B-3 / B-4: provider-retry flag-to-config wiring (#197) ---
+// --- provider-retry flag-to-config wiring ---
 
 // TestApplyProviderRetryOverrides_SubMillisecondRejected pins the helper's
-// refusal to silently truncate a sub-millisecond duration to zero. Without
-// this guard a `--provider-retry-initial-delay=500us` invocation would
-// satisfy `int(d / time.Millisecond) == 0` and fall through to the
-// zero-guard ("flag not set"), erasing the operator's intent.
+// refusal to silently truncate a sub-millisecond duration to zero: that
+// would satisfy the ms-conversion's zero-guard and erase operator intent.
 func TestApplyProviderRetryOverrides_SubMillisecondRejected(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -5019,9 +4745,7 @@ func TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile(t *testing
 
 // TestApplyOverrides_WorkspaceExportToFlowsThrough pins that
 // --export-workspace-to lands on ExecutorConfig.WorkspaceExportTo so
-// the end-of-run exporter wiring in runWithConfig sees it. End-to-end
-// (actual GCS upload) is covered by the Chunk C smoke workflow; this
-// test just confirms the flag-to-field path is wired.
+// the end-of-run exporter wiring in runWithConfig sees it.
 func TestApplyOverrides_WorkspaceExportToFlowsThrough(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -5055,11 +4779,9 @@ func TestApplyOverrides_WorkspaceExportToDefaultPreservesFile(t *testing.T) {
 	}
 }
 
-// TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough pins the
-// flag-only Path 2 wiring — buildHarnessRunConfig must thread
-// WorkspaceExportTo onto ExecutorConfig so the end-of-run hook fires
-// when --config is absent and the operator passed
-// --export-workspace-to alone.
+// TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough pins that
+// buildHarnessRunConfig threads WorkspaceExportTo onto ExecutorConfig
+// on the flag-only path.
 func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
@@ -5084,8 +4806,7 @@ func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
 
 // TestApplyOverrides_ToolDispatchMaxParallelSetsField pins that
 // --max-tool-parallel=N (with N > 0) populates cfg.ToolDispatch to
-// {MaxParallel: N}. Mirrors the "explicit flag wins" half of the
-// override precedence pattern used elsewhere in this file (issue #184).
+// {MaxParallel: N}.
 func TestApplyOverrides_ToolDispatchMaxParallelSetsField(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -5105,10 +4826,9 @@ func TestApplyOverrides_ToolDispatchMaxParallelSetsField(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride pins the
-// "default flag does not clobber file value" half of the precedence
-// pattern: a config-file ToolDispatch value must survive when the user
-// has not passed --max-tool-parallel (issue #184).
+// TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride pins
+// that a config-file ToolDispatch value survives when the user has not
+// passed --max-tool-parallel.
 func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -5128,8 +4848,8 @@ func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing
 }
 
 // TestApplyOverrides_EscalateToolChoiceEnables pins that
-// --escalate-tool-choice flips Enabled on cfg.ToolChoiceEscalation (issue
-// #230), allocating the sub-config when the file omitted it.
+// --escalate-tool-choice flips Enabled on cfg.ToolChoiceEscalation,
+// allocating the sub-config when the file omitted it.
 func TestApplyOverrides_EscalateToolChoiceEnables(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -5188,10 +4908,8 @@ func TestApplyOverrides_EscalateToolChoiceMaxRetries(t *testing.T) {
 }
 
 // TestRunHarness_OutputRunConfigWritesFile pins the dry-run capture
-// surface from issue #240: --output-runconfig writes the resolved
-// RunConfig to disk, the loop is not invoked, and the process exits
-// cleanly. The written file must be parseable JSON; round-tripping it
-// back through loadRunConfigFile asserts the wire shape.
+// surface: --output-runconfig writes the resolved RunConfig to disk, the
+// loop is not invoked, and the process exits cleanly.
 func TestRunHarness_OutputRunConfigWritesFile(t *testing.T) {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "out.json")
@@ -5233,10 +4951,7 @@ func TestRunHarness_OutputRunConfigWritesFile(t *testing.T) {
 
 // TestRunHarness_OutputRunConfigToStdout pins the "-" sentinel: a
 // captured config can flow straight back into another `stirrup
-// run-config` or `stirrup harness --config -` without a temp file
-// hop. We cannot easily capture the live os.Stdout here, but we can
-// at least confirm runHarness does not return an error for the
-// stdout-sentinel branch and does not try to invoke the loop.
+// run-config` or `stirrup harness --config -` without a temp file hop.
 func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
@@ -5246,11 +4961,6 @@ func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
 		t.Fatalf("set prompt: %v", err)
 	}
 
-	// Redirect os.Stdout for the duration so the test output stays
-	// clean. The exact stdout contents are exercised by
-	// TestWriteRunConfigJSON_RoundTrip and TestRunRunConfig_*; here we
-	// only need to confirm the dry-run branch doesn't fall through to
-	// runWithConfig.
 	origStdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -5285,12 +4995,8 @@ func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
 	}
 }
 
-// TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure pins
-// the spec's "never writes on validation failure" contract for
-// --output-runconfig. We pick the same bedrock + sonnet-4-6 trap that
-// powers TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation
-// because the validator rejects it deterministically and ahead of any
-// other path that might write the file.
+// TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure pins the
+// "never writes on validation failure" contract for --output-runconfig.
 func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T) {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "out.json")
@@ -5305,8 +5011,6 @@ func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T)
 	if err := cmd.Flags().Set("provider", "bedrock"); err != nil {
 		t.Fatalf("set provider: %v", err)
 	}
-	// --model stays at its CLI default "claude-sonnet-4-6", which is
-	// the issue #65 trap the validator rejects.
 
 	err := runHarness(cmd, nil)
 	if err == nil {
@@ -5318,11 +5022,9 @@ func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T)
 }
 
 // TestRunHarness_OutputRunConfigReplaysIdentically pins the "save and
-// replay" workflow the spec calls out: a config captured via
-// --output-runconfig, when fed back into `stirrup harness --config
-// <path>`, produces an equivalent resolved config. The check ignores
-// only RunID (a fresh run mints a new ID by design) and Timeout
-// pointer identity (the helper materialises a new *int).
+// replay" workflow: a config captured via --output-runconfig, fed back
+// into `stirrup harness --config <path>`, produces an equivalent
+// resolved config (RunID excepted, since a fresh run mints a new one).
 func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "captured.json")
@@ -5346,7 +5048,6 @@ func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
 		t.Fatalf("load captured: %v", err)
 	}
 
-	// Now feed it back via --config and capture the resolved shape.
 	replayPath := filepath.Join(dir, "replay.json")
 	cmd2 := newTestHarnessCommand()
 	if err := cmd2.Flags().Set("config", outPath); err != nil {
@@ -5369,18 +5070,15 @@ func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
 	if captured.Mode != replayed.Mode {
 		t.Errorf("Mode drifted: captured=%q replay=%q", captured.Mode, replayed.Mode)
 	}
-	// RunID is allowed to differ — the replay is a new run.
+
 	if captured.RunID == replayed.RunID {
 		t.Logf("RunIDs happen to match (clock resolution); harmless")
 	}
 }
 
-// withPipedStdin swaps os.Stdin for a pipe whose read end the helper
-// returns to the caller; the supplied content is written to the
-// write end and the writer is closed so EOF reaches the reader. The
-// returned cleanup is registered with t.Cleanup so tests do not need
-// to thread the restore call themselves. Used by the MF-2 stdin
-// integration tests to drive runHarness without launching a subprocess.
+// withPipedStdin swaps os.Stdin for a pipe, writes content to it, and
+// closes the writer so EOF reaches the reader; restore is registered
+// with t.Cleanup.
 func withPipedStdin(t *testing.T, content string) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -5404,9 +5102,7 @@ func withPipedStdin(t *testing.T, content string) {
 
 // captureStdout swaps os.Stdout for a pipe and returns a function the
 // caller invokes once the test action has completed to retrieve the
-// captured bytes. Used by MF-2 tests that drive runHarness via
-// --output-runconfig=- (the dry-run capture sentinel) so the test can
-// observe the resolved RunConfig without invoking the provider.
+// captured bytes.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -5432,10 +5128,8 @@ func captureStdout(t *testing.T) func() string {
 
 // minimalStdinRunConfig is the smallest RunConfig the runHarness stdin
 // integration tests pipe through os.Stdin. ResolveAll still runs after
-// the read so every required field for the validator must be set —
-// the minimalRunConfigJSON helper in runconfigbuilder_test.go is the
-// ResolveBase shape, which omits Tools.BuiltIn / PermissionPolicy
-// values ResolveAll would reject on the execution path.
+// the read, so every field ResolveAll (not just ResolveBase) requires
+// must be set.
 func minimalStdinRunConfig(t *testing.T) string {
 	t.Helper()
 	timeout := 300
@@ -5473,11 +5167,9 @@ func minimalStdinRunConfig(t *testing.T) string {
 	return string(body)
 }
 
-// TestRunHarness_StdinExplicitDashReadsConfig pins MF-2 scenario 1:
+// TestRunHarness_StdinExplicitDashReadsConfig pins that
 // `stirrup harness --config -` consumes a piped RunConfig from
 // os.Stdin and resolves through ResolveAll into a writable capture.
-// --output-runconfig=- short-circuits the provider invocation so the
-// test can assert on the resolved shape without booting the loop.
 func TestRunHarness_StdinExplicitDashReadsConfig(t *testing.T) {
 	withPipedStdin(t, minimalStdinRunConfig(t))
 	getOut := captureStdout(t)
@@ -5509,18 +5201,15 @@ func TestRunHarness_StdinExplicitDashReadsConfig(t *testing.T) {
 	}
 }
 
-// TestRunHarness_StdinAutoDetectsPipe pins MF-2 scenario 2: a piped
-// stdin (no --config flag) is auto-detected and treated as the base
-// RunConfig. The shape mirrors the canonical `run-config | harness`
-// pipeline.
+// TestRunHarness_StdinAutoDetectsPipe pins that a piped stdin (no
+// --config flag) is auto-detected and treated as the base RunConfig,
+// mirroring the canonical `run-config | harness` pipeline.
 func TestRunHarness_StdinAutoDetectsPipe(t *testing.T) {
 	withPipedStdin(t, minimalStdinRunConfig(t))
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-	// Deliberately no --config flag set. The pipe's named-pipe mode
-	// bit triggers isStdinPiped, which makes BuildRunConfig consume
-	// stdin as the base.
+
 	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
 		t.Fatalf("set output-runconfig: %v", err)
 	}
@@ -5541,10 +5230,9 @@ func TestRunHarness_StdinAutoDetectsPipe(t *testing.T) {
 	}
 }
 
-// TestRunHarness_StdinAndConfigFileAreAmbiguous pins MF-2 scenario 3:
-// `--config <path>` alongside a non-TTY stdin must fail loudly. Silent
-// precedence would surprise pipeline authors debugging which source
-// landed which field.
+// TestRunHarness_StdinAndConfigFileAreAmbiguous pins that
+// `--config <path>` alongside a non-TTY stdin fails loudly rather than
+// silently picking a precedence.
 func TestRunHarness_StdinAndConfigFileAreAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -5574,13 +5262,11 @@ func TestRunHarness_StdinAndConfigFileAreAmbiguous(t *testing.T) {
 	}
 }
 
-// TestRunHarness_StdinDashWithoutPipeErrors pins MF-2 scenario 4:
-// `--config -` with no piped stdin (the TTY / `go test` char-device
-// shape) returns a non-nil error with a clear "no piped input"
-// message rather than blocking on a phantom read.
+// TestRunHarness_StdinDashWithoutPipeErrors pins that `--config -` with
+// no piped stdin (the TTY / `go test` char-device shape) returns a
+// non-nil error rather than blocking on a phantom read.
 func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
-	// Deliberately do NOT swap os.Stdin — the `go test` default is a
-	// char device that isStdinPiped rejects.
+
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("config", "-"); err != nil {
 		t.Fatalf("set config: %v", err)
@@ -5598,20 +5284,17 @@ func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
 	}
 }
 
-// TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags pins the
-// non-interactive-runtime fix: an auto-detected piped stdin that turns
-// out to be empty (a closed anonymous pipe, exactly the fd 0 a GitHub
-// Actions shell step / `docker exec` without -i hands the process) must
-// be treated as "no piped config" and let the flag-only base build
-// proceed — not abort with "input is empty". Without the empty-read
-// downgrade this is the exact failure the OpenAI WIF smoke test hit.
+// TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags pins that an
+// auto-detected piped stdin that turns out to be empty (a closed
+// anonymous pipe, e.g. a GitHub Actions shell step or `docker exec`
+// without -i) is treated as "no piped config", letting the flag-only
+// base build proceed instead of aborting with "input is empty".
 func TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags(t *testing.T) {
-	withPipedStdin(t, "") // empty pipe == an *os.File reporting ModeNamedPipe
+	withPipedStdin(t, "")
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-	// No --config; a flag-only invocation with just a prompt should
-	// validate as planning off the flag defaults.
+
 	if err := cmd.Flags().Set("prompt", "prompt from flags"); err != nil {
 		t.Fatalf("set prompt: %v", err)
 	}
@@ -5635,11 +5318,10 @@ func TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags(t *testing.T) {
 	}
 }
 
-// TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous pins the
-// complement for the --config path: an empty piped stdin is not a
-// competing base, so `--config <path>` alongside it must succeed rather
-// than trip the ambiguous-sources guard. This is what lets a `--config`
-// smoke test run unmodified under a runtime that attaches an empty pipe.
+// TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous pins that an
+// empty piped stdin is not a competing base, so `--config <path>`
+// alongside it succeeds rather than tripping the ambiguous-sources
+// guard.
 func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -5647,7 +5329,7 @@ func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	withPipedStdin(t, "") // empty pipe alongside --config
+	withPipedStdin(t, "")
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
@@ -5674,13 +5356,12 @@ func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
 	}
 }
 
-// TestRunHarness_ExplicitDashWithEmptyPipeStillErrors guards the
-// exemption: the empty-read downgrade applies only to auto-detection.
-// When the operator explicitly names stdin via --config -, an empty pipe
-// is a genuine mistake and must stay a hard "input is empty" error
-// rather than silently falling through to flags.
+// TestRunHarness_ExplicitDashWithEmptyPipeStillErrors guards that the
+// empty-read downgrade applies only to auto-detection: when the operator
+// explicitly names stdin via --config -, an empty pipe stays a hard
+// "input is empty" error.
 func TestRunHarness_ExplicitDashWithEmptyPipeStillErrors(t *testing.T) {
-	withPipedStdin(t, "") // operator pointed --config - at an empty pipe
+	withPipedStdin(t, "")
 
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("config", "-"); err != nil {
@@ -5696,10 +5377,9 @@ func TestRunHarness_ExplicitDashWithEmptyPipeStillErrors(t *testing.T) {
 	}
 }
 
-// TestRunHarness_OutputRunConfigBadPathErrors pins SF-3: an
-// --output-runconfig path whose parent directory does not exist must
-// surface as a non-nil error mentioning the path. The OpenFile error
-// branch previously had no coverage.
+// TestRunHarness_OutputRunConfigBadPathErrors pins that an
+// --output-runconfig path whose parent directory does not exist
+// surfaces as a non-nil error mentioning the path.
 func TestRunHarness_OutputRunConfigBadPathErrors(t *testing.T) {
 	badPath := filepath.Join(t.TempDir(), "does-not-exist", "out.json")
 
@@ -5734,11 +5414,9 @@ type failCloseWriter struct {
 
 func (f *failCloseWriter) Close() error { return f.closeErr }
 
-// TestWriteOutputRunConfig_CloseError pins SF-1: a Close error from
-// the captured-config writer (e.g. ENOSPC manifesting only at kernel
-// flush time) must propagate as a non-nil error wrapping the
-// underlying cause. The pre-fix `defer _ = f.Close()` silently
-// discarded the failure.
+// TestWriteOutputRunConfig_CloseError pins that a Close error from the
+// captured-config writer (e.g. ENOSPC manifesting only at kernel flush
+// time) propagates as a non-nil error wrapping the underlying cause.
 func TestWriteOutputRunConfig_CloseError(t *testing.T) {
 	cfg := &types.RunConfig{
 		RunID:        "x",
@@ -5766,9 +5444,7 @@ func TestWriteOutputRunConfig_CloseError(t *testing.T) {
 	})
 
 	t.Run("write error wins over close error", func(t *testing.T) {
-		// When writeRunConfigJSON has already failed, the prior
-		// error must take precedence — the close error is irrelevant
-		// noise at that point.
+
 		w := &failWriteCloseWriter{closeErr: io.ErrClosedPipe, writeErr: io.ErrShortWrite}
 		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
 		if err == nil {
@@ -5792,17 +5468,9 @@ func (f *failWriteCloseWriter) Write(p []byte) (int, error) { return 0, f.writeE
 func (f *failWriteCloseWriter) Close() error                { return f.closeErr }
 
 // TestRunHarness_EnvVarConfigLoadsBase pins the integration-level
-// guarantee for #241: STIRRUP_CONFIG, set in the environment with no
-// --config flag, must be threaded through runHarness → BuildRunConfig
-// → os.Getenv and consume the named file as the base RunConfig. The
-// unit tests in runconfigbuilder_test.go cover BuildRunConfig directly;
-// this test catches a future refactor of runHarness that drops the
-// delegation (e.g., reverts to an inline config-load path) which would
-// silently break env-var support without any of the unit tests failing.
-//
-// --output-runconfig=- short-circuits the provider invocation and
-// writes the resolved RunConfig to stdout so the assertion observes
-// the merged shape without booting the loop.
+// guarantee that STIRRUP_CONFIG, set with no --config flag, is threaded
+// through runHarness -> BuildRunConfig -> os.Getenv and consumed as the
+// base RunConfig.
 func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "env-config.json")
@@ -5868,10 +5536,7 @@ func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
 	}
 }
 
-// captureStderr mirrors captureStdout for fd 2. Used by the --output
-// flag tests to assert that --output=json / --output=none suppress the
-// human-readable stderr summary that --output=text (the default)
-// continues to print.
+// captureStderr mirrors captureStdout for fd 2.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -5911,11 +5576,9 @@ func outputModeRunTrace() *types.RunTrace {
 	}
 }
 
-// TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour pins the
-// acceptance-criterion "--output=text matches today's behaviour
-// exactly": the stderr summary is printed and the configured (default)
-// resultSink — "none" — emits nothing. No STIRRUP_RESULT line should
-// appear on stdout because no sink is configured.
+// TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour pins that
+// --output=text prints the stderr summary and emits nothing on stdout
+// when the default (nil) resultSink is configured.
 func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
@@ -5937,10 +5600,9 @@ func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_JSONEmitsSingleStdoutLine pins the acceptance
-// criterion that --output=json writes exactly one STIRRUP_RESULT line
-// on stdout and prints nothing on stderr (the legacy summary is
-// suppressed). The JSON payload must be parseable as RunResult.
+// TestEmitRunOutput_JSONEmitsSingleStdoutLine pins that --output=json
+// writes exactly one STIRRUP_RESULT line on stdout, parseable as
+// RunResult, and prints nothing on stderr.
 func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
@@ -5960,7 +5622,7 @@ func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
 	if strings.Count(stdout, "STIRRUP_RESULT ") != 1 {
 		t.Errorf("expected exactly one STIRRUP_RESULT line, got: %q", stdout)
 	}
-	// Strip the sentinel and the trailing newline before parsing.
+
 	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
 	var got types.RunResult
 	if err := json.Unmarshal([]byte(payload), &got); err != nil {
@@ -5977,10 +5639,8 @@ func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_NoneSuppressesBoth pins the acceptance criterion
-// that --output=none produces no post-run summary on either stream.
-// Workspace export, follow-up grace, and exit code are exercised
-// elsewhere — this test scopes to the summary surfaces only.
+// TestEmitRunOutput_NoneSuppressesBoth pins that --output=none produces
+// no post-run summary on either stream.
 func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
@@ -6000,10 +5660,8 @@ func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
 }
 
 // TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce pins the
-// deduplication rule from the issue: --output=json and
-// resultSink.type=stdout-json together must produce exactly one
-// STIRRUP_RESULT line, not two. The flag wins because it is the more
-// explicit signal.
+// deduplication rule: --output=json and resultSink.type=stdout-json
+// together must produce exactly one STIRRUP_RESULT line, not two.
 func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{
@@ -6024,12 +5682,10 @@ func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged pins the legacy
-// behaviour when --output is left at "text" and the operator has
-// configured resultSink.type=stdout-json: the stderr summary prints
-// AND the configured sink emits its STIRRUP_RESULT line. This is the
-// pre-#242 surface the regression-tested acceptance criterion relies
-// on.
+// TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged pins that when
+// --output is left at "text" and resultSink.type=stdout-json is
+// configured, the stderr summary prints and the configured sink still
+// emits its STIRRUP_RESULT line.
 func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{
@@ -6050,12 +5706,9 @@ func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome pins the
-// edge case from the issue: a run cancelled mid-flight should produce
-// a partial RunResult with the cancellation outcome rather than
-// nothing. emitRunOutput is the dispatch site; here we hand it a
-// RunTrace whose Outcome is "cancelled" and assert the JSON line
-// surfaces it.
+// TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome pins that a
+// run cancelled mid-flight produces a partial RunResult with the
+// cancellation outcome rather than nothing.
 func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
 	started := time.Now()
 	rt := &types.RunTrace{
@@ -6084,11 +5737,9 @@ func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_EmptyModeMatchesText pins the runJob entry-point's
-// implicit dependency on the default branch: the job command does not
-// thread --output, so it passes outputMode="" and expects the legacy
-// "print summary + emit configured sink" behaviour. This guards
-// against a refactor that would otherwise silently break the job path.
+// TestEmitRunOutput_EmptyModeMatchesText pins that the runJob
+// entry-point's outputMode="" (it never threads --output) falls through
+// to the "print summary + emit configured sink" text behaviour.
 func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
@@ -6102,12 +5753,9 @@ func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
 	}
 }
 
-// TestPrintRunSummary_NilTraceDoesNotPanic pins the nil guard added in
-// M1. A nil RunTrace would otherwise dereference at the Outcome field
-// and crash the process before any structured output is emitted —
-// buildRunResult already returns a documented "internal-error"
-// sentinel for the same condition, and printRunSummary now mirrors
-// that defensive shape on stderr.
+// TestPrintRunSummary_NilTraceDoesNotPanic pins the nil guard: a nil
+// RunTrace would otherwise dereference at the Outcome field and crash
+// the process before any structured output is emitted.
 func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
 	stderrDone := captureStderr(t)
 	defer func() {
@@ -6122,9 +5770,8 @@ func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestPrintRunSummary_HooksLinePrintedWhenPresent pins the issue #461
-// summary line: present and correctly counted when the trace carries
-// HookResults, counting only executed (non-Skipped) entries and only
+// TestPrintRunSummary_HooksLinePrintedWhenPresent pins that the summary
+// counts only executed (non-Skipped) HookResults entries, treating only
 // those with a non-empty Error as failures.
 func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
 	rt := outputModeRunTrace()
@@ -6144,8 +5791,7 @@ func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
 }
 
 // TestPrintRunSummary_HooksLineOmittedWhenAbsent pins that a hookless
-// run's summary carries no "Hooks:" line at all, preserving the
-// pre-#461 stderr shape byte-for-byte.
+// run's summary carries no "Hooks:" line at all.
 func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {
 	rt := outputModeRunTrace()
 
@@ -6158,25 +5804,16 @@ func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_CancelledContextStillEmits pins the M2 fix:
-// emitRunOutput must be reachable with a usable context even when the
-// run's primary context has already been cancelled. The synthesizer's
-// concern is that a future remote sink (gcp-pubsub, gcs) honouring
-// ctx would otherwise drop every signal-cancelled run's STIRRUP_RESULT
-// silently. Today the StdoutJSONSink ignores ctx, so this test only
-// guards the dispatch site: passing a pre-cancelled ctx must still
-// produce the STIRRUP_RESULT line under --output=json. The
-// runWithConfig and runJob caller sites have been updated to build a
-// fresh context before invoking emitRunOutput; this test pins the
-// observable behaviour so a regression that re-introduces the
-// cancelled context surfaces in the test suite rather than only
-// when a remote sink ships.
+// TestEmitRunOutput_CancelledContextStillEmits pins that emitRunOutput
+// still produces the STIRRUP_RESULT line under --output=json when
+// passed a pre-cancelled context, guarding a future remote sink that
+// might honour ctx and otherwise drop signal-cancelled runs silently.
 func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // pre-cancel
+	cancel()
 
 	stdoutDone := captureStdout(t)
 	emitRunOutput(ctx, cfg, rt, "json")
@@ -6206,12 +5843,10 @@ func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_JSONWithNilTraceLogsWarning pins the S3 fix: a
-// nil trace under --output=json produces a structurally valid
-// STIRRUP_RESULT line with Outcome="internal-error", but operators
-// consuming only the JSON stream would otherwise have no diagnostic
-// for the underlying nil-trace condition. The slog.Warn at the top
-// of emitRunOutput surfaces the diagnostic in process logs.
+// TestEmitRunOutput_JSONWithNilTraceLogsWarning pins that a nil trace
+// under --output=json produces a structurally valid STIRRUP_RESULT line
+// with Outcome="internal-error", and that emitRunOutput's slog.Warn
+// surfaces the diagnostic in process logs.
 func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
@@ -6240,12 +5875,9 @@ func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
 	}
 }
 
-// stubResultSink records every Emit invocation so tests can assert
-// that the configured resultSink fires when --output=json or
-// --output=none is paired with a non-stdout sink (the
-// forward-compatibility surface for gcp-pubsub / gcs). Distinct from
-// resultsink.NoneSink because the latter discards silently and gives
-// the test no observable signal.
+// stubResultSink records every Emit invocation so tests can assert that
+// the configured resultSink fires, unlike resultsink.NoneSink which
+// discards silently.
 type stubResultSink struct {
 	calls []types.RunResult
 }
@@ -6256,8 +5888,7 @@ func (s *stubResultSink) Emit(_ context.Context, r types.RunResult) error {
 }
 
 // installStubResultSink rewires the newResultSink seam to return the
-// supplied stub for the duration of the test. Returns nothing because
-// the stub itself is the assertion surface.
+// supplied stub for the duration of the test.
 func installStubResultSink(t *testing.T, stub *stubResultSink) {
 	t.Helper()
 	prev := newResultSink
@@ -6267,29 +5898,20 @@ func installStubResultSink(t *testing.T, stub *stubResultSink) {
 	}
 }
 
-// resultsinkInterface is the local alias of resultsink.ResultSink so
-// the stub does not introduce a direct import on every test file
-// (harness_test.go already pulls in the package via the cfg.ResultSink
-// type, but the stub doesn't use any concrete type from there).
-// Renamed alias keeps newResultSink's signature compatible with the
-// production type without copying it.
+// resultsinkInterface is a local alias of resultsink.ResultSink, kept
+// so installStubResultSink's signature matches newResultSink's.
 type resultsinkInterface = resultsink.ResultSink
 
 // TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires pins the
 // forward-compatibility surface for a future gcp-pubsub / gcs sink
-// under --output=json. The flag's STIRRUP_RESULT line goes to stdout,
-// and the configured sink (a different channel) also fires. Today the
-// only way to exercise this branch is via the newResultSink seam
-// because resultsink.NewResultSink rejects gcp-pubsub / gcs as
-// "reserved but not yet implemented".
+// under --output=json: the flag's STIRRUP_RESULT line goes to stdout,
+// and the configured sink also fires.
 func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
 	stub := &stubResultSink{}
 	installStubResultSink(t, stub)
 
 	rt := outputModeRunTrace()
-	// Type set to a future-shaped value so the conditional in
-	// emitRunOutput skips the stdout-json short-circuit and falls
-	// through to emitRunResult.
+
 	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
 
 	stdoutDone := captureStdout(t)
@@ -6307,12 +5929,9 @@ func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins the
-// forward-compatibility surface under --output=none: the stderr
-// summary and stdout STIRRUP_RESULT are both suppressed, but a sink
-// targeting a non-stdout destination still fires because it
-// represents a separate operator-configured channel with its own
-// intent.
+// TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins that under
+// --output=none, the stderr summary and stdout STIRRUP_RESULT are both
+// suppressed, but a sink targeting a non-stdout destination still fires.
 func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
 	stub := &stubResultSink{}
 	installStubResultSink(t, stub)
@@ -6340,12 +5959,10 @@ func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
 	}
 }
 
-// TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins the
-// S2 fix: an unrecognised mode reached at this layer (the CLI
-// validator catches them earlier, so reaching here means a new caller
-// or a new mode that didn't update both switches) must surface a
-// diagnostic and fall through to the text behaviour rather than
-// silently dropping the summary.
+// TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins that an
+// unrecognised mode reached at this layer surfaces a diagnostic and
+// falls through to the text behaviour rather than silently dropping the
+// summary.
 func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
@@ -6369,10 +5986,7 @@ func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
 }
 
 // TestValidateOutputMode_AcceptsClosedSet pins the closed three-value
-// set surfaced via --output. A new value would need a corresponding
-// branch in emitRunOutput; this test forces the two to evolve
-// together by failing if validateOutputMode silently accepts an
-// unsupported value.
+// set surfaced via --output.
 func TestValidateOutputMode_AcceptsClosedSet(t *testing.T) {
 	for _, mode := range []string{"text", "json", "none"} {
 		if err := validateOutputMode(mode); err != nil {
@@ -6396,9 +6010,7 @@ func TestValidateOutputMode_RejectsUnsupported(t *testing.T) {
 // TestRunHarness_OutputFlagRejectsInvalidValue is the end-to-end
 // integration test for the closed-set validation: an invalid --output
 // value must surface as an error from runHarness rather than being
-// silently dropped. Pairs with TestValidateOutputMode_RejectsUnsupported
-// (which pins the helper directly) to catch a regression that would
-// stop calling validateOutputMode at all.
+// silently dropped.
 func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
@@ -6417,13 +6029,10 @@ func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
 	}
 }
 
-// TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig
-// pins the S1 fix: --output must be validated before the
-// --output-runconfig dry-run branch exits, otherwise
-// `stirrup harness --output-runconfig=- --output=yaml` returns 0 and
-// captures a config the operator cannot replay (the bad flag was
-// silently dropped). Pins the ordering so a refactor that moves
-// validateOutputMode below the dry-run branch surfaces here.
+// TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig pins
+// that --output is validated before the --output-runconfig dry-run
+// branch exits, so `--output-runconfig=- --output=yaml` cannot return 0
+// and capture a config the operator cannot replay.
 func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
@@ -6492,11 +6101,10 @@ func TestPrintHarnessUsageHint_PlainStripsAnsi(t *testing.T) {
 }
 
 // TestResolvePromptForRun_InteractiveReturnsHintSentinel pins the TTY
-// branch of the prompt-required gate (issue #249): when stderr is
-// interactive and no source supplied a prompt, resolvePromptForRun
-// returns errPromptHintRequested so runHarness can show the grouped hint
-// and exit 0. The interactive decision is injected via the
-// stderrIsInteractive seam rather than a real PTY.
+// branch of the prompt-required gate: when stderr is interactive and no
+// source supplied a prompt, resolvePromptForRun returns
+// errPromptHintRequested so runHarness can show the grouped hint and
+// exit 0.
 func TestResolvePromptForRun_InteractiveReturnsHintSentinel(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
@@ -6533,11 +6141,10 @@ func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
 	}
 }
 
-// TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint pins the
-// spec edge case (issue #249): even on an interactive terminal, a
-// resolvable prompt must short-circuit before the hint gate. A
-// STIRRUP_PROMPT-supplied prompt fills cfg.Prompt, so resolvePromptForRun
-// returns nil — the hint sentinel must NOT fire.
+// TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint pins that
+// even on an interactive terminal, a resolvable prompt short-circuits
+// before the hint gate: STIRRUP_PROMPT fills cfg.Prompt and the hint
+// sentinel must not fire.
 func TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
@@ -6555,12 +6162,9 @@ func TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint(t *testing.T) {
 	}
 }
 
-// TestResolvePromptForRun_InteractiveWithConfigPromptNoHint pins the
-// companion spec edge case: a prompt supplied by a --config file's
-// `prompt` field is already on cfg.Prompt by the time resolvePromptForRun
-// runs (BuildRunConfig loads the base before resolving the prompt chain).
-// The hint sentinel must NOT fire on an interactive terminal when a
-// prompt is already present.
+// TestResolvePromptForRun_InteractiveWithConfigPromptNoHint pins that the
+// hint sentinel must not fire on an interactive terminal when a prompt
+// supplied by a --config file's `prompt` field is already on cfg.Prompt.
 func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
@@ -6568,8 +6172,7 @@ func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
 	t.Setenv("STIRRUP_PROMPT", "")
 
 	cmd := newTestHarnessCommand()
-	// Models a --config file whose `prompt` field landed on cfg before
-	// the prompt-resolution chain runs.
+
 	cfg := &types.RunConfig{Prompt: "prompt-from-config"}
 	err := resolvePromptForRun(cmd, cfg)
 	if err != nil {
@@ -6582,9 +6185,7 @@ func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
 
 // TestRunHarness_BareInteractivePrintsHintAndExitsZero drives the full
 // runHarness path on a TTY with no prompt: it must print the grouped
-// hint to the command's stderr and return nil (exit 0). The
-// stderrIsInteractive seam forces the TTY branch; cmd.SetErr captures
-// the hint so the assertion does not depend on a real terminal.
+// hint to the command's stderr and return nil (exit 0).
 func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }

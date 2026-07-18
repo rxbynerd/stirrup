@@ -49,15 +49,12 @@ func NewWebIdentityAWSSource(ts TokenSource, region, roleARN, sessionName string
 }
 
 func (w *WebIdentityAWSSource) Resolve(_ context.Context) (*Resolved, error) {
-	// Create an STS client for the target region. AssumeRoleWithWebIdentity
-	// does not require pre-existing AWS credentials — the web identity token
-	// is the authentication — so no credentials are configured on this client.
+	// AssumeRoleWithWebIdentity needs no pre-existing AWS credentials on
+	// this client — the web identity token is the authentication.
 	stsClient := sts.New(sts.Options{
 		Region: w.region,
 	})
 
-	// tokenSourceAdapter bridges our context-aware TokenSource to the SDK's
-	// IdentityTokenRetriever (which lacks context). See adapter comment below.
 	adapter := &tokenSourceAdapter{ts: w.tokenSource}
 
 	roleProvider := stscreds.NewWebIdentityRoleProvider(
@@ -69,21 +66,16 @@ func (w *WebIdentityAWSSource) Resolve(_ context.Context) (*Resolved, error) {
 		},
 	)
 
-	// Wrap in CredentialsCache for automatic refresh before expiry.
 	cached := aws.NewCredentialsCache(roleProvider)
 
 	return &Resolved{AWSCredentials: cached}, nil
 }
 
-// tokenSourceAdapter bridges TokenSource to stscreds.IdentityTokenRetriever.
-//
-// The AWS SDK's IdentityTokenRetriever.GetIdentityToken() does not accept
-// a context.Context. This adapter calls the underlying TokenSource with
-// context.Background(). This is acceptable because:
-//   - Token sources (GKE metadata, file reads) are fast operations (~10ms)
-//   - The adapter is long-lived (created once at factory time)
-//   - The SDK calls GetIdentityToken() inside Retrieve(ctx), but does not
-//     forward that context to the retriever interface
+// tokenSourceAdapter bridges TokenSource to stscreds.IdentityTokenRetriever,
+// whose GetIdentityToken() does not accept a context.Context — the SDK
+// never forwards Retrieve(ctx) down to it. Using context.Background() is
+// acceptable because token sources are fast (~10ms) and the adapter is
+// long-lived.
 type tokenSourceAdapter struct {
 	ts TokenSource
 }

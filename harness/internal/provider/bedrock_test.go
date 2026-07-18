@@ -21,10 +21,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// ---------------------------------------------------------------------------
-// Mock infrastructure
-// ---------------------------------------------------------------------------
-
 // mockEventReader implements bedrockEventReader using a pre-loaded slice of
 // events. Events are sent on a channel; Err() returns a configurable error
 // after the channel drains.
@@ -49,12 +45,6 @@ func (m *mockEventReader) Events() <-chan brtypes.ConverseStreamOutput {
 func (m *mockEventReader) Close() error { m.closed = true; return nil }
 func (m *mockEventReader) Err() error   { return m.finalErr }
 
-// mockConverseStreamOutput wraps a mockEventReader to look like the SDK's
-// ConverseStreamOutput.GetStream() return value. We need this because
-// BedrockAdapter.Stream calls output.GetStream() which returns a
-// *bedrockruntime.ConverseStreamEventStream. Instead of fighting that, our
-// tests call consumeBedrockStream directly with a mockEventReader.
-
 // mockBedrockClient implements bedrockConverseStreamer. It captures the input
 // and returns events from a mock event reader.
 type mockBedrockClient struct {
@@ -67,16 +57,11 @@ func (m *mockBedrockClient) ConverseStream(ctx context.Context, params *bedrockr
 	if m.apiErr != nil {
 		return nil, m.apiErr
 	}
-	// We cannot easily construct a real ConverseStreamOutput with an injected
-	// event stream. Instead, tests that need to exercise the full Stream()
-	// method will use consumeBedrockStream directly. This mock is used for
-	// testing the buildConverseStreamInput translation and API error handling.
+	// Tests exercising the full Stream() method use consumeBedrockStream
+	// directly; this mock covers buildConverseStreamInput translation and
+	// API error handling.
 	return nil, fmt.Errorf("mock: use consumeBedrockStream directly for stream tests")
 }
-
-// ---------------------------------------------------------------------------
-// Stream consumption tests
-// ---------------------------------------------------------------------------
 
 func TestBedrock_TextStreaming(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
@@ -238,7 +223,6 @@ func TestBedrock_MixedTextAndToolCall(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	// Expect: text_delta, tool_call, message_complete.
 	if len(result) != 3 {
 		t.Fatalf("expected 3 events, got %d: %+v", len(result), result)
 	}
@@ -320,7 +304,6 @@ func TestBedrock_StreamError(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	// Expect: text_delta("partial"), error.
 	if len(result) != 2 {
 		t.Fatalf("expected 2 events, got %d: %+v", len(result), result)
 	}
@@ -365,7 +348,6 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 	go consumeBedrockStream(ctx, reader, ch)
 	result := collectEvents(t, ch)
 
-	// Should get the first text_delta and then an error from cancellation.
 	foundError := false
 	for _, ev := range result {
 		if ev.Type == "error" && ev.Error != nil {
@@ -426,10 +408,6 @@ func TestBedrock_MalformedToolInputJSON(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Message/tool translation tests
-// ---------------------------------------------------------------------------
-
 func TestBedrock_TranslateMessages(t *testing.T) {
 	msgs := []types.Message{
 		{
@@ -462,7 +440,6 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 		t.Fatalf("expected 3 messages, got %d", len(result))
 	}
 
-	// First message: user text.
 	if result[0].Role != brtypes.ConversationRoleUser {
 		t.Errorf("msg[0].Role = %q, want user", result[0].Role)
 	}
@@ -475,7 +452,6 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 		t.Errorf("msg[0].Content[0].Value = %q, want Hello", textBlock.Value)
 	}
 
-	// Second message: assistant with text + tool_use.
 	if result[1].Role != brtypes.ConversationRoleAssistant {
 		t.Errorf("msg[1].Role = %q, want assistant", result[1].Role)
 	}
@@ -493,7 +469,6 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 		}
 	}
 
-	// Third message: user with tool_result.
 	if len(result[2].Content) != 1 {
 		t.Fatalf("msg[2] has %d content blocks, want 1", len(result[2].Content))
 	}
@@ -612,10 +587,10 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 }
 
 // TestBedrock_TemperatureWireShape pins the unset-vs-explicit-zero
-// semantics for StreamParams.Temperature on the Bedrock adapter (issue
-// #200). A nil pointer leaves InferenceConfig.Temperature nil, which the
-// AWS SDK omits from the Converse request. A non-nil pointer (including
-// an explicit 0.0 for greedy decoding) flows through verbatim.
+// semantics for StreamParams.Temperature on the Bedrock adapter. A nil
+// pointer leaves InferenceConfig.Temperature nil, which the AWS SDK omits
+// from the Converse request. A non-nil pointer (including an explicit 0.0
+// for greedy decoding) flows through verbatim.
 func TestBedrock_TemperatureWireShape(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -689,7 +664,7 @@ func TestBedrock_APIError(t *testing.T) {
 	}
 }
 
-// TestBedrock_ToolChoiceNonAuto_WarnsDowngrade pins #343: Bedrock's
+// TestBedrock_ToolChoiceNonAuto_WarnsDowngrade pins that Bedrock's
 // ConverseStream request carries no tool-choice field, so a non-auto
 // ToolChoice is silently downgraded to auto. The warn must fire (so the
 // downgrade is observable) and must NOT leak message content or any
@@ -834,14 +809,14 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 	}
 }
 
-// TestNewBedrockAdapter_RetryPolicyWiring is SF1 coverage for the one
-// adapter that cannot reuse DoWithRetry: ConverseStream goes through the
-// AWS SDK's own transport, not a raw *http.Client, so the shared
-// RetryPolicy is mapped onto the SDK's own Standard retryer (or
-// aws.NopRetryer when retries are disabled) at construction time. This
-// only exercises that NewBedrockAdapter accepts the policy and returns a
-// usable adapter for both the enabled and disabled cases — the retryer
-// itself is internal to the AWS SDK client and not inspectable from here.
+// TestNewBedrockAdapter_RetryPolicyWiring covers the one adapter that
+// cannot reuse DoWithRetry: ConverseStream goes through the AWS SDK's own
+// transport, not a raw *http.Client, so the shared RetryPolicy is mapped
+// onto the SDK's own Standard retryer (or aws.NopRetryer when retries are
+// disabled) at construction time. This only exercises that
+// NewBedrockAdapter accepts the policy and returns a usable adapter for
+// both cases — the retryer itself is internal to the AWS SDK client and
+// not inspectable from here.
 func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 	for name, policy := range map[string]RetryPolicy{
 		"enabled":  {MaxAttempts: 5, InitialDelay: 200 * time.Millisecond, MaxDelay: 10 * time.Second},

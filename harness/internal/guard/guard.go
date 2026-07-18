@@ -7,10 +7,8 @@
 // or deny it outright.
 //
 // This package is intentionally leaf-level: it imports nothing from
-// elsewhere in the harness so it can be wired in by the factory in a
-// later integration step without creating import cycles. Concrete
-// adapters (Granite Guardian, cloud judges) and loop integration land
-// in subsequent chunks of issue #43.
+// elsewhere in the harness so adapters and loop integration can be
+// wired in by the factory without creating import cycles.
 package guard
 
 import (
@@ -85,7 +83,7 @@ type GuardRail interface {
 }
 
 // ValidPhase reports whether p is one of the three Phase constants
-// defined in this package. Used by config validation in later chunks.
+// defined in this package.
 func ValidPhase(p Phase) bool {
 	switch p {
 	case PhasePreTurn, PhasePreTool, PhasePostTurn:

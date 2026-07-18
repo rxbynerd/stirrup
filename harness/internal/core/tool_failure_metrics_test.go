@@ -266,13 +266,11 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 		wantCategory observability.ToolFailureCategory
 	}{
 		{
-			// Locks in the __unknown__ sentinel substitution: when
-			// the model emits a tool_use whose name does not
-			// resolve, the metric MUST report the bounded sentinel
-			// rather than the raw (model-controlled) name. Trace
-			// records still carry the raw name; only the TSDB
-			// label is sanitised. Regression test for the
-			// label-cardinality DoS (CWE-400) closed in this PR.
+			// Locks in the __unknown__ sentinel substitution: when the
+			// model emits a tool_use whose name does not resolve, the
+			// metric MUST report the bounded sentinel rather than the
+			// raw (model-controlled) name. Trace records still carry
+			// the raw name; only the TSDB label is sanitised.
 			name:         "unknown_tool",
 			tools:        []*tool.Tool{trivialTool()},
 			call:         types.ToolCall{ID: "tc1", Name: "does_not_exist", Input: json.RawMessage(`{}`)},
@@ -483,23 +481,13 @@ func TestToolFailureMetrics_StallTermination(t *testing.T) {
 
 // TestToolFailureCategory_BoundedCardinality is the cardinality guard:
 // every category value emitted by the harness MUST pass IsValid. A
-// future producer that invents a free-form string (e.g. "
-// permission_denied_v2") would silently widen the metric's label
-// cardinality; this test pins the bound by asserting every emission's
-// category is recognised.
-//
-// Combined with the table-driven test above (which covers each known
-// category at its dispatch site), this defines an interlock: any new
-// category MUST be added to the enum to be IsValid, AND any free-form
-// string slipped past the dispatch site fails this assertion.
+// future producer that invents a free-form string would silently widen
+// the metric's label cardinality; this test pins the bound by asserting
+// every emission's category is recognised.
 func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
-	// Pick a mix of categories drawn from different dispatch sites so
-	// the assertion sweeps every emission path simultaneously: an
-	// unknown_tool failure (dispatchToolCall pre-checks), a
-	// schema_validation_failed failure (mid-dispatchToolCall), a
-	// guardrail_denied failure (planAndDispatch pre-dispatch guard),
-	// a handler_error failure (terminal Handler), and a series of
-	// failed calls that trip the stall path.
+	// Mix of categories from different dispatch sites so the assertion
+	// sweeps every emission path: unknown_tool, schema_validation_failed,
+	// handler_error, and the stall path.
 	loop, reader := buildMetricsHarness(t,
 		[]*tool.Tool{trivialTool(), schemaTool(), erroringTool()},
 		nil, nil, nil,
@@ -820,15 +808,12 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 	}
 }
 
-// TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout is the
-// verification test for the deadline/cancellation split in
-// dispatchAsyncToolCall. When the run context expires by deadline,
-// the async dispatch MUST emit async_timeout, NOT async_cancelled —
-// operators alert on async_cancelled to detect user-cancellation
-// spikes; every deadline-bounded run polluting that series defeats
-// the alert. The synthesis brief requires explicit assertions that
-// async_timeout is emitted AND async_cancelled is NOT emitted on a
-// deadline-expired context, so both conditions are checked below.
+// TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout pins the
+// deadline/cancellation split in dispatchAsyncToolCall: when the run
+// context expires by deadline, the async dispatch MUST emit
+// async_timeout, NOT async_cancelled — operators alert on
+// async_cancelled to detect user-cancellation spikes, and a
+// deadline-bounded run polluting that series would defeat the alert.
 func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
@@ -1052,8 +1037,7 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 // trigger. The test installs a PayloadExtractor override via
 // withAsyncExtractor that returns a string payload keyed by the request
 // ID — the override unblocks Await like the real extractor but delivers
-// the wrong concrete type, driving the fallthrough. This closes the
-// #229-followup gap that previously left the branch untested.
+// the wrong concrete type, driving the fallthrough.
 func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)

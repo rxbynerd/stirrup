@@ -11,22 +11,7 @@ import (
 	"github.com/rxbynerd/stirrup/eval"
 )
 
-// JUnit XML schema reference: https://github.com/testmoapp/junitxml
-//
-// We emit the common <testsuites>/<testsuite>/<testcase> shape understood by
-// GitHub Actions, GitLab CI, Buildkite, CircleCI, and Jenkins. Only stdlib
-// encoding/xml is used so the eval module gains no new dependencies.
-//
-// Mapping (from issue #129):
-//
-//   SuiteResult → one <testsuite> wrapped in a <testsuites>
-//   TaskResult  → one <testcase>; outcome=="pass" emits no children,
-//                 "fail" emits <failure>, "error" emits <error>.
-//
-// JudgeVerdict.Details (when present) are appended to the <failure> body as
-// "Type: Reason" lines after a blank line separator. We bind body text to a
-// `,chardata` field so encoding/xml takes care of escaping `<`, `>`, `&` and
-// `"` in user-supplied prompts and verdict reasons.
+// JUnit XML output is documented in docs/eval.md.
 
 type xmlTestSuites struct {
 	XMLName    xml.Name       `xml:"testsuites"`
@@ -87,19 +72,15 @@ func WriteJUnit(w io.Writer, result eval.SuiteResult) error {
 	if err := enc.Close(); err != nil {
 		return err
 	}
-	// Trailing newline for friendlier diffs / POSIX conventions.
+
 	_, err := io.WriteString(w, "\n")
 	return err
 }
 
 // buildTestSuite converts a SuiteResult into the XML mirror struct.
-//
-// Outcome is a closed set: {"pass", "fail", "error"}. An unknown
-// value (e.g. a future "skipped" we forget to handle here) is
-// promoted to an error so it appears in CI render counts rather
-// than silently inflating Tests without bumping Failures or Errors.
-// buildTestCase mirrors the same default for the per-case child
-// element.
+// Outcome is a closed set {"pass", "fail", "error"}; an unknown value is
+// promoted to an error so totals stay consistent rather than silently
+// inflating Tests without bumping Failures or Errors.
 func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 	failures := 0
 	errors := 0
@@ -111,19 +92,17 @@ func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 		case "error":
 			errors++
 		case "pass":
-			// no child element
+
 		default:
-			// Unknown outcome: count as error so suite-level totals
-			// stay consistent with the per-case element emitted by
-			// buildTestCase.
+
 			errors++
 		}
 		cases = append(cases, buildTestCase(result.SuiteID, t))
 	}
 
-	// Suite duration: prefer wall-clock from CompletedAt-StartedAt; if
-	// unset (zero values, e.g. dry-run results), fall back to the sum of
-	// per-task durations so the field is never negative or nonsensical.
+	// Prefer wall-clock CompletedAt-StartedAt; fall back to the sum of
+	// per-task durations when unset (e.g. dry-run results) so the field
+	// is never negative or nonsensical.
 	var suiteSeconds float64
 	if !result.CompletedAt.IsZero() && !result.StartedAt.IsZero() && result.CompletedAt.After(result.StartedAt) {
 		suiteSeconds = result.CompletedAt.Sub(result.StartedAt).Seconds()
@@ -161,11 +140,8 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 
 	switch t.Outcome {
 	case "fail":
-		// Synthesise a non-empty Message when the judge verdict has
-		// no top-level Reason but does carry sub-judge Details — UI
-		// renderers (GitHub Actions, Jenkins) display the attribute
-		// as the headline and an empty headline reads as a missing
-		// failure to operators.
+		// Fall back to the first sub-judge Reason when the verdict has no
+		// top-level Reason, so CI renderers never show an empty headline.
 		msg := t.JudgeVerdict.Reason
 		if msg == "" && len(t.JudgeVerdict.Details) > 0 {
 			msg = t.JudgeVerdict.Details[0].Reason
@@ -182,11 +158,9 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 			Body:    t.Error,
 		}
 	case "pass":
-		// no child element
+
 	default:
-		// Unknown outcome — see buildTestSuite for the closed-set
-		// rationale. Surface as <error> so operators can grep for
-		// "UnknownOutcome" in the JUnit XML.
+		// Surface as <error> so operators can grep for "UnknownOutcome".
 		msg := fmt.Sprintf("unknown task outcome %q", t.Outcome)
 		tc.Error = &xmlError{
 			Type:    "UnknownOutcome",

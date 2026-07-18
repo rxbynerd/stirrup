@@ -27,24 +27,12 @@ type oauthExchangeResponse struct {
 // doJSONTokenExchange POSTs a pre-marshalled JSON token-exchange request and
 // parses the standard OAuth success response into an oauth2.Token. It is the
 // shared transport-and-parse skeleton behind the JSON-bodied WIF sources
-// (anthropic_wif.go, openai_wif.go).
+// (anthropic_wif.go, openai_wif.go); callers own the request body and
+// headers, which differ per provider.
 //
-// The caller owns the provider-specific parts — the request body and the
-// header set — because the grant type, field names, and version headers
-// differ per provider. This helper owns the parts that are identical: the
-// bounded response read (stsResponseLimit), the non-2xx error decoration,
-// the empty-access_token guard, and the expires_in → Expiry calculation with
-// a one-hour fallback.
-//
-// label prefixes every error so federation failures group together in
-// operator dashboards (e.g. "Anthropic WIF", "OpenAI WIF"). correlationHeader,
-// when non-empty, names a response header whose value is appended to a non-2xx
-// error as request_id=<value> for console correlation; an absent header is
-// simply omitted.
-//
-// The grant assertion (the subject token in the request body) is never
-// logged: only the bounded response body, the status code, and the
-// correlation header reach the error string.
+// label prefixes every error (e.g. "Anthropic WIF", "OpenAI WIF").
+// correlationHeader, when non-empty, names a response header appended to a
+// non-2xx error as request_id=<value>. The grant assertion is never logged.
 func doJSONTokenExchange(
 	ctx context.Context,
 	client *http.Client,
@@ -65,10 +53,8 @@ func doJSONTokenExchange(
 	resp, err := client.Do(req)
 	if err != nil {
 		// TODO(issue #117 follow-up): emit a `federation_exchange_failed`
-		// security event here so operators can dashboard refresh failures
-		// alongside other security events. The credential package has no
-		// SecurityLogger handle today — adding one requires a callback
-		// wired by the factory. Deferred to keep this skeleton leaf-free.
+		// security event; requires a SecurityLogger callback wired by the
+		// factory, which this package does not have today.
 		return nil, fmt.Errorf("%s: token request: %w", label, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -81,13 +67,10 @@ func doJSONTokenExchange(
 	if resp.StatusCode != http.StatusOK {
 		var corr string
 		if correlationHeader != "" {
-			// The correlation header is server-controlled. Sanitise it
-			// (strip non-printable bytes, cap length) so a hostile or
-			// misconfigured token endpoint cannot inject newlines into a
-			// slog line or pad the error with an oversized value — the
-			// response body is already bounded by truncateForError, but the
-			// header is not read through it. Shares the helper with the
-			// Azure source's body-borne correlation id.
+			// Server-controlled header: sanitise (strip non-printable bytes,
+			// cap length) so a hostile endpoint cannot inject newlines into
+			// a slog line or pad the error, since the header isn't read
+			// through truncateForError like the response body is.
 			corr = sanitiseCorrelationID(resp.Header.Get(correlationHeader))
 		}
 		if corr == "" {
@@ -110,10 +93,9 @@ func doJSONTokenExchange(
 		return nil, fmt.Errorf("%s: token exchange returned empty access_token", label)
 	}
 
-	// expires_in is in seconds. Fall back to one hour if the server omits it
-	// for any reason — without a non-zero expiry the ReuseTokenSource wrapper
-	// would treat the token as already expired and re-hit the exchange
-	// endpoint on every adapter request.
+	// One-hour fallback: a zero expires_in would make ReuseTokenSource
+	// treat the token as already expired and re-hit the endpoint on every
+	// adapter request.
 	lifetime := time.Duration(parsed.ExpiresIn) * time.Second
 	if lifetime <= 0 {
 		lifetime = time.Hour
