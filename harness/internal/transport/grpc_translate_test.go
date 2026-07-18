@@ -1253,6 +1253,113 @@ func TestRunConfigFromProto_MCPTrustFieldsPreserved(t *testing.T) {
 	}
 }
 
+// TestHarnessEventToProto_AudiencePreserved guards the Audience field
+// added for sandbox_token_request (issue #516 Part A) against the same
+// silent-drop class of regression flagged by gh-95/gh-117/gh-118/gh-100: a
+// HarnessEvent's Audience must survive the internal-to-proto hop
+// unmodified, since it is the only signal the control plane gets for the
+// intended JWT `aud` claim.
+func TestHarnessEventToProto_AudiencePreserved(t *testing.T) {
+	e := types.HarnessEvent{
+		Type:      "sandbox_token_request",
+		RequestID: "req-1",
+		Audience:  "https://haybale.internal",
+	}
+
+	pe := harnessEventToProto(e)
+
+	if pe.Audience != "https://haybale.internal" {
+		t.Errorf("Audience: got %q, want %q", pe.Audience, "https://haybale.internal")
+	}
+	if pe.RequestId != "req-1" {
+		t.Errorf("RequestId: got %q, want %q", pe.RequestId, "req-1")
+	}
+}
+
+// TestControlEventFromProto_SandboxTokenFieldsPreserved guards Token and
+// ExpiresAt (issue #516 Part A) against the same silent-drop regression
+// class as gh-95/gh-117/gh-118/gh-100. The token/expires_at case exercises
+// the actual wire path (Marshal -> Unmarshal) so the optional int64
+// unset-vs-explicit-zero distinction on ExpiresAt — the same concern
+// Temperature and Batch.MaxWaitSeconds guard above — is pinned rather than
+// assumed from an in-memory pointer copy.
+func TestControlEventFromProto_SandboxTokenFieldsPreserved(t *testing.T) {
+	t.Run("token and expires_at round-trip", func(t *testing.T) {
+		var exp int64 = 1700003600
+		original := &pb.ControlEvent{
+			Type:      "sandbox_token_response",
+			RequestId: "req-1",
+			Token:     "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJydW4tMSJ9.sig",
+			ExpiresAt: &exp,
+		}
+
+		raw, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.ControlEvent
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		e := controlEventFromProto(&decoded)
+
+		if e.Token != original.Token {
+			t.Errorf("Token: got %q, want %q", e.Token, original.Token)
+		}
+		if e.ExpiresAt == nil {
+			t.Fatal("ExpiresAt: got nil, want non-nil pointer")
+		}
+		if *e.ExpiresAt != exp {
+			t.Errorf("ExpiresAt: got %d, want %d", *e.ExpiresAt, exp)
+		}
+	})
+
+	t.Run("expires_at unset stays nil", func(t *testing.T) {
+		original := &pb.ControlEvent{
+			Type:      "sandbox_token_response",
+			RequestId: "req-2",
+			Token:     "some-token",
+		}
+
+		raw, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.ControlEvent
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		e := controlEventFromProto(&decoded)
+
+		if e.ExpiresAt != nil {
+			t.Errorf("ExpiresAt should be nil when proto field is unset, got %v", *e.ExpiresAt)
+		}
+	})
+
+	t.Run("is_error and reason round-trip for a decline", func(t *testing.T) {
+		original := &pb.ControlEvent{
+			Type:      "sandbox_token_response",
+			RequestId: "req-3",
+			IsError:   &pb.OptionalBool{Value: true},
+			Reason:    "no issuer configured",
+		}
+
+		e := controlEventFromProto(original)
+
+		if e.IsError == nil || !*e.IsError {
+			t.Fatalf("IsError: got %v, want pointer to true", e.IsError)
+		}
+		if e.Reason != "no issuer configured" {
+			t.Errorf("Reason: got %q, want %q", e.Reason, "no issuer configured")
+		}
+		if e.Token != "" {
+			t.Errorf("Token should be empty on an error response, got %q", e.Token)
+		}
+	})
+}
+
 // TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil documents the
 // backward-compatible default from #393: an MCP server config that omits
 // the trust fields entirely must translate to nil/empty slices on the

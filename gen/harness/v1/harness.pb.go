@@ -95,6 +95,20 @@ const (
 //	  (Best-effort signal; the control plane should call the provider's
 //	  batch-cancel endpoint. The harness does not retry or block on a
 //	  response — cancellation is fire-and-forget.)
+//
+//	"sandbox_token_request"
+//	  - request_id: unique ID for this request; the control plane must echo it
+//	                back in the corresponding sandbox_token_response ControlEvent.
+//	  - audience:   the intended JWT `aud` claim for the sandbox identity
+//	                token (e.g. "https://haybale.internal"). Informational —
+//	                the control plane may override it.
+//	  Sent once per run, after task_assignment and before the sandbox is
+//	  created, when the run wants a sandbox identity token. Deliberately
+//	  carries no harness-asserted identity field: the control plane derives
+//	  the run identity from the authenticated stream the task was assigned
+//	  on, never from the request body. The harness blocks on the matching
+//	  sandbox_token_response under a fail-closed 60s timeout; a timeout
+//	  aborts the run before any sandbox is created.
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -102,7 +116,7 @@ type HarnessEvent struct {
 	//
 	//	"warning", "heartbeat", "ready", "permission_request",
 	//	"tool_result_request", "batch_submission", "batch_waiting",
-	//	"batch_cancel_request".
+	//	"batch_cancel_request", "sandbox_token_request".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events.
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
@@ -137,8 +151,12 @@ type HarnessEvent struct {
 	// Build version of the harness binary. Set on "ready" events. The control
 	// plane may use this to verify compatibility before sending a task.
 	HarnessVersion string `protobuf:"bytes,13,opt,name=harness_version,json=harnessVersion,proto3" json:"harness_version,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The intended JWT `aud` claim for the sandbox identity token. Set on
+	// "sandbox_token_request" events. Informational to the control plane,
+	// which may override it when minting the token.
+	Audience      string `protobuf:"bytes,14,opt,name=audience,proto3" json:"audience,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HarnessEvent) Reset() {
@@ -262,6 +280,13 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 	return ""
 }
 
+func (x *HarnessEvent) GetAudience() string {
+	if x != nil {
+		return x.Audience
+	}
+	return ""
+}
+
 // ControlEvent is sent from the control plane to the harness.
 //
 // Each event has a type discriminator; only the fields relevant to that type
@@ -308,13 +333,28 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 //	  - content:    JSON-encoded BatchResult payload (response or err).
 //	  - is_error:   true for non-success result types (batch_expired,
 //	                batch_cancelled, invalid_request_error, server_error).
+//
+//	"sandbox_token_response"
+//	  - request_id:  must match the request_id from the corresponding
+//	                 sandbox_token_request HarnessEvent.
+//	  - token:       the signed JWT sandbox identity token. SENSITIVE:
+//	                 never logged, traced, or persisted to RunConfig —
+//	                 treated as opaque secret material for the run's
+//	                 lifetime.
+//	  - expires_at:  optional Unix-seconds expiry of token, so the harness
+//	                 can warn (scrub-safe) when it is shorter than the
+//	                 run's configured wall-clock budget.
+//	  - is_error:    when true, the control plane could not issue a token;
+//	                 reason carries a human-readable explanation. The
+//	                 harness treats this the same as a timeout — the run
+//	                 aborts before the sandbox is created.
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
 	// Valid values: "task_assignment", "user_response", "cancel",
 	//
 	//	"permission_response", "tool_result_response",
-	//	"batch_result".
+	//	"batch_result", "sandbox_token_response".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
@@ -328,16 +368,31 @@ type ControlEvent struct {
 	// The permission decision. Set on "permission_response" events.
 	// True = allow the tool call to proceed. False = deny.
 	Allowed *OptionalBool `protobuf:"bytes,5,opt,name=allowed,proto3" json:"allowed,omitempty"`
-	// Human-readable explanation for a denial. Set on "permission_response"
-	// events when allowed is false. Passed to the model as context.
+	// Human-readable explanation. Set on "permission_response" events when
+	// allowed is false (passed to the model as context), and on
+	// "sandbox_token_response" events when is_error is true (why the control
+	// plane could not issue a token).
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
 	// Async tool result payload. Set on "tool_result_response" events. Delivered
 	// to the agentic loop verbatim as the async tool's output content.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
 	// When true on a "tool_result_response", the loop marks the resulting
-	// ToolResult as an error so the model sees it as a tool failure. Wrapped
-	// to distinguish unset from explicit-false (proto3 scalar default).
-	IsError       *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	// ToolResult as an error so the model sees it as a tool failure. When true
+	// on a "sandbox_token_response", the control plane could not issue a
+	// token; reason carries the explanation and token / expires_at are unset.
+	// Wrapped to distinguish unset from explicit-false (proto3 scalar
+	// default).
+	IsError *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	// The signed JWT sandbox identity token. Set on "sandbox_token_response"
+	// events when is_error is false. SENSITIVE: never logged, traced, or
+	// persisted to RunConfig — the harness treats this as opaque secret
+	// material for the run's lifetime.
+	Token string `protobuf:"bytes,9,opt,name=token,proto3" json:"token,omitempty"`
+	// Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
+	// events. Declared `optional` so unset is wire-distinguishable from an
+	// explicit 0 (epoch), letting the harness tell "the control plane did not
+	// report an expiry" from "the token expires at the epoch".
+	ExpiresAt     *int64 `protobuf:"varint,10,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -426,6 +481,20 @@ func (x *ControlEvent) GetIsError() *OptionalBool {
 		return x.IsError
 	}
 	return nil
+}
+
+func (x *ControlEvent) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *ControlEvent) GetExpiresAt() int64 {
+	if x != nil && x.ExpiresAt != nil {
+		return *x.ExpiresAt
+	}
+	return 0
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"
@@ -4028,7 +4097,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\"\xfe\x02\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\"\x9a\x03\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -4045,7 +4114,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\v \x01(\tR\trequestId\x12\x1b\n" +
 	"\ttool_name\x18\f \x01(\tR\btoolName\x12'\n" +
-	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xc4\x02\n" +
+	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\x12\x1a\n" +
+	"\baudience\x18\x0e \x01(\tR\baudience\"\x8d\x03\n" +
 	"\fControlEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x121\n" +
 	"\x04task\x18\x02 \x01(\v2\x1d.stirrup.harness.v1.RunConfigR\x04task\x12#\n" +
@@ -4055,7 +4125,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x18\n" +
 	"\acontent\x18\a \x01(\tR\acontent\x12;\n" +
-	"\bis_error\x18\b \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aisError\"$\n" +
+	"\bis_error\x18\b \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aisError\x12\x14\n" +
+	"\x05token\x18\t \x01(\tR\x05token\x12\"\n" +
+	"\n" +
+	"expires_at\x18\n" +
+	" \x01(\x03H\x00R\texpiresAt\x88\x01\x01B\r\n" +
+	"\v_expires_at\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\bR\x05value\"\x9e\x11\n" +
 	"\tRunConfig\x12\x15\n" +
@@ -4458,6 +4533,7 @@ func file_harness_v1_harness_proto_init() {
 	if File_harness_v1_harness_proto != nil {
 		return
 	}
+	file_harness_v1_harness_proto_msgTypes[1].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[3].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[8].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[11].OneofWrappers = []any{}
