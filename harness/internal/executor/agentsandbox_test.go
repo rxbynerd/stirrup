@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -20,13 +21,74 @@ func baseSandboxCfg() K8sExecutorConfig {
 	}
 }
 
+// TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive is B-K8S:
+// buildSandboxPodSpec is the shared env-merge block for both the k8s and
+// k8s-sandbox executors (issue #516) — the production GKE deployment
+// target. Every other test in this file calls it with extraEnv == nil, so
+// the shared "proxyEnv + extraEnv" append block (harness/internal/executor/k8s.go's
+// buildSandboxPodSpec) has no coverage proving both sets survive together:
+// a broken index, wrong append order, or accidental overwrite of proxyEnv
+// would not be caught by anything else here. This test supplies a
+// non-empty proxyEnv (HTTP(S)_PROXY/NO_PROXY, issue #42) alongside a
+// realistic non-empty extraEnv (the sandbox identity token plus the
+// GIT_CONFIG_* pairs sandboxidentity.ComposeEnv produces, issue #516) and
+// asserts both land on the Pod additively.
+func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
+	cfg := baseSandboxCfg()
+	proxyEnv := []corev1.EnvVar{
+		{Name: "HTTP_PROXY", Value: "http://proxy.internal:8080"},
+		{Name: "HTTPS_PROXY", Value: "http://proxy.internal:8080"},
+		{Name: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
+	}
+
+	composed, err := sandboxidentity.ComposeEnv("HAYBALE_TOKEN", "the-jwt-token", &types.GitProxyConfig{
+		URL:        "http://haybale.internal:8466",
+		Hosts:      []string{"github.com"},
+		RewriteSsh: true,
+	})
+	if err != nil {
+		t.Fatalf("ComposeEnv() error: %v", err)
+	}
+	extraEnv := make([]EnvPair, len(composed))
+	for i, e := range composed {
+		extraEnv[i] = EnvPair{Name: e.Name, Value: e.Value}
+	}
+	if len(proxyEnv) == 0 || len(extraEnv) == 0 {
+		t.Fatalf("precondition: both proxyEnv (%d) and extraEnv (%d) must be non-empty", len(proxyEnv), len(extraEnv))
+	}
+
+	spec := buildSandboxPodSpec(cfg, proxyEnv, extraEnv)
+
+	gotEnv := spec.Containers[0].Env
+	wantLen := len(proxyEnv) + len(extraEnv)
+	if len(gotEnv) != wantLen {
+		t.Fatalf("Containers[0].Env has %d entries, want %d (proxyEnv + extraEnv, additive)", len(gotEnv), wantLen)
+	}
+
+	// proxyEnv must occupy the leading entries, in order — buildSandboxPodSpec
+	// appends proxyEnv first, then extraEnv.
+	for i, want := range proxyEnv {
+		if gotEnv[i].Name != want.Name || gotEnv[i].Value != want.Value {
+			t.Errorf("Env[%d] = %+v, want proxyEnv entry %+v", i, gotEnv[i], want)
+		}
+	}
+	// extraEnv must follow, in order, with none of proxyEnv's entries
+	// truncated, overwritten, or reordered away.
+	for i, want := range extraEnv {
+		idx := len(proxyEnv) + i
+		if gotEnv[idx].Name != want.Name || gotEnv[idx].Value != want.Value {
+			t.Errorf("Env[%d] = %+v, want extraEnv entry %+v", idx, gotEnv[idx], want)
+		}
+	}
+}
+
 // TestApplyAgentSandboxAdmissionDeltas covers the four GKE secure-sandbox-policy
 // deltas: forced gvisor runtime, default CPU+mem limits/requests, the gvisor
 // nodeSelector merge, and the gvisor toleration (added once, idempotently).
 func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("forces gvisor even when runtime was empty", func(t *testing.T) {
 		cfg := baseSandboxCfg() // Runtime unset → buildSandboxPodSpec leaves RuntimeClassName nil
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		if spec.RuntimeClassName != nil {
 			t.Fatalf("precondition: base spec RuntimeClassName = %v, want nil", spec.RuntimeClassName)
 		}
@@ -38,7 +100,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 
 	t.Run("fills default cpu+mem limits and requests when resources nil", func(t *testing.T) {
 		cfg := baseSandboxCfg()
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		// Precondition: no resources pinned (cfg.Resources nil).
 		if len(spec.Containers[0].Resources.Limits) != 0 {
 			t.Fatalf("precondition: base container has limits %v, want none", spec.Containers[0].Resources.Limits)
@@ -67,7 +129,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("preserves caller-set resources", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{CPUs: 2, MemoryMB: 1024}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		// Precondition: the caller's values are already on the base spec via
 		// resourcesToPodResources.
 		wantCPU := resource.MustParse("2")
@@ -93,7 +155,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 		// admission policy requires BOTH cpu and memory limits.
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{MemoryMB: 1024}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		res := spec.Containers[0].Resources
@@ -112,7 +174,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("merges nodeSelector with a pre-existing entry", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.NodeSelector = map[string]string{"disktype": "ssd"}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		if spec.NodeSelector[gkeSandboxRuntimeKey] != gkeSandboxRuntimeValue {
@@ -125,7 +187,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 
 	t.Run("adds the gvisor toleration and is idempotent", func(t *testing.T) {
 		cfg := baseSandboxCfg()
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 		applyAgentSandboxAdmissionDeltas(&spec) // second call must not duplicate
@@ -152,7 +214,7 @@ func TestBuildSandboxObject(t *testing.T) {
 	const ns, name = "default", "stirrup-abc123"
 
 	cfg := baseSandboxCfg()
-	spec := buildSandboxPodSpec(cfg, nil)
+	spec := buildSandboxPodSpec(cfg, nil, nil)
 	applyAgentSandboxAdmissionDeltas(&spec)
 
 	before := time.Now()
