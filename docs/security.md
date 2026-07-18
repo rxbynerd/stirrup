@@ -360,7 +360,10 @@ everything else in this document, and worth being explicit about:
   way `apiKeyRef` is for a provider. Clone/deploy credentials belong
   in control-plane runtime bindings (e.g. a pre-provisioned SSH agent
   or short-lived deploy token injected into the workspace before the
-  hook runs), never in `RunConfig`.
+  hook runs), never in `RunConfig` — issue #516 ships a concrete
+  instance of that binding for git specifically; see [Sandbox
+  identity tokens](#sandbox-identity-tokens-git-proxy-credential-binding),
+  below.
 
   This pattern moves the credential to a different trust boundary, not
   out of the agent's reach: anything a hook leaves on disk as a side
@@ -405,6 +408,50 @@ mid-upload. Operators relying on heartbeat-based liveness for runs with
 `postRun` hooks should account for this gap in their reap timeout;
 re-arming heartbeats for the detached post-hook phase is tracked as a
 follow-up if this proves disruptive in practice.
+
+## Sandbox identity tokens (git-proxy credential binding)
+
+Issue #516 ships a concrete instance of the control-plane runtime
+binding named above, scoped to cloning and pushing private
+repositories. The control plane issues a short-lived **sandbox
+identity token** — a signed JWT — to the harness over the existing
+gRPC control stream, fail-closed with a 60-second wait and a 16 KiB
+cap on the returned token (`sandboxidentity.MaxTokenBytes`): the
+harness aborts the run before any sandbox is created if the control
+plane is slow, silent, or declines to issue a token, rather than
+leaving a partially-provisioned, tokenless sandbox behind. The
+harness then injects the token, plus
+non-secret `GIT_CONFIG_*` environment variables that rewrite `git`
+remote URLs, into the sandbox environment at creation time.
+
+Git operations inside the sandbox are routed through a
+git-credential proxy such as
+[haybale](https://github.com/rxbynerd/haybale), which holds the real
+GitHub App credential *outside* the sandbox entirely and authenticates
+each proxied operation using the run's token, presented as the HTTP
+Basic-auth password on the rewritten request. The invariant this
+preserves: the raw git credential never enters the sandbox or
+`RunConfig` — the sandbox only ever holds the run-scoped token, and
+the proxy is the only component that ever sees the long-lived
+credential. The token itself never touches trace, transcript, or log
+output: the sandbox-identity exchange code path never logs, traces, or
+persists it, independent of the `oidc_jwt` `LogScrubber` pattern above
+that would otherwise backstop an accidental leak.
+
+This invariant concerns stirrup's own trace, transcript, and log
+surfaces. On the `k8s`/`k8s-sandbox` executors the token is delivered
+as a plaintext Pod env var rather than a `Secret`; see
+[`k8s.md`'s exposure note](executors/k8s.md#sandbox-identity-token-exposure)
+for the RBAC/etcd delta this implies and the scoping operators should
+apply.
+
+See [`deployment.md`'s "Sandbox identity token
+issuance"](deployment.md#sandbox-identity-token-issuance-control-plane-implementers)
+for the gRPC wire contract a control plane implements to answer the
+request, and [`configuration.md`'s "Sandbox identity and git-proxy
+wiring"](configuration.md#sandbox-identity-and-git-proxy-wiring) for
+the `executor.sandboxIdentity` / `executor.gitProxy` `RunConfig`
+fields that request it.
 
 ## Where each control sits
 

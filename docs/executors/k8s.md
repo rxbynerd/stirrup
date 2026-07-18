@@ -26,6 +26,7 @@ those files.
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
+- [Sandbox identity token exposure](#sandbox-identity-token-exposure)
 - [Troubleshooting](#troubleshooting)
 - [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)
 
@@ -580,6 +581,26 @@ top-level `examples/k8s/` manifests use `stirrup-sandbox` while
 `egress-proxy/` ships `default`; align them before applying (see the
 [examples README](../../examples/k8s/README.md#namespace-alignment--required-before-applying-the-egress-proxy)).
 
+### Git-credential proxy (haybale) deployment
+
+A run using `executor.sandboxIdentity` / `executor.gitProxy` (issue
+#516, see [`configuration.md`'s "Sandbox identity and git-proxy
+wiring"](../configuration.md#sandbox-identity-and-git-proxy-wiring))
+routes git operations through a git-credential proxy such as
+[haybale](https://github.com/rxbynerd/haybale) rather than through
+`github.com` directly. Deploy haybale as its own Service beside
+`stirrup-egress-proxy` — in-cluster, in the same namespace, or
+otherwise reachable through the allowlist proxy — and add its
+`host:port` to the run's `network.allowlist` (the FQDN matching rule
+above applies identically: suffix the port when it isn't 443). See
+haybale's own
+[`docs/stirrup-integration.md`](https://github.com/rxbynerd/haybale/blob/main/docs/stirrup-integration.md)
+("Deployment") for haybale's own deployment shape and scheduling
+notes. haybale is a separate component from `stirrup-egress-proxy`,
+not a replacement for it: the sandbox's outbound HTTP still transits
+the egress proxy exactly as before, with haybale simply being one more
+allowlisted destination on the other side of it.
+
 ### Enforcement caveat — kindnet does not enforce NetworkPolicy
 
 `NetworkPolicy` is enforced only by a CNI that implements it. **kindnet,
@@ -618,6 +639,54 @@ and the orchestrator's RBAC is the minimal `pods` / `pods/exec` /
 `pods/log` get for operator debugging only; drop it to reach the
 executor's exact minimum). The sandbox Pod has no API access of its own
 (`automountServiceAccountToken: false`).
+
+## Sandbox identity token exposure
+
+**Carried forward from PR C's security review (finding
+D-K8S-EXPOSURE).** On the `k8s` and `k8s-sandbox` executors, the
+sandbox identity token (issue #516, see [`configuration.md`'s
+"Sandbox identity and git-proxy
+wiring"](../configuration.md#sandbox-identity-and-git-proxy-wiring))
+is injected as a plaintext `corev1.EnvVar` on the Pod spec
+(`buildSandboxPodSpec`'s `extraEnv` parameter) — matching haybale's
+"pure env, nothing on disk" contract — rather than through a native
+Kubernetes `Secret` and `secretKeyRef`.
+
+This broadens the token's exposure relative to a `Secret`-backed
+credential:
+
+- **A weaker RBAC bar reads it.** Any principal holding `pods`/`get`
+  or `pods`/`list` in the namespace — a materially weaker bar than
+  `secrets`/`get` — can read the live token with `kubectl get pod -o
+  yaml`. The reference RBAC ([`rbac.yaml`](../../examples/k8s/rbac.yaml))
+  already grants the orchestrator `pods`/`get` for its own lifecycle
+  management — not `pods`/`list`, which the manifest withholds; the
+  residual risk is any *other* principal in the namespace that holds
+  either verb, and granting `pods`/`list` beyond what the reference
+  manifest does would broaden that exposure further.
+- **It lands in etcd in plaintext** absent cluster-wide encryption at
+  rest for Pod specs, and in API audit logs if request/response body
+  logging is enabled for the `pods` resource.
+- **Its lifetime spans the run's whole wall-clock budget** (see
+  [`deployment.md`'s "Sandbox identity token
+  issuance"](../deployment.md#sandbox-identity-token-issuance-control-plane-implementers),
+  "Token lifetime"), materially longer than haybale's recommended
+  ≤15-minute `exp` — a longer-lived credential widens the exposure
+  window for whatever can reach it by either path above.
+
+Operators running `sandboxIdentity`-configured jobs should scope
+`pods`/`get` and `pods`/`list` in the affected namespace as tightly as
+`secrets`/`get` is normally scoped — treat Pod read access as
+token-equivalent access for the duration of the run.
+
+**Not a current guarantee — a possible v2 hardening.** A future
+revision could have the harness create a short-lived, per-run
+`Secret` and mount the token via `EnvFrom.SecretKeyRef` instead,
+deleting the `Secret` alongside the Pod at teardown. That would move
+the token behind the `secrets`/`get` RBAC bar and out of the Pod spec
+in etcd, at the cost of the harness needing `secrets` create/delete
+RBAC it does not need today. This is tracked as future work, not
+something the current implementation provides.
 
 ## Troubleshooting
 

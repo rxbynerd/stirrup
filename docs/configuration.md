@@ -1072,6 +1072,34 @@ below are gated on anything but the blocks' own presence.
   not block semantically sensitive but syntactically valid names such
   as `PATH`.
 
+**Requesting a token requires the control-plane job entrypoint, not
+just `transport: "grpc"`.** The `transport: "grpc"` validation rule
+above is necessary but not sufficient: the token exchange must
+complete *before* the executor is built, which only works when the
+caller supplies an already-connected transport. In practice that means
+the `stirrup job` entrypoint, which dials the control plane and blocks
+for `task_assignment` before building the loop — see
+[`deployment.md`](deployment.md#the-stirrup-job-subcommand). A bare
+`stirrup harness` invocation (or any embedder calling
+`BuildLoop`/`BuildLoopWithTransport(ctx, config, nil)`) that
+configures `sandboxIdentity` fails closed at loop-build time with
+`executor.sandboxIdentity requires a pre-established transport (only
+supported via the control-plane job entrypoint, e.g. "stirrup job")`,
+rather than silently building its own transport too late to serve the
+request.
+
+**Sandbox image prerequisites (documented, not enforced).** The
+composed git configuration relies on two things the sandbox image
+must provide: `git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`
+support, and a POSIX shell, for the inline `!f() { ... }; f`
+credential-helper form the composed config uses. Neither is checked by
+`ValidateRunConfig` or the executor — an older `git`, or a shell-less
+image (e.g. a fully static distroless image with no `/bin/sh`), fails
+at git-invocation time inside the sandbox, not at config-load time.
+The default sandbox image
+([`ghcr.io/rxbynerd/stirrup-sandbox`](container-publishing.md))
+qualifies.
+
 Operators using `executor.network.mode: "allowlist"` should add the
 proxy's `host:port` to `executor.network.allowlist` (as in the
 example above) and deliberately leave the git hosts themselves

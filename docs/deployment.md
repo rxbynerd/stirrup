@@ -258,6 +258,15 @@ stirrup-side bug. The harness performs that comparison
 (`sandboxidentity.WarnIfExpiresBeforeBudget`) immediately after a
 successful token exchange, before the sandbox is created.
 
+**Follow-up for `docs/CONTROL_PLANE.md`** (tracked, not part of this
+change): the broader control-plane design doc lives on the unmerged
+`control-plane` branch. When that branch lands, add
+`sandbox_token_request` / `sandbox_token_response` as rows in its
+§2.1 event table alongside the existing `permission_request` /
+`tool_result_request` pairs, and note that this exchange participates
+in the mutual-partial-trust posture recorded in that doc's §1.1. This
+document is normative for the wire contract in the meantime.
+
 ## Container image
 
 Releases publish two image tags to GitHub Container Registry:
