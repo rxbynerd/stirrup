@@ -28,9 +28,8 @@ type SecurityNotifier interface {
 //
 // Optionally accepts a SecurityNotifier (typically *security.SecurityLogger)
 // so the harness emits a structured SecretRedactedInOutput event each time
-// the log scrubber actually fires. The implementation choice (a) per the
-// brief: plumb a SecurityLogger into the log handler so log-side redactions
-// produce the same audit trail as transport-side redactions.
+// the log scrubber fires, giving log-side redactions the same audit trail
+// as transport-side redactions.
 type ScrubHandler struct {
 	inner    slog.Handler
 	security SecurityNotifier // optional; nil means no event emission
@@ -122,13 +121,10 @@ func NewLoggerWithSecurity(runID string, level slog.Level, w io.Writer, sec Secu
 // to w; when exportHandler is non-nil (an OTLP-bridge leaf handler from
 // NewLogExporter) each record is additionally fanned out to that handler so
 // the same line ships to the configured OTel collector. Pass nil to keep
-// stderr-only behaviour (the default), which is exactly what
-// NewLoggerWithSecurity / NewLogger do.
+// stderr-only behaviour.
 //
-// The scrubbing and span-correlation layers wrap the fan-out point, so both
-// the stderr JSON sink and the OTLP bridge receive identical, already-
-// scrubbed, trace-correlated records — the secret scrubber runs once and
-// covers both paths, satisfying the invariant that no log value leaves the
+// The scrubbing and span-correlation layers wrap the fan-out point, so the
+// secret scrubber runs once and covers both sinks — no log value leaves the
 // process unscrubbed regardless of sink.
 //
 //	SpanContextHandler ← ScrubHandler ← fanout{JSONHandler, exportHandler}
@@ -143,11 +139,8 @@ func NewLoggerWithExport(runID string, level slog.Level, w io.Writer, sec Securi
 	}
 
 	scrubHandler := NewScrubHandlerWithSecurity(leaf, sec)
-	// SpanContextHandler is the outermost layer so the trace_id / span_id it
-	// injects still flow through ScrubHandler before reaching the leaf
-	// sink(s). Records emitted via *Context (e.g. InfoContext) inside an
-	// active span pick up correlation IDs; context-less calls pass through
-	// untouched.
+	// SpanContextHandler is outermost so the trace_id / span_id it injects
+	// still flow through ScrubHandler before reaching the leaf sink(s).
 	spanHandler := NewSpanContextHandler(scrubHandler)
 	return slog.New(spanHandler).With("runId", runID)
 }

@@ -85,9 +85,8 @@ func runTraceGrepWith(ctx context.Context, path string, out io.Writer, pattern s
 		src = f
 	}
 
-	// Scanner caps match types/trace.Reader so a record that fit on
-	// write also fits on read. Sharing the constant prevents grep from
-	// silently diverging from the reader if its cap is ever changed.
+	// Scanner cap matches types/trace.Reader so a record that fit on
+	// write also fits on read.
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, tracereader.MaxLineBytes/16), tracereader.MaxLineBytes)
 
@@ -97,11 +96,10 @@ func runTraceGrepWith(ctx context.Context, path string, out io.Writer, pattern s
 		}
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
-				// bufio.ErrTooLong is the cap-exceeded signal. Without
-				// resetting the scanner, every subsequent record on
-				// the same source is dropped silently with exit 0.
-				// Reset and continue past the oversized line, matching
-				// the recovery in tracereader.Reader.Next().
+				// Without resetting the scanner on bufio.ErrTooLong, every
+				// subsequent record on the same source is dropped silently.
+				// Reset and continue past the oversized line, matching the
+				// recovery in tracereader.Reader.Next().
 				if errors.Is(err, bufio.ErrTooLong) {
 					scanner = bufio.NewScanner(src)
 					scanner.Buffer(make([]byte, 0, tracereader.MaxLineBytes/16), tracereader.MaxLineBytes)
@@ -117,11 +115,9 @@ func runTraceGrepWith(ctx context.Context, path string, out io.Writer, pattern s
 		}
 		matched, err := lineMatches(line, pattern, pred)
 		if err != nil {
-			// A line that fails predicate evaluation is treated as a
-			// non-match (e.g. it isn't valid JSON, or the path
-			// doesn't exist). Predicate compile errors are surfaced
-			// up-front; runtime evaluation errors must not abort
-			// `grep` mid-stream.
+			// A runtime evaluation failure (invalid JSON, missing path)
+			// is a non-match, not an abort — compile errors already
+			// surfaced up-front.
 			matched = false
 		}
 		if invert {
@@ -156,9 +152,7 @@ func lineMatches(line []byte, pattern string, pred jqPredicate) (bool, error) {
 // jqPredicate is a deliberately tiny predicate evaluator over a JSON
 // document. It supports three operators: ==, !=, and `contains`. The
 // path is a dot-separated walk of object keys and numeric array
-// indices (e.g. `.toolCalls.0.name`). This is enough to cover the
-// acceptance-criteria examples in issue #244 without taking on a full
-// jq vendor dependency.
+// indices (e.g. `.toolCalls.0.name`).
 type jqPredicate struct {
 	path []pathSeg
 	op   string

@@ -9,18 +9,10 @@ import (
 
 // NewTemplatePromptBuilder returns a ComposedPromptBuilder whose preamble
 // is an operator-supplied Go text/template (promptBuilder.template),
-// replacing the shipped mode prompt. The template renders against the
-// same TemplateData surface as the shipped prompts, so model-conditional
-// content and the promptModel override keep working for tuned prompts.
-// The structural fragments (workspace path, turn budget, workspace tree,
-// git status, and dynamic context with untrusted_context wrapping) are
-// still appended, matching NewOverridePromptBuilder.
-//
-// The template is parsed and trial-rendered against trial — the run's
-// resolved prompt model and mode — so execution-time errors (an unknown
-// field, a misspelled method) surface at component construction instead
-// of at run start. Rendering is pure string work: TemplateData exposes no
-// filesystem, environment, or network reach.
+// replacing the shipped mode prompt but keeping the structural fragments.
+// It is parsed and trial-rendered against trial so execution-time errors
+// surface at construction rather than at run start. See "Operator
+// templates and the override" in docs/configuration.md.
 func NewTemplatePromptBuilder(text string, trial TemplateData) (*ComposedPromptBuilder, error) {
 	tmpl, err := template.New("promptBuilder.template").Parse(text)
 	if err != nil {

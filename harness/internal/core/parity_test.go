@@ -52,9 +52,9 @@ func buildComponentsForParity(t *testing.T, config *types.RunConfig) *builtCompo
 	return bc
 }
 
-// TestPreflightParity is the #356 regression guard. Every probe-eligible
-// component BuildLoop constructs (enumerated by builtComponents.probeSteps,
-// the set buildComponents produces) MUST surface as a step in a
+// TestPreflightParity is the preflight-parity regression guard. Every
+// probe-eligible component BuildLoop constructs (enumerated by
+// builtComponents.probeSteps) MUST surface as a step in a
 // representative-config Preflight report AND that step must have actually
 // run — not be a "not constructed" skip standing in for a component the
 // dry-run forgot to build. The second assertion closes the hole where a

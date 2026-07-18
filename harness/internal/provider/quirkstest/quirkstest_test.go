@@ -10,18 +10,9 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 )
 
-// TestScrubFixture pins the substitution behaviour of each scrubber
-// rule. Adding a new scrubber to the package's `scrubbers` list
-// requires a corresponding row here; otherwise a future
-// TestFixturesScrubbed failure for that pattern would surface as
-// "scrubber X exists" without a matching positive-case assertion
-// proving X does what its replacement string claims.
-//
-// Each row supplies an input substring and the expected output
-// substring after ScrubFixture. The test does not anchor the
-// regex — the full fixture body around the secret is irrelevant
-// to the rewrite — so substring presence on both sides is the
-// right shape.
+// TestScrubFixture pins the substitution behaviour of each scrubber rule.
+// Adding a scrubber to the package's `scrubbers` list requires a
+// corresponding row here.
 func TestScrubFixture(t *testing.T) {
 	cases := []struct {
 		name string
@@ -64,24 +55,10 @@ func TestScrubFixture(t *testing.T) {
 	}
 }
 
-// TestFixturesScrubbed is the CI gate that enforces design risk 4:
-// no fixture committed to the repository may carry an upstream
-// credential or other sensitive substring that ScrubFixture would
-// rewrite. The previous state shipped ScrubFixture with zero call
-// sites, so a real wire capture committed with a Bearer token in it
-// would have landed unnoticed.
-//
-// The test walks every file under
-// harness/internal/provider/testdata/quirks/ and asserts ScrubFixture
-// is a no-op against its content: scrub(bytes) == bytes. Any future
-// fixture that carries a sensitive substring fails the build with a
-// path-pinned message, naming the file the operator needs to revisit.
-//
-// Run from the quirkstest package (not the provider package) so the
-// helper imports do not pull a real provider symbol into a test-only
-// build. The fixture root is resolved relative to this test file,
-// which sits at harness/internal/provider/quirkstest/; the fixtures
-// live in a sibling subdirectory of the parent.
+// TestFixturesScrubbed is the CI gate ensuring no fixture committed under
+// harness/internal/provider/testdata/quirks/ carries an upstream credential
+// or other sensitive substring: it asserts ScrubFixture is a no-op against
+// every fixture's content.
 func TestFixturesScrubbed(t *testing.T) {
 	fixtureRoot := filepath.Join("..", "testdata", "quirks")
 	if _, err := os.Stat(fixtureRoot); err != nil {
@@ -113,17 +90,12 @@ func TestFixturesScrubbed(t *testing.T) {
 		t.Fatalf("walk fixtures: %v", err)
 	}
 	if checked == 0 {
-		// A zero-fixture state means either the fixture directory was
-		// renamed (in which case the gate is dead) or the harness has
-		// no fixtures yet (unlikely after Step 2). Fail loudly either
-		// way so the CI gate cannot silently regress to a no-op.
+
 		t.Fatalf("walked %s and found zero fixtures; the gate is no longer enforcing anything", fixtureRoot)
 	}
 }
 
-// diff is a small helper for surfacing the first byte at which raw
-// and scrubbed diverge, so the test error message points an operator
-// at the substring rather than dumping a multi-line file.
+// diff surfaces the first byte at which raw and scrubbed diverge.
 type diff struct {
 	offset          int
 	rawSnippet      string

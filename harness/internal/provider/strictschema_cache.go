@@ -8,26 +8,13 @@ import (
 	"sync/atomic"
 )
 
-// strictSchemaCache memoises NormalizeStrictSchema results within a
-// single adapter instance. The factory builds one adapter per run, so
-// per-adapter scope matches the "per-run" caching the design calls
-// for: a tool's schema is stable within a run, and the normalisation
-// is the same expensive recursive walk for every turn that re-sends
-// it. Different runs route through different adapter instances, so a
-// cache entry from one run cannot leak into another.
+// strictSchemaCache memoises NormalizeStrictSchema results within a single
+// adapter instance (one per run, so a cache entry cannot leak across runs).
+// The cache key is (model, tool-name, schema-bytes-hash); design rationale
+// in docs/provider-quirks.md.
 //
-// The cache key is (model, tool-name, schema-bytes-hash). Including
-// `model` in the key is load-bearing: a dynamic-router run can switch
-// models turn to turn, and a strict-mode rule may pin different
-// models to different strict-mode contracts (e.g. a future model with
-// stricter `additionalProperties` semantics). Hashing the raw schema
-// bytes is what protects against a runtime overwrite of the tool's
-// canonical schema — if the bytes change, the hash changes, and the
-// stale rewrite is bypassed.
-//
-// The atomic Hits / Misses counters expose the cache's effectiveness
-// to tests without bolting a separate observer onto the type. They
-// are intentionally not part of the public adapter contract.
+// Hits / Misses are exposed to tests but are not part of the public
+// adapter contract.
 type strictSchemaCache struct {
 	mu      sync.RWMutex
 	entries map[strictSchemaCacheKey]json.RawMessage
@@ -37,27 +24,22 @@ type strictSchemaCache struct {
 }
 
 // strictSchemaCacheKey identifies a normalised schema by (model,
-// tool-name, schema-hash). Schema-hash is a hex-encoded SHA-256 of
-// the input bytes — collision probability is vanishingly small at
-// this key population and the cost is one hash per cache lookup.
+// tool-name, schema-hash).
 type strictSchemaCacheKey struct {
 	model    string
 	toolName string
 	hash     string
 }
 
-// newStrictSchemaCache returns an initialised cache. Callers should
-// pass it by pointer; copy semantics would clone the mutex and the
-// counters into a state that no longer guards anything.
+// newStrictSchemaCache returns an initialised cache. Pass it by pointer —
+// copying would clone the mutex and counters.
 func newStrictSchemaCache() *strictSchemaCache {
 	return &strictSchemaCache{
 		entries: map[strictSchemaCacheKey]json.RawMessage{},
 	}
 }
 
-// lookup returns the cached normalised schema, or nil if absent. The
-// returned RawMessage is safe to share: NormalizeStrictSchema produces
-// fresh bytes each time, and the cache stores those bytes verbatim.
+// lookup returns the cached normalised schema, or nil if absent.
 func (c *strictSchemaCache) lookup(key strictSchemaCacheKey) (json.RawMessage, bool) {
 	c.mu.RLock()
 	out, ok := c.entries[key]
@@ -68,9 +50,8 @@ func (c *strictSchemaCache) lookup(key strictSchemaCacheKey) (json.RawMessage, b
 	return out, ok
 }
 
-// schemaHash returns a hex-encoded SHA-256 of the input bytes. Used by
-// the cache key. Constant in size (64 chars) so the map's key
-// equality cost is bounded regardless of schema size.
+// schemaHash returns a hex-encoded SHA-256 of the input bytes, used by
+// the cache key.
 func schemaHash(raw json.RawMessage) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
@@ -79,18 +60,8 @@ func schemaHash(raw json.RawMessage) string {
 // normalizeStrictWithCache is the call shape adapters use: it consults
 // the cache, runs NormalizeStrictSchema on a miss, stores the result,
 // and returns the cached bytes. Errors are NOT cached — a schema that
-// fails the strict-mode lint should re-fail on every turn so an
-// operator can see the failure surface in logs each time, and so a
-// rule change that introduces strict mode mid-run does not paper over
-// a transient parse problem.
-//
-// Concurrency: the miss path takes a write lock and re-checks for the
-// key after acquiring it. Concurrent first-misses on the same key
-// produce exactly one normalisation and one Misses increment — the
-// loser of the lock race observes the winner's stored bytes on its
-// re-check and accounts as a hit. Misses is only incremented on a
-// successful normalisation so a fail-closed schema lint does not
-// inflate the counter on every retry.
+// fails the strict-mode lint re-fails on every turn rather than papering
+// over a transient parse problem.
 func normalizeStrictWithCache(cache *strictSchemaCache, model, toolName string, raw json.RawMessage) (json.RawMessage, error) {
 	if cache == nil {
 		return NormalizeStrictSchema(toolName, raw)
@@ -106,17 +77,11 @@ func normalizeStrictWithCache(cache *strictSchemaCache, model, toolName string, 
 	return cache.computeAndStore(key, toolName, raw)
 }
 
-// computeAndStore handles the miss path under a write lock. Holding the
-// write lock for the duration of NormalizeStrictSchema gives this cache
-// singleflight semantics: only one goroutine runs the normaliser for a
-// given key. Concurrent first-misses serialise on the lock; the loser
-// observes the winner's entry on its re-check and is accounted a hit.
-//
-// Misses is incremented inside the locked section only when the entry
-// was genuinely absent on re-check AND normalisation succeeded — the
-// counter then reflects the number of (model, tool-name, schema-hash)
-// triples that produced a usable rewrite, not the number of attempts
-// or failures.
+// computeAndStore handles the miss path under a write lock, giving the
+// cache singleflight semantics: holding the lock for the duration of
+// NormalizeStrictSchema means only one goroutine runs the normaliser per
+// key, and a concurrent loser observes the winner's entry on its
+// re-check. Misses increments only on a genuine, successful miss.
 func (c *strictSchemaCache) computeAndStore(key strictSchemaCacheKey, toolName string, raw json.RawMessage) (json.RawMessage, error) {
 	c.mu.Lock()
 	if cached, ok := c.entries[key]; ok {

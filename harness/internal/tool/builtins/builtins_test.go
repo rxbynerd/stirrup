@@ -70,10 +70,10 @@ func (m *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 }
 
 // invokeText dispatches a tool the way the agentic loop does — preferring a
-// StructuredHandler over a plain Handler (issue #231) — and returns just the
-// canonical text output and error. Tests that only assert the text fallback
-// use this so they remain agnostic to which handler form a tool exposes;
-// tests that assert the structured payload call StructuredHandler directly.
+// StructuredHandler over a plain Handler — and returns just the canonical
+// text output and error. Tests that only assert the text fallback use this so
+// they remain agnostic to which handler form a tool exposes; tests that
+// assert the structured payload call StructuredHandler directly.
 func invokeText(ctx context.Context, tl *tool.Tool, input json.RawMessage) (string, error) {
 	if tl.StructuredHandler != nil {
 		res, err := tl.StructuredHandler(ctx, input)
@@ -700,11 +700,10 @@ func hasPositiveUseThis(desc string) bool {
 // balance so embedded objects do not terminate the scan early.
 //
 // Contract: descriptions must contain at least one capital-`E` "Example"
-// marker followed by a valid JSON object. The rightmost such marker is
-// the one parsed. The #222 migration has landed — each built-in now carries
-// the same example as structured tool.Tool.InputExamples — so this helper is
-// the oracle TestBuiltinInputExamples_MatchDescription uses to pin those
-// structured examples byte-for-byte to the description.
+// marker followed by a valid JSON object. The rightmost such marker is the
+// one parsed. Each built-in carries the same example as its structured
+// tool.Tool.InputExamples; this helper is the oracle
+// TestBuiltinInputExamples_MatchDescription uses to pin the two together.
 func extractJSONExample(desc string) (string, bool) {
 	marker := strings.LastIndex(desc, "Example")
 	if marker < 0 {
@@ -749,11 +748,8 @@ func extractJSONExample(desc string) (string, bool) {
 }
 
 // TestBuiltinDescriptions_EnrichedShape asserts that every registered
-// built-in tool description satisfies the #227 contract: when-to-use
-// guidance, a syntactically valid JSON example, and a length below the
-// system-prompt budget cap. Failures here mean a future contributor
-// pared a description back below the agreed shape — the test exists to
-// surface that regression before the change ships.
+// built-in tool description carries when-to-use guidance, a syntactically
+// valid JSON example, and a length below the system-prompt budget cap.
 func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 	mock := &mockExecutor{}
 	registry := tool.NewRegistry()
@@ -764,13 +760,9 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 			if len(def.Description) > maxToolDescriptionLen {
 				t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
 			}
-			// "Use this" is the canonical when-to-use opener used across
-			// the enriched descriptions. Asserting on it (rather than a
-			// hand-curated per-tool phrase) keeps the contract uniform
-			// and forces future tools to adopt the same convention.
-			// hasPositiveUseThis rejects matches that are negated (a
-			// description containing only "Do not use this..." would
-			// otherwise pass an unguarded strings.Contains).
+			// "Use this" is the canonical when-to-use opener across enriched
+			// descriptions; asserting on it forces future tools to adopt the
+			// same convention.
 			if !hasPositiveUseThis(def.Description) {
 				t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
 			}
@@ -786,14 +778,14 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 	}
 }
 
-// TestBuiltinInputExamples_MatchDescription pins the #222 invariant that every
+// TestBuiltinInputExamples_MatchDescription pins the invariant that every
 // built-in tool's structured InputExamples is byte-identical to the worked
-// example embedded in its description. The two are authored side by side — the
-// description carries the human-readable example for providers whose schema
-// dialect rejects the `examples` keyword (Gemini), while InputExamples carries
-// the structured form adapters fold into the schema where supported — so this
-// guards against them drifting apart. edit_file is covered separately in the
-// edit package (it is registered via the factory's strategy wrapper).
+// example embedded in its description: the description carries the
+// human-readable example for providers whose schema dialect rejects the
+// `examples` keyword (Gemini), while InputExamples carries the structured
+// form adapters fold into the schema where supported. edit_file is covered
+// separately in the edit package (it is registered via the factory's
+// strategy wrapper).
 func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 	mock := &mockExecutor{}
 	// Construct directly rather than via registerAllForTest so spawn_agent
@@ -887,11 +879,7 @@ func TestHasPositiveUseThis(t *testing.T) {
 }
 
 // TestExtractJSONExample locks the contract of the extractJSONExample
-// helper directly, independent of any real tool description. The helper
-// is the seam a future #222 migration to a structured InputExamples
-// []any field on types.ToolDefinition would replace; pinning the
-// edge-case behaviour here keeps that migration mechanical instead of
-// archaeological.
+// helper directly, independent of any real tool description.
 func TestExtractJSONExample(t *testing.T) {
 	cases := []struct {
 		name   string

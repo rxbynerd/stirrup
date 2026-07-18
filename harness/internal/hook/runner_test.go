@@ -21,8 +21,8 @@ type fakeExecCall struct {
 }
 
 // mockExecutor implements executor.Executor for hook.Runner unit tests.
-// Only Exec and Capabilities are exercised by ExecRunner; the file-I/O
-// methods are unreachable from this package and simply error if called.
+// Only Exec and Capabilities are exercised; the file-I/O methods error
+// if called.
 type mockExecutor struct {
 	caps     executor.ExecutorCapabilities
 	execFunc func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error)
@@ -185,11 +185,9 @@ func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing
 	}
 }
 
-// TestExecRunner_TimedOut pins the genuine-deadline shape every executor
-// (local.go, container.go, k8s_execcore.go) now produces via the shared
-// classifyExecCtxErr helper: executor.ErrTimeout wrapped together with the
-// underlying context.DeadlineExceeded. isTimeoutErr must classify it as a
-// timeout via errors.Is, not by matching the formatted text (#468).
+// TestExecRunner_TimedOut pins that isTimeoutErr classifies a wrapped
+// executor.ErrTimeout as a timeout via errors.Is, not by matching the
+// formatted text.
 func TestExecRunner_TimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
@@ -217,11 +215,7 @@ func TestExecRunner_TimedOut(t *testing.T) {
 
 // TestExecRunner_DeadlineExceededTimedOut pins that a bare, unwrapped
 // context.DeadlineExceeded — not itself wrapping executor.ErrTimeout — is
-// NOT classified as a timeout. Every production executor now wraps
-// ErrTimeout on a genuine deadline (see TestExecRunner_TimedOut); a raw
-// context.DeadlineExceeded reaching the hook runner would mean some other
-// code path (or a future executor) bypassed that contract, and TimedOut
-// should reflect the sentinel, not a coincidentally-named stdlib error.
+// NOT classified as a timeout.
 func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
@@ -241,14 +235,10 @@ func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
 	}
 }
 
-// TestExecRunner_CancelledContext_NotTimedOut is the #469/#468 regression:
-// a hook killed by a parent-context cancellation (e.g. a SIGTERM-driven
-// shutdown or a control-plane cancel) must be recorded as a failure but
-// NOT as a timeout, and its error text must not claim the hook "timed
-// out" — that claim is both false and misleading to an operator triaging
-// the trace. This mirrors the error shape classifyExecCtxErr produces for
-// ctx.Err() == context.Canceled across local.go, container.go, and
-// k8s_execcore.go.
+// TestExecRunner_CancelledContext_NotTimedOut pins that a hook killed by
+// a parent-context cancellation (e.g. a SIGTERM-driven shutdown) is
+// recorded as a failure but NOT as a timeout, and its error text must
+// not claim the hook "timed out".
 func TestExecRunner_CancelledContext_NotTimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
@@ -306,14 +296,10 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 }
 
 // TestExecRunner_TruncationTrimsUTF8RuneBoundary is a regression fixture
-// for a byte-index tail cut that landed mid-rune. "€" (U+20AC) encodes
-// as the 3-byte sequence E2 82 AC. combined = "€" + "\n" + 4093 "y"s has
-// length 3 + 1 + 4093 = maxOutputTailBytes+1, so the naive
-// len(scrubbed)-maxOutputTailBytes cut is exactly 1 — one byte into
-// "€" — leaving the bare continuation-byte pair (82 AC) at the start of
-// the slice before trimToRuneBoundary runs. Without the fix,
-// json.Marshal would silently substitute U+FFFD for that leading
-// partial rune when the trace is persisted.
+// for a byte-index tail cut that lands mid-rune: "€" encodes as 3 bytes,
+// so combined = "€" + "\n" + 4093 "y"s cuts exactly 1 byte into "€",
+// leaving a bare continuation-byte pair at the start before
+// trimToRuneBoundary runs.
 func TestExecRunner_TruncationTrimsUTF8RuneBoundary(t *testing.T) {
 	const euroSign = "€"
 	stderrFiller := strings.Repeat("y", maxOutputTailBytes-3)
@@ -348,10 +334,9 @@ func TestExecRunner_TruncationTrimsUTF8RuneBoundary(t *testing.T) {
 	}
 }
 
-// TestExecRunner_StderrOnlyOutput pins scrubbedTail's stderr-only
-// branch: when a hook writes nothing to stdout, the recorded OutputTail
-// must be exactly the (scrubbed) stderr text, with no spurious leading
-// newline from the stdout/stderr join logic.
+// TestExecRunner_StderrOnlyOutput pins that when a hook writes nothing
+// to stdout, OutputTail is exactly the stderr text with no spurious
+// leading newline.
 func TestExecRunner_StderrOnlyOutput(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
@@ -413,8 +398,7 @@ func TestExecRunner_RunPost_RunOnMatrix(t *testing.T) {
 }
 
 // TestExecRunner_RunPost_DeadCtx pins that RunPost handles an
-// already-cancelled ctx (e.g. the loop's detached post-hook budget
-// expired mid-run) by surfacing the resulting error on the
+// already-cancelled ctx by surfacing the resulting error on the
 // HookExecution rather than panicking or hanging.
 func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -436,20 +420,14 @@ func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
 	if results[0].Error == "" {
 		t.Error("results[0].Error is empty, want the ctx-cancelled error surfaced")
 	}
-	// A plain cancel (not a deadline) must not be classified as a timeout
-	// — the #469/#468 regression this task fixes.
+	// A plain cancel (not a deadline) must not be classified as a timeout.
 	if results[0].TimedOut {
 		t.Error("results[0].TimedOut = true, want false: an explicitly cancelled ctx is not a timeout")
 	}
 }
 
-// TestExecRunner_RunPost_BudgetExpiryMidHook pins the detached-ctx
-// budget-expiry scenario: a deadline that expires while the hook is
-// still "running" (from the fake executor's perspective) must surface
-// as a TimedOut result, not hang RunPost. The mock wraps executor.ErrTimeout
-// the way a real executor's Exec would once its own context.WithTimeout
-// child inherits the expired parent deadline (ctx.Err() ==
-// context.DeadlineExceeded propagates through the child unchanged).
+// TestExecRunner_RunPost_BudgetExpiryMidHook pins that a detached-ctx
+// deadline expiring mid-hook surfaces as a TimedOut result, not a hang.
 func TestExecRunner_RunPost_BudgetExpiryMidHook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()

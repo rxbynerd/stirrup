@@ -6,26 +6,18 @@ import (
 )
 
 // registerAllForTest registers every built-in tool constructor with the
-// given registry. It exists solely so this package's own tests (e.g.
-// TestBuiltinDescriptions_EnrichedShape, which walks every tool's
-// description) can build a "has everything" registry without hand-listing
-// constructors.
+// given registry, so this package's own tests can build a "has everything"
+// registry without hand-listing constructors.
 //
-// This is NOT production wiring. The factory's buildToolRegistry
-// (harness/internal/core/factory.go) is what the agentic loop actually
-// uses: it gates each tool on toolEnabled(cfg.Tools.BuiltIn, ...) and the
-// executor's capabilities. This helper used to be exported as
-// RegisterBuiltins and called only from tests, which let it silently drift
-// out of sync with buildToolRegistry — the git_* tools were wired here but
-// never reached the live registry (#448). Living in a _test.go file now
-// makes that divergence structurally impossible: this function cannot be
-// referenced from production code because it does not exist in a
-// non-test build.
+// This is NOT production wiring — the factory's buildToolRegistry
+// (harness/internal/core/factory.go) gates each tool on
+// toolEnabled(cfg.Tools.BuiltIn, ...) and the executor's capabilities.
+// Living in a _test.go file makes divergence between the two structurally
+// impossible: this function cannot be referenced from production code.
 //
 // Cross-references inside tool descriptions (e.g. grep_files mentioning
-// find_files, list_directory mentioning find_files, edit_file mentioning
-// write_file) use the canonical registry tool name. Wave 5 #234 aliases
-// must NOT rename these references — descriptions resolve via the
+// find_files) use the canonical registry tool name; presenter aliases must
+// not rename these references, since descriptions resolve via the
 // canonical name regardless of which alias the provider surface exposes.
 func registerAllForTest(registry *tool.Registry, exec executor.Executor) {
 	registry.Register(ReadFileTool(exec))

@@ -17,18 +17,14 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// staticBearer mirrors the harness-internal helper of the same name
-// without crossing the provider package boundary; the compat/zai
-// package lives outside `package provider` so it can't reach
-// staticBearer directly.
+// staticBearer mirrors the harness-internal helper of the same name;
+// compat/zai lives outside package provider so it can't reach it directly.
 func staticBearer(s string) func(context.Context) (string, error) {
 	return func(_ context.Context) (string, error) {
 		return s, nil
 	}
 }
 
-// hasReplayField reports whether path appears in the resolved
-// ReplayFields slice.
 func hasReplayField(q quirks.ProviderQuirks, path string) bool {
 	for _, p := range q.ReplayFields {
 		if p == path {
@@ -38,14 +34,8 @@ func hasReplayField(q quirks.ProviderQuirks, path string) bool {
 	return false
 }
 
-// TestZAICompatRule_AppliesTokenFieldAndExtraBody pins the two
-// divergences the base Z.ai compat rule enforces: TokenFieldMaxTokens
-// (so the wire body uses "max_tokens" rather than the modern
-// "max_completion_tokens") and the "tool_stream": true extra body
-// field. The test injects the rules into a registry, attaches them to
-// an OpenAICompatibleAdapter, fires a request against an httptest
-// server, and inspects the captured body — the same end-to-end
-// path a real Z.ai run takes.
+// TestZAICompatRules_AppliesTokenFieldAndExtraBody pins the base
+// Z.ai compat rule: legacy "max_tokens" field and "tool_stream": true.
 func TestZAICompatRules_AppliesTokenFieldAndExtraBody(t *testing.T) {
 	captured := make(chan []byte, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,8 +57,6 @@ func TestZAICompatRules_AppliesTokenFieldAndExtraBody(t *testing.T) {
 		provider.OpenAIAuthConfig{},
 		provider.RetryPolicy{},
 	)
-	// Inject the Z.ai compat rules on top of BuiltinRules so this
-	// test mirrors what core/factory.go does for compatProfile=zai-glm.
 	rules := append(quirks.BuiltinRules(), zai.CompatRules()...)
 	adapter.Registry = quirks.NewRegistry(rules)
 
@@ -110,14 +98,9 @@ func TestZAICompatRules_AppliesTokenFieldAndExtraBody(t *testing.T) {
 	}
 }
 
-// TestZAICompatRule_GLM47AppliesThinkingFamilyBody is the end-to-end
-// twin of the base-rule test for a thinking-family model. It drives a
-// glm-4.7 request through the adapter and asserts the wire body carries
-// the base quirks (max_tokens, tool_stream) AND the thinking-family
-// extra: a top-level "thinking" object == {"type":"enabled"}. The
-// reasoning_content half of the round-trip (outbound threading) is
-// exercised by the resolution tests below plus the provider package's
-// replay_threading_test.go; here we pin the request-shape contribution.
+// TestZAICompatRules_GLM47AppliesThinkingFamilyBody pins the
+// thinking-family request shape: base quirks plus a top-level
+// "thinking" object for a glm-4.7 request.
 func TestZAICompatRules_GLM47AppliesThinkingFamilyBody(t *testing.T) {
 	captured := make(chan []byte, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -186,13 +169,9 @@ func TestZAICompatRules_GLM47AppliesThinkingFamilyBody(t *testing.T) {
 	}
 }
 
-// glm47ReasoningSSE is a synthetic GLM-4.7 streaming response that
-// mirrors the deepseek-v4-flash fixture's wire shape exactly:
-// reasoning_content is streamed as a sibling of content on each
-// assistant delta, the docs assert GLM uses the identical
-// delta.reasoning_content shape. The two reasoning pieces concatenate
-// to "Scanning the request. Choosing an answer." — the value the
-// capture-and-flatten path must surface on message_complete.
+// glm47ReasoningSSE is a synthetic GLM-4.7 stream with
+// reasoning_content as a sibling of content on each assistant delta;
+// the pieces concatenate to "Scanning the request. Choosing an answer."
 const glm47ReasoningSSE = "data: {\"id\":\"glm-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"\"},\"finish_reason\":null}]}\n\n" +
 	"data: {\"id\":\"glm-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Scanning the request. \"},\"finish_reason\":null}]}\n\n" +
 	"data: {\"id\":\"glm-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Choosing an answer.\"},\"finish_reason\":null}]}\n\n" +
@@ -200,9 +179,8 @@ const glm47ReasoningSSE = "data: {\"id\":\"glm-test\",\"object\":\"chat.completi
 	"data: {\"id\":\"glm-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":8}}\n\n" +
 	"data: [DONE]\n\n"
 
-// zaiTestAdapter builds an OpenAICompatibleAdapter pointed at srvURL
-// with a registry assembled exactly as core/factory.go does for
-// compatProfile=zai-glm (BuiltinRules + zai.CompatRules()).
+// zaiTestAdapter builds an adapter with a registry assembled exactly
+// as core/factory.go does for compatProfile=zai-glm.
 func zaiTestAdapter(srvURL string) *provider.OpenAICompatibleAdapter {
 	adapter := provider.NewOpenAICompatibleAdapter(
 		staticBearer("test-key"),
@@ -214,13 +192,9 @@ func zaiTestAdapter(srvURL string) *provider.OpenAICompatibleAdapter {
 	return adapter
 }
 
-// TestZAICompatRules_GLM47CapturesReasoningContent is the GLM-scoped
-// parse-side capture test. It drives adapter.Stream() with Model:
-// "glm-4.7" against a server emitting the GLM reasoning SSE shape and
-// asserts message_complete.ReplayFields["reasoning_content"] accumulates
-// to the concatenated pieces. The generic deepseek capture test proves
-// the walker; this proves the zai compat rule actually registers the
-// reasoning_content path so the walker runs for a GLM model.
+// TestZAICompatRules_GLM47CapturesReasoningContent pins that the zai
+// compat rule registers the reasoning_content path for a GLM model,
+// so message_complete.ReplayFields accumulates the concatenated pieces.
 func TestZAICompatRules_GLM47CapturesReasoningContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -258,17 +232,10 @@ func TestZAICompatRules_GLM47CapturesReasoningContent(t *testing.T) {
 	}
 }
 
-// TestZAICompatRules_GLM47TwoTurnRoundTrip is the GLM-scoped end-to-end
-// round-trip — the test the spec deviation in review wave 1 flagged as
-// missing. The existing replay_threading_test.go TwoTurnRoundTrip
-// resolves from DefaultRegistry() (BuiltinRules), so it proves
-// DeepSeek's BUILTIN reasoning_content path, not the zai COMPAT-INJECTED
-// path. Here the registry is assembled the way the factory does for
-// compatProfile=zai-glm, so the assertion is that the compat injection
-// closes the loop: turn 1 streams a glm-4.7 response carrying
-// reasoning_content, the captured state is attached to the assistant
-// message exactly as the agentic loop does, and the turn-2 request body
-// must carry reasoning_content as a top-level assistant-message key.
+// TestZAICompatRules_GLM47TwoTurnRoundTrip pins that the zai
+// compat-injected reasoning_content path (not just DeepSeek's builtin
+// one) closes the loop: turn-1 reasoning_content is captured onto the
+// assistant message and threaded back as a top-level key on turn 2.
 func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
 	bodies := make(chan []byte, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -290,10 +257,6 @@ func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 	}
 
-	// Turn 1: stream and assemble the assistant message the way
-	// streamEventsToResult + appendAssistantContent do — text deltas
-	// concatenate into one block; message_complete supplies the replay
-	// state.
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "glm-4.7",
 		MaxTokens: 1024,
@@ -329,8 +292,6 @@ func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
 		},
 	)
 
-	// Turn 2: the request built from the updated history must thread the
-	// captured value back onto the assistant wire message.
 	ch2, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "glm-4.7",
 		MaxTokens: 1024,
@@ -349,15 +310,9 @@ func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
 	}
 }
 
-// TestZAICompatRules_ThinkingFamilyResolution pins the resolved quirks
-// for the thinking-family models against a registry assembled exactly
-// as the factory does. These are unit-level resolution assertions that
-// complement the end-to-end body test above: they confirm the
-// reasoning_content ReplayFields entry and the thinking extra body land
-// for both glob families — Rule B (glm-4.[5-9]*: glm-4.7, glm-4.5-air)
-// and Rule C (glm-5*: glm-5, glm-5.1). Rule C shares applyThinkingFamily
-// with Rule B, so covering it here catches a future divergence in the
-// glm-5 line that the shared helper alone would not surface.
+// TestZAICompatRules_ThinkingFamilyResolution pins resolved quirks for
+// both thinking-family globs (glm-4.[5-9]* and glm-5*), which share
+// applyThinkingFamily.
 func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
 
@@ -390,13 +345,9 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 	}
 }
 
-// TestZAICompatRules_LegacyLineHasNoThinking is the negative pin: every
-// hyphenated legacy GLM id (glm-4-plus, glm-4-flash, glm-4-air) must
-// receive ONLY the base quirks. The glm-4.[5-9]* glob deliberately uses
-// a dot so it does not match the hyphenated ids — if the scoping ever
-// leaked (e.g. a glob widened to glm-4*), this test fails for whichever
-// id regressed. A non-thinking model receiving a "thinking" body or
-// replaying reasoning_content would be a wire regression.
+// TestZAICompatRules_LegacyLineHasNoThinking pins that hyphenated
+// legacy GLM ids (glm-4-plus, glm-4-flash, glm-4-air) receive only
+// the base quirks, never the thinking-family additions.
 func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
 	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
 
@@ -423,15 +374,9 @@ func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
 	}
 }
 
-// TestZAICompatRules_GLM410IsAKnownGap pins a documented limitation
-// rather than a desired behaviour: the glm-4.[5-9]* char class stops at
-// 9, so a future glm-4.10 (if Z.ai ever ships double-digit minors)
-// would NOT match Rule B and would receive only the base quirks — no
-// thinking, no reasoning_content replay. This is the conservative
-// default (do not speculatively widen the glob), and the test makes the
-// gap visible: when glm-4.10 becomes real, this test starts failing the
-// day the rule is fixed, signalling the comment in zai.go must be
-// updated alongside it.
+// TestZAICompatRules_GLM410IsAKnownGap pins a known gap: the
+// glm-4.[5-9]* char class stops at 9, so a hypothetical glm-4.10
+// receives only the base quirks, no thinking.
 func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
 	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
 	q := reg.Resolve("openai-compatible", "glm-4.10")
@@ -450,11 +395,9 @@ func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
 }
 
 // TestZAICompatRules_GatewayPrefixResolution pins the OpenRouter
-// gateway rule (z-ai/glm-*). The bare glm-* glob cannot match a
-// slash-prefixed id (path.Match's `*` does not cross `/`), so the
-// gateway rule supplies the portable quirks itself: legacy max_tokens
-// and reasoning_content replay. tool_stream and thinking are
-// deliberately ABSENT — vendor extras unverified through gateways.
+// gateway rule (z-ai/glm-*): legacy max_tokens and reasoning_content
+// replay, but tool_stream and thinking absent (vendor extras
+// unverified through gateways).
 func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
 	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
 	q := reg.Resolve("openai-compatible", "z-ai/glm-4.7")
@@ -474,11 +417,8 @@ func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
 	}
 }
 
-// TestZAICompatRule_DoesNotAffectNonGLMModels guards against the
-// rules' ModelMatch leaking to non-GLM models served from the same
-// adapter. If an operator multiplexes openai-compatible against
-// multiple base URLs with the same registry, a non-GLM model
-// resolution must keep the modern token field.
+// TestZAICompatRules_DoesNotAffectNonGLMModels guards against the
+// rules' ModelMatch leaking to non-GLM models on the same registry.
 func TestZAICompatRules_DoesNotAffectNonGLMModels(t *testing.T) {
 	rules := append(quirks.BuiltinRules(), zai.CompatRules()...)
 	reg := quirks.NewRegistry(rules)
@@ -499,15 +439,11 @@ func TestZAICompatRules_DoesNotAffectNonGLMModels(t *testing.T) {
 	}
 }
 
-// TestCompatRulesReplayFieldsSuffix is the compat-package mirror of
-// quirks.TestBuiltinRulesReplayFieldsSuffix: every rule in CompatRules()
-// whose Apply registers a ReplayFields path must end its Description
-// with "(threaded)", because the openai-compatible adapter threads
-// those captures back onto subsequent requests. A rule author who adds
-// a ReplayFields entry without the suffix (or declares a non-threadable
-// multi-segment path) fails here at build time rather than silently
-// regressing trace observability. Compat rules are not part of
-// BuiltinRules(), so the quirks_test.go version cannot reach them.
+// TestCompatRulesReplayFieldsSuffix mirrors
+// quirks.TestBuiltinRulesReplayFieldsSuffix for CompatRules(), which
+// that test cannot reach: every rule registering a ReplayFields path
+// must end its Description with "(threaded)" and use a threadable
+// single-segment path.
 func TestCompatRulesReplayFieldsSuffix(t *testing.T) {
 	const threadedSuffix = "(threaded)"
 	for i, rule := range zai.CompatRules() {
@@ -546,13 +482,9 @@ func TestCompatRulesReplayFieldsSuffix(t *testing.T) {
 	}
 }
 
-// TestCompatRulesValidate is the per-compat-package mirror of
-// quirks.TestBuiltinRulesValidate: every rule in CompatRules() must
-// carry a non-empty Description (operators read it in the introspection
-// subcommand), a non-zero LastVerified (the staleness signal), and a
-// non-nil Apply (a rule that does nothing is a registration bug). The
-// quirks_test.go version walks only BuiltinRules() and cannot reach the
-// operator-gated compat rules, so each compat package owns this check.
+// TestCompatRulesValidate mirrors quirks.TestBuiltinRulesValidate for
+// CompatRules(): every rule must carry a non-empty Description, a
+// non-zero LastVerified, and a non-nil Apply.
 func TestCompatRulesValidate(t *testing.T) {
 	for i, rule := range zai.CompatRules() {
 		if rule.Description == "" {
@@ -571,12 +503,7 @@ func TestCompatRulesValidate(t *testing.T) {
 }
 
 // scanForSecretRefs walks v recursively (maps and slices) and reports
-// the first string value containing a secret:// reference, or "" if
-// none. ExtraBodyFields is serialised verbatim into the request body
-// and RunConfig.Redact() never reaches inside a quirks rule, so any
-// nested string carrying a secret reference would leak unredacted — the
-// thinking object's {"type":"enabled"} map is the first nested value, so
-// the walk must descend, not just check top-level strings.
+// the first string value containing a secret:// reference, or "" if none.
 func scanForSecretRefs(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -599,24 +526,13 @@ func scanForSecretRefs(v any) string {
 	return ""
 }
 
-// TestCompatRuleExtraBodyFieldsNoSecrets is the per-compat-package
-// mirror of quirks.TestBuiltinRulesExtraBodyFieldsNoSecrets: it
-// materialises each Z.ai rule into a fresh ProviderQuirks and walks
-// every ExtraBodyFields value for the secret:// prefix. The map is
-// serialised verbatim into the request body, and RunConfig.Redact()
-// never reaches inside a quirks rule, so a secret reference embedded
-// here would propagate to every wire request without redaction.
-//
-// The check walks EVERY rule in CompatRules() (resolving each against a
-// representative model id) and recurses into nested maps/slices so the
-// thinking object's contents are covered, not just top-level strings.
-// The pattern is intended for every compat package to copy: each must
-// contribute its own version against its own CompatRules, because the
-// quirks_test.go version only walks BuiltinRules() and cannot reach
-// compat rules that are not part of the registry default.
+// TestCompatRuleExtraBodyFieldsNoSecrets mirrors
+// quirks.TestBuiltinRulesExtraBodyFieldsNoSecrets for CompatRules():
+// ExtraBodyFields is serialised verbatim and RunConfig.Redact() never
+// reaches inside a quirks rule, so no value may contain a secret:// ref.
 func TestCompatRuleExtraBodyFieldsNoSecrets(t *testing.T) {
-	// Representative model id per rule, in declaration order: the id
-	// must match that rule's glob so Resolve materialises its Apply.
+	// Representative model id per rule, in declaration order, so
+	// Resolve materialises each rule's Apply.
 	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "z-ai/glm-4.7"}
 	rules := zai.CompatRules()
 	if len(models) != len(rules) {

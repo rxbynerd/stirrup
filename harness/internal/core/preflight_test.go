@@ -278,11 +278,10 @@ func stepDetail(report *PreflightReport, name string) (string, bool) {
 	return "", false
 }
 
-// TestPreflight_Executor_Skip is the #357 skip path: a container-executor
-// dry-run with SkipExecutor must record the executor-probe step as a skip
-// (no engine contacted) and keep the report honest the engine was not
-// probed. The container engine is never reachable in CI, so without the
-// gate this step would fail; the gate must turn it into a clean skip.
+// TestPreflight_Executor_Skip pins that a container-executor dry-run with
+// SkipExecutor records the executor-probe step as a skip (no engine
+// contacted); the container engine is never reachable in CI, so without
+// the gate this step would fail.
 func TestPreflight_Executor_Skip(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
@@ -307,10 +306,10 @@ func TestPreflight_Executor_Skip(t *testing.T) {
 	}
 }
 
-// TestPreflight_Executor_LocalProbeRunsWhenNotSkipped pins that
-// SkipExecutor is a container-only gate: a local executor still produces an
-// executor-probe step (a skip, since the local executor exposes no Probe),
-// and SkipExecutor does not suppress it with the gate reason.
+// TestPreflight_Executor_LocalUnaffectedBySkip pins that SkipExecutor is
+// a container-only gate: a local executor still produces an
+// executor-probe step (a skip, since it exposes no Probe), without the
+// container gate reason.
 func TestPreflight_Executor_LocalUnaffectedBySkip(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
@@ -330,13 +329,11 @@ func TestPreflight_Executor_LocalUnaffectedBySkip(t *testing.T) {
 	}
 }
 
-// TestPreflight_Executor_None locks in the #447 conclusion that the none
-// executor needs no special-case arm in preflight.go: it flows through
-// the same generic construct-then-probe path as local/api.
-// preflightExecutorConstruct calls buildExecutor unconditionally (only
-// "container" is special-cased), so the "executor" step should report a
-// successful construction, and "executor-probe" should record a skip
-// since NoneExecutor implements no Probe.
+// TestPreflight_Executor_None pins that the none executor needs no
+// special-case arm in preflight.go: it flows through the same
+// construct-then-probe path as local/api, so "executor" reports a
+// successful construction and "executor-probe" records a skip (NoneExecutor
+// implements no Probe).
 func TestPreflight_Executor_None(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)

@@ -335,13 +335,10 @@ func buildAnchorTestFile(fillerCount int, includeTarget bool) (content string, t
 	return b.String(), targetLine
 }
 
-// TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock is the
-// regression test for the fallback-anchoring fix: the whitespace-
-// insensitive fallback used to scan from position 0 and apply the hunk to
-// the first whitespace-equal block it found, even when that block was far
-// from the hunk's declared line and an equally-plausible (also drifted)
-// match existed at the declared location. That silently corrupted the
-// wrong region of the file while still reporting Applied=true.
+// TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock pins that
+// the whitespace-insensitive fallback must not apply a hunk to an early
+// whitespace-equal block far from the hunk's declared line when a
+// plausible match exists near the declared location.
 func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T) {
 	dir := t.TempDir()
 	exec, err := executor.NewLocalExecutor(dir)
@@ -355,11 +352,9 @@ func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T)
 	}
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
-	// Context/removed lines match both the early duplicate and the true
-	// target only after whitespace trimming (the file uses 4 spaces near
-	// the top and a tab at the true target; the diff itself carries neither
-	// indentation), so this can only apply via the whitespace-insensitive
-	// fallback.
+	// The file uses 4 spaces near the top and a tab at the true target;
+	// the diff carries neither, so this can only resolve via the
+	// whitespace-insensitive fallback.
 	diff := fmt.Sprintf(`--- a/file.txt
 +++ b/file.txt
 @@ -%d,3 +%d,3 @@
@@ -394,12 +389,10 @@ func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T)
 	}
 }
 
-// TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds guards against
-// over-tightening the anchor: a hunk whose declared line number is off by a
-// few lines (typical when an earlier hunk in the same diff miscounts, or
-// the model is working from a slightly stale view of the file) must still
-// resolve via the whitespace-insensitive fallback as long as the true
-// target is within the search window.
+// TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds pins that a
+// hunk whose declared line number is off by a few lines must still
+// resolve via the whitespace-insensitive fallback when the true target
+// is within the search window.
 func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	exec, err := executor.NewLocalExecutor(dir)
@@ -407,8 +400,8 @@ func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	// The real block sits 3 lines below where the hunk header claims it
-	// starts (line 1) — comfortably inside the anchoring window.
+	// The real block sits 3 lines below the declared start (line 1),
+	// inside the anchoring window.
 	original := "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n\tline 2\n\tline 3\n"
 	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -442,10 +435,9 @@ func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed covers the
-// fail-closed side of the fix: when the only whitespace-equal match in the
-// file is far outside the hunk's declared region, and nothing plausible
-// exists near the declared line, the strategy must report Applied=false
+// TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed pins the
+// fail-closed side: when the only whitespace-equal match is far outside
+// the hunk's declared region, the strategy must report Applied=false
 // with an actionable error rather than reaching past the window.
 func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T) {
 	dir := t.TempDir()
@@ -454,8 +446,8 @@ func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	// No true target this time — the only whitespace-equal match is the
-	// early duplicate, well outside the window around the declared line.
+	// No true target: the only whitespace-equal match is the early
+	// duplicate, outside the window around the declared line.
 	original, targetLine := buildAnchorTestFile(60, false)
 	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -500,11 +492,9 @@ func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T
 }
 
 // TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike is the
-// fuzzy-strategy counterpart to the whitespace-fallback regression above:
-// the fuzzy scan also used to run unbounded from position 0, so an early
-// block that merely resembles the pattern (rather than matching it after
-// whitespace trimming) could still win fuzzy scoring over the true,
-// drifted target.
+// fuzzy-strategy counterpart to the whitespace-fallback test above: an
+// early block that merely resembles the pattern must not outscore the
+// true, drifted target outside the search window.
 func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T) {
 	dir := t.TempDir()
 	exec, err := executor.NewLocalExecutor(dir)
@@ -513,11 +503,8 @@ func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T)
 	}
 
 	// Both blocks are near-misses on the pattern's first context line, so
-	// neither is caught by the exact or whitespace-insensitive strategies —
-	// this can only resolve via fuzzy matching. The early block's line is a
-	// closer (higher-scoring) match than the true target's, so an unbounded
-	// scan that simply takes the best score in the file — rather than
-	// respecting the declared region — picks the early block.
+	// this can only resolve via fuzzy matching. The early block scores
+	// higher than the true target, so an unbounded scan would pick it.
 	var b strings.Builder
 	b.WriteString("function calculateTotal(items) {\n")
 	b.WriteString("  let totale = 0;\n") // 1-edit drift: higher fuzzy score
@@ -794,8 +781,6 @@ func TestUdiffStrategy_NonexistentFile(t *testing.T) {
 		t.Errorf("expected read file error; got: %s", result.Error)
 	}
 }
-
-// Internal unit tests for helper functions.
 
 func TestParseHunkHeader(t *testing.T) {
 	tests := []struct {

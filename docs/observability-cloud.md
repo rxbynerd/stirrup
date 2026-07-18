@@ -190,6 +190,18 @@ need them can rewrite attributes in a collector
 (`transformprocessor`), keeping the vendor mapping in operator
 config.
 
+## Log-trace correlation
+
+Log records emitted inside an active span carry `trace_id` and
+`span_id` attributes in lowercase snake_case, rather than the
+camelCase the rest of the Stirrup log schema uses. This spelling is
+the OTel/Loki convention that the Tempo↔Loki "Logs for trace"
+correlation derived-field is keyed on; any other casing silently
+breaks the correlation in Grafana and other OTel/Loki-aware
+backends. IDs are the 32-hex-char trace ID and 16-hex-char span ID
+forms. Records emitted outside an active span (boot-time,
+context-less logging) carry no correlation fields.
+
 ## Span content capture (opt-in)
 
 By default the otel emitter records turn-level counters (tokens,

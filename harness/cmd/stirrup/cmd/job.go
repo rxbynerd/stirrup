@@ -41,18 +41,13 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
-	// shutdownCtx carries only the process-level shutdown signal
-	// (SIGINT/SIGTERM/pod deletion), deliberately independent of ctx's
-	// lifecycle below. The agentic loop's detached postRun hook phase
-	// (issue #461) is built to survive ctx's own run-deadline/
-	// control-plane cancel but must still observe a genuine process
-	// shutdown promptly — see AgenticLoop.Shutdown and
-	// docs/cloud-run-jobs.md.
+	// shutdownCtx carries only the process-level shutdown signal, independent
+	// of ctx below, so the detached postRun hook phase still observes it.
+	// See docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	// Top-level context with signal handling. The timeout is applied later
-	// once we receive the RunConfig (which carries the wall-clock timeout).
+	// Timeout is applied later once the RunConfig (which carries it) arrives.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setupSignalHandler(func() {
@@ -60,31 +55,26 @@ func runJob(cmd *cobra.Command, args []string) error {
 		cancel()
 	})
 
-	// 1. Dial the control plane.
 	tp, err := transport.NewGRPCTransport(ctx, addr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to control plane at %s: %w", addr, err)
 	}
 	defer func() { _ = tp.Close() }()
 
-	// 2. Send a "ready" event so the control plane knows we are listening.
-	//    Include the session ID (if set) so the control plane can correlate
-	//    this gRPC stream back to the session that launched the subprocess.
+	// Session ID (if set) lets the control plane correlate this stream with
+	// the session that launched the subprocess.
 	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
 	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID, HarnessVersion: version.Version()}); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 
-	// Write the liveness probe file so K8s knows we are healthy.
 	if err := health.WriteProbe("/tmp/healthy"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write health probe: %v\n", err)
 	}
 	defer func() { _ = health.RemoveProbe("/tmp/healthy") }()
 
-	// 3. Register OnControl and block until a task_assignment arrives.
-	//    Also honour a cancel event received before any task is assigned by
-	//    exiting cleanly — the control plane may want to abort a pod that
-	//    hasn't been dispatched yet.
+	// A cancel event before any task_assignment exits cleanly — the control
+	// plane may want to abort a pod that hasn't been dispatched yet.
 	configCh := make(chan *types.RunConfig, 1)
 	preTaskCancelCh := make(chan struct{}, 1)
 	tp.OnControl(func(event types.ControlEvent) {
@@ -111,7 +101,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	var config *types.RunConfig
 	select {
 	case config = <-configCh:
-		// Got our assignment.
+		// Assignment received.
 	case <-preTaskCancelCh:
 		fmt.Fprintln(os.Stderr, "cancel received before task assignment; exiting")
 		return nil
@@ -123,14 +113,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("interrupted before receiving task assignment")
 	}
 
-	// 4. Apply wall-clock timeout from the RunConfig.
 	if config.Timeout != nil && *config.Timeout > 0 {
 		var timeoutCancel context.CancelFunc
 		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(*config.Timeout)*time.Second)
 		defer timeoutCancel()
 	}
 
-	// 5. Build and run the agentic loop, reusing the existing gRPC transport.
 	loop, err := core.BuildLoopWithTransport(ctx, config, tp)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
@@ -143,60 +131,35 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	runTrace, runErr := loop.Run(ctx, config)
 	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself
-		// failed inside finishWithOutcome/finishWithError) — there is
-		// nothing to emit.
+		// No trace was produced at all (e.g. the trace emitter itself failed).
 		return fmt.Errorf("running harness: %w", runErr)
 	}
 	printRunSummary(runTrace)
-	// resultSink emission mirrors the harness command path so a Cloud
-	// Run / Kubernetes job can be configured with
-	// resultSink.type=stdout-json and have its answer scraped from the
-	// pod's stdout regardless of which entrypoint launched it. Uses a
-	// fresh context for the same reason as runWithConfig: ctx may
-	// already be cancelled here when a SIGTERM triggered the job to
-	// stop, and a future remote sink would silently drop the result
-	// line on every cancelled run. See postRunEmitTimeout in root.go.
+	// Fresh context: ctx may already be cancelled by a SIGTERM here, and a
+	// remote sink would otherwise silently drop the result on every
+	// cancelled run.
 	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
 	defer emitCancel()
 	emitRunResult(emitCtx, config, runTrace)
 
 	if runErr != nil {
-		// A RunTrace was produced even though Run() returned a fatal
-		// error: finishWithOutcome's early-return paths (build-system-
-		// prompt failure, git setup failure, and — issue #461 — a
-		// fatal preRun hook failure) return a valid trace, and now also
-		// emit the terminal "done" HarnessEvent (see loop.go), alongside
-		// a non-nil error. printRunSummary/emitRunResult above must
-		// still run for these — skipping them made the run's own
-		// structured outcome (and RunResult.HookFailures) unreachable
-		// on the most common trigger for setup_failed/hook_failed — but
-		// a failed run has nothing further to do, so still return the
-		// error here rather than continuing to workspace export /
-		// follow-up grace.
+		// A trace can exist alongside a fatal runErr (e.g. setup or a fatal
+		// preRun hook failed); the emission above must still happen, but
+		// there is nothing further to do for a failed run.
 		return fmt.Errorf("running harness: %w", runErr)
 	}
 
-	// Workspace export. The job entrypoint has no equivalent of the
-	// CLI's --export-workspace-required, so the control plane decides
-	// the URI via RunConfig.Executor.WorkspaceExportTo and we treat
-	// upload failures as non-fatal: an exit-failing job would lose
-	// the run's trace and resultSink before the operator could
-	// correlate it. Operators who need a hard requirement should
-	// guard the URI on the control-plane side. Independent post-run
-	// context — see runWithConfig for the same rationale.
+	// The control plane decides the export URI via
+	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
+	// an exit-failing job doesn't lose the trace/resultSink before an
+	// operator can correlate it.
 	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
 	defer exportCancel()
 	if err := exportWorkspace(exportCtx, config, false); err != nil {
-		// exportWorkspace returns nil in the non-required path, so
-		// reaching here is impossible given the false above. The
-		// guard keeps the signature compatible if the contract ever
-		// changes.
+		// Unreachable in the non-required path; guards the signature.
 		return err
 	}
 
-	// Honour follow-up grace from the RunConfig (set by the control plane) or
-	// fall back to the STIRRUP_FOLLOWUP_GRACE environment variable.
 	graceSecs := 0
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		graceSecs = *config.FollowUpGrace
@@ -209,10 +172,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
 	}
 
-	// A non-success outcome reached here (runErr == nil but, e.g.,
-	// Outcome == "error" from a provider failure, or "hook_failed" from
-	// a fatal postRun hook) must still fail the process — this is what
-	// a Cloud Run / K8s Jobs orchestrator observes to decide whether to
-	// retry or alert. See runOutcomeError in root.go.
+	// A non-success outcome (runErr == nil) must still fail the process so
+	// the job orchestrator can decide whether to retry or alert.
 	return runOutcomeError(runTrace)
 }

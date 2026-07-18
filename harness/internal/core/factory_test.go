@@ -82,19 +82,13 @@ func repoRootForTests(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
 }
 
-// disableRuleOfTwo returns a RuleOfTwoConfig that overrides the Rule-of-Two
-// invariant. The factory and integration tests in this file build configs
-// that legitimately exercise the all-three case (default tool list +
-// TEST_*_KEY APIKeyRef + allow-all/deny-side-effects) so they can verify
-// factory wiring and policy behaviour. Rule-of-Two semantics are covered
-// in types/runconfig_test.go; the tests here would otherwise be obscured
-// by the validator rejection.
+// disableRuleOfTwo overrides the Rule-of-Two invariant so factory tests can
+// exercise the all-three case without validator rejection; Rule-of-Two
+// semantics themselves are covered in types/runconfig_test.go.
 func disableRuleOfTwo() *types.RuleOfTwoConfig {
 	enforce := false
 	return &types.RuleOfTwoConfig{Enforce: &enforce}
 }
-
-// --- buildRouter ---
 
 func TestBuildRouter_Static(t *testing.T) {
 	r := buildRouter(types.ModelRouterConfig{
@@ -157,8 +151,6 @@ func TestBuildRouter_DefaultFallback(t *testing.T) {
 	}
 }
 
-// --- buildPerModeRouter ---
-
 func TestBuildPerModeRouter_ModeModelWithSlash(t *testing.T) {
 	r := buildPerModeRouter(types.ModelRouterConfig{
 		ModeModels: map[string]string{"review": "bedrock/review-model"},
@@ -190,12 +182,9 @@ func TestBuildPerModeRouter_DefaultsApplied(t *testing.T) {
 	}
 }
 
-// --- buildDynamicRouter ---
-
 func TestBuildDynamicRouter_Defaults(t *testing.T) {
 	r := buildDynamicRouter(types.ModelRouterConfig{}, "")
 
-	// Turn 0, no tokens — should get the default or cheap selection.
 	sel := r.Select(context.TODO(), router.RouterContext{Turn: 0})
 	if sel.Provider != "anthropic" {
 		t.Fatalf("expected anthropic, got %q", sel.Provider)
@@ -210,20 +199,16 @@ func TestBuildDynamicRouter_CustomThresholds(t *testing.T) {
 		ExpensiveModel:          "opus",
 	}, "anthropic")
 
-	// Under thresholds → cheap.
 	sel := r.Select(context.TODO(), router.RouterContext{Turn: 0, LastStopReason: "tool_use"})
 	if sel.Model != "haiku" {
 		t.Fatalf("expected haiku under threshold, got %q", sel.Model)
 	}
 
-	// Over turn threshold → expensive.
 	sel = r.Select(context.TODO(), router.RouterContext{Turn: 6})
 	if sel.Model != "opus" {
 		t.Fatalf("expected opus over threshold, got %q", sel.Model)
 	}
 }
-
-// --- buildPromptBuilder ---
 
 func mustBuildPromptBuilder(t *testing.T, config *types.RunConfig) prompt.PromptBuilder {
 	t.Helper()
@@ -311,8 +296,6 @@ func TestBuildPromptBuilder_OverrideWinsOverTemplate(t *testing.T) {
 	}
 }
 
-// --- buildContextStrategy ---
-
 func TestBuildContextStrategy_SlidingWindow(t *testing.T) {
 	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "sliding-window"}, nil, "", nil)
 	if _, ok := cs.(*contextpkg.SlidingWindowStrategy); !ok {
@@ -348,8 +331,6 @@ func TestBuildContextStrategy_UnknownFallsBack(t *testing.T) {
 		t.Fatalf("expected SlidingWindowStrategy for unknown type, got %T", cs)
 	}
 }
-
-// --- buildEditStrategy ---
 
 func TestBuildEditStrategy_WholeFile(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{Type: "whole-file"})
@@ -448,8 +429,6 @@ func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	}
 }
 
-// --- wrapWithCodeScanner ---
-
 func TestWrapWithCodeScanner_NilLeavesInnerUnchanged(t *testing.T) {
 	inner := edit.NewWholeFileStrategy()
 	got, err := wrapWithCodeScanner(inner, nil, nil)
@@ -493,8 +472,6 @@ func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
 		t.Fatal("expected error for unknown scanner type")
 	}
 }
-
-// --- buildVerifier ---
 
 func TestBuildVerifier_None(t *testing.T) {
 	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil, nil)
@@ -543,8 +520,6 @@ func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
 		t.Fatalf("expected NoneVerifier for unknown type, got %T", v)
 	}
 }
-
-// --- emitRuleOfTwoEvents ---
 
 // captureSecLogger writes to a buffer so tests can inspect the JSON-line
 // stream emitted by SecurityLogger. We use the real SecurityLogger
@@ -732,8 +707,6 @@ func TestEmitRuleOfTwoEvents_NoneOrOneStaysSilent(t *testing.T) {
 		t.Errorf("zero-or-one flag config should emit nothing, got: %s", buf.String())
 	}
 }
-
-// --- buildPermissionPolicy ---
 
 // buildPermissionPolicyForTest is a thin wrapper that fabricates a
 // minimal RunConfig from a bare PermissionPolicyConfig so the existing
@@ -939,8 +912,6 @@ func TestBuildPermissionPolicy_PolicyEngineFileReadOnce(t *testing.T) {
 	}
 }
 
-// --- buildGitStrategy ---
-
 func TestBuildGitStrategy_None(t *testing.T) {
 	gs := buildGitStrategy(types.GitStrategyConfig{Type: "none"})
 	if _, ok := gs.(*git.NoneGitStrategy); !ok {
@@ -968,8 +939,6 @@ func TestBuildGitStrategy_UnknownFallsBack(t *testing.T) {
 		t.Fatalf("expected NoneGitStrategy for unknown type, got %T", gs)
 	}
 }
-
-// --- buildHookRunner (issue #461) ---
 
 func TestBuildHookRunner_NilConfigReturnsNoop(t *testing.T) {
 	r := buildHookRunner(nil, nil, nil)
@@ -1004,8 +973,6 @@ func TestBuildHookRunner_PostRunOnlyReturnsExecRunner(t *testing.T) {
 		t.Fatalf("expected *hook.ExecRunner, got %T", r)
 	}
 }
-
-// --- buildTraceEmitter ---
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, nil, observability.ResourceOptions{}, false)
@@ -1061,8 +1028,6 @@ func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 		t.Fatal("expected error for bad trace file path")
 	}
 }
-
-// --- buildExecutor ---
 
 func TestBuildExecutor_Local(t *testing.T) {
 	workspace := t.TempDir()
@@ -1280,8 +1245,6 @@ func TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath(t *testing.T) {
 	}
 }
 
-// --- buildTransport ---
-
 func TestBuildTransport_Stdio(t *testing.T) {
 	tp, err := buildTransport(context.Background(), types.TransportConfig{Type: "stdio"})
 	if err != nil {
@@ -1322,8 +1285,6 @@ func TestBuildTransport_UnsupportedType(t *testing.T) {
 	}
 }
 
-// --- parseLogLevel ---
-
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1350,8 +1311,6 @@ func TestParseLogLevel(t *testing.T) {
 	}
 }
 
-// --- toolEnabled ---
-
 func TestToolEnabled_EmptyListEnablesAll(t *testing.T) {
 	if !toolEnabled(nil, "read_file") {
 		t.Fatal("empty list should enable all tools")
@@ -1370,8 +1329,6 @@ func TestToolEnabled_ExplicitList(t *testing.T) {
 		t.Fatal("write_file should not be enabled")
 	}
 }
-
-// --- editToolEnabled ---
 
 func TestEditToolEnabled_EmptyListEnablesAll(t *testing.T) {
 	if !editToolEnabled(nil, "write_file") {
@@ -1404,8 +1361,6 @@ func TestEditToolEnabled_NoMatch(t *testing.T) {
 	}
 }
 
-// --- mutatingToolSet ---
-
 func TestMutatingToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
@@ -1428,8 +1383,6 @@ func TestMutatingToolSet(t *testing.T) {
 		}
 	}
 }
-
-// --- approvalRequiredToolSet ---
 
 func TestApprovalRequiredToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
@@ -1458,8 +1411,6 @@ func TestApprovalRequiredToolSet(t *testing.T) {
 		t.Error("spawn_agent should not be in approvalRequiredToolSet — it is added post-loop-construction in BuildLoopWithTransport")
 	}
 }
-
-// --- git tool wiring (#448) ---
 
 // TestBuildToolRegistry_DefaultReadOnlyIncludesGitTools is the regression
 // test for #448: the git_* tools were listed in
@@ -1637,8 +1588,6 @@ func TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent(t *testing.T) {
 		}
 	}
 }
-
-// --- BuildLoopWithTransport integration ---
 
 func TestBuildLoopWithTransport_InvalidConfigReturnsError(t *testing.T) {
 	_, err := BuildLoopWithTransport(context.Background(), &types.RunConfig{
@@ -2234,8 +2183,6 @@ func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
 		})
 	}
 }
-
-// --- buildProvider ---
 
 func TestBuildProvider_OpenAIResponses(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
@@ -2989,8 +2936,6 @@ func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
 	}
 }
 
-// --- BatchAdapter wiring (phase 2 / #135) ---
-
 // intPtr returns a pointer to v. Local helper to avoid pulling in a
 // dependency just for a one-off literal pointer.
 func intPtr(v int) *int { return &v }
@@ -3188,8 +3133,6 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 		})
 	}
 }
-
-// --- normalizer wrap pinned at loop seam (#223) ---
 
 // TestBuildLoopWithTransport_NormalizingAdapterWrapsGeminiProvider
 // asserts the outermost wrap on a Gemini-built loop is the
@@ -3398,8 +3341,6 @@ func TestBuildLoopWithTransport_AnthropicAdapterHasLogger(t *testing.T) {
 		t.Error("AnthropicAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so the suppressed-temperature warn keeps run/trace correlation and scrubbing")
 	}
 }
-
-// --- stubSecretStore ---
 
 type stubSecretStore struct {
 	secrets map[string]string

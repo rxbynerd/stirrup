@@ -10,12 +10,8 @@ import (
 )
 
 // defaultGeminiSafetyThresholds is the BLOCK_NONE safety configuration
-// applied when the operator has not supplied an explicit override. A
-// coding harness producing security tooling cannot tolerate false
-// positives on legitimate code samples; setting BLOCK_NONE on every
-// HARM_CATEGORY_* category is the only sane default. Operators who
-// require stricter behaviour pass GeminiSafetySettings on the
-// ProviderConfig.
+// applied when the operator has not supplied an explicit override.
+// See docs/providers.md for the rationale.
 var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 	{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
 	{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
@@ -26,40 +22,23 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 
 // BuildGenerateContentRequest serialises StreamParams into the Vertex AI
 // GenerateContentRequest body. Returns the body bytes and a per-call
-// id→name map for tool-use IDs (used to look up the function name when
-// emitting tool_result blocks back to Gemini, since Gemini matches by
-// name and never echoes the original tool_use_id).
+// id→name map for tool-use IDs, used to look up the function name when
+// emitting tool_result blocks back to Gemini since Gemini matches by
+// name and never echoes the original tool_use_id.
 //
-// safety is the configured GeminiSafetySettings slice from
-// ProviderConfig. When empty, all five HARM_CATEGORY_* default to
-// BLOCK_NONE — the secure default for a coding harness. See
-// defaultGeminiSafetyThresholds for the full list.
+// safety is the configured GeminiSafetySettings slice; empty defaults
+// all five HARM_CATEGORY_* to BLOCK_NONE.
 //
-// q carries the resolved per-(provider, model) quirks for this stream.
-// The request-build path reads two fields from it:
-//   - BehaviourFlags.Gemini.StreamFunctionCallArgsShape selects the value
-//     emitted at functionCallingConfig.streamFunctionCallArguments.
-//   - ToolChoice (the cross-provider capability) gates whether
-//     StreamParams.ToolChoice is projected onto
-//     functionCallingConfig.mode / allowedFunctionNames.
+// q carries the resolved per-(provider, model) quirks: it selects the
+// wire value for functionCallingConfig.streamFunctionCallArguments and
+// gates whether StreamParams.ToolChoice is projected onto
+// functionCallingConfig.mode / allowedFunctionNames. A zero-value q
+// reproduces the no-quirk default (stream args off, mode AUTO with no
+// allow-list).
 //
-// A zero-value q reproduces today's post-#191 behaviour (StreamArgsOff
-// → false on the wire, and mode AUTO with no allow-list because the
-// capability advertises no support), so callers that do not yet route
-// through the registry continue to work. Future Gemini quirks (3.x
-// V3Deltas pilot, model-specific tool-config flags) are added by
-// extending the switch rather than threading new parameters.
-//
-// Errors fall into three categories:
-//
-//   - tool schema conversion failures (propagated from ConvertSchema)
-//   - role-mapping invariants (e.g. an assistant message containing a
-//     tool_result block, or a tool_result whose ToolUseID has not been
-//     seen as a prior tool_use)
-//   - JSON marshalling errors (only on programmer error in this package)
-//
-// The function does not perform safety-setting validation — that is the
-// responsibility of the types layer (Wave 1).
+// Errors are tool schema conversion failures, role-mapping invariant
+// violations, or JSON marshalling errors. Safety-setting validation is
+// the types layer's responsibility.
 func BuildGenerateContentRequest(
 	params types.StreamParams,
 	safety []types.GeminiSafetySetting,
@@ -74,24 +53,15 @@ func BuildGenerateContentRequest(
 		Contents: contents,
 	}
 
-	// System instruction: lifted from the leading system text. The first
-	// system message in params.System is normalised onto a Content with no
-	// role; subsequent role:"system" entries (rare, but supported) are
-	// concatenated by translateMessagesGemini.
 	if sys := geminiSystemFromMessages(params.System, params.Messages); sys != "" {
 		req.SystemInstruction = &geminiContent{
 			Parts: []geminiPart{{Text: sys}},
 		}
 	}
 
-	// Tools: lint each schema against the resolved Gemini model's
-	// unsupported-features list (a fail-closed gate, design §5), then
-	// convert. The lint runs before ConvertSchema so the operator sees
-	// the model-scoped policy rejection rather than a structural rewrite
-	// reason for the same shape. ConvertSchema errors include the tool
-	// name in the returned message so failures still point at the right
-	// declaration when structural rewrite fails on a feature the policy
-	// did not call out.
+	// Lint runs before ConvertSchema so the operator sees the
+	// model-scoped policy rejection rather than a structural-rewrite
+	// error for the same shape.
 	if len(params.Tools) > 0 {
 		unsupported := q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures
 		decls := make([]geminiFunctionDeclaration, 0, len(params.Tools))
@@ -120,21 +90,14 @@ func BuildGenerateContentRequest(
 		}
 	}
 
-	// Safety settings: pass-through when configured; otherwise emit the
-	// BLOCK_NONE defaults. We always send a non-empty list so the run is
-	// not at the mercy of Vertex's server-side default (which is to block
-	// medium-and-above on several categories).
+	// Always send a non-empty safety-settings list so the run is not at
+	// the mercy of Vertex's server-side default (blocks medium-and-above
+	// on several categories).
 	req.SafetySettings = buildGeminiSafetySettings(safety)
 
-	// Generation config: only emit fields that were actually set. A nil
-	// StreamParams.Temperature means "use Gemini's default" and is omitted
-	// from the wire; a non-nil pointer (including an explicit 0.0 for
-	// greedy decoding) is transmitted verbatim. MaxOutputTokens is
-	// guarded separately: the *float64 migration on Temperature made the
-	// MaxTokens=0 + Temperature=Float64Ptr(0.0) combination newly
-	// reachable, and Vertex AI's documented behaviour on an explicit
-	// maxOutputTokens:0 is either a validation error or a hard
-	// zero-output cap — neither what the caller wants.
+	// MaxOutputTokens is only emitted when > 0: Vertex treats an explicit
+	// 0 as either a validation error or a hard zero-output cap, neither
+	// of which the caller wants.
 	if params.MaxTokens > 0 || params.Temperature != nil {
 		gc := &geminiGenerationConfig{}
 		if params.MaxTokens > 0 {
@@ -157,29 +120,8 @@ func BuildGenerateContentRequest(
 // translateMessagesGemini converts stirrup's message history into the
 // Contents array that Vertex AI expects. Returns the contents plus a map
 // from tool_use ID → tool name so the caller can correlate later
-// tool_result blocks back to their originating call.
-//
-// Role mapping rules:
-//   - A "user" message with one or more text blocks becomes a single
-//     {role:"user"} content with all text concatenated (no separator) into
-//     a single Part. This matches Vertex's expectation that one Content
-//     represents one logical turn.
-//   - A "user" message with tool_result blocks emits a SEPARATE
-//     {role:"function"} content per result. Vertex requires this role
-//     specifically for functionResponse parts, and the wire format does
-//     not allow user-text and function-response parts to share a Content.
-//   - An "assistant" message is collapsed into a single {role:"model"}
-//     content whose parts preserve the original block ordering. Mixed
-//     text and tool_use blocks therefore live in one Content together.
-//   - "system" messages are stripped from the message stream and instead
-//     contribute to the SystemInstruction (handled in
-//     geminiSystemFromMessages).
-//
-// A user message containing both text and tool_result blocks emits the
-// function-response Contents first (mirroring the OpenAI Responses adapter's
-// pinned ordering, where function_call_output items precede the next user
-// turn's instructions). Without that ordering, Vertex receives a user-text
-// turn before a function-response, which violates its own expectations.
+// tool_result blocks back to their originating call. Role-mapping rules
+// are documented in docs/providers.md.
 func translateMessagesGemini(system string, messages []types.Message, cap quirks.StructuredToolResultCapability) ([]geminiContent, map[string]string, error) {
 	_ = system // consumed by geminiSystemFromMessages, not here
 	out := make([]geminiContent, 0, len(messages))
@@ -188,8 +130,8 @@ func translateMessagesGemini(system string, messages []types.Message, cap quirks
 	for i, msg := range messages {
 		switch msg.Role {
 		case "system":
-			// Handled in geminiSystemFromMessages; skip silently.
-			continue
+
+			continue // handled in geminiSystemFromMessages
 
 		case "assistant":
 			parts := make([]geminiPart, 0, len(msg.Content))
@@ -199,22 +141,14 @@ func translateMessagesGemini(system string, messages []types.Message, cap quirks
 					if block.Text == "" {
 						continue
 					}
-					// ThoughtSignature is round-tripped on assistant text
-					// parts when the previous turn captured one (#194).
-					// Vertex 2.x never emits the field, so it stays empty
-					// in that case and `omitempty` drops it from the
-					// serialised request.
+
 					parts = append(parts, geminiPart{
 						Text:             block.Text,
 						ThoughtSignature: block.ThoughtSignature,
 					})
 				case "tool_use":
 					args := normaliseToolArgs(block.Input)
-					// ThoughtSignature is round-tripped on the part
-					// carrying the functionCall — the load-bearing case
-					// for multi-turn tool exchanges on Gemini 3.x where
-					// dropping the blob breaks the model's chain-of-
-					// thought continuity (#194).
+
 					parts = append(parts, geminiPart{
 						FunctionCall: &geminiFunctionCall{
 							Name: block.Name,
@@ -228,24 +162,19 @@ func translateMessagesGemini(system string, messages []types.Message, cap quirks
 				case "tool_result":
 					return nil, nil, fmt.Errorf("messages[%d].content[%d]: tool_result is not valid on an assistant message", i, j)
 				default:
-					// Unknown block types on assistant side are ignored —
-					// the harness's message construction would never emit
-					// them, but a permissive read of the contract is
-					// preferable to a hard failure here.
+
 					continue
 				}
 			}
 			if len(parts) == 0 {
-				// Empty assistant message: skip rather than emit an empty
-				// Content (Vertex rejects empty parts arrays).
-				continue
+
+				continue // Vertex rejects empty parts arrays
 			}
 			out = append(out, geminiContent{Role: "model", Parts: parts})
 
 		case "user":
-			// Two passes: emit function-response Contents first, then a
-			// trailing user-text Content (if any). See the docstring for
-			// the rationale.
+			// Emit function-response Contents first, then a trailing
+			// user-text Content, per docs/providers.md.
 			textParts := make([]geminiPart, 0)
 			for j, block := range msg.Content {
 				switch block.Type {
@@ -283,21 +212,16 @@ func translateMessagesGemini(system string, messages []types.Message, cap quirks
 			}
 
 		default:
-			// Unknown role: skip rather than fail. Future message roles
-			// (e.g. for multi-agent transcripts) should not break the
-			// adapter, and the agentic loop already restricts the role
-			// values it produces.
+
 			continue
 		}
 	}
 	return out, toolNameByID, nil
 }
 
-// geminiSystemFromMessages composes the systemInstruction text. The
-// authoritative source is params.System (PromptBuilder output), but for
-// safety we also concatenate any role:"system" messages onto it — some
-// callers construct a Messages slice that includes the system prompt as
-// the first entry instead of using params.System.
+// geminiSystemFromMessages composes the systemInstruction text from
+// params.System plus any role:"system" messages, for callers that put
+// the system prompt in Messages instead of params.System.
 func geminiSystemFromMessages(system string, messages []types.Message) string {
 	parts := make([]string, 0, 2)
 	if system != "" {
@@ -318,12 +242,11 @@ func geminiSystemFromMessages(system string, messages []types.Message) string {
 
 // geminiToolResultResponse marshals one tool_result block into the JSON
 // object Vertex expects in functionResponse.response. The canonical text
-// always populates "content" (the fallback the model can read regardless of
-// structured support). When the resolved capability accepts the object-
-// response shape and the block carries a structured envelope, the envelope is
-// embedded verbatim under "structured" with its discriminator under "kind";
-// otherwise the response is the text-only {"content": ...} (with "error" on a
-// failed call) that is byte-identical to the pre-#231 map form.
+// always populates "content" (the fallback the model can read regardless
+// of structured support). When the resolved capability accepts the
+// object-response shape and the block carries a structured envelope, the
+// envelope is embedded verbatim under "structured" with its
+// discriminator under "kind".
 func geminiToolResultResponse(block types.ContentBlock, cap quirks.StructuredToolResultCapability) (json.RawMessage, error) {
 	body := geminiFunctionResponseBody{
 		Content: block.Content,
@@ -354,12 +277,9 @@ func normaliseToolArgs(in json.RawMessage) json.RawMessage {
 
 // geminiToolChoiceFromParams projects the provider-neutral
 // StreamParams.ToolChoice onto Gemini's functionCallingConfig.mode and,
-// for the named-tool form, allowedFunctionNames. It is gated on the
-// resolved capability and falls back to "AUTO" (the historical default
-// emitted whenever tools were present) for the auto mode, for any
-// unsupported mode, and for a named-tool choice with no name. Returning
-// "AUTO" with a nil allow-list keeps the wire body byte-identical to the
-// pre-#230 shape in every non-escalated turn.
+// for the named-tool form, allowedFunctionNames. Gated on the resolved
+// capability; falls back to "AUTO" with no allow-list for auto mode,
+// unsupported modes, and a named-tool choice with no name.
 func geminiToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) (mode string, allowedFunctionNames []string) {
 	if !capability.Supported {
 		return "AUTO", nil
@@ -382,8 +302,7 @@ func geminiToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 		if !capability.NamedTool || params.ToolChoiceName == "" {
 			return "AUTO", nil
 		}
-		// Defense-in-depth at the wire boundary (#230 B3): reject any name
-		// outside the providers' shared grammar and degrade to AUTO.
+
 		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
 			warnInvalidToolChoiceName("gemini", params.Model, len(params.ToolChoiceName))
 			return "AUTO", nil
@@ -396,14 +315,9 @@ func geminiToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 
 // streamFunctionCallArgsFromQuirks projects the resolved
 // GeminiStreamArgsShape onto the boolean the wire schema uses for
-// functionCallingConfig.streamFunctionCallArguments. Today the
-// production resolution is always StreamArgsOff (post-#191 default),
-// so the wire bool is always false; the projection exists so a future
-// model-scoped rule that pins StreamArgsV2Snapshot or StreamArgsV3Deltas
-// flips the bool without touching this file. Unknown enum values
-// conservatively map to false — the post-#191 safe default — rather
-// than panicking, so a forward-compatible reader of an older harness
-// build does not crash on a newer rule.
+// functionCallingConfig.streamFunctionCallArguments. Unknown enum
+// values conservatively map to false rather than panicking, so an
+// older harness build does not crash on a newer rule.
 func streamFunctionCallArgsFromQuirks(q quirks.ProviderQuirks) bool {
 	switch q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape {
 	case quirks.StreamArgsOff:

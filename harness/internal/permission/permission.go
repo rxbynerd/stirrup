@@ -33,8 +33,8 @@ type PermissionPolicy interface {
 type FallbackBuilder func(typeName string) (PermissionPolicy, error)
 
 // PolicyEngineEnv carries the per-run identity passed through to a
-// PolicyEnginePolicy at construction time. Wave 4 wiring populates this
-// from RunConfig + the runtime context.
+// PolicyEnginePolicy at construction time, populated from RunConfig and
+// the runtime context.
 type PolicyEngineEnv struct {
 	RunID          string
 	Mode           string
@@ -45,23 +45,13 @@ type PolicyEngineEnv struct {
 	Security       SecurityEventEmitter
 }
 
-// New constructs a PermissionPolicy from cfg. It handles every type the
-// permission package owns end-to-end, including "policy-engine" — which
-// requires loading the Cedar policy file and recursively constructing the
-// fallback policy via fallback.
-//
-// allowAll, denySideEffects, and ask-upstream remain available via their
-// dedicated constructors (NewAllowAll, NewDenySideEffects,
-// NewAskUpstreamPolicy). New is the entry point for the policy-engine
-// type because that arm needs the file loader and the fallback resolver
-// in one place.
-//
-// fallback is invoked only when cfg.Type == "policy-engine"; for all
-// other types, callers should use the dedicated constructors directly.
-// fallback may be nil when cfg.Type != "policy-engine".
-//
-// env carries per-run identity passed into the Cedar request context.
-// env is unused for non-policy-engine types.
+// New constructs a PermissionPolicy from cfg. It is the entry point for
+// "policy-engine" (loads the Cedar policy file and recursively
+// constructs the fallback via fallback) and "allow-all"; other types
+// require registry/transport context this package does not own and
+// must use their dedicated constructors (NewDenySideEffects,
+// NewAskUpstreamPolicy) directly. fallback and env are only used for
+// cfg.Type == "policy-engine".
 func New(cfg types.PermissionPolicyConfig, env PolicyEngineEnv, fallback FallbackBuilder) (PermissionPolicy, error) {
 	switch cfg.Type {
 	case "policy-engine":
@@ -69,11 +59,9 @@ func New(cfg types.PermissionPolicyConfig, env PolicyEngineEnv, fallback Fallbac
 	case "allow-all":
 		return NewAllowAll(), nil
 	case "":
-		// Empty type used to silently coerce to allow-all, which is the
-		// most permissive policy. A misconfigured caller (e.g. a test
-		// that forgot to populate cfg, or a future migration that
-		// dropped the field) would be handed unrestricted access with
-		// no error to investigate. Make the omission explicit (S3).
+		// Empty type used to silently coerce to allow-all, handing a
+		// misconfigured caller unrestricted access with no error to
+		// investigate. Make the omission explicit.
 		return nil, errors.New("permission.New: type is required")
 	default:
 		// Other types (deny-side-effects, ask-upstream) require
@@ -100,9 +88,9 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 		fallbackType = "deny-side-effects"
 	}
 	if fallbackType == "policy-engine" {
-		// Defensive re-check: ValidateRunConfig already rejects this in
-		// Wave 1, but the constructor is a public entry point and must
-		// not assume callers validated the config first.
+		// Defensive re-check: ValidateRunConfig already rejects this, but
+		// the constructor is a public entry point and must not assume
+		// callers validated the config first.
 		return nil, errors.New("permission: policy-engine fallback may not itself be policy-engine")
 	}
 

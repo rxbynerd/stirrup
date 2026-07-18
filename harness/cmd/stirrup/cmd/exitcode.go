@@ -2,9 +2,9 @@ package cmd
 
 import "errors"
 
-// CLI exit-code scheme (issue #253, #240). A single closed set of codes
-// applied across `harness`, `job`, and `run-config` so a wrapper script
-// can branch on the failure class without parsing stderr:
+// CLI exit-code scheme: a single closed set of codes applied across
+// `harness`, `job`, and `run-config` so a wrapper script can branch on
+// the failure class without parsing stderr:
 //
 //	0  success
 //	1  validation failed (ValidateRunConfig / run-config --validate)
@@ -13,9 +13,8 @@ import "errors"
 //	4  usage error (an invalid flag combination — e.g. a --dry-run probe
 //	   gate supplied without --dry-run)
 //
-// Code 0 is never carried by an exitError — a nil error from a command's
-// RunE is the success path, and Execute() exits 0 implicitly. The
-// constants below are the non-zero classes only.
+// Code 0 is never carried by an exitError; the constants below are the
+// non-zero classes only.
 const (
 	exitValidation = 1
 	exitParse      = 2
@@ -25,14 +24,9 @@ const (
 
 // exitError wraps a command error with the CLI exit code its failure
 // class maps to. Execute() unwraps it via errors.As and exits with the
-// carried code; any error NOT wrapped in an exitError preserves the
-// historical default-1 behaviour so nothing previously classified
-// silently changes its exit status.
-//
-// The wrapper is transparent: Error() and Unwrap() defer to the
-// underlying error so existing errors.Is / message-matching tests and
-// the stderr text an operator sees are unchanged. Only the process exit
-// code is affected.
+// carried code; an error not wrapped in an exitError defaults to 1.
+// Error() and Unwrap() defer to the underlying error so the wrapper is
+// transparent to errors.Is and message-matching.
 type exitError struct {
 	code int
 	err  error
@@ -66,11 +60,6 @@ func ioError(err error) error {
 // validationError tags err as a configuration-validation failure
 // (exit 1): a RunConfig that parsed cleanly but failed
 // ValidateRunConfig (or run-config --validate). A nil err returns nil.
-//
-// Exit 1 is also the untyped-error default, so wrapping here is mostly
-// documentary today; it keeps the validation class explicit so a future
-// renumbering of the scheme touches one site rather than relying on the
-// default.
 func validationError(err error) error {
 	if err == nil {
 		return nil
@@ -81,10 +70,8 @@ func validationError(err error) error {
 // usageError tags err as an invalid flag-combination failure (exit 4):
 // a flag was supplied in a context where it has no meaning — e.g. a
 // --dry-run probe gate (--no-probe-provider) or --dry-run-timeout
-// without --dry-run. A nil err returns nil so call sites can wrap
-// unconditionally. Distinct from validationError (exit 1, a structurally
-// invalid RunConfig) because the config itself is fine; only the
-// command-line combination is incoherent.
+// without --dry-run. Distinct from validationError (exit 1) because the
+// config itself is fine; only the command-line combination is incoherent.
 func usageError(err error) error {
 	if err == nil {
 		return nil
@@ -92,11 +79,9 @@ func usageError(err error) error {
 	return &exitError{code: exitUsage, err: err}
 }
 
-// classifyExitCode maps a command error to its process exit code. It is
-// the testable core of Execute()'s os.Exit decision: a nil error is the
-// success path (0), an error that unwraps to an *exitError carries its
-// code, and any other error preserves the historical default of 1 so
-// no previously-unclassified failure changes its exit status.
+// classifyExitCode maps a command error to its process exit code: nil
+// is 0, an *exitError carries its code, and any other error defaults
+// to 1.
 func classifyExitCode(err error) int {
 	if err == nil {
 		return 0

@@ -54,16 +54,13 @@ func init() {
 // egressProxyOptions is the resolved configuration for the egress-proxy
 // subcommand, parsed from flags by runEgressProxy and consumed by
 // serveEgressProxy. Splitting parse from serve keeps serveEgressProxy
-// driveable from a test with a cancelable context (the CLI path supplies a
-// signal-cancelled one).
+// driveable from a test with a cancelable context.
 type egressProxyOptions struct {
-	// listen is the host:port to bind when listener is nil. Ignored when a
-	// pre-bound listener is supplied.
+	// listen is the host:port to bind when listener is nil.
 	listen string
 	// listener, when non-nil, is used directly instead of binding listen.
-	// The CLI leaves it nil and binds listen; tests pass a pre-bound listener
-	// to avoid a free-port-then-rebind TOCTOU that can flake under parallel
-	// runs. serveEgressProxy owns closing it on the Start-failure path.
+	// Tests pass a pre-bound listener to avoid a free-port-then-rebind
+	// TOCTOU that can flake under parallel runs.
 	listener  net.Listener
 	allowlist []string
 	level     slog.Level
@@ -109,16 +106,12 @@ func runEgressProxy(cmd *cobra.Command, _ []string) error {
 func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writer) error {
 	logger := slog.New(slog.NewTextHandler(logW, &slog.HandlerOptions{Level: opts.level}))
 
-	// A SecurityLogger writing JSON lines gives the proxy the same
-	// egress_allowed / egress_blocked audit surface the in-process executor
-	// path produces, so a Deployment's pod logs carry the gating decisions.
 	// runID is empty: a standalone proxy is not scoped to a single run.
 	audit := security.NewSecurityLogger(logW, "")
 
-	// Bind the listener explicitly so listen-host overrides (default ":8080")
-	// take effect; egressproxy.Start only opens its own loopback listener when
-	// none is supplied, which would ignore the listen flag. A caller-supplied
-	// listener (tests) is used as-is.
+	// Bind the listener explicitly so listen-host overrides take effect;
+	// egressproxy.Start only opens its own loopback listener when none is
+	// supplied. A caller-supplied listener (tests) is used as-is.
 	listener := opts.listener
 	if listener == nil {
 		var err error
@@ -136,8 +129,7 @@ func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writ
 	})
 	if err != nil {
 		_ = listener.Close()
-		// A malformed allowlist entry surfaces here; it is a configuration
-		// error, not an I/O one.
+		// A malformed allowlist entry surfaces here — a config error, not I/O.
 		return validationError(fmt.Errorf("start egress proxy: %w", err))
 	}
 
@@ -150,8 +142,7 @@ func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writ
 	logger.Info("egress proxy shutting down")
 
 	// Bounded shutdown so a wedged in-flight tunnel cannot hold the process
-	// open past the orchestrator's SIGTERM→SIGKILL grace window. A fresh
-	// context is used because ctx is already cancelled by the time we get here.
+	// open past the orchestrator's SIGTERM→SIGKILL grace window.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := proxy.Stop(shutdownCtx); err != nil {
@@ -160,9 +151,7 @@ func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writ
 	return nil
 }
 
-// maxAllowlistFileBytes caps the --allowlist-file read at 1 MiB — far more
-// than thousands of FQDN entries need, and consistent with the project's
-// other bounded file reads (RunConfig 1 MiB, prompt 10 MiB). The cap defends
+// maxAllowlistFileBytes caps the --allowlist-file read, defending
 // against a runaway or hostile file exhausting memory at startup.
 const maxAllowlistFileBytes int64 = 1 << 20 // 1 MiB
 
@@ -178,18 +167,15 @@ func readAllowlistFile(path string) ([]string, error) {
 	}
 	defer func() { _ = file.Close() }()
 
-	// Bound the read with io.LimitReader (cap+1 so an exactly-at-cap file is
-	// allowed while an over-cap file is detectable). The scanner draws from
-	// the limited reader, so no more than cap+1 bytes ever reach memory.
+	// cap+1 so an exactly-at-cap file is allowed while an over-cap file is
+	// detectable.
 	limited := &countingReader{r: io.LimitReader(file, maxAllowlistFileBytes+1)}
 
 	var entries []string
 	scanner := bufio.NewScanner(limited)
-	// Raise the scanner's max token size to the cap so a single long line is
-	// drawn through the LimitReader (and counted) rather than tripping the
-	// default 64 KiB token limit with a confusing "token too long" before the
-	// byte-cap check below can govern. The LimitReader still bounds total
-	// memory at cap+1 bytes.
+	// Raise the scanner's max token size to the cap so a single long line
+	// is drawn through the LimitReader rather than tripping the default
+	// 64 KiB token limit before the byte-cap check below can govern.
 	scanner.Buffer(make([]byte, 0, 64*1024), int(maxAllowlistFileBytes)+1)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

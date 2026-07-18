@@ -28,7 +28,6 @@ func (c *CompositeVerifier) Verify(ctx context.Context, vc VerifyContext) (*type
 	merged := make(map[string]any)
 
 	for i, v := range c.verifiers {
-		// Respect context cancellation between sub-verifiers.
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("composite verifier: %w", err)
 		}
@@ -38,7 +37,6 @@ func (c *CompositeVerifier) Verify(ctx context.Context, vc VerifyContext) (*type
 			return nil, fmt.Errorf("composite verifier [%d]: %w", i, err)
 		}
 
-		// Merge this verifier's details under a namespaced key.
 		key := fmt.Sprintf("verifier_%d", i)
 		if result.Details != nil {
 			merged[key] = result.Details

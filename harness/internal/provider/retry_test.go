@@ -28,8 +28,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// --- unit tests ---
-
 func TestParseRetryAfter(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -91,10 +89,7 @@ func TestParseRetryAfter(t *testing.T) {
 			wantSource: "",
 		},
 		{
-			// Per parseRetryAfter contract: Retry-After-Ms: 0 is
-			// treated as "ignore this hint and fall through" rather
-			// than "retry immediately", so the source is the
-			// downstream Retry-After header.
+
 			name: "zero retry-after-ms falls through to retry-after",
 			headers: http.Header{
 				"Retry-After-Ms": []string{"0"},
@@ -113,22 +108,21 @@ func TestParseRetryAfter(t *testing.T) {
 			wantSource: delaySourceRetryAfter,
 		},
 		{
-			// At ceiling: 60000 ms == maxRetryAfterHint exactly.
+
 			name:       "retry-after-ms at ceiling returns 60s",
 			headers:    http.Header{"Retry-After-Ms": []string{"60000"}},
 			want:       60 * time.Second,
 			wantSource: delaySourceRetryAfterMs,
 		},
 		{
-			// Just above ceiling: falls through to Retry-After
-			// (which is empty here, so returns zero).
+
 			name:       "retry-after-ms above ceiling falls through",
 			headers:    http.Header{"Retry-After-Ms": []string{"60001"}},
 			want:       0,
 			wantSource: "",
 		},
 		{
-			// Just above ceiling with Retry-After fallback present.
+
 			name: "retry-after-ms above ceiling falls through to retry-after",
 			headers: http.Header{
 				"Retry-After-Ms": []string{"60001"},
@@ -138,16 +132,15 @@ func TestParseRetryAfter(t *testing.T) {
 			wantSource: delaySourceRetryAfter,
 		},
 		{
-			// Near-overflow: 9223372036954776 ms * 1e6 (ns/ms)
-			// would wrap int64. Cap rejects the value first; no
-			// wrap occurs.
+			// 9223372036954776 ms * 1e6 (ns/ms) would wrap int64; the
+			// ceiling rejects the value first.
 			name:       "retry-after-ms near int64 overflow returns zero",
 			headers:    http.Header{"Retry-After-Ms": []string{"9223372036954776"}},
 			want:       0,
 			wantSource: "",
 		},
 		{
-			// Retry-After seconds above ceiling: rejected.
+
 			name:       "retry-after seconds above ceiling returns zero",
 			headers:    http.Header{"Retry-After": []string{"3600"}},
 			want:       0,
@@ -226,8 +219,6 @@ func TestBackoffDelay_Distribution(t *testing.T) {
 		}
 	}
 }
-
-// --- integration tests ---
 
 // newTestMetrics returns a Metrics instance backed by a ManualReader so
 // assertions can inspect the recorded counter increments.
@@ -658,8 +649,6 @@ func collectSpanEvents(exporter *tracetest.InMemoryExporter, name string) []sdkt
 	return out
 }
 
-// --- B3: transientErr + transport error coverage ---
-
 // timeoutOpError synthesises a net.OpError whose underlying error
 // reports Timeout()==true. The retry helper classifies transport
 // errors via errors.As(*net.Error) + Timeout(); this is the
@@ -835,8 +824,6 @@ func TestDoWithRetry_PersistentEOF(t *testing.T) {
 	}
 }
 
-// --- B4: RetryPolicyFromConfig ---
-
 func TestRetryPolicyFromConfig(t *testing.T) {
 	t.Run("nil cfg returns zero policy", func(t *testing.T) {
 		got := RetryPolicyFromConfig(nil)
@@ -864,11 +851,9 @@ func TestRetryPolicyFromConfig(t *testing.T) {
 	})
 }
 
-// TestRetryPolicyFromConfig_ZeroInitialDelay asserts that a caller who
-// constructs a ProviderRetryConfig with InitialDelayMs=0 and bypasses
-// ValidateRunConfig still gets the safe canonical default rather than a
-// zero InitialDelay (which would produce a tight retry loop when
-// backoffDelay returns zero on every attempt).
+// TestRetryPolicyFromConfig_ZeroInitialDelay asserts a caller that
+// bypasses ValidateRunConfig with InitialDelayMs=0 still gets the safe
+// canonical default rather than a zero InitialDelay.
 func TestRetryPolicyFromConfig_ZeroInitialDelay(t *testing.T) {
 	cfg := &types.ProviderRetryConfig{
 		MaxAttempts:       3,
@@ -891,8 +876,6 @@ func TestRetryPolicyFromConfig_ZeroInitialDelay(t *testing.T) {
 		t.Errorf("WallClockBudget = %v, want 30s", got.WallClockBudget)
 	}
 }
-
-// --- M4: backoffDelay zero-guard paths ---
 
 func TestBackoffDelay_ZeroInitialDelay(t *testing.T) {
 	policy := RetryPolicy{
@@ -926,8 +909,6 @@ func TestBackoffDelay_ZeroMaxDelay(t *testing.T) {
 		}
 	}
 }
-
-// --- M5: Retry-After capping ---
 
 func TestDoWithRetry_RetryAfterMsCapped(t *testing.T) {
 	var count int32
@@ -1011,8 +992,6 @@ func TestDoWithRetry_RetryAfterSecondsCapped(t *testing.T) {
 	}
 }
 
-// --- M7: small coverage gaps ---
-
 func TestDoWithRetry_MaxAttemptsZeroNormalisedToOne(t *testing.T) {
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1066,8 +1045,6 @@ func TestDoWithRetry_NilMetrics(t *testing.T) {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
 }
-
-// --- M1: rewind failure path ---
 
 // flakyGetBody is a counter-backed GetBody implementation that returns
 // the body successfully on first call (for http.NewRequest's initial
@@ -1132,13 +1109,11 @@ func TestDoWithRetry_GetBodyError(t *testing.T) {
 	if outcomes[retryOutcomeRewindFailed] != 1 {
 		t.Errorf("rewind_failed counter: got %d, want 1 (all: %+v)", outcomes[retryOutcomeRewindFailed], outcomes)
 	}
-	// And specifically NOT exhausted — that was the M2 mislabel.
+	// Rewind failure must not also be recorded as exhaustion.
 	if outcomes[retryOutcomeExhausted] != 0 {
 		t.Errorf("exhausted counter: got %d, want 0 — rewind failure must not record exhaustion", outcomes[retryOutcomeExhausted])
 	}
 }
-
-// --- ShouldRetry classifier coverage ---
 
 func TestDoWithRetry_ShouldRetry_ConsumesAndRetries(t *testing.T) {
 	// ShouldRetry returns (retryable=true, consumed=true) on the
@@ -1233,17 +1208,9 @@ func TestDoWithRetry_ShouldRetry_FallsThroughOnNotConsumed(t *testing.T) {
 	}
 }
 
-// --- Nil-logger default fallback ---
-
-// TestDoWithRetry_NilLoggerFallback drives a 429-then-200 exchange so
-// the nil-logger fallback path actually emits a `provider_retry` warn
-// record. The slog.Default() handler is replaced for the duration of
-// the test with a JSON handler writing to an in-memory buffer; the
-// assertion verifies the buffer (i) received at least one record,
-// confirming the fallback is wired, and (ii) does not contain the
-// raw scrubbable test sentinel — confirming the fallback wraps the
-// default handler in a ScrubHandler. Without the wrapper the sentinel
-// would land verbatim.
+// TestDoWithRetry_NilLoggerFallback asserts the nil-logger fallback
+// emits a provider_retry warn record and wraps slog.Default() in a
+// ScrubHandler, so a scrubbable sentinel does not land raw.
 func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1298,8 +1265,6 @@ func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
 		t.Errorf("nil-logger fallback should run sentinel through ScrubHandler, expected [REDACTED] marker:\n%s", logOutput)
 	}
 }
-
-// --- B1: URL scrubbing ---
 
 func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
 	// Pick a port that nothing is listening on. The connection
@@ -1391,11 +1356,9 @@ func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
 }
 
 // scrubbableTransport is a stub http.RoundTripper that fails on the
-// first call with a *net.OpError whose embedded error message contains
-// a known scrub pattern (the sk-ant- prefix). transientErr classifies
-// net.OpError timeouts as retryable; we set Op="dial" + Err=timeout so
-// the helper logs a retry attempt rather than surfacing the error
-// immediately.
+// first call with a timeout error embedding a scrubbable pattern, so
+// transientErr classifies it as retryable and the helper logs a retry
+// attempt rather than surfacing the error immediately.
 type scrubbableTransport struct {
 	mu       sync.Mutex
 	calls    int
@@ -1424,10 +1387,8 @@ func (e *scrubTimeoutErr) Timeout() bool   { return true }
 func (e *scrubTimeoutErr) Temporary() bool { return true }
 
 // TestDoWithRetry_SpanErrorAttributeIsScrubbed asserts the OTel span's
-// `error` attribute is run through security.Scrub before export, so a
-// scrubbable secret pattern surfacing in a transport-error message
-// never reaches the span exporter unredacted. This mirrors the
-// existing slog scrubbing behaviour at the same code site.
+// `error` attribute is run through security.Scrub before export,
+// mirroring the existing slog scrubbing at the same code site.
 func TestDoWithRetry_SpanErrorAttributeIsScrubbed(t *testing.T) {
 	// Use a known scrubbable pattern (Anthropic API key prefix). The
 	// scrubber replaces it with "[REDACTED]" — asserting on the

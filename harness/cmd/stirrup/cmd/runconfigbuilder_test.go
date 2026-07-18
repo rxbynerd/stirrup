@@ -14,9 +14,7 @@ import (
 )
 
 // minimalRunConfigJSON is the smallest base RunConfig the tests pipe
-// through BuildRunConfig. It carries only the fields a downstream
-// pipeline stage cannot reasonably default — provider/credential
-// shape, prompt — so the assertions about flag overrides aren't
+// through BuildRunConfig, so assertions about flag overrides aren't
 // confused by mode-default mutations.
 func minimalRunConfigJSON(t *testing.T) string {
 	t.Helper()
@@ -59,11 +57,9 @@ func minimalRunConfigJSON(t *testing.T) string {
 	return string(b)
 }
 
-// TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig pins that
-// the shared builder produces a config equivalent to today's
-// buildHarnessRunConfig for the no-base case. Without this assertion
-// the refactor could silently drift the flag-only path (the
-// pre-refactor Path 2) from the rest of the resolver.
+// TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig pins that the
+// shared builder produces a config equivalent to buildHarnessRunConfig
+// for the no-base case.
 func TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{
@@ -105,9 +101,8 @@ func TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig(t *testing.T) {
 }
 
 // TestBuildRunConfig_ToolsProfileFlag pins that --tools-profile threads
-// onto RunConfig.Tools.Profile on the flag-only path and that omitting it
-// leaves the default (empty) identity profile, so a bare invocation does
-// not opt into aliasing (issue #234).
+// onto RunConfig.Tools.Profile on the flag-only path and that omitting
+// it leaves the default (empty) identity profile.
 func TestBuildRunConfig_ToolsProfileFlag(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{
@@ -224,11 +219,10 @@ func TestBuildRunConfig_StdinBaseWithFlagOverride(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EscalationMaxRetriesBasePreserved pins the R3
-// Changed() guard: a base config that sets toolChoiceEscalation.maxRetries
-// must survive when the operator passes no --escalate-tool-choice-max-retries
-// flag. Before the guard the flag's default (0) was forwarded
-// unconditionally and would clobber the base value.
+// TestBuildRunConfig_EscalationMaxRetriesBasePreserved pins the
+// Changed() guard: a base config that sets
+// toolChoiceEscalation.maxRetries must survive when the operator
+// passes no --escalate-tool-choice-max-retries flag.
 func TestBuildRunConfig_EscalationMaxRetriesBasePreserved(t *testing.T) {
 	var base types.RunConfig
 	if err := json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base); err != nil {
@@ -264,10 +258,7 @@ func TestBuildRunConfig_EscalationMaxRetriesBasePreserved(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_FilePath verifies the file-loading branch. The
-// path coverage matters because loadRunConfigFile already had a code
-// path for file reads pre-refactor — the test confirms BuildRunConfig
-// reaches it the same way.
+// TestBuildRunConfig_FilePath verifies the file-loading branch.
 func TestBuildRunConfig_FilePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -289,10 +280,9 @@ func TestBuildRunConfig_FilePath(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous pins acceptance
-// criterion 6: --config <path> with piped stdin must fail loudly
-// rather than silently picking one base. The error mentions both
-// sources so the operator can fix whichever was unintentional.
+// TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous pins that
+// --config <path> with piped stdin fails loudly rather than silently
+// picking one base; the error mentions both sources.
 func TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -321,11 +311,9 @@ func TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_ExplicitDashRequiresStdin pins the explicit
-// `--config -` failure mode the spec calls out: when stdin is a TTY
-// (or, in our test harness, simulated with a nil Stdin), reading the
-// dash literal as a path is nonsense. The error tells the operator
-// the redirection is missing.
+// TestBuildRunConfig_ExplicitDashRequiresStdin pins that `--config -`
+// with no piped stdin (simulated with a nil Stdin) errors rather than
+// reading the dash literal as a path.
 func TestBuildRunConfig_ExplicitDashRequiresStdin(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	_, err := BuildRunConfig(RunConfigSources{
@@ -342,12 +330,10 @@ func TestBuildRunConfig_ExplicitDashRequiresStdin(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_ResolveBaseSkipsModeDefaults pins the
-// pipeline-friendly contract: ResolveBase leaves PermissionPolicy and
-// Tools.BuiltIn empty even for a read-only mode because a later
-// pipeline stage may pivot to --mode execution where those defaults
-// would be wrong. ResolveAll, by contrast, populates them — that's
-// what the harness path needs before invoking the loop.
+// TestBuildRunConfig_ResolveBaseSkipsModeDefaults pins that
+// ResolveBase leaves PermissionPolicy and Tools.BuiltIn empty even for
+// a read-only mode, since a later pipeline stage may pivot to --mode
+// execution; ResolveAll populates them.
 func TestBuildRunConfig_ResolveBaseSkipsModeDefaults(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{
@@ -387,15 +373,11 @@ func TestBuildRunConfig_ResolveBaseSkipsModeDefaults(t *testing.T) {
 }
 
 // TestBuildRunConfig_ResolveAllRequiresPrompt pins that the harness
-// path's existing prompt-required error fires through the shared
-// builder. The message text matches harness_test.go's existing prompt
-// fixtures so the error string is part of the API contract.
+// path's prompt-required error fires through the shared builder.
 func TestBuildRunConfig_ResolveAllRequiresPrompt(t *testing.T) {
-	// Pin the interactive seam to false: resolvePromptForRun returns the
-	// errPromptHintRequested sentinel (not the documented message) when
-	// stderr is a TTY (issue #249). Without this override the test passes
-	// in CI but fails on a developer's interactive terminal, which would
-	// receive the sentinel rather than the "prompt is required" string.
+	// Pin the interactive seam to false: on a TTY, resolvePromptForRun
+	// returns the errPromptHintRequested sentinel instead, which would
+	// make this test pass in CI but fail on a developer's terminal.
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return false }
 	defer func() { stderrIsInteractive = orig }()
@@ -418,11 +400,9 @@ func TestBuildRunConfig_ResolveAllRequiresPrompt(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt pins the
-// pipeline-stage contract: a chained `run-config` stage must be
-// allowed to emit a config without a prompt because the final
-// `harness` stage will supply one via --prompt / positional /
-// --prompt-file / STIRRUP_PROMPT.
+// TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt pins that a chained
+// `run-config` stage may emit a config without a prompt, since the
+// final `harness` stage supplies one.
 func TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{"--mode", "execution"}); err != nil {
@@ -443,9 +423,8 @@ func TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt(t *testing.T) {
 }
 
 // TestBuildRunConfig_RejectsUnknownStdinFields exercises the
-// DisallowUnknownFields safeguard on the stdin reader. Typos in a
-// piped JSON should fail loudly with a parse error, not silently
-// drop the unknown field.
+// DisallowUnknownFields safeguard: a typo in piped JSON must fail
+// loudly, not silently drop the unknown field.
 func TestBuildRunConfig_RejectsUnknownStdinFields(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	_, err := BuildRunConfig(RunConfigSources{
@@ -485,10 +464,9 @@ func TestBuildRunConfig_StdinSizeCap(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EmptyStdinErrors pins the spec's "non-TTY but
-// empty" failure mode for explicit --config -. With ConfigPath = "-"
-// and an empty reader, the builder must error loudly rather than
-// silently falling through to flag-only.
+// TestBuildRunConfig_EmptyStdinErrors pins that explicit --config -
+// with a non-TTY but empty reader errors loudly rather than silently
+// falling through to flag-only.
 func TestBuildRunConfig_EmptyStdinErrors(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	_, err := BuildRunConfig(RunConfigSources{
@@ -505,13 +483,10 @@ func TestBuildRunConfig_EmptyStdinErrors(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_FlagOverridesBaseWIFInference exercises one of
-// the cross-field invariants the spec calls out: --azure-tenant-id
-// implies credential.type=azure-workload-identity. Reaching this from
-// a stdin-base path proves the WIF folding step runs for both file/
-// stdin and flag-only bases — without that, an Azure operator piping
-// `run-config --azure-tenant-id ...` into `harness --prompt ...`
-// would get a config without the implied credential block.
+// TestBuildRunConfig_FlagOverridesBaseWIFInference pins that
+// --azure-tenant-id implies credential.type=azure-workload-identity,
+// exercised from a stdin-base path to prove the WIF folding step runs
+// for file/stdin bases too, not just flag-only.
 func TestBuildRunConfig_FlagOverridesBaseWIFInference(t *testing.T) {
 	base := minimalRunConfigJSON(t)
 	cmd := newTestHarnessCommand()
@@ -565,9 +540,7 @@ func TestBuildRunConfig_PositionalPromptOverlay(t *testing.T) {
 }
 
 // TestWriteRunConfigJSON_RoundTrip pins that the writer emits a
-// document the existing loader can read back. Belt-and-braces against
-// a hypothetical future tweak to the marshal indent / trailing newline
-// that breaks downstream `stirrup run-config` consumers.
+// document the existing loader can read back.
 func TestWriteRunConfigJSON_RoundTrip(t *testing.T) {
 	cfg := &types.RunConfig{
 		RunID:        "test-run",
@@ -612,12 +585,9 @@ func TestWriteRunConfigJSON_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_AnthropicWIFWarnFiresOnce pins MF-1: BuildRunConfig
-// must invoke applyAnthropicWIFOverrides exactly once. The pre-fix code
-// invoked it both inside applyOverrides AND directly in BuildRunConfig,
-// so the "config already specifies tokenSource" diagnostic was emitted
-// twice per invocation. This test captures slog output and asserts the
-// warning appears once.
+// TestBuildRunConfig_AnthropicWIFWarnFiresOnce pins that BuildRunConfig
+// invokes applyAnthropicWIFOverrides exactly once, so the "config
+// already specifies tokenSource" diagnostic is not emitted twice.
 func TestBuildRunConfig_AnthropicWIFWarnFiresOnce(t *testing.T) {
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
@@ -699,10 +669,9 @@ func (w *failWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestWriteRunConfigJSON_WriteError pins SF-5: writeRunConfigJSON must
-// surface a write error from either of its two Write call sites
-// (payload bytes and trailing newline) rather than silently producing
-// a half-written capture file.
+// TestWriteRunConfigJSON_WriteError pins that writeRunConfigJSON
+// surfaces a write error from either of its two Write call sites
+// (payload bytes and trailing newline).
 func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 	cfg := &types.RunConfig{
 		RunID:        "x",
@@ -746,8 +715,8 @@ func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 	})
 }
 
-// TestIsStdinPiped_NamedPipeReturnsTrue pins SF-4: an os.Pipe reader,
-// whose Stat() reports os.ModeNamedPipe, must be treated as piped.
+// TestIsStdinPiped_NamedPipeReturnsTrue pins that an os.Pipe reader,
+// whose Stat() reports os.ModeNamedPipe, is treated as piped.
 func TestIsStdinPiped_NamedPipeReturnsTrue(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -762,8 +731,8 @@ func TestIsStdinPiped_NamedPipeReturnsTrue(t *testing.T) {
 	}
 }
 
-// TestIsStdinPiped_RegularFileReturnsTrue pins SF-4: a redirected
-// regular file (`< config.json`) must be treated as piped.
+// TestIsStdinPiped_RegularFileReturnsTrue pins that a redirected
+// regular file (`< config.json`) is treated as piped.
 func TestIsStdinPiped_RegularFileReturnsTrue(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "in-*.json")
 	if err != nil {
@@ -775,10 +744,9 @@ func TestIsStdinPiped_RegularFileReturnsTrue(t *testing.T) {
 	}
 }
 
-// TestIsStdinPiped_StatErrorReturnsFalse pins SF-4: a closed file fd
-// whose Stat() errors must be treated as non-piped (the conservative
-// default — better to fall through to flag-only than to attempt a
-// read on an unusable fd).
+// TestIsStdinPiped_StatErrorReturnsFalse pins that a closed file fd
+// whose Stat() errors is treated as non-piped — the conservative
+// default: fall through to flag-only rather than read an unusable fd.
 func TestIsStdinPiped_StatErrorReturnsFalse(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "stat-err-*")
 	if err != nil {
@@ -792,11 +760,9 @@ func TestIsStdinPiped_StatErrorReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestIsStdinPiped_CharDeviceReturnsFalse pins SF-4 and the documented
-// `go test` deviation: a character device (the shape `go test` hands
-// its children as stdin) must NOT be treated as piped. Removing this
-// branch would re-introduce false-positive activation in every
-// harness_test.go fixture.
+// TestIsStdinPiped_CharDeviceReturnsFalse pins that a character device
+// (the shape `go test` hands its children as stdin) is NOT treated as
+// piped — otherwise every harness_test.go fixture false-positives.
 func TestIsStdinPiped_CharDeviceReturnsFalse(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
@@ -808,10 +774,9 @@ func TestIsStdinPiped_CharDeviceReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_ApplyOverridesError pins SF-6: a malformed
+// TestBuildRunConfig_ApplyOverridesError pins that a malformed
 // --query-param entry surfaces through BuildRunConfig as a non-nil
-// error. Before, applyOverrides was only tested directly; this
-// exercises the error-propagation arm of BuildRunConfig itself.
+// error.
 func TestBuildRunConfig_ApplyOverridesError(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.Flags().Set("query-param", "no-equals-sign"); err != nil {
@@ -829,7 +794,7 @@ func TestBuildRunConfig_ApplyOverridesError(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_WIFOverridesError pins SF-6: a WIF flag set
+// TestBuildRunConfig_WIFOverridesError pins that a WIF flag set
 // alongside an explicit --api-key-ref surfaces through BuildRunConfig
 // as a non-nil error.
 func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
@@ -867,11 +832,9 @@ func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarSuppliesBasePath pins the #241 fourth-rank
-// fallback: when --config is absent and stdin is not piped,
-// STIRRUP_CONFIG=<path> loads the file the flag would have loaded.
-// This is the "set once per shell session" ergonomic the env var
-// exists to provide.
+// TestBuildRunConfig_EnvVarSuppliesBasePath pins that when --config is
+// absent and stdin is not piped, STIRRUP_CONFIG=<path> loads the file
+// the flag would have loaded.
 func TestBuildRunConfig_EnvVarSuppliesBasePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -893,11 +856,8 @@ func TestBuildRunConfig_EnvVarSuppliesBasePath(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_ExplicitConfigBeatsEnvVar pins acceptance
-// criterion 2: when both --config and STIRRUP_CONFIG name a file, the
-// explicit flag wins. The env var must not silently leak its base
-// into a flag-driven invocation, or operators with the env var set
-// in their shell profile cannot override it ad-hoc.
+// TestBuildRunConfig_ExplicitConfigBeatsEnvVar pins that when both
+// --config and STIRRUP_CONFIG name a file, the explicit flag wins.
 func TestBuildRunConfig_ExplicitConfigBeatsEnvVar(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "env.json")
@@ -950,11 +910,10 @@ func TestBuildRunConfig_ExplicitConfigBeatsEnvVar(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarDashOptsIntoStdin pins acceptance
-// criterion 3: STIRRUP_CONFIG=- treats the env var as a stdin opt-in,
-// mirroring `--config -`. Combined with a piped stdin, this loads the
-// base from the pipe rather than failing as ambiguous — the env var
-// is opting *into* the stdin path, not naming a separate source.
+// TestBuildRunConfig_EnvVarDashOptsIntoStdin pins that
+// STIRRUP_CONFIG=- treats the env var as a stdin opt-in, mirroring
+// `--config -`: combined with piped stdin, it loads the base from the
+// pipe rather than failing as ambiguous.
 func TestBuildRunConfig_EnvVarDashOptsIntoStdin(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "-")
 
@@ -972,16 +931,11 @@ func TestBuildRunConfig_EnvVarDashOptsIntoStdin(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous pins acceptance
-// criterion 4: STIRRUP_CONFIG=<path> plus piped stdin must fail
-// loudly, the same way --config <path> + piped stdin already does.
-// The error must cite both sources — the env var by name and the
-// pipe — so the operator knows which source to remove.
-//
-// Additionally pins B1: no debug log line claiming STIRRUP_CONFIG
-// was the chosen source may fire on the ambiguity path. Emitting
-// such a trace immediately before returning the ambiguity error
-// would directly contradict the error message.
+// TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous pins that
+// STIRRUP_CONFIG=<path> plus piped stdin fails loudly, citing both
+// sources, the same way --config <path> + piped stdin does. Also
+// pins that no debug log line claiming STIRRUP_CONFIG was chosen
+// fires on the ambiguity path — that would contradict the error.
 func TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -1018,16 +972,11 @@ func TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarDashRequiresStdin pins the mirror of
-// `--config -` without a pipe: STIRRUP_CONFIG=- with a TTY stdin is
-// nonsense (nothing to read). The error must name the env var so the
-// operator knows the env var, not the absent --config flag, is the
-// source of the failure.
-//
-// Pins S2: when sources.Stdin is nil (embedded-API path with no
-// reader threaded through), the error must NOT claim "stdin is a
-// terminal" because that diagnosis is wrong — nil means no reader
-// was provided, not that a TTY is attached.
+// TestBuildRunConfig_EnvVarDashRequiresStdin pins that
+// STIRRUP_CONFIG=- with a TTY stdin errors, naming the env var as the
+// source. When sources.Stdin is nil (embedded-API path with no reader
+// threaded through), the error must NOT claim "stdin is a terminal" —
+// nil means no reader was provided, not that a TTY is attached.
 func TestBuildRunConfig_EnvVarDashRequiresStdin(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "-")
 
@@ -1053,9 +1002,7 @@ func TestBuildRunConfig_EnvVarDashRequiresStdin(t *testing.T) {
 
 // TestBuildRunConfig_EnvVarEmptyIgnored pins that an empty
 // STIRRUP_CONFIG="" behaves identically to an unset env var — the
-// builder falls through to flag-only construction. An empty value
-// must not be treated as a path (loadRunConfigFile would error on
-// the empty string) nor as the stdin opt-in.
+// builder falls through to flag-only construction.
 func TestBuildRunConfig_EnvVarEmptyIgnored(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "")
 
@@ -1078,11 +1025,9 @@ func TestBuildRunConfig_EnvVarEmptyIgnored(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarDebugLogged pins the spec's "single
-// slog.Debug line so operators can audit precedence" requirement: when
-// the env var is the chosen source, BuildRunConfig must emit a Debug
-// log entry that mentions STIRRUP_CONFIG and carries the structured
-// "path" field so log consumers can filter on a stable key.
+// TestBuildRunConfig_EnvVarDebugLogged pins that when the env var is
+// the chosen source, BuildRunConfig emits a Debug log entry mentioning
+// STIRRUP_CONFIG with a structured "path" field.
 func TestBuildRunConfig_EnvVarDebugLogged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -1113,11 +1058,9 @@ func TestBuildRunConfig_EnvVarDebugLogged(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarDashDebugLogged mirrors the path-branch
-// log assertion for the STIRRUP_CONFIG=- form: the same message and
-// the same structured "path" key (value "-") must fire so log
-// consumers can filter on a single key regardless of which env-var
-// shape the operator chose.
+// TestBuildRunConfig_EnvVarDashDebugLogged mirrors
+// TestBuildRunConfig_EnvVarDebugLogged for the STIRRUP_CONFIG=- form:
+// the same "path" key (value "-") must fire.
 func TestBuildRunConfig_EnvVarDashDebugLogged(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "-")
 
@@ -1144,12 +1087,9 @@ func TestBuildRunConfig_EnvVarDashDebugLogged(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarPathNotFound pins S1: when STIRRUP_CONFIG
-// names a file that does not exist, the error must name the env var
-// so the operator can tell whether the bad path came from --config or
-// the env var. Without this wrap an operator with both --config in
-// muscle memory and STIRRUP_CONFIG in their shell profile would chase
-// the wrong source.
+// TestBuildRunConfig_EnvVarPathNotFound pins that when STIRRUP_CONFIG
+// names a file that does not exist, the error names the env var so the
+// operator can tell it apart from a --config failure.
 func TestBuildRunConfig_EnvVarPathNotFound(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "/no/such/stirrup/config/file.json")
 
@@ -1166,14 +1106,10 @@ func TestBuildRunConfig_EnvVarPathNotFound(t *testing.T) {
 	}
 }
 
-// TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed pins S5: a
-// STIRRUP_CONFIG value with leading or trailing whitespace must be
-// trimmed before use. Shell env-var editors and CI secret stores
-// routinely smuggle in a stray newline or space; the alternative
-// behaviour ("open  /path: no such file" with a spurious leading
-// space) is a worse failure than treating the trimmed value as
-// authoritative. This test pins the trim contract so the choice
-// cannot silently regress.
+// TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed pins that a
+// STIRRUP_CONFIG value with leading or trailing whitespace is trimmed
+// before use — shell env-var editors and CI secret stores routinely
+// smuggle in a stray newline or space.
 func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
@@ -1196,12 +1132,10 @@ func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 }
 
 // TestBuildRunConfig_EmptyEditStrategyResolvesToMulti pins the
-// end-to-end CLI default for the edit strategy. A bare flag-only
-// invocation (no --edit-strategy flag) must land on "multi" after the
-// full Resolve == ResolveAll pipeline, matching direct RunConfig
-// embedding (TestValidateRunConfig_EditStrategyDefaultsToMulti) and the
-// run-config subcommand (TestRunRunConfig_EmptyEditStrategyDefaultsToMulti).
-// Tests fail if CLI and validation defaults ever diverge again.
+// end-to-end CLI default for the edit strategy: a bare flag-only
+// invocation lands on "multi" after ResolveAll, matching
+// TestValidateRunConfig_EditStrategyDefaultsToMulti and
+// TestRunRunConfig_EmptyEditStrategyDefaultsToMulti.
 func TestBuildRunConfig_EmptyEditStrategyResolvesToMulti(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{

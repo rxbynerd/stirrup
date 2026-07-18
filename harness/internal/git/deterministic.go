@@ -39,10 +39,8 @@ func (d *DeterministicGitStrategy) Checkpoint(ctx context.Context, message strin
 		return fmt.Errorf("stage changes: %w", err)
 	}
 
-	// Check whether there is anything to commit. "diff --cached --quiet"
-	// exits 0 when the index matches HEAD (nothing staged).
+	// "diff --cached --quiet" exits 0 when nothing is staged.
 	if err := d.git(ctx, "diff", "--cached", "--quiet"); err == nil {
-		// Nothing to commit — this is not an error.
 		return nil
 	}
 
@@ -70,7 +68,6 @@ func (d *DeterministicGitStrategy) Finalise(ctx context.Context) (*GitResult, er
 	}, nil
 }
 
-// git runs a git command in the workspace directory.
 func (d *DeterministicGitStrategy) git(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = d.workspace

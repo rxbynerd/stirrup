@@ -332,10 +332,7 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 // TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent
 // pins the request shape: when tools are declared the adapter sets
 // functionCallingConfig.mode="AUTO" and streamFunctionCallArguments=false.
-// The flag stays off because Gemini 3.x's streamed-args wire format
-// (JSON-path deltas with name only on the first chunk) would otherwise
-// break the parser — see geminiToolConfig in gemini_types.go for the full
-// rationale.
+// See geminiToolConfig in gemini_types.go for why the flag stays off.
 func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
@@ -466,10 +463,9 @@ func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.
 	}
 }
 
-// TestBuildGenerateContentRequest_ToolChoice_PartialCapability exercises
-// the per-mode guard branches (B2) that today's full-support builtin
-// rule never reaches: Supported=true with a specific mode disabled must
-// fall back to mode AUTO rather than emit the disallowed mode.
+// TestBuildGenerateContentRequest_ToolChoice_PartialCapability asserts
+// Supported=true with a specific mode disabled falls back to mode AUTO
+// rather than emitting the disallowed mode.
 func TestBuildGenerateContentRequest_ToolChoice_PartialCapability(t *testing.T) {
 	tools := []types.ToolDefinition{
 		{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -504,19 +500,11 @@ func TestBuildGenerateContentRequest_ToolChoice_PartialCapability(t *testing.T) 
 	}
 }
 
-// TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3 pins the
-// projection from the resolved GeminiStreamArgsShape onto the
-// wire boolean. The post-#191 default (StreamArgsOff) keeps the
-// flag false; any future model-scoped rule that pins V2 or V3
-// flips the boolean to true so the request body opts in to
-// streamed function-call args. The table includes StreamArgsOff
-// as the sanity baseline.
-//
-// The `default` arm of the switch in streamFunctionCallArgsFromQuirks
-// is intentionally not exercised here — it is the forward-compatibility
-// safety net for an enum value the build does not yet know about,
-// which is unreachable today without constructing the enum out of
-// range.
+// TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3 pins the projection
+// from the resolved GeminiStreamArgsShape onto the wire boolean: the
+// default (StreamArgsOff) keeps the flag false; V2/V3 flip it to true.
+// The `default` arm of the switch is a forward-compatibility safety net
+// and is not exercised here (unreachable without an out-of-range enum).
 func TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -676,10 +664,9 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 }
 
 // TestBuildGenerateContentRequest_TemperatureWireShape pins the unset-vs-
-// explicit-zero semantics for StreamParams.Temperature on the Gemini
-// adapter (issue #200). The adapter emits a generationConfig.temperature
-// only when the upstream pointer is non-nil; an explicit Float64Ptr(0.0)
-// transmits "temperature":0 (caller-requested greedy decoding).
+// explicit-zero semantics for StreamParams.Temperature: the adapter emits
+// generationConfig.temperature only when the pointer is non-nil, so an
+// explicit Float64Ptr(0.0) transmits "temperature":0 (greedy decoding).
 func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
@@ -696,11 +683,8 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 		{name: "nil omitted", maxTokens: 1024, temperature: nil, wantTemperature: false, wantMaxOutTokens: true},
 		{name: "explicit zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: true},
 		{name: "non-zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`, wantMaxOutTokens: true},
-		// Greedy decoding with no caller-supplied MaxTokens: the
-		// *float64 migration makes this combination newly reachable.
-		// maxOutputTokens must be omitted entirely — emitting
-		// "maxOutputTokens":0 produces a validation error or a hard
-		// zero-output cap on Vertex AI.
+		// maxOutputTokens must be omitted entirely: emitting "maxOutputTokens":0
+		// produces a validation error or a hard zero-output cap on Vertex AI.
 		{name: "zero maxtokens omits maxOutputTokens", maxTokens: 0, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: false},
 	}
 
@@ -821,11 +805,9 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 	}
 }
 
-// TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip pins the
-// send side of the issue #194 fix: when an assistant `tool_use` block
-// carries a ThoughtSignature, the marshalled request must emit the
-// `thoughtSignature` field on the corresponding part. Without this the
-// Gemini 3.x model cannot resume its prior reasoning across turns.
+// TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip asserts that
+// when an assistant `tool_use` block carries a ThoughtSignature, the
+// marshalled request emits `thoughtSignature` on the corresponding part.
 func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
@@ -850,8 +832,7 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	dr := decodeGeminiRequest(t, body)
-	// Find the model-role content; assert the functionCall part carries
-	// the signature back to Vertex unchanged.
+
 	var modelContent *decodedContent
 	for i := range dr.Contents {
 		if dr.Contents[i].Role == "model" {
@@ -873,14 +854,10 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText pins
-// the text-part round-trip path: assistant `text` blocks that carry a
-// ThoughtSignature must also re-emit it on the part. The Gemini 3.x
-// receive-side capture of signatures on text parts is deferred (see
-// TODO(#194) in the SSE consumer), but the send-side path supports the
-// field today, so a future caller constructing a Message history with
-// text-block signatures (e.g. trace replay) continues to round-trip
-// correctly.
+// TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText asserts
+// assistant `text` blocks that carry a ThoughtSignature also re-emit it
+// on the part. Receive-side capture on text parts is not yet implemented
+// (see TODO in gemini.go), but the send-side path supports the field.
 func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.T) {
 	const sig = "TEXTPARTSIGNATURE=="
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
@@ -914,14 +891,9 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.
 	}
 }
 
-// TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent
-// confirms that assistant blocks without a ThoughtSignature do NOT
-// emit the field on the wire. This protects 2.x compatibility:
-// Vertex 2.x ignores unknown fields, but emitting an empty string on
-// every part still flunks visual diffing against captured fixtures.
-// `omitempty` on both the wire type and ContentBlock is the only safe
-// way to keep parity with the pre-#194 request shape when no signature
-// is present.
+// TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent confirms
+// assistant blocks without a ThoughtSignature do NOT emit the field on
+// the wire (`omitempty` keeps parity with the pre-3.x request shape).
 func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
@@ -941,21 +913,16 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 }
 
 // TestGeminiThoughtSignatureFullRoundTrip confirms JSON decode of the
-// Vertex wire type and serialisation by BuildGenerateContentRequest:
+// Vertex wire type and serialisation by BuildGenerateContentRequest agree:
 // parse a Gemini 3.x response chunk containing a functionCall with a
-// thoughtSignature, hand-build the ContentBlock the harness would
-// persist, and assert the next request body emits the same signature
-// back to Vertex. This is the end-to-end JSON-shape contract for
-// issue #194.
-//
-// The SSE receive path and loop plumbing are covered separately by
-// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall and
-// TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock; this
-// test does NOT drive consumeSSE or streamEventsToResult directly.
+// thoughtSignature, hand-build the ContentBlock the harness would persist,
+// and assert the next request body emits the same signature back to
+// Vertex. Does not drive consumeSSE or streamEventsToResult directly;
+// those paths are covered by TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall
+// and TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock.
 func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 
-	// Parse the response chunk via the same decoder the adapter uses.
 	chunkJSON := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`
 	var chunk generateContentChunk
 	if err := json.Unmarshal([]byte(chunkJSON), &chunk); err != nil {
@@ -969,8 +936,6 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 		t.Fatalf("decoded thoughtSignature = %q, want %q", gotSig, sig)
 	}
 
-	// Simulate what the agentic loop persists: a tool_use ContentBlock
-	// carrying the signature captured from the StreamEvent.
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read it"}}},
 		{Role: "assistant", Content: []types.ContentBlock{
@@ -987,7 +952,6 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 		}},
 	}
 
-	// Render the next request and assert the blob made it back.
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:    "gemini-3.1-pro-preview",
 		Messages: messages,
@@ -1000,11 +964,9 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured covers the
-// error return of geminiToolResultResponse. The structured envelope is a
-// json.RawMessage, so a malformed payload makes json.Marshal fail when it
-// validates the embedded raw bytes. The function must surface that as a wrapped
-// error rather than emit a broken functionResponse body onto the wire.
+// TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured asserts a
+// malformed Structured payload surfaces as an error rather than emitting
+// a broken functionResponse body.
 func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) {
 	block := types.ContentBlock{
 		Type:       "tool_result",
@@ -1020,11 +982,10 @@ func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) 
 	}
 }
 
-// TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured pins
-// the companion path: the same invalid Structured payload does NOT reach
-// json.Marshal when the capability withholds the object-response shape, so a
-// text-only result still marshals cleanly. This guards that the capability gate
-// — not the payload — decides whether Structured is embedded.
+// TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured
+// asserts an invalid Structured payload does not reach json.Marshal when
+// the capability withholds the object-response shape: the capability
+// gate, not the payload, decides whether Structured is embedded.
 func TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured(t *testing.T) {
 	block := types.ContentBlock{
 		Type:       "tool_result",

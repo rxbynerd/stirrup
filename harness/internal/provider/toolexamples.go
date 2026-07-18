@@ -7,8 +7,8 @@ import (
 )
 
 // mergeSchemaExamples returns schema with the tool's worked examples injected
-// under the JSON-Schema `examples` keyword (issue #222). It is the shared
-// fold step the OpenAI Chat, OpenAI Responses, and Anthropic adapters use when
+// under the JSON-Schema `examples` keyword. It is the shared fold step the
+// OpenAI Chat, OpenAI Responses, and Anthropic adapters use when
 // the resolved ToolExamples capability advertises support: `examples` is a
 // standard JSON-Schema 2020-12 keyword those providers pass through to the
 // model context.
@@ -44,8 +44,8 @@ func mergeSchemaExamples(schema json.RawMessage, examples []json.RawMessage) (js
 }
 
 // toolInputExamples returns the worked examples carried on a tool definition's
-// Presentation (issue #222), or nil when the tool carries none. It centralises
-// the nil-pointer guard the adapters would otherwise repeat.
+// Presentation, or nil when the tool carries none. It centralises the
+// nil-pointer guard the adapters would otherwise repeat.
 func toolInputExamples(t types.ToolDefinition) []json.RawMessage {
 	if t.Presentation == nil {
 		return nil

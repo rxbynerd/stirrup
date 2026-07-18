@@ -329,11 +329,10 @@ func TestNormalizeStrictSchema_EmptySchema(t *testing.T) {
 }
 
 // TestNormalizeStrictSchema_GrepFilesActualSchema is the integration
-// canary: the real grep_files schema (Wave 3 Step A) must round-trip
-// through the strict-mode normaliser without error, and its optional
-// fields (path, include, exclude, max_results) must all become
-// nullable in the output. This pins that Step B does not regress Step
-// A's schemas.
+// canary: the real grep_files schema must round-trip through the
+// strict-mode normaliser without error, and its optional fields (path,
+// include, exclude, max_results) must all become nullable in the
+// output.
 func TestNormalizeStrictSchema_GrepFilesActualSchema(t *testing.T) {
 	in := json.RawMessage(`{
 		"type": "object",
@@ -377,9 +376,8 @@ func TestNormalizeStrictSchema_GrepFilesActualSchema(t *testing.T) {
 }
 
 // TestNormalizeStrictSchema_EditFileActualSchema mirrors the grep_files
-// canary for the edit_file (multi.go) schema, which is the more
-// adversarial input: it carries the explicit operation enum from
-// Wave 3 Step A. Strict mode must accept it.
+// canary for the edit_file (multi.go) schema, a more adversarial input
+// that carries an explicit operation enum. Strict mode must accept it.
 func TestNormalizeStrictSchema_EditFileActualSchema(t *testing.T) {
 	in := json.RawMessage(`{
 		"type": "object",

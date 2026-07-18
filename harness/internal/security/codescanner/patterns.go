@@ -69,18 +69,14 @@ var sinkRules = []patternRule{
 		message:  "exec() use: dynamic code execution risk",
 	},
 	{
-		// Function constructor (JS/TS) commonly used to evaluate strings.
-		// Match `new Function(` or `Function(` at a token boundary.
+		// Matches `new Function(` / `Function(`, commonly used to eval strings.
 		id:       "sink/js_function_constructor",
 		re:       regexp.MustCompile(`(^|[^A-Za-z0-9_$.])(new\s+)?Function\s*\(`),
 		severity: SeverityWarn,
 		message:  "Function() constructor: dynamic code execution risk",
 	},
 	{
-		// Backtick command substitution in shell scripts. The pattern
-		// matches a `...` pair on a single line containing a shell-like
-		// command character. False positives on Markdown code spans are
-		// accepted; the warn severity keeps this advisory.
+		// May false-positive on Markdown code spans; warn severity keeps it advisory.
 		id:       "sink/shell_backtick",
 		re:       regexp.MustCompile("`[^`\n]*[A-Za-z_/][^`\n]*`"),
 		severity: SeverityWarn,

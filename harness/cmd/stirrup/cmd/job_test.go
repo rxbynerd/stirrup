@@ -5,18 +5,11 @@ import (
 	"testing"
 )
 
-// TestRunJob_MissingControlPlaneAddrIsPlain pins issue #249's job
-// contract: the "CONTROL_PLANE_ADDR environment variable is required"
-// error stays plain text with no ANSI escapes. Log aggregators ingest
-// the job's stderr verbatim, so a future help-system refactor that
-// reached for colour here would corrupt every captured line. There is
-// deliberately no behaviour change for the job entry point — this test
-// is the regression guard.
+// TestRunJob_MissingControlPlaneAddrIsPlain checks that the
+// "CONTROL_PLANE_ADDR environment variable is required" error stays
+// plain text with no ANSI escapes, since log aggregators ingest the
+// job's stderr verbatim.
 func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
-	// Unset rather than save/restore: t.Setenv("", "") cannot clear a
-	// var, and the test must observe the empty-addr branch. t.Setenv
-	// registers cleanup so a value set by the surrounding environment is
-	// restored for later tests.
 	t.Setenv("CONTROL_PLANE_ADDR", "")
 
 	err := runJob(jobCmd, nil)

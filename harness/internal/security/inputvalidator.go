@@ -45,18 +45,13 @@ func StripDangerousKeysFromInput(input json.RawMessage) (json.RawMessage, []stri
 	return out, dropped, nil
 }
 
-// ValidateJSONSchema validates input against a JSON Schema document.
-//
-// This uses santhosh-tekuri/jsonschema v6 for full JSON Schema Draft 2020-12
-// support including $ref, $defs, patternProperties, oneOf/anyOf/allOf,
-// format validation, enum, pattern, minimum/maximum, array items, etc.
-//
-// Dangerous keys (__proto__, constructor) are stripped from input before
-// validation to prevent prototype pollution attacks. Use
+// ValidateJSONSchema validates input against a JSON Schema Draft 2020-12
+// document. Dangerous keys (__proto__, constructor) are stripped from input
+// before validation to prevent prototype pollution attacks. Use
 // StripDangerousKeysFromInput when callers need to learn that keys were
 // stripped (e.g. to emit a SecurityLogger event).
 func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
-	// No schema to validate against — accept any input.
+	// No schema — accept any input.
 	if len(schema) == 0 {
 		return nil
 	}
@@ -66,18 +61,16 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 		return fmt.Errorf("invalid input JSON: %w", err)
 	}
 
-	// Strip dangerous keys from the input before validation.
 	inputVal = stripDangerousKeys(inputVal)
 
-	// Unmarshal the schema into the format the compiler expects.
 	schemaVal, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
 		return fmt.Errorf("invalid schema JSON: %w", err)
 	}
 
 	c := jsonschema.NewCompiler()
-	// Block all external resource loading (file://, http://, etc.) to prevent
-	// local file read or SSRF via $ref in untrusted schemas from MCP servers.
+	// Blocks external resource loading (file://, http://, $ref) — schemas
+	// must be self-contained.
 	c.UseLoader(noopLoader{})
 	if err := c.AddResource("schema.json", schemaVal); err != nil {
 		return fmt.Errorf("failed to add schema resource: %w", err)

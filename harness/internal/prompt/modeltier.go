@@ -6,7 +6,7 @@ import "path"
 // models degrade under over-prescriptive prompts and get lean additions;
 // open-weight models benefit from explicit process scaffolding; everything
 // else renders the base prompt only, so an unrecognised model is always
-// safe (issue #492's fall-through requirement).
+// safe.
 const (
 	TierFrontier   = "frontier"
 	TierOpenWeight = "open-weight"

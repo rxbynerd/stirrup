@@ -23,9 +23,9 @@ Subcommands:
           the result. Side-effect-free; needs no API key.`,
 }
 
-// promptRenderCmd renders the shipped mode prompt templates (#492)
-// offline so prompt content can be iterated on and diffed across
-// models without a provider call or credentials.
+// promptRenderCmd renders the shipped mode prompt templates offline
+// so prompt content can be iterated on and diffed across models
+// without a provider call or credentials.
 var promptRenderCmd = &cobra.Command{
 	Use:   "render",
 	Short: "Render a mode's system prompt template for a model",

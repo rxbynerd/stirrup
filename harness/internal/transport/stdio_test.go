@@ -112,8 +112,8 @@ func TestStdioTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 }
 
-// TestStdioTransport_EmitScrubsInput pins the Wave-4 fix: the
-// ask-upstream rule-of-two gate forwards a tool call's raw Input on a
+// TestStdioTransport_EmitScrubsInput pins that the ask-upstream
+// rule-of-two gate forwards a tool call's raw Input on a
 // permission_request event after the sensitive-data latch trips, so a
 // secret echoed into the call must not reach the control plane
 // unscrubbed.
@@ -214,10 +214,10 @@ func TestStdioTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
 }
 
 // TestStdioTransport_RoundTripsBatchEventTypes confirms the stdio
-// transport carries the phase-2 batch event-type discriminators through
-// without dropping or remapping them. The transport is pass-through on
-// Type (no allowlist), so the test guards against a future regression
-// that would add one.
+// transport carries batch event-type discriminators through without
+// dropping or remapping them. The transport is pass-through on Type (no
+// allowlist), so the test guards against a future regression that would
+// add one.
 func TestStdioTransport_RoundTripsBatchEventTypes(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewStdioTransport(&buf, strings.NewReader(""))

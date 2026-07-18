@@ -10,21 +10,15 @@ import (
 // SpanContextHandler wraps any slog.Handler and, when a record is emitted
 // inside an active span, appends lowercase trace_id and span_id attributes
 // so the record can be correlated with the trace in Grafana's "Logs for
-// trace" panel (and any other OTel/Loki-aware backend).
-//
-// The attribute names are deliberately lowercase snake_case (trace_id,
-// span_id) rather than the camelCase the rest of the stirrup log schema
-// uses: this is the OTel/Loki convention the Tempo↔Loki correlation
-// derived-field is keyed on, so spelling them any other way silently
-// breaks the correlation. The IDs are the 32-hex-char / 16-hex-char
-// forms produced by SpanContext.TraceID().String() / SpanID().String().
+// trace" panel (and any other OTel/Loki-aware backend). The lowercase
+// snake_case naming (rather than the camelCase the rest of the stirrup log
+// schema uses) is the OTel/Loki convention the Tempo↔Loki correlation
+// derived-field is keyed on; see docs/observability-cloud.md.
 //
 // This handler is the outermost layer in the stack
 // (JSONHandler ← ScrubHandler ← SpanContextHandler) so the trace_id and
 // span_id it adds still pass through ScrubHandler on their way to the
-// JSON encoder. Hex span/trace IDs never match a secret pattern, but
-// keeping the scrubber on every value is the project invariant — no log
-// value reaches stderr unscrubbed.
+// JSON encoder.
 type SpanContextHandler struct {
 	inner slog.Handler
 }

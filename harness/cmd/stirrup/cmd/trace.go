@@ -108,10 +108,7 @@ func colorize(enabled bool, c, s string) string {
 }
 
 // addColorFlag registers --color on cmd with the canonical
-// auto|always|never enum the family shares. The shell completion
-// function surfaces the three values to bash/zsh tab completion,
-// matching the convention every other closed-set flag in this
-// package (e.g. --mode, --provider) already follows.
+// auto|always|never enum the family shares, with shell completion.
 func addColorFlag(cmd *cobra.Command) {
 	cmd.Flags().String("color", "auto", "Colourise output: auto|always|never. 'auto' enables colour only when stdout is a TTY.")
 	_ = cmd.RegisterFlagCompletionFunc("color", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

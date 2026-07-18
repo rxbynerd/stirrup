@@ -199,6 +199,25 @@ Per-adapter configuration including base URLs, API-key headers, query
 params, and credential federation lives in
 [`providers.md`](providers.md).
 
+**Cross-provider confidentiality invariant.** `types.ContentBlock` is
+a shared carrier type across all provider adapters, and accumulates
+new fields over time to hold opaque per-provider round-trip state
+(for example, a thought-signature field some providers require to be
+echoed back on the next turn). Because the carrier is shared, a field
+one provider populates for its own benefit could otherwise be
+forwarded to a different provider by accident — for instance if a
+model router passes a message translated for one provider's SDK
+through to another provider's wire call. Each adapter therefore
+defines its own local, provider-specific wire type (e.g.
+`anthropicContentBlock`) as an explicit allowlist of the fields that
+provider's API documents support, and a dedicated translation
+function copies from `types.ContentBlock` into that local type field
+by field. Any field on `types.ContentBlock` not explicitly mirrored
+onto the local type is dropped at translation time, rather than
+relying on call sites to scrub egress. Extending an adapter's local
+wire type is an active decision: add a field only when that
+provider's API documents support for it.
+
 ## Credential federation
 
 The `harness/internal/credential/` package separates *who you are*
@@ -255,6 +274,25 @@ The `k8s` and `k8s-sandbox` executors run the agent in a Kubernetes
 sandbox Pod; see [`docs/executors/k8s.md`](executors/k8s.md) and
 [`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md).
 
+The container executor's Docker Engine API client (`container_api.go`)
+carries no blanket `http.Client.Timeout`: exec output attach and
+archive transfer are long-lived streaming reads that can legitimately
+outlast any single short window, and a client-level `Timeout` would
+bound the entire round trip including the body. Instead, every
+short control-plane call (create/start/stop/remove/ping/exec-create/
+exec-inspect) applies its own `context.WithTimeout`
+(`containerControlPlaneTimeout`, 30s), while the streaming calls
+(`startExec`, `getArchive`/`putArchive`) are bounded only by the
+caller's own command/file-I/O deadline. The `Transport`'s
+`ResponseHeaderTimeout` still gives an explicit, connection-level
+bound (catching a daemon that accepts a connection but never answers
+at all) independent of whether a per-call context deadline was set.
+
+`classifyControlPlaneErr` reclassifies a Docker API call that failed
+because `containerControlPlaneTimeout` elapsed through the shared
+`ErrTimeout` sentinel, so callers matching `errors.Is(err,
+ErrTimeout)` see a wedged daemon identically to a command timeout.
+
 Filesystem executors enforce a 10 MB file size cap, a 1 MB command
 output cap, a 30 s default command timeout, and symlink-aware
 workspace containment. The container executor is hardened with
@@ -275,6 +313,16 @@ timeout argument entirely (it replays a recorded output instantly)
 and reports its own fixed 5-minute `Capabilities().MaxTimeout`,
 unaffected by the raised cap — see [Eval framework](#eval-framework)
 below for the resulting hooks-under-replay gap.
+
+A `run_command` timeout is a soft outcome, not a tool error: the
+handler returns whatever partial stdout/stderr the executor captured
+before the kill, plus a `TimedOut` flag and a `[timed out after Ns]`
+marker appended to the text fallback, so the model can act on partial
+output or rerun with a longer timeout. `ExitCode` is meaningless on a
+timeout (executor-dependent — `local` leaves it `0`, `container` and
+`k8s` set `-1`) since the process never ran to completion; callers
+must gate on `TimedOut` rather than reading `ExitCode` as a real exit
+status in that case.
 
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with
@@ -613,11 +661,27 @@ during tool-bearing turns (`provider_request_failed`,
 (`stall_repeated_calls`, `stall_consecutive_failures`). The same
 category is co-emitted into `ToolCallTrace.ErrorCategory` on each
 failed `tool_call_record` event so JSONL traces carry the
-identical taxonomy.
+identical taxonomy. For provider-scope categories
+(`provider_request_failed`, `provider_stream_failed`) no individual
+tool call is in scope, so `tool.name` is the empty string. A
+stall-terminated batch co-emits one `stall_consecutive_failures`
+observation alongside the N per-call failure observations, so
+`sum(stirrup.harness.tool_failures)` counts N+1 for that batch; this
+double-count is intentional and load-bearing for stall alerts.
 
 Resource attributes (`service.name`, `service.namespace`,
 `deployment.environment`, `service.instance.id`, `harness.run.mode`)
-are built once per process. Stirrup's overlay wins over
+are built once per process by `observability.BuildResource`, which
+merges the OTel SDK's `resource.Default()` with Stirrup's overlay;
+if the merge fails (e.g. a future SDK change), it falls back to a
+schemaless resource carrying just the Stirrup attributes. The
+deployment-environment attribute is emitted under the legacy stable
+key `deployment.environment`, not the newer
+`deployment.environment.name` that semconv v1.40.0 exposes via
+`DeploymentEnvironmentName` — the legacy key is what existing
+Grafana dashboards, Tempo derived metrics, and OTel collector
+processors (e.g. `resourcedetectionprocessor`) look for. Stirrup's
+overlay wins over
 `OTEL_RESOURCE_ATTRIBUTES` on key conflicts. High-cardinality fields
 (`run.id`, `run.provider`, `run.model`) stay at span/instrument level
 to avoid metric series cardinality explosion. `tool_failures` keeps

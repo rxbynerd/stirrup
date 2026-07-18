@@ -27,13 +27,9 @@ type CompactionEvent struct {
 
 // ContextStrategy prepares a message slice to fit within a token budget.
 //
-// Concurrency contract: implementations must update LastCompaction()
-// before Prepare returns. The metric-recording wrapper (and any other
-// caller pairing Prepare with LastCompaction) reads the value on the
-// same goroutine immediately after Prepare returns, so deferring the
-// update to a background goroutine would race the read. Setting
-// LastCompaction inline at the end of Prepare keeps the pairing
-// race-free without locking.
+// Implementations must update LastCompaction() before Prepare returns:
+// callers read it on the same goroutine immediately afterward, so a
+// deferred update would race.
 type ContextStrategy interface {
 	Prepare(ctx context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error)
 

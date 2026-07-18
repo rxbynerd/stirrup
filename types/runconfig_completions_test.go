@@ -5,18 +5,8 @@ import (
 	"testing"
 )
 
-// TestCompletionValues_SortedAndNonEmpty pins two contracts the shell-
-// completion call sites rely on:
-//
-//  1. Output is sorted lexicographically so cobra emits a stable
-//     completion order. Map iteration is non-deterministic; a regression
-//     that drops the sort would make completion snapshots and dependent
-//     tests flaky without ever raising a build error.
-//
-//  2. Output contains no empty strings. The maps that include ""
-//     (validContainerRuntimes, validK8sRuntimes, validTraceEmitterProtocols)
-//     must be filtered through sortedNonEmptyKeys at the helper boundary so
-//     a shell does not offer an unusable empty completion entry.
+// TestCompletionValues_SortedAndNonEmpty pins that completion output is
+// sorted lexicographically and contains no empty strings.
 func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -52,15 +42,9 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 	}
 }
 
-// TestCompletionValues_TrackValidatorMaps pins the source-of-truth
-// invariant: every key in the validator's closed-set map (minus the
-// intentionally-filtered empty string) must appear in the matching
-// completion helper output. A regression that adds "runscv2" to
-// validContainerRuntimes but forgets to extend the helper surface would
-// silently ship a completion list that lags the validator.
-//
-// Each row pairs a helper with its backing map; equality is checked
-// against the filtered slice form for parity with what cobra emits.
+// TestCompletionValues_TrackValidatorMaps pins that every key in the
+// validator's closed-set map (minus the filtered empty string) appears
+// in the matching completion helper output.
 func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

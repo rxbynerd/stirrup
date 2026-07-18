@@ -1,28 +1,9 @@
 package main
 
-// stirrup-eval replay re-evaluates one or more recorded runs against a
-// fresh judge specification, without invoking the harness or any
-// provider. This is the fast loop for iterating on judge criteria —
-// change the regex or composite logic, replay the recording set, see
-// whether outcomes match expectations — without re-burning provider
-// tokens.
-//
-// The v0.1 scope is the judge-only flavour: load recordings from the
-// lakehouse, apply each suite task's judge to a workspace dir, write
-// a SuiteResult. The harness-replay flavour (spawning a harness
-// configured with ReplayProvider+ReplayExecutor) is a follow-up; the
-// building blocks already exist in harness/internal/provider/replay.go
-// and harness/internal/executor/replay.go but the orchestration is
-// non-trivial. See #272 for the scope decision.
-//
-// Workspace caveat: judge-only replay against a recording with no
-// preserved workspace dir works for content-only judges (composite
-// over text predicates, future LLM-as-judge) but fails for judges
-// that require file state (file-exists, file-contains, test-command).
-// Operators must preserve the workspace alongside the recording —
-// the `eval run --output` path retains per-task artifacts that suit
-// this. For arbitrary production recordings the workspace is opt-in
-// per #272.
+// stirrup-eval replay re-evaluates recorded runs against a fresh
+// judge specification without invoking the harness or any provider.
+// See docs/eval.md for scope, the workspace caveat, and the
+// harness-replay follow-up.
 
 import (
 	"context"
@@ -91,10 +72,7 @@ func cmdReplay(args []string) {
 	tasks := make([]eval.TaskResult, 0, len(recordings))
 	pass := 0
 	for i, rec := range recordings {
-		// Pair recording with suite task by position; if the suite
-		// has fewer tasks than recordings, the i-th recording uses
-		// task i%len(tasks). Sole-task suites are a common authoring
-		// pattern (one judge applied across all mined failures).
+		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
 		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir)
 		if err != nil {
@@ -108,11 +86,8 @@ func cmdReplay(args []string) {
 				},
 			}
 		}
-		// Tag the result with the source recording's runId so a
-		// downstream `compare` knows which production run each
-		// verdict came from. result.TaskID is otherwise the suite
-		// task ID, which collapses when one task replays N
-		// recordings.
+		// Tag with the source recording's runId; the bare task ID
+		// would collapse when one task replays N recordings.
 		result.TaskID = fmt.Sprintf("%s/%s", task.ID, rec.RunID)
 		if result.Outcome == "pass" {
 			pass++

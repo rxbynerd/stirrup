@@ -21,11 +21,8 @@ import (
 const commandTimeout = 5 * time.Minute
 
 // KnownJudgeTypes returns the set of judge types Evaluate accepts. It is
-// the single source of truth: callers (e.g. the HCL spec loader) use it
-// for authoring-time validation so a new judge type added below cannot
-// drift out of sync with up-front error messages.
-//
-// The returned slice is freshly allocated on each call.
+// the single source of truth for authoring-time validation (e.g. the HCL
+// spec loader) so a new judge type here cannot drift out of sync.
 func KnownJudgeTypes() []string {
 	return []string{
 		"test-command",
@@ -41,12 +38,8 @@ func KnownJudgeTypes() []string {
 type JudgeContext struct {
 	WorkspaceDir string // path to the workspace after the run
 
-	// Trace is the run's parsed RunTrace, used by the "tool-trace" judge
-	// to assert on tool-call behaviour. Nil for callers that judge only
-	// workspace state (the file/command judges ignore it); the runner
-	// populates it from the per-task trace it already parses. A
-	// tool-trace judge errors rather than silently passing when this is
-	// nil — see evaluateToolTrace.
+	// Trace is the run's parsed RunTrace, used by the "tool-trace" judge.
+	// Nil for callers that judge only workspace state.
 	Trace *types.RunTrace
 }
 

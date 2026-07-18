@@ -13,7 +13,7 @@ import (
 )
 
 // probeRecorder counts requests to a metadata path vs a completion path so
-// the no-completion-endpoint invariant (issue #245 AC) can be asserted.
+// the no-completion-endpoint invariant can be asserted.
 type probeRecorder struct {
 	metadataHits   atomic.Int64
 	completionHits atomic.Int64

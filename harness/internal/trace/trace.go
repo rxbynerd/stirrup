@@ -41,58 +41,39 @@ type TraceEmitter interface {
 }
 
 // SystemInstructionsRecorder is an optional capability a TraceEmitter
-// can implement to receive the run's built system prompt. The agentic
-// loop forwards the prompt via a type assertion after PromptBuilder.Build
-// succeeds — the same optional-capability pattern as the existing
-// *OTelTraceEmitter assertions in core — so emitters that do not record
-// system instructions need no stub method.
-//
-// Today only the OTel emitter implements it, to emit
-// gen_ai.system_instructions when content capture is opted into.
-// Forwarding is intentionally not wired through NestedJSONLEmitter:
-// a sub-agent's system prompt would clobber the parent's single
-// stored value, so sub-agent system instructions are not captured.
+// can implement to receive the run's built system prompt via a type
+// assertion after PromptBuilder.Build succeeds. Only the OTel emitter
+// implements it today, to emit gen_ai.system_instructions when content
+// capture is opted into. Not wired through NestedJSONLEmitter: a
+// sub-agent's system prompt would clobber the parent's single stored
+// value, so sub-agent system instructions are not captured.
 type SystemInstructionsRecorder interface {
 	RecordSystemInstructions(system string)
 }
 
 // PromptResolutionRecorder is an optional capability a TraceEmitter can
-// implement to receive the resolved prompt model and tier (#492): which
-// model identity the system prompt templates rendered against, and which
-// guidance tier that selected. The loop forwards both via a type
-// assertion after PromptBuilder.Build succeeds, mirroring
-// SystemInstructionsRecorder. Unlike system instructions this is config
-// metadata, not message content, so recording is not gated on content
-// capture — a prompt/model comparison run must be attributable from its
-// trace alone.
+// implement to receive the resolved prompt model and tier. Recording is
+// not gated on content capture, since this is config metadata rather
+// than message content — a prompt/model comparison run must be
+// attributable from its trace alone.
 type PromptResolutionRecorder interface {
 	RecordPromptResolution(model, tier string)
 }
 
 // HookRecorder is an optional capability a TraceEmitter can implement to
-// receive lifecycle hook results (issue #461) as they complete. The
-// agentic loop forwards each types.HookExecution via a type assertion
-// after hook.Runner.RunPre/RunPost returns — the same optional-
-// capability pattern as SystemInstructionsRecorder — so emitters that do
-// not record hook executions need no stub method.
-//
-// Today only the JSONL emitter implements it: it streams a hook_record
-// line per execution and folds the accumulated results into
-// RunTrace.HookResults at Finish, mirroring how RecordToolCall streams
-// tool_call_record lines and folds into RunTrace.ToolCalls.
+// receive lifecycle hook results as each PreRun/PostRun hook completes.
+// Only the JSONL emitter implements it: it streams a hook_record line
+// per execution and folds the accumulated results into
+// RunTrace.HookResults at Finish, mirroring RecordToolCall.
 type HookRecorder interface {
 	RecordHookExecution(exec types.HookExecution)
 }
 
 // FinalAssistantTextRecorder is an optional capability a TraceEmitter
 // can implement to receive the run's final assistant text just before
-// Finish. The agentic loop forwards the guard-approved, scrubbed text
-// via a type assertion — the same optional-capability pattern as
-// SystemInstructionsRecorder — so the emitter can stamp it onto the
-// RunTrace it builds and serialises inside Finish. A post-Finish
-// assignment on the returned struct would never reach the persisted
-// trace, because the concrete emitters marshal/write the RunTrace
-// before Finish returns.
+// Finish, so the emitter can stamp it onto the RunTrace before
+// marshaling it: a post-Finish assignment would never reach the
+// persisted trace.
 type FinalAssistantTextRecorder interface {
 	RecordFinalAssistantText(text string)
 }

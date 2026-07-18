@@ -1,33 +1,8 @@
 package main
 
 // stirrup-eval ingest reads JSONL trace files produced by the
-// harness (`traceEmitter.type=jsonl`) and persists them into a
-// FileStore lakehouse. Two on-wire shapes are accepted transparently:
-//
-//   - Legacy single-blob: one `types.RunTrace` per line. Each line
-//     yields one traces/<id>.json entry. No recording is written.
-//   - Streaming events (since #270): line-delimited events with a
-//     `kind` discriminator. The ingest walks the event stream,
-//     reassembles a *types.RunRecording per runId, and writes both
-//     a traces/<id>.json and a recordings/<id>.json entry per
-//     completed run. Interrupted streams (no run_finished event)
-//     produce a partial recording with FinalOutcome.Outcome set to
-//     "interrupted" so downstream consumers can distinguish truncated
-//     captures from completed runs.
-//
-// Format selection is per-file: the first non-blank line is peeked
-// at for a `kind` discriminator. Mixed-format invocations (some
-// legacy, some streaming) are supported within a single ingest call.
-//
-// Scrubbing posture: trace files written by the post-#270 emitter
-// have already passed through security.LogScrubber on the way to
-// disk. The eval module is intentionally NOT importing
-// harness/internal/security to apply a second pass (the
-// harness/internal/* boundary is private per CLAUDE.md). Pre-#270
-// binaries only emitted single-blob RunTrace lines, which went
-// through RunConfig.Redact() at write time. The defence-in-depth
-// scrubbing AC from #271 is satisfied structurally rather than by
-// re-scrubbing here.
+// harness and persists them into a FileStore lakehouse. See
+// docs/eval.md for the on-wire shapes and scrubbing posture.
 
 import (
 	"context"
@@ -92,14 +67,10 @@ func cmdIngest(args []string) {
 	fmt.Fprintln(os.Stderr)
 }
 
-// ingestFile dispatches on the per-file wire shape. The detection is
-// based on the first non-blank line's `kind` discriminator: present
-// => streaming event format; absent => legacy single-blob.
-//
-// Returns (#traces written, #recordings written, #partials skipped,
-// error). The error is non-nil only on unrecoverable I/O failures
-// (file open, store write); per-line malformed records are skipped
-// with a stderr warning and contribute zero to the counters.
+// ingestFile dispatches on the per-file wire shape and returns
+// (#traces written, #recordings written, #partials skipped, error).
+// The error is non-nil only on unrecoverable I/O failures; per-line
+// malformed records are skipped with a stderr warning.
 func ingestFile(ctx context.Context, store *lakehouse.FileStore, path string, skipPartial bool) (int, int, int, error) {
 	reader, err := tracereader.Open(path)
 	if err != nil {
@@ -107,25 +78,6 @@ func ingestFile(ctx context.Context, store *lakehouse.FileStore, path string, sk
 	}
 	defer func() { _ = reader.Close() }()
 
-	// Peek behaviour lives in tracereader.Reader: ReadRecording walks
-	// the stream and returns one *RunRecording covering all events
-	// (or, for a legacy single-blob file, one recording per blob).
-	// Both wire shapes round-trip through the same reader.
-	//
-	// For ingest's purposes the streaming reader semantics
-	// (ReadRecording per file) handle:
-	//   - streaming traces (run_started + turn_records + run_finished)
-	//     → one trace + one recording with full transcript
-	//   - legacy single-blob traces → one trace per line; no
-	//     recording (the legacy line has no transcript content)
-	//   - interrupted streams → recording with FinalOutcome.ID==""
-	//     (signal: emit partial recording or skip per --skip-partial)
-	//
-	// Multi-recording legacy files (one .jsonl with many one-line
-	// RunTraces — the pre-#268 batch shape) need walking via .Next
-	// rather than ReadRecording, which is single-recording. The
-	// branch below distinguishes the two cases by peeking the first
-	// line.
 	first, format, err := detectFormat(path)
 	if err != nil {
 		return 0, 0, 0, err
@@ -155,8 +107,7 @@ func ingestFile(ctx context.Context, store *lakehouse.FileStore, path string, sk
 		fmt.Fprintf(os.Stderr, "ingest: %s is empty; skipping\n", path)
 		return 0, 0, 0, nil
 	default:
-		// detectFormat returned a sentinel beyond the closed set
-		// (defensive — should be unreachable).
+		// Should be unreachable.
 		return 0, 0, 0, fmt.Errorf("internal: unknown format %v for %q (first line: %.80s)", format, path, first)
 	}
 }
@@ -171,15 +122,8 @@ const (
 
 // detectFormat peeks at the first non-blank line of path to decide
 // between the legacy single-blob shape and the streaming event
-// shape. The file is opened, read up to ~MaxLineBytes, and closed —
-// the caller re-opens for the actual ingest.
-//
-// A line with a `kind` discriminator => streaming. A kind-less line
-// or a file with no lines => legacy / empty respectively. The
-// detection is robust to leading blank lines (some editors append
-// stray newlines) but does not attempt to recover from a malformed
-// first line; that path falls through to the streaming case and
-// surfaces as a per-line skip during the actual ingest.
+// shape (present `kind` discriminator => streaming). The caller
+// re-opens the file for the actual ingest.
 func detectFormat(path string) (string, traceFormat, error) {
 	r, err := tracereader.Open(path)
 	if err != nil {
@@ -187,18 +131,14 @@ func detectFormat(path string) (string, traceFormat, error) {
 	}
 	defer func() { _ = r.Close() }()
 
-	// Reader.Next yields RunTrace records, which silently skips
-	// streaming-event lines that aren't run_finished. We need to
-	// inspect the raw first line directly, so re-open as an os.File
-	// and read one line manually. (tracereader does not expose its
-	// scanner.)
+	// tracereader does not expose its scanner and Reader.Next
+	// silently skips non-run_finished streaming lines, so the raw
+	// first line is read manually here instead.
 	f, err := os.Open(path)
 	if err != nil {
 		if path == "-" {
-			// stdin path: tracereader handles it but we cannot peek
-			// without consuming bytes. Treat as streaming — that
-			// branch is robust to legacy lines (the read-side reader
-			// handles both).
+			// Cannot peek stdin without consuming it; the streaming
+			// reader handles both wire shapes, so default to it.
 			return "", formatStreaming, nil
 		}
 		return "", formatEmpty, fmt.Errorf("peek open file: %w", err)
@@ -211,38 +151,27 @@ func detectFormat(path string) (string, traceFormat, error) {
 		return "", formatEmpty, fmt.Errorf("peek read: %w", err)
 	}
 	chunk := string(buf[:n])
-	// Skip leading whitespace / blank lines.
+	// Blank leading lines are tolerated.
 	chunk = strings.TrimLeft(chunk, "\r\n\t ")
 	if chunk == "" {
 		return "", formatEmpty, nil
 	}
-	// Slice the first line (up to a newline) so the discriminator
-	// check examines only one record.
+	// Examine only the first line.
 	firstLine := chunk
 	if nl := strings.IndexByte(firstLine, '\n'); nl >= 0 {
 		firstLine = firstLine[:nl]
 	}
-	// A streaming event always starts with `{"kind":"…"` modulo
-	// field ordering. JSON allows any field order; check the more
-	// general "contains a kind key" predicate using a substring
-	// scan, which is robust to formatting variations from third-
-	// party tools that might round-trip a trace through jq.
+	// A streaming event starts with a `kind` key, modulo field order.
 	if hasKindKey(firstLine) {
 		return firstLine, formatStreaming, nil
 	}
 	return firstLine, formatLegacy, nil
 }
 
-// hasKindKey reports whether a JSON object string contains a top-level
-// `"kind":` token. The detector is intentionally lexical (not a
-// full JSON parser) so it tolerates whitespace variations and quoted
-// kind values without bringing the json package on the hot path.
-//
-// False positives are possible (a legacy RunTrace whose Config.Mode
-// or Outcome contains the literal substring `"kind":`), but neither
-// field is documented to accept arbitrary user input, and the
-// streaming reader path would still yield the correct RunTrace
-// shape for such a line. The trade-off favours simplicity.
+// hasKindKey reports whether a JSON object string contains a
+// top-level `"kind":` token. Intentionally lexical rather than a
+// full JSON parse; false positives are possible but harmless since
+// the streaming reader still yields a correct shape either way.
 func hasKindKey(line string) bool {
 	return strings.Contains(line, `"kind":`)
 }

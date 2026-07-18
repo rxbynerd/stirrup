@@ -11,28 +11,10 @@ import (
 // tools[].functionDeclarations[].parameters. Pure — no I/O, no globals.
 //
 // Returns an error rather than silently dropping fields when an
-// unsupported keyword is encountered. The caller (Stream) propagates
-// the error so the run fails fast at request-build time.
-//
-// Supported transformations:
-//   - JSON Schema lowercase type names → Gemini UPPERCASE.
-//   - Type arrays of the form ["X","null"] → nullable: true with single type.
-//   - Recursive descent into "properties" and "items".
-//   - Pass-through of validation keywords (description, enum, required, etc.).
-//   - Drop of metadata keywords ($schema, $id, $defs, definitions, $comment,
-//     additionalProperties).
-//
-// Hard errors:
-//   - "$ref" — Gemini does not resolve refs; caller must inline.
-//   - "oneOf" / "anyOf" with more than one non-null branch.
-//   - "allOf" — no merge logic.
-//   - Type values not in the Gemini type table.
-//   - Type arrays with more than two values, or two values where neither is
-//     "null".
-//
-// Empty input ("" or "{}") returns an empty object schema. Unknown keywords
-// are passed through verbatim — Vertex tolerates them, and silently dropping
-// would mask future schema features.
+// unsupported keyword is encountered, so the caller (Stream) fails fast
+// at request-build time. Supported transformations, hard-error cases,
+// and the empty-input/unknown-keyword pass-through behaviour are
+// documented in docs/providers.md.
 func ConvertSchema(in json.RawMessage) (json.RawMessage, error) {
 	if len(in) == 0 {
 		return json.RawMessage("{}"), nil
@@ -69,10 +51,8 @@ func convertNode(node any, path string) (any, error) {
 		return nil, fmt.Errorf("schema at %s: allOf is not supported by Gemini", pathOrRoot(path))
 	}
 
-	// Drop metadata keywords that Gemini ignores. Listed explicitly so
-	// extending the set is a single-line change. Done before union
-	// collapsing so dropped keys cannot end up in the merged output by
-	// accident.
+	// Drop metadata keywords Gemini ignores, before union collapsing so
+	// dropped keys cannot end up in the merged output.
 	for _, drop := range []string{
 		"$schema", "$id", "$comment", "$defs", "definitions",
 		"additionalProperties", "unevaluatedProperties",
@@ -113,10 +93,7 @@ func convertNode(node any, path string) (any, error) {
 			obj["nullable"] = true
 		}
 		// The branch was already passed through convertNode, so its `type`
-		// is already Gemini-shaped. Skip the type translation below by
-		// returning here — there are no further walking targets at this
-		// level (oneOf/anyOf branches don't carry their own properties or
-		// items at this node).
+		// is already Gemini-shaped; skip the type translation below.
 		return obj, nil
 	}
 
@@ -151,9 +128,7 @@ func convertNode(node any, path string) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema at %s: properties must be an object", pathOrRoot(path))
 		}
-		// Sort keys for deterministic output ordering of the converted map.
-		// Iteration order for map values does not affect JSON output (Go's
-		// encoding/json sorts map keys), but sorted iteration here gives
+		// Sort keys so iteration order is deterministic, giving
 		// deterministic error messages when one of many properties fails.
 		keys := make([]string, 0, len(props))
 		for k := range props {

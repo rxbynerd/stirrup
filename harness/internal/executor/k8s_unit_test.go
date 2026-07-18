@@ -97,8 +97,7 @@ func TestNewK8sExecutor_MissingNamespace(t *testing.T) {
 
 // TestNewK8sExecutor_NilNetworkRejected asserts the fail-closed guard fires
 // before any cluster I/O: a nil Network leaves egress posture undefined and
-// is rejected at construction (issue #178). This pins the acceptance
-// criterion "nil Network rejected at construction".
+// is rejected at construction.
 func TestNewK8sExecutor_NilNetworkRejected(t *testing.T) {
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image:     "busybox",
@@ -113,9 +112,9 @@ func TestNewK8sExecutor_NilNetworkRejected(t *testing.T) {
 }
 
 // TestNewK8sExecutor_AllowlistRequiresProxyURL asserts the allowlist-mode
-// guard fails closed before any cluster I/O when no EgressProxyURL is set
-// (issue #83). An enforced allowlist NetworkPolicy makes the proxy the only
-// route to the network, so omitting its URL is a misconfiguration.
+// guard fails closed before any cluster I/O when no EgressProxyURL is set.
+// An enforced allowlist NetworkPolicy makes the proxy the only route to the
+// network, so omitting its URL is a misconfiguration.
 func TestNewK8sExecutor_AllowlistRequiresProxyURL(t *testing.T) {
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image:     "busybox",
@@ -450,10 +449,10 @@ func TestClassifyTarError(t *testing.T) {
 	}
 }
 
-// TestK8sResolveFilePath_RejectsRoot pins finding #1: resolveFilePath (used
-// by ReadFile/WriteFile) must reject any input that resolves to the
-// workspace root, so WriteFile never drives `mkdir -p /` / `tar -C /`. The
-// inputs "", ".", and "/workspace" all collapse to the root.
+// TestK8sResolveFilePath_RejectsRoot asserts resolveFilePath (used by
+// ReadFile/WriteFile) rejects any input that resolves to the workspace
+// root, so WriteFile never drives `mkdir -p /` / `tar -C /`. The inputs "",
+// ".", and "/workspace" all collapse to the root.
 func TestK8sResolveFilePath_RejectsRoot(t *testing.T) {
 	exec := &K8sExecutor{}
 	for _, in := range []string{"", ".", "/workspace", "/workspace/"} {

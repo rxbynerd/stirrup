@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// TestParseDiffReviewVerdict_HappyPath pins the model-side JSON
-// contract: a well-formed {"passed": true|false, "feedback": "..."}
-// round-trips into the expected JudgeVerdict shape.
+// TestParseDiffReviewVerdict_HappyPath pins that a well-formed
+// {"passed": true|false, "feedback": "..."} round-trips into a JudgeVerdict.
 func TestParseDiffReviewVerdict_HappyPath(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -48,11 +47,9 @@ func TestParseDiffReviewVerdict_HappyPath(t *testing.T) {
 	}
 }
 
-// TestParseDiffReviewVerdict_Malformed pins the malformed-response
-// posture: a parsed-as-FAIL verdict with the raw response in the
-// reason, never an error. This matches the verifier-side parser so
-// the eval framework's caller sees a consistent surface across
-// at-run-time and post-run judging.
+// TestParseDiffReviewVerdict_Malformed pins that a malformed response
+// parses as a FAIL verdict with the raw response in the reason, never
+// an error.
 func TestParseDiffReviewVerdict_Malformed(t *testing.T) {
 	cases := []string{
 		`not json at all`,
@@ -63,9 +60,8 @@ func TestParseDiffReviewVerdict_Malformed(t *testing.T) {
 	for _, response := range cases {
 		got := parseDiffReviewVerdict(response)
 		if response == `{"feedback": "..."}` {
-			// Missing "passed" decodes as zero-value (false), so the
-			// outer parser will return Passed=false with no error;
-			// that's a valid "model misbehaved → fail" verdict.
+			// Missing "passed" decodes as zero-value (false): a valid
+			// "model misbehaved -> fail" verdict.
 			if got.Passed {
 				t.Errorf("response %q: got Passed=true, want false", response)
 			}
@@ -77,9 +73,7 @@ func TestParseDiffReviewVerdict_Malformed(t *testing.T) {
 	}
 }
 
-// TestAnthropicRequestShape pins the wire shape the diff-review
-// judge POSTs. A regression in field names would surface here
-// before the live API rejects the request with a confusing 400.
+// TestAnthropicRequestShape pins the wire shape the diff-review judge POSTs.
 func TestAnthropicRequestShape(t *testing.T) {
 	req := anthropicRequest{
 		Model:       "claude-haiku-4-5-20251001",
@@ -100,9 +94,7 @@ func TestAnthropicRequestShape(t *testing.T) {
 			t.Errorf("missing key %q in request body: %s", key, body)
 		}
 	}
-	// Anthropic uses snake_case keys; a camelCase regression would
-	// emit "maxTokens" or "stopReason" and the API would reject
-	// the call. Anchor on the negative.
+	// Anthropic uses snake_case keys; anchor on the negative.
 	for _, bad := range []string{`"maxTokens"`, `"stopReason"`} {
 		if strings.Contains(body, bad) {
 			t.Errorf("unexpected camelCase key %q in request body", bad)

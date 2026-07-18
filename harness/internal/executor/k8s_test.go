@@ -24,10 +24,8 @@ import (
 
 // testK8sConfig carries the cluster-specific knobs the integration suite
 // needs to run against an arbitrary cluster, not just the untainted
-// single-node kind dev cluster. Every value falls back to the original
-// kind-friendly default when its env var is unset, so `just kind-smoke`
-// style runs are unchanged; a real cluster (e.g. GKE, whose node pools are
-// tainted and gated on a RuntimeClass) is selected by exporting:
+// single-node kind dev cluster. Every value falls back to the kind-friendly
+// default when its env var is unset:
 //
 //	STIRRUP_TEST_KUBECONFIG       path to a kubeconfig (also the suite gate)
 //	STIRRUP_TEST_NAMESPACE        sandbox namespace            (default "default")
@@ -36,9 +34,8 @@ import (
 //	STIRRUP_TEST_EGRESS_PROXY_URL allowlist proxy URL          (default the default-ns svc)
 //
 // On a cluster whose only schedulable nodes are tainted for a sandbox
-// runtime (GKE Sandbox taints the gVisor pool, and a no-RuntimeClass Pod
-// has nowhere to land), STIRRUP_TEST_RUNTIME_CLASS must name the sandbox
-// RuntimeClass (e.g. "gvisor") or every Pod times out at readiness.
+// runtime, STIRRUP_TEST_RUNTIME_CLASS must name the sandbox RuntimeClass
+// (e.g. "gvisor") or every Pod times out at readiness.
 type testK8sConfig struct {
 	kubeconfig   string
 	namespace    string
@@ -230,8 +227,7 @@ func TestK8sExec_NonZeroExit(t *testing.T) {
 // reported via the shared executor.ErrTimeout sentinel (still wrapping the
 // underlying context.DeadlineExceeded, so errors.Is against either matches)
 // at roughly the timeout boundary, not after the full sleep. Also asserts
-// the partial output captured before the deadline is preserved (#473),
-// rather than the blank result the pre-fix k8s Exec returned.
+// the partial output captured before the deadline is preserved.
 func TestK8sExec_Timeout(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
@@ -257,11 +253,7 @@ func TestK8sExec_Timeout(t *testing.T) {
 // TestK8sExec_Cancelled verifies that a parent-context cancellation (not a
 // deadline expiry) is reported distinctly from a timeout: it must satisfy
 // errors.Is(err, context.Canceled) but NOT errors.Is(err, ErrTimeout), even
-// though a large configured timeout is in play. This is the k8s-specific
-// facet of #469: the pre-fix Exec returned ctx.Err() verbatim on ANY ctx
-// ending, which happened to distinguish deadline from cancel correctly via
-// errors.Is(err, context.DeadlineExceeded) but discarded partial output
-// (#473) and gave hook.isTimeoutErr no shared sentinel to key off.
+// though a large configured timeout is in play.
 func TestK8sExec_Cancelled(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -420,9 +412,9 @@ func TestK8sListDirectory_WorkspaceRoot(t *testing.T) {
 	}
 }
 
-// TestK8sWriteFile_RejectsWorkspaceRoot verifies finding #1 against a
-// cluster: a write whose path resolves to the workspace root is rejected
-// before any tar extraction runs.
+// TestK8sWriteFile_RejectsWorkspaceRoot verifies against a cluster that a
+// write whose path resolves to the workspace root is rejected before any
+// tar extraction runs.
 func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
@@ -436,34 +428,16 @@ func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 
 // TestK8sRuntimeClass_Admitted exercises the RuntimeClassName plumbing
 // against a real cluster: the Pod must be admitted and reach Ready for
-// each RuntimeClass the platform supports.
-//
-//   - ""       — cluster default RuntimeClass (always present).
-//   - "runc"   — vanilla runc; assumes a `runc` RuntimeClass is registered
-//     (kind installs one in the gvisor-enabled image setup).
-//   - "gvisor" — the gVisor RuntimeClass. Requires kind to be built with
-//     the runsc shim (`containerd` + RuntimeClass node.k8s.io
-//     "gvisor"). When the cluster lacks it, NewK8sExecutor
-//     returns the friendly classifyPodCreateError wrap; the test
-//     skips rather than fails so a non-gVisor kind cluster still
-//     passes the rest of the suite.
-//
-// VERIFY AGAINST REAL RUN: the assertion that gVisor is actually in force
-// (vs. the Pod silently falling back to runc) must be pinned to what a real
-// kind+runsc run produces. The kernel signature `uname -r` returns under
-// gVisor differs from the host kernel (gVisor reports a synthetic version,
-// historically "4.4.0"), but the exact string depends on the runsc release
-// the cluster ships. Do not hard-code a fabricated uname here — capture the
-// real value from a `kubectl exec ... uname -r` against the gVisor Pod and
-// pin it once observed.
+// each RuntimeClass the platform supports ("" cluster-default, "runc",
+// "gvisor"). When the cluster lacks a RuntimeClass, NewK8sExecutor returns
+// the friendly classifyPodCreateError wrap and the test skips rather than
+// fails so a non-gVisor cluster still passes the rest of the suite.
 func TestK8sRuntimeClass_Admitted(t *testing.T) {
 	cfg := testK8sEnv(t)
 
-	// The default set assumes a kind cluster (untainted node + a `runc`
-	// RuntimeClass registered by kind-up.sh). On a cluster whose only
-	// schedulable nodes are sandbox-tainted (GKE Sandbox) the cluster-default
-	// and runc cases have nowhere to land, so the operator narrows the set,
-	// e.g. STIRRUP_TEST_RUNTIME_CLASSES=gvisor.
+	// On a cluster whose only schedulable nodes are sandbox-tainted the
+	// cluster-default and runc cases have nowhere to land, so the operator
+	// narrows the set, e.g. STIRRUP_TEST_RUNTIME_CLASSES=gvisor.
 	runtimeClasses := []string{"", "runc", "gvisor"}
 	if v := os.Getenv("STIRRUP_TEST_RUNTIME_CLASSES"); v != "" {
 		runtimeClasses = nil
@@ -490,8 +464,7 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			})
 			if err != nil {
 				// An unregistered RuntimeClass surfaces as the friendly
-				// admission wrap. Skip (not fail) so the suite still passes
-				// on a kind cluster that lacks the gVisor shim.
+				// admission wrap; skip rather than fail.
 				if runtimeClass != "" && strings.Contains(err.Error(), "RuntimeClass") {
 					t.Skipf("RuntimeClass %q not registered on this cluster: %v", runtimeClass, err)
 				}
@@ -499,8 +472,6 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = exec.Close() })
 
-			// The Pod is Ready (NewK8sExecutor blocks on readiness). A trivial
-			// exec confirms the sandbox is actually executing commands.
 			res, err := exec.Exec(ctx, "echo ok", 10*time.Second)
 			if err != nil {
 				t.Fatalf("Exec under runtimeClass %q: %v", runtimeClass, err)
@@ -509,16 +480,10 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 				t.Errorf("Exec stdout = %q, want \"ok\"", res.Stdout)
 			}
 
-			// Confirm gVisor is actually in force rather than the Pod silently
-			// falling back to the host runtime. Two independent signals,
-			// observed against this GKE Sandbox cluster (handler "gvisor"):
-			//   - `dmesg` prints the gVisor boot banner ("Starting gVisor...").
-			//     This is the robust signal — it is a literal product string,
-			//     stable across releases (and what scripts/dev/smoke-test.sh
-			//     keys on).
-			//   - `uname -r` reports a synthetic kernel version ("4.4.0" on the
-			//     observed release) distinct from the host's. Logged, not hard
-			//     asserted, since the exact string tracks the runsc build.
+			// Two independent gVisor signals: the dmesg boot banner (robust,
+			// stable across releases) and the synthetic uname -r kernel
+			// version (logged, not hard-asserted, since it tracks the runsc
+			// build).
 			if runtimeClass == "gvisor" {
 				dmesgRes, dmesgErr := exec.Exec(ctx, "dmesg 2>/dev/null | head -n 50", 10*time.Second)
 				if dmesgErr != nil {
@@ -556,16 +521,14 @@ func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 	}
 }
 
-// TestK8sEgress_NoneInstallsDenyAllPolicy verifies MANIFEST SHAPE (issue
-// #178): a Mode=="none" run installs a deny-all egress NetworkPolicy that
-// selects exactly this Pod, carries the Egress policy type with no egress
-// rules, and is torn down on Close. The Pod is also labelled
-// stirrup-sandbox=true.
+// TestK8sEgress_NoneInstallsDenyAllPolicy verifies MANIFEST SHAPE: a
+// Mode=="none" run installs a deny-all egress NetworkPolicy that selects
+// exactly this Pod, carries the Egress policy type with no egress rules,
+// and is torn down on Close. The Pod is also labelled stirrup-sandbox=true.
 //
-// MANIFEST-SHAPE ONLY: kindnet accepts the NetworkPolicy but does NOT enforce
-// it (see allowlistEgressPolicy / K8sExecutorConfig CNI caveat). This test
-// proves the object is created with the right shape, NOT that egress is
-// actually denied. Enforcement is only verifiable on a Cilium/Calico cluster.
+// MANIFEST-SHAPE ONLY: kindnet accepts the NetworkPolicy but does NOT
+// enforce it. This test proves the object is created with the right shape,
+// not that egress is actually denied — see docs/executors/k8s.md.
 func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 	cfg := testK8sEnv(t)
 
@@ -637,9 +600,9 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 }
 
 // TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy verifies MANIFEST
-// SHAPE (issue #83): a Mode=="allowlist" run installs an egress policy that
-// permits DNS plus the egress-proxy peer, and injects HTTP_PROXY/HTTPS_PROXY/
-// NO_PROXY pointing at EgressProxyURL.
+// SHAPE: a Mode=="allowlist" run installs an egress policy that permits DNS
+// plus the egress-proxy peer, and injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+// pointing at EgressProxyURL.
 //
 // MANIFEST-SHAPE ONLY: kindnet does not enforce NetworkPolicy, so this proves
 // the object/env shape, not that egress is actually confined to the proxy.

@@ -279,13 +279,11 @@ func TestGRPCTransport_OnControlPermissionResponse(t *testing.T) {
 }
 
 func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
-	// Server sends a task assignment, then we emit events and receive more
-	// control events interleaved.
+
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
 
-	// Get the server stream for manual control.
 	var serverStream pb.HarnessService_RunTaskServer
 	select {
 	case serverStream = <-srv.streamCh:
@@ -293,13 +291,11 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 		t.Fatal("timed out waiting for server stream")
 	}
 
-	// Start receiving control events.
 	controlEvents := make(chan types.ControlEvent, 10)
 	tr.OnControl(func(event types.ControlEvent) {
 		controlEvents <- event
 	})
 
-	// Server sends task_assignment.
 	timeout := int32(300)
 	if err := serverStream.Send(&pb.ControlEvent{
 		Type: "task_assignment",
@@ -314,7 +310,6 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 		t.Fatalf("server send task_assignment: %v", err)
 	}
 
-	// Client receives it.
 	select {
 	case ev := <-controlEvents:
 		if ev.Type != "task_assignment" {
@@ -324,17 +319,14 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 		t.Fatal("timed out waiting for task_assignment")
 	}
 
-	// Client emits a text_delta.
 	if err := tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "working..."}); err != nil {
 		t.Fatalf("Emit text_delta: %v", err)
 	}
 
-	// Client emits a tool_call.
 	if err := tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "bash"}); err != nil {
 		t.Fatalf("Emit tool_call: %v", err)
 	}
 
-	// Server sends a user_response.
 	if err := serverStream.Send(&pb.ControlEvent{
 		Type:         "user_response",
 		UserResponse: "yes, continue",
@@ -342,7 +334,6 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 		t.Fatalf("server send user_response: %v", err)
 	}
 
-	// Client receives user_response.
 	select {
 	case ev := <-controlEvents:
 		if ev.Type != "user_response" {
@@ -355,7 +346,6 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 		t.Fatal("timed out waiting for user_response")
 	}
 
-	// Verify server received the client events.
 	time.Sleep(50 * time.Millisecond)
 	received := srv.getReceived()
 	if len(received) < 2 {
@@ -495,13 +485,9 @@ func TestGRPCTransport_NoSecretEventForCleanText(t *testing.T) {
 	}
 }
 
-// TestGRPCTransport_OnControlTaskAssignmentAzureFields is the gRPC-side
-// regression guard for issue #48: a task_assignment carrying APIKeyHeader
-// and QueryParams must round-trip through the proto wire format without
-// losing data, so "stirrup job" mode receives the same RunConfig that
-// "stirrup harness" sees from --config. The acceptance test for the actual
-// adapter behaviour (header value, URL composition) lives in
-// harness/internal/provider; this test only pins the wire-level passthrough.
+// TestGRPCTransport_OnControlTaskAssignmentAzureFields pins that a
+// task_assignment carrying APIKeyHeader and QueryParams round-trips
+// through the proto wire format without losing data.
 func TestGRPCTransport_OnControlTaskAssignmentAzureFields(t *testing.T) {
 	timeout := int32(300)
 	srv := newTestServer(&pb.ControlEvent{
@@ -571,11 +557,8 @@ func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
 }
 
 func TestGRPCTransport_OnControl_ToolResultResponse_Success(t *testing.T) {
-	// Locks in the gRPC translation of a successful async tool result:
-	// IsError must be omitted (or unset) when the proto wire field is
-	// nil, and Content must round-trip verbatim. A regression in
-	// controlEventFromProto's mapping (e.g. wrong proto tag, dropped
-	// field) is the exact failure mode this guards.
+	// IsError must be omitted (unset) when the proto wire field is nil,
+	// and Content must round-trip verbatim.
 	srv := newTestServer(&pb.ControlEvent{
 		Type:      "tool_result_response",
 		RequestId: "async-tool-7",
@@ -609,12 +592,8 @@ func TestGRPCTransport_OnControl_ToolResultResponse_Success(t *testing.T) {
 }
 
 func TestGRPCTransport_OnControl_ToolResultResponse_IsError(t *testing.T) {
-	// Locks in the IsError=true translation. The proto field is an
-	// OptionalBool wrapper; controlEventFromProto must dereference and
-	// produce a *bool whose value is true. A nil-pointer bug or wrong
-	// field copy would silently downgrade upstream errors to
-	// successes — exactly the kind of regression the harness's error
-	// taxonomy depends on catching.
+	// IsError is an OptionalBool wrapper on the wire; controlEventFromProto
+	// must dereference it into a *bool rather than dropping true to nil.
 	yes := true
 	srv := newTestServer(&pb.ControlEvent{
 		Type:      "tool_result_response",
@@ -653,12 +632,8 @@ func TestGRPCTransport_OnControl_ToolResultResponse_IsError(t *testing.T) {
 }
 
 func TestGRPCTransport_EmitToolResultRequest(t *testing.T) {
-	// The harness emits tool_result_request when an async tool defers
-	// its result. Lock in the four wire fields the control plane needs
-	// to route the request and emit the matching tool_result_response:
-	// RequestID, ToolUseID, ToolName, and Input. A drop or rename in
-	// harnessEventToProto would silently break async tool dispatch on
-	// the gRPC path.
+	// Pins the four wire fields the control plane needs to route an
+	// async tool_result_request and emit the matching response.
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()

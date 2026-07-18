@@ -8,26 +8,16 @@ import (
 	"strings"
 )
 
-// ProbeAllowlist performs a dry-run preflight reachability check of an
-// egress allowlist. For each entry it resolves the destination hostname
-// via DNS (using the supplied resolver, defaulting to net.DefaultResolver
-// when nil) so an operator catches a typo'd or NXDOMAIN destination before
-// the run starts. A wildcard entry ("*.example.com") has no single
-// resolvable host, so its base domain ("example.com") is resolved as a
-// best-effort signal that the zone exists.
+// ProbeAllowlist performs a DNS-only dry-run reachability check of an
+// egress allowlist: it resolves each entry's hostname (using resolver,
+// defaulting to net.DefaultResolver when nil) so a typo'd or NXDOMAIN
+// destination is caught before the run starts. It never opens a TCP
+// connection — see docs/configuration.md for the DNS-only rationale. A
+// wildcard entry resolves its base domain as a best-effort signal.
 //
-// The probe is DNS-only by design: it never opens a TCP connection to the
-// destination. A TCP dial would be a stronger signal but turns a cheap
-// dry-run into a fan-out of outbound connections to every allowlisted
-// host, which is both slow and surprising for a "check my config" command.
-// DNS resolution catches the common misconfiguration (a bad hostname)
-// without that cost.
-//
-// The allowlist is parsed with the same NewMatcher rules the proxy
-// enforces, so a malformed entry fails the probe identically to how it
-// would fail the proxy at run time. An empty allowlist is a no-op (nil):
-// allowlist network mode with no entries denies all egress, which is a
-// valid — if restrictive — configuration the probe should not flag.
+// The allowlist is parsed with NewMatcher's rules, so a malformed entry
+// fails the probe identically to how it would fail the proxy at run
+// time. An empty allowlist is a no-op.
 func ProbeAllowlist(ctx context.Context, allowlist []string, resolver *net.Resolver) error {
 	matcher, err := NewMatcher(allowlist)
 	if err != nil {

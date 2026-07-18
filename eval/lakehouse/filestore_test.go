@@ -262,10 +262,8 @@ func TestQueryTraces_FilterModel(t *testing.T) {
 }
 
 // TestQueryTraces_FilterProvider pins that TraceFilter.Provider is
-// honoured by the FileStore. The field was inert before #142 (the
-// filter type had a Provider slot but matchesTraceFilter never
-// consulted it); a regression would silently let through traces from
-// the wrong provider and quietly skew --sample-by provider in #274.
+// honoured by the FileStore; a regression would silently let through
+// traces from the wrong provider.
 func TestQueryTraces_FilterProvider(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
@@ -532,10 +530,9 @@ func TestQueryRecordings_FilterByOutcome(t *testing.T) {
 }
 
 // TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries asserts the
-// helper rejects tool call summaries that were forwarded from a sub-
-// agent run (#55). The mixed-source contract is documented on
-// types.RunTrace.ToolCalls; without filtering, any aggregate over
-// ToolCalls double-counts sub-agent activity against the parent run.
+// helper rejects tool call summaries forwarded from a sub-agent run;
+// without filtering, any aggregate over ToolCalls double-counts
+// sub-agent activity against the parent run.
 func TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries(t *testing.T) {
 	trace := types.RunTrace{
 		ID: "parent-1",
@@ -570,9 +567,7 @@ func TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries(t *testing.T) {
 // TestComputeMetrics_SubAgentToolCallsDoNotInflate verifies that
 // running computeMetrics over a trace whose ToolCalls slice contains
 // sub-agent forwarded entries does not affect the returned aggregate
-// shape. This is the regression guard for the contract described on
-// types.RunTrace.ToolCalls: any future per-run tool-count aggregate
-// added to TraceMetrics must filter via parentOnlyToolCalls (#55).
+// shape.
 func TestComputeMetrics_SubAgentToolCallsDoNotInflate(t *testing.T) {
 	started := time.Now()
 	parentOnly := types.RunTrace{
@@ -616,10 +611,8 @@ func TestComputeMetrics_SubAgentToolCallsDoNotInflate(t *testing.T) {
 }
 
 // makeBatchTrace is makeTrace's twin with Batch enabled on the
-// Provider config. computeMetrics keys the bucketing on
-// Config.Provider.Batch.Enabled, so the helper centralises the
-// classifier wiring rather than scattering BatchProviderConfig
-// constructions across each #138 test case.
+// Provider config, centralising the BatchProviderConfig wiring
+// computeMetrics keys its bucketing on.
 func makeBatchTrace(id, outcome, model string, started time.Time, durationMs int64, turns int, tokens types.TokenUsage) types.RunTrace {
 	tr := makeTrace(id, outcome, "execution", model, started, durationMs, turns, tokens)
 	tr.Config.Provider = types.ProviderConfig{
@@ -629,10 +622,10 @@ func makeBatchTrace(id, outcome, model string, started time.Time, durationMs int
 	return tr
 }
 
-// TestMetrics_BucketsStreamingAndBatchSeparately is the core
-// regression guard for #138: a mixed window of streaming and batch
-// runs must produce two independent duration percentile pairs so
-// batch queue time does not skew the streaming latency signal.
+// TestMetrics_BucketsStreamingAndBatchSeparately pins that a mixed
+// window of streaming and batch runs produces two independent
+// duration percentile pairs, so batch queue time does not skew the
+// streaming latency signal.
 func TestMetrics_BucketsStreamingAndBatchSeparately(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
@@ -830,15 +823,10 @@ func TestClose(t *testing.T) {
 	}
 }
 
-// TestWriteJSON_ConcurrentStoreTraceIsAtomic pins #267's atomicity AC:
-// two goroutines writing the same trace ID concurrently must leave a
-// valid JSON document on disk — never a torn file with a JSON prefix
-// followed by stale trailing bytes.
-//
-// The previous os.WriteFile path failed this because O_TRUNC happens
-// before the write, so a reader interleaved between the truncate and
-// the write would observe a zero-byte file, and two interleaved
-// writers' bytes could mix.
+// TestWriteJSON_ConcurrentStoreTraceIsAtomic pins that two goroutines
+// writing the same trace ID concurrently leave a valid JSON document
+// on disk, never a torn file with a JSON prefix followed by stale
+// trailing bytes.
 func TestWriteJSON_ConcurrentStoreTraceIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)

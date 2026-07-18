@@ -129,6 +129,23 @@ Mid-batch run cancellation behaves differently per transport:
   cancel does not block the run's exit. This path lands in phase 4
   (issue #137).
 
+### Results-URL credential guard
+
+The harness-side Anthropic polling client fetches the batch's
+JSONL results from a `results_url` the API returns on the polled
+batch object. That URL is provider-controlled data, and the fetch
+attaches the run's `x-api-key` unconditionally, so before issuing
+the GET the client validates that the URL's scheme is `https` and
+its host is `anthropic.com` or a subdomain of it. A `results_url`
+pointing anywhere else is treated as a misframed upstream response
+or an active exfiltration attempt and rejected — either way the
+credential must not be sent to an unverified host. The one
+exception is when the client's `baseURL` has been overridden to a
+loopback address (an `httptest` fixture in the test suite): in that
+case a `results_url` sharing the same loopback host is accepted, so
+the check does not require the test server to mint URLs on
+`*.anthropic.com`.
+
 ### Bedrock
 
 Bedrock batch via `CreateModelInvocationJob` is **out of scope in

@@ -54,7 +54,6 @@ func fakeMCPServer(t *testing.T, tools []mcpTool, sessionID string) (*httptest.S
 			return
 		}
 
-		// Set session ID header if configured.
 		if sessionID != "" {
 			w.Header().Set("Mcp-Session-Id", sessionID)
 		}
@@ -122,9 +121,7 @@ func writeJSONRPCError(w http.ResponseWriter, id int64, code int, message string
 }
 
 // callMCPText invokes a registered MCP tool's StructuredHandler and returns
-// the canonical text fallback. MCP tools register a StructuredHandler (issue
-// #231 B2) rather than a plain Handler, so tests exercising only the text
-// result route through this helper. callMCPStructured returns the full
+// the canonical text fallback. callMCPStructured returns the full
 // StructuredResult for tests that assert the structured envelope.
 func callMCPText(t *testing.T, tl *tool.Tool, input json.RawMessage) (string, error) {
 	t.Helper()
@@ -165,7 +162,6 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 
-	// Verify tools are registered with prefixed names.
 	defs := registry.List()
 	if len(defs) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(defs))
@@ -178,7 +174,6 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 		t.Errorf("tool[1].Name = %q, want %q", defs[1].Name, "mcp_docs_fetch")
 	}
 
-	// Verify tool has side effects.
 	resolved := registry.Resolve("mcp_docs_search")
 	if resolved == nil {
 		t.Fatal("Resolve returned nil for mcp_docs_search")
@@ -192,7 +187,7 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 }
 
 // TestConnect_ToolAnnotations verifies the bridge parses server-declared MCP
-// tool annotations (#222) and surfaces them on the registered tool's
+// tool annotations and surfaces them on the registered tool's
 // ToolPresentation, while pinning the invariant that the hints are advisory:
 // a server asserting readOnlyHint must NOT relax the conservative
 // WorkspaceMutating/RequiresApproval gating the harness applies to all remote
@@ -241,7 +236,7 @@ func TestConnect_ToolAnnotations(t *testing.T) {
 		t.Error("server readOnlyHint must not relax WorkspaceMutating/RequiresApproval")
 	}
 
-	// The annotations also surface on the model-facing Presentation (#222).
+	// The annotations also surface on the model-facing Presentation.
 	def := resolved.Definition()
 	if def.Presentation == nil || def.Presentation.Annotations == nil {
 		t.Fatalf("Definition().Presentation.Annotations missing: %+v", def.Presentation)
@@ -314,7 +309,6 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 		t.Errorf("first request should have no session ID, got %q", reqs[0].SessionID)
 	}
 
-	// Now call a tool — should send the session ID we got back.
 	resolved := registry.Resolve("mcp_sess_ping")
 	if resolved == nil {
 		t.Fatal("tool not found")
@@ -331,9 +325,8 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 }
 
 // TestConnect_RejectsOversizedSessionID pins the maxMCPSessionIDLen cap: a
-// server that returns an Mcp-Session-Id longer than the cap must not have that
-// value stored or echoed back, since the ID rides on every later request and an
-// unbounded value would inflate outbound headers without limit.
+// server that returns an Mcp-Session-Id longer than the cap must not have
+// that value stored or echoed back.
 func TestConnect_RejectsOversizedSessionID(t *testing.T) {
 	oversized := strings.Repeat("x", maxMCPSessionIDLen+1)
 	tools := []mcpTool{
@@ -415,7 +408,6 @@ func TestConnect_NoAuthHeaderWhenNoAPIKeyRef(t *testing.T) {
 }
 
 func TestConnect_JSONRPCError(t *testing.T) {
-	// Create a server that returns an error for tools/list.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -478,9 +470,8 @@ func TestConnect_MultipleServers(t *testing.T) {
 	srvB, _ := fakeMCPServer(t, toolsB, "")
 
 	registry := tool.NewRegistry()
-	// Both servers share an http client that can reach both test servers.
-	// Since httptest servers use different ports, we need to use the default
-	// transport which can reach any local address.
+	// Shared client using the default transport, which can reach both
+	// httptest servers regardless of port.
 	client := NewClient(registry, &http.Client{Timeout: 30 * time.Second})
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
@@ -499,7 +490,6 @@ func TestConnect_MultipleServers(t *testing.T) {
 		t.Fatalf("expected 3 tools, got %d", len(defs))
 	}
 
-	// Both "search" tools should be registered with distinct prefixed names.
 	if registry.Resolve("mcp_alpha_search") == nil {
 		t.Error("missing mcp_alpha_search")
 	}
@@ -534,7 +524,6 @@ func TestConnect_MissingURI(t *testing.T) {
 }
 
 func TestConnect_ToolCallError(t *testing.T) {
-	// Server returns isError: true in tools/call response.
 	tools := []mcpTool{
 		{Name: "fail", Description: "Always fails", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -664,9 +653,7 @@ func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
 
 // TestMCPCall_RecordsMetrics_Success asserts that a successful tools/call
 // records stirrup.mcp.calls (with success=true) and stirrup.mcp.duration_ms
-// when the client has a Metrics instance attached. It also covers the
-// failure path: a server that responds with isError=true should still
-// record a call, but with success=false.
+// when the client has a Metrics instance attached.
 func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	tools := []mcpTool{{
 		Name:        "echo",
@@ -704,8 +691,6 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 
-	// Expect exactly one mcp.calls observation, success=true, with the
-	// configured server.name/tool.name attributes.
 	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
 	if got.total != 1 {
 		t.Errorf("stirrup.mcp.calls total = %d, want 1", got.total)
@@ -730,10 +715,8 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 }
 
 // TestMCPCall_RecordsMetrics_Failure asserts a failed tools/call still
-// records the counter with success=false. The server returns isError=true
-// so the call reaches the client cleanly but surfaces an error to the
-// handler — the success label distinguishes this from transport errors
-// (also recorded as success=false).
+// records the counter with success=false; the success label distinguishes
+// an isError=true response from a transport error (also success=false).
 func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
 	tools := []mcpTool{{
 		Name:        "boom",
@@ -741,7 +724,6 @@ func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
 
-	// Custom server that returns isError=true on tools/call.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -860,14 +842,10 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 	return histogramDataPoint{}
 }
 
-// TestRegisterMCPTool_TruncatesLongNames is the regression test for the
-// unbounded metric cardinality footgun (#97 B1, CWE-400). A misconfigured
-// or malicious MCP server can advertise tool names of arbitrary length;
-// without sanitisation, those names flow verbatim into the
-// `tool.name` attribute on stirrup.mcp.calls and would explode
-// cardinality on any OTLP-aware backend. Assertion: the prefixed
-// registry name and any downstream metric attribution use the truncated
-// form.
+// TestRegisterMCPTool_TruncatesLongNames pins the metric-cardinality bound
+// (CWE-400): a server-advertised tool name of arbitrary length must be
+// truncated before it flows into the registry name or the `tool.name`
+// metric attribute.
 func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
 	longName := strings.Repeat("a", maxMCPToolNameLen+50)
 	tools := []mcpTool{{
@@ -953,9 +931,8 @@ func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
 }
 
 // TestConnect_CapsToolsPerServer asserts the per-server tool count cap
-// applied at Connect time (#97 B1). A misbehaving MCP server cannot
-// flood the registry with thousands of unique tool names — the first
-// maxMCPToolsPerServer entries are registered and the rest are dropped.
+// applied at Connect time: the first maxMCPToolsPerServer entries are
+// registered and the rest are dropped.
 func TestConnect_CapsToolsPerServer(t *testing.T) {
 	overflow := maxMCPToolsPerServer + 25
 	tools := make([]mcpTool, overflow)
@@ -982,8 +959,8 @@ func TestConnect_CapsToolsPerServer(t *testing.T) {
 	}
 }
 
-// TestConnect_AllowedToolsFiltersAdvertised verifies the per-server allowlist
-// (#4 2.2): a server advertising a tool not in AllowedTools has that tool
+// TestConnect_AllowedToolsFiltersAdvertised verifies the per-server
+// allowlist: a server advertising a tool not in AllowedTools has that tool
 // rejected at registration, while allowlisted tools register.
 func TestConnect_AllowedToolsFiltersAdvertised(t *testing.T) {
 	tools := []mcpTool{
@@ -1044,7 +1021,7 @@ func TestConnect_EmptyAllowedToolsRegistersAll(t *testing.T) {
 
 // TestConnect_RejectsNonHTTPSRemote verifies a remote (non-loopback) server
 // reached over plain http is refused — credentials and tool-call payloads
-// must not travel in clear (#4 2.5).
+// must not travel in clear.
 func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
@@ -1141,10 +1118,10 @@ func mustHost(t *testing.T, raw string) string {
 
 // TestConnect_LocalhostNameDefaultTransport drives a full tool call to an
 // http://localhost server through the DEFAULT transport
-// (LoopbackAwareDialContext), pinning the review-wave-1 regression: a loopback
-// NAME (which net.ParseIP cannot recognise as loopback) must be admitted at
-// dial time, not refused by the SSRF guard. Reaching the registered tool's
-// result is the proof the dial succeeded.
+// (LoopbackAwareDialContext): a loopback NAME (which net.ParseIP cannot
+// recognise as loopback) must be admitted at dial time, not refused by the
+// SSRF guard. Reaching the registered tool's result is the proof the dial
+// succeeded.
 func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 	tools := []mcpTool{{Name: "ping", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1184,8 +1161,8 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 }
 
 // credentialedURI rewrites base (e.g. an httptest server URL) to embed
-// userinfo and a secret query parameter, matching the CWE-532 leak scenario in
-// issue #395: an operator who puts credentials directly in the MCP server URI.
+// userinfo and a secret query parameter, matching the CWE-532 leak scenario
+// of an operator putting credentials directly in the MCP server URI.
 func credentialedURI(t *testing.T, base string) string {
 	t.Helper()
 	u, err := url.Parse(base)

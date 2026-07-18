@@ -43,8 +43,7 @@ type Metrics struct {
 	RuleOfTwoDetections   metric.Int64Counter
 	RuleOfTwoActions      metric.Int64Counter
 
-	// --- Component-level instruments (issue #97) ---
-	// Counters
+	// Component-level counters
 	SubagentSpawns       metric.Int64Counter
 	SubagentTokensInput  metric.Int64Counter
 	SubagentTokensOutput metric.Int64Counter
@@ -65,7 +64,7 @@ type Metrics struct {
 	GuardDuration    metric.Float64Histogram
 	SensitiveScan    metric.Float64Histogram
 
-	// --- Component-level histograms (issue #97) ---
+	// Component-level histograms
 	SubagentDuration metric.Float64Histogram
 	MCPDuration      metric.Float64Histogram
 	EditDuration     metric.Float64Histogram
@@ -86,23 +85,17 @@ type Metrics struct {
 // NewMetrics creates a Metrics instance backed by an OTLP metric exporter
 // connected to the given endpoint over the chosen wire protocol.
 //
-// protocol selects the OTLP wire protocol:
-//   - "" or "grpc": OTLP/gRPC. endpoint is host:port.
-//   - "http/protobuf": OTLP/HTTP with binary protobuf bodies. endpoint is
-//     a full URL ending in the gateway base path; the SDK appends
-//     "/v1/metrics". TLS is on for "https://" URLs and off for plain
-//     "http://" or scheme-less endpoints (local collectors).
+// protocol selects the OTLP wire protocol: "" or "grpc" for OTLP/gRPC
+// (endpoint is host:port), or "http/protobuf" for OTLP/HTTP (endpoint is
+// the gateway base URL; the SDK appends "/v1/metrics"). TLS follows the
+// endpoint scheme.
 //
-// headers is forwarded to the SDK transport unchanged; resolve any
-// "secret://" references upstream via ResolveHeaders so the SDK only
-// ever sees plaintext bearer tokens.
+// headers must already have any "secret://" references resolved (see
+// ResolveHeaders) — the SDK sees them unchanged.
 //
-// resourceOpts threads the run-scoped resource attributes
-// (deployment.environment, service.namespace, harness.run.mode) so metrics
-// emitted here share a consistent resource identity with traces emitted
-// from the same run. Callers without a config in hand can pass a zero
-// ResourceOptions and the resource builder will fall through to env-var
-// fallbacks and the documented defaults.
+// resourceOpts threads the run-scoped resource attributes so metrics share
+// a consistent resource identity with traces from the same run; a zero
+// value falls through to env-var and documented defaults.
 func NewMetrics(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts ResourceOptions) (*Metrics, error) {
 	exporter, err := buildOTLPMetricExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
@@ -158,14 +151,11 @@ func buildOTLPMetricExporter(ctx context.Context, endpoint, protocol string, hea
 }
 
 // stripURLScheme returns the host:port portion of an OTLP endpoint URL
-// for use with otlpmetrichttp.WithEndpoint, which expects a bare host
-// and toggles TLS via WithInsecure(). When the endpoint has no scheme
-// (e.g. "localhost:4318"), the value is returned unchanged. Path
-// components are dropped here and re-applied separately via
-// WithURLPath. Duplicated from the trace package because the two
-// packages are siblings under harness/internal and exporting helpers
-// for HTTP-URL parsing from one to the other adds public API surface
-// for a small amount of code.
+// for use with otlpmetrichttp.WithEndpoint, which expects a bare host and
+// toggles TLS via WithInsecure(). Path components are dropped here and
+// re-applied separately via WithURLPath. Duplicated from the trace package
+// rather than exported, to avoid adding public API surface for a small
+// amount of code.
 func stripURLScheme(endpoint string) string {
 	for _, scheme := range []string{"https://", "http://"} {
 		if strings.HasPrefix(endpoint, scheme) {
@@ -291,17 +281,9 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// ToolFailures decomposes ToolErrors by normalised failure category
-	// and labels each observation with provider.type, provider.model,
-	// tool.name, run.mode, and category. The category attribute is
-	// drawn from the closed ToolFailureCategory enum (see
-	// toolfailure.go) so series cardinality is bounded regardless of
-	// adversary-influenceable inputs. Includes turn-level provider
-	// failures attributable to the tool-use pipeline (request
-	// rejection, mid-stream parser errors with tools attached) and
-	// stall-detector terminations triggered by tool failure patterns,
-	// in addition to the dispatch-site failures already counted by
-	// ToolErrors.
+	// ToolFailures decomposes ToolErrors by category (see
+	// ToolFailureCategory in toolfailure.go); see docs/architecture.md
+	// for the label set and double-counting note.
 	m.ToolFailures, err = meter.Int64Counter("stirrup.harness.tool_failures",
 		metric.WithUnit("{failure}"),
 		metric.WithDescription("Tool-use failures decomposed by provider, model, tool, and bounded failure category. "+
@@ -370,12 +352,9 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// Guard instruments. The five new counters/histogram are tagged with
-	// guard.id and guard.phase so a multi-stage composite (e.g. granite
-	// + cloud-judge) reports correctly attributed metrics. Skips are
-	// distinct from regular allows because a min-chunk skip never
-	// contacts the upstream classifier — counting them as allows would
-	// hide cost-saving optimisation behaviour.
+	// Guard instruments are tagged with guard.id and guard.phase. Skips
+	// are distinct from allows because a min-chunk skip never contacts
+	// the upstream classifier.
 	m.GuardChecks, err = meter.Int64Counter("stirrup.guard.checks",
 		metric.WithUnit("{check}"),
 		metric.WithDescription("Total guard checks dispatched (allow + deny + spotlight)"),
@@ -426,13 +405,9 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// --- Component-level counters (issue #97) ---
-	//
-	// These instruments expose per-component activity (sub-agent, MCP,
-	// edit, verifier, codescanner, permission, context) so dashboards
-	// can attribute cost and latency to specific subsystems. Wiring at
-	// call sites is a follow-up chunk; the foundation lands first so
-	// the names are stable before any producer references them.
+	// Component-level counters expose per-component activity (sub-agent,
+	// MCP, edit, verifier, codescanner, permission, context) so
+	// dashboards can attribute cost and latency to specific subsystems.
 
 	m.SubagentSpawns, err = meter.Int64Counter("stirrup.subagent.spawns",
 		metric.WithUnit("{spawn}"),
@@ -572,10 +547,9 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// --- Component-level histograms (issue #97) ---
-	// Default histogram buckets are reused; per-component bucket
-	// configuration is intentionally deferred until call-site wiring
-	// reveals the actual latency distribution.
+	// Component-level histograms use the default buckets; per-component
+	// bucket configuration is deferred until call-site wiring reveals
+	// the actual latency distribution.
 
 	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration_ms",
 		metric.WithUnit("ms"),
@@ -609,14 +583,6 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// --- Observable gauge ---
-	//
-	// ContextTokens reports the live (absolute) context-window token
-	// estimate per run. Each AgenticLoop registers a callback at run start
-	// via RegisterContextTokensCallback and unregisters it at run end. The
-	// gauge value is tagged with run.id and run.mode so concurrent runs can
-	// be distinguished downstream — there is no shared cumulative counter
-	// to confuse with delta sums.
 	m.ContextTokens, err = meter.Int64ObservableGauge("stirrup.harness.context_tokens",
 		metric.WithUnit("{token}"),
 		metric.WithDescription("Live context window token usage per run"),
@@ -633,15 +599,12 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 // set to attach to the observation (typically run.id and run.mode).
 type ctxTokenCallback func() (val int64, attrs []attribute.KeyValue)
 
-// RegisterContextTokensCallback registers a callback that the OTel SDK will
-// invoke at each collection cycle to observe the current ContextTokens
-// value. Returns an unregister function the caller MUST invoke when the
-// run finishes — otherwise the callback continues firing after the run
-// ends.
-//
-// Multiple concurrent registrations are supported (one per active run).
-// A nil callback is rejected; the returned unregister function is always
-// safe to call (it is a no-op when registration failed).
+// RegisterContextTokensCallback registers a callback the OTel SDK invokes
+// at each collection cycle to observe the current ContextTokens value.
+// Returns an unregister function the caller MUST invoke when the run
+// finishes, or the callback keeps firing after the run ends. Multiple
+// concurrent registrations are supported (one per active run); the
+// returned unregister function is always safe to call.
 func (m *Metrics) RegisterContextTokensCallback(fn ctxTokenCallback) (unregister func(), err error) {
 	if fn == nil {
 		return func() {}, nil
@@ -689,12 +652,9 @@ func (m *Metrics) Close() error {
 }
 
 // NewMetricsForTesting builds a Metrics instance backed by the supplied
-// MeterProvider (typically a ManualReader-backed provider). This is exposed
-// so tests in dependent packages (provider, core, transport, security) can
-// assert that instruments are recorded without requiring an OTLP endpoint.
-//
-// The returned Metrics does not own provider; callers are responsible for
-// shutting it down.
+// MeterProvider (typically ManualReader-backed), so dependent-package tests
+// can assert instruments are recorded without an OTLP endpoint. The
+// returned Metrics does not own provider; callers must shut it down.
 func NewMetricsForTesting(provider *sdkmetric.MeterProvider) (*Metrics, error) {
 	meter := provider.Meter("stirrup-harness-test")
 	// Pass nil so Close() on the returned Metrics is a no-op — the caller

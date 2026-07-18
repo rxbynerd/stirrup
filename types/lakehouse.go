@@ -5,15 +5,12 @@ import "context"
 // TraceLakehouse is the read surface eval consumers (baseline,
 // mine-failures, drift, compare-to-production, replay) depend on.
 // Implementations may back this with files, BigQuery, ClickHouse, or
-// any other store — the eval framework consumes it without caring
-// about the backing store.
+// any other store.
 //
-// As of #109 the write surface (StoreTrace, StoreRecording) is NOT
-// part of this interface. Production writes flow through the control
-// plane; the local OSS path writes via the concrete `*FileStore` type
-// that `stirrup-eval ingest` constructs directly. Cloud-backed
-// adapters never implement the write methods — see the issue body
-// for the architectural rationale.
+// The write surface (StoreTrace, StoreRecording) is deliberately not
+// part of this interface: production writes flow through the control
+// plane, and the local OSS path writes via the concrete *FileStore
+// type instead.
 type TraceLakehouse interface {
 	// QueryTraces returns traces matching the filter, ordered by StartedAt desc.
 	QueryTraces(ctx context.Context, filter TraceFilter) ([]RunTrace, error)

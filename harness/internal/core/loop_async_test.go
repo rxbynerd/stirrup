@@ -169,8 +169,6 @@ func TestAsyncDispatch_HappyPath(t *testing.T) {
 		t.Fatalf("expected output 'async output ok', got %q", output)
 	}
 
-	// Verify the emitted request event carries tool_use_id, tool name,
-	// and request_id.
 	events := tr.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 emitted event, got %d", len(events))
@@ -226,11 +224,9 @@ func TestAsyncDispatch_UpstreamError(t *testing.T) {
 	if success {
 		t.Fatalf("expected success=false on is_error response")
 	}
-	// The is_error path must wrap the control-plane content with a
-	// structured prefix so the model can disambiguate upstream failures
-	// from harness-side failures (transport_disconnect, timeout,
-	// internal error). Without the prefix, the four error categories
-	// are not textually distinguishable.
+	// The is_error path must wrap control-plane content with a structured
+	// prefix so the model can disambiguate upstream failures from
+	// harness-side failures (transport_disconnect, timeout, internal error).
 	if !strings.Contains(output, "upstream_error:") {
 		t.Fatalf("expected output to contain 'upstream_error:' prefix, got %q", output)
 	}
@@ -243,13 +239,11 @@ func TestAsyncDispatch_UpstreamError(t *testing.T) {
 }
 
 func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
-	// The control plane is partially trusted. A misbehaving or
-	// compromised control plane could embed secret-shaped strings in
-	// the error payload; the failure path forwards content into the
-	// JSONL trace via RecordToolCall.ErrorReason without going through
-	// the transport's outbound scrub, so scrubbing must happen at the
-	// point of entry. Use an Anthropic-API-key-shaped secret so the
-	// existing security.LogScrubber pattern catches it.
+	// The control plane is partially trusted: a misbehaving or
+	// compromised control plane could embed secret-shaped strings in the
+	// error payload, which reaches the JSONL trace via
+	// RecordToolCall.ErrorReason without going through the transport's
+	// outbound scrub, so scrubbing must happen at the point of entry.
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -294,10 +288,9 @@ func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
 
 func TestAsyncDispatch_ContentTruncation(t *testing.T) {
 	// The control plane supplies tool result content as an unbounded
-	// string. The harness must cap it before the value flows into tool
+	// string; the harness must cap it before the value flows into tool
 	// output, message history, or the wire — same discipline as the
-	// 1MB run_command output cap. Send 1MB+1 bytes and assert the
-	// returned content is truncated and carries the harness suffix.
+	// 1MB run_command output cap.
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -471,13 +464,10 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 		r2 <- res{out, ok}
 	}()
 
-	// Wait until both pending awaits are registered. We poll the count of
-	// emitted tool_result_request events as a proxy: each in-flight async
-	// dispatch emits exactly one such event before blocking on the
-	// correlator. Reading loop.asyncCorrelator directly from this
-	// goroutine would race with the dispatch goroutines writing it under
-	// sync.Once; the correlator's own state is fine to inspect via
-	// PendingCount() once construction is established.
+	// Poll the count of emitted tool_result_request events as a proxy for
+	// both pending awaits being registered: reading loop.asyncCorrelator
+	// directly here would race with the dispatch goroutines writing it
+	// under sync.Once.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		count := 0
@@ -499,8 +489,6 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 		t.Fatalf("expected 2 pending awaits, got %d", got)
 	}
 
-	// Pull request IDs out of the emitted events. Map them to the tool
-	// use IDs so we know which dispatch returned which payload.
 	events := tr.Events()
 	idByToolUseID := map[string]string{}
 	for _, e := range events {

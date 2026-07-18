@@ -382,8 +382,8 @@ var (
 	_ HasOnControl = (*NullTransport)(nil)
 )
 
-// Sanity: NewCorrelator returns a non-nil instance and PendingCount starts
-// at zero. (Belt-and-braces; covered indirectly above.)
+// TestCorrelator_NewIsEmpty verifies NewCorrelator returns a non-nil
+// instance with PendingCount starting at zero.
 func TestCorrelator_NewIsEmpty(t *testing.T) {
 	t.Parallel()
 	c := NewCorrelator("x")
