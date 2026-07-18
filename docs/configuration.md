@@ -982,6 +982,110 @@ before the session starts, submit an artifact after it ends:
 }
 ```
 
+## Sandbox identity and git-proxy wiring
+
+`executor.sandboxIdentity` and `executor.gitProxy` (issue #516)
+request a short-lived, control-plane-issued credential ("sandbox
+identity token") for the sandbox and compose the non-secret git
+configuration that routes clone/push traffic for private
+repositories through a git-credential proxy such as
+[haybale](https://github.com/rxbynerd/haybale). Neither block carries
+the token itself — `RunConfig` and its `Redact()`ed form never see
+the JWT; only the (non-secret) request shape and env-var wiring live
+here. See [`deployment.md`'s "Sandbox identity token
+issuance"](deployment.md#sandbox-identity-token-issuance-control-plane-implementers)
+for the gRPC wire contract a control plane implements to answer the
+request these fields configure.
+
+```json
+"executor": {
+  "type": "container",
+  "sandboxIdentity": {
+    "source": "control-plane",
+    "audience": "https://haybale.internal",
+    "envVar": "HAYBALE_TOKEN"
+  },
+  "gitProxy": {
+    "url": "http://haybale.internal:8466",
+    "hosts": ["github.com"],
+    "rewriteSsh": true,
+    "tokenEnvVar": "HAYBALE_TOKEN"
+  },
+  "network": {
+    "mode": "allowlist",
+    "allowlist": ["haybale.internal:8466"]
+  }
+}
+```
+
+| Field | Meaning | Default / bound |
+|---|---|---|
+| `sandboxIdentity.source` | Token issuer. Closed set. | Required; only `"control-plane"` is supported |
+| `sandboxIdentity.audience` | Intended JWT `aud` claim. Informational — the control plane may override it. | `""` |
+| `sandboxIdentity.envVar` | Sandbox environment variable the token is injected as. | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `gitProxy.url` | The proxy's base URL, e.g. `http://haybale.internal:8466`. | Required when `gitProxy` is set; must be an absolute `http`/`https` URL with a host |
+| `gitProxy.hosts` | Git hosts to rewrite through the proxy, e.g. `["github.com"]`. | Required (at least one host) when `gitProxy` is set |
+| `gitProxy.rewriteSsh` | Also rewrite the `git@<host>:` and `ssh://git@<host>/` URL forms, not just `https://<host>/`. | `false` |
+| `gitProxy.tokenEnvVar` | Environment variable the composed git-credential helper reads the token from. Must resolve to the same value as `sandboxIdentity.envVar` (both apply the same `HAYBALE_TOKEN` default when empty). | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
+
+Both blocks are optional and pointer-typed: a `RunConfig` with neither
+set validates exactly as it did before this feature existed,
+regardless of `transport` or `executor.type` — none of the rules
+below are gated on anything but the blocks' own presence.
+
+`ValidateRunConfig` enforces:
+
+- **`transport: "grpc"` is required.** Requesting a sandbox identity
+  token means asking the control plane over the gRPC control stream;
+  `stdio` has no upstream to ask. Setting `sandboxIdentity` or
+  `gitProxy` under `transport: "stdio"` (or the unset/default
+  transport) is a validation error.
+- **Executor scope (v1).** `sandboxIdentity` / `gitProxy` are only
+  valid for `executor.type` `"container"`, `"k8s"`, or
+  `"k8s-sandbox"` — the executors that create a sandbox environment
+  the harness controls at creation time. `"local"` is deferred (a
+  developer machine already carries its own git credentials);
+  `"api"` and `"none"` have no sandbox environment to inject into.
+- **`gitProxy` requires `sandboxIdentity`.** v1's only token source
+  is control-plane issuance via `sandboxIdentity` — a `gitProxy`
+  block with no `sandboxIdentity` names an environment variable that
+  would never be populated, so the combination is a validation
+  error rather than a silent no-op.
+- **`gitProxy.tokenEnvVar` must match the effective
+  `sandboxIdentity.envVar`.** Both fields apply the same
+  `HAYBALE_TOKEN` default when left empty, so two unset fields match
+  by default; an explicit value on one side with no matching
+  explicit value on the other is a mismatch and a validation error.
+- **`gitProxy.url` is required and must be a well-formed endpoint.**
+  An empty `gitProxy.url` is a validation error, and a non-empty one
+  must parse as an absolute URL with scheme `http` or `https` and a
+  non-empty host — the same shape check `guardRail.endpoint` applies.
+- **`gitProxy.hosts` must name at least one host.** `hosts` is what
+  drives how many proxy rewrite rules get composed; an empty list
+  would let the block validate cleanly while silently routing
+  nothing through the proxy, so it is a validation error.
+- **`sandboxIdentity.envVar` and `gitProxy.tokenEnvVar` must be legal
+  POSIX environment variable names when non-empty.** Both names are
+  interpolated into a shell credential-helper string when the sandbox
+  git configuration is composed, so each must match
+  `^[A-Za-z_][A-Za-z0-9_]*$`. This is a charset check only — it does
+  not block semantically sensitive but syntactically valid names such
+  as `PATH`.
+
+Operators using `executor.network.mode: "allowlist"` should add the
+proxy's `host:port` to `executor.network.allowlist` (as in the
+example above) and deliberately leave the git hosts themselves
+(`github.com`) off it, so the proxy is the only route to them — Ring
+2's egress allowlist otherwise gives the sandbox no route to the
+proxy at all. `ValidateRunConfig` warns (via `slog`, not a validation
+error) when `gitProxy.url`'s `host:port` is absent from the
+allowlist in `allowlist` mode; the check is a plain exact-match
+against `gitProxy.url`, so an allowlist entry that only covers the
+proxy host via a wildcard (`*.internal:8466`) may still trigger a
+spurious warning even though the sandbox has a working route — the
+common case being a proxy already covered by a wildcard-subdomain
+allowlist entry, where the warning is expected and can be ignored.
+
 ## Limits and budgets
 
 `ValidateRunConfig` enforces hard caps on values that could otherwise
