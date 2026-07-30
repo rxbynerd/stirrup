@@ -2,6 +2,13 @@ name: CI
 
 on:
   push:
+  workflow_dispatch:
+    inputs:
+      run_quirks_suites:
+        description: 'Also run the self-pinned provider-quirk suites (Terra/Sol grade — costs materially more than the Luna gate)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   verify:
@@ -12,33 +19,40 @@ jobs:
     name: Eval Gate
     runs-on: ubuntu-latest
     needs: verify
-    # Runs on every push (this workflow's only trigger), on every
-    # branch: the gate is the cheap-model regression check for the
-    # baselined suites, so PR branches get the signal before merge
-    # rather than discovering a regression on main. It was disabled
-    # outright between b472687 and this job's re-enable. Missing
-    # credentials (fork clones, Dependabot-actor pushes — neither can
-    # read this repository's Actions secrets) skip gracefully via the
-    # check-creds step, so that failure mode never masquerades as an
-    # eval regression.
+    # SCOPED TO main AND workflow_dispatch ON PURPOSE — this is a cost
+    # control, not an oversight. Live eval runs spend real tokens on
+    # every invocation, and running them per-push across every active
+    # branch multiplies that by the branch count for a signal that main
+    # will produce anyway a few minutes later. Even on promotionally
+    # priced models the per-push shape is what makes the bill grow
+    # without bound.
     #
-    # The gate authenticates with a static OpenRouter API key
-    # (secrets.OPENROUTER_API_KEY), not Anthropic WIF. That is a
-    # deliberate simplification over the previous posture: the WIF
-    # federation rule pinned the OIDC ref claim to refs/heads/main, so
-    # every branch push — the pushes this gate exists to catch
-    # regressions on — skipped via a preflight downgrade. A repository
-    # secret is ref-agnostic, so branch pushes now run the gate for
-    # real, and a preflight failure is unambiguously an infrastructure
-    # fault on every ref rather than an expected non-main refusal.
+    # Do not "fix" this by widening the trigger. If a branch needs the
+    # signal before merge, run the workflow on demand
+    # (`gh workflow run ci.yml --ref <branch>`), which also gates the
+    # expensive provider-quirk suites behind an explicit input.
+    #
+    # An earlier revision of this file described the non-main skip as an
+    # accident of the Anthropic WIF federation rule (which pinned the
+    # OIDC ref claim to refs/heads/main) and told operators to widen the
+    # rule so branch pushes would run live. That advice was wrong about
+    # the intent: main-only is the desired posture, and this `if:` now
+    # enforces it at the job level rather than leaving it to a
+    # credential-side accident.
+    #
+    # Missing credentials (fork clones, Dependabot-actor pushes —
+    # neither can read this repository's Actions secrets) still skip
+    # gracefully via the check-creds step, so that failure mode never
+    # masquerades as an eval regression.
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     env:
-      # Cheap-model configuration for the per-push gate. The gate's job
-      # is "did the harness regress on tasks it used to pass", not
-      # "measure the best model", so it runs the cheapest model that
-      # clears the suite reliably. The stronger-model sweep runs at
-      # release time (release.yml::eval-extended, Sonnet 5 + Opus 4.8).
+      # Cheap-model configuration for the gate. Its job is "did the
+      # harness regress on tasks it used to pass", not "measure the best
+      # model", so it runs the cheapest model that clears the suite
+      # reliably. The stronger-model sweep runs at release time
+      # (release.yml::eval-extended, Sonnet 5 + Opus 4.8).
       #
       # GPT-5.6 Luna over OpenRouter replaced Claude Haiku 4.5 here, on
       # cost alone: ~$0.10/M input and ~$0.60/M output against Haiku
@@ -148,9 +162,10 @@ jobs:
       # WIF posture this step downgraded to a warning off main, because
       # the federation rule legitimately refused non-main-ref OIDC
       # tokens and a hard failure there would have been noise. A
-      # repository secret has no such ref sensitivity: if check-creds
-      # saw a key and the probe still fails, something is genuinely
-      # broken on every ref. Failing red keeps this gate from silently
+      # repository secret has no such ref sensitivity, and the job's
+      # `if:` already restricts execution to main and manual dispatch:
+      # if this job is running at all and the probe fails, something is
+      # genuinely broken. Failing red keeps the gate from silently
       # decaying into the no-op it was previously rescued from.
       - name: Preflight provider credential
         id: preflight
@@ -182,12 +197,46 @@ jobs:
           # secret://OPENROUTER_API_KEY reference in EVAL_API_KEY_REF.
           # stirrup-eval passes the reference, never the value.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Empty on a push event; only workflow_dispatch supplies it.
+          RUN_QUIRKS: ${{ inputs.run_quirks_suites }}
         run: |
           shopt -s nullglob
           mkdir -p eval/results
           for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
+            # Self-pinned suites carry their own provider posture in a
+            # run_config block, including the model. Passing the gate's
+            # --model on top would silently override the pin (explicit
+            # flags beat --config by design) and collapse a Terra/Sol
+            # matrix into another Luna run — the exact silent
+            # nullification eval/suites/README.md warns about. They also
+            # cost materially more than the Luna gate, so the
+            # run_quirks_suites dispatch input is their opt-in.
+            #
+            # This case deliberately precedes the baseline check below.
+            # The explicit dispatch input is already a stronger opt-in
+            # than baseline presence, and a quirk suite must be runnable
+            # BEFORE it has a baseline — the first live run is what
+            # produces the result.json a baseline is minimised from.
+            # Once baselined, the compare step gates it like any other
+            # suite; until then compare skips it with a message.
+            case "$name" in
+              provider-quirks-*)
+                if [ "${RUN_QUIRKS:-false}" != "true" ]; then
+                  echo "Skipping ${name} — self-pinned quirk suite; re-run via workflow_dispatch with run_quirks_suites=true"
+                  continue
+                fi
+                echo "Running ${name} with its own pinned provider/model (no --model override)"
+                ./stirrup-eval run \
+                  --suite "$suite" \
+                  --harness "$GITHUB_WORKSPACE/stirrup" \
+                  --output "eval/results/${name}" \
+                  --junit "eval/results/${name}/junit.xml"
+                continue
+                ;;
+            esac
+
             # Only baselined suites are gated. Unbaselined suites
             # (guardrail needs a local vLLM endpoint; tooluse's
             # no-credential gate is the in-process replay test — see
@@ -199,6 +248,7 @@ jobs:
               echo "Skipping ${name} — no baseline at eval/baselines/${name}.json (unbaselined suites are opt-in; see eval/suites/README.md)"
               continue
             fi
+
             # JUnit XML is an annotation/artifact only; the eval gate
             # is enforced by the `compare` step below.
             #

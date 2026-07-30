@@ -5,12 +5,36 @@ Each `.hcl` file in this directory is an `EvalSuite` that the
 binary. Two CI surfaces execute the suites that have a matching
 baseline in `../baselines/`:
 
-- **Per-push gate** — `.github/workflows/ci.yml::eval-gate` runs
-  the baselined suites on every push, pinned to a cheap model
-  (GPT-5.6 Luna over OpenRouter, selected by `stirrup-eval run`'s
-  `--provider` / `--base-url` / `--api-key-ref` / `--model` flags),
-  compares each result to its baseline, and fails the gate on a
-  regression.
+- **Main-push gate** — `.github/workflows/ci.yml::eval-gate` runs
+  the baselined suites on pushes to `main` (and on manual
+  `workflow_dispatch`), pinned to a cheap model (GPT-5.6 Luna over
+  OpenRouter, selected by `stirrup-eval run`'s `--provider` /
+  `--base-url` / `--api-key-ref` / `--model` flags), compares each
+  result to its baseline, and fails the gate on a regression.
+
+  The `main`-and-dispatch scoping is a cost control, not an
+  oversight: live eval runs spend real tokens per invocation, and a
+  per-push trigger multiplies that by the number of active branches
+  for a signal `main` produces anyway. To get the signal on a branch
+  before merge, run it on demand:
+
+  ```bash
+  gh workflow run ci.yml --ref <branch>
+  ```
+
+- **On-demand quirk suites** — suites named `provider-quirks-*` pin
+  their own provider and model and cost materially more than the
+  gate, so they run only when `workflow_dispatch` is given
+  `run_quirks_suites=true`:
+
+  ```bash
+  gh workflow run ci.yml --ref <branch> -f run_quirks_suites=true
+  ```
+
+  CI invokes them with **no** `--model` / `--provider` / `--base-url`
+  override, so their inline `run_config` decides the wire posture.
+  That is the point: a quirk test whose model can be swapped from the
+  command line tests nothing.
 - **Release sweep** — `.github/workflows/release.yml::eval-extended`
   re-runs the same baselined suites against stronger models
   (Claude Sonnet 5 and Claude Opus 4.8) on every release tag. The
@@ -29,7 +53,8 @@ For the suite schema and the per-task contract see
 |---|---|---|
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
-| `openai-responses-empty-tool-output.hcl` | Hand-authored | Regression pin for a provider edge case. |
+| `openai-responses-empty-tool-output.hcl` | Hand-authored | Regression pin for a provider edge case. Self-pinned (`openai-responses`, `secret://OPENAI_KEY`); opt-in local run. |
+| `provider-quirks-openai.hcl` | Hand-authored | Live wire-protocol suite for OpenAI reasoning-class models via OpenRouter, at Terra and Sol grade. Self-pinned; requires `OPENROUTER_API_KEY`. On-demand only — see the dispatch recipe above. |
 | `tooluse.hcl` | Hand-authored (#233) | Tool-use reliability regression for the Wave 1-5 tool redesign. Judges check both workspace state and tool-call trace. See below for the no-credential gate. |
 | `ruleoftwo.hcl` | Hand-authored | Deterministic suite for [Ring 4's runtime sensitive-data classifier](../../docs/safety-rings.md#the-runtime-classifier) under the default enforcing `block-external` action: a secret in a tool result and a Luhn-valid PAN in the prompt each revoke egress; canonical AWS example keys must not over-block. No vLLM/guard dependency. |
 | `ruleoftwo-observe.hcl` | Hand-authored | Companion to `ruleoftwo.hcl` for the `ruleOfTwo.enforce: false` observe-only escape hatch (egress survives while detection still latches). A separate file because `LoadSuiteHCL` takes one suite per file and `rule_of_two` is not a per-task override. |
@@ -82,6 +107,40 @@ are slow and spend credits; they are an explicit opt-in and are not
 part of default CI. No baseline ships for this suite, so the eval
 gate neither runs nor compares it until an operator promotes one
 (see "Promoting a mined suite" for the baseline workflow).
+
+## Authoring a self-pinned suite
+
+Two constraints catch every author writing one for the first time.
+
+**A suite-level `run_config` is the complete baseline RunConfig, not
+an overlay on the harness defaults.** It must satisfy
+`ValidateRunConfig` by itself, which means `mode` and `max_turns` are
+required even though a task's own `mode` attribute reaches the harness
+as a `--mode` flag — validation runs against the merged config before
+any flag is applied. Omitting them fails every task with `mode type is
+required; maxTurns must be positive` before a single request is sent.
+
+**A per-task `run_config_overrides` block replaces a whole struct, it
+does not merge fields.** `mergeOverrides` assigns `*overlay.ModelRouter`
+over the baseline wholesale, so an override that sets only `model`
+zeroes `type` and `provider`. Restate every field:
+
+```hcl
+run_config_overrides {
+  model_router {
+    type     = "static"
+    provider = "openai-compatible"
+    model    = "openai/gpt-5.6-sol"
+  }
+}
+```
+
+Validate both with `--dry-run` before spending any credits — it runs
+the same merge and validation path without issuing a request:
+
+```sh
+./stirrup-eval run --suite eval/suites/<name>.hcl --dry-run --output /tmp/dry
+```
 
 ## Promoting a mined suite
 

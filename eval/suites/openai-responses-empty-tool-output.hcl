@@ -53,6 +53,15 @@ suite "openai-responses-empty-tool-output-regression" {
   # `--output` includes the redacted form (every `secret://` ref
   # rewritten to `secret://[REDACTED]`).
   run_config {
+    // A suite-level run_config is the COMPLETE baseline RunConfig, not
+    // an overlay on the harness defaults, so it must satisfy
+    // ValidateRunConfig on its own. Without these two the suite errored
+    // every task with "mode type is required; maxTurns must be
+    // positive" before reaching the API — which went unnoticed because
+    // the suite is unbaselined and therefore never runs in CI.
+    mode      = "execution"
+    max_turns = 20
+
     provider {
       type        = "openai-responses"
       api_key_ref = "secret://OPENAI_KEY"
