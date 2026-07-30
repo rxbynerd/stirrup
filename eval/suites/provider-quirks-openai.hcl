@@ -15,9 +15,38 @@
 // matched `openai/gpt-5.6-terra`. A reasoning-class model was being
 // treated as zero-value. Nothing offline could see it.
 //
-// So this suite runs real requests and asserts on the resulting tool
-// trace. It is the end-to-end half of the contract; the unit tests
-// remain the per-PR gate.
+// So this suite runs real requests against the live API. It is the
+// end-to-end half of the contract; the unit tests remain the per-PR
+// gate.
+//
+// ASSERT ON THE WIRE CONTRACT, NOT ON TOOL CHOICE
+//
+// The first revision of this suite asserted `write_file` call counts.
+// Four of five tasks failed on their first live run while every
+// filesystem assertion passed — the models had used `edit_file`, or
+// satisfied a whole three-file task with a single `run_command`. The
+// assertions were measuring which tool a model happens to prefer,
+// which is not a harness contract and varies by model, by grade, and
+// by prompt phrasing.
+//
+// The rule this suite now follows:
+//
+//   - The correct END STATE is the primary assertion. Under a wire
+//     regression the run dies mid-loop and the artifact never lands,
+//     so the artifact's presence and exact bytes prove the round trip.
+//   - Assert on a specific tool only where the task's PREMISE requires
+//     that tool to have run (terra-empty-tool-output-round-trip needs
+//     a run_command to have produced the empty result it is testing),
+//     and then on min_calls rather than success — the shell-escape
+//     guard legitimately rejects some command shapes, and a rejected
+//     attempt the model recovers from is correct behaviour, not a
+//     defect.
+//   - Assert ORDER only where the prompt itself imposes it across
+//     distinct tools (sol-reasoning-class-tool-chain reads before it
+//     verifies).
+//
+// A judge that fails when the harness is working is worse than no
+// judge: it trains readers to ignore the suite.
 //
 // WHY IT PINS ITS OWN PROVIDER
 //
@@ -86,7 +115,7 @@ suite "provider-quirks-openai" {
   }
 
   task "terra-reasoning-class-tool-loop" {
-    description = "Baseline contract at Terra grade: a gateway-prefixed reasoning-class model completes a prompt -> tool_use -> tool_result -> answer loop. This is the task that fails outright if the harness sends sampling parameters to a model class that rejects them — the exact exposure the */gpt-5* quirk rule closes. The tool-trace judge asserts the write actually happened rather than inferring it from the file alone, so a run that produced the file by some other route is not counted as a pass."
+    description = "Baseline contract at Terra grade: a gateway-prefixed reasoning-class model completes a prompt -> tool_use -> tool_result -> answer loop. This is the task that fails outright if the harness sends sampling parameters to a model class that rejects them — the exact exposure the */gpt-5* quirk rule closes. The correct end state IS the assertion: under a rejected request the run dies before anything is written, so the file's presence is the proof the loop completed. Deliberately makes no claim about WHICH tool did the writing — see the note on tool-choice assertions at the top of this file."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -97,30 +126,14 @@ suite "provider-quirks-openai" {
     EOT
 
     judge {
-      type    = "composite"
-      require = "all"
-
-      judge {
-        type    = "file-contains"
-        path    = "terra-loop.txt"
-        pattern = "^ok$"
-      }
-
-      judge {
-        type = "tool-trace"
-
-        tool_trace {
-          call "write_file" {
-            min_calls     = 1
-            all_succeeded = true
-          }
-        }
-      }
+      type    = "file-contains"
+      path    = "terra-loop.txt"
+      pattern = "^ok$"
     }
   }
 
   task "terra-empty-tool-output-round-trip" {
-    description = "Chat Completions analogue of the openai-responses #172 regression. A tool result with empty content must survive being replayed into the next request. Under an adapter that drops or nulls the empty result, the follow-up turn is rejected and the sentinel write never happens — so the sentinel's presence, not the command's exit status, is the signal. Ordering matters here, hence sequence rather than two independent call expectations."
+    description = "Chat Completions analogue of the openai-responses #172 regression. A tool result with empty content must survive being replayed into the next request. Under an adapter that drops or nulls the empty result, the follow-up turn is rejected and the sentinel write never happens — so the sentinel's presence, not the command's exit status, is the signal. The run_command expectation is min_calls only: it confirms the empty-output path was actually exercised rather than the model skipping straight to the write, without asserting success, because the shell-escape guard legitimately rejects some command shapes and a rejected attempt is not a harness defect."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -148,11 +161,8 @@ suite "provider-quirks-openai" {
         type = "tool-trace"
 
         tool_trace {
-          sequence = ["run_command", "write_file"]
-
           call "run_command" {
-            min_calls     = 1
-            all_succeeded = true
+            min_calls = 1
           }
         }
       }
@@ -160,7 +170,7 @@ suite "provider-quirks-openai" {
   }
 
   task "terra-multi-tool-turn" {
-    description = "Exercises several tool calls within one task, the shape that surfaces request-threading defects: tool_call ids must round-trip so each result is attributed to the right call. A provider or adapter that mismatches ids typically completes some writes and drops others, which min_calls = 3 catches. Deliberately does not assert on parallelism — whether the model batches the calls into one assistant turn is a model choice, not a harness contract, and asserting it would make this task a model-behaviour test rather than a wire test."
+    description = "Multi-artifact correctness: three distinct outputs must all land with exactly the right bytes. A truncated or mis-attributed tool result typically produces some files and not others, or the right count with swapped contents, which the per-file assertions catch. Makes no claim about the number of tool calls — an earlier revision asserted three write_file calls and failed against a model that satisfied the whole task with one shell command, which is a model choice, not a harness contract. Genuine multi-turn threading is covered by sol-reasoning-class-tool-chain, which the prompt forces across several turns."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -185,19 +195,20 @@ suite "provider-quirks-openai" {
 
       judge {
         type    = "file-contains"
+        path    = "one.txt"
+        pattern = "^alpha$"
+      }
+
+      judge {
+        type    = "file-contains"
         path    = "two.txt"
         pattern = "^beta$"
       }
 
       judge {
-        type = "tool-trace"
-
-        tool_trace {
-          call "write_file" {
-            min_calls     = 3
-            all_succeeded = true
-          }
-        }
+        type    = "file-contains"
+        path    = "three.txt"
+        pattern = "^gamma$"
       }
     }
   }
@@ -251,7 +262,7 @@ suite "provider-quirks-openai" {
   }
 
   task "sol-strict-schema-adherence" {
-    description = "Sol grade. The gpt-5 family resolves strict-mode structured outputs, which constrains tool arguments to the declared JSON schema. This task drives a tool call whose arguments must carry an exact, awkward literal — leading zeros, embedded punctuation — through the strict-mode encoder. A schema or encoder defect mangles the argument in transit, so the file lands with the wrong bytes while every call still reports success. The file-contains pattern is anchored on both ends so a truncated or padded value fails."
+    description = "Sol grade. The gpt-5 family resolves strict-mode structured outputs, which constrains tool arguments to the declared JSON schema. This task drives a tool call whose arguments must carry an exact, awkward literal — leading zeros, embedded punctuation, brackets — through the strict-mode encoder. A schema or encoder defect mangles the argument in transit, so the file lands with the wrong bytes while every call still reports success. That is why the byte-exact, both-ends-anchored content check is the whole assertion: a tool-call-count check would pass in exactly the case this task exists to catch."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -272,25 +283,9 @@ suite "provider-quirks-openai" {
     }
 
     judge {
-      type    = "composite"
-      require = "all"
-
-      judge {
-        type    = "file-contains"
-        path    = "strict.txt"
-        pattern = "^id=007;name=a-b_c\\.d;flags=\\[x,y\\]$"
-      }
-
-      judge {
-        type = "tool-trace"
-
-        tool_trace {
-          call "write_file" {
-            min_calls     = 1
-            all_succeeded = true
-          }
-        }
-      }
+      type    = "file-contains"
+      path    = "strict.txt"
+      pattern = "^id=007;name=a-b_c\\.d;flags=\\[x,y\\]$"
     }
   }
 }
