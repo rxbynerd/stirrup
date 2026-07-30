@@ -1,0 +1,53 @@
+{
+  "_comment_": "Real-harness baseline for provider-quirks-openai.hcl, minimised from a live CI run on 2026-07-30 (GitHub Actions run 30581229175, source runId eval-1785445414694, 5/5). Models are pinned by the suite itself — openai/gpt-5.6-terra for the terra-* tasks, openai/gpt-5.6-sol for the sol-* tasks, both over OpenRouter — NOT by the eval-gate's --model, which CI deliberately withholds from provider-quirks-* suites. Regenerate by re-running the suite with no --model/--provider/--base-url override and re-minimising. Traces, timings, and temp paths are intentionally omitted to keep the baseline deterministic; the compare step gates on per-task outcome only. NOTE ON judgeVerdict.reason: the sub-judge counts below are a property of the suite's judge blocks, not of the run — changing a task's judges changes the reason string and requires regenerating this file even when behaviour is unchanged. The tool-call SEQUENCE is deliberately not baselined: it varies legitimately between runs (the first live run of this suite used edit_file where the second used run_command for the same task), which is why the judges assert end state rather than tool choice — see the header of the .hcl.",
+  "suiteId": "provider-quirks-openai",
+  "runId": "baseline-live-eval-1785445414694",
+  "passRate": 1,
+  "tasks": [
+    {
+      "taskId": "terra-reasoning-class-tool-loop",
+      "outcome": "pass",
+      "judgeVerdict": {
+        "passed": true,
+        "reason": "pattern \"^ok$\" found in terra-loop.txt"
+      },
+      "durationMs": 0
+    },
+    {
+      "taskId": "terra-empty-tool-output-round-trip",
+      "outcome": "pass",
+      "judgeVerdict": {
+        "passed": true,
+        "reason": "all 2 sub-judges passed"
+      },
+      "durationMs": 0
+    },
+    {
+      "taskId": "terra-multi-tool-turn",
+      "outcome": "pass",
+      "judgeVerdict": {
+        "passed": true,
+        "reason": "all 4 sub-judges passed"
+      },
+      "durationMs": 0
+    },
+    {
+      "taskId": "sol-reasoning-class-tool-chain",
+      "outcome": "pass",
+      "judgeVerdict": {
+        "passed": true,
+        "reason": "all 2 sub-judges passed"
+      },
+      "durationMs": 0
+    },
+    {
+      "taskId": "sol-strict-schema-adherence",
+      "outcome": "pass",
+      "judgeVerdict": {
+        "passed": true,
+        "reason": "pattern \"^id=007;name=a-b_c\\\\.d;flags=\\\\[x,y\\\\]$\" found in strict.txt"
+      },
+      "durationMs": 0
+    }
+  ]
+}
