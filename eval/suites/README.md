@@ -7,8 +7,10 @@ baseline in `../baselines/`:
 
 - **Per-push gate** — `.github/workflows/ci.yml::eval-gate` runs
   the baselined suites on every push, pinned to a cheap model
-  (Claude Haiku 4.5 via `stirrup-eval run --model`), compares each
-  result to its baseline, and fails the gate on a regression.
+  (GPT-5.6 Luna over OpenRouter, selected by `stirrup-eval run`'s
+  `--provider` / `--base-url` / `--api-key-ref` / `--model` flags),
+  compares each result to its baseline, and fails the gate on a
+  regression.
 - **Release sweep** — `.github/workflows/release.yml::eval-extended`
   re-runs the same baselined suites against stronger models
   (Claude Sonnet 5 and Claude Opus 4.8) on every release tag. The
@@ -98,10 +100,11 @@ The v0.1 demo narrative (#277) is:
 5. Commit `eval/suites/mined.hcl` and the produced `result.json`
    as `eval/baselines/mined.json` once you're satisfied with the
    coverage and the baseline reflects an intentional reference
-   state. Generate the baseline with the model the per-push gate
-   runs (`--model claude-haiku-4-5-20251001`) so the committed
-   expectations match what CI actually executes; committing a
-   baseline auto-enrols the suite in both CI eval surfaces.
+   state. Generate the baseline with the provider and model the
+   per-push gate runs (see [Provider credentials](#provider-credentials)
+   for the exact invocation) so the committed expectations match what
+   CI actually executes; committing a baseline auto-enrols the suite in
+   both CI eval surfaces.
 
 The seed suite (`dogfood-seed.hcl`) exists to give the eval-gate
 non-empty work while the dogfood corpus matures. When the mined
@@ -110,25 +113,40 @@ same PR that lands the replacement.
 
 ## Provider credentials
 
-Both CI eval surfaces authenticate via Anthropic Workload Identity
-Federation (the four non-secret `--anthropic-*` identifiers plus
-the GitHub Actions OIDC token); no static `ANTHROPIC_API_KEY`
-secret is required in the canonical configuration. If a static key
-IS configured as a repository secret, the harness prefers it over
-WIF. Suites that bundle a `diff-review` judge ALSO read that key
-at judge-evaluation time. Without any usable credential (e.g. a
-fork without the federation rule or a static key), the eval jobs
-skip their live-run steps gracefully with a warning instead of
+The two CI eval surfaces authenticate differently.
+
+The **per-push gate** uses the `OPENROUTER_API_KEY` repository
+secret, passed to the harness as the `secret://OPENROUTER_API_KEY`
+reference — the key itself never enters a `RunConfig` or a trace.
+Reproduce the gate's exact invocation locally with:
+
+```bash
+OPENROUTER_API_KEY=... ./stirrup-eval run \
+  --suite eval/suites/<name>.hcl \
+  --harness "$PWD/stirrup" \
+  --provider openai-compatible \
+  --base-url https://openrouter.ai/api/v1 \
+  --api-key-ref secret://OPENROUTER_API_KEY \
+  --model openai/gpt-5.6-luna
+```
+
+The **release sweep** authenticates via Anthropic Workload Identity
+Federation (the four non-secret `--anthropic-*` identifiers plus the
+GitHub Actions OIDC token); no static `ANTHROPIC_API_KEY` secret is
+required. Suites that bundle a `diff-review` judge ALSO read an
+Anthropic key at judge-evaluation time.
+
+Without a usable credential — a fork clone, or a Dependabot-actor
+push, neither of which can read this repository's Actions secrets —
+the eval jobs skip their live-run steps with a warning instead of
 failing.
 
-Both jobs run a `stirrup harness --dry-run` preflight before any
-task executes, performing the real credential exchange without
-spending completion tokens. The Anthropic-side federation rule
-constrains which OIDC refs it accepts: a refused exchange on a
-non-main ref skips the per-push gate with a warning (widening the
-rule in the Anthropic console enables live branch runs, no repo
-change needed), a refusal on `main` fails the gate as an
-infrastructure regression, and a refusal at release time fails the
-matrix cell. In every case the log names the credential failure
-explicitly — a wall of per-task "regressions" is never the correct
-reading of an auth problem.
+Both jobs run a `stirrup harness --dry-run` preflight before any task
+executes, performing real credential resolution and a provider probe
+without spending completion tokens. For the per-push gate a preflight
+failure is fatal on every ref: the repository secret is ref-agnostic,
+so a probe failure means a revoked, exhausted, or mistyped key rather
+than an expected refusal. At release time a refusal fails the matrix
+cell. In every case the log names the credential failure explicitly —
+a wall of per-task "regressions" is never the correct reading of an
+auth problem.
