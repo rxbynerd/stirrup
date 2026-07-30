@@ -131,8 +131,18 @@ PR.
 - Reference any related issue in the PR description (`refs #42`,
   `closes #62`).
 - Run `just lint` and `just test` locally before pushing. The
-  `eval-gate` job catches behavioural regressions on every push, but
-  catching them locally is cheaper.
+  `eval-gate` job catches behavioural regressions, but it runs only on
+  pushes to `main` and on manual dispatch — live eval runs spend real
+  tokens, so they are deliberately not per-push. To get the signal on a
+  branch before merge, run it on demand:
+
+  ```sh
+  gh workflow run ci.yml --ref <branch>
+  ```
+
+  Catching regressions locally is cheaper still; see
+  [`eval/suites/README.md`](eval/suites/README.md) for the local
+  invocation.
 - Keep PRs focused. The exception is the safety-ring style multi-step
   PR that ships an opt-in feature in one go — those are fine but
   benefit from clear sub-task labels in commit subjects.
