@@ -333,6 +333,9 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `o[1-9]*`          | OpenAI reasoning-class (o-series): omit sampling params              |
 | `openai-compatible` | `gpt-5*`           | OpenAI gpt-5 family: omit sampling params                            |
 | `openai-compatible` | `gpt-5-chat*`      | OpenAI gpt-5-chat carve-out: chat-class accepts sampling params      |
+| `openai-compatible` | `*/o[1-9]*`        | OpenAI reasoning-class via gateway prefix (OpenRouter-style ids): same as `o[1-9]*` |
+| `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix (OpenRouter-style ids): same as `gpt-5*` |
+| `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |

@@ -1606,3 +1606,54 @@ func TestValueJSONTags(t *testing.T) {
 		})
 	}
 }
+
+// TestGatewayPrefixResolution_OpenAIReasoningClass pins the */gpt-5*
+// and */o[1-9]* sibling rules. OpenRouter serves the OpenAI reasoning
+// models under vendor-prefixed ids (openai/gpt-5.6-terra), and
+// path.Match's `*` does not cross `/`, so the bare gpt-5* glob cannot
+// match them. Without the siblings a gateway-served reasoning model
+// resolved to zero-value behaviour and the harness would send sampling
+// params to a model class that rejects them — the same latent 400 the
+// bare rules exist to prevent. ci.yml::eval-gate runs prefixed ids, so
+// this is the live configuration, not a hypothetical one.
+func TestGatewayPrefixResolution_OpenAIReasoningClass(t *testing.T) {
+	r := DefaultRegistry()
+
+	omits := []string{
+		"openai/gpt-5.6-terra",
+		"openai/gpt-5.6-sol",
+		"openai/gpt-5.6-luna",
+		"openai/gpt-5-nano",
+		"openai/o3-mini",
+		"azure/o1",
+	}
+	for _, model := range omits {
+		q := r.Resolve("openai-compatible", model)
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("Resolve(openai-compatible, %q): OmitSamplingParams = false, want true — a gateway-prefixed reasoning model must omit sampling params", model)
+		}
+		// The bare form must keep resolving identically; the sibling
+		// rules add coverage rather than moving it.
+		bare := model[strings.Index(model, "/")+1:]
+		if bq := r.Resolve("openai-compatible", bare); !bq.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("Resolve(openai-compatible, %q): OmitSamplingParams = false, want true", bare)
+		}
+	}
+
+	// The chat-class carve-out must survive one level of prefix too,
+	// and it must run after the broader */gpt-5* rule.
+	for _, model := range []string{"gpt-5-chat-latest", "openai/gpt-5-chat-latest"} {
+		q := r.Resolve("openai-compatible", model)
+		if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("Resolve(openai-compatible, %q): OmitSamplingParams = true, want false — chat-class accepts sampling params", model)
+		}
+	}
+
+	// Non-reasoning ids must not be caught by the new globs.
+	for _, model := range []string{"openai/gpt-4o", "anthropic/claude-sonnet-5"} {
+		q := r.Resolve("openai-compatible", model)
+		if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("Resolve(openai-compatible, %q): OmitSamplingParams = true, want false", model)
+		}
+	}
+}
