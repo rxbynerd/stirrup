@@ -378,7 +378,17 @@ func validatePathSegment(label, id string) error {
 func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) eval.TaskResult {
 	start := time.Now()
 
-	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
+	// "evaltask-", not "eval-task-": the hyphenated form ends in "...ta"
+	// immediately before the task ID's leading "sk-"-forming boundary,
+	// so "eval-task-<id>" contains the literal substring "sk-<id>" and
+	// registered as an OpenAI API key in the sensitive-data detector.
+	// Tool results echo this path (a read_file on a missing file puts it
+	// in the error string), which latched Rule-of-Two and revoked
+	// run_command mid-run. The detector regex is now boundary-anchored,
+	// which fixes it properly; this naming keeps the runner from
+	// manufacturing key-shaped paths regardless of what any future
+	// pattern pack matches. Same reasoning for the trace dir below.
+	tmpDir, err := os.MkdirTemp("", "evaltask-"+task.ID+"-")
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
 	}
@@ -405,7 +415,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// workspace summarised the leaked trace instead). A sibling temp dir
 	// keeps the trace retrievable for artifact retention without polluting
 	// the agent's view of its workspace.
-	traceDir, err := os.MkdirTemp("", "eval-trace-"+task.ID+"-")
+	traceDir, err := os.MkdirTemp("", "evaltrace-"+task.ID+"-")
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating trace directory: %w", err))
 	}
