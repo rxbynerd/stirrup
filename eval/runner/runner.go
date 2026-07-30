@@ -64,6 +64,27 @@ type RunConfig struct {
 	// prompt" on a newer model against that model's native prompt.
 	PromptModel string
 
+	// Provider, BaseURL, and APIKeyRef, when non-empty, are forwarded
+	// to every harness invocation as --provider / --base-url /
+	// --api-key-ref. They carry the same Changed()-gated override
+	// semantics as Model: an explicitly passed flag wins over both the
+	// harness default and anything the suite's run_config block pins.
+	//
+	// Their reason to exist is the same as Model's — the provider a
+	// suite runs against is a property of the *invocation* (cheap
+	// third-party gate on push, first-party models at release), not of
+	// the suite, so CI can retarget without editing suite files and
+	// without splitting the suite per provider.
+	//
+	// APIKeyRef is a `secret://` reference, not a key: it names the
+	// environment variable (or file) the harness resolves through
+	// SecretStore at runtime. Passing a literal key here would violate
+	// the project's no-secrets-in-RunConfig invariant, and the harness
+	// rejects a non-reference value.
+	Provider  string
+	BaseURL   string
+	APIKeyRef string
+
 	// AnthropicWIF, when populated, instructs the runner to forward
 	// Anthropic Workload Identity Federation flags to every harness
 	// invocation. The four identifiers are non-secret per Anthropic's
@@ -487,6 +508,20 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// Changed()-backed semantics as --model above.
 	if cfg.PromptModel != "" {
 		args = append(args, "--prompt-model", cfg.PromptModel)
+	}
+
+	// Provider selection, same unconditional Changed()-backed semantics
+	// as --model. Each is emitted independently so an invocation can
+	// retarget just the base URL (a gateway in front of the same
+	// provider type) without restating the rest.
+	if cfg.Provider != "" {
+		args = append(args, "--provider", cfg.Provider)
+	}
+	if cfg.BaseURL != "" {
+		args = append(args, "--base-url", cfg.BaseURL)
+	}
+	if cfg.APIKeyRef != "" {
+		args = append(args, "--api-key-ref", cfg.APIKeyRef)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)

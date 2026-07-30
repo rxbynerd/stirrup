@@ -443,6 +443,25 @@ tree gains a `run_config.redacted.json` per task. See
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
 | `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
+| `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block. |
+| `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
+| `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
+
+The three provider flags exist for the same reason as `--model`: the
+provider a suite runs against is a property of the invocation, not of
+the suite, so CI can retarget a provider-neutral suite without editing
+suite files. Each is emitted independently, so an invocation may
+override just the base URL. The per-push eval gate uses all four to run
+`dogfood-seed.hcl` against OpenRouter:
+
+```bash
+./stirrup-eval run \
+  --suite eval/suites/dogfood-seed.hcl \
+  --provider openai-compatible \
+  --base-url https://openrouter.ai/api/v1 \
+  --api-key-ref secret://OPENROUTER_API_KEY \
+  --model openai/gpt-5.6-luna
+```
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
@@ -622,10 +641,13 @@ the framework as a gating job:
 - **`eval-gate`** — depends on `verify`. On every push it builds
   the binaries, runs each suite in `eval/suites/` that has a
   matching baseline in `eval/baselines/` (unbaselined suites are
-  opt-in local runs), pins the model to Claude Haiku 4.5 via
-  `stirrup-eval run --model`, compares each result to its baseline
-  via `eval compare`, and uploads the result JSON as a build
-  artifact.
+  opt-in local runs), pins the model to GPT-5.6 Luna over OpenRouter
+  via `stirrup-eval run`'s provider flags, compares each result to its
+  baseline via `eval compare`, and uploads the result JSON as a build
+  artifact. Authentication is the `OPENROUTER_API_KEY` repository
+  secret; runs that cannot read it (fork clones, Dependabot-actor
+  pushes) skip the live run with a warning rather than reporting a
+  false regression.
 - **`publish-container`** — depends on `verify`. On `main` pushes it
   publishes the harness Docker image to `ghcr.io/rxbynerd/stirrup`.
 

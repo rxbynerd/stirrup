@@ -129,6 +129,9 @@ func cmdRun(args []string) {
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
 	model := fs.String("model", "", "Model to run every task with (forwarded to each harness invocation as --model). Overrides the harness default and any model pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
 	promptModel := fs.String("prompt-model", "", "Prompt model to render system prompts with (forwarded to each harness invocation as --prompt-model). The wire model is unchanged; combine with --model to compare a prompt tuned for one model against another. Empty (the default) derives the prompt model from the effective model.")
+	provider := fs.String("provider", "", "Provider type to run every task against (forwarded to each harness invocation as --provider). Overrides the harness default and any provider pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
+	baseURL := fs.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (forwarded as --base-url). Pair with --provider to point a suite at a gateway such as OpenRouter without editing suite files.")
+	apiKeyRef := fs.String("api-key-ref", "", "Secret reference for the provider API key (forwarded as --api-key-ref), e.g. secret://OPENROUTER_API_KEY. This is a reference resolved by the harness at runtime, never a literal key.")
 	// Anthropic Workload Identity Federation flags. The runner forwards
 	// these verbatim to every `stirrup harness` invocation so the
 	// eval-gate CI job can authenticate via WIF instead of a static
@@ -180,6 +183,9 @@ func cmdRun(args []string) {
 		DryRun:      *dryRun,
 		Model:       *model,
 		PromptModel: *promptModel,
+		Provider:    *provider,
+		BaseURL:     *baseURL,
+		APIKeyRef:   *apiKeyRef,
 		AnthropicWIF: runner.AnthropicWIFConfig{
 			FederationRuleID:  *anthropicFederationRuleID,
 			OrganizationID:    *anthropicOrganizationID,
