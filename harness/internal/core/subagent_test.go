@@ -114,7 +114,7 @@ func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 		Permissions: permission.NewAllowAll(),
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
-		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),

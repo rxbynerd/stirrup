@@ -83,6 +83,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 		map[string]string{authHeader: authValue},
 		observability.ResourceOptions{},
 		false,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewOTelTraceEmitter: %v", err)
@@ -245,6 +246,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 		nil,
 		observability.ResourceOptions{},
 		false,
+		false,
 	)
 	if err == nil {
 		t.Fatalf("expected error for unsupported protocol, got nil")
@@ -294,6 +296,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 		"http/protobuf",
 		resolved,
 		observability.ResourceOptions{},
+		false,
 		false,
 	)
 	if err != nil {

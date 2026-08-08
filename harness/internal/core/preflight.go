@@ -197,7 +197,10 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	// permission policy: the construction (and any Cedar parse) is what is
 	// validated, not the run's tool set or upstream approval channel.
 	sink := &componentStepSink{ok: ok, failStep: fail}
-	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, resolvedHeaders, resourceOptionsFromConfig(config), sink)
+	// debugRedactionDisabled is always false here: a --dry-run preflight
+	// never disables redaction, regardless of --debug (dry-run has no
+	// documented interaction with the debug-build flags).
+	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, resolvedHeaders, resourceOptionsFromConfig(config), sink, false)
 	if err != nil {
 		// The sink already recorded the failed construction step; the
 		// wrapped error is for internal logging only and does not become a

@@ -13,7 +13,7 @@ import (
 
 func TestJSONLCommandOutputRecordAndArchiveLink(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-1", &types.RunConfig{})
 	record := types.CommandOutputRecord{
 		ArchiveID: "archive-1", RunID: "run-1", Turn: 1, ToolUseID: "tool-1", CaptureComplete: true,

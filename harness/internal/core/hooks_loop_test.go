@@ -381,7 +381,7 @@ func TestLoop_Hooks_HooklessUnchanged(t *testing.T) {
 // other tests.
 func TestLoop_Hooks_RecordedViaHookRecorder(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
-	loop.Trace = trace.NewJSONLTraceEmitter(discardWriter{})
+	loop.Trace = trace.NewJSONLTraceEmitter(discardWriter{}, false)
 	hooks := &fakeHookRunner{
 		preResults:  []types.HookExecution{{Phase: "preRun", Index: 0, Name: "clone", ExitCode: 0}},
 		postResults: []types.HookExecution{{Phase: "postRun", Index: 0, Name: "smoke", ExitCode: 0}},

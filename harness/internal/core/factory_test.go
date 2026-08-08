@@ -1008,7 +1008,7 @@ func TestBuildHookRunner_PostRunOnlyReturnsExecRunner(t *testing.T) {
 // --- buildTraceEmitter ---
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, nil, observability.ResourceOptions{})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, nil, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1019,7 +1019,7 @@ func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 
 func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, nil, observability.ResourceOptions{})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, nil, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1033,7 +1033,7 @@ func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, nil, observability.ResourceOptions{})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, nil, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
-	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, nil, observability.ResourceOptions{})
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, nil, observability.ResourceOptions{}, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -1056,7 +1056,7 @@ func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
 		Type:     "jsonl",
 		FilePath: "/nonexistent/deeply/nested/dir/trace.jsonl",
-	}, nil, observability.ResourceOptions{})
+	}, nil, observability.ResourceOptions{}, false)
 	if err == nil {
 		t.Fatal("expected error for bad trace file path")
 	}

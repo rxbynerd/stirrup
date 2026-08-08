@@ -109,7 +109,7 @@ func buildAsyncTestLoop(t *testing.T, tr transport.Transport, asyncTool *tool.To
 		Permissions:  permission.NewAllowAll(),
 		Git:          git.NewNoneGitStrategy(),
 		Transport:    tr,
-		Trace:        trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:        trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:       noop.NewTracerProvider().Tracer(""),
 		TraceContext: context.Background(),
 		Metrics:      observability.NewNoopMetrics(),

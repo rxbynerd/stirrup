@@ -34,7 +34,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		if err := store.RecordInitial(&captured.Record, "failed"); err != nil {
 			t.Fatal(err)
 		}
-		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "command_output_capture_failed" {
@@ -58,7 +58,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		if err := store.RecordInitial(&captured.Record, "failed"); err != nil {
 			t.Fatal(err)
 		}
-		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		if got := loop.finalizeCommandOutput(context.Background(), "timeout"); got != "timeout" {
@@ -86,7 +86,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		if err := store.RecordInitial(&captured.Record, "failed"); err != nil {
 			t.Fatal(err)
 		}
-		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "command_output_capture_failed" {
@@ -117,7 +117,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		if err := store.RecordInitial(&captured.Record, "ok"); err != nil {
 			t.Fatal(err)
 		}
-		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, CommandOutputBestEffort: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "success" {
@@ -148,7 +148,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		if err := store.RecordInitial(&captured.Record, "ok"); err != nil {
 			t.Fatal(err)
 		}
-		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "command_output_archive_failed" {
@@ -178,7 +178,7 @@ func TestFinishWithOutcomeFinalizesCommandOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+	emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 	emitter.Start("run", &types.RunConfig{})
 	loop := &AgenticLoop{
 		CommandOutput:     store,
