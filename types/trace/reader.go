@@ -28,6 +28,8 @@ package trace
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -195,28 +197,30 @@ func (r *Reader) Next() (*types.RunTrace, error) {
 // here as untyped string constants so this package does not import the
 // harness internal trace package (which depends on types).
 const (
-	eventKindRunStarted     = "run_started"
-	eventKindTurnRecord     = "turn_record"
-	eventKindToolCallRecord = "tool_call_record"
-	eventKindRunFinished    = "run_finished"
+	eventKindRunStarted          = "run_started"
+	eventKindTurnRecord          = "turn_record"
+	eventKindToolCallRecord      = "tool_call_record"
+	eventKindRunFinished         = "run_finished"
+	eventKindCommandOutputRecord = "command_output_record"
 )
 
 // streamedEvent mirrors the on-wire shape of harness/internal/trace.Event
 // at the fields the reader cares about. Re-defining the shape locally
 // avoids an internal-package import while keeping the decoder lean.
 type streamedEvent struct {
-	Kind          string                 `json:"kind"`
-	SchemaVersion string                 `json:"schemaVersion,omitempty"`
-	RunID         string                 `json:"runId,omitempty"`
-	StartedAt     *time.Time             `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time             `json:"completedAt,omitempty"`
-	Config        *types.RunConfig       `json:"config,omitempty"`
-	Turn          int                    `json:"turn,omitempty"`
-	ModelInput    *types.ModelInput      `json:"modelInput,omitempty"`
-	ModelOutput   []types.ContentBlock   `json:"modelOutput,omitempty"`
-	ToolCalls     []types.ToolCallRecord `json:"toolCalls,omitempty"`
-	ToolCall      *types.ToolCallRecord  `json:"toolCall,omitempty"`
-	Trace         *types.RunTrace        `json:"trace,omitempty"`
+	Kind          string                     `json:"kind"`
+	SchemaVersion string                     `json:"schemaVersion,omitempty"`
+	RunID         string                     `json:"runId,omitempty"`
+	StartedAt     *time.Time                 `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time                 `json:"completedAt,omitempty"`
+	Config        *types.RunConfig           `json:"config,omitempty"`
+	Turn          int                        `json:"turn,omitempty"`
+	ModelInput    *types.ModelInput          `json:"modelInput,omitempty"`
+	ModelOutput   []types.ContentBlock       `json:"modelOutput,omitempty"`
+	ToolCalls     []types.ToolCallRecord     `json:"toolCalls,omitempty"`
+	ToolCall      *types.ToolCallRecord      `json:"toolCall,omitempty"`
+	Trace         *types.RunTrace            `json:"trace,omitempty"`
+	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -344,6 +348,10 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 					recording.Config = ev.Trace.Config
 				}
 			}
+		case eventKindCommandOutputRecord:
+			if ev.CommandOutput != nil {
+				recording.CommandOutputs = append(recording.CommandOutputs, *ev.CommandOutput)
+			}
 		default:
 			// Unknown kind: skip. Forward compatibility — a future
 			// event kind added to the wire must not abort old
@@ -365,7 +373,41 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		}
 		return recording, fmt.Errorf("reading trace file: %w", err)
 	}
+	synthesizeLegacyCommandOutputs(recording)
 	return recording, nil
+}
+
+func synthesizeLegacyCommandOutputs(recording *types.RunRecording) {
+	if recording == nil {
+		return
+	}
+	seen := make(map[string]bool, len(recording.CommandOutputs))
+	for _, record := range recording.CommandOutputs {
+		seen[record.RunID+"\x00"+record.ToolUseID] = true
+	}
+	for _, turn := range recording.Turns {
+		for _, call := range turn.ToolCalls {
+			if call.Name != "run_command" && call.InternalName != "run_command" {
+				continue
+			}
+			runID := turn.RunID
+			if runID == "" {
+				runID = recording.RunID
+			}
+			key := runID + "\x00" + call.ID
+			if seen[key] {
+				continue
+			}
+			sum := sha256.Sum256([]byte(call.Output))
+			hash := hex.EncodeToString(sum[:])
+			stream := types.CommandOutputStreamRecord{RawBytes: int64(len(call.Output)), RawSHA256: hash, ScrubbedBytes: int64(len(call.Output)), ScrubbedSHA256: hash}
+			recording.CommandOutputs = append(recording.CommandOutputs, types.CommandOutputRecord{
+				RunID: runID, ParentRunID: turn.ParentRunID, Turn: turn.Turn, ToolUseID: call.ID,
+				CaptureComplete: true, Stdout: stream, InitialResultSHA256: hash, LegacySingleRepresentation: true,
+			})
+			seen[key] = true
+		}
+	}
 }
 
 // All drains the reader into a slice. The slice is empty when the

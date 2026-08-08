@@ -49,6 +49,7 @@ type NestedJSONLEmitter struct {
 }
 
 var _ FinalAssistantTextRecorder = (*NestedJSONLEmitter)(nil)
+var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
 // events to parent, tagged with parentRunID and the child's runID set
@@ -157,6 +158,12 @@ func (e *NestedJSONLEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalAssistantText = text
+}
+
+func (e *NestedJSONLEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
+	if parent, ok := e.parent.(CommandOutputRecorder); ok {
+		parent.RecordCommandOutput(record)
+	}
 }
 
 // Finish builds and returns the child's RunTrace. It does NOT call

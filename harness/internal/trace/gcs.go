@@ -62,17 +62,20 @@ type GCSTraceEmitter struct {
 	httpClient      *http.Client
 	endpointBaseURL string // override for tests
 
-	mu                 sync.Mutex
-	runID              string
-	config             *types.RunConfig
-	startedAt          time.Time
-	turns              []types.TurnTrace
-	toolCalls          []types.ToolCallTrace
-	permissionDenials  int
-	finalAssistantText string
+	mu                   sync.Mutex
+	runID                string
+	config               *types.RunConfig
+	startedAt            time.Time
+	turns                []types.TurnTrace
+	toolCalls            []types.ToolCallTrace
+	permissionDenials    int
+	finalAssistantText   string
+	commandOutputArchive string
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
+var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
+var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -149,6 +152,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
+	e.commandOutputArchive = ""
 }
 
 // RecordTurn appends a turn trace.
@@ -188,6 +192,14 @@ func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
+
+func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.commandOutputArchive = location
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -210,6 +222,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
 	permissionDenials := e.permissionDenials
 	finalAssistantText := e.finalAssistantText
+	commandOutputArchive := e.commandOutputArchive
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -231,16 +244,17 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:                 runID,
-		Config:             redactedConfig,
-		StartedAt:          startedAt,
-		CompletedAt:        now,
-		Turns:              len(turns),
-		TokenUsage:         totalTokens,
-		ToolCalls:          summaries,
-		PermissionDenials:  permissionDenials,
-		Outcome:            outcome,
-		FinalAssistantText: finalAssistantText,
+		ID:                   runID,
+		Config:               redactedConfig,
+		StartedAt:            startedAt,
+		CompletedAt:          now,
+		Turns:                len(turns),
+		TokenUsage:           totalTokens,
+		ToolCalls:            summaries,
+		PermissionDenials:    permissionDenials,
+		Outcome:              outcome,
+		FinalAssistantText:   finalAssistantText,
+		CommandOutputArchive: commandOutputArchive,
 	}
 
 	data, err := json.Marshal(trace)

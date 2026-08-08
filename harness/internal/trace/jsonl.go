@@ -42,14 +42,17 @@ type JSONLTraceEmitter struct {
 	// canonical RunTrace (token totals, tool call summaries, outcome)
 	// for the in-process caller (harness factory, eval runner) that
 	// reads it directly without re-parsing the file.
-	turns              []types.TurnTrace
-	toolCalls          []types.ToolCallTrace
-	permissionDenials  int
-	hookResults        []types.HookExecution
-	finalAssistantText string
+	turns                []types.TurnTrace
+	toolCalls            []types.ToolCallTrace
+	permissionDenials    int
+	hookResults          []types.HookExecution
+	finalAssistantText   string
+	commandOutputArchive string
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
+var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
+var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -97,6 +100,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.hookResults = nil
 	e.finalAssistantText = ""
+	e.commandOutputArchive = ""
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -230,6 +234,19 @@ func (e *JSONLTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+func (e *JSONLTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	copyRecord := record
+	_ = e.writeLineLocked(Event{Kind: EventKindCommandOutputRecord, CommandOutput: &copyRecord})
+}
+
+func (e *JSONLTraceEmitter) RecordCommandOutputArchive(location string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.commandOutputArchive = location
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -256,17 +273,18 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:                 e.runID,
-		Config:             redactedConfig,
-		StartedAt:          e.startedAt,
-		CompletedAt:        now,
-		Turns:              len(e.turns),
-		TokenUsage:         totalTokens,
-		ToolCalls:          summaries,
-		PermissionDenials:  e.permissionDenials,
-		Outcome:            outcome,
-		FinalAssistantText: e.finalAssistantText,
-		HookResults:        e.hookResults,
+		ID:                   e.runID,
+		Config:               redactedConfig,
+		StartedAt:            e.startedAt,
+		CompletedAt:          now,
+		Turns:                len(e.turns),
+		TokenUsage:           totalTokens,
+		ToolCalls:            summaries,
+		PermissionDenials:    e.permissionDenials,
+		Outcome:              outcome,
+		FinalAssistantText:   e.finalAssistantText,
+		HookResults:          e.hookResults,
+		CommandOutputArchive: e.commandOutputArchive,
 	}
 
 	ev := Event{
@@ -340,6 +358,7 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 			// shape on disk even when a secret straddles a JSON token.
 			Structured: scrubRawJSON(tc.Structured),
 			Kind:       tc.Kind,
+			IsError:    tc.IsError,
 		}
 	}
 	return out
