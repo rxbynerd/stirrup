@@ -630,12 +630,9 @@ func TestOpenAIWIFSource_NetworkError(t *testing.T) {
 	}
 }
 
-// TestOpenAIWIFSource_NegativeExpiresInFallback documents the safe-default
-// behaviour for a malformed expires_in: the shared doJSONTokenExchange
-// helper treats any non-positive value as the 1-hour fallback, so a
-// hostile/buggy server returning a negative value must not yield a token
-// whose Expiry is already in the past (which would re-exchange on every
-// request). Mirrors TestAnthropicWIFSource_NegativeExpiresInFallback.
+// TestOpenAIWIFSource_NegativeExpiresInFallback verifies a negative
+// expires_in triggers the shared 1-hour fallback rather than yielding a
+// token whose Expiry is already in the past.
 func TestOpenAIWIFSource_NegativeExpiresInFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -671,15 +668,10 @@ func TestOpenAIWIFSource_NegativeExpiresInFallback(t *testing.T) {
 	}
 }
 
-// TestOpenAIWIFSource_CorrelationHeaderCapped verifies the shared helper
-// runs a server-controlled correlation header through sanitiseCorrelationID
-// before embedding it in the error, capping its length so a hostile or
-// misconfigured token endpoint cannot pad the error (and any slog line it
-// reaches) with an oversized value. The response body is already bounded by
-// truncateForError; this closes the same hole on the header. (Control bytes
-// are stripped too, but Go's own transport rejects a response whose header
-// carries them before this code runs, so only the length cap is reachable
-// from an end-to-end test.)
+// TestOpenAIWIFSource_CorrelationHeaderCapped verifies a server-controlled
+// correlation header is capped via sanitiseCorrelationID before embedding
+// in the error, so a hostile endpoint cannot pad the error (and any slog
+// line it reaches) with an oversized value.
 func TestOpenAIWIFSource_CorrelationHeaderCapped(t *testing.T) {
 	oversized := strings.Repeat("A", maxCorrelationIDLen*3)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

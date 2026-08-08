@@ -8,10 +8,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// makeTraceWithOutcomeMode is a small helper to build a RunTrace
-// with the fields the new mining filters consult: outcome, mode,
-// provider type, model, and start time. Keeping the helper local
-// to the file avoids polluting main_test.go's shared fixtures.
+// makeTraceWithOutcomeMode builds a RunTrace with the fields the mining
+// filters consult: outcome, mode, provider type, model, and start time.
 func makeTraceWithOutcomeMode(id, outcome, mode, provider, model string, started time.Time) types.RunTrace {
 	return types.RunTrace{
 		ID:        id,
@@ -30,10 +28,9 @@ func makeTraceWithOutcomeMode(id, outcome, mode, provider, model string, started
 	}
 }
 
-// TestFilterTracesForMining_FailedOnlyDefault pins the new default:
-// only EvalFailed traces match unless --include-inconclusive is set.
-// EvalPassed (success) is always excluded; EvalInconclusive (max_turns
-// etc.) is excluded by default and included with the flag.
+// TestFilterTracesForMining_FailedOnlyDefault pins that only EvalFailed
+// traces match unless --include-inconclusive is set; EvalPassed is always
+// excluded.
 func TestFilterTracesForMining_FailedOnlyDefault(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{
@@ -60,8 +57,8 @@ func TestFilterTracesForMining_FailedOnlyDefault(t *testing.T) {
 	}
 }
 
-// TestFilterTracesForMining_ExcludesBatchByDefault pins #138's
-// batch-exclusion default through the new code path.
+// TestFilterTracesForMining_ExcludesBatchByDefault pins the batch-exclusion
+// default.
 func TestFilterTracesForMining_ExcludesBatchByDefault(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	stream := makeTraceWithOutcomeMode("s1", "error", "execution", "anthropic", "claude", base)
@@ -78,9 +75,8 @@ func TestFilterTracesForMining_ExcludesBatchByDefault(t *testing.T) {
 	}
 }
 
-// TestSampleTraces_Limit pins the simplest sampling case: no
-// stratification, limit truncates to the first N (by input order,
-// which is StartedAt-desc from QueryTraces).
+// TestSampleTraces_Limit pins that with no stratification, limit truncates
+// to the first N in input order (StartedAt-desc from QueryTraces).
 func TestSampleTraces_Limit(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{
@@ -103,9 +99,9 @@ func TestSampleTraces_Limit(t *testing.T) {
 	}
 }
 
-// TestSampleTraces_StratifyByModel pins the proportional-sampling
-// behaviour. With three failed traces from model A and one from
-// model B, --sample-by model --limit 2 should pick one from each.
+// TestSampleTraces_StratifyByModel pins that with three failed traces from
+// model A and one from model B, --sample-by model --limit 2 picks one from
+// each.
 func TestSampleTraces_StratifyByModel(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{
@@ -127,11 +123,9 @@ func TestSampleTraces_StratifyByModel(t *testing.T) {
 	}
 }
 
-// TestBuildMinedTask_HydratedDescriptionIncludesContext pins the
-// representativeness AC: when a recording is available, the mined
-// task's Description must include the failing-turn excerpt (last
-// assistant message + failing tool name) so the operator reading
-// the suite knows what went wrong.
+// TestBuildMinedTask_HydratedDescriptionIncludesContext pins that when a
+// recording is available, the mined task's Description includes the
+// failing-turn excerpt (last assistant message + failing tool name).
 func TestBuildMinedTask_HydratedDescriptionIncludesContext(t *testing.T) {
 	trace := makeTraceWithOutcomeMode("h1", "tool_failures", "execution", "anthropic", "claude", time.Now())
 	rec := types.RunRecording{
@@ -163,10 +157,9 @@ func TestBuildMinedTask_HydratedDescriptionIncludesContext(t *testing.T) {
 	}
 }
 
-// TestBuildMinedTask_ThinTraceFallback pins the "no recording
-// available" path: the task is still emitted, the description
-// flags the thin-trace status, and the prompt comes from the
-// trace's RunConfig as before.
+// TestBuildMinedTask_ThinTraceFallback pins the no-recording path: the task
+// is still emitted, the description flags thin-trace status, and the
+// prompt comes from the trace's RunConfig.
 func TestBuildMinedTask_ThinTraceFallback(t *testing.T) {
 	trace := makeTraceWithOutcomeMode("t1", "error", "execution", "anthropic", "claude", time.Now())
 	task := buildMinedTask(trace, types.RunRecording{}, false)
@@ -178,10 +171,9 @@ func TestBuildMinedTask_ThinTraceFallback(t *testing.T) {
 	}
 }
 
-// TestSampleTraces_StratifyByOutcome pins stratification across
-// EvalOutcome buckets. With failed + inconclusive traces, sampling
-// by outcome at a small limit pulls one from each non-empty
-// stratum before doubling up.
+// TestSampleTraces_StratifyByOutcome pins that with failed + inconclusive
+// traces, sampling by outcome at a small limit pulls one from each
+// non-empty stratum before doubling up.
 func TestSampleTraces_StratifyByOutcome(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{

@@ -59,16 +59,11 @@ var (
 	instanceID     string
 )
 
-// InstanceID returns a stable random identifier for the current process.
-// It is generated once at first call and reused for the rest of the
-// process's lifetime. Used as service.instance.id so concurrent harness
-// processes can be distinguished in OTel-aware backends.
-//
-// 16 bytes (128 bits) of randomness is enough that collisions across all
-// running Stirrup processes are vanishingly unlikely. The fallback string
-// "unknown" is only ever returned if crypto/rand.Read fails, which on Unix
-// would imply /dev/urandom is unreadable — an environment in which
-// stirrup cannot meaningfully run anyway.
+// InstanceID returns a stable random identifier for the current process,
+// generated once and reused for the process's lifetime. Used as
+// service.instance.id so concurrent harness processes can be distinguished
+// in OTel-aware backends. Falls back to "unknown" only if
+// crypto/rand.Read fails.
 func InstanceID() string {
 	instanceIDOnce.Do(func() {
 		var b [16]byte
@@ -101,38 +96,15 @@ type ResourceOptions struct {
 	RunMode string
 }
 
-// BuildResource builds the OTel Resource that identifies this Stirrup process.
-//
-// It merges two sources, in order of increasing specificity (later wins):
-//  1. resource.Default() — provides telemetry.sdk.{name,language,version},
-//     host.name, and any operator-supplied OTEL_RESOURCE_ATTRIBUTES.
-//     resource.Default() also seeds service.name as
-//     "unknown_service:<binary>"; our overlay below replaces it.
-//  2. Stirrup-specific service identity — service.name, service.version,
-//     service.instance.id, and the run-scoped opts (deployment.environment,
-//     service.namespace, harness.run.mode).
-//
-// The Default resource's SchemaURL is reused for the overlay so resource.Merge
-// always succeeds. If Merge nonetheless fails (e.g. a future SDK changes the
-// merge contract), we fall back to a schemaless resource carrying just the
-// Stirrup attributes; that still fixes "unknown_service:stirrup", which is
-// the user-visible problem we're solving.
-//
-// Note: the deployment-environment attribute key is "deployment.environment"
-// (the legacy stable form), not the newer "deployment.environment.name" that
-// semconv v1.40.0 exposes via DeploymentEnvironmentName. The legacy key is
-// what every existing Grafana dashboard, Tempo derived metric, and OTel
-// collector processor (e.g. resourcedetectionprocessor) looks for; switching
-// to the .name suffix would silently break operator dashboards. When the
-// upstream conventions stabilise on the .name form across the ecosystem we
-// will re-evaluate.
+// BuildResource builds the OTel Resource that identifies this Stirrup
+// process, merging resource.Default() with Stirrup-specific service
+// identity (service.name/version/instance.id and the run-scoped opts);
+// the Stirrup overlay wins on key conflicts. See docs/architecture.md for
+// the merge-failure fallback and the deployment.environment key choice.
 func BuildResource(opts ResourceOptions) *resource.Resource {
 	// Env-var fallbacks are sanitised against the same character set the
-	// RunConfig validator enforces. Without this, a hostile pod-spec
-	// OTEL_DEPLOYMENT_ENVIRONMENT (e.g. embedded newline, > 64 chars,
-	// containing `=`) would propagate verbatim to every OTLP span and
-	// metric batch — the RunConfig path validates via
-	// validateObservabilityConfig but the env-var path bypassed it.
+	// RunConfig validator enforces, so a hostile OTEL_DEPLOYMENT_ENVIRONMENT
+	// (embedded newline, oversized, containing `=`) can't reach OTLP output.
 	env := sanitiseLabel(firstNonEmpty(opts.Environment, os.Getenv(envEnvironment)), DefaultEnvironment)
 	ns := sanitiseLabel(firstNonEmpty(opts.ServiceNamespace, os.Getenv(envServiceNamespace)), DefaultServiceNamespace)
 
@@ -141,26 +113,17 @@ func BuildResource(opts ResourceOptions) *resource.Resource {
 		semconv.ServiceVersion(version.Version()),
 		semconv.ServiceInstanceID(InstanceID()),
 		semconv.ServiceNamespace(ns),
-		// See the doc-comment above for why we emit "deployment.environment"
-		// instead of using semconv.DeploymentEnvironmentName.
+		// Legacy stable key; see docs/architecture.md.
 		attribute.String("deployment.environment", env),
 	}
 	if opts.RunMode != "" {
-		// harness.run.mode has no semconv equivalent; we use a stirrup-
-		// scoped key. Omitted entirely when empty so callers that don't
-		// know the mode (eval replays, ad-hoc tools) don't pollute the
-		// resource set with a synthetic value.
+		// harness.run.mode has no semconv equivalent. Omitted entirely
+		// when empty so callers that don't know the mode (eval replays,
+		// ad-hoc tools) don't pollute the resource set with a synthetic
+		// value.
 		attrs = append(attrs, attribute.String("harness.run.mode", opts.RunMode))
 	}
 
-	// resource.Default() picks up OTEL_RESOURCE_ATTRIBUTES and other SDK
-	// defaults. Our overlay is the second argument and wins on key
-	// conflicts, so our service.namespace and deployment.environment take
-	// precedence over any OTEL_RESOURCE_ATTRIBUTES value for those keys.
-	// Operators who need to set these attributes should use
-	// --deployment-environment / --service-namespace, RunConfig.Observability,
-	// or OTEL_DEPLOYMENT_ENVIRONMENT / OTEL_SERVICE_NAMESPACE — not
-	// OTEL_RESOURCE_ATTRIBUTES.
 	base := resource.Default()
 	overlay := resource.NewWithAttributes(base.SchemaURL(), attrs...)
 	merged, err := resource.Merge(base, overlay)
@@ -183,12 +146,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 // sanitiseLabel returns v if it matches observabilityLabelPattern, otherwise
-// fallback. Empty inputs also resolve to fallback so callers can use it as
-// a unified "first valid label, else default" reducer. Without this, a
-// hostile env-var value (containing newlines, over 64 bytes, or characters
-// outside the validated charset) would propagate verbatim to every OTLP
-// span and metric batch — the RunConfig path validates via
-// types.validateObservabilityConfig but the env-var path used to bypass it.
+// fallback. Empty inputs also resolve to fallback, so callers can use it as
+// a unified "first valid label, else default" reducer.
 func sanitiseLabel(v, fallback string) string {
 	if v == "" {
 		return fallback

@@ -25,20 +25,12 @@ type SecurityEventEmitter interface {
 }
 
 // ScannedStrategy wraps an EditStrategy with a post-Apply CodeScanner
-// pass. The wrapper intercepts the result, reads the just-written
-// content, runs the scanner, and:
-//
-//   - On a "block" finding (or a "warn" finding when BlockOnWarn is
-//     set) it rolls back the write by restoring the previous file
-//     contents, then returns an EditResult with Applied=false and an
-//     error message naming the rule, line, and message.
-//   - On a "warn" finding (without BlockOnWarn) it leaves the edit in
-//     place and emits a `code_scan_warning` security event so the run
-//     trace records the advisory.
+// pass: a block finding rolls the write back and returns Applied=false;
+// a warn finding (or a promoted warn under BlockOnWarn) leaves the edit
+// in place and emits a code_scan_warning event.
 //
 // Construction is via NewScannedStrategy. A nil scanner or a scanner of
-// type codescanner.NoneScanner short-circuits the wrapper entirely so
-// the no-scan path has zero overhead beyond a single nil check.
+// type codescanner.NoneScanner short-circuits the wrapper entirely.
 type ScannedStrategy struct {
 	inner       EditStrategy
 	scanner     codescanner.CodeScanner
@@ -46,27 +38,18 @@ type ScannedStrategy struct {
 	emitter     SecurityEventEmitter
 	blockOnWarn bool
 
-	// Metrics is optional. When set, every scan invocation records
-	// stirrup.codescanner.scans (with scanner) and per-finding
-	// stirrup.codescanner.findings (with scanner, severity, blocked).
-	// Field-injected from the factory; nil is safe everywhere.
+	// Metrics is optional; nil is safe. Field-injected from the factory.
 	Metrics *observability.Metrics
 }
 
 // NewScannedStrategy returns a ScannedStrategy that delegates to inner
 // and consults scanner after each Apply. Pass cfg=nil or a config with
-// Type=="none" to disable scanning; in that case the inner strategy is
-// returned unchanged so this wrapper is invisible to non-scan callers.
+// Type=="none" to disable scanning; the inner strategy is then returned
+// unchanged.
 //
-// emitter may be nil — in that case warn findings are still applied
-// (the edit succeeds) but they are logged via slog only and no
-// SecurityEvent is emitted. Production wiring should always supply the
-// run's SecurityLogger.
-//
-// The scanner name used for metric attribution is taken from cfg.Type
-// when cfg is non-nil; otherwise it is "unknown" so dashboards still
-// show activity even from hand-wired scanners that bypass the config
-// dispatch.
+// emitter may be nil: warn findings still apply, but are logged via
+// slog only, with no SecurityEvent emitted. Production wiring should
+// always supply the run's SecurityLogger.
 func NewScannedStrategy(inner EditStrategy, scanner codescanner.CodeScanner, cfg *types.CodeScannerConfig, emitter SecurityEventEmitter) EditStrategy {
 	if scanner == nil {
 		return inner
@@ -97,9 +80,8 @@ func (s *ScannedStrategy) ToolDefinition() types.ToolDefinition {
 	return s.inner.ToolDefinition()
 }
 
-// Inner returns the wrapped EditStrategy. Exposed so the factory can
-// reach an underlying *MultiStrategy to inject Metrics; the field
-// itself stays unexported to discourage other tinkering.
+// Inner returns the wrapped EditStrategy, so the factory can reach an
+// underlying *MultiStrategy to inject Metrics.
 func (s *ScannedStrategy) Inner() EditStrategy {
 	return s.inner
 }
@@ -109,11 +91,9 @@ func (s *ScannedStrategy) Inner() EditStrategy {
 func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
 	path := pathFromInput(input)
 
-	// Snapshot the current contents so we can roll back on a block.
-	// A read error is fine here — it most commonly means the file
-	// does not exist yet, in which case "rollback" reduces to writing
-	// an empty file. We capture existed=false so we can avoid writing
-	// content the user did not have on disk before.
+	// Snapshot the pre-edit contents for rollback on a block. A read
+	// error most commonly means the file does not exist yet; existed=false
+	// records that so rollback doesn't write content that was never there.
 	prevContent, prevExisted := snapshot(ctx, exec, path)
 
 	result, err := s.inner.Apply(ctx, input, exec)
@@ -121,12 +101,10 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 		return nil, err
 	}
 	if result == nil || !result.Applied {
-		// The edit did not modify the file; nothing to scan.
 		return result, nil
 	}
 
-	// Read the post-edit content. If we cannot read it back, treat
-	// that as a hard error — we cannot guarantee the scan ran.
+	// A read-back failure is a hard error: we cannot guarantee the scan ran.
 	post, readErr := exec.ReadFile(ctx, result.Path)
 	if readErr != nil {
 		return nil, fmt.Errorf("scan post-apply: read %q: %w", result.Path, readErr)
@@ -145,18 +123,11 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 	}
 
 	blocking, warnings := classify(scanRes.Findings, s.blockOnWarn)
-	// Record one stirrup.codescanner.findings observation per finding.
-	// Findings that triggered the block path (any blocking finding when
-	// len(blocking) > 0) get blocked=true; warnings that survived
-	// classification get blocked=false. Promotion via blockOnWarn lands
-	// in the "blocking" bucket, matching the promotion semantics.
 	s.recordFindings(ctx, blocking, true)
 	s.recordFindings(ctx, warnings, false)
 	if len(blocking) > 0 {
-		// Roll back the write before returning the failure so the
-		// workspace is left in its prior state. Best-effort: a
-		// rollback failure is logged but does not mask the original
-		// scan failure.
+		// Best-effort rollback: a failure here is logged but does not
+		// mask the original scan-blocked result.
 		if rbErr := rollback(ctx, exec, result.Path, prevContent, prevExisted); rbErr != nil {
 			slog.Error("codescanner: rollback failed",
 				"path", result.Path,
@@ -170,8 +141,6 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 		}, nil
 	}
 
-	// Only warnings remain — emit the security event, log, and let
-	// the edit stand.
 	for _, w := range warnings {
 		s.emitWarn(result.Path, w)
 	}
@@ -180,8 +149,8 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 
 // pathFromInput pulls the "path" field from any of the edit-strategy
 // input shapes (whole-file, search-replace, udiff, or multi). Returns
-// "" if the input is malformed; the caller proceeds anyway since the
-// inner strategy will surface its own parse error.
+// "" on malformed input; the caller proceeds anyway since the inner
+// strategy will surface its own parse error.
 func pathFromInput(input json.RawMessage) string {
 	var probe struct {
 		Path string `json:"path"`
@@ -191,9 +160,8 @@ func pathFromInput(input json.RawMessage) string {
 }
 
 // snapshot returns the file's current contents and whether it existed.
-// A read error is treated as "did not exist" — for our purposes the
-// distinction between ENOENT and EACCES is moot: we will not try to
-// roll back content we never read.
+// A read error is treated as "did not exist": the distinction between
+// ENOENT and EACCES is moot since we won't roll back content never read.
 func snapshot(ctx context.Context, exec executor.Executor, path string) (string, bool) {
 	if path == "" {
 		return "", false
@@ -206,16 +174,14 @@ func snapshot(ctx context.Context, exec executor.Executor, path string) (string,
 }
 
 // rollback restores prev as the file's content. If the file did not
-// exist before, we write an empty string — the Executor interface does
-// not expose a delete primitive, and a zero-byte file is a strictly
-// less-bad outcome than leaving the secret-bearing content on disk.
+// exist before, it writes an empty string: the Executor interface has
+// no delete primitive, and a zero-byte file beats leaving secret-bearing
+// content on disk.
 func rollback(ctx context.Context, exec executor.Executor, path, prev string, existed bool) error {
 	if path == "" {
 		return errors.New("empty path")
 	}
 	if !existed {
-		// Best-effort: zero out the file. We document this caveat
-		// in the package comment.
 		return exec.WriteFile(ctx, path, "")
 	}
 	return exec.WriteFile(ctx, path, prev)
@@ -235,9 +201,7 @@ func classify(findings []codescanner.Finding, blockOnWarn bool) (block, warn []c
 				warn = append(warn, f)
 			}
 		default:
-			// Unknown severities are conservatively treated as
-			// warnings: the scanner returned something we don't
-			// recognise; log it but don't block on it.
+			// Unrecognised severity: treat conservatively as a warning.
 			warn = append(warn, f)
 		}
 	}
@@ -259,7 +223,7 @@ func formatFindings(findings []codescanner.Finding) string {
 }
 
 // emitWarn records one warn finding via slog and the security emitter.
-// We log first so an emitter outage does not lose the trail.
+// Logging first means an emitter outage does not lose the trail.
 func (s *ScannedStrategy) emitWarn(path string, f codescanner.Finding) {
 	slog.Warn("codescanner: warn finding (edit allowed)",
 		"path", path,
@@ -290,11 +254,8 @@ func (s *ScannedStrategy) recordScan(ctx context.Context) {
 }
 
 // recordFindings records one stirrup.codescanner.findings observation
-// per finding. blocked=true is passed for the blocking bucket (which
-// includes warn findings promoted via BlockOnWarn) and false otherwise.
-// The finding's own Severity is forwarded as the severity attribute so
-// dashboards can distinguish naturally-block findings from promoted
-// warns.
+// per finding, tagged with its own Severity and the given blocked flag
+// (true for the blocking bucket, which includes BlockOnWarn promotions).
 func (s *ScannedStrategy) recordFindings(ctx context.Context, findings []codescanner.Finding, blocked bool) {
 	if s.Metrics == nil || len(findings) == 0 {
 		return

@@ -104,10 +104,6 @@ func TestParseSemgrepOutput_BadJSON(t *testing.T) {
 }
 
 func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
-	// Verify the runFn hook contract: a fake exec returning canned JSON
-	// flows through Scan unchanged. This lets the constructor wire
-	// SemgrepScanner.path without us having to shell out to a real
-	// binary in tests.
 	canned := []byte(`{"results":[{"check_id":"fake/rule","start":{"line":3},"extra":{"severity":"ERROR","message":"hi"}}]}`)
 	s := &SemgrepScanner{
 		path: "/fake/semgrep",
@@ -127,11 +123,8 @@ func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
 	}
 }
 
-// TestSemgrepScanner_ConfigPathUsed covers M7: a non-empty
-// ConfigPath flows into the runFn argv as the value of --config.
-// This is the supply-chain pin: operators set a local rules bundle
-// (e.g. /etc/stirrup/semgrep-rules) so semgrep stops fetching from
-// semgrep.dev at scan time.
+// TestSemgrepScanner_ConfigPathUsed verifies a non-empty ConfigPath
+// flows into the runFn argv as the value of --config.
 func TestSemgrepScanner_ConfigPathUsed(t *testing.T) {
 	var captured string
 	s := &SemgrepScanner{
@@ -150,8 +143,8 @@ func TestSemgrepScanner_ConfigPathUsed(t *testing.T) {
 	}
 }
 
-// TestSemgrepScanner_DefaultConfigIsAuto ensures the historical
-// behaviour is preserved when ConfigPath is left empty.
+// TestSemgrepScanner_DefaultConfigIsAuto ensures ConfigPath defaults to
+// "auto" when left empty.
 func TestSemgrepScanner_DefaultConfigIsAuto(t *testing.T) {
 	var captured string
 	s := &SemgrepScanner{

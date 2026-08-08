@@ -1,14 +1,9 @@
 package core
 
-// Tool-choice escalation (#230). This file defines the seam between the
-// agentic loop and the missed-tool recovery policy. The loop never decides
-// *whether* a no-tool answer is suspicious or *how* to recover — that
-// judgement lives behind the EscalationPolicy interface, injected by the
-// factory. Keeping the decision out of the loop preserves the
-// loop-as-pure-interfaces invariant (CLAUDE.md): the loop reads no
-// environment, touches no filesystem, and imports no concrete component
-// here. It hands the policy a value-typed EscalationInput and acts on the
-// returned EscalationDecision.
+// This file defines the seam between the agentic loop and the missed-tool
+// recovery policy: the loop never decides whether a no-tool answer is
+// suspicious or how to recover — that lives behind EscalationPolicy,
+// injected by the factory, preserving the loop-as-pure-interfaces invariant.
 
 // EscalationKind enumerates the recovery action the policy selected for a
 // suspected missed-tool turn. The zero value (EscalationNone) means "do
@@ -16,20 +11,13 @@ package core
 type EscalationKind int
 
 const (
-	// EscalationNone — the turn is not a missed-tool failure (or the
-	// feature is off / the cap is exhausted). The loop accepts the
-	// model's answer unchanged.
+	// EscalationNone means the turn is not a missed-tool failure; the loop accepts the answer unchanged.
 	EscalationNone EscalationKind = iota
 
-	// EscalationNative — retry the turn with provider-native required
-	// tool choice (StreamParams.ToolChoice = ToolChoiceRequired). Chosen
-	// only when the resolved provider capability advertises
-	// Supported && Required.
+	// EscalationNative retries with provider-native required tool choice; chosen only when the provider advertises Supported && Required.
 	EscalationNative
 
-	// EscalationPrompt — retry the turn after injecting a stronger-prompt
-	// user message stating the missing requirement. The fallback when the
-	// provider cannot force tool use natively.
+	// EscalationPrompt retries with an injected stronger-prompt message; the fallback when native tool-choice forcing isn't available.
 	EscalationPrompt
 )
 
@@ -54,87 +42,54 @@ func (k EscalationKind) String() string {
 // this turn, the turn index, and how many escalations have already fired in
 // this inner-loop run.
 type EscalationInput struct {
-	// Mode is the run mode ("planning"/"review"/"research"/"execution"/
-	// "toil"). The policy uses it to pick the mode-specific requirement
-	// and to stay silent for modes where no tool is required.
+	// Mode is the run mode; the policy picks the mode-specific requirement from it.
 	Mode string
 
-	// Provider and Model identify the resolved (provider, model) pair so
-	// the policy can resolve the native tool-choice capability and decide
-	// native-vs-prompt fallback. Empty strings resolve to no native
-	// capability, so the policy falls back to the prompt path.
+	// Provider and Model resolve the native tool-choice capability; empty strings fall back to the prompt path.
 	Provider string
 	Model    string
 
-	// StopReason is the turn's provider stop reason. A missed-tool answer
-	// is a final/text stop reason (e.g. "end_turn"); a "tool_use" turn is
-	// never a missed-tool failure.
+	// StopReason is the turn's provider stop reason; "tool_use" is never a missed-tool failure.
 	StopReason string
 
-	// ToolsAvailable reports whether the loop attached any tool
-	// definitions to the turn. The trigger never fires when false — a run
-	// with no tools cannot be expected to call one.
+	// ToolsAvailable reports whether any tool was attached to the turn; the trigger never fires when false.
 	ToolsAvailable bool
 
-	// PriorToolCalls is the number of tool calls dispatched so far in this
-	// inner-loop run. The conservative trigger fires only on the *first*
-	// assistant turn (PriorToolCalls == 0): a model that has already used
-	// tools and then answers is making a legitimate judgement.
+	// PriorToolCalls gates escalation to the first assistant turn (== 0); a model that has already used tools is trusted.
 	PriorToolCalls int
 
 	// Turn is the zero-based turn index within the inner-loop run.
 	Turn int
 
-	// EscalationsSoFar is the number of escalations already performed in
-	// this inner-loop run. The policy compares it against its cap so a
-	// retry that itself ends in a no-tool answer cannot loop unboundedly.
+	// EscalationsSoFar is compared against the policy's cap so a retry cannot loop unboundedly.
 	EscalationsSoFar int
 }
 
-// EscalationDecision is the policy's verdict for one turn.
-//
-// The zero value (Kind == EscalationNone) is the safe default: a disabled
-// or nil policy returns it and the loop accepts the model's answer
-// unchanged.
+// EscalationDecision is the policy's verdict for one turn. The zero value
+// (Kind == EscalationNone) is the safe default for a disabled or nil policy.
 type EscalationDecision struct {
-	// Kind selects the recovery action. EscalationNone means no retry.
+	// Kind selects the recovery action; EscalationNone means no retry.
 	Kind EscalationKind
 
-	// PromptMessage is the user-message text the loop appends before the
-	// retry when Kind == EscalationPrompt. Empty for the native path
-	// (the provider field forces the call, so no extra prompt is added).
+	// PromptMessage is appended before the retry when Kind == EscalationPrompt; empty for the native path.
 	PromptMessage string
 
-	// Reason is a short, bounded, non-model-derived explanation of why the
-	// escalation fired (e.g. the mode requirement that was unmet). It is
-	// attached to the trace span so operators can audit the trigger
-	// without the raw model output. It is NOT a metric label.
+	// Reason is a short, non-model-derived explanation attached to the trace span; it is NOT a metric label.
 	Reason string
 }
 
-// EscalationPolicy decides whether a completed no-tool turn is a likely
-// missed-tool failure and, if so, how to recover. It is injected into the
-// AgenticLoop by the factory so the loop stays free of the detection
-// heuristic, the mode-requirement table, and the provider-capability
-// lookup.
-//
-// Implementations MUST be safe to call on every turn: the loop calls
-// Decide unconditionally and relies on the EscalationNone zero value to
-// mean "do nothing". A nil EscalationPolicy on the loop is treated as a
-// disabled policy (see (*AgenticLoop).escalationDecision).
+// EscalationPolicy decides whether a completed no-tool turn is a missed-tool
+// failure and, if so, how to recover; injected by the factory so the loop
+// stays free of the detection heuristic. Decide must be safe to call on
+// every turn — the EscalationNone zero value means "do nothing", and a nil
+// EscalationPolicy on the loop is treated as disabled.
 type EscalationPolicy interface {
-	// Decide returns the recovery action for the given turn. It must never
-	// return EscalationNative/EscalationPrompt when in.ToolsAvailable is
-	// false, when in.StopReason is "tool_use", when in.PriorToolCalls > 0,
-	// or when in.EscalationsSoFar has reached the cap.
+	// Decide must never return Native/Prompt when ToolsAvailable is false, StopReason is "tool_use", PriorToolCalls > 0, or EscalationsSoFar reached the cap.
 	Decide(in EscalationInput) EscalationDecision
 }
 
 // escalationDecision resolves the loop's EscalationPolicy, treating a nil
-// policy as disabled (returns the EscalationNone zero value). Centralising
-// the nil check keeps the call site in runInnerLoop free of a guard and
-// guarantees the loop is a no-op whenever the factory left the policy
-// unset (the OFF-by-default path).
+// policy as disabled (EscalationNone zero value).
 func (l *AgenticLoop) escalationDecision(in EscalationInput) EscalationDecision {
 	if l.Escalation == nil {
 		return EscalationDecision{Kind: EscalationNone}

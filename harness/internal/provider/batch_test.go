@@ -320,13 +320,10 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 
 // TestDeriveOpenAIResponsesStopReason pins the full
 // status × incomplete-reason × has-tool matrix for the batch path's
-// deriveOpenAIResponsesStopReason. Lifts coverage from the partial
-// streaming-incidental coverage (only completed-with-tool, expired,
-// max_output_tokens) to all eight documented branches plus the
-// non-empty-unknown fallthrough.
+// deriveOpenAIResponsesStopReason.
 // TestBatchAdapter_marshalRequestBody_OpenAICompatible pins the
-// openai-compatible arm of marshalRequestBody — previously at 0%
-// coverage. Asserts the marshalled JSON is the Chat Completions wire
+// openai-compatible arm of marshalRequestBody. Asserts the marshalled
+// JSON is the Chat Completions wire
 // body shape with stream=false.
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
@@ -425,10 +422,9 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 }
 
 // TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
-// openai-responses arm of marshalRequestBody — previously at 0%
-// coverage. Asserts the marshalled JSON is the Responses wire body
-// shape: model present, stream key absent (omitempty stripping in
-// buildResponsesRequest).
+// openai-responses arm of marshalRequestBody: the marshalled JSON is the
+// Responses wire body shape, model present, stream key absent (omitempty
+// stripping in buildResponsesRequest).
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
 	body, err := a.marshalRequestBody(types.StreamParams{
@@ -668,9 +664,9 @@ func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
 }
 
 // TestBatchAdapter_LastBatchID_EmptyBeforeSubmit pins the contract
-// documented on LastBatchID(): readers (the agentic loop in #138)
-// must see an empty string when no batch has been submitted yet, so
-// a streaming-only fallback path can detect the absence cleanly.
+// documented on LastBatchID(): readers (the agentic loop) must see an
+// empty string when no batch has been submitted yet, so a
+// streaming-only fallback path can detect the absence cleanly.
 func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
 	a := batchAdapter(t, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, nil)
 	if got := a.LastBatchID(); got != "" {
@@ -1085,7 +1081,7 @@ func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 		t.Errorf("unexpected response: %s", got.Response)
 	}
 
-	// Cleanup proof (R10): a second Result on the same batchID surfaces
+	// Cleanup proof: a second Result on the same batchID surfaces
 	// "no pending submission", confirming the success path called
 	// releasePending and dropped both maps.
 	if _, err := c.Result(context.Background(), batchID); err == nil ||
@@ -1232,10 +1228,10 @@ func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_DeliverBeforeResult exercises the B1
-// race: handleControl delivers a batch_result before Result is even
-// called. With the fix, Result must return the buffered value rather
-// than spuriously surfacing "no pending submission".
+// TestControlPlaneBatchClient_DeliverBeforeResult exercises the race
+// where handleControl delivers a batch_result before Result is even
+// called: Result must return the buffered value rather than spuriously
+// surfacing "no pending submission".
 func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Second, false)
@@ -1276,8 +1272,8 @@ func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_CancelBundle_TimeoutEmits asserts B3: a
-// timeout exit emits a batch_cancel_request when cancelBundleOnExit=true.
+// TestControlPlaneBatchClient_CancelBundle_TimeoutEmits: a timeout exit
+// emits a batch_cancel_request when cancelBundleOnExit=true.
 func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, 30*time.Millisecond, true)
@@ -1306,8 +1302,8 @@ func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits asserts B3 on
-// the ctx-cancel arm.
+// TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits mirrors
+// TestControlPlaneBatchClient_CancelBundle_TimeoutEmits on the ctx-cancel arm.
 func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Hour, true)
@@ -1341,9 +1337,9 @@ func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit asserts B3:
-// when cancelBundleOnExit=false, the cancel/timeout arms emit nothing
-// beyond the original batch_submission.
+// TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit: when
+// cancelBundleOnExit=false, the cancel/timeout arms emit nothing beyond
+// the original batch_submission.
 func TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit(t *testing.T) {
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Hour, false)
@@ -1370,7 +1366,7 @@ func TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit(t *testing.T) {
 	}
 }
 
-// TestDecodeBatchResult_MalformedJSON (B6) asserts a non-JSON content
+// TestDecodeBatchResult_MalformedJSON asserts a non-JSON content
 // surfaces as a synthetic invalid_request_error rather than panicking.
 func TestDecodeBatchResult_MalformedJSON(t *testing.T) {
 	got := decodeBatchResult(types.ControlEvent{
@@ -1389,7 +1385,7 @@ func TestDecodeBatchResult_MalformedJSON(t *testing.T) {
 	}
 }
 
-// TestDecodeBatchResult_SizeCap (B6) asserts a Content payload above
+// TestDecodeBatchResult_SizeCap asserts a Content payload above
 // maxBatchResponseBytes surfaces as a synthetic invalid_request_error
 // without attempting to decode the oversized blob.
 func TestDecodeBatchResult_SizeCap(t *testing.T) {
@@ -1410,9 +1406,9 @@ func TestDecodeBatchResult_SizeCap(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_SubmitEmitFailureCleansUp (B7) drives an
-// Emit failure on batch_submission and asserts the pending entry was
-// dropped (no leak; subsequent Result reports "no pending submission").
+// TestControlPlaneBatchClient_SubmitEmitFailureCleansUp drives an Emit
+// failure on batch_submission and asserts the pending entry was dropped
+// (no leak; subsequent Result reports "no pending submission").
 func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
 	tr := &mockBatchTransport{
 		emitErr:      errors.New("simulated emit failure"),
@@ -1446,7 +1442,7 @@ func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
 	}
 }
 
-// TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel (R3) asserts the
+// TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel asserts the
 // heartbeat goroutine terminates promptly when its context is cancelled
 // before any tick has fired.
 func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
@@ -1481,9 +1477,9 @@ func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
 	}
 }
 
-// TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError (R5) asserts
-// that when FallbackOnTimeout fires and the inner adapter itself
-// returns an error, the BatchAdapter surfaces a single error event.
+// TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError asserts that
+// when FallbackOnTimeout fires and the inner adapter itself returns an
+// error, the BatchAdapter surfaces a single error event.
 func TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
@@ -1511,8 +1507,8 @@ func (e *erroringProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 	return nil, e.err
 }
 
-// TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay (R5)
-// asserts the channel closes cleanly when ctx is cancelled mid-relay.
+// TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay asserts
+// the channel closes cleanly when ctx is cancelled mid-relay.
 func TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
@@ -1579,7 +1575,7 @@ func (b *blockingProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 	return ch, nil
 }
 
-// TestFabricateStream_AnthropicParityWithReference (R8) compares the
+// TestFabricateStream_AnthropicParityWithReference compares the
 // fabricator's output against a hand-rolled reference sequence for a
 // single text + tool_use fixture. Guards against drift between the SSE
 // consumer (consumeSSE in anthropic.go) and the batch fabricator.

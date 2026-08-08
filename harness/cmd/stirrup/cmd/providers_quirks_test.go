@@ -13,9 +13,8 @@ import (
 )
 
 // newTestProvidersQuirksCommand returns a fresh cobra command preloaded
-// with the providers-quirks flag surface. Mirrors
-// newTestRunConfigCommand's per-test scope so flag-changed state does
-// not leak between tests.
+// with the providers-quirks flag surface, scoped per test so
+// flag-changed state does not leak between tests.
 func newTestProvidersQuirksCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "quirks"}
 	cmd.Flags().String("provider", "", "")
@@ -23,15 +22,11 @@ func newTestProvidersQuirksCommand() *cobra.Command {
 	return cmd
 }
 
-// TestProvidersQuirks_EmptyRegistryEmitsValidJSON exercises the
-// no-rules-matched state: the subcommand must still produce a
-// structurally valid JSON document with an empty appliedRules slice
-// (not null) and a ProviderQuirks value at the post-Resolve zero shape
-// (non-nil empty maps/slices). It resolves an unknown provider type so
-// no builtin rule fires — the first-party providers now all carry a
-// cross-provider tool-choice base rule (#230) that matches every model,
-// so this assertion needs a provider with no rules at all to still
-// observe the empty-appliedRules path.
+// TestProvidersQuirks_EmptyRegistryEmitsValidJSON pins the
+// no-rules-matched state: the subcommand must still produce valid JSON
+// with an empty appliedRules slice (not null). Resolves an unknown
+// provider type since every first-party provider now carries a base
+// rule matching every model.
 func TestProvidersQuirks_EmptyRegistryEmitsValidJSON(t *testing.T) {
 	cmd := newTestProvidersQuirksCommand()
 	if err := cmd.ParseFlags([]string{"--provider", "no-such-provider", "--model", "gpt-4o"}); err != nil {
@@ -59,25 +54,21 @@ func TestProvidersQuirks_EmptyRegistryEmitsValidJSON(t *testing.T) {
 	if len(got.AppliedRules) != 0 {
 		t.Errorf("AppliedRules = %+v, want empty", got.AppliedRules)
 	}
-	// The JSON output must also literally contain "appliedRules": []
-	// so downstream scripts can rely on the array shape even before
-	// unmarshalling.
+	// Assert the literal shape too, so downstream scripts relying on it
+	// without unmarshalling are covered.
 	if !strings.Contains(buf.String(), `"appliedRules": []`) {
 		t.Errorf("output missing literal `\"appliedRules\": []`:\n%s", buf.String())
 	}
 }
 
-// TestProvidersQuirks_RequiredFlags pins the MarkFlagRequired wiring
-// on the registered cobra command: missing --provider or --model
-// must produce a non-nil error rather than a bare-default
-// resolution.
+// TestProvidersQuirks_RequiredFlags pins the MarkFlagRequired wiring on
+// the registered cobra command: missing --provider or --model must
+// produce a non-nil error.
 func TestProvidersQuirks_RequiredFlags(t *testing.T) {
 	for _, name := range []string{"provider", "model"} {
 		t.Run("missing-"+name, func(t *testing.T) {
-			// Re-execute the real command tree with the offending flag
-			// absent. cobra surfaces MarkFlagRequired through
-			// Command.Execute, not ParseFlags, so we drive Execute
-			// against a fresh root command to avoid mutating the
+			// cobra surfaces MarkFlagRequired through Execute, not
+			// ParseFlags, so drive a fresh root command instead of the
 			// process-global one.
 			root := &cobra.Command{Use: "stirrup"}
 			parent := &cobra.Command{Use: "providers"}
@@ -109,12 +100,9 @@ func TestProvidersQuirks_RequiredFlags(t *testing.T) {
 	}
 }
 
-// TestProvidersQuirks_OutputIsValidJSON broadens
-// TestProvidersQuirks_EmptyRegistryEmitsValidJSON to assert that the
-// emitted document is valid against a generic decoder (not just our
-// typed struct). Catches a future regression where a field with no
-// JSON tag is added to quirksCLIOutput and produces unexpected camel
-// or snake casing.
+// TestProvidersQuirks_OutputIsValidJSON asserts the emitted document
+// decodes against a generic map, not just the typed struct — catches a
+// field with no JSON tag producing unexpected casing.
 func TestProvidersQuirks_OutputIsValidJSON(t *testing.T) {
 	cmd := newTestProvidersQuirksCommand()
 	if err := cmd.ParseFlags([]string{"--provider", "gemini", "--model", "gemini-3.1-pro-preview"}); err != nil {
@@ -137,9 +125,6 @@ func TestProvidersQuirks_OutputIsValidJSON(t *testing.T) {
 
 // TestCollectAppliedRules_FiltersAndFlagsCorrectly exercises every
 // branch of collectAppliedRules using a hand-constructed rule slice.
-// Without this test the CLI's primary operator-facing correctness
-// surface had zero direct coverage (BuiltinRules() is empty in Step 1
-// so no rule ever flowed through the predicate or staleness branches).
 //
 // Covers:
 //   - matching rule (ProviderType + ModelMatch glob both match)
@@ -245,9 +230,8 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 	}
 }
 
-// TestCollectAppliedRules_EmptyRules pins the empty-rule-set
-// behaviour the JSON output depends on: an empty rule slice returns a
-// non-nil empty slice so the encoded JSON is `[]` rather than `null`.
+// TestCollectAppliedRules_EmptyRules pins that an empty rule slice
+// returns a non-nil empty slice so the encoded JSON is `[]`, not `null`.
 func TestCollectAppliedRules_EmptyRules(t *testing.T) {
 	got := formatAppliedRules(nil)
 	if got == nil {

@@ -135,8 +135,6 @@ func TestMetricRecorder_NilMetricsReturnsInner(t *testing.T) {
 	}
 }
 
-// --- helpers ---
-
 type counterDataPoint struct {
 	value int64
 	attrs map[string]string

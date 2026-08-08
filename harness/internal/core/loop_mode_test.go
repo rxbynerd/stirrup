@@ -25,10 +25,8 @@ import (
 )
 
 // fakeBatchAdapter satisfies batchModeAdapter by returning a fixed
-// LastBatchID. It also implements the ProviderAdapter Stream contract
-// so it can be slotted into the loop without pulling the real
-// BatchAdapter (which would require BatchClient + BatchProviderConfig
-// plumbing the wiring this test isn't here to cover).
+// LastBatchID, without pulling in the real BatchAdapter's
+// BatchClient/BatchProviderConfig wiring.
 type fakeBatchAdapter struct {
 	batchID string
 	events  []types.StreamEvent
@@ -45,10 +43,8 @@ func (f *fakeBatchAdapter) Stream(_ context.Context, _ types.StreamParams) (<-ch
 
 func (f *fakeBatchAdapter) LastBatchID() string { return f.batchID }
 
-// TestTurnModeInfo_StreamingDefault is the direct unit test for the
-// helper: a vanilla ProviderAdapter (no LastBatchID method) must
-// resolve to (TurnModeStreaming, "") so the streaming-only call
-// sites take no extra branches.
+// TestTurnModeInfo_StreamingDefault: a vanilla ProviderAdapter (no
+// LastBatchID method) resolves to (TurnModeStreaming, "").
 func TestTurnModeInfo_StreamingDefault(t *testing.T) {
 	mode, batchID := turnModeInfo(&mockProvider{})
 	if mode != types.TurnModeStreaming {
@@ -59,10 +55,8 @@ func TestTurnModeInfo_StreamingDefault(t *testing.T) {
 	}
 }
 
-// TestTurnModeInfo_BatchAdapterPopulatesBatchID confirms the
-// type-assertion path: any adapter implementing LastBatchID() yields
-// mode=batch and the surfaced identifier. The duck-typed contract is
-// what lets the loop avoid importing internal/provider directly.
+// TestTurnModeInfo_BatchAdapterPopulatesBatchID: any adapter implementing
+// LastBatchID() yields mode=batch and the surfaced identifier.
 func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
 	mode, batchID := turnModeInfo(&fakeBatchAdapter{batchID: "msgbatch_xyz"})
 	if mode != types.TurnModeBatch {
@@ -73,10 +67,8 @@ func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
 	}
 }
 
-// TestTurnModeInfo_NilSelectedProvider pins the defence-in-depth
-// branch: turnModeInfo(nil) returns the streaming defaults rather
-// than panicking, so the helper is safe to call on any code path
-// the loop can reach.
+// TestTurnModeInfo_NilSelectedProvider: turnModeInfo(nil) returns the
+// streaming defaults rather than panicking.
 func TestTurnModeInfo_NilSelectedProvider(t *testing.T) {
 	mode, batchID := turnModeInfo(nil)
 	if mode != types.TurnModeStreaming || batchID != "" {
@@ -84,10 +76,8 @@ func TestTurnModeInfo_NilSelectedProvider(t *testing.T) {
 	}
 }
 
-// buildBatchTestLoop is buildTestLoop's twin that takes the fake batch
-// adapter directly. The shared buildTestLoop accepts *mockProvider; we
-// need a *fakeBatchAdapter here to exercise the batch-mode wiring all
-// the way to the recorded TurnTrace.
+// buildBatchTestLoop is buildTestLoop's twin, taking a *fakeBatchAdapter
+// directly since buildTestLoop only accepts *mockProvider.
 func buildBatchTestLoop(prov *fakeBatchAdapter, recorder *recordingTraceEmitter) *AgenticLoop {
 	var transportBuf bytes.Buffer
 	registry := tool.NewRegistry()
@@ -121,12 +111,9 @@ func buildBatchTestLoop(prov *fakeBatchAdapter, recorder *recordingTraceEmitter)
 	}
 }
 
-// TestLoop_BatchAdapter_RecordsBatchMode is the end-to-end guard:
-// when the loop's selectedProvider implements LastBatchID(), the
-// emitted TurnTrace carries Mode="batch" and the batch identifier.
-// Without this test, a refactor that drops the turnModeInfo call at
-// the happy-path RecordTurn site would silently regress mine-failures
-// filtering and lakehouse bucketing.
+// TestLoop_BatchAdapter_RecordsBatchMode: when the loop's selectedProvider
+// implements LastBatchID(), the emitted TurnTrace carries Mode="batch"
+// and the batch identifier.
 func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
 	prov := &fakeBatchAdapter{
 		batchID: "msgbatch_test123",
@@ -154,11 +141,8 @@ func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
 	}
 }
 
-// TestLoop_StreamingProvider_RecordsStreamingMode is the
-// companion guard for the default path. A vanilla mockProvider must
-// produce TurnTrace.Mode="streaming" so the new field is set
-// consistently on every successful turn, not just batch ones — the
-// lakehouse bucketing path keys on the explicit string.
+// TestLoop_StreamingProvider_RecordsStreamingMode: a vanilla mockProvider
+// produces TurnTrace.Mode="streaming" on every successful turn.
 func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -186,11 +170,9 @@ func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
 	}
 }
 
-// failingBatchAdapter returns a stream-time error so the loop hits
-// the streamErr branch. Pins that the batch metadata is still
-// recorded on the failure-path TurnTrace — operators inspecting
-// failed batches still need the batch ID to find the upstream
-// receipt.
+// failingBatchAdapter returns a stream-time error so the loop hits the
+// streamErr branch, while still recording the batch ID needed to find
+// the upstream receipt.
 type failingBatchAdapter struct{ batchID string }
 
 func (f *failingBatchAdapter) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
@@ -202,20 +184,14 @@ func (f *failingBatchAdapter) Stream(_ context.Context, _ types.StreamParams) (<
 
 func (f *failingBatchAdapter) LastBatchID() string { return f.batchID }
 
-// TestLoop_ProviderNotFound_RecordsEmptyMode pins the B1 contract:
-// the pre-resolution error path emitted when the router selects a
-// provider that is absent from l.Providers must record Mode="", not
-// Mode="streaming". The honest empty value preserves the
-// streaming/batch distinction for any future analysis that buckets
-// on resolved-mode failures, while lakehouse/mine-failures already
-// treat empty as streaming for legacy traces (#138).
+// TestLoop_ProviderNotFound_RecordsEmptyMode: the pre-resolution error path
+// (router selects a provider absent from l.Providers) must record
+// Mode="", not Mode="streaming".
 func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
 	recorder := &recordingTraceEmitter{}
 	loop := &AgenticLoop{
-		// l.Provider is intentionally nil and l.Providers contains a
-		// single entry under a different key than the router selects
-		// ("anthropic"), so the !ok branch in the loop fires before
-		// any provider is resolved.
+		// l.Provider is intentionally nil; Providers has no "anthropic"
+		// entry, so the !ok branch fires before any provider is resolved.
 		Providers: map[string]provider.ProviderAdapter{
 			"other": &mockProvider{},
 		},
@@ -246,9 +222,6 @@ func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
 	if turns[0].StopReason != "error" {
 		t.Errorf("turn[0].StopReason = %q, want %q", turns[0].StopReason, "error")
 	}
-	// The crux: pre-resolution Mode is empty, not "streaming". A
-	// regression that hardcodes "streaming" here would misfile the
-	// failure into the streaming latency bucket of a batch-enabled run.
 	if turns[0].Mode != "" {
 		t.Errorf("turn[0].Mode = %q, want empty (pre-resolution error)", turns[0].Mode)
 	}

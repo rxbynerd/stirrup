@@ -36,10 +36,10 @@ func TestDenySideEffects_DeniesMutatingTools(t *testing.T) {
 	}
 }
 
-// TestDenySideEffects_AllowsApprovalRequiredButNonMutating is the WP1
-// regression: web_fetch and spawn_agent are read-only as far as the
-// workspace is concerned, so deny-side-effects must let them through.
-// They will still be gated by ask-upstream when configured.
+// TestDenySideEffects_AllowsApprovalRequiredButNonMutating: web_fetch
+// and spawn_agent are read-only as far as the workspace is concerned,
+// so deny-side-effects must let them through. They are still gated by
+// ask-upstream when configured.
 func TestDenySideEffects_AllowsApprovalRequiredButNonMutating(t *testing.T) {
 	mutating := map[string]bool{
 		"write_file":  true,

@@ -13,34 +13,16 @@ type namedPattern struct {
 // Names are stable identifiers safe to log (they reveal pattern type, not the
 // matched secret value).
 var secretPatterns = []namedPattern{
-	// anthropic_wif_token MUST come before anthropic_api_key. Both
-	// match `sk-ant-oat01-...` strings (WIF OAuth access tokens), but
-	// the more specific name attaches the right label to scrub events
-	// in audit logs so operators can distinguish federated leaks
-	// (a credential rotation problem) from static-key leaks (a
-	// secrets-management problem). The replacement is `[REDACTED]`
-	// either way; only the stats label differs.
-	// The \b before each sk- prefix is load-bearing, not decoration.
-	// Without it `sk-[A-Za-z0-9_-]{16,}` matches the tail of any
-	// hyphenated identifier ending in "...sk-", because "ta|sk" carries
-	// no word boundary: "eval-task-narrow-edit-leaves-surroundings-alone"
-	// yields "sk-narrow-edit-leaves-surroundings-alone". That is not
-	// hypothetical — it is where the eval runner's own workspace paths
-	// landed, and since sensitivepatterns.go lifts these regexes into
-	// the Rule-of-Two detector at TierLatch, a `read_file` error echoing
-	// such a path revoked run_command mid-run and made the eval gate
-	// flaky across three different models (see ci.yml::eval-gate).
-	// Ordinary English words ending in "sk" ("task-", "disk-", "risk-")
-	// are common enough in paths and identifiers that the unanchored
-	// form is a persistent false-positive source.
+	// anthropic_wif_token MUST precede anthropic_api_key: both match
+	// `sk-ant-oat01-...`, and only the order decides which label lands in
+	// audit stats (the redaction is identical either way).
 	//
-	// This tightens precision without losing a real key: an API key is
-	// always preceded by start-of-string or a non-word delimiter
-	// (whitespace, =, :, ", ', {), all of which produce the boundary.
-	// The intent matches the aws_secret_access_key / azure_storage_key
-	// entries below, which are likewise anchored so "ordinary hashes,
-	// IDs, and trace fragments are not scrubbed just because they share
-	// an alphabet".
+	// The \b before each sk- prefix is load-bearing. Unanchored, the pattern
+	// matches the tail of any identifier ending in "...sk-", and because
+	// sensitivepatterns.go lifts these regexes into the Rule-of-Two detector
+	// at TierLatch, a tool error echoing such a path revoked run_command
+	// mid-run. No real key is lost: an API key is always preceded by
+	// start-of-string or a non-word delimiter.
 	{"anthropic_wif_token", regexp.MustCompile(`\bsk-ant-oat01-[a-zA-Z0-9_-]+`)},
 	{"anthropic_api_key", regexp.MustCompile(`\bsk-ant-[a-zA-Z0-9_-]+`)},
 	{"openai_api_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`)},
@@ -61,9 +43,7 @@ var secretPatterns = []namedPattern{
 	// format is `Basic <base64(instanceID:apiToken)>` (see
 	// docs/observability-cloud.md), and the bearer_token pattern below
 	// would not match this prefix. Without this entry, a resolved
-	// Basic token leaking into slog output would land unscrubbed —
-	// defeating the defence-in-depth contract the ScrubHandler
-	// promises for the OTLP/HTTP feature added in gh-100.
+	// Basic token leaking into slog output would land unscrubbed.
 	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
 	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
 	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},

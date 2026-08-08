@@ -115,9 +115,9 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
 			"Example: {\"path\": \"path/to/file.go\", \"start_line\": 100, \"limit\": 50}",
 		// InputExamples mirrors the description's worked example as structured
-		// data (#222); adapters fold it into the schema `examples` keyword
-		// where the provider supports it. TestBuiltinInputExamples_MatchDescription
-		// pins it byte-for-byte against the description so the two cannot drift.
+		// data; adapters fold it into the schema `examples` keyword where the
+		// provider supports it. TestBuiltinInputExamples_MatchDescription pins
+		// it byte-for-byte against the description so the two cannot drift.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"path": "path/to/file.go", "start_line": 100, "limit": 50}`)},
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
@@ -169,11 +169,11 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 
 // readFileExcerpt computes the typed structured payload for read_file from the
 // same inputs formatReadFile uses, mirroring its line-window arithmetic so the
-// structured fields agree with the text rendering exactly (issue #231). Lines
-// holds the excerpt content without the line-number prefixes the text adds.
-// PastEOF is set when start_line is beyond the file, matching the past-EOF
-// notice the text returns; Lines is empty in that case. Truncated reports that
-// the window stopped short of the end of the file.
+// structured fields agree with the text rendering exactly. Lines holds the
+// excerpt content without the line-number prefixes the text adds. PastEOF is
+// set when start_line is beyond the file, matching the past-EOF notice the
+// text returns; Lines is empty in that case. Truncated reports that the
+// window stopped short of the end of the file.
 func readFileExcerpt(path, content string, startLine, limit int) fileExcerpt {
 	// Mirror formatReadFile's trailing-newline handling so the line count and
 	// the EOF boundary match the text rendering byte-for-byte.
@@ -263,7 +263,7 @@ func WriteFileTool(exec executor.Executor) *tool.Tool {
 			"Use this when authoring a new file or when a wholesale rewrite is simpler than a targeted change. " +
 			"Do not use for small edits to existing files — prefer edit_file with operation 'replace' or 'patch' so unrelated lines stay untouched. " +
 			"Example: {\"path\": \"cmd/cli/main.go\", \"content\": \"package main\\n\\nfunc main() {}\\n\"}",
-		// #222 structured example, pinned to the description by TestBuiltinInputExamples_MatchDescription.
+		// Pinned to the description by TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"path": "cmd/cli/main.go", "content": "package main\n\nfunc main() {}\n"}`)},
 		InputSchema:       writeFileSchema,
 		WorkspaceMutating: true,

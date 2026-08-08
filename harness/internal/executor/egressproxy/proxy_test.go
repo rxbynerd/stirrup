@@ -148,9 +148,8 @@ func TestProxy_CONNECT_AllowedSplices(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
-	// Send a ClientHello whose SNI matches the CONNECT host. The proxy
-	// peeks SNI before writing the 200, so the hello must come before
-	// we read the response. Absent or mismatched SNI is a drop (M2).
+	// The 200 is written before the SNI peek, so the hello can be sent
+	// before the response is read.
 	hello := clientHelloWithSNI(upstreamHost)
 	if _, err := conn.Write(hello); err != nil {
 		t.Fatalf("write hello: %v", err)
@@ -241,13 +240,11 @@ func TestProxy_CONNECT_SNIMismatchIsDropped(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
-	// Send a ClientHello whose SNI is "evil.example", which does NOT match
-	// the allowlisted CONNECT host. The proxy writes the 200 first (so a
-	// compliant client can send its ClientHello at all — see
-	// TestProxy_CONNECT_CompliantClient_Succeeds), then reads the SNI and
-	// drops the connection on the mismatch BEFORE dialing any upstream. The
-	// security guarantee is the sni_mismatch deny plus a closed tunnel, not
-	// the absence of a 200 on the wire (M2).
+	// "evil.example" does not match the allowlisted CONNECT host. The
+	// proxy writes the 200 first, then reads the SNI and drops the
+	// connection on mismatch before dialing any upstream: the security
+	// guarantee is the deny plus a closed tunnel, not the absence of a
+	// 200 on the wire.
 	hello := clientHelloWithSNI("evil.example")
 	if _, err := conn.Write(hello); err != nil {
 		t.Logf("write hello: %v", err)
@@ -288,10 +285,9 @@ func TestProxy_Stop_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestEgressProxy_StopsOnContextCancel covers M4: the proxy goroutine
-// must shut down when the caller's ctx is cancelled. Pre-fix, Start
-// took a context but ignored it (`_ context.Context`), so a build path
-// that cancelled mid-startup leaked a listener.
+// TestEgressProxy_StopsOnContextCancel: the proxy goroutine must shut
+// down when the caller's ctx is cancelled, so a leaked listener cannot
+// outlive the caller.
 func TestEgressProxy_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -352,8 +348,6 @@ func TestProxy_ParsesHostHeaderForPlainHTTP(t *testing.T) {
 		t.Error("expected egress_allowed")
 	}
 }
-
-// --- Helpers ---
 
 type httpUpstream struct {
 	Listener net.Listener
@@ -525,8 +519,6 @@ func buildClientHelloBody(sni string) []byte {
 	copy(body[4:], inner.Bytes())
 	return body
 }
-
-// --- direct unit test against the SNI parser ---
 
 func TestParseSNIFromHandshake_PresentAndAbsent(t *testing.T) {
 	body := buildClientHelloBody("foo.example.com")

@@ -79,7 +79,6 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 
 	events := collectEvents(t, ch)
 
-	// Expect: text_delta("Hello"), text_delta(" world"), message_complete
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
 	}
@@ -96,11 +95,9 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 }
 
 // TestAnthropicAdapter_LongSSELineRoundTrips guards against a regression to
-// bufio.Scanner's default 64 KB per-line budget: a single SSE data line
-// larger than that (long reasoning_content, or a large write_file
-// tool-call args delta) must round-trip as ordinary content instead of
-// aborting the scan with bufio.ErrTooLong. 200 KB is comfortably over the
-// old default and comfortably under the 16 MiB maxSSEScannerBuffer cap.
+// bufio.Scanner's default 64 KB per-line budget: an SSE data line larger
+// than that must round-trip as ordinary content instead of aborting with
+// bufio.ErrTooLong.
 func TestAnthropicAdapter_LongSSELineRoundTrips(t *testing.T) {
 	longText := strings.Repeat("a", 200*1024)
 	encoded, err := json.Marshal(longText)
@@ -271,13 +268,13 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 }
 
 // TestAnthropicAdapter_TransportError_DoesNotLeakCredentials drives the
-// transport-error path with a credentialed baseURL pointed at a closed port.
-// An operator may put credentials directly in a custom baseURL (userinfo or a
-// gateway api_key query param); the *url.Error Go returns from Do embeds that
-// URL and does not redact the query string, so the wrapped error must report
-// only the dial-level cause (CWE-532, follow-up to #395).
+// transport-error path with a credentialed baseURL pointed at a closed
+// port. An operator may put credentials directly in a custom baseURL
+// (userinfo or a gateway api_key query param); the *url.Error Go returns
+// from Do embeds that URL and does not redact the query string, so the
+// wrapped error must report only the dial-level cause.
 func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
-	// A closed loopback port yields a connection-refused dial error.
+
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	closed := srv.URL
 	srv.Close()
@@ -333,7 +330,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream() error: %v", err)
 	}
-	// Drain the channel.
+
 	for range ch {
 	}
 
@@ -352,10 +349,9 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 }
 
 // TestAnthropicAdapter_TemperatureWireShape pins the unset-vs-explicit-zero
-// semantics for StreamParams.Temperature (issue #200). A nil pointer must
-// omit the "temperature" key entirely so callers who did not set it are
-// not silently pinned to Anthropic's greedy-decoding behaviour at 0; an
-// explicit Float64Ptr(0.0) must transmit "temperature":0.
+// semantics for StreamParams.Temperature: a nil pointer must omit the
+// "temperature" key entirely, but an explicit Float64Ptr(0.0) must
+// transmit "temperature":0.
 func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -409,13 +405,10 @@ func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 }
 
 // TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels pins
-// the fix for the model families that reject a non-default temperature
-// outright (Claude Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 all return a 400
-// rather than ignoring the field). Even though the harness loop always
-// resolves a non-nil default temperature when RunConfig.Temperature is
-// unset (core.defaultTemperature), the wire body must omit "temperature"
-// entirely for these models. claude-sonnet-4-6 is the negative control: it
-// still accepts a non-default temperature, so the key must survive there.
+// the model families that reject a non-default temperature outright
+// (Claude Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 return a 400 rather than
+// ignoring the field): the wire body must omit "temperature" entirely for
+// these models. claude-sonnet-4-6 is the negative control.
 func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *testing.T) {
 	cases := []struct {
 		model       string
@@ -443,9 +436,6 @@ func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *test
 			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 			adapter.baseURL = srv.URL
 
-			// Deliberately non-nil, non-default: pins that suppression
-			// wins even when a caller (or the loop's own default) set an
-			// explicit temperature.
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:       tc.model,
 				MaxTokens:   1024,
@@ -469,10 +459,9 @@ func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *test
 }
 
 // TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature
-// mirrors the OpenAI adapter's design-risk-2 coverage: when the quirk
-// suppresses a caller-supplied non-nil Temperature, the warn log must fire,
-// name the rule that caused the suppression, and never include the
-// suppressed value itself.
+// asserts that when the quirk suppresses a caller-supplied non-nil
+// Temperature, the warn log fires, names the suppressing rule, and never
+// includes the suppressed value itself.
 func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -513,16 +502,10 @@ func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *tes
 }
 
 // TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset covers
-// the "double negative" the suppression logic must handle correctly:
-// a caller who never set Temperature at all, on a model in the omit
-// family. The wire body must still omit "temperature" (the loop's own
-// default-temperature resolution supplies a non-nil pointer in
-// production, but buildAnthropicRequest must not depend on that — a
-// direct nil is the base case), and — unlike
-// TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature —
-// the WARN log must NOT fire, since there is no caller-supplied value to
-// warn about suppressing (mirrors the `params.Temperature != nil` guard
-// on the log condition).
+// the double-negative case: a caller who never set Temperature at all, on
+// a model in the omit family. The wire body must still omit "temperature",
+// but unlike the WarnsOnSuppressedTemperature test, the WARN log must NOT
+// fire since there is no caller-supplied value to warn about suppressing.
 func TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset(t *testing.T) {
 	var rawBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -560,12 +543,9 @@ func TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset(t *testi
 }
 
 // TestAnthropicAdapter_DebugLogListsAppliedRules pins the per-Stream debug
-// line, mirroring TestOpenAIAdapter_DebugLogListsAppliedRules: the line
-// fires at the top of every Stream call and lists the descriptions of the
-// rules that contributed to the resolution. An empty rule list is still
-// logged (never happens for "anthropic" in practice, since the base "*"
-// tool-choice/structured-result/parallel-call rules always fire, but the
-// no-omission-rule case for claude-sonnet-4-6 is the useful negative here).
+// line: it fires at the top of every Stream call and lists the
+// descriptions of the rules that contributed to the resolution.
+// claude-sonnet-4-6 is the useful negative (no omission rule fires).
 func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -655,7 +635,6 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 
 	events := collectEvents(t, ch)
 
-	// Should only get message_complete, no text_delta for the orphan, no error.
 	for _, ev := range events {
 		if ev.Type == "error" {
 			t.Errorf("unexpected error event: %v", ev.Error)
@@ -713,8 +692,7 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 }
 
 func TestSSE_MalformedToolInput(t *testing.T) {
-	// Accumulate invalid JSON via input_json_delta, then stop the block.
-	// The adapter should emit an error when it tries to unmarshal.
+
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"read_file"}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
@@ -760,7 +738,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 }
 
 func TestSSE_MultipleBlocks(t *testing.T) {
-	// Two tool_use blocks at different indices, interleaved.
+
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_aaa","name":"read_file"}}`),
 		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"tool_use","id":"toolu_bbb","name":"write_file"}}`),
@@ -792,7 +770,6 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 
 	events := collectEvents(t, ch)
 
-	// Expect: tool_call(aaa), tool_call(bbb), message_complete.
 	var toolCalls []types.StreamEvent
 	for _, ev := range events {
 		if ev.Type == "error" {
@@ -807,7 +784,6 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 		t.Fatalf("expected 2 tool_call events, got %d", len(toolCalls))
 	}
 
-	// First tool call should be toolu_aaa / read_file.
 	if toolCalls[0].ID != "toolu_aaa" {
 		t.Errorf("toolCalls[0].ID = %q, want toolu_aaa", toolCalls[0].ID)
 	}
@@ -818,7 +794,6 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 		t.Errorf("toolCalls[0].Input[path] = %v, want a.go", toolCalls[0].Input["path"])
 	}
 
-	// Second tool call should be toolu_bbb / write_file.
 	if toolCalls[1].ID != "toolu_bbb" {
 		t.Errorf("toolCalls[1].ID = %q, want toolu_bbb", toolCalls[1].ID)
 	}
@@ -831,7 +806,7 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 }
 
 func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
-	// Server that never finishes sending events.
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -839,7 +814,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 		if ok {
 			flusher.Flush()
 		}
-		// Block until the client disconnects.
+
 		<-r.Context().Done()
 	}))
 	defer srv.Close()
@@ -860,7 +835,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	cancel()
 
 	events := collectEvents(t, ch)
-	// Should get an error event from context cancellation.
+
 	if len(events) == 0 {
 		t.Fatal("expected at least one event after cancellation")
 	}
@@ -870,13 +845,10 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestAnthropicAdapter_BearerClosureError asserts that a failure
-// inside the bearer closure (e.g. a federation source whose STS
-// exchange returned a 4xx) is surfaced synchronously by Stream
-// without ever hitting the upstream API. Without this, a
-// credential-layer failure would result in a half-built request that
-// only error out after the network round-trip, masking the original
-// cause behind a HTTP-shaped failure.
+// TestAnthropicAdapter_BearerClosureError asserts that a failure inside
+// the bearer closure (e.g. a federation source whose STS exchange
+// returned a 4xx) is surfaced synchronously by Stream without ever
+// hitting the upstream API.
 func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("anthropic adapter should not have hit the network when the bearer closure errors")
@@ -986,10 +958,9 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	for range ch { // drain to allow goroutine to record latency
+	for range ch {
 	}
 
-	// Both histograms should record exactly one observation per Stream call.
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
 		t.Errorf("provider_latency count = %d, want 1", got)
 	}
@@ -997,8 +968,6 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Errorf("provider_ttfb count = %d, want 1", got)
 	}
 
-	// Confirm provider.type / provider.model attributes are set on the latency
-	// histogram. We pick the first data point and verify both keys.
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
 	if !ok || len(h.DataPoints) == 0 {
 		t.Fatal("expected at least one provider_latency data point")
@@ -1050,10 +1019,7 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 
 // TestAnthropicAdapter_StaticKeyModeUsesXApiKey asserts that AuthModeAPIKey
 // sends the credential in the x-api-key header and does NOT set
-// Authorization. This pins the static-key code path against a future
-// regression that would silently swap the header on every request.
-// Together with TestAnthropicAdapter_WIFModeUsesAuthorizationBearer this
-// captures the BLOCKING B2 contract from issue #117.
+// Authorization.
 func TestAnthropicAdapter_StaticKeyModeUsesXApiKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("x-api-key"); got != "sk-ant-api03-fake" {
@@ -1083,12 +1049,9 @@ func TestAnthropicAdapter_StaticKeyModeUsesXApiKey(t *testing.T) {
 }
 
 // TestAnthropicAdapter_WIFModeUsesAuthorizationBearer asserts that
-// AuthModeBearer sends the credential as Authorization: Bearer and
-// does NOT set x-api-key. WIF OAuth access tokens (sk-ant-oat01-...)
-// are rejected by Anthropic's /v1/messages endpoint when sent via
-// x-api-key; this is the issue #117 BLOCKING B2 invariant — pinning
-// the test prevents a future regression that would 401 every
-// WIF-authenticated run.
+// AuthModeBearer sends the credential as Authorization: Bearer and does
+// NOT set x-api-key. WIF OAuth access tokens (sk-ant-oat01-...) are
+// rejected by Anthropic's /v1/messages endpoint when sent via x-api-key.
 func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-ant-oat01-fake" {
@@ -1118,16 +1081,12 @@ func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
 }
 
 // TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI is a regression
-// guard for issue #194 cross-provider data leakage: ContentBlock now
-// carries a Gemini-private `thought_signature` field, and a multi-provider
-// run (model router) can route history blocks produced by the Gemini
-// adapter into an Anthropic request. The adapter must serialise messages
-// through a local wire type that omits ThoughtSignature so Vertex's
-// encrypted chain-of-thought blob never reaches Anthropic infrastructure.
-//
-// The assertion is structural: the marshalled request body must not
-// contain the substring "thought_signature" anywhere, even when an input
-// ContentBlock carries a populated value.
+// guard for cross-provider data leakage: ContentBlock carries a
+// Gemini-private `thought_signature` field, and a multi-provider run
+// (model router) can route history blocks produced by the Gemini adapter
+// into an Anthropic request. The adapter must serialise messages through
+// a local wire type that omits ThoughtSignature so Vertex's encrypted
+// chain-of-thought blob never reaches Anthropic infrastructure.
 func TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI(t *testing.T) {
 	var capturedBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1142,9 +1101,6 @@ func TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
-	// Construct a message history that mirrors what the harness builds
-	// after a Gemini 3.x turn that emitted a thoughtSignature: an
-	// assistant message with a tool_use ContentBlock carrying the blob.
 	const sig = "AY89SIGBLOB=="
 	messages := []types.Message{
 		{
@@ -1203,10 +1159,8 @@ func fastRetryPolicy() RetryPolicy {
 	}
 }
 
-// TestAnthropicAdapter_RetriesOn429ThenSucceeds pins SF1 (v0.1 core review):
-// providerRetry is documented as harness-wide but was wired only into the
-// openai-compatible adapter. Anthropic is the default provider, so a single
-// 429 failing the turn outright was the highest-impact instance of the gap.
+// TestAnthropicAdapter_RetriesOn429ThenSucceeds asserts providerRetry
+// applies on the Anthropic adapter, not just openai-compatible.
 func TestAnthropicAdapter_RetriesOn429ThenSucceeds(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1252,7 +1206,6 @@ func TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt(t *testing.T) {
 
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
-	// adapter.RetryPolicy left at its zero value.
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "claude-sonnet-4-6",
@@ -1270,15 +1223,10 @@ func TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt(t *testing.T) {
 // streaming-safety boundary: DoWithRetry governs only the pre-stream
 // request/response exchange. Once the server has returned 200 and the
 // adapter has begun handing events to the caller, a mid-stream transport
-// failure must surface as a terminal error event on the channel — never as
-// a second HTTP request. Retrying after bytes have already reached the
-// caller would risk duplicating partially-emitted output.
-//
-// The handler writes a 200 response with one SSE event, flushes it to the
-// wire, then hijacks and closes the raw connection — an abrupt mid-chunk
-// drop the chunked-transfer-encoding reader surfaces as a transport error,
-// exactly the class DoWithRetry would retry if it occurred before any
-// response had been received.
+// failure must surface as a terminal error event on the channel, never as
+// a second HTTP request (which would risk duplicating partial output).
+// The handler simulates this by hijacking and closing the connection
+// mid-stream after flushing one SSE event.
 func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

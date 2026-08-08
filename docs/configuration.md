@@ -211,6 +211,16 @@ fail the run:
 | `--no-probe-executor` | The container-engine probe (socket ping + image-present, container executor only). The executor step then records `skip`; no engine is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
 
+The egress-allowlist probe (`--no-probe-egress`) is DNS-only: it
+resolves each allowlist entry's hostname (a wildcard entry resolves
+its base domain) but never opens a TCP connection to the
+destination. A TCP dial would be a stronger reachability signal, but
+turns a cheap dry-run into a fan-out of outbound connections to
+every allowlisted host, which is both slow and surprising for a
+config-check command. DNS resolution catches the common
+misconfiguration — a typo'd or non-existent hostname — without that
+cost.
+
 A `--no-probe-*` gate or `--dry-run-timeout` supplied **without**
 `--dry-run` is an invalid flag combination and exits `4` (see
 [Exit codes](#exit-codes)). Silently ignoring them would hide an
@@ -584,6 +594,20 @@ carries the run's outcome for callers that need finer detail than the
 exit code. The interactive first-contact hints (a bare `stirrup` or a
 bare `stirrup harness` on a terminal) are a success surface and exit
 `0`.
+
+Process exit code uses a binary success/non-success split on
+`RunTrace.Outcome` ("success" is the only success value; every other
+documented outcome — hard errors, exhausted resource limits, or an
+interruption — exits non-zero) deliberately distinct from the eval
+suite's passed/failed/inconclusive taxonomy
+([`docs/eval.md`](eval.md)). Eval outcome answers "was the change any
+good", folding limit-hit and cancelled runs into a separate
+inconclusive bucket so aggregates don't punish a run that never got a
+fair shot. Exit code answers a narrower question — "did this
+invocation produce a usable result" — where inconclusive and failed
+both mean no. This also matches the failure-signalling contract Cloud
+Run and K8s Jobs need: an orchestrator should retry or alert on any run
+that was not a genuine success.
 
 ## Component-selection limits
 

@@ -138,11 +138,11 @@ func TestOpenAIStrictMode_WireBodyShape(t *testing.T) {
 	}
 }
 
-// TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema pins design §5:
-// when strict-mode normalisation rejects a tool's schema, the Stream
-// call returns an error BEFORE any HTTP request is sent. The error
-// must name the tool and the offending field path so the operator can
-// locate it.
+// TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema pins the
+// fail-closed contract: when strict-mode normalisation rejects a
+// tool's schema, the Stream call returns an error BEFORE any HTTP
+// request is sent. The error must name the tool and the offending
+// field path so the operator can locate it.
 func TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema(t *testing.T) {
 	// Whether the HTTP server was reached. Set true by the handler; the
 	// test fails if any request lands.
@@ -184,10 +184,9 @@ func TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema(t *testing.T) {
 }
 
 // TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum pins the
-// privacy contract from #228 §5 for the OpenAI strict-mode path. The
-// fail-closed error message must NOT carry the schema's description
-// or enum content, even when those fields exist in the rejected
-// schema.
+// privacy contract for the OpenAI strict-mode path: the fail-closed
+// error message must NOT carry the schema's description or enum
+// content, even when those fields exist in the rejected schema.
 func TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("k"), "http://invalid.test", OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Registry = strictRegistryFor("gpt-4o-mini")
@@ -437,15 +436,10 @@ func TestOpenAIStrictMode_ErrorsAreNotCached(t *testing.T) {
 // TestOpenAIStrictMode_ConcurrentFirstMiss pins the singleflight
 // behaviour of the strict-schema cache: N goroutines calling Stream
 // simultaneously on the same adapter, same model, same schema produce
-// exactly one Misses increment and N-1 Hits. Prior to the B5 fix the
-// counters would overshoot — multiple goroutines could both observe
-// the initial miss, both run NormalizeStrictSchema, and both increment
-// Misses, giving Misses == N for what is logically a single miss.
-//
-// Runs with -race to also catch a regression in the lock ordering
-// inside computeAndStore. The schema is deliberately the canonical
-// strictTestSchema so the rewrite cost is realistic (small but
-// non-trivial recursive walk).
+// exactly one Misses increment and N-1 Hits, rather than each
+// goroutine independently observing the initial miss and double-
+// counting it. Runs with -race to also catch a regression in the lock
+// ordering inside computeAndStore.
 func TestOpenAIStrictMode_ConcurrentFirstMiss(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

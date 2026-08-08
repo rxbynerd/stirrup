@@ -239,10 +239,8 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 		Description: "async tool that records entry/exit timestamps",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 		AsyncHandler: func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
-			// Record the handler-entry timestamp. The "exit" timestamp is
-			// captured in the response-firing goroutine immediately before
-			// the FireControl call so the [enter, exit] interval reflects
-			// the handler's true occupancy of its semaphore slot.
+			// "exit" is recorded in the response-firing goroutine right
+			// before FireControl, so [enter, exit] reflects true occupancy.
 			mu.Lock()
 			spans = append(spans, span{enter: time.Now()})
 			mu.Unlock()
@@ -263,11 +261,6 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 		}
 	}
 
-	// For each call, wait for its request to land then sleep ~80ms before
-	// firing the response. The sleep is the handler's "in-flight" window;
-	// the exit timestamp is recorded immediately before the response is
-	// fired so the recorded [enter, exit] spans match the handler's true
-	// occupancy.
 	for i := 0; i < n; i++ {
 		i := i
 		go func() {
@@ -309,14 +302,8 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 // path: planAndDispatch must return promptly when the parent ctx is
 // cancelled, with every in-flight call marked as an error. The wall-time
 // bound is well under DefaultAsyncToolTimeout (60s) so a hang here is
-// instantly obvious.
-//
-// Wired with an in-memory OTel exporter so this exercises the same OTel
-// configuration as TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn —
-// previous iterations of this test cleared TraceContext to dodge a real
-// bug (the trace-emitter root ctx severed run-level cancellation); that
-// fix landed in dispatch.go so the goroutine span ctx is now always
-// rooted in the cancellable run ctx.
+// instantly obvious. Wired with an in-memory OTel exporter to match the
+// tracer setup TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn uses.
 func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -325,10 +312,9 @@ func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
 	loop.Tracer = tp.Tracer("test")
-	// Mirror the real loop: TraceContext is the OTel emitter's root,
-	// which derives from context.Background() and is therefore NOT
-	// cancelled by the run ctx. The fix in dispatch.go separates span
-	// parentage from goroutine ctx, so cancel must still drain.
+	// TraceContext (the OTel emitter's root) derives from
+	// context.Background() and is NOT cancelled by the run ctx; span
+	// parentage is separate from goroutine ctx, so cancel must still drain.
 	loop.TraceContext = context.Background()
 	config := configWithMaxParallel(3)
 
@@ -343,9 +329,8 @@ func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel once all three requests have been emitted. Doing this with a
-	// dedicated goroutine (rather than a fixed sleep) avoids racing the
-	// loop's emission loop and keeps the test robust under load.
+	// A dedicated goroutine (rather than a fixed sleep) avoids racing the
+	// loop's emission loop.
 	go func() {
 		for _, c := range calls {
 			waitForRequestID(t, tr, c.ID, 2*time.Second)
@@ -552,19 +537,11 @@ func TestParallelDispatch_PanicInOneHandler_DoesNotStopOthers(t *testing.T) {
 	}
 }
 
-// TestParallelDispatch_StallDetector_ObservesCallOrder verifies Phase 3
-// invariant: the stall detector sees recordToolCall invocations in
-// original call order even when async resolution happens out of order.
-// Strategy: dispatch two identical calls + one different call (sandwich
-// arrangement: identical, identical, different). If the detector saw
-// them in resolution order rather than call order, two identical calls
-// would land consecutively in either ordering — so we additionally
-// resolve the middle one first to maximise the chance of an
-// order-dependent bug surfacing. With correct in-order Phase-3
-// iteration, the lastToolCall after dispatch is the "different" tool
-// (the last call), and repeatCount is 1 (the "different" tool broke
-// the identical streak). The maxRepeatedToolCalls threshold of 3 is
-// not reached, so the outcome must be "" (no stall).
+// TestParallelDispatch_StallDetector_ObservesCallOrder verifies the stall
+// detector sees recordToolCall invocations in original call order even
+// when async resolution happens out of order. Dispatches two identical
+// calls plus one different call, resolved out of order (middle, last,
+// first) to maximise the chance of an order-dependent bug surfacing.
 func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool(),
@@ -600,10 +577,6 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
 
-	// After in-order Phase-3 iteration:
-	//   call 0 recorded → lastToolCall = "async_echo:..."        repeat=1
-	//   call 1 recorded → lastToolCall = "async_echo:..." (same) repeat=2
-	//   call 2 recorded → lastToolCall = "async_other:..." (new) repeat=1
 	expectedKey := "async_other:" + string(calls[2].Input)
 	if stall.lastToolCall != expectedKey {
 		t.Errorf("stall.lastToolCall = %q, want %q (records must run in call order, not resolution order)",
@@ -686,11 +659,11 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 }
 
 // TestParallelDispatch_UnknownTool_SpanNameSentinel pins the span-name
-// cardinality bound from issue #309: an unknown (unresolved) tool must open
-// its OTel span as "tool.__unknown__" rather than "tool.<model-controlled
-// name>", so a hostile or buggy provider response cannot pollute trace
-// storage with arbitrary span names. The model-supplied name is still
-// preserved verbatim in the tool.name attribute for debuggability.
+// cardinality bound: an unknown (unresolved) tool must open its OTel span
+// as "tool.__unknown__" rather than "tool.<model-controlled name>", so a
+// hostile or buggy provider response cannot pollute trace storage with
+// arbitrary span names. The model-supplied name is still preserved
+// verbatim in the tool.name attribute for debuggability.
 func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -757,14 +730,9 @@ func spanNames(spans []tracetest.SpanStub) []string {
 // stall-tail span-close loop in planAndDispatch: when stall trips at
 // index i mid-iteration, every plan[j].span for j > i must have End()
 // called so OTel spans for already-dispatched async calls beyond the
-// stall point do not leak.
-//
-// The stall threshold is 3 identical calls. To exercise the cleanup
-// branch we need stall to trip at index i < len(plan)-1; with four
-// identical inputs and MaxParallel=4, Phase 2 opens spans for all four
-// and stall trips at i=2, leaving j=3's span open without the close
-// loop. The test asserts all four exporter spans have a non-zero
-// EndTime.
+// stall point do not leak. Four identical calls with MaxParallel=4 trip
+// the stall (threshold 3) at index 2, leaving index 3's span for the
+// cleanup loop to close.
 func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -775,9 +743,6 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	loop.Tracer = tp.Tracer("test")
 	config := configWithMaxParallel(4)
 
-	// Four identical name+input async calls so stall trips at index 2
-	// (the third identical call), leaving index 3's span as a
-	// "remaining" span the cleanup branch must close.
 	const n = 4
 	sameInput := json.RawMessage(`{"k":"v"}`)
 	calls := make([]types.ToolCall, n)
@@ -788,9 +753,7 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 			Input: sameInput,
 		}
 	}
-	// Fire responses for every call so Phase 2 completes — only then
-	// does Phase 3 iterate, observe the stall outcome at i=2, and run
-	// the cleanup loop over j=3.
+
 	for i := 0; i < n; i++ {
 		i := i
 		go fireResponseWhenEmitted(t, tr, calls[i].ID, 20*time.Millisecond,
@@ -829,18 +792,17 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	}
 }
 
-// TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace pins the R-5
-// invariant: the PhasePreTool guard's adversary-influenceable Reason
+// TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace pins the
+// invariant that the PhasePreTool guard's adversary-influenceable Reason
 // string is scrubbed by security.Scrub before it lands on the trace
 // emitter's ToolCallTrace.ErrorReason field. Without the scrub, a
 // classifier model that echoes secret-shaped fragments from an attacker's
 // tool input back as its denial reason would leak those fragments into
 // JSONL trace files on disk and any OTLP sink.
 func TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace(t *testing.T) {
-	// sk-ant-FAKE_SECRET_SENTINEL matches the anthropic_api_key pattern
-	// (security/logscrubber.go) so Scrub will redact it. The literal
-	// "FAKE_SECRET_SENTINEL" survives only if Scrub was NOT applied —
-	// hence the assertion below.
+	// Matches the anthropic_api_key pattern (security/logscrubber.go), so
+	// the literal "FAKE_SECRET_SENTINEL" survives only if Scrub was NOT
+	// applied.
 	const sentinel = "sk-ant-FAKE_SECRET_SENTINEL"
 
 	tr := newAsyncTestTransport()

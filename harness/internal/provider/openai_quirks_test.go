@@ -80,12 +80,9 @@ func TestOpenAIQuirks_GPT5NanoOmitsSamplingParams(t *testing.T) {
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-5-nano", "request.json"), body)
 }
 
-// TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams pins the carve-out
-// in design D10: gpt-5-chat-latest matches both gpt-5* and
-// gpt-5-chat*; the longer glob runs last and clears
-// OmitSamplingParams, so temperature is on the wire. This test is the
-// load-bearing assertion that the composition order works in
-// practice, not just in the unit test in quirks_test.go.
+// TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams pins the carve-out:
+// gpt-5-chat-latest matches both gpt-5* and gpt-5-chat*; the longer glob
+// runs last and clears OmitSamplingParams, so temperature is on the wire.
 func TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams(t *testing.T) {
 	params := quirksCanonicalParams("gpt-5-chat-latest")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
@@ -406,21 +403,12 @@ func TestOpenAIQuirks_NoReplayRule_OmitsReplayState(t *testing.T) {
 	}
 }
 
-// TestNoRegressionMaxCompletionTokensDefault pins design risk 1: the
-// default openai-compatible body MUST emit max_completion_tokens, NOT
-// the legacy max_tokens, regardless of whether a quirk rule fired.
-// The current main branch hard-codes max_completion_tokens; this test
-// guards against a regression where a future rule accidentally
-// restores the legacy field for non-Z.ai providers.
-//
-// The assertion is exhaustive: every (model) combination from the
-// shared canonical-params table plus a no-rule-match model produces
-// the modern key and never the legacy key in the same body. Reasoning-
-// class models additionally assert temperature is absent from the
-// wire body, because quirksCanonicalParams supplies a non-nil
-// Temperature: the suppression path is the live contract for those
-// models and the negative assertion here closes the gap with the
-// dedicated O1MiniOmitsSamplingParams test.
+// TestNoRegressionMaxCompletionTokensDefault: the default
+// openai-compatible body MUST emit max_completion_tokens, not the legacy
+// max_tokens, regardless of whether a quirk rule fired, guarding against
+// a future rule accidentally restoring the legacy field for non-Z.ai
+// providers. Reasoning-class models additionally assert temperature is
+// absent from the wire body despite a non-nil caller-supplied value.
 func TestNoRegressionMaxCompletionTokensDefault(t *testing.T) {
 	models := []string{
 		"gpt-4o",            // no rule
@@ -686,13 +674,11 @@ func quirksLogStubServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-// TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription
-// pins design risk 2: when OmitSamplingParams suppresses a caller-
-// supplied non-nil Temperature, the warn log must (a) fire, (b) name
-// the rule that caused the suppression so an operator can identify
-// the source without reading code, and (c) NOT include the suppressed
-// value itself (sidechannel concern — the caller's value would
-// otherwise propagate into any log sink that captures warn records).
+// TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription:
+// when OmitSamplingParams suppresses a caller-supplied non-nil
+// Temperature, the warn log must fire, name the rule that caused the
+// suppression, and NOT include the suppressed value itself (a caller
+// value must not propagate into any log sink that captures warn records).
 func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription(t *testing.T) {
 	srv := quirksLogStubServer(t)
 	defer srv.Close()
@@ -737,20 +723,14 @@ func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDe
 	}
 }
 
-// TestLogReplayFieldsCapture_NonStringValue exercises the
-// non-string fallback branch in logReplayFieldsCapture's per-value
-// switch. The default arm runs json.Marshal on the value to compute
-// its length contribution; without this test, the side-channel
-// safety invariant (length only, never the value) was unverified
-// for any captured value type other than string.
-//
-// Current ReplayFields rules only register string-typed fields
-// (reasoning_content, thoughtSignature), but CaptureReplayFields
-// can return any JSON value type, and the helper is the safety
-// gate for future rules. The test pins three properties: the log
-// line is emitted, it contains the field name and length metadata,
-// and it does NOT contain the literal value (the leakage we
-// guard against).
+// TestLogReplayFieldsCapture_NonStringValue exercises the non-string
+// fallback branch in logReplayFieldsCapture's per-value switch: the
+// default arm runs json.Marshal on the value to compute its length
+// contribution. Current ReplayFields rules only register string-typed
+// fields, but CaptureReplayFields can return any JSON value type, and
+// the helper is the safety gate for future rules — the log line must be
+// emitted with the field name and length metadata, and never the
+// literal value.
 func TestLogReplayFieldsCapture_NonStringValue(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -789,15 +769,11 @@ func TestLogReplayFieldsCapture_NonStringValue(t *testing.T) {
 	}
 }
 
-// TestOpenAIChunkChoice_UnmarshalJSON covers the custom decoder's
-// three observable states: a chunk with no delta key (the false-
-// branch of the len(helper.Delta) > 0 guard), a chunk with a
-// malformed delta value (the json.Unmarshal error return), and a
-// chunk with a valid delta (the happy path that populates both
-// RawDelta and the typed Delta). Coverage on the decoder was 80%
-// before this test — the no-delta branch and the error-return
-// branch were both uncovered, leaving production-critical per-
-// chunk paths unverified.
+// TestOpenAIChunkChoice_UnmarshalJSON covers the custom decoder's three
+// observable states: a chunk with no delta key (the false branch of the
+// len(helper.Delta) > 0 guard), a chunk with a malformed delta value
+// (the json.Unmarshal error return), and a chunk with a valid delta (the
+// happy path that populates both RawDelta and the typed Delta).
 func TestOpenAIChunkChoice_UnmarshalJSON(t *testing.T) {
 	t.Run("no_delta", func(t *testing.T) {
 		raw := []byte(`{"index":0,"finish_reason":"stop"}`)
@@ -858,10 +834,10 @@ func TestOpenAIChunkChoice_UnmarshalJSON(t *testing.T) {
 	})
 }
 
-// TestOpenAIAdapter_DebugLogListsAppliedRules pins the per-Stream
-// debug line from design §5: the line fires at the top of every
-// Stream call and lists the descriptions of the rules that
-// contributed to the resolution. Empty rule list is still logged so a
+// TestOpenAIAdapter_DebugLogListsAppliedRules pins the per-Stream debug
+// line: it fires at the top of every Stream call and lists the
+// descriptions of the rules that contributed to the resolution. Empty
+// rule list is still logged so a
 // future grep against the line never misses a resolution.
 func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
 	srv := quirksLogStubServer(t)

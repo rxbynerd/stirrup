@@ -53,21 +53,15 @@ type BedrockAdapter struct {
 
 // NewBedrockAdapter creates an adapter that uses the ConverseStream API.
 // Region and profile are optional overrides for the default AWS credential chain.
-// credProvider, when non-nil, is injected into the AWS config to override the
-// default credential chain — used for cross-cloud federation scenarios
-// (e.g. GKE Workload Identity → STS AssumeRoleWithWebIdentity).
+// credProvider, when non-nil, overrides the default credential chain — used
+// for cross-cloud federation (e.g. GKE Workload Identity → STS
+// AssumeRoleWithWebIdentity).
 //
-// retryPolicy carries the shared providerRetry knob (types.ProviderRetryConfig
-// via RetryPolicyFromConfig). Bedrock has no raw *http.Client seam the way
-// the net/http-based adapters do — ConverseStream goes through the AWS SDK's
-// own transport — so DoWithRetry cannot be reused here; instead MaxAttempts
-// and MaxDelay are mapped onto the SDK's own Standard retryer, which already
-// retries throttling/5xx with its own exponential-jitter backoff. This is
-// the only way the knob can reach Bedrock, and it deliberately does not try
-// to replicate DoWithRetry's Retry-After parsing or wall-clock budget, which
-// have no SDK equivalent. A MaxAttempts < 1 (retry disabled) swaps in
-// aws.NopRetryer so an explicit "no retries" policy is honoured rather than
-// silently falling back to the SDK's own default of 3 attempts.
+// retryPolicy's MaxAttempts and MaxDelay are mapped onto the AWS SDK's own
+// Standard retryer rather than DoWithRetry, since ConverseStream goes
+// through the SDK's transport with no raw *http.Client seam. MaxAttempts < 1
+// swaps in aws.NopRetryer so an explicit "no retries" policy is honoured
+// rather than falling back to the SDK's default of 3 attempts.
 func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvider, retryPolicy RetryPolicy) (*BedrockAdapter, error) {
 	var opts []func(*config.LoadOptions) error
 	if region != "" {
@@ -105,19 +99,12 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 }
 
 // Probe validates that the AWS credential chain resolves, as a cheap
-// control-plane reachability check for a dry-run. It deliberately does
-// NOT call a Bedrock API: ConverseStream is billable, and the
-// bedrockruntime client carries no zero-cost reachability operation.
-// Pulling in aws-sdk-go-v2/service/bedrock purely for ListFoundationModels
-// would add a second SDK module to satisfy a preflight check, so the probe
-// settles for credential resolution — the failure mode operators most
-// often hit (missing/expired keys, an unconfigured federation role)
-// surfaces here, while a region typo or a revoked Bedrock-invoke IAM
-// permission would only surface on the first real turn. This limitation
-// is documented for the dry-run report's "skip"/"ok" semantics.
-//
-// A nil credentials provider (the mock-client test path) returns nil so
-// the preflight records the step without a spurious failure.
+// dry-run reachability check. It deliberately does not call a Bedrock API
+// (ConverseStream is billable, and there is no zero-cost reachability
+// operation), so a region typo or revoked Bedrock-invoke permission only
+// surfaces on the first real turn. A nil credentials provider (the
+// mock-client test path) returns nil so the preflight records the step
+// without a spurious failure.
 func (b *BedrockAdapter) Probe(ctx context.Context) error {
 	if b.credentials == nil {
 		return nil
@@ -137,25 +124,20 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		attribute.String("provider.model", params.Model),
 	)
 
-	// Resolve the logger once at the top so it is available on every
-	// early-return path, not only inside the tool-choice branch below.
+	// Resolved once at the top so it is available on every early-return
+	// path, not only inside the tool-choice branch below.
 	logger := b.Logger
 	if logger == nil {
-		// The slog.Default() fallback bypasses the ScrubHandler-backed
-		// logger the factory injects. On the production path the factory
-		// always supplies a real logger (guarded by
-		// TestBuildLoopWithTransport_BedrockAdapterHasLogger); only direct
-		// struct-literal construction reaches this branch, where the
-		// default handler is unscrubbable.
+		// This fallback bypasses the ScrubHandler-backed logger the
+		// factory injects; only direct struct-literal construction (not
+		// the production factory path) reaches it.
 		logger = slog.Default()
 	}
 
 	// buildConverseStreamInput does not project ToolChoice onto the
-	// ConverseStream request, so a non-auto ToolChoice requested against
-	// this adapter is silently downgraded to auto. Warn so the downgrade
-	// is observable (#343). Only the static mode integer and the adapter /
-	// model identifiers are logged — never message content or any
-	// secret-derived value.
+	// ConverseStream request, so a non-auto ToolChoice is silently
+	// downgraded to auto; warn so the downgrade is observable. Only the
+	// static mode integer and adapter/model identifiers are logged.
 	if params.ToolChoice != types.ToolChoiceAuto {
 		logger.WarnContext(ctx, "bedrock tool-choice downgraded to auto: adapter does not support tool-choice",
 			slog.String("provider.type", "bedrock"),
@@ -304,15 +286,10 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 		}
 	}
 
-	// Check for stream errors after the event channel drains.
 	if err := stream.Err(); err != nil {
 		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Request translation
-// ---------------------------------------------------------------------------
 
 // buildConverseStreamInput translates stirrup StreamParams into a Bedrock
 // ConverseStreamInput.
@@ -321,37 +298,30 @@ func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.Conver
 		ModelId: aws.String(params.Model),
 	}
 
-	// System prompt.
 	if params.System != "" {
 		input.System = []brtypes.SystemContentBlock{
 			&brtypes.SystemContentBlockMemberText{Value: params.System},
 		}
 	}
 
-	// Messages.
 	msgs, err := bedrockTranslateMessages(params.Messages)
 	if err != nil {
 		return nil, err
 	}
 	input.Messages = msgs
 
-	// Inference config.
 	input.InferenceConfig = &brtypes.InferenceConfiguration{}
 	if params.MaxTokens > 0 {
 		mt := int32(params.MaxTokens)
 		input.InferenceConfig.MaxTokens = &mt
 	}
-	// A non-nil StreamParams.Temperature is forwarded, narrowed to
-	// float32 for the AWS SDK, including an explicit 0.0 for greedy
-	// decoding. Bedrock's InferenceConfig accepts temperature=0; this is
-	// a behaviour change from the prior "> 0" guard, which silently
-	// dropped a caller-supplied zero.
+	// A non-nil Temperature is forwarded including an explicit 0.0 for
+	// greedy decoding; Bedrock accepts temperature=0.
 	if params.Temperature != nil {
 		temp := float32(*params.Temperature)
 		input.InferenceConfig.Temperature = &temp
 	}
 
-	// Tools.
 	if len(params.Tools) > 0 {
 		tools, err := bedrockTranslateTools(params.Tools)
 		if err != nil {
@@ -449,10 +419,6 @@ func bedrockTranslateTools(tools []types.ToolDefinition) ([]brtypes.Tool, error)
 	}
 	return out, nil
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 // mapRole converts a stirrup role string to a Bedrock ConversationRole.
 func mapRole(role string) (brtypes.ConversationRole, error) {

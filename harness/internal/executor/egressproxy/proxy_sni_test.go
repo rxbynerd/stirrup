@@ -11,11 +11,9 @@ import (
 	"time"
 )
 
-// TestProxy_CONNECT_SNIAbsent_IsDropped exercises M2: a client that
-// CONNECTs to an allowlisted host but suppresses the SNI extension on
-// the inner ClientHello must be dropped, not allowed through. Without
-// this, a tampered binary could tunnel arbitrary TLS to an allowlisted
-// IP under cover of the CONNECT cross-check.
+// TestProxy_CONNECT_SNIAbsent_IsDropped: a client that CONNECTs to an
+// allowlisted host but suppresses the SNI extension on the inner
+// ClientHello must be dropped, not allowed through.
 func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
@@ -59,15 +57,10 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 	}
 }
 
-// TestProxy_CONNECT_CompliantClient_Succeeds is the regression test for the
-// CONNECT-ordering bug: an RFC 7231 §4.3.6 client reads the proxy's 2xx
-// response BEFORE sending any tunnel bytes (curl, browsers, Go net/http, git
-// all do this). The earlier "peek ClientHello before writing 200" ordering
-// deadlocked such a client — it waited for a 200 the proxy would not send
-// until it had read a ClientHello the client would not send until it saw the
-// 200 — until the read deadline tripped (observed as tls_parse_failed against
-// a real cluster). This test fails (hangs to deadline) under that ordering and
-// passes once the 200 is written first.
+// TestProxy_CONNECT_CompliantClient_Succeeds: an RFC 7231 §4.3.6 client
+// reads the proxy's 2xx response before sending any tunnel bytes (curl,
+// browsers, Go net/http, git all do this), so the proxy must write the
+// 200 before peeking the ClientHello.
 func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
@@ -90,9 +83,8 @@ func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
-	// Compliant ordering: read the CONNECT response FIRST, only then send the
-	// ClientHello. Under the old peek-before-200 logic this read blocks until
-	// the deadline.
+	// Compliant ordering: read the CONNECT response first, only then send
+	// the ClientHello.
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
 	if err != nil {
@@ -125,11 +117,9 @@ func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 	}
 }
 
-// TestProxy_TLSParseFailed_DropsConnection covers S4: a non-handshake
-// first byte after CONNECT (TLS Application Data 0x17 instead of
-// Handshake 0x16) must produce a tls_parse_failed deny without OOM
-// or hang. The first 5-byte record header must be readable; the type
-// check fires immediately.
+// TestProxy_TLSParseFailed_DropsConnection: a non-handshake first byte
+// after CONNECT (TLS Application Data 0x17 instead of Handshake 0x16)
+// must produce a tls_parse_failed deny without hanging.
 func TestProxy_TLSParseFailed_DropsConnection(t *testing.T) {
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
@@ -160,9 +150,9 @@ func TestProxy_TLSParseFailed_DropsConnection(t *testing.T) {
 	awaitDeny(t, emitter, "tls_parse_failed")
 }
 
-// TestProxy_OversizedClientHello_Rejected covers S4's OOM-resistance
-// claim: a TLS record header announcing length > maxClientHello must
-// be rejected without trying to allocate a 16640-plus-byte buffer.
+// TestProxy_OversizedClientHello_Rejected: a TLS record header
+// announcing a length over maxClientHello must be rejected without
+// allocating a buffer that size.
 func TestProxy_OversizedClientHello_Rejected(t *testing.T) {
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
@@ -384,8 +374,8 @@ func awaitDeny(t *testing.T, emitter *fakeEmitter, reason string) {
 }
 
 // readAllUntilEOF reads from conn until EOF or the existing read
-// deadline trips. It exists so M2's "no 200 ever" assertion isn't
-// fooled by partial reads of buffered bytes.
+// deadline trips, so a deny assertion isn't fooled by partial reads of
+// buffered bytes.
 func readAllUntilEOF(t *testing.T, conn net.Conn) []byte {
 	t.Helper()
 	var out bytes.Buffer

@@ -34,7 +34,7 @@ Subcommands:
 }
 
 // providersQuirksCmd is the `stirrup providers quirks` introspection
-// surface for the Wave 2 quirks registry. It prints the resolved
+// surface for the quirks registry. It prints the resolved
 // ProviderQuirks as JSON, along with the Description, LastVerified,
 // and staleness flag of every contributing rule, so operators can
 // debug a divergence between what they expected the adapter to send

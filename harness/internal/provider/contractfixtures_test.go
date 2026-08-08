@@ -9,15 +9,12 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// These tests close the #224 gap where the Anthropic and OpenAI Responses
-// adapters had no golden request fixture — their request shape was only
-// validated field-by-field inline, so a change that added or dropped a
-// top-level key could pass unnoticed. AssertWireEqual pins the full canonical
-// body against the committed fixture; the fixture-authoring procedure is in
-// testdata/quirks/README.md.
+// AssertWireEqual pins the full canonical request body against a committed
+// fixture, so a change that adds or drops a top-level key does not pass
+// unnoticed; the fixture-authoring procedure is in testdata/quirks/README.md.
 //
 // Both use a synthetic tool with no Presentation so the fixtures stay stable
-// regardless of the #222 examples-folding capability (a tool that carries
+// regardless of the examples-folding capability (a tool that carries
 // InputExamples would fold them into the schema on these providers).
 
 func contractFixtureTool() types.ToolDefinition {
@@ -79,7 +76,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 
 // TestResponsesContract_ToolEnabledRequestBody pins the outbound OpenAI
 // Responses request for a tool-enabled turn, including the typed input-item
-// variants (#199) and the flat function-tool shape.
+// variants and the flat function-tool shape.
 func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 	params := types.StreamParams{
 		Model:       "gpt-4o",

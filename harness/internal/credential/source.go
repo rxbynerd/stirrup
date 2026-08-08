@@ -19,8 +19,7 @@
 //     goroutines (e.g. concurrent Stream calls on the same adapter).
 //   - Internally caches and refreshes: static sources capture a resolved
 //     value once and return it on every call with no IO; federation sources
-//     (e.g. Google ADC, future OIDC-to-Anthropic exchange) implement an
-//     OAuth2-style cache + refresh internally (typically via
+//     implement an OAuth2-style cache + refresh internally (typically via
 //     oauth2.ReuseTokenSource).
 //   - Called per provider request: adapters MUST NOT cache the returned
 //     string across requests, because the cache/refresh logic lives behind
@@ -123,10 +122,8 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.ServiceAccount,
 		), nil
 	case "anthropic-wif":
-		// Belt-and-braces. types.validateCredentialConfig already enforces
-		// these field shapes at config-load time; the redundant guard here
-		// keeps BuildSource self-contained for callers (e.g. eval harness)
-		// that bypass full RunConfig validation.
+		// Redundant with types.validateCredentialConfig; keeps BuildSource
+		// self-contained for callers that bypass full RunConfig validation.
 		if cfg.Credential.FederationRuleID == "" || cfg.Credential.OrganizationID == "" || cfg.Credential.ServiceAccountID == "" {
 			return nil, fmt.Errorf("anthropic-wif requires federationRuleId, organizationId, and serviceAccountId")
 		}
@@ -145,10 +142,8 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.WorkspaceID,
 		), nil
 	case "openai-wif":
-		// Belt-and-braces. types.validateCredentialConfig already enforces
-		// these field shapes at config-load time; the redundant guard here
-		// keeps BuildSource self-contained for callers (e.g. eval harness)
-		// that bypass full RunConfig validation.
+		// Redundant with types.validateCredentialConfig; keeps BuildSource
+		// self-contained for callers that bypass full RunConfig validation.
 		if cfg.Credential.OpenAIIdentityProviderID == "" || cfg.Credential.OpenAIServiceAccountID == "" {
 			return nil, fmt.Errorf("openai-wif requires openaiIdentityProviderId and openaiServiceAccountId")
 		}
@@ -166,11 +161,8 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.OpenAISubjectTokenType,
 		), nil
 	case "azure-workload-identity":
-		// Defence-in-depth: validateRunConfig already rejects these
-		// missing-field cases at config-load time. Re-checking here
-		// keeps a programmatic caller of BuildSource (e.g. a future
-		// embedded harness invocation) from reaching an Entra exchange
-		// with a malformed assertion request.
+		// Redundant with validateRunConfig; keeps BuildSource
+		// self-contained for callers that bypass full RunConfig validation.
 		if cfg.Credential.AzureTenantID == "" {
 			return nil, fmt.Errorf("azure-workload-identity requires azureTenantId")
 		}

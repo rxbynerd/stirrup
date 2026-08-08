@@ -20,14 +20,10 @@ type EvalSuite struct {
 	// RunConfigFile; the HCL parser rejects suites that set both.
 	RunConfig *RunConfig `json:"runConfig,omitempty"`
 
-	// QuarantineFlags marks suites mined from production data that
-	// carry raw conversation content and may have privacy / safety
-	// implications. A non-empty list means the suite was mined from
-	// classified or oversized recordings (see QuarantineFlag for the
-	// enumeration). The runner refuses to execute a quarantined
-	// suite without --accept-quarantine and CI should treat the
-	// presence of this field as a code-review smell. See #115 for
-	// the design rationale.
+	// QuarantineFlags marks suites mined from production data that carry
+	// raw conversation content and may have privacy / safety implications.
+	// The runner refuses to execute a quarantined suite without
+	// --accept-quarantine. See docs/eval.md#quarantine-envelope.
 	QuarantineFlags []QuarantineFlag `json:"quarantineFlags,omitempty"`
 }
 
@@ -39,34 +35,22 @@ type QuarantineFlag string
 
 const (
 	// QuarantineUnscrubbedSecretEvent indicates a source recording
-	// triggered SecretRedactedInOutput during the harness run. The
-	// upstream scrubber redacted the matched substring, but the
-	// surrounding context that *almost* leaked may still be in the
-	// recording — a precautionary flag rather than a "secret is on
-	// disk" claim.
+	// triggered SecretRedactedInOutput: a precautionary flag, not a claim
+	// that a secret is on disk.
 	QuarantineUnscrubbedSecretEvent QuarantineFlag = "unscrubbed_secret_event"
 
-	// QuarantineLargePayload indicates a source recording carries a
-	// turn or tool-call payload above the configurable byte limit
-	// (see DefaultLargePayloadBytes). Large payloads are a privacy
-	// risk by sheer surface area: an attacker who exfiltrates a
-	// quarantined suite gets megabytes of model-context per task.
+	// QuarantineLargePayload indicates a source recording carries a turn or
+	// tool-call payload above DefaultLargePayloadBytes.
 	QuarantineLargePayload QuarantineFlag = "large_payload"
 
 	// QuarantinePIIClassification indicates a source recording was
-	// classified `restricted` by the upstream PII pipeline. v0.1
-	// does not implement a classifier — the flag is reserved so
-	// future control-plane scoring can populate it without a
-	// schema change.
+	// classified `restricted` by the upstream PII pipeline. Reserved: v0.1
+	// does not implement a classifier.
 	QuarantinePIIClassification QuarantineFlag = "pii_classification"
 )
 
-// DefaultLargePayloadBytes is the per-recording-payload byte
-// threshold above which QuarantineLargePayload fires. 256 KiB is a
-// conservative pick: a turn carrying that much content is large
-// enough to imply file-shaped data (config dumps, log captures) was
-// pulled into the conversation. Operators can override per-policy
-// in a future iteration.
+// DefaultLargePayloadBytes is the per-recording-payload byte threshold
+// above which QuarantineLargePayload fires.
 const DefaultLargePayloadBytes = 256 * 1024
 
 // EvalTask describes a single evaluation task.
@@ -112,19 +96,10 @@ type EvalJudge struct {
 	ToolTrace *ToolTraceCriteria `json:"toolTrace,omitempty"`
 }
 
-// ToolTraceCriteria parameterises the "tool-trace" judge (issue #233). It
-// asserts on the tool-call behaviour a run recorded in its RunTrace —
-// which tools were called, in what relative order, how often, with what
-// success — rather than on the resulting workspace state. The two are
-// complementary: a file-state judge confirms the agent reached the right
-// end state, while a tool-trace judge confirms it got there by the
-// expected tool-use path (e.g. read-before-edit, bounded search,
-// in-loop recovery from an unknown-tool miss).
-//
-// Tool names are matched against the internal tool ID (RunTrace
-// ToolCallSummary.InternalName when set, falling back to Name under the
-// default profile), so an assertion written against the canonical name
-// holds under any toolset profile alias (issue #234).
+// ToolTraceCriteria parameterises the "tool-trace" judge: it asserts on the
+// tool-call behaviour recorded in a run's RunTrace (which tools were
+// called, in what order, how often, with what success) rather than on the
+// resulting workspace state. See docs/eval.md#the-tool-trace-judge.
 type ToolTraceCriteria struct {
 	// Sequence is an ordered list of internal tool names that must each
 	// appear at least once, in this relative order, somewhere in the
@@ -137,18 +112,10 @@ type ToolTraceCriteria struct {
 	// independently of Sequence. Empty means no per-tool constraint.
 	Calls []ToolCallExpectation `json:"calls,omitempty"`
 
-	// ForbidUnknown, when true, fails the judge if any tool call recorded
-	// a failure that was never followed by a later successful call to the
-	// same tool. Used to assert in-loop recovery from a renamed-tool miss
-	// actually happened.
-	//
-	// Warning: the check is a heuristic keyed on call success, not on the
-	// failure's cause. It fires on ANY unrecovered failure — a permission
-	// denial, an invalid-argument error, a handler error — not only on
-	// renamed- or unknown-tool misses, and it also fails on an empty trace
-	// (no calls cannot demonstrate recovery). Reserve it for tasks whose
-	// expected trace contains no deliberate terminal failures, or those
-	// failures will be misreported as unresolved unknown-tool misses.
+	// ForbidUnknown, when true, fails the judge if any tool call recorded a
+	// failure never followed by a later successful call to the same tool.
+	// Heuristic, not cause-specific: fires on any unrecovered failure, not
+	// only unknown-/renamed-tool misses. See docs/eval.md.
 	ForbidUnknown bool `json:"forbidUnknown,omitempty"`
 }
 

@@ -9,11 +9,8 @@ import (
 
 // TestBuildHarnessRunConfig_BatchFlagEnabledOnly verifies that --batch
 // alone produces a BatchProviderConfig with Enabled=true and every
-// other field at its zero value. The other knobs (MaxWaitSeconds,
-// HarnessSidePolling, FallbackOnTimeout, CancelBundleOnRunCancel,
-// AllowInteractiveModes) are deliberately out-of-band for the flag —
-// operators reach for --config to set them — so the test pins that
-// only Enabled flips.
+// other field at its zero value; operators reach for --config to set
+// the rest.
 func TestBuildHarnessRunConfig_BatchFlagEnabledOnly(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -81,10 +78,9 @@ func TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil(t *testing.T) {
 }
 
 // TestApplyOverrides_BatchFlagMergesWithFile pins the merge semantics
-// against a --config file that already carries a partial Batch block
-// (here, HarnessSidePolling=true for a stdio polling setup). Setting
-// --batch on top must flip Enabled to true without disturbing the
-// file's other fields — the operator's polling choice must survive.
+// against a --config file that already carries a partial Batch block:
+// setting --batch on top must flip Enabled to true without disturbing
+// the file's other fields.
 func TestApplyOverrides_BatchFlagMergesWithFile(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -137,9 +133,8 @@ func TestApplyOverrides_BatchFlagAllocatesWhenFileOmits(t *testing.T) {
 }
 
 // TestApplyOverrides_BatchFlagUnsetPreservesFile pins the precedence
-// rule: an unset --batch flag MUST NOT clobber a Batch block the file
-// supplied. This is the same Changed()-gated invariant every other
-// override flag obeys.
+// rule: an unset --batch flag must not clobber a Batch block the file
+// supplied.
 func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
@@ -191,13 +186,10 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 	}
 }
 
-// TestApplyOverrides_BatchFlagExplicitFalseClears pins the third arm
-// of the --batch override block: when --batch=false is explicitly
-// passed on top of a file that supplied Batch.Enabled=true, Enabled
-// flips to false but the surrounding struct (and HarnessSidePolling
-// and other fields) survives. This mirrors the "set field to zero"
-// precedent the comment in harness.go calls out and keeps a
-// subsequent --batch=true re-enable ergonomic without --config.
+// TestApplyOverrides_BatchFlagExplicitFalseClears pins that
+// --batch=false explicitly passed on top of a file with
+// Batch.Enabled=true flips Enabled to false while the rest of the
+// struct (e.g. HarnessSidePolling) survives.
 func TestApplyOverrides_BatchFlagExplicitFalseClears(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()

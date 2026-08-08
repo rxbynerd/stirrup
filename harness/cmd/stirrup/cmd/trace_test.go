@@ -74,11 +74,10 @@ func TestTraceShow_PrintsRecords(t *testing.T) {
 	}
 }
 
-// TestToolStatus_RendersErrorCategory pins the #314 trace-show change:
-// a failed tool call carrying an ErrorCategory must render it inline
-// (e.g. "fail (unknown_tool)") so an operator sees the same bounded
-// taxonomy the metrics expose, while a failure without a category and a
-// success keep their bare renderings.
+// TestToolStatus_RendersErrorCategory pins that a failed tool call
+// carrying an ErrorCategory renders it inline (e.g. "fail
+// (unknown_tool)"), while a failure without a category and a success
+// keep their bare renderings.
 func TestToolStatus_RendersErrorCategory(t *testing.T) {
 	cases := []struct {
 		name string

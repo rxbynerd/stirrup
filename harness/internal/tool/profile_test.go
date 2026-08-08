@@ -140,8 +140,7 @@ func TestPresenter_DescriptionOverride(t *testing.T) {
 // A deliberate alias collision (two internal tools aliasing to the same
 // target) must be resolved by the shared toolname collision code: both
 // presented names are distinct and both resolve back to their own
-// internal tool. Proves the presenter routes through toolname rather than
-// hand-rolling a second algorithm.
+// internal tool.
 func TestPresenter_AliasCollisionResolvedByToolname(t *testing.T) {
 	reg := newRegistryWith(
 		fixedTool("grep_files", "regex"),
@@ -171,9 +170,6 @@ func TestPresenter_AliasCollisionResolvedByToolname(t *testing.T) {
 
 	// Exactly one presented name keeps the bare "search" target; the other
 	// carries toolname's deterministic "_<6 hex>" disambiguation suffix.
-	// Asserting the suffix shape (rather than just "they differ") proves
-	// the presenter reused the toolname collision algorithm rather than
-	// inventing its own scheme.
 	var bare, suffixed string
 	for _, name := range presented {
 		if name == "search" {
@@ -207,12 +203,9 @@ func TestPresenter_AliasCollisionResolvedByToolname(t *testing.T) {
 	}
 }
 
-// Collision resolution must be independent of registration order:
-// NewPresenter sorts by internal ID before calling BuildFromCandidates,
-// so the same tool set always pins the same alias to the same tool no
-// matter which order the registry listed them in. Registering the two
-// colliding tools in both orders must yield identical presented-name
-// mappings (same bare-alias winner, same disambiguated suffix).
+// Collision resolution must be independent of registration order: the same
+// tool set always pins the same alias to the same tool regardless of the
+// order the registry listed them in.
 func TestPresenter_CollisionOrderIndependent(t *testing.T) {
 	collide := &Profile{
 		Name: "collide",
@@ -268,10 +261,7 @@ func TestPresenter_ResolveUnknownReturnsNil(t *testing.T) {
 // The presenter only aliases tools that are actually registered. A
 // profile aliasing a tool a read-only mode declined to register (here
 // run_command -> bash, with run_command absent from the registry)
-// produces no "bash" alias and no way to reach the excluded tool — the
-// alias cannot smuggle an unregistered tool past the registry. This is
-// the registry-level half of the issue #234 read-only-mode invariant
-// (the config-level half is enforced by ValidateRunConfig).
+// produces no "bash" alias and no way to reach the excluded tool.
 func TestPresenter_AliasCannotSurfaceUnregisteredTool(t *testing.T) {
 	// A read-only-style registry: no run_command / edit_file registered.
 	reg := newRegistryWith(

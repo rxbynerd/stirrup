@@ -44,5 +44,4 @@ func (l *Loop) Close() error {
 	return l.inner.Close()
 }
 
-// ensure Loop implements io.Closer at compile time.
 var _ io.Closer = (*Loop)(nil)

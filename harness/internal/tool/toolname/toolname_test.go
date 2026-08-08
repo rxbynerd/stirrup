@@ -191,20 +191,11 @@ func TestBuild_DuplicateInternalNameRejected(t *testing.T) {
 }
 
 func TestBuild_IrresolvableCollisionErrors(t *testing.T) {
-	// Force the stillCollides branch in Build: three distinct internal
-	// names that all sanitize to the same single-character form under
-	// MaxLen=1. The first wins the bare name; the second's
-	// disambiguation suffix is the pathological-budget branch in
-	// disambiguate (budget = MaxLen - len(suffix) < 1), which falls
-	// back to a one-character truncated suffix. The third name's
-	// disambiguation truncates to the same one character, so the
-	// post-disambiguation external name collides with what the second
-	// already claimed — the only legitimate way to reach the
-	// stillCollides return at toolname.go:194.
-	//
-	// This is the spec's fail-closed guarantee: irresolvable collisions
-	// must surface as an error before any wire request is issued, so a
-	// silent alias cannot route a tool call to the wrong handler.
+	// Three distinct internal names all sanitize to the same single
+	// character under MaxLen=1, so even after disambiguation the third
+	// name's suffix collides with what the second already claimed —
+	// an irresolvable collision that must surface as an error rather
+	// than silently aliasing a tool call to the wrong handler.
 	names := []string{"aa", "ab", "ac"}
 	policy := Policy{MaxLen: 1, AllowHyphen: false, AllowLeadingDigit: true}
 	_, err := Build(names, policy)
@@ -217,16 +208,9 @@ func TestBuild_IrresolvableCollisionErrors(t *testing.T) {
 }
 
 func TestBuild_PathologicalMaxLenResolvesColludingPair(t *testing.T) {
-	// Exercise the budget < 1 guard in disambiguate on its success path:
-	// distinct from TestBuild_IrresolvableCollisionErrors (which forces
-	// the guard then fails closed), here the guard still produces two
-	// distinct names so the collision resolves.
-	//
-	// Under MaxLen=2 the 7-char hash suffix ("_" + 6 hex) cannot fit, so
-	// budget = 2 - 7 < 1 and disambiguate returns suffix[:2]. Both names
-	// share the "ji" prefix and truncate to the same bare external name;
-	// the second is routed through disambiguate and lands on a distinct
-	// two-char hash slice, keeping the pair separable and round-trippable.
+	// Under MaxLen=2 the 7-char hash suffix cannot fit, so disambiguate
+	// falls back to a 2-char suffix slice; unlike the irresolvable case
+	// above, that still keeps this pair distinct and round-trippable.
 	names := []string{"jira_alpha", "jira_bravo"}
 	policy := Policy{MaxLen: 2, AllowHyphen: false, AllowLeadingDigit: true}
 	m, err := Build(names, policy)
@@ -314,10 +298,10 @@ func TestMapping_MissingKeyPassThrough(t *testing.T) {
 }
 
 // BuildFromCandidates is the shared collision core the toolset-profile
-// presenter (issue #234) routes alias resolution through. Two distinct
-// keys whose candidates are the identical string must be disambiguated by
-// the same hash-suffix scheme Build uses for sanitize collisions — not
-// rejected as a duplicate (the keys differ; only the candidates collide).
+// presenter routes alias resolution through. Two distinct keys whose
+// candidates are the identical string must be disambiguated by the same
+// hash-suffix scheme Build uses — not rejected as a duplicate (the keys
+// differ; only the candidates collide).
 func TestBuildFromCandidates_IdenticalCandidatesDisambiguated(t *testing.T) {
 	keys := []string{"grep_files", "find_files"}
 	candidates := []string{"search", "search"}

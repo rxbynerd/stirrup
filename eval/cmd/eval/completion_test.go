@@ -120,12 +120,9 @@ func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 }
 
 // TestEvalCompletionFishScript_QuotesValues pins the fish-script
-// quoting contract for subcommand and mode values. Fish single-quote
-// literals interpret no escape sequences, so wrapping the format
-// argument keeps the generated script safe even if a future value
-// contains a space or fish-special character. A regression that drops
-// the surrounding single quotes would re-introduce the latent
-// injection path described in the SF-3 finding.
+// quoting contract for subcommand and mode values: values must stay
+// wrapped in single quotes, or a future value containing a space or
+// fish-special character could break the generated script.
 func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
 	var buf bytes.Buffer
 	if err := emitEvalCompletion("fish", &buf); err != nil {

@@ -10,12 +10,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestLoadSuiteHCL_StructEquality parses an HCL fixture and asserts
-// it deep-equals a hand-rolled types.EvalSuite literal with the same
-// logical content. This is the core guarantee: HCL is the canonical
-// authoring surface and must deserialise into the documented struct
-// shape exactly. The literal lives in this test (rather than a JSON
-// fixture) now that the legacy JSON loader has been removed.
+// TestLoadSuiteHCL_StructEquality parses an HCL fixture and asserts it
+// deep-equals a hand-rolled types.EvalSuite literal with the same
+// logical content.
 func TestLoadSuiteHCL_StructEquality(t *testing.T) {
 	hclPath := filepath.Join("testdata", "sample.hcl")
 

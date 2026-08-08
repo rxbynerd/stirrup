@@ -174,12 +174,9 @@ func TestWriteJUnit_FailEmitsFailure(t *testing.T) {
 	}
 }
 
-// TestWriteJUnit_FailMessageFallback pins the I3 message-synthesis
-// behaviour: when the judge verdict has no top-level Reason but
-// carries sub-judge Details, the <failure message=...> attribute
-// must be populated from the first detail rather than left blank.
-// CI UIs (mikepenz/action-junit-report, Jenkins) render this
-// attribute as the failure headline.
+// TestWriteJUnit_FailMessageFallback pins that when the judge verdict has
+// no top-level Reason but carries sub-judge Details, the <failure
+// message=...> attribute is populated from the first detail.
 func TestWriteJUnit_FailMessageFallback(t *testing.T) {
 	result := eval.SuiteResult{
 		SuiteID: "s",
@@ -207,11 +204,9 @@ func TestWriteJUnit_FailMessageFallback(t *testing.T) {
 	}
 }
 
-// TestWriteJUnit_UnknownOutcome pins the closed-set default branch:
-// an outcome value not in {"pass", "fail", "error"} must surface as
-// <error type="UnknownOutcome"> and increment the suite Errors count
-// so CI renderers don't silently inflate Tests against a placid 0/0
-// failures/errors total.
+// TestWriteJUnit_UnknownOutcome pins that an outcome value not in
+// {"pass", "fail", "error"} surfaces as <error type="UnknownOutcome"> and
+// increments the suite Errors count.
 func TestWriteJUnit_UnknownOutcome(t *testing.T) {
 	result := eval.SuiteResult{
 		SuiteID: "s",
@@ -294,7 +289,6 @@ func TestWriteJUnit_XMLEscaping(t *testing.T) {
 		},
 	}
 	out := runWriteJUnit(t, result)
-	// Raw output must not contain unescaped attribute-breaking quotes.
 	if strings.Contains(string(out), `name="<>&"'"`) {
 		t.Fatalf("attribute quoting was not escaped:\n%s", string(out))
 	}
@@ -311,16 +305,13 @@ func TestWriteJUnit_XMLEscaping(t *testing.T) {
 	}
 }
 
-// TestWriteJUnit_ZeroTimestampFallback pins the dry-run-shaped path
-// in buildTestSuite where StartedAt/CompletedAt are both zero (so
-// wall-clock subtraction would either be zero or panic-adjacent
-// nonsense): the suite's Time attribute must be the sum of the
-// per-task DurationMs values converted to seconds, and Timestamp
-// must be empty rather than the Go zero-time string.
+// TestWriteJUnit_ZeroTimestampFallback pins that with StartedAt/CompletedAt
+// both zero, the suite's Time attribute is the sum of per-task DurationMs
+// converted to seconds, and Timestamp is empty rather than the Go zero-time
+// string.
 func TestWriteJUnit_ZeroTimestampFallback(t *testing.T) {
 	result := eval.SuiteResult{
 		SuiteID: "fallback",
-		// StartedAt and CompletedAt are intentionally zero.
 		Tasks: []eval.TaskResult{
 			{TaskID: "t1", Outcome: "pass", DurationMs: 1200},
 			{TaskID: "t2", Outcome: "pass", DurationMs: 300},
@@ -336,10 +327,9 @@ func TestWriteJUnit_ZeroTimestampFallback(t *testing.T) {
 	}
 }
 
-// TestWriteJUnit_BackwardTimestampFallback pins the second branch of
-// the fallback: when CompletedAt precedes StartedAt (clock skew, or a
-// recording deserialised with mismatched fields), we must not emit a
-// negative wall-clock duration. The DurationMs sum is used instead.
+// TestWriteJUnit_BackwardTimestampFallback pins that when CompletedAt
+// precedes StartedAt, a negative wall-clock duration is not emitted; the
+// DurationMs sum is used instead.
 func TestWriteJUnit_BackwardTimestampFallback(t *testing.T) {
 	started := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
 	result := eval.SuiteResult{
@@ -358,8 +348,6 @@ func TestWriteJUnit_BackwardTimestampFallback(t *testing.T) {
 }
 
 func TestWriteJUnit_ProducesParseableXML(t *testing.T) {
-	// A coarse smoke test: feed mixed outcomes through WriteJUnit and confirm
-	// the output is well-formed by re-parsing into a generic map.
 	result := eval.SuiteResult{
 		SuiteID:     "smoke",
 		StartedAt:   time.Now().UTC(),
@@ -373,11 +361,8 @@ func TestWriteJUnit_ProducesParseableXML(t *testing.T) {
 	}
 	out := runWriteJUnit(t, result)
 
-	// Round-trip via a token-walking decoder to ensure no malformed
-	// regions. EOF terminates the loop on success; any other error is
-	// a parser-detected malformation and must fail the test — the
-	// previous "break on any error" formulation made this assertion a
-	// no-op for the very class of bug it claimed to catch.
+	// EOF terminates the loop on success; any other error is a
+	// parser-detected malformation and must fail the test.
 	dec := xml.NewDecoder(bytes.NewReader(out))
 	for {
 		_, err := dec.Token()

@@ -142,6 +142,17 @@ The harness ships vetted criteria text per phase and constructs the
 classifier prompt — you supply only the endpoint and (optionally) a
 model name and bespoke criteria.
 
+The adapter is intentionally narrow: it owns the Granite prompt
+template and parses the `<score>yes|no</score>` verdict head, but
+delegates auth, retries, and fail-open policy to the caller — whether
+to allow content through when the classifier is slow or unreachable
+is a loop-side policy decision, not something baked into adapter
+code. Wire format is a single non-streaming POST to
+`{endpoint}/v1/chat/completions` (or just `{endpoint}` when the
+endpoint already pins the path). vLLM is usually unauthenticated;
+adding auth would need an API-key field rather than smuggling
+credentials through the endpoint URL.
+
 Minimal config:
 
 ```json
@@ -183,6 +194,13 @@ the slower Granite Guardian) without modifying the harness. See
 There is **no fast-path adapter shipped in the harness**. If you
 need sub-100ms guard latency, write a custom adapter and compose
 it via `phase-gated` in front of `granite-guardian`.
+
+Config-driven composites (`GuardRailConfig`) always wire a sequential
+chain — deny short-circuits, and a non-deny result is the last guard's
+decision. The harness also exports a `Parallel` composite (deny beats
+spotlight beats allow, aggregated across every guard) but it has no
+config-file equivalent yet; use it by constructing `guard.Parallel`
+directly via the harnessapi.
 
 ## Latency budget
 

@@ -83,10 +83,6 @@ func anthropicSubmitEntries(customID string) []BatchEntry {
 	}}
 }
 
-// -----------------------------------------------------------------------------
-// Submit
-// -----------------------------------------------------------------------------
-
 func TestHarnessPollingBatch_SubmitHappyPath(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,16 +188,11 @@ func TestHarnessPollingBatch_SubmitMissingID(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Result (poll + fetch JSONL)
-// -----------------------------------------------------------------------------
-
-// pollServer is a tiny stateful test fixture: it serves a configurable
+// pollServer is a stateful test fixture: it serves a configurable
 // sequence of /v1/messages/batches/{id} polls, then a results JSONL
 // document, and tracks how many cancel calls fired. httptest dispatches
 // each request on its own goroutine, so every shared counter sits behind
-// a real sync.Mutex — the prior anonymous-struct grouping was a data
-// race waiting for go test -race to catch it.
+// a sync.Mutex.
 type pollServer struct {
 	*httptest.Server
 
@@ -214,10 +205,6 @@ type pollServer struct {
 	resultCalls int
 }
 
-// pollCount, cancelCount, resultCount are accessor helpers used by tests
-// to inspect the counters under the lock. The bare fields stay
-// addressable (no getter for the handler-side writes) so the handler can
-// take and release the lock as a single critical section.
 func (ps *pollServer) pollCount() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -237,7 +224,7 @@ func (ps *pollServer) resultCount() int {
 }
 
 // waitForCancelCount blocks (up to timeout) until cancelCalls reaches the
-// expected count. With bestEffortCancel now detached into a goroutine,
+// expected count. bestEffortCancel runs in a detached goroutine, so
 // tests must wait on the side-effect rather than reading the counter
 // immediately after Result returns.
 func (ps *pollServer) waitForCancelCount(t *testing.T, want int, timeout time.Duration) {
@@ -293,8 +280,7 @@ func TestHarnessPollingBatch_ResultEventually(t *testing.T) {
 	polls := []string{
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
-		// Note: results_url is set to ps.Server.URL + "/results" after
-		// the server starts. We rewrite it in-place below.
+		// results_url is rewritten below once the server has a URL.
 		`{"id":"batch_xyz","processing_status":"ended","results_url":"REPLACE"}`,
 	}
 	resultsBody := `{"custom_id":"stirrup-run-1-turn-1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}}}` + "\n"
@@ -302,7 +288,6 @@ func TestHarnessPollingBatch_ResultEventually(t *testing.T) {
 	ps := newPollServer(t, polls, resultsBody)
 	defer ps.Close()
 
-	// Rewrite the placeholder once the server has an URL.
 	ps.pollResponses[2] = strings.ReplaceAll(ps.pollResponses[2], "REPLACE", ps.URL+"/results")
 
 	c, teardown := newTestPollingClient(t, ps.Server, src, time.Second)
@@ -351,7 +336,7 @@ func TestHarnessPollingBatch_ResultTimeout(t *testing.T) {
 	if !errors.Is(err, errBatchExpired) {
 		t.Errorf("error must wrap errBatchExpired so isBatchTimeout routes correctly; got: %v", err)
 	}
-	// bestEffortCancel is detached into a goroutine (B3), so wait for the
+	// bestEffortCancel is detached into a goroutine, so wait for the
 	// side-effect rather than reading the counter immediately.
 	ps.waitForCancelCount(t, 1, time.Second)
 	if n := ps.cancelCount(); n != 1 {
@@ -369,7 +354,7 @@ func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
 	defer teardown()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after the first poll has had time to fire.
+	// Cancel once the first poll has had time to fire.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -390,17 +375,13 @@ func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
 		t.Fatal("Result did not return promptly after ctx cancel")
 	}
 
-	// bestEffortCancel runs in a detached goroutine (B3); wait on the
+	// bestEffortCancel runs in a detached goroutine; wait on the
 	// side-effect rather than a sleep-and-pray window.
 	ps.waitForCancelCount(t, 1, time.Second)
 	if n := ps.cancelCount(); n != 1 {
 		t.Errorf("cancelCalls on ctx cancel: got %d, want 1", n)
 	}
 }
-
-// -----------------------------------------------------------------------------
-// Per-poll credential resolution
-// -----------------------------------------------------------------------------
 
 func TestHarnessPollingBatch_CredentialResolvedPerPoll(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
@@ -422,31 +403,20 @@ func TestHarnessPollingBatch_CredentialResolvedPerPoll(t *testing.T) {
 	}
 
 	// Three poll calls + one results GET = at least four resolves.
-	// Allow >= 4 rather than ==4 in case the bestEffortCancel-on-
-	// success path ever changes (it currently does not, but a future
-	// "cancel on succeeded" refactor should not break this test for
-	// the credential-rotation invariant it actually guards).
 	calls := src.resolveCalls.Load()
 	if calls < 4 {
 		t.Errorf("Resolve should be called per HTTP request; got %d, want >=4", calls)
 	}
 }
 
-// -----------------------------------------------------------------------------
-// HTTP-error surfaces (B6)
-// -----------------------------------------------------------------------------
-
 // TestHarnessPollingBatch_ResultsURLNonOKStatus confirms a 500 from
-// results_url is propagated up — it must NOT be silently converted into
-// errBatchExpired (which would route to the FallbackOnTimeout branch
-// and mask a real upstream failure).
+// results_url is propagated up rather than silently converted into
+// errBatchExpired, which would mask a real upstream failure.
 func TestHarnessPollingBatch_ResultsURLNonOKStatus(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
-	// resultsURL is captured by the handler closure; populated after the
-	// httptest.Server starts so the same server serves both the poll and
-	// the failing results_url endpoint (loopback-relaxation branch in
-	// validateResultsURL accepts the same-host URL).
+	// resultsURL is populated after the httptest.Server starts so the
+	// same server serves both the poll and the results_url endpoint.
 	var resultsURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -480,10 +450,8 @@ func TestHarnessPollingBatch_ResultsURLNonOKStatus(t *testing.T) {
 }
 
 // TestHarnessPollingBatch_PollOnceNonOKStatus confirms a 503 on the
-// first poll is surfaced as an HTTP error (not silently converted to
-// errBatchExpired). Anthropic's batch API is durable, so a transient
-// 5xx is the upstream transport's problem; the harness must surface it
-// so the operator (and any retrying caller above) sees the real status.
+// first poll is surfaced as an HTTP error, not silently converted to
+// errBatchExpired.
 func TestHarnessPollingBatch_PollOnceNonOKStatus(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
@@ -518,10 +486,9 @@ func TestHarnessPollingBatch_PollOnceNonOKStatus(t *testing.T) {
 }
 
 // TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout asserts
-// the B3 non-blocking guarantee: when the cancel endpoint hangs longer
+// the non-blocking guarantee: when the cancel endpoint hangs longer
 // than batchCancelTimeout, Result must still return promptly because
-// bestEffortCancel runs in a detached goroutine. Before B3 this test
-// would have blocked for the full batchCancelTimeout (10s).
+// bestEffortCancel runs in a detached goroutine.
 func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
@@ -570,21 +537,18 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 	if !errors.Is(err, errBatchExpired) {
 		t.Errorf("expected errBatchExpired, got: %v", err)
 	}
-	// The cancel handler is still blocked; without B3 we would be inside
-	// httpClient.Do here for up to batchCancelTimeout (10s). The
-	// generous-but-bounded 2s upper bound is well under batchCancelTimeout
-	// so a regression that re-synchronises the call will trip it.
+	// The cancel handler is still blocked. The generous-but-bounded 2s
+	// upper bound is well under batchCancelTimeout (10s), so a regression
+	// that re-synchronises the call will trip it.
 	if elapsed > 2*time.Second {
 		t.Errorf("Result must not block on bestEffortCancel; took %s", elapsed)
 	}
 }
 
 // TestHarnessPollingBatch_CtxCancelledDuringPoll covers the
-// errors.Is(ctx-error) branch added in R7: cancel the parent ctx after
-// the poll handler has accepted the request but before it writes a
-// response, forcing the request context to be cancelled mid-flight.
-// Without the R7 fix, http.Client.Timeout-driven DeadlineExceeded
-// errors from a per-request ctx would have fallen through the branch.
+// errors.Is(ctx-error) branch: cancel the parent ctx after the poll
+// handler has accepted the request but before it writes a response,
+// forcing the request context to be cancelled mid-flight.
 func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
@@ -634,7 +598,7 @@ func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
 	}
 
 	// Cancel the parent context mid-flight so the in-flight request
-	// fails with context.Canceled — the load-bearing case for the R7
+	// fails with context.Canceled — the load-bearing case for the
 	// errors.Is branch in Result.
 	cancel()
 
@@ -661,10 +625,6 @@ func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
 		t.Errorf("expected exactly 1 cancel hit, got %d", cancelHits.Load())
 	}
 }
-
-// -----------------------------------------------------------------------------
-// Result type mapping
-// -----------------------------------------------------------------------------
 
 func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
 	tests := []struct {
@@ -723,10 +683,6 @@ func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Credential failure surfaces
-// -----------------------------------------------------------------------------
-
 func TestHarnessPollingBatch_CredentialResolveFails(t *testing.T) {
 	src := &fakeCredentialSource{resolveErr: errors.New("vault down")}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -758,10 +714,6 @@ func TestHarnessPollingBatch_CredentialNilBearer(t *testing.T) {
 		t.Fatalf("expected no-bearer-token error, got: %v", err)
 	}
 }
-
-// -----------------------------------------------------------------------------
-// Result body sanity
-// -----------------------------------------------------------------------------
 
 func TestHarnessPollingBatch_ResultsMissingCustomID(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
@@ -795,12 +747,8 @@ func TestHarnessPollingBatch_ResultsURLMissing(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Jitter
-// -----------------------------------------------------------------------------
-
 func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
-	// Enable jitter for this test only; restore on exit.
+	// Enable jitter for this test only.
 	prev := setBatchPollJitterDisabled(false)
 	defer setBatchPollJitterDisabled(prev)
 
@@ -815,15 +763,9 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// results_url origin validation
-// -----------------------------------------------------------------------------
-
 // TestHarnessPollingBatch_ResultsURLBadOrigin confirms an "ended" batch
 // whose results_url points off-domain is rejected before fetchResults
-// would send the credential. The test server records whether any GET
-// reached the (would-be exfiltration) path; the assertion must observe
-// zero hits.
+// would send the credential.
 func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
@@ -835,9 +777,8 @@ func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
 	}))
 	defer exfilSrv.Close()
 
-	// Use a non-loopback off-domain URL so the test-mode relaxation does
-	// not paper over the check. evil.com is registered but should never
-	// be reached because validation fires first.
+	// Non-loopback so the test-mode relaxation does not paper over the
+	// check; validation must fire before evil.com is ever reached.
 	const badURL = "https://evil.com/exfil"
 
 	polls := []string{
@@ -885,11 +826,9 @@ func TestHarnessPollingBatch_ResultsURLNonHTTPS(t *testing.T) {
 	}
 }
 
-// TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted is a unit-level
-// check on validateResultsURL — when the caller's baseURL is the
+// TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted checks
+// validateResultsURL directly: when the caller's baseURL is the
 // production Anthropic root, an *.anthropic.com results_url must pass.
-// The end-to-end happy-path test still uses an httptest base URL (relaxed
-// branch); this case exercises the strict-host branch directly.
 func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
 	cases := []string{
 		"https://api.anthropic.com/v1/messages/batches/abc/results",
@@ -905,16 +844,11 @@ func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// URL escaping
-// -----------------------------------------------------------------------------
-
 // TestHarnessPollingBatch_BatchIDPathEscaped confirms a batchID containing
 // path-sensitive characters is escaped into a single path segment before
 // being concatenated into the poll / cancel URLs. A bare concatenation
 // would let an attacker-supplied (or upstream-mangled) batchID navigate
-// to an unintended endpoint; the gemini.go adapter applies the same
-// defence at every path component and the polling client mirrors it.
+// to an unintended endpoint.
 func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
@@ -934,9 +868,8 @@ func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/v1/messages/batches/") && !strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
 			obs.pollPaths = append(obs.pollPaths, r.URL.EscapedPath())
-			// First poll returns "ended" with an empty results_url so
-			// Result errors out before fetchResults is exercised — we
-			// only care about the URL escaping here.
+			// "ended" with an empty results_url errors out before
+			// fetchResults is exercised — we only care about escaping here.
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintf(w, `{"id":%q,"processing_status":"ended"}`, sneakyID)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
@@ -1008,7 +941,7 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 		t.Fatal("expected timeout error, got nil")
 	}
 
-	// bestEffortCancel is now async (B3); wait briefly for it to fire.
+	// bestEffortCancel runs asynchronously; wait briefly for it to fire.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
@@ -1030,15 +963,11 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Transport / decoder edge cases (R5)
-// -----------------------------------------------------------------------------
-
 // TestHarnessPollingBatch_SubmitTransportError covers the path where the
-// initial POST to /v1/messages/batches fails at the transport layer (the
-// upstream server is gone before Submit fires). The harness must surface
-// the failure as a wrapped "submit batch" error rather than returning a
-// bare "" batchID or panicking on the nil response.
+// initial POST to /v1/messages/batches fails at the transport layer. The
+// harness must surface the failure as a wrapped "submit batch" error
+// rather than returning a bare "" batchID or panicking on the nil
+// response.
 func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -1202,10 +1131,6 @@ func keysOf[T any](m map[string]T) []string {
 	return out
 }
 
-// -----------------------------------------------------------------------------
-// OpenAI Submit / Result
-// -----------------------------------------------------------------------------
-
 // newTestOpenAIPollingClient builds a polling client configured for the
 // OpenAI provider type, pointed at srv (which must serve /files,
 // /batches, /batches/{id}, /batches/{id}/cancel, and /files/{id}/content).
@@ -1317,7 +1242,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 			_, _ = io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/files/") &&
 			strings.HasSuffix(r.URL.Path, "/content"):
-			// Path: /files/{id}/content
+			// /files/{id}/content
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/files/"), "/content")
 			f.mu.Lock()
 			f.downloadCalls++
@@ -1388,10 +1313,9 @@ func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
 		t.Errorf("create body missing completion_window: %s", createBody)
 	}
 
-	// Phase-6 R8 extension: parse the captured multipart body with
-	// mime/multipart and pin the part-level invariants (purpose="batch",
-	// file part filename="batch.jsonl") so a refactor that changes the
-	// multipart layout fails loudly.
+	// Parse the captured multipart body and pin the part-level invariants
+	// (purpose="batch", file part filename="batch.jsonl") so a refactor
+	// that changes the multipart layout fails loudly.
 	f.mu.Lock()
 	rawUpload := f.uploadedFiles[0]
 	f.mu.Unlock()
@@ -1643,9 +1567,9 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload pins
-// the auth header on the file-download GET (/files/{id}/content):
-// previously only Submit was asserted, so a regression that bypassed
-// applyAuthHeaders on download would have shipped unnoticed.
+// the auth header on the file-download GET (/files/{id}/content), so a
+// regression that bypassed applyAuthHeaders on download does not ship
+// unnoticed.
 func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload(t *testing.T) {
 	src := &fakeCredentialSource{token: "azure-key"}
 
@@ -1834,9 +1758,8 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
 
 // TestMapOpenAIOutputLine pins the mapOpenAIOutputLine projection
 // from /v1/files content line → BatchResult across all branches. The
-// status_code==0 row in particular guards against a silent success
-// fabrication when the field is absent / malformed (phase-6 review
-// caught the legacy guard masking this).
+// status_code==0 row guards against a silent success fabrication when
+// the field is absent or malformed.
 func TestMapOpenAIOutputLine(t *testing.T) {
 	statusBody := func(code int, body string) *struct {
 		StatusCode int             `json:"status_code"`
@@ -1906,9 +1829,8 @@ func TestMapOpenAIOutputLine(t *testing.T) {
 }
 
 // TestNewHarnessPollingBatchClient_PanicsOnNilCredSource pins the
-// nil-CredSource guard added by R2: the constructor must panic with a
-// clear message rather than defer a nil-pointer dereference to the
-// first HTTP request.
+// nil-CredSource guard: the constructor must panic with a clear message
+// rather than defer a nil-pointer dereference to the first HTTP request.
 func TestNewHarnessPollingBatchClient_PanicsOnNilCredSource(t *testing.T) {
 	defer func() {
 		r := recover()
@@ -1930,10 +1852,9 @@ func TestNewHarnessPollingBatchClient_PanicsOnNilCredSource(t *testing.T) {
 	})
 }
 
-// TestNewHarnessPollingBatchClient_DefaultsMaxWait pins the R3
-// behaviour: a zero MaxWait must be replaced with
-// types.DefaultBatchMaxWaitSeconds at constructor time, not later
-// deferred to a deadline that has already passed.
+// TestNewHarnessPollingBatchClient_DefaultsMaxWait pins that a zero
+// MaxWait is replaced with types.DefaultBatchMaxWaitSeconds at
+// constructor time, not later deferred to an already-passed deadline.
 func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
@@ -1950,7 +1871,7 @@ func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
 
 // TestNewHarnessPollingBatchClient_DefaultBaseURL pins the
 // default-baseURL selection per provider type and the trailing-slash
-// stripping. (Phase-6 review NIT-15.)
+// stripping.
 func TestNewHarnessPollingBatchClient_DefaultBaseURL(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	for _, tc := range []struct {
@@ -1986,9 +1907,9 @@ func TestNewHarnessPollingBatchClient_DefaultBaseURL(t *testing.T) {
 	})
 }
 
-// TestNewHarnessPollingBatchClient_LoggerInjected pins the R6
-// behaviour: a Logger supplied via options replaces slog.Default on
-// the constructed client so cancel-path warnings flow through the
+// TestNewHarnessPollingBatchClient_LoggerInjected pins that a Logger
+// supplied via options replaces slog.Default on the constructed client
+// so cancel-path warnings flow through the
 // run-scoped logger.
 func TestNewHarnessPollingBatchClient_LoggerInjected(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
@@ -2009,8 +1930,8 @@ func TestNewHarnessPollingBatchClient_LoggerInjected(t *testing.T) {
 // BatchAdapter.Stream → harnessPollingBatchClient integration where the
 // fake OpenAI server returns "cancelled" on poll. The first
 // StreamEvent.Error must contain "[batch_cancelled]" — the typed
-// BatchResultError fan-in — not "missing entry" (the symptom of a
-// customID/batchID key mismatch the phase-6 review caught).
+// BatchResultError fan-in — not "missing entry" (a customID/batchID key
+// mismatch).
 func TestBatchAdapter_OpenAIStdio_CancelledSurfaces(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"cancelled"}`}
@@ -2285,8 +2206,8 @@ func TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL(t *testing.T) {
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile pins the
 // fallthrough from an empty error-file body to the top-level
-// errors.data fallback. After B1 the surface is a typed BatchResultError
-// keyed by the originating customID, not a bare error.
+// errors.data fallback. The surface is a typed BatchResultError keyed
+// by the originating customID, not a bare error.
 func TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{

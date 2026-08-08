@@ -243,15 +243,11 @@ func TestServiceAccountKeySource_RejectsUnknownType(t *testing.T) {
 }
 
 // TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh verifies
-// the B1 fix: a Resolve(ctx) call must not bind ctx to subsequent token
-// refreshes. Otherwise cancelling the factory/pre-run context (as
-// happens on signal, sub-agent teardown, or factory failure) would
-// poison every future Token() call even though the long-lived
-// agentic-loop context is still valid.
-//
-// We do not verify that Token() succeeds — the fake credentials are
-// not signed with a key Google IAM trusts — only that the error, if
-// any, is not "context canceled".
+// that a Resolve(ctx) call does not bind ctx to subsequent token
+// refreshes — otherwise cancelling the factory/pre-run context would
+// poison every future Token() call even with a valid agentic-loop
+// context. We only check the error, if any, is not "context canceled";
+// the fake credentials aren't signed with a key Google IAM trusts.
 func TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh(t *testing.T) {
 	dir := t.TempDir()
 	path := writeServiceAccountJSON(t, dir, nil)
@@ -354,11 +350,9 @@ func TestBuildSource_ExplicitGCPServiceAccount(t *testing.T) {
 	}
 }
 
-// TestBuildSource_UnsupportedGCPCredentialTypeReturnsError verifies
-// that an unrecognised credential.type on a gemini provider produces
-// a clear error rather than silently falling through to the default
-// ADC source. A typo like "gcp-unkown" should fail loudly so the
-// operator knows the credential layer never honoured their intent.
+// TestBuildSource_UnsupportedGCPCredentialTypeReturnsError verifies an
+// unrecognised credential.type fails loudly rather than silently
+// falling through to the default ADC source.
 func TestBuildSource_UnsupportedGCPCredentialTypeReturnsError(t *testing.T) {
 	cfg := types.ProviderConfig{
 		Type: "gemini",

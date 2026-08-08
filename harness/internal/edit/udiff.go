@@ -99,9 +99,7 @@ func (s *UdiffStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 		}, nil
 	}
 
-	// Detect new file creation: diff against /dev/null.
 	isNewFile := isCreationDiff(params.Diff)
-	// Detect file deletion: diff to /dev/null.
 	isDeletion := isDeletionDiff(params.Diff)
 
 	var lines []string
@@ -119,7 +117,6 @@ func (s *UdiffStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 		lines = splitLines(content)
 	}
 
-	// Apply hunks sequentially, tracking cumulative offset from prior hunks.
 	offset := 0
 	for i, hunk := range hunks {
 		applied, newLines, newOffset, applyErr := s.applyHunk(lines, hunk, offset)
@@ -180,10 +177,8 @@ type hunk struct {
 	context  []string // context lines (lines starting with ' ')
 	removed  []string // removed lines (lines starting with '-')
 	added    []string // added lines (lines starting with '+')
-	// lines preserves the original ordering of context/removed/added lines
-	// as they appear in the hunk, so we can reconstruct the old and new
-	// content in order.
-	lines []diffLine
+
+	lines []diffLine // lines in original hunk order, for reconstructing old/new content
 }
 
 // diffLine is a single line within a hunk, tagged with its type.
@@ -247,22 +242,21 @@ func parseUnifiedDiff(diff string) ([]hunk, error) {
 		}
 		i++
 
-		// Collect hunk body lines until we hit another hunk header, a file
-		// header, or end of input.
+		// Collect hunk body lines until the next hunk header, a file
+		// header (defensive: shouldn't appear mid-hunk in a well-formed
+		// single-file diff), or end of input.
 		for i < len(rawLines) {
 			line := rawLines[i]
 			if strings.HasPrefix(line, "@@") {
 				break
 			}
-			// Skip file headers that appear between hunks (shouldn't happen
-			// in well-formed diffs for a single file, but be defensive).
+
 			if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
 				break
 			}
 
 			if len(line) == 0 {
-				// Treat blank lines in hunk body as context lines (empty
-				// context lines may have their space prefix stripped).
+				// A blank line is a context line whose space prefix was stripped.
 				h.lines = append(h.lines, diffLine{kind: ' ', text: ""})
 				h.context = append(h.context, "")
 				i++
@@ -282,17 +276,16 @@ func parseUnifiedDiff(diff string) ([]hunk, error) {
 				h.lines = append(h.lines, diffLine{kind: '+', text: text})
 				h.added = append(h.added, text)
 			default:
-				// Lines without a recognized prefix are treated as context
-				// (some diff generators omit the space prefix).
+				// No recognized prefix: some diff generators omit the space
+				// prefix on context lines.
 				h.lines = append(h.lines, diffLine{kind: ' ', text: line})
 				h.context = append(h.context, line)
 			}
 			i++
 		}
 
-		// Validate that the hunk body line counts are consistent with the
-		// header. Context + removed should match oldCount; context + added
-		// should match newCount.
+		// Context+removed must match oldCount and context+added must match
+		// newCount, or the header lied about the hunk's shape.
 		actualOld := len(h.context) + len(h.removed)
 		actualNew := len(h.context) + len(h.added)
 		if h.oldCount != actualOld {
@@ -312,7 +305,7 @@ func parseUnifiedDiff(diff string) ([]hunk, error) {
 
 // parseHunkHeader parses a line like "@@ -1,4 +1,6 @@" or "@@ -1,4 +1,6 @@ optional text".
 func parseHunkHeader(line string) (hunk, error) {
-	// Strip the leading "@@" and find the closing "@@".
+
 	line = strings.TrimPrefix(line, "@@")
 	closingIdx := strings.Index(line, "@@")
 	if closingIdx < 0 {
@@ -392,8 +385,7 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 		return true, result, newOffset, nil
 	}
 
-	// Try to find the hunk location using three strategies.
-	// Strategy 1: Exact match at the expected position.
+	// Strategy 1: exact match at the expected position.
 	targetPos := h.oldStart - 1 + offset
 	if matchExact(lines, oldContent, targetPos) {
 		result := spliceLines(lines, targetPos, len(oldContent), newContent)
@@ -401,20 +393,18 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 		return true, result, newOffset, nil
 	}
 
-	// All remaining strategies are inexact scans over lines. Bound them to a
-	// window around the hunk's declared position (see hunkSearchWindow):
-	// unbounded scans take the first exact-after-drift, whitespace-equal, or
-	// best-fuzzy match anywhere in the file, which silently applies the hunk
-	// to an unrelated but coincidentally similar block when one exists
-	// earlier in the file. A wrong-region edit that still reports
-	// Applied=true is worse than failing closed.
+	// The remaining strategies are inexact scans, bounded to a window
+	// around the declared position (hunkSearchWindow): an unbounded scan
+	// would take the first coincidentally similar match anywhere in the
+	// file, silently corrupting the wrong region while still reporting
+	// Applied=true.
 	lo, hi := hunkSearchWindow(targetPos, len(oldContent), len(lines))
 
-	// Exact match: search the declared region in case only the offset is
-	// wrong (e.g. an earlier hunk in the diff mis-declared its line count).
+	// Re-try exact match across the window: an earlier hunk in the same
+	// diff may have mis-declared its line count, shifting only the offset.
 	for pos := lo; pos <= hi; pos++ {
 		if pos == targetPos {
-			continue // already tried
+			continue
 		}
 		if matchExact(lines, oldContent, pos) {
 			result := spliceLines(lines, pos, len(oldContent), newContent)
@@ -424,9 +414,9 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 		}
 	}
 
-	// Strategy 2: Whitespace-insensitive match.
-	// When matching inexactly, we preserve the original file's context lines
-	// and only substitute the added lines from the diff.
+	// Strategy 2: whitespace-insensitive match. Context lines come from
+	// the original file (preserving its whitespace); only added lines
+	// come from the diff.
 	for pos := lo; pos <= hi; pos++ {
 		if matchWhitespaceInsensitive(lines, oldContent, pos) {
 			replacement := buildReplacement(h, lines, pos)
@@ -437,7 +427,7 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 		}
 	}
 
-	// Strategy 3: Fuzzy match (Levenshtein-based).
+	// Strategy 3: fuzzy match (Levenshtein-based).
 	bestPos, bestSim := findFuzzyMatch(lines, oldContent, lo, hi)
 	if bestSim >= s.fuzzyThreshold {
 		replacement := buildReplacement(h, lines, bestPos)
@@ -486,9 +476,7 @@ func hunkSearchWindow(target, patternLen, lineCount int) (lo, hi int) {
 // the file's actual whitespace/content), while added lines come from the diff.
 func buildReplacement(h hunk, fileLines []string, pos int) []string {
 	var result []string
-	// Walk through the diff lines in order. For context lines, use the
-	// corresponding file line; for added lines, use the diff's text.
-	// Removed lines are skipped (they're being deleted).
+
 	fileIdx := pos
 	for _, dl := range h.lines {
 		switch dl.kind {
@@ -499,10 +487,10 @@ func buildReplacement(h hunk, fileLines []string, pos int) []string {
 			}
 			fileIdx++
 		case '-':
-			// Removed — skip this file line.
+
 			fileIdx++
 		case '+':
-			// Added — use the diff's text.
+
 			result = append(result, dl.text)
 		}
 	}

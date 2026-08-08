@@ -40,7 +40,7 @@ func newFakeGraniteServer(t *testing.T, responseContent string, status int) *fak
 		fs.lastURL = r.URL.String()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		// Encode a minimal OpenAI-compatible chat-completions response.
+
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
 				{"message": map[string]any{"role": "assistant", "content": responseContent}},
@@ -134,9 +134,8 @@ func TestGraniteGuardianThinkMode(t *testing.T) {
 	if d.Verdict != VerdictDeny {
 		t.Fatalf("verdict = %q, want deny", d.Verdict)
 	}
-	// The request body should carry the <think> directive inside the
-	// <guardian> envelope. We assert the literal sequence rather than a
-	// regex because the placement is load-bearing per the spec.
+	// Placement of <think> inside <guardian> is load-bearing; assert
+	// the literal sequence rather than a regex.
 	got := fs.firstUserMessageContent(t)
 	if !strings.Contains(got, "<guardian><think>") {
 		t.Fatalf("user message did not contain <guardian><think>; got: %s", got)
@@ -314,14 +313,9 @@ func newTruncatingFakeServer(t *testing.T, content, finishReason string) *fakeSe
 }
 
 func TestGraniteGuardianTruncatedResponseSurfacesActionableError(t *testing.T) {
-	// LM Studio (and other DeepSeek-style runtimes) routes the model's
-	// reasoning into a separate reasoning_content field. When max_tokens
-	// is too tight the budget is exhausted before the <score> head fires,
-	// content arrives empty, and finish_reason is "length". The adapter
-	// must recognise this and surface ErrResponseTruncated so operators
-	// know to raise the budget rather than debug the parser. The error
-	// must still chain ErrParseFailed for any caller using errors.Is on
-	// the broader category.
+	// Empty content + finish_reason="length" must surface
+	// ErrResponseTruncated so operators raise the budget rather than
+	// debug the parser.
 	fs := newTruncatingFakeServer(t, "", "length")
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
 	if err != nil {
@@ -334,10 +328,8 @@ func TestGraniteGuardianTruncatedResponseSurfacesActionableError(t *testing.T) {
 	if !errors.Is(err, ErrResponseTruncated) {
 		t.Fatalf("error chain missing ErrResponseTruncated: %v", err)
 	}
-	// Backward compatibility: callers checking the broader parse-failed
-	// category must still match. ErrResponseTruncated wraps ErrParseFailed
-	// precisely so existing fail-closed paths in the loop continue to
-	// behave identically without code changes.
+	// ErrResponseTruncated must still chain ErrParseFailed so existing
+	// callers on the broader category keep matching.
 	if !errors.Is(err, ErrParseFailed) {
 		t.Fatalf("ErrResponseTruncated must wrap ErrParseFailed for backward compat: %v", err)
 	}
@@ -395,22 +387,12 @@ func TestGraniteGuardianDefaultPhaseCriteria(t *testing.T) {
 	}
 }
 
-// TestGraniteGuardianPolarityConvention is a regression test for a
-// genuine semantic bug we shipped on first cut: PhasePostTurn was
-// authored in safety-requirement form ("the response must not contain
-// X"), which under the generic "if meets criteria → yes" scoring
-// schema means a benign response *meets* the safety requirements and
-// the model returns "yes" — which the adapter then mapped to deny.
-// Symptom in the field: a clean README summary triggered guard_denied
-// at post_turn with reason "granite-guardian classifier returned yes".
-//
-// The convention is: every default criterion must be phrased so that
-// "meeting the criterion" means "this content is risky" — i.e. "yes"
-// must always mean "deny". This test pins that invariant by asserting
-// that the post-turn criterion text uses risk-form ("contains")
-// rather than safety-form ("must satisfy" / "must not"). It is
-// deliberately specific to PostTurn because that is the phase that
-// regressed; PreTurn and PreTool were correct from day one.
+// TestGraniteGuardianPolarityConvention pins the polarity invariant:
+// every default criterion must be phrased so that "meeting the
+// criterion" means "this content is risky" — i.e. "yes" must always
+// mean "deny". Safety-form phrasing ("must not contain X") flips this,
+// since a benign response meets the requirement and the model says
+// "yes", which the adapter maps to deny.
 func TestGraniteGuardianPolarityConvention(t *testing.T) {
 	postTurn := defaultPhaseCriteria[PhasePostTurn]
 	if postTurn == "" {
@@ -430,15 +412,9 @@ func TestGraniteGuardianPolarityConvention(t *testing.T) {
 	}
 }
 
-// TestGraniteGuardianBenignPostTurnAllowed simulates the field-test
-// failure mode end-to-end: a benign assistant response is sent through
-// PhasePostTurn and the classifier (mocked) returns "no" because no
-// risk is present. With the corrected risk-form criterion the adapter
-// must produce VerdictAllow. Before the fix, the criterion was authored
-// in safety-form, the model returned "yes" on benign content, and this
-// path produced VerdictDeny. The mock here pins the parser+criterion
-// contract: when the criterion is risk-form and the content is benign,
-// the wire response is "no" and the verdict is allow.
+// TestGraniteGuardianBenignPostTurnAllowed pins the parser+criterion
+// contract end-to-end: with a risk-form criterion, a benign response
+// gets "no" from the classifier and the verdict is allow.
 func TestGraniteGuardianBenignPostTurnAllowed(t *testing.T) {
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
@@ -577,10 +553,8 @@ func TestGraniteGuardianRejectsNonHTTPScheme(t *testing.T) {
 }
 
 // TestGraniteGuardian_ThresholdWarnsAtConstruction asserts that a
-// non-zero Threshold emits a startup warning (per SF-6) — the field
-// is reserved for forward compatibility and has no behavioural effect
-// in v1, so silently accepting it would mislead operators who think
-// they configured calibrated admission control.
+// non-zero Threshold emits a startup warning — the field is reserved
+// for forward compatibility and has no behavioural effect in v1.
 func TestGraniteGuardian_ThresholdWarnsAtConstruction(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))

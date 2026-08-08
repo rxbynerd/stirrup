@@ -9,14 +9,9 @@ import (
 )
 
 // TestBuildResource_PreservesExistingIdentity locks down the spec-required
-// service.* attributes plus the SDK-managed telemetry.sdk.* attributes. The
-// OpenTelemetry semantic conventions list service.name as required for
-// every signal, and recommend service.version + service.instance.id. If
-// any of these go missing, downstream backends (Zipkin, Jaeger, Tempo, ...)
-// fall back to "unknown_service:<binary>", which is the regression this
-// test exists to prevent. The telemetry.sdk.* keys come from the OTel SDK's
-// own resource.Default() — without them, exporters can't tell which SDK
-// produced a signal.
+// service.* attributes plus the SDK-managed telemetry.sdk.* attributes. If
+// any go missing, downstream backends fall back to
+// "unknown_service:<binary>".
 func TestBuildResource_PreservesExistingIdentity(t *testing.T) {
 	got := attrMap(BuildResource(ResourceOptions{}))
 
@@ -43,13 +38,9 @@ func TestBuildResource_PreservesExistingIdentity(t *testing.T) {
 // TestBuildResource_DefaultsApplied pins that an entirely-empty
 // ResourceOptions still produces a usable resource: service.namespace
 // falls through to "stirrup", deployment.environment to "local", and
-// harness.run.mode is omitted entirely (no synthetic value injected). This
-// is the path a fresh "stirrup harness --prompt ..." invocation takes when
-// the operator has not pinned any environment, so it must not regress.
+// harness.run.mode is omitted entirely (no synthetic value injected).
 func TestBuildResource_DefaultsApplied(t *testing.T) {
-	// Clear env vars so we measure the pure-default path. t.Setenv with
-	// the empty string still records a value; Unsetenv via t.Setenv-on-
-	// empty has been the convention since Go 1.17.
+	// t.Setenv("", ...) clears the var for the pure-default path.
 	t.Setenv(envEnvironment, "")
 	t.Setenv(envServiceNamespace, "")
 
@@ -67,10 +58,7 @@ func TestBuildResource_DefaultsApplied(t *testing.T) {
 }
 
 // TestBuildResource_ExplicitWins pins the precedence chain: explicit
-// ResourceOptions values must override env vars. Without this guarantee an
-// operator's --deployment-environment flag could be silently swallowed by a
-// stale env var inherited from the parent shell, which is the exact
-// foot-gun this precedence chain exists to prevent.
+// ResourceOptions values must override env vars.
 func TestBuildResource_ExplicitWins(t *testing.T) {
 	t.Setenv(envEnvironment, "env-set-environment")
 	t.Setenv(envServiceNamespace, "env-set-namespace")
@@ -93,10 +81,7 @@ func TestBuildResource_ExplicitWins(t *testing.T) {
 }
 
 // TestBuildResource_EnvFallback pins that env vars are consulted when
-// ResourceOptions is silent. This is the path most production deployments
-// take: the K8s job sets OTEL_DEPLOYMENT_ENVIRONMENT in the pod spec, and
-// the harness picks it up without anyone having to thread it through the
-// RunConfig.
+// ResourceOptions is silent.
 func TestBuildResource_EnvFallback(t *testing.T) {
 	t.Setenv(envEnvironment, "production-eu")
 	t.Setenv(envServiceNamespace, "stirrup-eval")
@@ -112,10 +97,8 @@ func TestBuildResource_EnvFallback(t *testing.T) {
 }
 
 // TestBuildResource_RunModeOmittedWhenEmpty pins that an empty RunMode
-// produces no harness.run.mode attribute. Read-only modes that the eval
-// runner constructs without a Mode value (or future replay paths that load
-// recorded traces lacking the field) must not silently inject an empty-
-// string mode label that would break Grafana group-by-mode queries.
+// produces no harness.run.mode attribute, rather than an empty-string
+// value that would break Grafana group-by-mode queries.
 func TestBuildResource_RunModeOmittedWhenEmpty(t *testing.T) {
 	got := attrMap(BuildResource(ResourceOptions{
 		Environment:      "production",
@@ -127,19 +110,12 @@ func TestBuildResource_RunModeOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestBuildResource_EnvVarSanitisation locks down the BLK-2 fix: hostile
-// env-var values must not reach OTLP exporters. The RunConfig validation
-// path screens via validateObservabilityConfig, but the env-var fallback
-// used to call attribute.String() with the raw os.Getenv result. An
-// attacker with K8s ConfigMap write access could inject newlines, oversized
-// strings, or "=" delimiters into every emitted span and metric batch.
-// Sanitisation is now applied symmetrically.
+// TestBuildResource_EnvVarSanitisation pins that hostile env-var values
+// (an attacker with K8s ConfigMap write access could inject newlines,
+// oversized strings, or "=" delimiters) do not reach OTLP exporters.
 func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 	t.Run("newline-laced env value falls back to default", func(t *testing.T) {
-		// A real attack vector: an environment variable that smuggles a
-		// second key=value pair via newline delimiters. OTLP serialisers do
-		// not see this as malformed because attribute.String accepts any
-		// UTF-8 — the damage is done at the backend's parsing layer.
+
 		t.Setenv(envEnvironment, "prod\nservice.name=evil")
 		t.Setenv(envServiceNamespace, "")
 
@@ -151,11 +127,7 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 	})
 
 	t.Run("oversized env value falls back to default", func(t *testing.T) {
-		// 65 chars; the pattern caps at 64. Exceeding the cap is a
-		// realistic operator mistake (paste-from-uuid-tooling) as well as
-		// a deliberate flood: backends like Prometheus truncate or reject
-		// over-long labels, and Grafana dashboards then group rows in
-		// surprising ways.
+		// 65 chars; the pattern caps at 64.
 		oversized := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl5"
 		if len(oversized) != 65 {
 			t.Fatalf("test fixture broken: oversized has %d chars, want 65", len(oversized))
@@ -171,8 +143,7 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 	})
 
 	t.Run("valid env value passes through", func(t *testing.T) {
-		// A name that satisfies the pattern must reach the resource
-		// untouched — sanitisation is a screen, not a transform.
+
 		t.Setenv(envEnvironment, "")
 		t.Setenv(envServiceNamespace, "valid-ns")
 
@@ -184,8 +155,7 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 	})
 
 	t.Run("equals-sign env value falls back to default", func(t *testing.T) {
-		// "=" is rejected by the pattern; an attacker could otherwise
-		// smuggle a key=value pair into a single attribute body.
+
 		t.Setenv(envEnvironment, "")
 		t.Setenv(envServiceNamespace, "evil=injected")
 

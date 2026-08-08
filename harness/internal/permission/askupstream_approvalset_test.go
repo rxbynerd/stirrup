@@ -6,12 +6,9 @@ import (
 	"time"
 )
 
-// TestAskUpstream_ApprovalToolNamesContainsExpectedTools is the WP1
-// regression test for ask-upstream wiring: the policy must prompt on
-// every tool that requires upstream approval — not just workspace-mutating
-// tools. The expected set covers writes (write_file), shell execution
-// (run_command), network (web_fetch), and sub-agent spawning
-// (spawn_agent).
+// TestAskUpstream_ApprovalToolNamesContainsExpectedTools: the policy
+// must prompt on every tool that requires upstream approval — not just
+// workspace-mutating tools.
 func TestAskUpstream_ApprovalToolNamesContainsExpectedTools(t *testing.T) {
 	approval := map[string]bool{
 		"write_file":  true,

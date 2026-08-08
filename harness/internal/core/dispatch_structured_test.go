@@ -9,9 +9,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// structuredEchoTool is a sync tool exposing a StructuredHandler that returns a
-// text fallback, a typed structured payload, and a kind discriminator,
-// exercising the issue #231 dispatch seam.
+// structuredEchoTool returns a tool with a StructuredHandler that yields a
+// text fallback, a structured payload, and a kind discriminator.
 func structuredEchoTool() *tool.Tool {
 	return &tool.Tool{
 		Name:        "structured_echo",

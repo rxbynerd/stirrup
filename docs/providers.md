@@ -16,6 +16,13 @@ Messages API; no Anthropic SDK dependency. Auth: API key resolved from
 a `secret://` reference, or keyless via Anthropic Workload Identity
 Federation — see [`docs/anthropic-wif.md`](anthropic-wif.md).
 
+The two auth modes use different, non-interchangeable request headers:
+a static API key (`sk-ant-api03-...`) goes in `x-api-key`, while a WIF
+OAuth access token (`sk-ant-oat01-...`) requires `Authorization:
+Bearer`. Sending a WIF token via `x-api-key` returns an Anthropic 401;
+the adapter selects the header from the credential source's type, not
+by inspecting the token.
+
 Default safety thresholds: none — the harness does not configure
 Anthropic safety settings; the API defaults apply.
 
@@ -169,14 +176,64 @@ Key implementation notes:
   `tool_use` whenever the same stream emitted at least one
   `functionCall` part.
 - **Safety thresholds.** Defaults to `BLOCK_NONE` for all five
-  categories. Override via `provider.geminiSafetySettings`.
+  categories. A coding harness that produces security tooling cannot
+  tolerate false positives on legitimate code samples, so BLOCK_NONE
+  is the only sane default; operators requiring stricter behaviour
+  override via `provider.geminiSafetySettings`.
 - **Request/schema translation.** JSON Schema → Gemini OpenAPI Schema
   conversion: `provider/gemini_schema.go`. Request assembly:
   `provider/gemini_request.go`.
+- **Role mapping.** A user message with text becomes one
+  `{role:"user"}` Content; a user message with `tool_result` blocks
+  emits a separate `{role:"function"}` Content per result (Vertex
+  requires this role for `functionResponse` parts and does not allow
+  user-text and function-response parts to share a Content). An
+  assistant message collapses into one `{role:"model"}` Content
+  preserving block order. When a user message has both text and
+  `tool_result` blocks, the function-response Contents are emitted
+  first, mirroring the OpenAI Responses adapter's ordering — otherwise
+  Vertex would receive a user-text turn before the function-response
+  it depends on.
 
 **Intentional exclusions:** multimodal input, server-side built-in
 tools (`google_search`, `code_execution`, etc. — tracked as issue #93),
 AI Studio direct support.
+
+### Schema translation (`provider/gemini_schema.go`)
+
+`ConvertSchema` converts a JSON Schema (Draft 2020-12) document into
+the Gemini OpenAPI-3.0-flavoured Schema dialect used in
+`tools[].functionDeclarations[].parameters`. It is pure (no I/O, no
+globals) and returns an error rather than silently dropping fields
+when it hits an unsupported keyword, so the adapter's `Stream` call
+fails fast at request-build time instead of sending a schema Gemini
+will reject.
+
+Supported transformations:
+
+- JSON Schema lowercase type names → Gemini UPPERCASE.
+- Type arrays of the form `["X","null"]` → `nullable: true` with a
+  single type.
+- Recursive descent into `properties` and `items`.
+- Pass-through of validation keywords (`description`, `enum`,
+  `required`, etc.).
+- Drop of metadata keywords (`$schema`, `$id`, `$defs`,
+  `definitions`, `$comment`, `additionalProperties`).
+
+Hard errors:
+
+- `$ref` — Gemini does not resolve refs; the caller must inline the
+  referenced schema.
+- `oneOf` / `anyOf` with more than one non-null branch (Gemini Schema
+  has no discriminated-union support).
+- `allOf` — no merge logic.
+- Type values outside the Gemini type table.
+- Type arrays with more than two values, or two values where neither
+  is `"null"`.
+
+Empty input (`""` or `"{}"`) returns an empty object schema. Unknown
+keywords are passed through verbatim — Vertex tolerates them, and
+silently dropping them would mask future schema features.
 
 ### Configuration
 

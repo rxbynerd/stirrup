@@ -11,7 +11,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// mockExecutor implements the commandExecutor interface for testing.
 type mockExecutor struct {
 	result *executor.ExecResult
 	err    error
@@ -56,7 +55,6 @@ func TestTestRunnerVerifier_PassingTests(t *testing.T) {
 	if mock.lastTimeout != 30*time.Second {
 		t.Errorf("expected timeout %v, got %v", 30*time.Second, mock.lastTimeout)
 	}
-	// Verify details are populated.
 	if result.Details["command"] != "go test ./..." {
 		t.Errorf("expected details command, got %v", result.Details["command"])
 	}
@@ -97,14 +95,12 @@ func TestTestRunnerVerifier_FailingTests(t *testing.T) {
 	if result.Details["exitCode"] != 1 {
 		t.Errorf("expected details exitCode 1, got %v", result.Details["exitCode"])
 	}
-	// Default timeout should have been applied.
 	if mock.lastTimeout != defaultTestTimeout {
 		t.Errorf("expected default timeout %v, got %v", defaultTestTimeout, mock.lastTimeout)
 	}
 }
 
 func TestTestRunnerVerifier_OutputTruncation(t *testing.T) {
-	// Generate output larger than maxFeedbackLen.
 	bigOutput := strings.Repeat("FAIL: line of test output\n", 300)
 	if len(bigOutput) <= maxFeedbackLen {
 		t.Fatal("test setup error: output should exceed maxFeedbackLen")
@@ -129,14 +125,9 @@ func TestTestRunnerVerifier_OutputTruncation(t *testing.T) {
 	if result.Passed {
 		t.Fatal("expected Passed to be false")
 	}
-	// The feedback should be bounded in length. The overhead from the
-	// "Test command ... failed ..." prefix and truncation marker means the
-	// total will be somewhat larger than maxFeedbackLen, but the test
-	// output portion itself must be capped.
 	if !strings.Contains(result.Feedback, "[...truncated...]") {
 		t.Error("expected truncation marker in feedback")
 	}
-	// The tail of the output should be preserved (most useful part).
 	if !strings.HasSuffix(strings.TrimSpace(result.Feedback), "FAIL: line of test output") {
 		t.Errorf("expected tail of output to be preserved, got %q", result.Feedback[len(result.Feedback)-80:])
 	}
@@ -167,7 +158,6 @@ func TestTestRunnerVerifier_ExecError(t *testing.T) {
 func TestTestRunnerVerifier_InvalidExecutor(t *testing.T) {
 	v := NewTestRunnerVerifier("go test ./...", time.Minute)
 
-	// Pass a string instead of an executor.
 	_, err := v.Verify(context.Background(), VerifyContext{
 		Executor: "not an executor",
 	})
@@ -248,13 +238,10 @@ func TestNewTestRunnerVerifier_NegativeTimeout(t *testing.T) {
 	}
 }
 
-// Verify that TestRunnerVerifier satisfies the Verifier interface.
 var _ Verifier = (*TestRunnerVerifier)(nil)
 
-// Verify that mockExecutor satisfies commandExecutor.
 var _ commandExecutor = (*mockExecutor)(nil)
 
-// Verify that passing test returns expected VerificationResult type.
 func TestTestRunnerVerifier_ReturnsCorrectType(t *testing.T) {
 	mock := &mockExecutor{
 		result: &executor.ExecResult{ExitCode: 0},

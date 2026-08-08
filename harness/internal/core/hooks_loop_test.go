@@ -21,8 +21,8 @@ var (
 )
 
 // fakeHookRunner is a test double for hook.Runner used by the agentic
-// loop's lifecycle-hook integration tests (issue #461). It records every
-// RunPost call's outcome argument (and the ctx's own Err() at call time,
+// loop's lifecycle-hook integration tests. It records every RunPost
+// call's outcome argument (and the ctx's own Err() at call time,
 // so tests can assert the detached post-hook ctx is not already dead)
 // without needing a real Executor.
 type fakeHookRunner struct {
@@ -102,15 +102,11 @@ func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
 	}
 }
 
-// TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent pins issue #461
-// finding #2: a fatal preRun hook failure — routed through
-// finishWithOutcome — must emit a terminal "done" HarnessEvent
-// (StopReason=outcome), not just the pre-existing "error" event.
-// Without this, a control plane watching for the documented terminal
-// "done" event (docs/deployment.md) never sees one for this outcome,
-// and the CLI entrypoints' RunResult/resultSink emission — gated on a
-// non-nil RunTrace, not on this event — was a separate but related gap
-// fixed alongside it (see cmd/harness.go, cmd/job.go).
+// TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent pins that a fatal
+// preRun hook failure emits a terminal "done" HarnessEvent
+// (StopReason=outcome), not just the pre-existing "error" event —
+// control planes watch for the terminal "done" event per
+// docs/deployment.md.
 func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
 	rec := &recordingTransport{}
@@ -226,8 +222,7 @@ func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
 	loop.Provider = &fireAndCloseProvider{
 		onStream: func() {
 			// Block long enough for the 50ms deadline below to fire
-			// before the next turn boundary ctx check, matching the
-			// existing TestLoop_CancelAttribute_Deadline pattern.
+			// before the next turn boundary ctx check.
 			time.Sleep(150 * time.Millisecond)
 		},
 	}
@@ -253,13 +248,11 @@ func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
 	}
 }
 
-// TestLoop_Hooks_PostRunCutShortByShutdownSignal pins the SIGTERM/SIGINT
-// remediation (issue #461 finding #1): a detached postRun hook survives
-// the run's own wall-clock deadline/control-plane cancel (covered by
-// the timeout test above), but a distinct process-shutdown signal on
-// l.Shutdown must still cut it off well before its full configured
-// budget, rather than the hook running unconditionally for up to that
-// budget while an orchestrator's SIGKILL escalation counts down.
+// TestLoop_Hooks_PostRunCutShortByShutdownSignal pins that a detached
+// postRun hook survives the run's own wall-clock deadline/cancel
+// (covered by the timeout test above), but a distinct process-shutdown
+// signal on l.Shutdown still cuts it off well before its full
+// configured budget.
 func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
 
@@ -269,9 +262,8 @@ func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
 	hookCtxCancelled := make(chan struct{})
 	hooks := &fakeHookRunner{
 		onPost: func(ctx context.Context) {
-			// Simulate a long-running hook (e.g. an artifact upload)
-			// that only returns once its ctx is cancelled — exactly
-			// what a real Executor.Exec does via exec.CommandContext.
+			// Simulate a long-running hook that only returns once its
+			// ctx is cancelled.
 			<-ctx.Done()
 			close(hookCtxCancelled)
 		},

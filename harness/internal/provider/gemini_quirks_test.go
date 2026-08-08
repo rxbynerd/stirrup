@@ -48,12 +48,12 @@ func geminiQuirksCanonicalParams(model string) types.StreamParams {
 }
 
 // TestGeminiQuirks_Gemini25Pro_StreamArgsOff pins the wire shape for
-// gemini-2.5-pro: the resolved quirks set StreamArgsOff (the
-// post-#191 safe default), and the marshalled request body therefore
-// emits no streamFunctionCallArguments field at all (omitempty drops
-// false). The fixture is the source of truth for the canonical body;
-// AssertWireEqual normalises both sides through unmarshal→marshal so
-// key ordering and whitespace are not load-bearing.
+// gemini-2.5-pro: the resolved quirks set StreamArgsOff, so the
+// marshalled request body emits no streamFunctionCallArguments field
+// at all (omitempty drops false). The fixture is the source of truth
+// for the canonical body; AssertWireEqual normalises both sides
+// through unmarshal→marshal so key ordering and whitespace are not
+// load-bearing.
 func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 	params := geminiQuirksCanonicalParams("gemini-2.5-pro")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
@@ -64,26 +64,21 @@ func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
-	// Negative wire-shape check ahead of the fixture comparison so a
-	// failure here names the load-bearing invariant directly: the wire
-	// body must NOT enable streamFunctionCallArguments. A future rule
-	// that flips this back to true on 2.5 would either need to be
-	// removed or replace this fixture in lockstep.
+	// Negative check ahead of the fixture comparison so a failure names
+	// the load-bearing invariant directly: the wire body must not
+	// enable streamFunctionCallArguments.
 	if strings.Contains(string(body), `"streamFunctionCallArguments":true`) {
 		t.Errorf("gemini-2.5-pro: body contains streamFunctionCallArguments=true (post-#191 default violated): %s", body)
 	}
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-2.5-pro", "request.json"), body)
 }
 
-// TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff is the
-// regression guard for PR #191: Gemini 3.x's streamed-args wire
-// format (JSON-path delta records) breaks the parser, so the adapter
-// must continue to emit streamFunctionCallArguments=false (which
-// omitempty drops from the body entirely) on every 3.x request until
-// a verified rule explicitly opts into a different shape. The fixture
-// pins the byte-identical wire body produced under the quirks-resolved
-// path; a divergence here is a behaviour change in the Gemini 3.x
-// pre-existing contract that requires a deliberate review.
+// TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff pins that
+// Gemini 3.x's streamed-args wire format (JSON-path delta records)
+// breaks the parser, so the adapter must continue to emit
+// streamFunctionCallArguments=false (which omitempty drops from the
+// body entirely) on every 3.x request until a verified rule explicitly
+// opts into a different shape.
 func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
 	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
@@ -121,17 +116,11 @@ func geminiQuirksLogStubServer(t *testing.T) *httptest.Server {
 }
 
 // TestGeminiAdapter_QuirksDebugLogListsAppliedRules pins the
-// per-Stream debug line in the Gemini adapter (design §5): the line
-// fires at the top of every Stream call and lists the descriptions
-// of the rules that contributed to the resolution. Mirrors the
-// openai-counterpart TestOpenAIAdapter_DebugLogListsAppliedRules
-// so a future change to the resolution-logging convention is caught
-// uniformly across adapters.
-//
-// gemini-2.5-pro is sufficient to trigger the Gemini base rule
-// ("Gemini: off streamFunctionCallArguments"); the substring asserted
-// is taken verbatim from the rule's Description field, so renaming
-// the description requires updating this test in lockstep.
+// per-Stream debug line in the Gemini adapter: it fires at the top of
+// every Stream call and lists the descriptions of the rules that
+// contributed to the resolution. The substring asserted is taken
+// verbatim from the rule's Description field, so renaming the
+// description requires updating this test in lockstep.
 func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
 	srv := geminiQuirksLogStubServer(t)
 	defer srv.Close()
@@ -194,20 +183,12 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 	}
 }
 
-// TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry pins the
-// load-bearing design invariant from PR #316: the registry-resolved
-// ProviderQuirks value for any Gemini model is byte-identical, on
-// the wire, to a zero-value ProviderQuirks. The base rule
-// ("Gemini: off streamFunctionCallArguments") writes StreamArgsOff,
-// which IS the zero value of GeminiStreamArgsShape, so the rule is
-// functionally a no-op — but the registry path is the canonical
-// post-#191 default and callers that bypass the registry would
-// regress silently if the rule ever wrote a non-zero value.
-//
-// The test marshals both paths to JSON and asserts bytes.Equal.
-// A future rule that diverges the registry-resolved value from
-// the zero-value default would fail this test, forcing a deliberate
-// decision rather than a silent behaviour change.
+// TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry pins that the
+// registry-resolved ProviderQuirks value for any Gemini model is
+// byte-identical, on the wire, to a zero-value ProviderQuirks: the
+// base rule writes StreamArgsOff, which is the zero value of
+// GeminiStreamArgsShape, so callers that bypass the registry would
+// regress silently only if a future rule wrote a non-zero value.
 func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
 	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
 

@@ -120,12 +120,8 @@ func TestOffloadToFile_PreservesReplayFieldsOnModifiedMessages(t *testing.T) {
 	largeContent := strings.Repeat("x", 3000)
 	msgs := []types.Message{
 		makeMessage("user", "do something"),
-		// A message that both triggers the offload rebuild (large
-		// tool_result) and carries replay state. The rebuild path
-		// constructs a fresh types.Message; any field not copied
-		// explicitly — ReplayFields here — would be silently dropped,
-		// and the next request against DeepSeek v4 thinking mode would
-		// omit reasoning_content and 400.
+		// The rebuild path constructs a fresh types.Message; any field not
+		// copied explicitly — ReplayFields here — would be silently dropped.
 		{
 			Role: "assistant",
 			Content: []types.ContentBlock{

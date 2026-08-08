@@ -16,11 +16,10 @@ var renderMatrixModels = []string{
 	"",                        // unset → default tier
 }
 
-// executionBasePrompt pins the execution mode's fall-through text to the
-// exact prompt shipped before #492 introduced templating. If this test
-// fails, either the base text was edited (update the constant alongside
-// a deliberate prompt change) or tier content leaked into the default
-// tier (a fall-through regression).
+// executionBasePrompt pins the execution mode's default-tier fall-through
+// text. A failure means either the base text was edited (update the
+// constant alongside a deliberate prompt change) or tier content leaked
+// into the default tier.
 const executionBasePrompt = `You are a coding agent with full read/write access to the workspace.
 Read relevant files before making changes. Apply edits, run tests, and iterate until all tests pass and the task is complete.
 If the task is ambiguous, make the minimal reasonable interpretation rather than asking.
@@ -37,8 +36,7 @@ func renderMode(t *testing.T, mode, model string) string {
 
 // Every embedded mode prompt must parse and render cleanly for every
 // tier: no leftover template syntax, and the default-tier text is always
-// a prefix of the output because tier blocks are additive (issue #492's
-// fall-through requirement, held structurally).
+// a prefix of the output because tier blocks are additive.
 func TestRenderModePrompt_Matrix(t *testing.T) {
 	for mode := range ModePrompts() {
 		base := renderMode(t, mode, "")

@@ -12,12 +12,10 @@ import (
 )
 
 // TestRunOutcomeError_EnumeratedOutcomes pins the outcome→exit mapping
-// (issue #101, v0.1 release blocker B4) against every value documented
-// on types.RunTrace.Outcome. "success" is the only outcome that must
-// not produce an error; every other documented value — including the
-// limit-hit and lifecycle-hook classes, not just "error" — must, so a
-// future outcome added to the enum without updating runSuccessOutcomes
-// fails this test rather than silently exiting 0.
+// against every value documented on types.RunTrace.Outcome. "success"
+// is the only outcome that must not produce an error; a future outcome
+// added to the enum without updating runSuccessOutcomes fails this
+// test rather than silently exiting 0.
 func TestRunOutcomeError_EnumeratedOutcomes(t *testing.T) {
 	nonSuccessOutcomes := []string{
 		"error",
@@ -57,10 +55,8 @@ func TestRunOutcomeError_EnumeratedOutcomes(t *testing.T) {
 }
 
 // openAICompatibleErrorServer replies to every request with a 401,
-// mirroring an invalid API key against a real provider — the same
-// failure class as the live ANTHROPIC_API_KEY=fake repro for issue
-// #101, just against the openai-compatible adapter so the test needs
-// no live credentials or network access.
+// mirroring an invalid API key against a real provider without
+// requiring live credentials or network access.
 func openAICompatibleErrorServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -115,12 +111,10 @@ func runOutcomeTestConfig(t *testing.T, baseURL string) *types.RunConfig {
 	}
 }
 
-// TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero is the cmd-layer
-// regression for issue #101 / v0.1 release blocker B4: AgenticLoop.Run
-// returns (trace, nil) for a mid-run provider failure — only the trace
-// carries the failure via Outcome=="error" — so runWithConfig must
-// convert that into a non-nil error itself, or the process exits 0 on
-// a failed run (the ANTHROPIC_API_KEY=fake live repro this pins).
+// TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero pins that
+// runWithConfig converts a trace-only failure (AgenticLoop.Run returns
+// (trace, nil) with Outcome=="error" for a mid-run provider failure)
+// into a non-nil error, so the process does not exit 0 on a failed run.
 func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 	srv := openAICompatibleErrorServer(t)
 	defer srv.Close()
@@ -146,8 +140,7 @@ func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 
 // TestRunWithConfig_SuccessOutcome_ExitsZero is the success-path
 // counterpart: a run that completes normally must still return a nil
-// error (and therefore exit 0) after the B4 fix, proving the new
-// outcome check does not regress the happy path.
+// error (and therefore exit 0).
 func TestRunWithConfig_SuccessOutcome_ExitsZero(t *testing.T) {
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()

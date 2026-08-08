@@ -64,9 +64,8 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 			"Example: {\"url\": \"https://pkg.go.dev/encoding/json\"}",
 		InputExamples: []json.RawMessage{json.RawMessage(`{"url": "https://pkg.go.dev/encoding/json"}`)},
 		InputSchema:   webFetchSchema,
-		// web_fetch does not mutate the workspace, but it makes outbound
-		// network requests on the user's behalf — gate it behind
-		// upstream approval where one is configured.
+		// Does not mutate the workspace, but makes outbound network
+		// requests on the user's behalf — gate behind approval.
 		WorkspaceMutating: false,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -92,12 +91,9 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 
 			resp, err := client.Do(req)
 			if err != nil {
-				// The fetched URL is arbitrary user input and frequently
-				// carries credentials in its query string (presigned S3/GCS
-				// URLs, ?api_key=...) or userinfo. The transport *url.Error
-				// embeds that URL and Go does not redact the query string, so
-				// unwrap to the dial-level cause before this error is returned
-				// to the model and logged (CWE-532).
+				// The fetched URL may carry credentials in its query string
+				// or userinfo; *url.Error embeds the URL verbatim, so unwrap
+				// to the dial-level cause before this reaches the model/logs.
 				return "", fmt.Errorf("fetch URL: %w", security.UnwrapURLError(err))
 			}
 			defer func() { _ = resp.Body.Close() }()
@@ -106,7 +102,7 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 				return "", fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
 			}
 
-			// Read up to maxFetchSize + 1 to detect truncation.
+			// +1 so a body exceeding maxFetchSize is detectable below.
 			limited := io.LimitReader(resp.Body, maxFetchSize+1)
 			body, err := io.ReadAll(limited)
 			if err != nil {

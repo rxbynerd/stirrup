@@ -263,16 +263,11 @@ func TestRun_ConvertDispatch(t *testing.T) {
 
 // TestCmdRun_JUnitFlag drives the `run` arm of run()'s switch with
 // --dry-run + --junit and asserts the JUnit XML is created. Dry-run
-// mode short-circuits the harness binary requirement (see
-// runner.RunSuite), so this test works on a bare-bones runner and
-// has no external dependencies beyond a fixture suite.
-//
-// The assertions are deliberately coarse: this is a wiring test for
-// the `*junitPath != ""` guard, the writeJUnit call inside cmdRun,
-// and (post-B2) the warning-not-fatal behaviour. Per-suite content
-// shape is covered by reporter tests; per-helper file shape is
-// covered by TestWriteJUnit_CreatesFile. Here we only need to know
-// the flag value reached writeJUnit.
+// mode short-circuits the harness binary requirement, so this test
+// has no external dependencies beyond a fixture suite. The
+// assertions are deliberately coarse — this is a wiring test for the
+// `*junitPath != ""` guard and the writeJUnit call inside cmdRun;
+// per-suite content shape is covered by reporter tests.
 func TestCmdRun_JUnitFlag(t *testing.T) {
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "results")

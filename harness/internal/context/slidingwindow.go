@@ -47,7 +47,6 @@ func (s *SlidingWindowStrategy) Prepare(_ context.Context, messages []types.Mess
 		return messages, nil
 	}
 
-	// Calculate per-message token estimates so we can drop from the front.
 	estimates := make([]int, len(messages))
 	for i, msg := range messages {
 		estimates[i] = estimateTokens(msg)

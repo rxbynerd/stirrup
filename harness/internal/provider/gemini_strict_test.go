@@ -9,15 +9,12 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature pins the
-// Gemini lint contract: when the resolved quirks list a JSON Schema
-// keyword as unsupported and a tool's schema uses it,
-// BuildGenerateContentRequest returns an error BEFORE marshalling
-// the request body. The error names the tool and offending field
-// path so an operator can locate the issue without grepping the
-// schema.
+// TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature pins that
+// BuildGenerateContentRequest errors before marshalling when a tool's
+// schema uses a JSON Schema keyword the resolved quirks list as
+// unsupported; the error names the tool and offending field path.
 func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
-	// Build the quirks struct as if the gemini-3 rule fired.
+
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-3-pro")
 	if len(q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures) == 0 {
 		t.Fatalf("gemini-3 rule should pin SchemaUnsupportedFeatures, got empty")
@@ -49,9 +46,8 @@ func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
 	}
 }
 
-// TestGeminiSchemaLint_PassesCleanSchema pins that a tool whose schema
-// uses only Gemini-supported keywords clears the lint and proceeds to
-// ConvertSchema as before.
+// TestGeminiSchemaLint_PassesCleanSchema pins that a schema using only
+// Gemini-supported keywords clears the lint and proceeds to ConvertSchema.
 func TestGeminiSchemaLint_PassesCleanSchema(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-3-pro")
 	params := types.StreamParams{
@@ -69,17 +65,14 @@ func TestGeminiSchemaLint_PassesCleanSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clean schema rejected: %v", err)
 	}
-	// Sanity check: the body should carry the tool name.
+
 	if !strings.Contains(string(body), "search") {
 		t.Errorf("body should reference the tool: %s", body)
 	}
 }
 
-// TestGeminiSchemaLint_IsNoOpForGemini25 pins the negative case: the
-// gemini-2.5 surface has no SchemaUnsupportedFeatures rule today, so a
-// schema with `pattern` proceeds to ConvertSchema. ConvertSchema
-// passes unknown keywords through, so the request body still
-// serialises.
+// TestGeminiSchemaLint_IsNoOpForGemini25 pins that gemini-2.5, having no
+// SchemaUnsupportedFeatures rule, accepts a schema with `pattern`.
 func TestGeminiSchemaLint_IsNoOpForGemini25(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
 	if len(q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures) != 0 {

@@ -1,29 +1,9 @@
 package lakehouse
 
-// manifest.go implements the append-only JSONL manifest the FileStore
-// uses to answer QueryTraces / QueryRecordings without loading every
-// JSON file on disk (#275).
-//
-// Wire shape: <lakehouse>/manifest.jsonl, one event per line:
-//
-//	{"kind":"trace","id":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
-//	{"kind":"recording","runId":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
-//
-// StoreTrace / StoreRecording append one entry per call. Re-ingest of
-// the same id appends a duplicate; the read path uses the LAST entry
-// per id so last-write-wins matches the JSON-file write semantics.
-//
-// Concurrency: a single os.OpenFile with O_APPEND ensures every write
-// is atomic on POSIX for sub-PIPE_BUF payloads (4 KiB on Linux, larger
-// on macOS — a manifest line is well under that). A second writer
-// appending concurrently sees a consistent on-disk shape; the
-// only ordering guarantee is "if A's append returned before B's
-// started, A's bytes precede B's." The read path tolerates any order
-// because last-write-wins is symmetric.
-//
-// Missing or corrupt manifest is recoverable: the read path detects
-// the failure, falls back to scanning every JSON file, and rebuilds
-// the manifest as a side effect with a single info-level log line.
+// manifest.go implements the append-only JSONL manifest FileStore
+// uses to answer QueryTraces/QueryRecordings without loading every
+// JSON file on disk. Wire shape and concurrency model are documented
+// in docs/eval.md under "Trace lakehouse".
 
 import (
 	"bufio"
@@ -49,12 +29,8 @@ const (
 	manifestKindRecording manifestKind = "recording"
 )
 
-// manifestEntry is one line in the manifest. Fields cover the
-// filterable surface of TraceFilter (Outcome, Mode, Model, Provider,
-// time-range via StartedAt); a future filter addition that needs a
-// new field bumps the manifest's effective version implicitly because
-// the read path skips entries lacking the field and falls through to
-// a JSON-file read.
+// manifestEntry is one line in the manifest, covering the filterable
+// surface of TraceFilter (Outcome, Mode, Model, Provider, StartedAt).
 type manifestEntry struct {
 	Kind      manifestKind `json:"kind"`
 	ID        string       `json:"id,omitempty"`    // trace ID
@@ -66,20 +42,15 @@ type manifestEntry struct {
 	Provider  string       `json:"provider,omitempty"`
 }
 
-// manifestPath returns the absolute path of the manifest file rooted
-// at the FileStore's directory.
+// manifestPath returns the manifest file's absolute path.
 func (fs *FileStore) manifestPath() string {
 	return filepath.Join(fs.rootDir, manifestFile)
 }
 
-// appendManifest appends a single entry to manifest.jsonl.
-// O_APPEND makes the write atomic at the kernel layer for sub-
-// PIPE_BUF payloads; manifest lines are well under that. A failure
-// is logged but does not propagate — the JSON file write already
-// succeeded by the time appendManifest is called, so a transient
-// FS error must not cause the operator to see a "store failed"
-// when the data is on disk. The next query falls back to a
-// rebuild from the directory listing.
+// appendManifest appends a single entry to manifest.jsonl. A failure
+// is logged but not propagated: the JSON file write already
+// succeeded, so a transient FS error here should not surface as a
+// store failure. The next query falls back to a rebuild.
 func (fs *FileStore) appendManifest(e manifestEntry) {
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -103,9 +74,8 @@ func (fs *FileStore) appendManifest(e manifestEntry) {
 
 // loadManifestIndex reads manifest.jsonl and returns one map per
 // kind, keyed by id. Later entries with the same id replace earlier
-// ones (last-write-wins, matching the JSON-file write semantics).
-// A missing or unparseable manifest yields ok=false; the caller
-// should fall back to a directory rebuild.
+// ones (last-write-wins). A missing or unparseable manifest yields
+// ok=false; the caller should fall back to a directory rebuild.
 func (fs *FileStore) loadManifestIndex() (traces, recordings map[string]manifestEntry, ok bool) {
 	f, err := os.Open(fs.manifestPath())
 	if err != nil {
@@ -130,9 +100,8 @@ func (fs *FileStore) loadManifestIndex() (traces, recordings map[string]manifest
 		}
 		var e manifestEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			// A single malformed line invalidates the whole
-			// manifest's "I know what's on disk" claim. Rebuild
-			// is cheaper than guessing which entries to trust.
+			// A single malformed line invalidates the manifest;
+			// rebuild is cheaper than guessing which entries to trust.
 			slog.Default().Info("lakehouse manifest: corrupt line; rebuilding",
 				"err", err.Error())
 			return nil, nil, false
@@ -157,10 +126,10 @@ func (fs *FileStore) loadManifestIndex() (traces, recordings map[string]manifest
 }
 
 // rebuildManifest scans the on-disk trace and recording directories
-// and writes a fresh manifest.jsonl. Used by the query path when
-// the manifest is missing or corrupt. Atomicity is delivered via the
-// writeJSON-style write-then-rename pattern (#267) so a concurrent
-// reader never sees a half-written manifest.
+// and writes a fresh manifest.jsonl, used by the query path when the
+// manifest is missing or corrupt. Uses the same write-then-rename
+// pattern as writeJSON so a concurrent reader never sees a
+// half-written manifest.
 func (fs *FileStore) rebuildManifest() error {
 	tmp, err := os.CreateTemp(fs.rootDir, ".tmp-manifest-*.jsonl")
 	if err != nil {
@@ -283,12 +252,9 @@ func manifestEntryForRecording(rec types.RunRecording) manifestEntry {
 	}
 }
 
-// matchesManifestEntry reports whether an entry passes a
-// TraceFilter. Mirrors matchesTraceFilter but reads from the
-// pre-decoded manifest fields. The function exists separately so
-// the manifest path can short-circuit a JSON-file load: if the
-// manifest entry doesn't match the filter, we skip loading the
-// underlying file.
+// matchesManifestEntry reports whether an entry passes a TraceFilter,
+// mirroring matchesTraceFilter but reading pre-decoded manifest
+// fields so the caller can skip a JSON-file load on mismatch.
 func matchesManifestEntry(e manifestEntry, f types.TraceFilter) bool {
 	if f.Outcome != "" && e.Outcome != f.Outcome {
 		return false
@@ -303,11 +269,6 @@ func matchesManifestEntry(e manifestEntry, f types.TraceFilter) bool {
 		return false
 	}
 	// After/Before are checked against the trace's actual StartedAt
-	// after the file is loaded — the manifest entry only carries a
-	// formatted string and parsing here twice (manifest read + post-
-	// load) doubles the parse cost without value. The full
-	// matchesTraceFilter re-evaluates the time bounds on the loaded
-	// trace, so the manifest's role is to skip files that can't
-	// match Outcome/Mode/Model/Provider regardless of time.
+	// once the file is loaded; matchesTraceFilter re-evaluates them.
 	return true
 }

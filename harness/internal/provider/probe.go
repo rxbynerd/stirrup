@@ -17,8 +17,8 @@ import (
 const probeBodyLimit = 4096
 
 // Probe hits the models metadata endpoint, never the completion path, so
-// a dry-run cannot spend tokens (issue #245 AC). Auth-header selection
-// mirrors Stream so the probe authenticates identically.
+// a dry-run cannot spend tokens. Auth-header selection mirrors Stream so
+// the probe authenticates identically.
 func (a *AnthropicAdapter) Probe(ctx context.Context) error {
 	apiKey, err := resolveBearer(ctx, a.bearer)
 	if err != nil {

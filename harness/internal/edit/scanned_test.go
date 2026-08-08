@@ -297,11 +297,9 @@ func TestScannedStrategy_CleanContent_NoEvents(t *testing.T) {
 	}
 }
 
-// TestScannedStrategy_InnerApplyError covers S5: an error from the
-// inner strategy must propagate verbatim and the scanner must not
-// run. A scanner that fires after a failed inner.Apply would scan
-// stale (or nonexistent) content and either crash or report
-// nonsense findings.
+// TestScannedStrategy_InnerApplyError asserts that an error from the
+// inner strategy propagates verbatim and the scanner does not run
+// (which would otherwise scan stale or nonexistent content).
 func TestScannedStrategy_InnerApplyError(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
@@ -320,11 +318,9 @@ func TestScannedStrategy_InnerApplyError(t *testing.T) {
 	}
 }
 
-// TestScannedStrategy_ScannerError covers S5: a hard error from
-// the scanner must surface as a hard error, not as a silent passthrough
-// of the inner result. This is the path that fires when semgrep
-// cannot reach its rule registry, when the patterns scanner panics
-// on a malformed input, etc.
+// TestScannedStrategy_ScannerError asserts that a hard scanner error
+// surfaces as a hard error rather than a silent passthrough of the
+// inner result.
 func TestScannedStrategy_ScannerError(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
@@ -348,11 +344,9 @@ func TestScannedStrategy_ScannerError(t *testing.T) {
 	}
 }
 
-// TestScannedStrategy_PostApplyReadError covers S5: if the executor
-// can no longer read the file just-written by the inner strategy,
-// the wrapper must fail closed rather than skip the scan. A silent
-// passthrough here would mean the operator's "every edit is scanned"
-// guarantee depends on the underlying file system never glitching.
+// TestScannedStrategy_PostApplyReadError asserts that if the executor
+// can no longer read the file just written, the wrapper fails closed
+// rather than skipping the scan.
 func TestScannedStrategy_PostApplyReadError(t *testing.T) {
 	inner := &fakeEditStrategy{
 		result: &EditResult{Path: "missing.go", Applied: true},

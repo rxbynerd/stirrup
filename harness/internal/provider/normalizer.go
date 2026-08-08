@@ -11,32 +11,12 @@ import (
 
 // NormalizingAdapter wraps a ProviderAdapter and applies per-request
 // tool-name normalization between the agentic loop and the wrapped
-// adapter's wire serialisation. It is the single source of truth for
-// "the provider sees a name the provider accepts" — adapters
-// themselves remain naïve and serialise whatever string is on
-// types.ToolDefinition / types.ContentBlock.
-//
-// Lifecycle of a single Stream call:
-//
-//  1. Build a toolname.Mapping from the names in params.Tools using
-//     the policy for the wrapped provider type. Two distinct internal
-//     names that normalise to the same external name fail the call
-//     before any wire request is issued — silently aliasing would
-//     route a tool call to the wrong handler on the inbound path.
-//  2. Rewrite params.Tools[*].Name and the Name on every tool_use
-//     ContentBlock in params.Messages to the external (normalised)
-//     form so the adapter's allowlist wire types receive a string
-//     that matches what was declared.
-//  3. Forward the rewritten params to the inner adapter.
-//  4. Intercept the streamed events: on tool_call, translate
-//     event.Name back to the internal name so the loop's
-//     ToolRegistry.Resolve continues to work unchanged. Every other
-//     event is forwarded verbatim.
-//
-// Wrapping is applied at factory build time and sits on the outside
-// of any BatchAdapter wrap so the loop's batch-mode detection still
-// observes batch state through the wrapper's LastBatchID
-// pass-through.
+// adapter's wire serialisation — the single source of truth for "the
+// provider sees a name the provider accepts". It rewrites tool
+// definitions and tool_use names on egress and reverse-maps inbound
+// tool_call events back to the registry-side name; a collision between
+// two internal names fails the call before any wire request is issued.
+// See docs/architecture.md "Provider-facing tool name normalization".
 type NormalizingAdapter struct {
 	inner        ProviderAdapter
 	providerType string
@@ -99,14 +79,10 @@ func (a *NormalizingAdapter) Stream(ctx context.Context, params types.StreamPara
 	return out, nil
 }
 
-// Unwrap returns the inner ProviderAdapter the normalizer wraps. It
-// is intended for tests that need to assert on the concrete adapter
-// type (e.g. that batch wrapping is present) without coupling them to
-// the wrapper's existence. The intended consumer is within-module test
-// code only; an unexported method would not serve the test's
-// type-assertion pattern. Production code should not unwrap — the
-// normalizer is the single source of truth for the on-wire name
-// invariant and bypassing it would be a regression.
+// Unwrap returns the inner ProviderAdapter the normalizer wraps, for
+// tests that need to assert on the concrete adapter type. Production
+// code should not unwrap — bypassing the normalizer would regress the
+// on-wire name invariant.
 func (a *NormalizingAdapter) Unwrap() ProviderAdapter {
 	return a.inner
 }
@@ -130,18 +106,13 @@ func (a *NormalizingAdapter) LastBatchID() string {
 	return ""
 }
 
-// buildMapping centralises the policy lookup so tests can construct a
-// NormalizingAdapter against a fake inner adapter and exercise the
+// buildMapping centralises the policy lookup so tests can exercise the
 // same translation logic the production wiring uses.
 //
 // BuildSorted (rather than Build) is used so collision-resolution is
-// independent of the input slice's order. The registry's List() is
-// stable today, but a future change to MCP server connection ordering,
-// alias resolution, or a registry rebuild between turns could shift
-// the input order and silently re-assign which colliding tool gets
-// the hash-suffix disambiguation. Sorting first pins the external
+// independent of the input slice's order: sorting pins the external
 // name for a given internal name to the policy + name set, never to
-// the order they happened to be passed in.
+// whatever order the caller's tool list happened to be built in.
 func (a *NormalizingAdapter) buildMapping(tools []types.ToolDefinition) (*toolname.Mapping, error) {
 	if len(tools) == 0 {
 		return &toolname.Mapping{

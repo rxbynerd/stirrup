@@ -11,18 +11,8 @@ import (
 
 // This file maps stirrup's transcript types onto the OTel GenAI
 // semconv message schemas for the opt-in content-capture path
-// (traceEmitter.captureContent, issue #413).
-//
-// Schema source: semconv v1.40.0 (the version pinned by
-// observability/resource.go) — gen-ai-input-messages.json,
-// gen-ai-output-messages.json, gen-ai-system-instructions.json. That
-// version marks the gen_ai.input.messages / gen_ai.output.messages /
-// gen_ai.system_instructions span attributes as the current
-// (Development-status) form and deprecates the per-role
-// gen_ai.{user,assistant,system,tool}.message span events in their
-// favour, which is why attributes were chosen here. The Go attribute
-// API has no structured "any" value, so the spec's JSON-string
-// fallback encoding applies.
+// (traceEmitter.captureContent). See docs/observability-cloud.md
+// for the attribute reference and safety properties.
 //
 // Every value serialised here MUST already be scrubbed: callers pass
 // content through scrubTurnRecord / security.Scrub before these

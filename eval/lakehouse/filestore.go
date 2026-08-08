@@ -1,10 +1,9 @@
 // Package lakehouse provides a file-based implementation of the read
 // surface of types.TraceLakehouse plus the concrete write methods
 // (StoreTrace, StoreRecording) that stirrup-eval ingest calls
-// directly. The write methods are intentionally NOT part of the
-// TraceLakehouse interface — see #109 for the architectural rationale
-// (production writes flow through the control plane; cloud-backed
-// adapters never implement write).
+// directly. Write methods are intentionally not part of the
+// TraceLakehouse interface: production writes flow through the
+// control plane, and cloud-backed adapters never implement write.
 package lakehouse
 
 import (
@@ -26,22 +25,14 @@ const (
 )
 
 // FileStore implements the read surface of types.TraceLakehouse
-// (QueryTraces, QueryRecordings, Metrics, Close) backed by JSON
-// files on disk, and additionally exposes the concrete StoreTrace
-// and StoreRecording methods that `stirrup-eval ingest` constructs
-// a *FileStore for. Traces are stored in <root>/traces/<id>.json
-// and recordings in <root>/recordings/<runId>.json.
-//
-// A compile-time assertion below pins that *FileStore satisfies the
-// narrowed types.TraceLakehouse contract; if a method is ever
-// removed from the read surface accidentally, the build fails.
+// backed by JSON files on disk, plus the concrete StoreTrace and
+// StoreRecording methods that `stirrup-eval ingest` uses directly.
+// Traces are stored in <root>/traces/<id>.json, recordings in
+// <root>/recordings/<runId>.json.
 type FileStore struct {
 	rootDir string
 }
 
-// _ var pins the interface conformance contract. Any change to
-// types.TraceLakehouse that removes a method from *FileStore will
-// break the build here before it can ship.
 var _ types.TraceLakehouse = (*FileStore)(nil)
 
 // NewFileStore creates a FileStore rooted at rootDir, creating the necessary
@@ -56,11 +47,10 @@ func NewFileStore(rootDir string) (*FileStore, error) {
 }
 
 // StoreTrace writes a RunTrace as JSON to traces/<id>.json and
-// appends a manifest entry so QueryTraces can answer filter queries
-// without loading every trace file from disk (#275). A manifest
-// append failure is logged but does not propagate — the JSON file
-// is already on disk and the next query path will fall back to a
-// directory rebuild.
+// appends a manifest entry so QueryTraces can skip loading files it
+// filters out. A manifest append failure is logged but does not
+// propagate: the JSON file is already on disk, and the next query
+// falls back to a directory rebuild.
 func (fs *FileStore) StoreTrace(_ context.Context, trace types.RunTrace) error {
 	if trace.ID == "" {
 		return fmt.Errorf("trace ID is empty")
@@ -89,24 +79,16 @@ func (fs *FileStore) StoreRecording(_ context.Context, recording types.RunRecord
 // QueryTraces reads stored traces matching filter and sorts by
 // StartedAt descending.
 //
-// When a manifest is present and parseable, the read path consults
-// it to skip JSON-file loads for entries the filter rejects on
-// pre-decoded fields (Outcome / Mode / Model / Provider). This is
-// the day-to-day-usable performance win promised by #275: a
-// 10,000-trace lakehouse with a narrow filter loads only the
-// matching subset rather than every JSON file. Time-range filters
-// (After / Before) still require the underlying trace's
-// StartedAt to be parsed post-load.
-//
-// A missing or unparseable manifest falls through to a scan of
-// the on-disk trace directory and rebuilds the manifest as a
-// side effect (logged at info level).
+// When a manifest is present and parseable, entries the filter
+// rejects on pre-decoded fields (Outcome / Mode / Model / Provider)
+// are skipped without a JSON-file load; After/Before still require
+// the file's StartedAt to be parsed post-load. A missing or
+// unparseable manifest falls back to a full directory scan and
+// rebuilds the manifest as a side effect.
 func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([]types.RunTrace, error) {
 	manifestTraces, _, ok := fs.loadManifestIndex()
 	if !ok {
-		// Rebuild on miss; ignore rebuild errors (a transient FS
-		// failure should not break the query — we fall through to
-		// a full scan below and try again next time).
+		// Ignore rebuild errors; fall through to the full scan below.
 		_ = fs.rebuildManifest()
 	}
 
@@ -129,9 +111,7 @@ func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([
 		if strings.HasPrefix(entry.Name(), ".tmp") {
 			continue
 		}
-		// Strip ".json" to get the trace ID; the manifest is keyed
-		// by ID and lets us skip pure-field-mismatch entries before
-		// the file system has to read the file.
+		// id is the manifest key.
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		if ok && manifestTraces != nil {
 			if me, found := manifestTraces[id]; found && !matchesManifestEntry(me, filter) {
@@ -160,13 +140,8 @@ func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([
 // QueryRecordings reads stored recordings matching filter and sorts
 // by FinalOutcome.StartedAt descending. Recordings are 10-100x
 // larger than traces (full conversation history + tool I/O) so the
-// manifest-driven short-circuit pays its biggest dividend here:
-// rejecting a recording from a pre-decoded field saves loading the
-// whole transcript.
-//
-// Behaviour mirrors QueryTraces: manifest-driven skip on field
-// mismatch, full-scan fallback when the manifest is missing or
-// corrupt.
+// manifest-driven short-circuit — same behaviour as QueryTraces —
+// pays its biggest dividend here.
 func (fs *FileStore) QueryRecordings(_ context.Context, filter types.TraceFilter) ([]types.RunRecording, error) {
 	_, manifestRecordings, ok := fs.loadManifestIndex()
 	if !ok {
@@ -232,27 +207,11 @@ func (fs *FileStore) Close() error {
 }
 
 // writeJSON marshals v as indented JSON and writes it atomically via
-// the write-then-rename pattern. POSIX rename(2) within a single
-// directory is atomic: concurrent readers observe either the old or
-// the new contents, never a torn / zero-byte intermediate state.
-//
-// The temp file is created in the target directory so the rename
-// stays inside one filesystem (cross-mount rename falls back to a
-// non-atomic copy on most kernels). On any failure path the temp
-// file is cleaned up; the caller never sees a leaked .tmp-*.json.
-//
-// This guards against three torn-file scenarios the previous
-// os.WriteFile path could not:
-//
-//   - A reader running concurrent QueryTraces seeing a zero-byte file
-//     between the O_TRUNC and the write.
-//   - A reader seeing a partial JSON document if the writing process
-//     is killed mid-write.
-//   - Two concurrent ingest processes writing the same trace ID
-//     interleaving their bytes into a corrupt document — under
-//     write-then-rename, the last successful rename wins atomically.
-//
-// See #267 for the failure modes and a worked example.
+// the write-then-rename pattern: POSIX rename(2) within a single
+// directory means concurrent readers see either the old or the new
+// contents, never a torn/zero-byte file. The temp file is created in
+// the target directory so the rename stays on one filesystem. On any
+// failure path the temp file is cleaned up.
 func (fs *FileStore) writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -276,10 +235,8 @@ func (fs *FileStore) writeJSON(path string, v any) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	// Match the perm the previous os.WriteFile call used so behaviour
-	// is unchanged from a file-permissions perspective. os.CreateTemp
-	// defaults to 0o600; without this chmod a downstream tool that
-	// reads the file under a different uid would start to see EACCES.
+	// os.CreateTemp defaults to 0o600; chmod so a downstream tool
+	// reading under a different uid doesn't see EACCES.
 	if err := os.Chmod(tmpPath, 0o644); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
@@ -301,13 +258,11 @@ func (fs *FileStore) readJSON(path string, v any) error {
 
 // matchesTraceFilter returns true if the trace satisfies all non-zero filter fields.
 //
-// TraceFilter.Provider is matched against RunTrace.Config.Provider.Type
-// — the provider implementation selector (e.g. "anthropic", "openai-
-// responses", "gemini") set when the run was launched. Sub-agent runs
-// and model-router runs that switch providers mid-execution carry
-// their parent's Provider.Type at the top level; provider routing
-// changes per-turn live on individual TurnTraces, which this filter
-// does not consult.
+// TraceFilter.Provider matches RunTrace.Config.Provider.Type, the
+// top-level provider selector. Sub-agent and model-router runs that
+// switch providers mid-execution carry their parent's Provider.Type
+// here; per-turn provider routing on individual TurnTraces is not
+// consulted.
 func matchesTraceFilter(trace types.RunTrace, f types.TraceFilter) bool {
 	if f.After != nil && !trace.StartedAt.After(*f.After) {
 		return false
@@ -332,13 +287,10 @@ func matchesTraceFilter(trace types.RunTrace, f types.TraceFilter) bool {
 
 // computeMetrics aggregates TraceMetrics from a slice of traces.
 //
-// As of #55, RunTrace.ToolCalls may contain entries forwarded from
-// sub-agent runs alongside parent-only entries (see types.RunTrace
-// doc). Any aggregation over ToolCalls in this function must use
-// parentOnlyToolCalls to avoid double-counting sub-agent activity
-// against parent-run aggregates. The current TraceMetrics shape
-// does not expose a tool-call count, but the filter is applied here
-// so that adding one later cannot silently regress the contract.
+// RunTrace.ToolCalls may contain entries forwarded from sub-agent
+// runs alongside parent-only entries; any aggregation over ToolCalls
+// here must go through parentOnlyToolCalls to avoid double-counting
+// sub-agent activity against parent-run aggregates.
 func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	n := len(traces)
 	if n == 0 {
@@ -356,11 +308,10 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	)
 
 	for _, t := range traces {
-		// Pass / fail / inconclusive is derived consumer-side per
-		// types.EvalOutcomeFor (#273). PassRate is now a quality
-		// signal: a success that the verifier disagreed with does NOT
-		// count as a pass, and limit-hit terminations are bucketed
-		// inconclusive rather than silently boosting the failure rate.
+		// PassRate is a quality signal, not a raw outcome tally: a
+		// success the verifier disagreed with does not count as a
+		// pass, and limit-hit terminations bucket as inconclusive
+		// rather than boosting the failure rate.
 		switch types.EvalOutcomeFor(t) {
 		case types.EvalPassed:
 			passCount++
@@ -371,11 +322,9 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 		}
 		totalTurns += t.Turns
 		totalTokens += t.TokenUsage.Input + t.TokenUsage.Output
-		// Filter is intentionally evaluated even though the result is
-		// not yet aggregated: this exercises the helper on every run
-		// so a regression breaks the parentOnlyToolCalls test path,
-		// and prepares the loop body for a future per-run tool-count
-		// aggregate without having to revisit this filter contract.
+		// Result unused today, but calling this on every run keeps a
+		// regression in the filter caught by tests before any
+		// aggregate depends on it.
 		_ = parentOnlyToolCalls(t)
 		durationMs := float64(t.CompletedAt.Sub(t.StartedAt).Milliseconds())
 		if isBatchRun(t) {
@@ -404,22 +353,17 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 
 // isBatchRun reports whether a trace's RunConfig opted into batch
 // provider submission. A nil Batch or Batch.Enabled=false counts as
-// streaming so legacy traces (predating the batch field) and
-// streaming-only runs fall into the streaming bucket. Eval drift
-// detection compares streaming-vs-streaming and batch-vs-batch on
-// the strength of this classifier (#138).
+// streaming, so legacy traces predating the batch field fall into
+// the streaming bucket.
 func isBatchRun(t types.RunTrace) bool {
 	return t.Config.Provider.IsBatchEnabled()
 }
 
 // parentOnlyToolCalls returns the subset of trace.ToolCalls that
-// originated in the parent run, excluding sub-agent calls that were
-// forwarded to the parent's trace emitter. A forwarded sub-agent call
-// is recognised by ParentRunID being set OR by RunID being set to a
-// value other than trace.ID.
-//
-// Without this filter, any aggregation over RunTrace.ToolCalls double-
-// counts sub-agent activity against parent-run aggregates (#55).
+// originated in the parent run, excluding sub-agent calls forwarded
+// to the parent's trace emitter. A forwarded call is recognised by
+// ParentRunID being set, or by RunID set to a value other than
+// trace.ID.
 func parentOnlyToolCalls(trace types.RunTrace) []types.ToolCallSummary {
 	if len(trace.ToolCalls) == 0 {
 		return nil

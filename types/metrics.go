@@ -64,10 +64,10 @@ type DriftReport struct {
 
 // DriftDeltas holds the absolute differences between current and baseline metrics.
 //
-// P50/P95DurationDelta and BatchP50/P95DurationDelta are populated
-// from the streaming-only and batch-only buckets respectively
-// (#138), so a drift threshold check compares like-for-like rather
-// than mixing batch queue time into the streaming latency signal.
+// P50/P95DurationDelta and BatchP50/P95DurationDelta are populated from the
+// streaming-only and batch-only buckets respectively, so a drift threshold
+// check compares like-for-like rather than mixing batch queue time into
+// the streaming latency signal.
 type DriftDeltas struct {
 	PassRateDelta         float64 `json:"passRateDelta"`
 	MeanTurnsDelta        float64 `json:"meanTurnsDelta"`
@@ -80,31 +80,23 @@ type DriftDeltas struct {
 
 // TraceMetrics holds aggregate metrics computed over a set of traces.
 //
-// P50Duration / P95Duration bucket *streaming-only* runs to preserve
-// the pre-batch (#138) interpretation of the metric: a batch run's
-// wall-clock duration is dominated by provider-side queue time, not
-// the harness's stall pattern, so mixing the two distorts the
-// streaming latency signal. BatchP50Duration / BatchP95Duration
-// cover batch runs separately for operators tracking batch throughput.
-// Both pairs are zero (not nil) when their bucket has no entries.
+// P50Duration / P95Duration bucket streaming-only runs: a batch run's
+// wall-clock is dominated by provider-side queue time, not the harness's
+// stall pattern, so mixing the two distorts the streaming latency signal.
+// BatchP50Duration / BatchP95Duration cover batch runs separately. Both
+// pairs are zero (not nil) when their bucket has no entries.
 type TraceMetrics struct {
 	Count int `json:"count"`
 	// PassRate is the fraction of traces whose derived EvalOutcome is
-	// EvalPassed. As of #273 this is a quality signal, not a
-	// termination signal: a run that terminated with Outcome=="success"
-	// but a verifier disagreed is excluded from the numerator.
+	// EvalPassed — a quality signal, not a termination signal: a run that
+	// terminated with Outcome=="success" but a verifier disagreed is
+	// excluded from the numerator.
 	PassRate float64 `json:"passRate"`
 	// FailRate is the fraction of traces whose derived EvalOutcome is
-	// EvalFailed — termination outcomes `error`, `tool_failures`,
-	// `verification_failed`, plus successes where the verifier
-	// disagreed.
+	// EvalFailed. See docs/eval.md for the full outcome-to-EvalOutcome table.
 	FailRate float64 `json:"failRate"`
-	// InconclusiveRate is the fraction of traces whose derived
-	// EvalOutcome is EvalInconclusive — limit-hit terminations
-	// (`max_turns`, `budget_exceeded`, `timeout`, `max_tokens`,
-	// `stalled`) and interrupted terminations (`cancelled`,
-	// `verification_error`). The three rates sum to 1.0 by
-	// construction.
+	// InconclusiveRate is the fraction of traces whose derived EvalOutcome
+	// is EvalInconclusive. The three rates sum to 1.0 by construction.
 	InconclusiveRate float64 `json:"inconclusiveRate"`
 	MeanTurns        float64 `json:"meanTurns"`
 	MeanTokens       float64 `json:"meanTokens"`

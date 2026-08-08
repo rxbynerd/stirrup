@@ -12,8 +12,6 @@ import (
 // contain operator-supplied or model-supplied content that should not
 // land in a log or trace at error level. The reason string names the
 // JSON Schema keyword or structural issue and is safe to surface.
-//
-// Issue #228 §5 (fail-closed contract).
 type strictSchemaError struct {
 	tool   string
 	path   string
@@ -32,38 +30,25 @@ func (e *strictSchemaError) Error() string {
 }
 
 // NormalizeStrictSchema rewrites a JSON Schema document to satisfy OpenAI's
-// structured-outputs strict-mode contract:
+// structured-outputs strict-mode contract: every property is listed in
+// `required` (optionals become nullable via `["type","null"]`) and every
+// object carries `additionalProperties: false`. The rewrite is faithful —
+// no field is deleted, no type narrowed beyond nullability.
 //
-//   - every object's `properties` are all listed in `required`
-//   - optional properties are nullable (`["type","null"]`)
-//   - every object carries `additionalProperties: false`
+// When the input contains a construct strict mode cannot express (`$ref`,
+// `oneOf`, `anyOf`, `allOf`, `patternProperties`, a tuple-form `items`, a
+// property with no `type`/`enum`), it returns a *strictSchemaError before
+// producing any bytes, naming only the tool and field path — never the
+// schema's description or enum values, which may carry content unsafe to
+// surface in logs. toolName is informational only; pass "" when the caller
+// wraps its own context.
 //
-// The rewrite is faithful: no field is deleted, no type is narrowed beyond
-// nullability. When the input schema contains a construct strict mode
-// cannot express (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`,
-// a tuple-form `items`, a property with no `type`/`enum`), the function
-// returns an error before producing any bytes. The error is a
-// *strictSchemaError carrying the tool name and offending field path —
-// callers should surface it verbatim so operators can identify what
-// blocked the normalisation without reading the schema's description or
-// enum values.
+// Empty input ("" or "{}") returns a well-formed empty-object schema
+// rather than being rejected for a missing `type`.
 //
-// Empty input ("" or "{}") returns the JSON `{"type":"object","properties":{},"additionalProperties":false,"required":[]}`
-// so an OpenAI strict-mode payload for a no-arg tool is well-formed
-// rather than rejected by the API for a missing `type`.
-//
-// toolName is informational only — it is embedded in error messages so
-// the caller does not need to wrap. Pass "" when the caller wraps its
-// own context onto the returned error.
-//
-// Caller precondition (design §5.1): the schemas this function accepts
-// must originate from first-party tool registrations
-// (harness/internal/tool/builtins/) or the structured MCP import path.
-// Operator-authored schemas are not accepted in v1; the recursion has
-// no depth cap because the canonical schema surface is bounded by
-// design. A future operator-facing surface (e.g. the deferred
-// quirkOverrides hook on provider.Registry) must add a depth cap here
-// before exposing untrusted nesting.
+// The schemas this function accepts must originate from first-party tool
+// registrations or the structured MCP import path; the recursion has no
+// depth cap because that input surface is bounded by design.
 func NormalizeStrictSchema(toolName string, in json.RawMessage) (json.RawMessage, error) {
 	if len(in) == 0 || string(in) == "{}" {
 		return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false,"required":[]}`), nil
@@ -85,17 +70,13 @@ func NormalizeStrictSchema(toolName string, in json.RawMessage) (json.RawMessage
 func normalizeStrictNode(toolName string, node any, path string) (any, error) {
 	obj, ok := node.(map[string]any)
 	if !ok {
-		// Scalar / array leaf reached via a known walking key — pass
-		// through. The caller is responsible for only descending into
-		// schema positions.
+		// Reached via a known walking key; the caller only descends into
+		// schema positions, so a non-map here is a scalar/array leaf.
 		return node, nil
 	}
 
-	// Reject features strict mode cannot express. Each rejection names
-	// the keyword and field path so the operator sees what blocked
-	// normalisation. The order mirrors the design's risk table: the
-	// structural unions come first so a schema with several issues
-	// surfaces the highest-priority one.
+	// Reject features strict mode cannot express, naming the keyword and
+	// field path so the operator sees what blocked normalisation.
 	for _, key := range []string{"$ref", "oneOf", "anyOf", "allOf", "patternProperties", "dependentSchemas", "if", "then", "else", "not"} {
 		if _, has := obj[key]; has {
 			return nil, &strictSchemaError{
@@ -112,11 +93,9 @@ func normalizeStrictNode(toolName string, node any, path string) (any, error) {
 		out[k] = v
 	}
 
-	// Type handling: pass through both the single-string and the type
-	// array forms unchanged at this node. Nullability is applied at the
-	// parent level when this node sits in an optional `properties` slot,
-	// not here, so an object's own `type` is whatever the caller
-	// declared.
+	// Nullability is applied at the parent level when this node sits in
+	// an optional `properties` slot, not here — an object's own `type`
+	// is passed through as the caller declared it.
 	typeStr, typeIsString := out["type"].(string)
 
 	switch {
@@ -129,14 +108,10 @@ func normalizeStrictNode(toolName string, node any, path string) (any, error) {
 			return nil, err
 		}
 	default:
-		// Non-object / non-array leaves (string, integer, number, boolean,
-		// or a node carrying only `enum`) pass through unchanged. Strict
-		// mode tolerates `enum`, `description`, `minimum`/`maximum`,
-		// `minLength`/`maxLength`, `pattern`, `format` here — these
-		// constraint keywords are not part of the strict-mode structural
-		// surface, so the API silently ignores them but does not reject
-		// the schema for their presence. Retaining them keeps the lint
-		// rewrite faithful to the canonical schema.
+		// Non-object/non-array leaves pass through unchanged: strict mode
+		// silently ignores constraint keywords like enum/description/
+		// minimum/pattern rather than rejecting them, so retaining them
+		// keeps the rewrite faithful to the canonical schema.
 	}
 
 	return out, nil
@@ -152,9 +127,9 @@ func normalizeStrictObject(toolName string, out map[string]any, path string) err
 
 	rawProps, hasProps := out["properties"]
 	if !hasProps {
-		// An object with no properties is well-formed in strict mode
-		// (e.g. a no-arg tool with explicit type:object). Pin the empty
-		// shape so the wire body always carries the canonical fields.
+		// An object with no properties is well-formed in strict mode; pin
+		// the empty shape so the wire body always carries the canonical
+		// fields.
 		out["properties"] = map[string]any{}
 		out["required"] = []any{}
 		return nil
@@ -212,15 +187,7 @@ func normalizeStrictObject(toolName string, out map[string]any, path string) err
 		if err != nil {
 			return err
 		}
-		// Optional properties become nullable. The wrapping rule:
-		//   - if the property has `type` as a string, replace it with
-		//     ["<type>","null"].
-		//   - if the property has `type` as an array already containing
-		//     "null", leave it alone.
-		//   - if the property has `type` as an array NOT containing
-		//     "null", append "null".
-		//   - if the property has no `type` (e.g. enum-only), fail —
-		//     strict mode cannot model a typeless nullable.
+		// Optional properties become nullable; see makeNullable.
 		if !currentRequired[k] {
 			converted, err = makeNullable(toolName, converted, childPath)
 			if err != nil {
@@ -268,20 +235,10 @@ func normalizeStrictArray(toolName string, out map[string]any, path string) erro
 	return nil
 }
 
-// makeNullable wraps a property schema's `type` so it admits JSON null.
-// Called only on optional properties; required properties pass through
-// untouched.
-//
-// The schema-level invariants the function enforces:
-//
-//   - The property must already have a `type` (string or array). A
-//     bare-enum property (no type) is rejected because strict mode does
-//     not model a typeless nullable.
-//   - If `type` is a string "X", it is rewritten to ["X","null"].
-//   - If `type` is an array already containing "null", the array is
-//     left as-is (the schema is already nullable).
-//   - If `type` is an array NOT containing "null", "null" is appended.
-//   - Any other shape is a schema error.
+// makeNullable wraps a property schema's `type` so it admits JSON null:
+// a string type "X" becomes ["X","null"]; an array type gets "null"
+// appended unless already present. A typeless property (e.g. enum-only)
+// is rejected — strict mode cannot model a typeless nullable.
 func makeNullable(toolName string, node any, path string) (any, error) {
 	obj, ok := node.(map[string]any)
 	if !ok {

@@ -78,9 +78,8 @@ type Proxy struct {
 // Start fails if the allowlist contains malformed entries or the listener
 // cannot be opened. The returned Proxy must be stopped via Stop() to release
 // the listener — except when the supplied ctx is cancelled, in which case
-// the proxy stops itself with a bounded grace period (5 seconds). This
-// guarantees a leaked listener cannot outlive the caller scope even if the
-// caller forgets to call Stop or panics before the defer fires (M4).
+// the proxy stops itself with a bounded grace period (5 seconds), so a
+// leaked listener cannot outlive the caller even if Stop is never called.
 func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	matcher, err := NewMatcher(cfg.Allowlist)
 	if err != nil {
@@ -141,15 +140,11 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		}
 	}()
 
-	// Tie the proxy lifetime to the caller's context. When ctx is
-	// cancelled we trigger Stop with a bounded timeout so the listener
-	// is always released; this defends against early-return paths in
-	// the caller that skip a manual Stop call.
+	// Tie the proxy lifetime to ctx: cancellation triggers a bounded Stop
+	// so a caller that skips a manual Stop cannot leak the listener.
 	//
-	// Capture the shutdown channel locally: Stop() clears p.shutdown
-	// under p.mu, and the goroutine's select must not race that write by
-	// re-reading the struct field. The channel value is stable for the
-	// goroutine's lifetime, and Stop() closes this same channel.
+	// The shutdown channel is captured by value so this goroutine's
+	// select cannot race a concurrent Stop() close of the struct field.
 	if ctx != nil {
 		shutdown := p.shutdown
 		go func() {
@@ -184,12 +179,9 @@ func (p *Proxy) Stop(ctx context.Context) error {
 		return err
 	}
 	p.stopped = true
-	// Release the ctx-watcher goroutine started by Start so it does not
-	// linger after Stop returns. The stopped flag above guards against a
-	// second Stop reaching this close, so the channel is closed exactly
-	// once. We must not nil out p.shutdown here: the ctx-watcher captures
-	// the channel by value, so there is no field to clear, and a write
-	// would only reintroduce a race with that goroutine.
+	// Release the ctx-watcher goroutine from Start; the stopped flag
+	// above guarantees this close happens exactly once. Do not nil
+	// p.shutdown here — the watcher captured the channel by value.
 	if p.shutdown != nil {
 		close(p.shutdown)
 	}
@@ -247,31 +239,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// goroutines below.
 	defer func() { _ = clientConn.Close() }()
 
-	// Clear both deadlines that net/http inherited from
-	// {Read,Write}Timeout. They were intended for the request/response
-	// turn — once we hijack and splice we own the lifetime, and the
-	// per-stream upstream timeouts handle health. Failing to clear the
-	// write deadline here truncates long CONNECT tunnels at 60s (S1).
+	// Clear both deadlines net/http inherited from {Read,Write}Timeout:
+	// once hijacked we own the connection lifetime, and leaving the write
+	// deadline set truncates long CONNECT tunnels at readTimeout.
 	if err := clientConn.SetDeadline(time.Time{}); err != nil {
 		p.logger.Debug("clear deadlines failed", slog.String("err", err.Error()))
 	}
 
-	// Write the 200 BEFORE peeking the ClientHello. Per RFC 7231 §4.3.6 a
-	// CONNECT client (curl, browsers, Go net/http, git, ...) sends NO tunnel
-	// bytes until it has seen a 2xx, so peeking first deadlocks every
-	// compliant client until the read deadline fires — observed against a
-	// real cluster as a hang ending in tls_parse_failed. The host allowlist
-	// was already enforced above (a 403 returned before the hijack), so this
-	// 200 only promises a tunnel to an allowlisted *host*.
-	//
-	// SECURITY INVARIANT: the SNI cross-check below still gates whether any
-	// bytes ever reach an upstream — p.dialer is not called, and nothing is
-	// spliced, until the ClientHello SNI is verified to match the allowlisted
-	// host. A bad/absent/mismatched SNI drops the hijacked connection here
-	// (the client's in-flight TLS handshake fails) WITHOUT opening any
-	// upstream connection, so this is a closed tunnel, not an egress leak.
-	// Sending the 200 early costs only that a denied client briefly saw
-	// "tunnel established"; the audit event is still emitted by deny().
+	// Write the 200 before peeking the ClientHello: a compliant CONNECT
+	// client sends no tunnel bytes until it sees a 2xx. The SNI
+	// cross-check below still gates whether any bytes reach an upstream —
+	// see docs/security.md for the full protocol rationale.
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		p.logger.Debug("write 200 to client failed", slog.String("err", err.Error()))
 		return
@@ -296,11 +274,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	rawHello, sni, sniErr := peekTLSClientHello(clientReader)
 
 	// Treat absent SNI as a deny: every modern TLS 1.2/1.3 client emits
-	// SNI for HTTPS, so the absence is a tampering signal — most likely
-	// a crafted client suppressing SNI to bypass the cross-check below.
-	// Without this, a CONNECT to an allowlisted host could tunnel TLS
-	// for a different hostname (M2). Each deny path returns before any
-	// upstream dial, so no client bytes are ever forwarded.
+	// SNI for HTTPS, so its absence is a tampering signal that could mask
+	// tunneling to a different hostname. Each deny path below returns
+	// before any upstream dial, so no client bytes are ever forwarded.
 	if errors.Is(sniErr, errSNINotPresent) {
 		p.deny(w, r, host, port, "sni_absent", 0)
 		return
@@ -329,14 +305,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	p.allow(host, port, "CONNECT")
 
-	// Replay the ClientHello to the upstream first.
 	if _, err := upstream.Write(rawHello); err != nil {
 		p.logger.Debug("replay ClientHello to upstream failed", slog.String("err", err.Error()))
 		return
 	}
 
-	// Splice. Use io.Copy in both directions; close write half on EOF so
-	// the peer sees half-close and exits its own copy.
 	splice(clientConn, upstream)
 }
 
