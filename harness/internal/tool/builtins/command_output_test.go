@@ -126,3 +126,43 @@ func TestCommandOutputReplayUsesRecordedModelVisibleResultsVerbatim(t *testing.T
 		t.Fatalf("read replay=%q", readResult.Text)
 	}
 }
+
+// TestRunCommandCaptureTimeoutKeepsSoftOutcomeMarker pins #489's contract
+// on the capture path. buildCommandResult carries the "[timed out after
+// Ns]" marker on the store-less legacy path, but a real run always goes
+// through ExecStream, where the marker has to come from
+// formatCapturedCommand instead — and only the spilled rendering states
+// timed_out explicitly. Without the inline branch appending it, a model
+// reading only Text sees a bare partial transcript indistinguishable from
+// a clean exit.
+func TestRunCommandCaptureTimeoutKeepsSoftOutcomeMarker(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := types.CommandOutputConfig{InlineMaxBytes: 1 << 20, PreviewBytesPerStream: 1 << 10, MaxBytesPerStream: 1 << 20, MaxBytesPerRun: 2 << 20}
+	store, err := commandoutput.New(commandoutput.Options{RunID: "timeout", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "timeout", Turn: 1, ToolUseID: "slow"})
+	got, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 30","timeout":1}`))
+	if err != nil {
+		t.Fatalf("unexpected hard error for a timeout: %v", err)
+	}
+	if !strings.Contains(got.Text, "partial") {
+		t.Errorf("Text = %q, want the partial stdout preserved", got.Text)
+	}
+	if !strings.Contains(got.Text, "[timed out after 1s]") {
+		t.Errorf("Text = %q, want an explicit timed-out marker", got.Text)
+	}
+	var result commandResult
+	if err := json.Unmarshal(got.Structured, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.TimedOut || result.TimeoutSeconds != 1 {
+		t.Errorf("structured = %+v, want TimedOut with TimeoutSeconds=1", result)
+	}
+}
