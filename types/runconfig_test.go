@@ -7606,11 +7606,12 @@ func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 	}
 	addAll(readCapabilityBuiltInTools)
 	addAll(mutatingTools)
+	addAll(execCapabilityBuiltInTools)
 	addAll(ungated)
 
 	for name := range validBuiltInToolNames {
 		if !union[name] {
-			t.Errorf("validBuiltInToolNames contains %q but none of readCapabilityBuiltInTools/mutatingTools/the ungated list accounts for it", name)
+			t.Errorf("validBuiltInToolNames contains %q but none of readCapabilityBuiltInTools/mutatingTools/execCapabilityBuiltInTools/the ungated list accounts for it", name)
 		}
 	}
 	for name := range union {

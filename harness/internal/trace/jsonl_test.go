@@ -350,6 +350,7 @@ func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 		Success:      true,
 		Structured:   json.RawMessage(`{"kind":"file_edit"}`),
 		Kind:         "file_edit",
+		IsError:      true,
 	}
 
 	rtIn := reflect.TypeOf(in)

@@ -1512,7 +1512,7 @@ func TestBuildToolRegistry_NoneExecutorRegistersOnlyUngatedTools(t *testing.T) {
 			"git_status", "git_changed_files", "git_diff", "git_show",
 			"run_command", "write_file", "web_fetch",
 		},
-	})
+	}, nil)
 
 	registered := make(map[string]bool)
 	for _, def := range registry.List() {

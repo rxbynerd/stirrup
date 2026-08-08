@@ -2394,6 +2394,20 @@ var readCapabilityBuiltInTools = map[string]bool{
 	"git_show":          true,
 }
 
+// execCapabilityBuiltInTools enumerates built-in tools buildToolRegistry
+// only registers when Capabilities().CanExec is true but which do not
+// mutate workspace state, so they belong in neither
+// readCapabilityBuiltInTools nor mutatingTools. read_command_output is the
+// only member: factory.go registers it inside run_command's CanExec branch
+// (it paginates references run_command produced), yet it is a read-only
+// paginator over an already-captured archive and stays legal in read-only
+// modes for the standalone replay case. Like the two sets above this is a
+// hand-kept mirror of buildToolRegistry, and exists so a none executor
+// still fails fast rather than silently dropping the tool.
+var execCapabilityBuiltInTools = map[string]bool{
+	"read_command_output": true,
+}
+
 // DefaultReadOnlyBuiltInToolsForExecutor returns the default built-in tool
 // list a caller (the CLI's applyModeDefaults) should inject for a
 // read-only mode when Tools.BuiltIn is unset, given the configured
@@ -2420,7 +2434,7 @@ func DefaultReadOnlyBuiltInToolsForExecutor(executorType string) []string {
 	}
 	filtered := make([]string, 0, len(defaults))
 	for _, name := range defaults {
-		if readCapabilityBuiltInTools[name] || mutatingTools[name] {
+		if readCapabilityBuiltInTools[name] || mutatingTools[name] || execCapabilityBuiltInTools[name] {
 			continue
 		}
 		filtered = append(filtered, name)
@@ -5439,7 +5453,7 @@ func validateNoneExecutorTools(executorType string, builtIns []string, errs *[]s
 		return
 	}
 	for _, name := range builtIns {
-		if readCapabilityBuiltInTools[name] || mutatingTools[name] {
+		if readCapabilityBuiltInTools[name] || mutatingTools[name] || execCapabilityBuiltInTools[name] {
 			*errs = append(*errs, fmt.Sprintf(
 				"tools.builtIn entry %q requires an execution capability the none executor lacks (executor.type=\"none\" registers no filesystem/shell tools)",
 				name))
