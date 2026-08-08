@@ -528,3 +528,69 @@ func TestScrubWithStats_ScrubWrapperParity(t *testing.T) {
 		}
 	}
 }
+
+// TestScrub_SkPrefixRequiresWordBoundary pins the \b anchor on the
+// three sk- secret patterns. The unanchored form matched the tail of
+// any hyphenated identifier ending in "...sk-" — "ta|sk" carries no
+// word boundary — which meant the eval runner's own workspace paths
+// registered as OpenAI API keys. Because sensitivepatterns.go lifts
+// these regexes into the Rule-of-Two detector at TierLatch, that false
+// positive revoked run_command mid-run and made the eval gate flaky
+// across three different models.
+func TestScrub_SkPrefixRequiresWordBoundary(t *testing.T) {
+	notSecrets := []string{
+		// The exact string that broke ci.yml::eval-gate.
+		"/tmp/eval-task-narrow-edit-leaves-surroundings-alone-1530359655/target.txt",
+		// Ordinary English words ending in "sk" are the general case.
+		"stat /var/task-management-system-v2-config/main.go",
+		"disk-usage-monitoring-daemon-v3",
+		"at risk-assessment-framework-2026 line 4",
+	}
+	for _, in := range notSecrets {
+		if got := Scrub(in); got != in {
+			t.Errorf("Scrub(%q) = %q, want unchanged — an identifier containing \"sk-\" mid-word is not a key", in, got)
+		}
+	}
+
+	// The anchor must not cost a real key. Every realistic occurrence
+	// is preceded by start-of-string or a non-word delimiter.
+	realKeys := []string{
+		"sk-abcdefghijklmnop12345",
+		"OPENAI_API_KEY=sk-abcdefghijklmnop12345",
+		"Authorization: sk-ant-abc123_DEF-456",
+		`{"key":"sk-ant-oat01-abcDEF_123-xyz"}`,
+		"token is sk-abcdefghijklmnop12345, rotate it",
+	}
+	for _, in := range realKeys {
+		got := Scrub(in)
+		if strings.Contains(got, "sk-") {
+			t.Errorf("Scrub(%q) = %q, want the key redacted", in, got)
+		}
+	}
+}
+
+// The Rule-of-Two detector is the consumer that made this a run-breaking
+// bug rather than a cosmetic over-redaction, so pin it there too: a
+// workspace path must not produce a latching finding.
+func TestDetectSensitive_WorkspacePathIsNotAKey(t *testing.T) {
+	path := "Tool error: stat file: stat /tmp/eval-task-narrow-edit-leaves-surroundings-alone-1530359655/target.txt: no such file or directory"
+	if fs := DetectSensitive(path); len(fs) != 0 {
+		t.Errorf("DetectSensitive(%q) = %+v, want no findings — a tool-result path must not latch Rule-of-Two", path, fs)
+	}
+
+	// Control: a genuine key in a tool result still latches.
+	leaked := "cat .env: OPENAI_API_KEY=sk-abcdefghijklmnop12345"
+	fs := DetectSensitive(leaked)
+	if len(fs) == 0 {
+		t.Fatalf("DetectSensitive(%q) returned no findings, want the key detected", leaked)
+	}
+	var latched bool
+	for _, f := range fs {
+		if f.Tier == TierLatch {
+			latched = true
+		}
+	}
+	if !latched {
+		t.Errorf("DetectSensitive(%q) = %+v, want a TierLatch finding", leaked, fs)
+	}
+}

@@ -1308,3 +1308,140 @@ fi
 		t.Errorf("captured argv unexpectedly contains --prompt-model:\n%s", string(data))
 	}
 }
+
+// TestRunSuite_ForwardsProviderFlags pins that RunConfig.Provider,
+// BaseURL, and APIKeyRef reach the harness argv. The per-push eval gate
+// (ci.yml::eval-gate) runs a suite that pins no provider of its own
+// against OpenRouter purely through these three flags; a silent drop
+// would send every task to the harness's default Anthropic provider and
+// surface as a wall of auth errors rather than a missing-flag error.
+func TestRunSuite_ForwardsProviderFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "provider-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "provider-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-provider-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		Provider:    "openai-compatible",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		APIKeyRef:   "secret://OPENROUTER_API_KEY",
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	captured := string(data)
+	for _, frag := range []string{
+		"--provider", "openai-compatible",
+		"--base-url", "https://openrouter.ai/api/v1",
+		"--api-key-ref", "secret://OPENROUTER_API_KEY",
+	} {
+		if !strings.Contains(captured, frag+"\n") {
+			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
+		}
+	}
+}
+
+// Each provider flag is emitted independently, so an unset field must
+// not appear at all — a suite that pins its own provider in run_config
+// and only wants the base URL retargeted must not have --provider
+// silently reasserted at the harness default.
+func TestRunSuite_NoProviderFlagsWhenUnset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "no-provider-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "no-provider-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-provider-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		BaseURL:     "https://openrouter.ai/api/v1",
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	captured := string(data)
+	if !strings.Contains(captured, "--base-url\n") {
+		t.Errorf("captured argv missing --base-url:\n%s", captured)
+	}
+	for _, frag := range []string{"--provider\n", "--api-key-ref\n"} {
+		if strings.Contains(captured, frag) {
+			t.Errorf("captured argv unexpectedly contains %q:\n%s", frag, captured)
+		}
+	}
+}

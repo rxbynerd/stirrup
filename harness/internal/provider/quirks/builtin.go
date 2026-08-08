@@ -19,12 +19,23 @@ package quirks
 //     is a chat-class fork of the gpt-5 family and accepts the standard
 //     sampling parameters. This rule undoes the gpt-5* omission for
 //     models matching the longer glob.
+//   - openai-compatible / "*/o[1-9]*", "*/gpt-5*", "*/gpt-5-chat*" —
+//     the same three rules for one level of vendor prefix, the form
+//     OpenRouter and similar gateways serve (openai/gpt-5.6-terra).
+//     path.Match's `*` does not cross `/`, so the bare globs above
+//     cannot match a prefixed id and a gateway-served reasoning model
+//     would otherwise resolve to zero-value behaviour — sampling
+//     params sent to a model class that rejects them. Same treatment
+//     the deepseek/* and z-ai/* families already have.
 //
 // Composition example:
 //   - "gpt-5-nano"        — matches "gpt-5*" only; OmitSamplingParams = true.
 //   - "gpt-5-chat-latest" — matches "gpt-5*" then "gpt-5-chat*"; the
 //     longer carve-out runs last and sets OmitSamplingParams = false.
 //   - "gpt-4o"            — matches neither; zero-value behaviour.
+//   - "openai/gpt-5.6-terra"    — matches "*/gpt-5*"; OmitSamplingParams = true.
+//   - "openai/gpt-5-chat-latest" — matches "*/gpt-5*" then
+//     "*/gpt-5-chat*"; carve-out runs last, OmitSamplingParams = false.
 //
 // Operators who want a non-default rule (e.g. Z.ai compat) inject it
 // via NewRegistry — see harness/internal/provider/compat/zai for the
@@ -66,6 +77,31 @@ func BuiltinRules() []Rule {
 				// OmitSamplingParams = true; clearing it here is the
 				// carve-out. Specificity ordering (D10) guarantees this
 				// rule runs after gpt-5*.
+				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/o[1-9]*",
+			Description:  "OpenAI reasoning-class via gateway prefix: omit sampling params",
+			LastVerified: Date("2026-07-30"),
+			Apply:        applyOpenAIReasoningClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-5*",
+			Description:  "OpenAI gpt-5 family via gateway prefix: omit sampling params (reasoning-class)",
+			LastVerified: Date("2026-07-30"),
+			Apply:        applyOpenAIReasoningClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-5-chat*",
+			Description:  "OpenAI gpt-5-chat carve-out via gateway prefix: chat-class accepts sampling params",
+			LastVerified: Date("2026-07-30"),
+			Apply: func(q *ProviderQuirks) {
+				// Mirrors the bare gpt-5-chat* carve-out above; see the
+				// gateway-prefix rationale on the */gpt-5* sibling.
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
 			},
 		},

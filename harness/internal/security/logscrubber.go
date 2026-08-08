@@ -20,9 +20,30 @@ var secretPatterns = []namedPattern{
 	// (a credential rotation problem) from static-key leaks (a
 	// secrets-management problem). The replacement is `[REDACTED]`
 	// either way; only the stats label differs.
-	{"anthropic_wif_token", regexp.MustCompile(`sk-ant-oat01-[a-zA-Z0-9_-]+`)},
-	{"anthropic_api_key", regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`)},
-	{"openai_api_key", regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)},
+	// The \b before each sk- prefix is load-bearing, not decoration.
+	// Without it `sk-[A-Za-z0-9_-]{16,}` matches the tail of any
+	// hyphenated identifier ending in "...sk-", because "ta|sk" carries
+	// no word boundary: "eval-task-narrow-edit-leaves-surroundings-alone"
+	// yields "sk-narrow-edit-leaves-surroundings-alone". That is not
+	// hypothetical — it is where the eval runner's own workspace paths
+	// landed, and since sensitivepatterns.go lifts these regexes into
+	// the Rule-of-Two detector at TierLatch, a `read_file` error echoing
+	// such a path revoked run_command mid-run and made the eval gate
+	// flaky across three different models (see ci.yml::eval-gate).
+	// Ordinary English words ending in "sk" ("task-", "disk-", "risk-")
+	// are common enough in paths and identifiers that the unanchored
+	// form is a persistent false-positive source.
+	//
+	// This tightens precision without losing a real key: an API key is
+	// always preceded by start-of-string or a non-word delimiter
+	// (whitespace, =, :, ", ', {), all of which produce the boundary.
+	// The intent matches the aws_secret_access_key / azure_storage_key
+	// entries below, which are likewise anchored so "ordinary hashes,
+	// IDs, and trace fragments are not scrubbed just because they share
+	// an alphabet".
+	{"anthropic_wif_token", regexp.MustCompile(`\bsk-ant-oat01-[a-zA-Z0-9_-]+`)},
+	{"anthropic_api_key", regexp.MustCompile(`\bsk-ant-[a-zA-Z0-9_-]+`)},
+	{"openai_api_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`)},
 	{"stripe_live_key", regexp.MustCompile(`sk_live_[A-Za-z0-9]{16,}`)},
 	{"github_pat", regexp.MustCompile(`ghp_[a-zA-Z0-9]+`)},
 	{"github_app_token", regexp.MustCompile(`ghs_[a-zA-Z0-9]+`)},

@@ -20,8 +20,13 @@ name: Release
 #                         path.
 #   eval-extended       → runs the baselined eval suites against the
 #                         stronger models (Sonnet 5, Opus 4.8) that the
-#                         per-push cheap gate (ci.yml::eval-gate, Haiku
-#                         4.5) deliberately skips. Non-blocking-but-
+#                         per-push cheap gate (ci.yml::eval-gate,
+#                         GPT-5.6 Luna) deliberately skips. It also
+#                         differs by provider: the gate runs over
+#                         OpenRouter, this job over Anthropic WIF, so
+#                         a release still exercises the first-party
+#                         Anthropic path end to end.
+#                         Non-blocking-but-
 #                         visible, same philosophy as vulnerability-gate:
 #                         not in `release.needs`, so a regression shows
 #                         up as a red job on the release run without

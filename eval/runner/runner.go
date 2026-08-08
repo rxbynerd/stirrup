@@ -64,6 +64,27 @@ type RunConfig struct {
 	// prompt" on a newer model against that model's native prompt.
 	PromptModel string
 
+	// Provider, BaseURL, and APIKeyRef, when non-empty, are forwarded
+	// to every harness invocation as --provider / --base-url /
+	// --api-key-ref. They carry the same Changed()-gated override
+	// semantics as Model: an explicitly passed flag wins over both the
+	// harness default and anything the suite's run_config block pins.
+	//
+	// Their reason to exist is the same as Model's — the provider a
+	// suite runs against is a property of the *invocation* (cheap
+	// third-party gate on push, first-party models at release), not of
+	// the suite, so CI can retarget without editing suite files and
+	// without splitting the suite per provider.
+	//
+	// APIKeyRef is a `secret://` reference, not a key: it names the
+	// environment variable (or file) the harness resolves through
+	// SecretStore at runtime. Passing a literal key here would violate
+	// the project's no-secrets-in-RunConfig invariant, and the harness
+	// rejects a non-reference value.
+	Provider  string
+	BaseURL   string
+	APIKeyRef string
+
 	// AnthropicWIF, when populated, instructs the runner to forward
 	// Anthropic Workload Identity Federation flags to every harness
 	// invocation. The four identifiers are non-secret per Anthropic's
@@ -357,7 +378,17 @@ func validatePathSegment(label, id string) error {
 func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) eval.TaskResult {
 	start := time.Now()
 
-	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
+	// "evaltask-", not "eval-task-": the hyphenated form ends in "...ta"
+	// immediately before the task ID's leading "sk-"-forming boundary,
+	// so "eval-task-<id>" contains the literal substring "sk-<id>" and
+	// registered as an OpenAI API key in the sensitive-data detector.
+	// Tool results echo this path (a read_file on a missing file puts it
+	// in the error string), which latched Rule-of-Two and revoked
+	// run_command mid-run. The detector regex is now boundary-anchored,
+	// which fixes it properly; this naming keeps the runner from
+	// manufacturing key-shaped paths regardless of what any future
+	// pattern pack matches. Same reasoning for the trace dir below.
+	tmpDir, err := os.MkdirTemp("", "evaltask-"+task.ID+"-")
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
 	}
@@ -384,7 +415,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// workspace summarised the leaked trace instead). A sibling temp dir
 	// keeps the trace retrievable for artifact retention without polluting
 	// the agent's view of its workspace.
-	traceDir, err := os.MkdirTemp("", "eval-trace-"+task.ID+"-")
+	traceDir, err := os.MkdirTemp("", "evaltrace-"+task.ID+"-")
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating trace directory: %w", err))
 	}
@@ -487,6 +518,20 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// Changed()-backed semantics as --model above.
 	if cfg.PromptModel != "" {
 		args = append(args, "--prompt-model", cfg.PromptModel)
+	}
+
+	// Provider selection, same unconditional Changed()-backed semantics
+	// as --model. Each is emitted independently so an invocation can
+	// retarget just the base URL (a gateway in front of the same
+	// provider type) without restating the rest.
+	if cfg.Provider != "" {
+		args = append(args, "--provider", cfg.Provider)
+	}
+	if cfg.BaseURL != "" {
+		args = append(args, "--base-url", cfg.BaseURL)
+	}
+	if cfg.APIKeyRef != "" {
+		args = append(args, "--api-key-ref", cfg.APIKeyRef)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
