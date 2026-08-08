@@ -62,10 +62,9 @@ type GCSTraceEmitter struct {
 	httpClient      *http.Client
 	endpointBaseURL string // override for tests
 
-	// redactionDisabled is the --debug bit (issue #219); see
-	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set
-	// only by the factory, and only when debugbuild.DebugBuildEnabled()
-	// is also true; see docs/security.md#debug-builds.
+	// redactionDisabled is the --debug bit; see
+	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set only
+	// by the factory, and only under a debug build.
 	redactionDisabled bool
 
 	mu                   sync.Mutex
@@ -102,10 +101,9 @@ type GCSTraceEmitterOptions struct {
 	// httptest.NewServer; production callers leave it empty.
 	EndpointBaseURL string
 
-	// RedactionDisabled is the --debug bit (issue #219); see
+	// RedactionDisabled is the --debug bit; see
 	// GCSTraceEmitter.redactionDisabled. Production callers pass the
-	// factory's already debugbuild-gated value; every other caller
-	// (including every test) should leave this false.
+	// factory's already-gated value; every other caller leaves it false.
 	RedactionDisabled bool
 }
 

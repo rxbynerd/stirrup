@@ -73,11 +73,9 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 	}
 }
 
-// WireTap installs a WireTapTransport (issue #220) around the adapter's
-// HTTP transport, so every request/response this adapter sends is
-// dumped, UNREDACTED, to out. The sole caller is the factory's
-// buildProvider wiring, which only invokes this when --trace-wire was
-// set AND debugbuild.DebugBuildEnabled() — see docs/security.md#debug-builds.
+// WireTap dumps every request and response this adapter sends, UNREDACTED,
+// to out. Only the factory calls it, and only under a debug build with
+// --trace-wire. See docs/security.md#debug-builds.
 func (a *OpenAIResponsesAdapter) WireTap(out io.Writer) {
 	a.httpClient.Transport = WireTapTransport(a.httpClient.Transport, out)
 }

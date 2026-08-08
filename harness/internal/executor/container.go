@@ -65,11 +65,9 @@ type ContainerExecutorConfig struct {
 	// per-request events flow through the same SecurityLogger the executor
 	// uses for path/file events.
 	EgressSecurity egressproxy.SecurityEventEmitter
-	// ExtraEnv is appended to the container's environment after the
-	// HTTP(S)_PROXY/NO_PROXY entries (when Network.Mode == "allowlist"),
-	// regardless of network mode. Populated by the factory from a
-	// sandbox identity token exchange (issue #516) when
-	// ExecutorConfig.SandboxIdentity is configured; empty otherwise.
+	// ExtraEnv is appended after the HTTP(S)_PROXY/NO_PROXY entries
+	// regardless of network mode. Populated by the factory from a sandbox
+	// identity token exchange; empty otherwise.
 	ExtraEnv []EnvPair
 }
 

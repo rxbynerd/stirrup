@@ -2,15 +2,10 @@
 
 package debugbuild
 
-// DebugBuildEnabled reports whether this binary was compiled with
-// -tags stirrupdebug. This is the release-build implementation, always
-// false: release artifacts (built via `just build` / the release
-// workflow, neither of which pass -tags) never satisfy this, so
-// --debug and --trace-wire hard-error at startup instead of silently
-// no-op'ing. See harness/cmd/stirrup/cmd/harness.go's PreRunE gate and
-// docs/security.md#debug-builds.
+// DebugBuildEnabled is the release-build implementation, always false:
+// neither `just build` nor the release workflow passes -tags, so --debug
+// and --trace-wire hard-error at startup rather than silently no-op'ing.
 func DebugBuildEnabled() bool { return false }
 
-// VersionSuffix returns "" on a release build so `stirrup --version`
-// output is unchanged from its pre-debug-build form.
+// VersionSuffix is empty on a release build, leaving --version unchanged.
 func VersionSuffix() string { return "" }

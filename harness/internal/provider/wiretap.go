@@ -9,20 +9,14 @@ import (
 )
 
 // WireTapTransport wraps base with a RoundTripper that dumps every raw,
-// UNREDACTED HTTP request and response — including streaming SSE frames
-// as they arrive over the wire — to out. It exists solely to back
-// --trace-wire (issue #220).
+// UNREDACTED request and response — streaming SSE frames included — to out,
+// backing --trace-wire. Nil out and base default to os.Stderr and
+// http.DefaultTransport.
 //
-// This function itself carries no build tag: it is an ordinary,
-// always-compiled HTTP utility, safe to unit test in a normal build.
-// The security property lives at the CALL SITE — harness/internal/core's
-// factory only installs it when both the --trace-wire flag was set AND
-// debugbuild.DebugBuildEnabled() is true, so a release binary never
-// wires a WireTapTransport into a live provider client. See
+// Deliberately untagged: this is an ordinary HTTP utility, testable in a
+// normal build. The security property lives at the CALL SITE, where the
+// factory installs it only under a debug build. See
 // docs/security.md#debug-builds.
-//
-// out defaults to os.Stderr when nil. base defaults to
-// http.DefaultTransport when nil (mirroring http.Client's own default).
 func WireTapTransport(base http.RoundTripper, out io.Writer) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -38,19 +32,16 @@ type wireTapRoundTripper struct {
 	base http.RoundTripper
 	out  io.Writer
 
-	// mu serialises individual writes to out so concurrent in-flight
-	// requests (e.g. a retry racing a follow-up call) cannot interleave
-	// their dumped frames mid-write. It is held only for the duration of
-	// a single Write, never across a streaming response body, so it
-	// never blocks a long-lived SSE read.
+	// mu keeps concurrent in-flight requests from interleaving their dumped
+	// frames mid-write. Held per Write, never across a streaming body, so
+	// it cannot block a long-lived SSE read.
 	mu sync.Mutex
 }
 
 func (t *wireTapRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// DumpRequestOut drains and restores req.Body internally (via
-	// drainBody), so it is safe to call before the real RoundTrip
-	// consumes the body. It also reproduces headers http.Transport adds
-	// itself (e.g. User-Agent), which a hand-rolled dump would miss.
+	// DumpRequestOut restores req.Body internally, so it is safe ahead of
+	// the real RoundTrip, and reproduces the headers http.Transport adds
+	// itself (e.g. User-Agent) that a hand-rolled dump would miss.
 	if dump, err := httputil.DumpRequestOut(req, true); err == nil {
 		t.write("---- REQUEST ----\n")
 		t.write(string(dump))
@@ -64,14 +55,10 @@ func (t *wireTapRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		return resp, err
 	}
 
-	// Response headers are dumped immediately via DumpResponse with
-	// body=false (a header-only dump does not drain resp.Body, so this
-	// costs nothing and cannot block). The body itself is NOT dumped via
-	// DumpResponse(resp, true): that call blocks until the entire body is
-	// read, which would defeat streaming SSE — the caller would see no
-	// tokens until the provider closed the connection. Instead the body
-	// is tee'd below so each chunk is dumped exactly when the real
-	// caller reads it, preserving live streaming behaviour.
+	// Headers only: DumpResponse(resp, true) would block until the whole
+	// body is read, defeating streaming SSE — no tokens would surface until
+	// the provider closed the connection. The body is tee'd below instead,
+	// dumping each chunk as the real caller reads it.
 	if dump, derr := httputil.DumpResponse(resp, false); derr == nil {
 		t.write("---- RESPONSE HEADERS ----\n")
 		t.write(string(dump))

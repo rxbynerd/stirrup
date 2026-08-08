@@ -74,10 +74,9 @@ type K8sExecutorConfig struct {
 	// reach the same monitoring surface as the container and local
 	// executors.
 	Security SecurityEventEmitter
-	// ExtraEnv is appended to the sandbox container's environment after
-	// the HTTP(S)_PROXY/NO_PROXY entries (proxyEnv). Populated by the
-	// factory from a sandbox identity token exchange (issue #516) when
-	// ExecutorConfig.SandboxIdentity is configured; empty otherwise.
+	// ExtraEnv is appended after the HTTP(S)_PROXY/NO_PROXY entries
+	// (proxyEnv). Populated by the factory from a sandbox identity token
+	// exchange; empty otherwise.
 	ExtraEnv []EnvPair
 }
 
@@ -194,8 +193,8 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 // buildSandboxPodSpec builds the hardened agent Pod spec shared by the k8s and
 // k8s-sandbox executors. proxyEnv is the already-computed HTTP(S)_PROXY env;
-// extraEnv is appended after it (issue #516 — a sandbox identity token and,
-// when configured, the git-proxy GIT_CONFIG_* pairs).
+// extraEnv is appended after it: a sandbox identity token and, when
+// configured, the git-proxy GIT_CONFIG_* pairs.
 func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraEnv []EnvPair) corev1.PodSpec {
 	serviceAccount := cfg.ServiceAccountName
 	if serviceAccount == "" {

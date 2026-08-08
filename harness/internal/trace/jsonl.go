@@ -28,13 +28,10 @@ type JSONLTraceEmitter struct {
 	writer io.Writer
 	closer io.Closer
 
-	// redactionDisabled is the --debug bit (issue #219), immutable after
-	// construction like OTelTraceEmitter.captureContent. When true, every
-	// scrub/redact call this emitter would otherwise make is bypassed —
-	// RunConfig.Redact() and security.Scrub are both skipped in favour of
-	// the raw value — so the persisted trace carries unredacted secrets.
-	// Set only by the factory, and only when debugbuild.DebugBuildEnabled()
-	// is also true; see docs/security.md#debug-builds.
+	// redactionDisabled is the --debug bit, immutable after construction.
+	// When true every scrub this emitter would make is bypassed, so the
+	// persisted trace carries unredacted secrets. Set only by the factory,
+	// and only under a debug build. See docs/security.md#debug-builds.
 	redactionDisabled bool
 
 	mu        sync.Mutex
@@ -62,10 +59,9 @@ var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
 //
-// redactionDisabled is the --debug bit (issue #219); see the field
-// docstring. Production callers pass the factory's already debugbuild-
-// gated value; every other caller (including every test) should pass
-// false.
+// redactionDisabled is the --debug bit; see the field docstring.
+// Production callers pass the factory's already-gated value; every other
+// caller passes false.
 func NewJSONLTraceEmitter(w io.Writer, redactionDisabled bool) *JSONLTraceEmitter {
 	emitter := &JSONLTraceEmitter{writer: w, redactionDisabled: redactionDisabled}
 	if closer, ok := w.(io.Closer); ok {
@@ -450,11 +446,9 @@ func scrubRawJSON(raw json.RawMessage, redactionDisabled bool) json.RawMessage {
 	return json.RawMessage(wrapped)
 }
 
-// scrubOrPass returns security.Scrub(s), or s verbatim when
-// redactionDisabled is true (the --debug bypass, issue #219). Centralises
-// the bypass so every scrub call site in this package — and in otel.go,
-// which shares the same redactionDisabled contract — reads identically
-// rather than hand-rolling the conditional at each site.
+// scrubOrPass returns security.Scrub(s), or s verbatim under the --debug
+// bypass. Centralised so every scrub call site here and in otel.go reads
+// identically rather than hand-rolling the conditional.
 func scrubOrPass(s string, redactionDisabled bool) string {
 	if redactionDisabled {
 		return s

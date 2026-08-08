@@ -101,25 +101,17 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build prompt builder: %w", err)
 	}
 
-	// 2b. Sandbox identity token exchange (issue #516 Part A) and sandbox
-	// env composition (issue #516 Part B), when
-	// config.Executor.SandboxIdentity is configured. Runs before
-	// buildExecutor (step 3): the composed env — which carries the secret
-	// token — is passed into the executor's construction so a sandbox
-	// never comes up without it, and a failed/declined/timed-out exchange
-	// aborts the run before any sandbox is created (fail-closed).
+	// 2b. Sandbox identity token exchange and env composition, deliberately
+	// ahead of buildExecutor: the composed env carries the secret token into
+	// the executor's construction so no sandbox comes up without it, and a
+	// declined or timed-out exchange aborts before any sandbox exists.
 	var sandboxExtraEnv []executor.EnvPair
 	if si := config.Executor.SandboxIdentity; si != nil {
-		// tp is the transport this function was invoked with (the stirrup
-		// job control-plane entrypoint pre-establishes it). A nil tp means
-		// BuildLoopWithTransport would build its own transport later, at
-		// step 6 — after the executor. Sandbox identity issuance is only
-		// supported against a caller-supplied transport, since the token
-		// exchange must complete before the executor is built.
-		// ValidateRunConfig's transport=grpc check does not catch a nil tp
-		// here (a bare BuildLoop(ctx, config) call with
-		// transport.type=grpc still reaches this branch with tp==nil), so
-		// this is a defensive, not redundant, guard.
+		// The exchange must complete before the executor is built, so it
+		// only works against a caller-supplied transport — a nil tp would
+		// have its transport built later, at step 6. ValidateRunConfig's
+		// transport=grpc check does not catch this: a bare BuildLoop with
+		// transport.type=grpc still arrives here with tp==nil.
 		if tp == nil {
 			return nil, fmt.Errorf("executor.sandboxIdentity requires a pre-established transport (only supported via the control-plane job entrypoint, e.g. \"stirrup job\")")
 		}
@@ -866,12 +858,10 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-// buildExecutor constructs the run's executor. extraEnv carries the
-// composed sandbox identity / git-proxy environment (issue #516) computed
-// by the caller before this function runs; it is only honoured by the
-// container and k8s/k8s-sandbox cases — ValidateRunConfig restricts
-// ExecutorConfig.SandboxIdentity/GitProxy to those executor types, so
-// extraEnv is empty for every other case by construction.
+// buildExecutor constructs the run's executor. extraEnv carries the composed
+// sandbox identity / git-proxy environment and is honoured only by the
+// container and k8s cases; ValidateRunConfig confines SandboxIdentity and
+// GitProxy to those types, so it is empty elsewhere by construction.
 func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
@@ -991,14 +981,10 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "git_show") && caps.CanRead {
 		registry.Register(builtins.GitShowTool(exec))
 	}
-	// read_command_output is run_command's companion: it registers
-	// automatically whenever run_command registers with a live capture
-	// store — a spilled reference without its reader is incoherent, and
-	// operator configs written before capture existed list run_command in
-	// explicit builtIn allowlists that would otherwise silently strand
-	// refs. Listing it in builtIn is only needed for the standalone
-	// (replay) case; ValidateRunConfig rejects listing it with capture
-	// disabled.
+	// read_command_output registers automatically alongside run_command: a
+	// spilled reference without its reader is incoherent, and pre-capture
+	// operator configs listing only run_command would otherwise strand refs.
+	// Naming it in builtIn is only needed for the standalone replay case.
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput()))
 		if outputStore != nil {
@@ -1702,12 +1688,10 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 	}
 }
 
-// debugRedactionDisabled is the --debug bit (issue #219). It is re-gated
-// here — the single construction point for every emitter type — against
-// debugbuild.DebugBuildEnabled() before being threaded into any emitter
-// constructor, so a release binary (where DebugBuildEnabled always
-// returns false) constructs every emitter with redaction on regardless
-// of what a caller passes in. See docs/security.md#debug-builds.
+// debugRedactionDisabled is re-gated here — the single construction point
+// for every emitter type — so a release binary builds every emitter with
+// redaction on regardless of what a caller passes in. See
+// docs/security.md#debug-builds.
 func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
 	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {

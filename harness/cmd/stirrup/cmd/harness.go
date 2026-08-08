@@ -647,15 +647,10 @@ to enable editing and shell access; the read-only modes (planning, review,
 research, toil) differ only in prompt template and ship as the safe-by-
 default first-touch posture.`,
 	Args: cobra.MaximumNArgs(1),
-	// PreRunE (not a check inlined at the top of runHarness) so --debug
-	// and --trace-wire stay visible in --help and parse normally on
-	// every build, but a release binary refuses to proceed the moment
-	// either was explicitly set — before BuildRunConfig does any I/O or
-	// credential resolution. Using RunE for this instead would still work
-	// today, but PreRunE keeps the "reject before touching the config"
-	// contract explicit and separate from runHarness's own validation
-	// order (see the --output / BuildRunConfig / --dry-run sequencing
-	// comments there).
+	// PreRunE rather than a check inside runHarness: a release binary must
+	// reject an explicitly-set --debug / --trace-wire before BuildRunConfig
+	// does any I/O or credential resolution, and keeping it out of RunE
+	// leaves that contract independent of runHarness's own ordering.
 	PreRunE: validateDebugBuildFlags,
 	RunE:    runHarness,
 }
@@ -694,25 +689,18 @@ func init() {
 	})
 }
 
-// debugBuildOnlyFlags lists the flags that require a binary built with
-// -tags stirrupdebug (issues #219, #220). Kept as a table, mirroring
-// dryRunProbeGates below, so validateDebugBuildFlags's error names the
-// offending flag and a future debug-only flag is one append away.
+// debugBuildOnlyFlags lists the flags requiring -tags stirrupdebug. A table
+// (mirroring dryRunProbeGates) so the error names the offending flag.
 var debugBuildOnlyFlags = []string{
 	"debug",
 	"trace-wire",
 }
 
-// validateDebugBuildFlags hard-errors (exit 4, the usage class) when
-// --debug or --trace-wire was explicitly set on a release binary — one
-// built without -tags stirrupdebug. This is the CLI-layer half of the
-// load-bearing security property: a release build must be physically
-// incapable of disabling redaction or dumping unredacted wire traffic.
-// debugbuild.DebugBuildEnabled() is the compile-time source of truth;
-// this function only decides how loudly to fail when a caller asked for
-// debug-only behaviour a release binary cannot provide. The flags stay
-// registered (visible in --help, parse normally) on every build — only
-// this PreRunE gate differs by build.
+// validateDebugBuildFlags hard-errors (exit 4, usage) when a debug-only flag
+// is explicitly set on a release binary. This is the CLI-layer half of the
+// property: the flags stay registered and parse on every build, and
+// debugbuild.DebugBuildEnabled() remains the compile-time source of truth —
+// this only decides how loudly to fail. See docs/security.md#debug-builds.
 func validateDebugBuildFlags(cmd *cobra.Command, _ []string) error {
 	if debugbuild.DebugBuildEnabled() {
 		return nil
@@ -1232,11 +1220,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	exportRequired, _ := f.GetBool("export-workspace-required")
-	// validateDebugBuildFlags (PreRunE) already rejected these on a
-	// release binary when explicitly set, so reading the raw bool here
-	// is safe: on a release build both are always false (rejected before
-	// this point if true), and on a debug build the flag's value is
-	// exactly what the operator asked for.
+	// Safe to read raw: PreRunE already rejected an explicitly-set flag on
+	// a release binary, so both are false there by the time control
+	// reaches here.
 	debugRedactionDisabled, _ := f.GetBool("debug")
 	wireTrace, _ := f.GetBool("trace-wire")
 	return runWithConfig(cfg, runOptions{

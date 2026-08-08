@@ -897,25 +897,15 @@ type ExecutorConfig struct {
 	// set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 
-	// SandboxIdentity, when set, requests a control-plane-issued sandbox
-	// identity token over the gRPC control stream before sandbox
-	// creation and injects it into the sandbox environment (issue #516
-	// Part A/B). Requires Transport.Type == "grpc" (stdio has no
-	// upstream to request a token from) and Type in {"container",
-	// "k8s", "k8s-sandbox"} — the executor types that actually create a
-	// sandbox environment to inject into. The token itself never enters
-	// RunConfig; see docs/deployment.md for the wire-level exchange.
+	// SandboxIdentity requests a control-plane-issued token over the gRPC
+	// control stream and injects it into the sandbox environment. The token
+	// never enters RunConfig. GitProxy composes non-secret GIT_CONFIG_* env
+	// pairs routing git through a credential proxy authenticated with that
+	// token, and so requires SandboxIdentity. Both are restricted to
+	// grpc transport and sandbox-creating executors — see
+	// docs/configuration.md#sandbox-identity-and-git-proxy-wiring.
 	SandboxIdentity *SandboxIdentityConfig `json:"sandboxIdentity,omitempty"`
-
-	// GitProxy, when set, composes non-secret git configuration
-	// (GIT_CONFIG_* env pairs) that route git operations against Hosts
-	// through a git-credential proxy such as haybale
-	// (github.com/rxbynerd/haybale), authenticated with the token
-	// SandboxIdentity requested (issue #516 Part B). TokenEnvVar must
-	// name the same environment variable SandboxIdentity populates, so
-	// GitProxy requires SandboxIdentity to also be set. Subject to the
-	// same Transport/Type restrictions as SandboxIdentity.
-	GitProxy *GitProxyConfig `json:"gitProxy,omitempty"`
+	GitProxy        *GitProxyConfig        `json:"gitProxy,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
@@ -940,42 +930,27 @@ type ResourceLimits struct {
 	PIDs     int     `json:"pids"`
 }
 
-// DefaultSandboxIdentityEnvVar is the sandbox environment variable a
-// sandbox identity token is injected as when SandboxIdentityConfig.EnvVar
-// (or GitProxyConfig.TokenEnvVar) is left empty. Named after haybale
-// (github.com/rxbynerd/haybale), the v1 (and so far only) consumer.
+// DefaultSandboxIdentityEnvVar is the variable a sandbox identity token is
+// injected as when SandboxIdentityConfig.EnvVar (or
+// GitProxyConfig.TokenEnvVar) is empty. Named after haybale
+// (github.com/rxbynerd/haybale), the v1 consumer.
 const DefaultSandboxIdentityEnvVar = "HAYBALE_TOKEN"
 
 // SandboxIdentityConfig requests a control-plane-issued sandbox identity
-// token over the gRPC control stream (issue #516 Part A). The harness
-// sends a sandbox_token_request after task assignment and before sandbox
-// creation, then injects the returned JWT into the sandbox environment
-// under the variable EffectiveEnvVar names. The token itself is never
-// written to RunConfig, a trace, or a transcript — see
-// docs/deployment.md for the wire-level exchange this config requests.
+// token. The harness sends a sandbox_token_request after task assignment
+// and before sandbox creation, then injects the returned JWT under the
+// variable EffectiveEnvVar names. The JWT is never written to RunConfig, a
+// trace, or a transcript. Wire-level exchange:
+// docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
 type SandboxIdentityConfig struct {
-	// Source names the token issuer. "control-plane" — the only
-	// supported value in v1 — requests issuance from the control plane
-	// the harness is already streaming to over gRPC.
-	Source string `json:"source"`
-
-	// Audience is the intended JWT "aud" claim, e.g.
-	// "https://haybale.internal". Informational to the control plane,
-	// which may override it.
+	Source   string `json:"source"` // only "control-plane" in v1
 	Audience string `json:"audience,omitempty"`
-
-	// EnvVar names the sandbox environment variable the token is
-	// injected as. Empty resolves to DefaultSandboxIdentityEnvVar via
-	// EffectiveEnvVar.
-	EnvVar string `json:"envVar,omitempty"`
+	EnvVar   string `json:"envVar,omitempty"`
 }
 
-// EffectiveEnvVar returns the sandbox environment variable name a token
-// requested by cfg is injected as: EnvVar verbatim when set, else
-// DefaultSandboxIdentityEnvVar. A nil cfg returns the default so callers
-// (validation and, later, env-composition wiring) need not nil-check
-// first — the single source of truth for the default-resolution rule
-// GitProxyConfig.EffectiveTokenEnvVar must agree with.
+// EffectiveEnvVar resolves EnvVar against DefaultSandboxIdentityEnvVar. It
+// is the single source of truth the GitProxyConfig equivalent must agree
+// with; a nil cfg returns the default so callers need not nil-check.
 func (cfg *SandboxIdentityConfig) EffectiveEnvVar() string {
 	if cfg == nil || cfg.EnvVar == "" {
 		return DefaultSandboxIdentityEnvVar
@@ -983,43 +958,24 @@ func (cfg *SandboxIdentityConfig) EffectiveEnvVar() string {
 	return cfg.EnvVar
 }
 
-// GitProxyConfig composes non-secret git configuration (GIT_CONFIG_* env
-// pairs, issue #516 Part B) that rewrites git operations against Hosts
-// through a git-credential proxy such as haybale
-// (github.com/rxbynerd/haybale), authenticating with the token
-// SandboxIdentityConfig requested. All fields here are non-secret: the
-// JWT itself is carried only by the environment variable EffectiveTokenEnvVar
-// names, never by RunConfig.
+// GitProxyConfig composes non-secret GIT_CONFIG_* env pairs that rewrite
+// git operations against Hosts through a git-credential proxy,
+// authenticating with the token SandboxIdentityConfig requested. Every
+// field here is non-secret; the JWT travels only in the environment
+// variable EffectiveTokenEnvVar names. Field reference and the
+// operator-facing allowlist guidance:
+// docs/configuration.md#sandbox-identity-and-git-proxy-wiring.
 type GitProxyConfig struct {
-	// URL is the proxy's base URL, e.g. "http://haybale.internal:8466".
-	// Operators should also add its host:port to
-	// ExecutorConfig.Network.Allowlist when Network.Mode ==
-	// "allowlist" — ValidateRunConfig warns, but does not error, when
-	// it is absent.
-	URL string `json:"url"`
-
-	// Hosts lists the git hosts to rewrite through the proxy, e.g.
-	// ["github.com"]. Operators should deliberately leave these hosts
-	// off Network.Allowlist so the proxy is the only route to them.
-	Hosts []string `json:"hosts,omitempty"`
-
-	// RewriteSsh additionally rewrites the "git@<host>:" and
-	// "ssh://git@<host>/" URL forms, not just "https://<host>/".
-	RewriteSsh bool `json:"rewriteSsh,omitempty"`
-
-	// TokenEnvVar must name the same environment variable
-	// SandboxIdentityConfig.EnvVar populates — ValidateRunConfig rejects
-	// a mismatch between the effective values of the two. The composed
-	// git-credential helper reads the token from this variable.
-	TokenEnvVar string `json:"tokenEnvVar,omitempty"`
+	URL         string   `json:"url"`
+	Hosts       []string `json:"hosts,omitempty"`
+	RewriteSsh  bool     `json:"rewriteSsh,omitempty"`
+	TokenEnvVar string   `json:"tokenEnvVar,omitempty"`
 }
 
-// EffectiveTokenEnvVar returns the sandbox environment variable name the
-// git-credential helper GitProxyConfig composes reads the token from:
-// TokenEnvVar verbatim when set, else DefaultSandboxIdentityEnvVar — the
-// same default SandboxIdentityConfig.EffectiveEnvVar applies, since v1
-// ties both fields to a single token variable. A nil cfg returns the
-// default so callers need not nil-check first.
+// EffectiveTokenEnvVar resolves TokenEnvVar against
+// DefaultSandboxIdentityEnvVar — the same default
+// SandboxIdentityConfig.EffectiveEnvVar applies, since v1 ties both fields
+// to a single token variable and ValidateRunConfig rejects a mismatch.
 func (cfg *GitProxyConfig) EffectiveTokenEnvVar() string {
 	if cfg == nil || cfg.TokenEnvVar == "" {
 		return DefaultSandboxIdentityEnvVar
@@ -1330,31 +1286,20 @@ type ToolsConfig struct {
 	CommandOutput CommandOutputConfig `json:"commandOutput,omitempty"`
 }
 
-// CommandOutputConfig bounds full command-output capture. These are audit
-// limits: crossing one cancels the command and fails the run; output is never
-// silently truncated at these boundaries.
+// CommandOutputConfig bounds full command-output capture. The byte caps are
+// compliance boundaries, not truncation limits: crossing one always cancels
+// the command, and FailurePosture decides what that does to the run. See
+// docs/configuration.md#command-output-capture.
 type CommandOutputConfig struct {
-	// Enabled gates the capture pipeline as a whole. A pointer so unset is
-	// distinguishable from an explicit false (the RuleOfTwo.Enforce
-	// pattern): nil means enabled — capture is the default behaviour —
-	// while false reverts run_command to the legacy bounded-inline path,
-	// registers no read_command_output tool, and writes no archive.
+	// Enabled is a pointer so unset is distinguishable from an explicit
+	// false (the RuleOfTwo.Enforce pattern): nil means enabled.
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// FailurePosture selects how capture failures affect the run. "strict"
-	// (the default) treats the byte caps as compliance boundaries: a limit
-	// breach refuses further captures and an otherwise-successful run
-	// reports command_output_capture_failed / command_output_archive_failed.
-	// "bestEffort" still cancels the offending command at its cap — output
-	// is never silently truncated — but later commands keep capturing and
-	// the run outcome is never overridden; failures stay visible in the
-	// archive manifest and per-command records.
-	FailurePosture string `json:"failurePosture,omitempty"`
-
-	InlineMaxBytes        int64 `json:"inlineMaxBytes,omitempty"`
-	PreviewBytesPerStream int64 `json:"previewBytesPerStream,omitempty"`
-	MaxBytesPerStream     int64 `json:"maxBytesPerStream,omitempty"`
-	MaxBytesPerRun        int64 `json:"maxBytesPerRun,omitempty"`
+	FailurePosture        string `json:"failurePosture,omitempty"`
+	InlineMaxBytes        int64  `json:"inlineMaxBytes,omitempty"`
+	PreviewBytesPerStream int64  `json:"previewBytesPerStream,omitempty"`
+	MaxBytesPerStream     int64  `json:"maxBytesPerStream,omitempty"`
+	MaxBytesPerRun        int64  `json:"maxBytesPerRun,omitempty"`
 }
 
 // CommandOutput failure postures (CommandOutputConfig.FailurePosture).
@@ -2046,16 +1991,12 @@ var readCapabilityBuiltInTools = map[string]bool{
 	"git_show":          true,
 }
 
-// execCapabilityBuiltInTools enumerates built-in tools buildToolRegistry
-// only registers when Capabilities().CanExec is true but which do not
-// mutate workspace state, so they belong in neither
-// readCapabilityBuiltInTools nor mutatingTools. read_command_output is the
-// only member: factory.go registers it inside run_command's CanExec branch
-// (it paginates references run_command produced), yet it is a read-only
-// paginator over an already-captured archive and stays legal in read-only
-// modes for the standalone replay case. Like the two sets above this is a
-// hand-kept mirror of buildToolRegistry, and exists so a none executor
-// still fails fast rather than silently dropping the tool.
+// execCapabilityBuiltInTools enumerates built-in tools registered only under
+// CanExec that nonetheless mutate nothing, so they fit neither set above.
+// read_command_output is registered inside run_command's CanExec branch yet
+// stays legal in read-only modes for standalone replay. A hand-kept mirror of
+// buildToolRegistry, so a none executor fails fast rather than silently
+// dropping the tool.
 var execCapabilityBuiltInTools = map[string]bool{
 	"read_command_output": true,
 }
@@ -4764,19 +4705,17 @@ func validateK8sEgressProxy(cfg ExecutorConfig, errs *[]string) {
 
 // validSandboxIdentitySources is the closed set of legal
 // SandboxIdentityConfig.Source values. "control-plane" is the only
-// supported issuer in v1 (issue #516): the harness requests a token from
-// the control plane it is already streaming to over gRPC.
+// supported issuer in v1: the harness requests a token from the control
+// plane it is already streaming to over gRPC.
 var validSandboxIdentitySources = map[string]bool{
 	"control-plane": true,
 }
 
 // sandboxIdentityCapableExecutors is the closed set of executor types
-// that may configure ExecutorConfig.SandboxIdentity / GitProxy (issue
-// #516, "Scope restrictions (v1)"): only these executors create a
-// sandbox environment the harness controls at creation time. "local" is
-// deferred (a developer machine already carries its own git
-// credentials); "api" and "none" have no sandbox environment to inject
-// into at all.
+// that may configure ExecutorConfig.SandboxIdentity / GitProxy: only these
+// create a sandbox environment the harness controls at creation time.
+// "local" is deferred — a developer machine carries its own git credentials
+// — and "api"/"none" have no sandbox environment to inject into.
 var sandboxIdentityCapableExecutors = map[string]bool{
 	"container":   true,
 	"k8s":         true,
@@ -4794,11 +4733,10 @@ var sandboxIdentityCapableExecutors = map[string]bool{
 var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // validateSandboxIdentity enforces the cross-field invariants on
-// ExecutorConfig.SandboxIdentity and .GitProxy (issue #516 Part B). Both
-// blocks are pointers and every rule below is strictly gated on their
-// presence, so a bare RunConfig with neither set validates cleanly
-// regardless of Transport or Executor.Type — this function must never
-// fire on a default/defaulted config.
+// ExecutorConfig.SandboxIdentity and .GitProxy. Every rule below is gated
+// on their presence, so a config with neither set validates cleanly
+// regardless of Transport or Executor.Type — this must never fire on a
+// defaulted config.
 func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 	si := config.Executor.SandboxIdentity
 	gp := config.Executor.GitProxy
@@ -4875,18 +4813,13 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 // keep the two in sync if the egress proxy's default port ever changes.
 const gitProxyAllowlistDefaultPort = 443
 
-// warnGitProxyAllowlistGap emits a scrub-safe slog warning — never a
-// ValidateRunConfig error, per the issue's "nice-to-have" framing — when
-// GitProxy.URL's host:port is absent from Executor.Network.Allowlist
-// while Network.Mode == "allowlist". A missing entry leaves the sandbox
-// with no egress route to the proxy at all (Ring 2 fails closed), which
-// is a real operator footgun worth flagging, but this is intentionally
-// a plain exact-match check, not a full reimplementation of
-// egressproxy.Matcher's wildcard semantics: an operator covering the
-// proxy host with a "*.example.com"-style wildcard entry may see a
-// spurious warning here, which is an acceptable false positive for a
-// non-blocking diagnostic (the actual enforcement point is the egress
-// proxy itself, which does implement wildcards).
+// warnGitProxyAllowlistGap warns — never errors — when GitProxy.URL's
+// host:port is absent from an "allowlist"-mode Executor.Network.Allowlist,
+// which would leave the sandbox no egress route to the proxy at all.
+// Deliberately an exact-match check rather than a reimplementation of
+// egressproxy.Matcher: a wildcard entry covering the proxy host yields a
+// spurious warning, acceptable for a non-blocking diagnostic whose real
+// enforcement point is the proxy itself.
 func warnGitProxyAllowlistGap(config *RunConfig) {
 	gp := config.Executor.GitProxy
 	if gp == nil || gp.URL == "" {

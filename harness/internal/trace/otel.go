@@ -90,12 +90,9 @@ type OTelTraceEmitter struct {
 	// the mutex.
 	captureContent bool
 
-	// redactionDisabled is the --debug bit (issue #219), immutable after
-	// construction like captureContent. When true, RunConfig.Redact() and
-	// security.Scrub are both bypassed for this emitter — see
-	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set
-	// only by the factory, and only when debugbuild.DebugBuildEnabled()
-	// is also true; see docs/security.md#debug-builds.
+	// redactionDisabled is the --debug bit, immutable after construction;
+	// see JSONLTraceEmitter.redactionDisabled for the shared contract. Set
+	// only by the factory, and only under a debug build.
 	redactionDisabled bool
 
 	mu                   sync.Mutex

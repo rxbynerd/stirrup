@@ -1,13 +1,11 @@
 // Package commandoutput owns complete, scrubbed run_command output capture.
 //
-// Raw (unscrubbed) bytes are spooled to run-scoped 0600 files under a 0700
-// temp directory while a command streams, and each spool is deleted when its
-// command completes and whole-stream redaction has produced the scrubbed
-// canonical copy. Durable archives contain scrubbed bytes only. The raw
-// spool's lifetime therefore depends on clean completion: a crash or SIGKILL
-// mid-command can leave raw spool files in the OS temp directory until it is
-// cleared (scrub-on-write, which would remove the raw-bytes-at-rest window
-// entirely, is tracked as a follow-up).
+// Raw bytes spool to 0600 files under a 0700 temp directory while a command
+// streams and are deleted once whole-stream redaction has produced the
+// scrubbed canonical copy; archives hold scrubbed bytes only. That cleanup
+// depends on clean completion, so a crash mid-command can leave raw spools
+// behind until the OS temp directory is cleared. See
+// docs/configuration.md#command-output-capture.
 package commandoutput
 
 import (
@@ -378,14 +376,11 @@ func (c *Capture) canonicalize(stream string, w *spoolWriter) (string, string, t
 		return "", "", meta, fmt.Errorf("%w: write canonical %s: %v", ErrCaptureIO, stream, err)
 	}
 	sum := sha256.Sum256([]byte(scrubbed))
-	// The model-visible reference must stay short: the loop's tool guard
-	// rejects inputs containing base64-like runs longer than 100
-	// characters (security.GuardToolCall's encoded_payload rule), and a
-	// reference embedding archiveID plus the base64url member ID tripped
-	// it — the model's first read_command_output call was denied. A
-	// truncated digest of the store-unique entry key keeps the reference
-	// opaque, collision-safe within the run, and far under the guard's
-	// threshold; the refs map carries the actual file mapping.
+	// The reference must stay short: security.GuardToolCall's
+	// encoded_payload rule rejects base64-like runs over 100 characters,
+	// and an earlier reference embedding archiveID plus the base64url
+	// member ID tripped it, denying the model's first read. A truncated
+	// digest stays under the threshold; refs carries the file mapping.
 	refID := sha256.Sum256([]byte(c.entry.record.RunID + "\x00" + c.entry.record.ToolUseID))
 	ref := fmt.Sprintf("stirrup://command-output/%s/%s", hex.EncodeToString(refID[:8]), stream)
 	meta.ScrubbedBytes = int64(len(scrubbed))

@@ -189,9 +189,9 @@ func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConf
 	combined := c.Record.Stdout.ScrubbedBytes + c.Record.Stderr.ScrubbedBytes
 	if combined <= cfg.InlineMaxBytes && c.Record.CaptureComplete {
 		text := formatRunCommand(c.Stdout, c.Stderr, c.Record.ExitCode)
-		// #489: a timeout is a soft outcome, so the inline rendering has to
-		// carry the same unambiguous marker buildCommandResult emits — the
-		// spilled rendering below states timed_out explicitly instead.
+		// A timeout is a soft outcome, so the inline rendering must carry
+		// the same unambiguous marker buildCommandResult emits; the spilled
+		// rendering below states timed_out explicitly instead.
 		if c.Record.TimedOut {
 			text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
 		}

@@ -26,10 +26,14 @@ func BuiltinRules() []Rule {
 			Description:  "OpenAI gpt-5-chat carve-out: chat-class accepts sampling params",
 			LastVerified: Date("2026-05-24"),
 			Apply: func(q *ProviderQuirks) {
-
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
 			},
 		},
+		// The */... globs repeat the three rules above for one level of
+		// vendor prefix, the form gateways such as OpenRouter serve.
+		// path.Match's `*` does not cross `/`, so the bare globs cannot
+		// match a prefixed id and a gateway-served reasoning model would
+		// otherwise take zero-value behaviour.
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "*/o[1-9]*",
@@ -50,8 +54,6 @@ func BuiltinRules() []Rule {
 			Description:  "OpenAI gpt-5-chat carve-out via gateway prefix: chat-class accepts sampling params",
 			LastVerified: Date("2026-07-30"),
 			Apply: func(q *ProviderQuirks) {
-				// Mirrors the bare gpt-5-chat* carve-out above; see the
-				// gateway-prefix rationale on the */gpt-5* sibling.
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
 			},
 		},

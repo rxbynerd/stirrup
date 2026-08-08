@@ -322,16 +322,13 @@ func validatePathSegment(label, id string) error {
 func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) eval.TaskResult {
 	start := time.Now()
 
-	// "evaltask-", not "eval-task-": the hyphenated form ends in "...ta"
-	// immediately before the task ID's leading "sk-"-forming boundary,
-	// so "eval-task-<id>" contains the literal substring "sk-<id>" and
-	// registered as an OpenAI API key in the sensitive-data detector.
-	// Tool results echo this path (a read_file on a missing file puts it
-	// in the error string), which latched Rule-of-Two and revoked
-	// run_command mid-run. The detector regex is now boundary-anchored,
-	// which fixes it properly; this naming keeps the runner from
-	// manufacturing key-shaped paths regardless of what any future
-	// pattern pack matches. Same reasoning for the trace dir below.
+	// "evaltask-", not "eval-task-": the hyphenated form makes
+	// "eval-task-<id>" contain the literal substring "sk-<id>", which the
+	// sensitive-data detector read as an OpenAI key — latching Rule-of-Two
+	// mid-run off a tool result that echoed the path. The detector regex is
+	// now boundary-anchored, but this naming keeps the runner from
+	// manufacturing key-shaped paths for any future pattern pack. Same for
+	// the trace dir below.
 	tmpDir, err := os.MkdirTemp("", "evaltask-"+task.ID+"-")
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
@@ -431,10 +428,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		args = append(args, "--prompt-model", cfg.PromptModel)
 	}
 
-	// Provider selection, same unconditional Changed()-backed semantics
-	// as --model. Each is emitted independently so an invocation can
-	// retarget just the base URL (a gateway in front of the same
-	// provider type) without restating the rest.
+	// Emitted independently so an invocation can retarget just the base URL
+	// — a gateway in front of the same provider type — without restating
+	// the rest.
 	if cfg.Provider != "" {
 		args = append(args, "--provider", cfg.Provider)
 	}
