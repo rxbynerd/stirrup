@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cedar-policy/cedar-go"
@@ -274,27 +275,70 @@ func (pl policyUnderLint) finding(rule string, sev LintSeverity, format string, 
 // forEachPolicy walks a policy set in ID order, handing each statement to
 // fn with its annotations already parsed.
 func forEachPolicy(ps *cedar.PolicySet, fn func(policyUnderLint)) {
-	var ids []string
+	var linted []policyUnderLint
 	for id := range ps.All() {
-		ids = append(ids, string(id))
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		p := ps.Get(cedar.PolicyID(id))
+		p := ps.Get(id)
 		if p == nil {
 			continue
 		}
-		astPolicy := (*internalast.Policy)(p.AST())
-		if astPolicy == nil {
+		pl := policyUnderLint{
+			id:      string(id),
+			line:    p.Position().Line,
+			ast:     (*internalast.Policy)(p.AST()),
+			ignores: parseLintIgnores(p.Annotations()),
+		}
+		linted = append(linted, pl)
+	}
+	// Source order, so a multi-statement file (the documented way to
+	// compose policies is concatenation) reports top to bottom. IDs break
+	// ties naturally: cedar-go mints "policy0".."policyN", and a plain
+	// string sort puts "policy10" before "policy2".
+	sort.SliceStable(linted, func(i, j int) bool {
+		if linted[i].line != linted[j].line {
+			return linted[i].line < linted[j].line
+		}
+		return naturalLess(linted[i].id, linted[j].id)
+	})
+	for _, pl := range linted {
+		if pl.ast == nil {
+			// Unreachable for a policy set parsed from source; a nil AST
+			// would mean cedar-go handed back a statement it could not
+			// represent. Report rather than skip: silently excluding a
+			// statement from every rule is the one behaviour a
+			// fail-closed linter must not have.
+			fn2 := pl
+			fn2.ast = &internalast.Policy{}
+			fn(fn2)
 			continue
 		}
-		fn(policyUnderLint{
-			id:      id,
-			line:    p.Position().Line,
-			ast:     astPolicy,
-			ignores: parseLintIgnores(p.Annotations()),
-		})
+		fn(pl)
 	}
+}
+
+// naturalLess orders "policy2" before "policy10" by comparing any
+// trailing digit run numerically. Falls back to a plain string compare
+// for @id-derived policy IDs, which have no such convention.
+func naturalLess(a, b string) bool {
+	ai, aok := trailingNumber(a)
+	bi, bok := trailingNumber(b)
+	if aok && bok && strings.TrimSuffix(a, ai) == strings.TrimSuffix(b, bi) {
+		an, _ := strconv.Atoi(ai)
+		bn, _ := strconv.Atoi(bi)
+		return an < bn
+	}
+	return a < b
+}
+
+// trailingNumber returns the trailing digit run of s, if any.
+func trailingNumber(s string) (string, bool) {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) {
+		return "", false
+	}
+	return s[i:], true
 }
 
 // parseLintIgnores reads the @stirrupLintIgnore annotation into a rule set.
@@ -566,40 +610,178 @@ func attributePath(n internalast.IsNode) ([]string, bool) {
 // where a wildcard before the host is the whole point.
 var urlAttributeSuffixes = []string{"url", "uri"}
 
-// lintWildcardHosts flags `like` patterns whose wildcard falls at or
-// before the end of a URL's authority component. Cedar's `*` matches `/`
-// and `@`, so `https://*.github.com/*` is satisfied by
-// `https://evil.example/x.github.com/y` — the host is not anchored.
+// lintWildcardHosts flags URL allow-list clauses that fail to anchor the
+// host. Cedar's `like` wildcard matches every character, `/` and `@`
+// included, so a pattern whose authority component is not fully literal
+// is satisfied by an attacker URL that embeds the expected host in its
+// path or userinfo: `https://*.github.com/*`, `*.github.com/*`, and
+// `https:*/github.com/*` are all matched by
+// `https://evil.example/x.github.com/y`.
 //
-// The rule only fires where over-matching *widens* access: a `when` clause
-// on a permit, or an `unless` clause on a forbid. The mirror cases
-// (forbid/when, permit/unless) over-match in the safe direction, and
-// flagging them would push operators to narrow a deny-list. Negation
-// inside the clause flips that polarity and is tracked.
+// The rule fires only where over-matching *widens* access — a `when` on
+// a permit, or an `unless` on a forbid. The mirror cases over-match in
+// the safe direction, and flagging them would push operators to narrow a
+// deny-list. Negation flips that polarity and is tracked.
+//
+// Anchoring is judged per attribute per conjunctive group, not per
+// pattern, because `url like "https://github.com/*" && url like "*.json"`
+// is anchored by its first conjunct: the second constrains the same
+// already-anchored value and needs no host of its own. Disjuncts get no
+// such credit — either branch alone can satisfy the clause, so each must
+// anchor on its own.
 func lintWildcardHosts(pl policyUnderLint) []LintFinding {
 	permits := pl.ast.Effect == internalast.EffectPermit
 	var findings []LintFinding
 	for _, cond := range pl.ast.Conditions {
 		widens := permits == (cond.Condition == internalast.ConditionWhen)
-		walkPolarity(cond.Body, widens, func(n internalast.IsNode, widening bool) {
-			like, ok := n.(internalast.NodeTypeLike)
-			if !ok || !widening {
-				return
+		budget := maxURLGroupProduct
+		for _, group := range collectURLGroups(cond.Body, widens, &budget) {
+			for _, unanchored := range unanchoredPaths(group) {
+				findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
+					"matches %s against %s, which does not anchor the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — spell out the full scheme://host/ prefix as literal text and enumerate hosts one clause each",
+					unanchored.path, unanchored.patterns))
 			}
-			path, ok := attributePath(like.Arg)
-			if !ok || !isURLAttribute(path) {
-				return
-			}
-			pattern, err := decodePattern(like.Value)
-			if err != nil || !pattern.wildcardInAuthority() {
-				return
-			}
-			findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
-				"matches %s against %q, whose wildcard falls inside the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — anchor the full scheme://host/ prefix and enumerate hosts one per clause",
-				strings.Join(path, "."), pattern.source))
-		})
+		}
 	}
 	return findings
+}
+
+// urlLikeClause is one `like` test against a URL-valued attribute, in a
+// position where over-matching widens access.
+type urlLikeClause struct {
+	path    string
+	pattern cedarPattern
+}
+
+// maxURLGroupProduct bounds the conjunctive cross-product below. A policy
+// deep enough to exceed it degrades to treating the operands as
+// disjuncts, which demands that each anchors independently — more
+// findings, never fewer, so the bound cannot hide a defect.
+const maxURLGroupProduct = 256
+
+// collectURLGroups reduces a condition body to disjunctive normal form
+// over its URL `like` tests: each returned group is a set of clauses that
+// must hold together, and the groups themselves are alternatives.
+//
+// widening tracks whether over-matching at this node widens the clause.
+// Negation flips it and swaps the roles of `&&` and `||` (De Morgan), so
+// the DNF of a negated subtree comes out correct rather than approximated.
+// A negated `like` contributes nothing: narrowing a clause cannot anchor
+// a host.
+func collectURLGroups(n internalast.IsNode, widening bool, budget *int) [][]urlLikeClause {
+	none := [][]urlLikeClause{nil}
+	if n == nil {
+		return none
+	}
+	switch t := n.(type) {
+	case internalast.NodeTypeNot:
+		return collectURLGroups(t.Arg, !widening, budget)
+	case internalast.NodeTypeAnd:
+		if widening {
+			return crossURLGroups(collectURLGroups(t.Left, true, budget), collectURLGroups(t.Right, true, budget), budget)
+		}
+		// !(A && B) == !A || !B
+		return append(collectURLGroups(t.Left, false, budget), collectURLGroups(t.Right, false, budget)...)
+	case internalast.NodeTypeOr:
+		if !widening {
+			// !(A || B) == !A && !B
+			return crossURLGroups(collectURLGroups(t.Left, false, budget), collectURLGroups(t.Right, false, budget), budget)
+		}
+		return append(collectURLGroups(t.Left, true, budget), collectURLGroups(t.Right, true, budget)...)
+	case internalast.NodeTypeLike:
+		if !widening {
+			return none
+		}
+		path, ok := attributePath(t.Arg)
+		if !ok || !isURLAttribute(path) {
+			return none
+		}
+		pattern, err := decodePattern(t.Value)
+		if err != nil {
+			// Fail closed. decodePattern only fails on a component shape
+			// cedar-go does not currently produce, but if an upstream
+			// encoding change ever made it fail for every pattern, the
+			// alternative — skipping — would turn this rule silently
+			// inert. An undecodable pattern is treated as unanchored so
+			// the failure is loud.
+			pattern = cedarPattern{undecodable: true, source: strings.TrimSuffix(strings.TrimPrefix(string(t.Value.MarshalCedar()), `"`), `"`)}
+		}
+		return [][]urlLikeClause{{{path: strings.Join(path, "."), pattern: pattern}}}
+	}
+
+	// Any other node type (comparisons, `in`, `if`/`then`/`else`,
+	// extension calls) is not boolean structure this function models, so
+	// its children are unioned rather than crossed. Union is the
+	// conservative direction: it requires each nested clause to anchor on
+	// its own.
+	var out [][]urlLikeClause
+	root := true
+	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {
+		if root {
+			root = false
+			return true
+		}
+		out = append(out, collectURLGroups(child, widening, budget)...)
+		return false
+	})
+	if len(out) == 0 {
+		return none
+	}
+	return out
+}
+
+// crossURLGroups distributes a conjunction over two DNF group sets.
+func crossURLGroups(left, right [][]urlLikeClause, budget *int) [][]urlLikeClause {
+	if len(left)*len(right) > *budget {
+		return append(left, right...)
+	}
+	*budget -= len(left) * len(right)
+	out := make([][]urlLikeClause, 0, len(left)*len(right))
+	for _, l := range left {
+		for _, r := range right {
+			merged := make([]urlLikeClause, 0, len(l)+len(r))
+			merged = append(merged, l...)
+			merged = append(merged, r...)
+			out = append(out, merged)
+		}
+	}
+	return out
+}
+
+// unanchoredFinding names one attribute whose patterns, taken together,
+// leave the host unanchored.
+type unanchoredFinding struct {
+	path     string
+	patterns string
+}
+
+// unanchoredPaths reports the attributes in a conjunctive group for which
+// no clause anchors the authority. Anchoring is per attribute: an anchored
+// pattern on `context.input.url` says nothing about `context.input.target`.
+func unanchoredPaths(group []urlLikeClause) []unanchoredFinding {
+	if len(group) == 0 {
+		return nil
+	}
+	anchored := map[string]bool{}
+	patterns := map[string][]string{}
+	var order []string
+	for _, c := range group {
+		if _, seen := patterns[c.path]; !seen {
+			order = append(order, c.path)
+		}
+		patterns[c.path] = append(patterns[c.path], strconv.Quote(c.pattern.source))
+		if c.pattern.anchorsAuthority() {
+			anchored[c.path] = true
+		}
+	}
+	var out []unanchoredFinding
+	for _, path := range order {
+		if anchored[path] {
+			continue
+		}
+		out = append(out, unanchoredFinding{path: path, patterns: strings.Join(patterns[path], " / ")})
+	}
+	return out
 }
 
 // isURLAttribute reports whether the final segment of an attribute path
@@ -617,52 +799,16 @@ func isURLAttribute(path []string) bool {
 	return false
 }
 
-// walkPolarity walks a condition body, tracking whether each node sits in
-// a position where matching MORE input widens the clause's effect.
-// Boolean structure is handled explicitly; every other node type inherits
-// its parent's polarity, which is why an `if`/`then`/`else` is walked
-// conservatively at the inherited polarity rather than guessed at.
-func walkPolarity(n internalast.IsNode, widening bool, fn func(internalast.IsNode, bool)) {
-	if n == nil {
-		return
-	}
-	switch t := n.(type) {
-	case internalast.NodeTypeNot:
-		walkPolarity(t.Arg, !widening, fn)
-		return
-	case internalast.NodeTypeAnd:
-		walkPolarity(t.Left, widening, fn)
-		walkPolarity(t.Right, widening, fn)
-		return
-	case internalast.NodeTypeOr:
-		walkPolarity(t.Left, widening, fn)
-		walkPolarity(t.Right, widening, fn)
-		return
-	}
-
-	fn(n, widening)
-
-	// Inspect visits n itself first, then its direct children. Recursing
-	// through walkPolarity per child (and returning false so Inspect does
-	// not descend again) keeps negation tracking alive below node types
-	// this switch does not know about.
-	root := true
-	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {
-		if root {
-			root = false
-			return true
-		}
-		walkPolarity(child, widening, fn)
-		return false
-	})
-}
-
 // cedarPattern is a decoded `like` pattern: the literal text with every
 // wildcard elided, plus the byte offsets at which the wildcards sat.
 type cedarPattern struct {
 	flat      string
 	wildcards []int
 	source    string
+	// undecodable marks a pattern whose component list could not be read.
+	// It never anchors, so the rule degrades visibly instead of going
+	// silently inert. See collectURLGroups.
+	undecodable bool
 }
 
 // decodePattern reads a types.Pattern through its JSON encoding, which is
@@ -678,7 +824,7 @@ func decodePattern(p cedartypes.Pattern) (cedarPattern, error) {
 		return cedarPattern{}, err
 	}
 	var sb strings.Builder
-	out := cedarPattern{source: strings.Trim(string(p.MarshalCedar()), `"`)}
+	out := cedarPattern{source: strings.TrimSuffix(strings.TrimPrefix(string(p.MarshalCedar()), `"`), `"`)}
 	for _, comp := range comps {
 		var literal struct {
 			Literal *string `json:"Literal"`
@@ -700,27 +846,43 @@ func decodePattern(p cedartypes.Pattern) (cedarPattern, error) {
 	return out, nil
 }
 
-// wildcardInAuthority reports whether any wildcard sits at or before the
-// end of the URL authority. A pattern with no "://" is not treated as
-// URL-anchored at all: `"*sk-*"` is a substring probe, not a host match.
-func (p cedarPattern) wildcardInAuthority() bool {
-	schemeSep := strings.Index(p.flat, "://")
-	if schemeSep < 0 {
+// anchorsAuthority reports whether the pattern pins the URL authority
+// with literal text: every byte up to and including the character that
+// terminates the authority must be literal, so no wildcard can extend the
+// host.
+//
+// The authority begins after a literal "://" when the pattern has one and
+// at offset zero when it does not — a scheme-relative pattern such as
+// `*.github.com/*` is just as unanchored, and a pattern that splits the
+// separator (`https:*/github.com/*`) never produces the literal "://" at
+// all. Both were missed by an earlier formulation that only looked for a
+// wildcard AFTER a literal "://"; anchoring is the property worth
+// testing, not the presence of a wildcard.
+func (p cedarPattern) anchorsAuthority() bool {
+	if p.undecodable {
 		return false
 	}
-	authStart := schemeSep + len("://")
-	authEnd := len(p.flat)
-	if rel := strings.IndexAny(p.flat[authStart:], "/?#"); rel >= 0 {
-		authEnd = authStart + rel
+	if len(p.wildcards) == 0 {
+		return true
 	}
-	for _, at := range p.wildcards {
-		// <= authEnd, not <: a wildcard flush against the closing `/`
-		// (`https://github.com*/x`) still extends the host.
-		if at <= authEnd {
-			return true
+	first := p.wildcards[0]
+	authStart := 0
+	if i := strings.Index(p.flat, "://"); i >= 0 {
+		authStart = i + len("://")
+		if first < authStart {
+			// The scheme or separator itself contains a wildcard.
+			return false
 		}
 	}
-	return false
+	rel := strings.IndexAny(p.flat[authStart:], "/?#")
+	if rel < 0 {
+		// The authority is never terminated by literal text, so the
+		// trailing wildcard runs into the host.
+		return false
+	}
+	// Strictly greater: a wildcard flush against the terminator
+	// (`https://github.com*/x`) still extends the host.
+	return first > authStart+rel
 }
 
 // normaliseFindings sorts findings deterministically and drops exact
@@ -732,8 +894,11 @@ func normaliseFindings(findings []LintFinding) []LintFinding {
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
 		a, b := findings[i], findings[j]
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
 		if a.PolicyID != b.PolicyID {
-			return a.PolicyID < b.PolicyID
+			return naturalLess(a.PolicyID, b.PolicyID)
 		}
 		if a.Rule != b.Rule {
 			return a.Rule < b.Rule

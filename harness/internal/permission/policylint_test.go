@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,27 +163,43 @@ func TestLintPolicySetStructure_ScopeEntities(t *testing.T) {
 
 // --- wildcard-host rule ----------------------------------------------
 
-func TestWildcardInAuthority(t *testing.T) {
+func TestWildcardHostPattern_Anchoring(t *testing.T) {
 	cases := []struct {
 		pattern string
-		want    bool
+		flagged bool
 	}{
+		// Fully-anchored: every byte of scheme + host is literal.
 		{`https://github.com/*`, false},
 		{`https://api.github.com/*`, false},
 		{`https://github.com/anthropics/*`, false},
-		{`*sk-*`, false},
-		{`*rm -rf*`, false},
+		{`https://github.com`, false},
+		{`https://github.com?*`, false},
+		{`https://github.com/x?q=*`, false},
+		{`https://github.com/#*`, false},
+
+		// Wildcard inside the host.
 		{`https://*.github.com/*`, true},
 		{`https://*github.com*`, true},
 		{`https://github.com*/x`, true},
 		{`https://*`, true},
+
+		// Wildcard in or before the scheme.
 		{`*://github.com/*`, true},
 		{`*https://github.com/*`, true},
-		{`https://github.com`, false},
-		{`https://github.com?*`, false},
-		// A wildcard only in the query or fragment leaves the host anchored.
-		{`https://github.com/x?q=*`, false},
-		{`https://github.com/#*`, false},
+
+		// Regressions for two bypasses an earlier formulation missed: it
+		// gated on a literal "://" surviving in the pattern, so a
+		// scheme-relative pattern and a pattern that splits the separator
+		// both slipped through. Both are matched by
+		// https://evil.example/x.github.com/y.
+		{`*.github.com/*`, true},
+		{`*github.com*`, true},
+		{`github.com*`, true},
+		{`https:*/github.com/*`, true},
+
+		// A substring probe over a URL is not an anchored allow-list
+		// either; in a widening position it grants everything.
+		{`*sk-*`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.pattern, func(t *testing.T) {
@@ -190,13 +207,79 @@ func TestWildcardInAuthority(t *testing.T) {
 				when { context.input.url like "` + tc.pattern + `" };`
 			findings := LintPolicySetStructure(mustParse(t, src))
 			got := len(findings) > 0
-			if got != tc.want {
-				t.Fatalf("pattern %q: flagged = %v, want %v (%v)", tc.pattern, got, tc.want, findings)
+			if got != tc.flagged {
+				t.Fatalf("pattern %q: flagged = %v, want %v (%v)", tc.pattern, got, tc.flagged, findings)
 			}
 			if got && findings[0].Rule != LintRuleWildcardHostPattern {
 				t.Fatalf("pattern %q: rule = %s, want %s", tc.pattern, findings[0].Rule, LintRuleWildcardHostPattern)
 			}
 		})
+	}
+}
+
+// Anchoring is judged per attribute per conjunctive group. A second
+// constraint on an already-anchored attribute is not itself a host match,
+// and demanding that it anchor too would make the fail-closed rule reject
+// a correct policy.
+func TestWildcardHostPattern_ConjunctionCredit(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "second conjunct rides the first's anchor",
+			body: `context.input.url like "https://github.com/*" && context.input.url like "*.json"`,
+			want: false,
+		},
+		{
+			name: "neither conjunct anchors",
+			body: `context.input.url like "*github.com*" && context.input.url like "*.json"`,
+			want: true,
+		},
+		{
+			name: "disjuncts get no credit from each other",
+			body: `context.input.url like "https://github.com/*" || context.input.url like "*.github.com/*"`,
+			want: true,
+		},
+		{
+			name: "an anchor on one attribute does not cover another",
+			body: `context.input.url like "https://github.com/*" && context.input.callbackUri like "*.github.com/*"`,
+			want: true,
+		},
+		{
+			name: "negated conjunct cannot anchor",
+			body: `context.input.url like "*github.com*" && !(context.input.url like "*evil*")`,
+			want: true,
+		},
+		{
+			name: "every disjunct anchored",
+			body: `context.input.url like "https://github.com/*" || context.input.url like "https://gitlab.com/*"`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+				when { ` + tc.body + ` };`
+			findings := LintPolicySetStructure(mustParse(t, src))
+			if got := len(findings) > 0; got != tc.want {
+				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
+			}
+		})
+	}
+}
+
+// De Morgan: negation swaps the roles of && and ||, so the DNF of a
+// negated subtree must come out correct rather than approximated.
+func TestWildcardHostPattern_DeMorgan(t *testing.T) {
+	// forbid/unless widens, and !(A || B) == !A && !B, so the inner
+	// disjuncts become conjuncts: one anchor covers the group.
+	src := `forbid (principal, action, resource) unless {
+		!(!(context.input.url like "https://github.com/*") || !(context.input.url like "*.json"))
+	};`
+	if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
+		t.Fatalf("expected the anchored conjunct to cover the group, got %v", findings)
 	}
 }
 
@@ -725,4 +808,107 @@ func sameKeys(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// A structural-tier abort must leave the same audit evidence as a
+// registry-tier one. It previously did not: LoadPolicySetFromFile
+// returned its error before newPolicyEngineFromConfig could emit
+// anything, so the simpler and more common defect class — a misspelled
+// attribute — aborted the run silently while docs promised otherwise.
+func TestNewPolicyEngine_StructuralErrorIsAudited(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "structural.cedar")
+	src := `forbid (principal, action, resource) when { context.inputs.command like "*rm*" };`
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &fakeEmitter{}
+	_, err := New(
+		types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: path, Fallback: "deny-all"},
+		PolicyEngineEnv{ToolSchemas: harnessSchemas(), Security: rec},
+		func(string) (PermissionPolicy, error) { return NewDenyAll(), nil },
+	)
+	if err == nil {
+		t.Fatal("expected construction to abort")
+	}
+	events := rec.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one policy_lint event, got %+v", events)
+	}
+	if events[0].event != "policy_lint" || events[0].level != "error" {
+		t.Fatalf("event = %+v, want an error-level policy_lint", events[0])
+	}
+	if events[0].data["rule"] != LintRuleUnknownContextAttribute {
+		t.Fatalf("event does not carry the rule: %+v", events[0].data)
+	}
+}
+
+// The generic descent in collectURLGroups hands each child back to a
+// fresh polarity-aware walk. Node types with more than one child are the
+// ones that stress it, and neither `&&`/`||`/`!` (handled explicitly) nor
+// a bare `like` reaches that branch at all.
+func TestWildcardHostPattern_MultiChildNodes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "like nested in an if/then/else",
+			body: `if principal.mode == "execution" then context.input.url like "*.github.com/*" else false`,
+			want: true,
+		},
+		{
+			name: "anchored like nested in an if/then/else",
+			body: `if principal.mode == "execution" then context.input.url like "https://github.com/*" else false`,
+			want: false,
+		},
+		{
+			name: "like inside a set literal's element",
+			body: `[context.input.url like "*.github.com/*"].contains(true)`,
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `permit (principal, action, resource) when { ` + tc.body + ` };`
+			findings := LintPolicySetStructure(mustParse(t, src))
+			if got := len(findings) > 0; got != tc.want {
+				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
+			}
+		})
+	}
+}
+
+// normaliseFindings exists to collapse the same defect reported from
+// several disjuncts of one clause.
+func TestLint_DuplicateFindingsCollapse(t *testing.T) {
+	src := `forbid (principal, action, resource) when {
+		context.inputs.a like "x" || context.inputs.a like "y" || context.inputs.a like "z"
+	};`
+	assertRules(t, LintPolicySetStructure(mustParse(t, src)), LintRuleUnknownContextAttribute+":error")
+}
+
+// Findings are ordered by source line so a concatenated policy file —
+// the documented way to compose policies — reports top to bottom. A
+// plain string sort over cedar-go's "policy0".."policyN" IDs puts
+// "policy10" before "policy2", which scrambles any file past ten
+// statements.
+func TestLint_FindingsFollowSourceOrder(t *testing.T) {
+	var sb strings.Builder
+	for i := range 12 {
+		fmt.Fprintf(&sb, "forbid (principal, action, resource) when { context.bad%02d == \"x\" };\n", i)
+	}
+	findings := LintPolicySetStructure(mustParse(t, sb.String()))
+	if len(findings) != 12 {
+		t.Fatalf("expected 12 findings, got %d: %v", len(findings), findings)
+	}
+	for i, f := range findings {
+		if f.Line != i+1 {
+			t.Fatalf("finding %d is at line %d, want %d — order does not follow the file", i, f.Line, i+1)
+		}
+		if want := fmt.Sprintf("context.bad%02d", i); !strings.Contains(f.Message, want) {
+			t.Fatalf("finding %d names %q, want %s", i, f.Message, want)
+		}
+	}
 }

@@ -103,12 +103,13 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 		return nil, errors.New("permission: policy-engine fallback may not itself be policy-engine")
 	}
 
-	// LoadPolicySetFromFile has already applied the structural lint tier
-	// and rejected its errors. Re-running it here costs a pure AST walk
-	// and is what surfaces the structural WARNINGS (an @stirrupLintIgnore
-	// downgrade) on the same audit path as the registry-aware tier.
-	source := fmt.Sprintf("policy file %q", cfg.PolicyFile)
-	policySet, err := LoadPolicySetFromFile(cfg.PolicyFile)
+	// Parse and lint as two steps rather than going through
+	// LoadPolicySetFromFile: that entry point aborts on an error-severity
+	// structural finding before this function could emit anything, which
+	// would leave the audit trail silent for exactly the abort the linter
+	// exists to cause. Emitting first means a run the linter killed leaves
+	// the same evidence as one that continued.
+	policySet, err := parsePolicySetFile(cfg.PolicyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -117,9 +118,10 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 		LintPolicySetTools(policySet, env.ToolSchemas)...,
 	)
 	emitLintFindings(env.Security, cfg.PolicyFile, findings)
-	if err := LintErrors(source, findings); err != nil {
+	if err := LintErrors(policySourceName(cfg.PolicyFile), findings); err != nil {
 		return nil, err
 	}
+	// LintErrors returned nil, so everything left is warning-severity.
 
 	fb, err := fallback(fallbackType)
 	if err != nil {
@@ -132,6 +134,7 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 	return NewPolicyEnginePolicy(PolicyEngineConfig{
 		PolicySet:      policySet,
 		Fallback:       fb,
+		LintWarnings:   findings,
 		Security:       env.Security,
 		RunID:          env.RunID,
 		Mode:           env.Mode,

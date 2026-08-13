@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -147,7 +148,7 @@ func buildComponents(
 		return nil, fmt.Errorf("build permission policy: %w", err)
 	}
 	if sink != nil {
-		sink.ok("permission-policy", fmt.Sprintf("%s policy constructed", config.PermissionPolicy.Type))
+		sink.ok("permission-policy", permissionPolicyDetail(config.PermissionPolicy.Type, pp))
 	}
 
 	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts, debugRedactionDisabled)
@@ -169,4 +170,30 @@ func buildComponents(
 		traceEmitter:     te,
 		resolvedHeaders:  resolvedHeaders,
 	}, nil
+}
+
+// permissionPolicyDetail renders the permission-policy construction step.
+// Warning-severity policy-lint findings are appended because Preflight
+// builds its SecurityLogger over io.Discard — a dry run must not write to
+// a real run's audit trail — so the policy_lint events the linter emits
+// go nowhere there. Without this, an operator dry-running a policy file
+// to review it sees silence for every @stirrupLintIgnore-accepted risk
+// and every attribute the linter could not verify.
+func permissionPolicyDetail(policyType string, pp permission.PermissionPolicy) string {
+	detail := fmt.Sprintf("%s policy constructed", policyType)
+	reporter, ok := pp.(interface {
+		LintWarnings() []permission.LintFinding
+	})
+	if !ok {
+		return detail
+	}
+	warnings := reporter.LintWarnings()
+	if len(warnings) == 0 {
+		return detail
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		parts = append(parts, w.String())
+	}
+	return fmt.Sprintf("%s; %d policy-lint warning(s): %s", detail, len(warnings), strings.Join(parts, "; "))
 }

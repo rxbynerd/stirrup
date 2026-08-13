@@ -572,7 +572,7 @@ every load path including `--dry-run`:
 | `unknown-principal-attribute` | A `principal.<attr>` the request never carries (only `runId`, `mode`, `parentRunId`, `capabilities` exist). |
 | `no-such-attribute` | Any attribute access on the action or resource entity; neither carries attributes. Match on the entity ID instead. |
 | `unknown-scope-entity` | A scope clause naming an entity type the harness never mints (`tool::` for `Tool::`, `Agent::` for `User::`) or an action ID missing the `tool:` prefix. |
-| `wildcard-host-pattern` | A `like` URL pattern whose wildcard falls at or before the end of the authority. |
+| `wildcard-host-pattern` | A `like` URL pattern that does not pin the whole authority with literal text — a wildcard in or before the host, including scheme-relative (`*.github.com/*`) and split-separator (`https:*/github.com/*`) spellings. |
 
 **Registry-aware tier** — runs at policy-engine construction, once the
 run's tool set (built-ins plus every MCP-imported tool) is known:
@@ -587,7 +587,11 @@ The registry-aware tier is skipped under `--dry-run`, which builds
 components against an empty registry; the structural tier still runs
 there. A `--dry-run` pass is therefore not a guarantee that the
 registry-aware tier will pass, but the tier still fires before the
-first model turn and before any workspace mutation.
+first model turn and before any workspace mutation. Warning-severity
+findings are printed in the `permission-policy` step of the dry-run
+report, which is otherwise the one place they would go unseen — a dry
+run writes its security events to `io.Discard` so it cannot pollute a
+real run's audit trail.
 
 Both tiers emit a `policy_lint` security event per finding — errors
 included, so a run the linter aborted leaves the same evidence as one
@@ -609,10 +613,17 @@ permit (
 ```
 
 The annotation is per-policy and per-rule; its value is a
-comma-separated rule list. An honoured ignore is never silent — the
-finding is downgraded to a warning and still emitted as a
-`policy_lint` event, so an accepted risk stays visible in the audit
-trail. There is no flag that disables the linter wholesale.
+comma-separated rule list. It covers **every** finding of that rule in
+that policy statement, present and future — adding a second, unrelated
+defect of the same class to the same `when` clause later will be
+downgraded too, with no new signal. Keep ignoring policies small and
+single-purpose for that reason.
+
+An honoured ignore is never silent: the finding is downgraded to a
+warning, still emitted as a `policy_lint` event, and still printed in
+the `permission-policy` step of a `--dry-run` report — so an accepted
+risk stays visible both in the audit trail and at review time. There is
+no flag that disables the linter wholesale.
 
 ### Limits
 
