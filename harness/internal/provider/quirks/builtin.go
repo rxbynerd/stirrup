@@ -347,5 +347,34 @@ func BuiltinRules() []Rule {
 			LastVerified: Date("2026-07-01"),
 			Apply:        applyAnthropicNoSamplingParamsClass,
 		},
+
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.6*",
+			Description:  "Gemini 3.6: tool results on role:\"user\" (role:\"function\" is a 400); omit deprecated sampling params; thinkingLevel minimal/low/medium/high",
+			LastVerified: Date("2026-08-13"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"minimal", "low", "medium", "high",
+				)
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.7*",
+			Description:  "Gemini 3.7: tool results on role:\"user\" (role:\"function\" is a 400); omit deprecated sampling params; thinkingLevel low/medium/high (minimal is a 400)",
+			LastVerified: Date("2026-08-13"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"low", "medium", "high",
+				)
+			},
+		},
 	}
 }

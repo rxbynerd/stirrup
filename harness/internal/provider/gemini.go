@@ -53,6 +53,12 @@ type GeminiAdapter struct {
 	safety     []types.GeminiSafetySetting
 	httpClient *http.Client
 
+	// thinkingLevel is the operator-configured
+	// generationConfig.thinkingConfig.thinkingLevel; empty leaves the
+	// model on its own default. Which levels the resolved model accepts
+	// is a quirk, checked per request in BuildGenerateContentRequest.
+	thinkingLevel string
+
 	// baseURLOverride points the adapter at an httptest.Server; empty in
 	// production, where the URL is derived from projectID + location.
 	baseURLOverride string
@@ -82,12 +88,14 @@ func NewGeminiAdapter(
 	bearer credential.BearerTokenFunc,
 	projectID, location string,
 	safety []types.GeminiSafetySetting,
+	thinkingLevel string,
 ) *GeminiAdapter {
 	return &GeminiAdapter{
-		bearer:    bearer,
-		projectID: projectID,
-		location:  location,
-		safety:    safety,
+		bearer:        bearer,
+		projectID:     projectID,
+		location:      location,
+		safety:        safety,
+		thinkingLevel: thinkingLevel,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -192,7 +200,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
 	}
 
-	body, _, err := BuildGenerateContentRequest(params, g.safety, q)
+	body, _, err := BuildGenerateContentRequest(params, g.safety, g.thinkingLevel, q)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)

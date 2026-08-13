@@ -19,8 +19,11 @@ type generateContentRequest struct {
 }
 
 // geminiContent is one turn or one tool exchange in the Contents array.
-// Roles: "user" (input), "model" (assistant output), "function" (tool
-// results, on a separate Content entry from surrounding user text).
+// Roles: "user" (input), "model" (assistant output), and one of "function"
+// or "user" for tool results, on a separate Content entry from surrounding
+// user text — Gemini 3.6 dropped "function" from the accepted role set, so
+// the role comes from the resolved quirks (GeminiBehaviourFlags.
+// ToolResultRole) rather than a literal here.
 // SystemInstruction also uses Content, with role omitted.
 type geminiContent struct {
 	Role  string       `json:"role,omitempty"`
@@ -126,8 +129,17 @@ type geminiSafetySetting struct {
 // types so the JSON encoder can omit unset values (omitempty alone is
 // ambiguous for zero floats).
 type geminiGenerationConfig struct {
-	Temperature     *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Temperature     *float64              `json:"temperature,omitempty"`
+	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// geminiThinkingConfig selects how much the model thinks before answering.
+// thinkingLevel is the Gemini 3 successor to the 2.x thinkingBudget token
+// count; the harness exposes only the level because a budget in tokens is
+// not portable across the families the adapter targets.
+type geminiThinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel,omitempty"`
 }
 
 // generateContentChunk is a partial GenerateContentResponse delivered as

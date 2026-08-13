@@ -297,7 +297,7 @@ func TestReplayFields_Gemini3_PreservesThoughtSignature(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil, "")
 	adapter.baseURLOverride = srv.URL
 	adapter.Logger = logger
 
@@ -383,7 +383,7 @@ func TestReplayFields_Gemini25_NoCaptureWhenNoRuleFires(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil, "")
 	adapter.baseURLOverride = srv.URL
 	adapter.Logger = logger
 

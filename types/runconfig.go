@@ -624,6 +624,16 @@ type ProviderConfig struct {
 	// unacceptable.
 	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
 
+	// GeminiThinkingLevel sets generationConfig.thinkingConfig.thinkingLevel
+	// for the "gemini" provider: "minimal", "low", "medium", or "high".
+	// Empty means "say nothing on the wire" and the model applies its own
+	// default (medium for the 3.6/3.7 Flash families). Which levels a
+	// given model accepts is model-specific — Gemini 3.7 Flash rejects
+	// "minimal" with a 400 — so the quirks registry carries a per-model
+	// allow-list and the adapter fails the request before any wire bytes
+	// are sent. See docs/provider-quirks.md.
+	GeminiThinkingLevel string `json:"geminiThinkingLevel,omitempty"`
+
 	// Retry overrides the per-call retry policy applied by adapters that
 	// honour it. Nil = use defaults. Defaults are filled in by
 	// ValidateRunConfig so downstream consumers always see a populated
@@ -1450,6 +1460,18 @@ var validGeminiSafetyThresholds = map[string]bool{
 	"BLOCK_LOW_AND_ABOVE":    true,
 	"BLOCK_MEDIUM_AND_ABOVE": true,
 	"BLOCK_ONLY_HIGH":        true,
+}
+
+// validGeminiThinkingLevels enumerates the thinkingLevel values the
+// Gemini REST enum defines, minus THINKING_LEVEL_UNSPECIFIED (which the
+// empty string already expresses). This is the union across models —
+// per-model acceptance is narrower and lives in the quirks registry,
+// because Gemini 3.7 Flash rejects "minimal" while 3.6 Flash accepts it.
+var validGeminiThinkingLevels = map[string]bool{
+	"minimal": true,
+	"low":     true,
+	"medium":  true,
+	"high":    true,
 }
 
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
@@ -3812,10 +3834,11 @@ func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string
 }
 
 // validateGeminiProviderFields enforces the cross-field constraints on
-// the four Vertex AI Gemini fields (GCPProject, GCPLocation,
-// GCPCredentialsFile, GeminiSafetySettings). Guard rails:
+// the five Vertex AI Gemini fields (GCPProject, GCPLocation,
+// GCPCredentialsFile, GeminiSafetySettings, GeminiThinkingLevel).
+// Guard rails:
 //
-//   - The four fields are scoped to type="gemini". Setting any of
+//   - The five fields are scoped to type="gemini". Setting any of
 //     them on a non-gemini provider is a hard error so a stale value
 //     does not silently linger across a provider-type change.
 //   - "gemini" requires both GCPProject and GCPLocation; the URL the
@@ -3833,6 +3856,9 @@ func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string
 //   - Each GeminiSafetySetting must reference a category and threshold
 //     from the closed Vertex AI set; values that pass through to the
 //     API verbatim would otherwise produce confusing 400s.
+//   - GeminiThinkingLevel must name a level the REST enum defines.
+//     Whether the *selected model* accepts that level is narrower still
+//     and belongs to the quirks registry, which knows the model name.
 func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]string) {
 	if cfg.Type != "gemini" {
 		// Reject leakage of gemini-shaped fields onto non-gemini providers.
@@ -3847,6 +3873,9 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		}
 		if len(cfg.GeminiSafetySettings) > 0 {
 			*errs = append(*errs, fmt.Sprintf("%s.geminiSafetySettings is only valid for provider type %q", path, "gemini"))
+		}
+		if cfg.GeminiThinkingLevel != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.geminiThinkingLevel is only valid for provider type %q", path, "gemini"))
 		}
 		return
 	}
@@ -3909,6 +3938,12 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		} else if !validGeminiSafetyThresholds[s.Threshold] {
 			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
 		}
+	}
+
+	if cfg.GeminiThinkingLevel != "" && !validGeminiThinkingLevels[cfg.GeminiThinkingLevel] {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.geminiThinkingLevel %q must be one of minimal, low, medium, high",
+			path, cfg.GeminiThinkingLevel))
 	}
 }
 

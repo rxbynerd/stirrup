@@ -30,6 +30,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
 	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
 	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
+	f.String("gemini-thinking-level", "", "Gemini thinking level: \"minimal\", \"low\", \"medium\", or \"high\". Empty leaves the model on its default. Accepted levels are model-specific — Gemini 3.7 Flash rejects \"minimal\".")
 
 	f.String("anthropic-federation-rule-id", "", "Anthropic federation rule ID (`fdrl_...`). Implies `credential.type=anthropic-wif` when set. Env fallback: ANTHROPIC_FEDERATION_RULE_ID.")
 	f.String("anthropic-organization-id", "", "Anthropic organization UUID. Required with WIF. Env fallback: ANTHROPIC_ORGANIZATION_ID.")

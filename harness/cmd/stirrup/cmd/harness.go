@@ -119,9 +119,10 @@ type harnessCLIOptions struct {
 
 	// Vertex AI Gemini provider fields; meaningful only when
 	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
-	GCPProject         string
-	GCPLocation        string
-	GCPCredentialsFile string
+	GCPProject          string
+	GCPLocation         string
+	GCPCredentialsFile  string
+	GeminiThinkingLevel string
 
 	// Anthropic Workload Identity Federation fields; meaningful only
 	// when ProviderType == "anthropic". Any of the four ID fields being
@@ -365,6 +366,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.Provider.GCPProject = opts.GCPProject
 		config.Provider.GCPLocation = opts.GCPLocation
 		config.Provider.GCPCredentialsFile = opts.GCPCredentialsFile
+		config.Provider.GeminiThinkingLevel = opts.GeminiThinkingLevel
 	}
 
 	// --gcp-credentials-file implies credential.type=gcp-service-account
@@ -835,6 +837,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// path; the flag-only path gets it for free from the cobra default.
 	if cfg.Provider.Type == "gemini" && cfg.Provider.GCPLocation == "" {
 		cfg.Provider.GCPLocation = "global"
+	}
+	if changed("gemini-thinking-level") {
+		cfg.Provider.GeminiThinkingLevel, _ = f.GetString("gemini-thinking-level")
 	}
 	if changed("gcp-credentials-file") {
 		path, _ := f.GetString("gcp-credentials-file")

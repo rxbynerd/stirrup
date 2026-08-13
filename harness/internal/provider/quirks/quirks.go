@@ -320,6 +320,70 @@ type GeminiBehaviourFlags struct {
 	// structurally for every model — this list is for rejections beyond
 	// that floor (e.g. some Gemini families also reject pattern/format).
 	SchemaUnsupportedFeatures []string `json:"schemaUnsupportedFeatures"`
+
+	// ToolResultRole selects the contents[].role the adapter attaches to a
+	// tool result. Default (ToolResultRoleFunction) is the historical
+	// role:"function", which Gemini 3.6 and later reject outright with a
+	// 400 naming the valid roles — see the gemini-3.6*/gemini-3.7* rules.
+	ToolResultRole GeminiToolResultRole `json:"toolResultRole"`
+
+	// OmitSamplingParams suppresses generationConfig.temperature for models
+	// that deprecate the sampling knobs. The API tolerates and ignores them
+	// rather than 400-ing, so this is hygiene, not a compatibility fix: it
+	// stops a trace from claiming a temperature the model never applied.
+	OmitSamplingParams bool `json:"omitSamplingParams"`
+
+	// ThinkingLevels is the allow-list of generationConfig.thinkingConfig
+	// .thinkingLevel values the resolved model accepts. Non-empty means the
+	// adapter rejects a configured level outside the list before any wire
+	// bytes are sent; empty (the default) passes the level through
+	// unvalidated, so a model whose acceptance has not been probed is never
+	// blocked by a guess.
+	ThinkingLevels []string `json:"thinkingLevels"`
+}
+
+// GeminiToolResultRole enumerates the contents[].role values a tool result
+// can ride on.
+type GeminiToolResultRole int
+
+const (
+	ToolResultRoleFunction GeminiToolResultRole = 0 // role:"function"; pre-3.6 default
+	ToolResultRoleUser     GeminiToolResultRole = 1 // role:"user"; required from 3.6 on
+)
+
+// MarshalJSON renders GeminiToolResultRole as the literal wire role for the
+// CLI introspection surface.
+func (r GeminiToolResultRole) MarshalJSON() ([]byte, error) {
+	switch r {
+	case ToolResultRoleFunction:
+		return []byte(`"function"`), nil
+	case ToolResultRoleUser:
+		return []byte(`"user"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(r))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON. Rejects unknown strings
+// rather than silently zero-ing the field.
+func (r *GeminiToolResultRole) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"function"`:
+		*r = ToolResultRoleFunction
+	case `"user"`:
+		*r = ToolResultRoleUser
+	default:
+		return fmt.Errorf("quirks: unknown GeminiToolResultRole %.64s", data)
+	}
+	return nil
+}
+
+// WireRole is the contents[].role string for r.
+func (r GeminiToolResultRole) WireRole() string {
+	if r == ToolResultRoleUser {
+		return "user"
+	}
+	return "function"
 }
 
 // GeminiStreamArgsShape enumerates the streamFunctionCallArguments shapes.

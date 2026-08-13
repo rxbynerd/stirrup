@@ -60,7 +60,7 @@ func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 	if q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != quirks.StreamArgsOff {
 		t.Fatalf("gemini-2.5-pro: expected StreamArgsOff, got %v (Gemini base rule not firing)", q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape)
 	}
-	body, _, err := BuildGenerateContentRequest(params, nil, q)
+	body, _, err := BuildGenerateContentRequest(params, nil, "", q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
 	if q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != quirks.StreamArgsOff {
 		t.Fatalf("gemini-3.1-pro-preview: expected StreamArgsOff, got %v (post-#191 default violated)", q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape)
 	}
-	body, _, err := BuildGenerateContentRequest(params, nil, q)
+	body, _, err := BuildGenerateContentRequest(params, nil, "", q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil, "")
 	adapter.baseURLOverride = srv.URL
 	adapter.Logger = logger
 
@@ -165,7 +165,7 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 	srv := geminiQuirksLogStubServer(t)
 	defer srv.Close()
 
-	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil, "")
 	adapter.baseURLOverride = srv.URL
 	adapter.Logger = nil
 
@@ -192,11 +192,11 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
 	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
 
-	pre, _, err := BuildGenerateContentRequest(params, nil, quirks.ProviderQuirks{})
+	pre, _, err := BuildGenerateContentRequest(params, nil, "", quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("zero-value build: %v", err)
 	}
-	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview"))
+	post, _, err := BuildGenerateContentRequest(params, nil, "", quirks.DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview"))
 	if err != nil {
 		t.Fatalf("registry-resolved build: %v", err)
 	}

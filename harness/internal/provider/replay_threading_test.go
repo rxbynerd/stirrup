@@ -700,11 +700,11 @@ func TestTranslateMessagesAnthropic_IgnoresMessageReplayFields(t *testing.T) {
 // the typed block-level ThoughtSignature, never the message-level
 // ReplayFields map.
 func TestTranslateMessagesGemini_IgnoresMessageReplayFields(t *testing.T) {
-	contentsWithout, _, err := translateMessagesGemini("sys", replayLeakageMessages(false), quirks.StructuredToolResultCapability{})
+	contentsWithout, _, err := translateMessagesGemini("sys", replayLeakageMessages(false), quirks.StructuredToolResultCapability{}, "function")
 	if err != nil {
 		t.Fatalf("translate without: %v", err)
 	}
-	contentsWith, _, err := translateMessagesGemini("sys", replayLeakageMessages(true), quirks.StructuredToolResultCapability{})
+	contentsWith, _, err := translateMessagesGemini("sys", replayLeakageMessages(true), quirks.StructuredToolResultCapability{}, "function")
 	if err != nil {
 		t.Fatalf("translate with: %v", err)
 	}

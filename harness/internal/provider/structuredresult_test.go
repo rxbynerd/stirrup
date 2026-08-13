@@ -199,7 +199,7 @@ func TestGeminiStructuredToolResult_CapabilityOn(t *testing.T) {
 		Model:    "gemini-2.5-pro",
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
-	}, nil, q)
+	}, nil, "", q)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestGeminiStructuredToolResult_TextByDefault(t *testing.T) {
 		Model:    "gemini-2.5-pro",
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
-	}, nil, zero)
+	}, nil, "", zero)
 	if err != nil {
 		t.Fatalf("build with-structured: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestGeminiStructuredToolResult_TextByDefault(t *testing.T) {
 		Model:    "gemini-2.5-pro",
 		Tools:    anthropicTools(),
 		Messages: textOnlyToolResultMessages(),
-	}, nil, zero)
+	}, nil, "", zero)
 	if err != nil {
 		t.Fatalf("build text-only: %v", err)
 	}
