@@ -65,11 +65,16 @@ func geminiContentRoles(t *testing.T, body []byte) []string {
 }
 
 // TestGeminiQuirks_ToolResultRole_ByFamily pins the model-gated role
-// switch. Gemini 3.6 removed "function" from the accepted role set, so
-// the 3.6/3.7 families must place a functionResponse on role:"user"
-// while every earlier family keeps the historical role. A regression
-// here is not cosmetic: the wrong role is an HTTP 400 that kills the
-// agentic loop on its second turn.
+// switch: the 3.6/3.7 families place a functionResponse on role:"user"
+// while every earlier family keeps the historical role.
+//
+// The boundary comes from the AI Studio surface, which stopped
+// accepting role:"function" at 3.6; Vertex, which this adapter calls,
+// still accepts either role for all three families. Both roles were
+// probed on both surfaces on 2026-08-13, so this test pins a choice
+// made for forward-compatibility rather than a live Vertex rejection —
+// which is exactly why it needs a test: nothing in a Vertex run fails
+// today if the flag regresses.
 func TestGeminiQuirks_ToolResultRole_ByFamily(t *testing.T) {
 	cases := []struct {
 		model string

@@ -1,4 +1,4 @@
-# synthetic: derived from BuildGenerateContentRequest + DefaultRegistry().Resolve("gemini", "gemini-3.6-flash") — the harness has no live Vertex AI capture for this family. Pins the two divergences verified against the AI Studio v1beta generateContent surface on 2026-08-13: a tool result rides on role:"user" (role:"function" is a hard 400 from 3.6 on), and generationConfig carries no temperature because the sampling knobs are deprecated for this family.
+# synthetic: derived from BuildGenerateContentRequest + DefaultRegistry().Resolve("gemini", "gemini-3.6-flash"). The body was replayed live on 2026-08-13 against both Vertex AI (projects/*/locations/global) and the AI Studio v1beta generateContent surface, which share the GenerateContentRequest schema; both accepted it and the model consumed the tool result. Pins two decisions: a tool result rides on role:"user" — accepted by both surfaces for 3.5/3.6/3.7, whereas role:"function" is a 400 on AI Studio from 3.6 on and still accepted by Vertex — and generationConfig carries no temperature, which both surfaces accept but neither applies for this family.
 {
   "contents": [
     {

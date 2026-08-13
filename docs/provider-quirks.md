@@ -239,13 +239,16 @@ will cover them too if those are added later.
 `GeminiBehaviourFlags` gained three fields for the 3.6/3.7 families:
 
 - `ToolResultRole` selects the `contents[].role` carrying a
-  `functionResponse` part. Gemini 3.6 removed `function` from the
-  accepted role set, so a tool result sent on the historical role is an
-  HTTP 400 (`Role 'function' is not supported`) on the second turn of
-  every tool-using run. `user` is accepted by 3.5 and earlier as well,
-  but the flag is scoped to the families that require it rather than
-  applied globally, so the older families keep the shape their fixtures
-  and live captures were taken against.
+  `functionResponse` part. From 3.6 on, the AI Studio surface rejects
+  the historical `function` role with an HTTP 400 (`Role 'function' is
+  not supported`) on the second turn of every tool-using run. Vertex AI
+  — the surface this adapter calls — still accepts `function` for 3.6
+  and 3.7, so the flag is forward-compatibility rather than a fix for a
+  live failure: `user` is accepted by both surfaces across 3.5, 3.6 and
+  3.7, making it the shape that survives Vertex adopting the stricter
+  validator. The flag is scoped to the families whose API generation
+  dropped the role rather than applied globally, so older families keep
+  the shape their fixtures and live captures were taken against.
 - `OmitSamplingParams` mirrors the Anthropic and OpenAI flags of the
   same name, with a weaker justification: Gemini 3.6+ *ignores* a
   deprecated `temperature` rather than rejecting it, so suppression is
@@ -368,8 +371,8 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
-| `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
-| `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"`; omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400) |
+| `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400 on AI Studio, still accepted by Vertex); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
+| `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"` (same surface split as 3.6); omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400 on Vertex and AI Studio alike) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k) |
 | `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k) |
@@ -776,22 +779,34 @@ concerns are tracked separately:
    no `deepseek-chat` rule exists (non-thinking, no
    `reasoning_content`).
 
-10. **Gemini 3.6/3.7 verification surface.** The role, sampling-param,
-    and thinking-level behaviours were probed live on 2026-08-13
-    against the AI Studio `generativelanguage.googleapis.com/v1beta`
-    `generateContent` endpoint, which shares the
-    `GenerateContentRequest` schema with the Vertex AI endpoint the
-    adapter actually calls. Vertex itself was not exercised, so a
-    Vertex-only divergence (a different accepted role set, a
-    different thinking-level enum) would not have been caught. The
-    `role:"function"` and `MINIMAL` 400s were each confirmed by sending
-    them against an otherwise-valid body — the rejected value is the
-    only variable — rather than inferred from an error message or a
-    release note, and the positive path was exercised as a two-turn
-    exchange in which the model consumed a tool result delivered on
-    `role:"user"`. The thinking-level allow-lists
-    cover only the levels probed on each family; a level Google adds
-    later resolves as unsupported until the rule is updated, which
-    fails closed with a message naming the model and the accepted set.
-    The 180-day staleness window flags both rules for
-    re-verification.
+10. **Gemini 3.6/3.7 verification surface, and the role split
+    between it and Vertex.** Every rule here was probed live on
+    2026-08-13 against both surfaces: Vertex AI
+    (`aiplatform.googleapis.com`, `locations/global`), which the
+    adapter calls, and AI Studio
+    (`generativelanguage.googleapis.com/v1beta`), which shares the
+    `GenerateContentRequest` schema. The two disagree on exactly one
+    rule. A tool result on `role:"function"` is a 400 on AI Studio from
+    3.6 on, but Vertex accepts it for 3.5, 3.6 and 3.7 alike and
+    consumes the tool output normally, so `ToolResultRole` fixes
+    nothing that is broken on Vertex today. It ships because
+    `role:"user"` is accepted in all six probed cells, which makes it
+    the only shape that survives Vertex adopting AI Studio's validator
+    — and because the reverse migration, discovering the rejection
+    from a production 400, costs a broken agentic loop on turn two.
+    The consequence to keep in mind: no Vertex run fails if this flag
+    regresses, so `TestGeminiQuirks_ToolResultRole_ByFamily` is the
+    only thing standing between the intent and a silent revert.
+
+    The thinking-level rejection agrees across both surfaces
+    (`MINIMAL` is a 400 on 3.7, accepted on 3.6), as does the
+    sampling-param tolerance (`temperature` returns 200 and is
+    ignored). Each 400 was confirmed by sending it against an
+    otherwise-valid body — the rejected value the only variable —
+    rather than inferred from an error message or a release note, and
+    the accepting path was exercised as a two-turn exchange in which
+    the model consumed a tool result. The allow-lists cover only the
+    levels probed on each family; a level Google adds later resolves
+    as unsupported until the rule is updated, which fails closed with
+    a message naming the model and the accepted set. The 180-day
+    staleness window flags both rules for re-verification.

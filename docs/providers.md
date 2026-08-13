@@ -189,8 +189,12 @@ Key implementation notes:
   and function-response parts to share a Content). The role on those
   function-response Contents is model-dependent and comes from the
   resolved quirks, not a literal: `function` through Gemini 3.5, and
-  `user` from 3.6 on, where `function` was removed from the accepted
-  role set and returns an HTTP 400. An assistant message collapses
+  `user` from 3.6 on. Vertex AI still accepts `function` for those
+  newer families; the AI Studio surface that shares this request
+  schema returns an HTTP 400 for it from 3.6 on, and `user` is
+  accepted everywhere, so the newer families use the shape that
+  survives Vertex adopting the stricter validator. An assistant
+  message collapses
   into one `{role:"model"}` Content preserving block order. When a
   user message has both text and `tool_result` blocks, the
   function-response Contents are emitted first, mirroring the OpenAI

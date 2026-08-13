@@ -7,9 +7,9 @@ import (
 )
 
 // TestGeminiFlashRules_Resolution pins the model gating of the 3.6/3.7
-// rules. The families that break on role:"function" are exactly the ones
-// that must resolve to ToolResultRoleUser; everything older keeps the
-// zero value, which is the historical role. Both rules also carry the
+// rules. The families whose API generation dropped role:"function" are
+// exactly the ones that resolve to ToolResultRoleUser; everything older
+// keeps the zero value, which is the historical role. Both rules carry the
 // per-model thinkingLevel allow-list, and 3.7 is the narrower of the two
 // because it rejects "minimal".
 func TestGeminiFlashRules_Resolution(t *testing.T) {
