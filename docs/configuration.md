@@ -367,6 +367,7 @@ upstream blip than from failing fast.
 | `--gcp-project` | (none) | GCP project ID. Required when `--provider=gemini`. |
 | `--gcp-location` | `global` | Vertex AI location: `global` or a region like `us-central1`. |
 | `--gcp-credentials-file` | (none) | Path to a Google service account JSON key file. When set, implies `credential.type=gcp-service-account`; otherwise the credential layer falls back to Application Default Credentials. |
+| `--gemini-thinking-level` | (none) | Thinking level: `minimal`, `low`, `medium`, or `high`, mapped to `generationConfig.thinkingConfig.thinkingLevel`. Empty leaves the model on its own default. Which levels a model accepts is model-specific — Gemini 3.7 Flash rejects `minimal` — so the request is rejected before it is sent when the resolved model is known not to accept the level. Sets `provider.geminiThinkingLevel`. |
 
 ### Anthropic Workload Identity Federation
 

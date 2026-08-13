@@ -206,6 +206,9 @@ type OpenAIBehaviourFlags struct {
 
 type GeminiBehaviourFlags struct {
     StreamFunctionCallArgsShape GeminiStreamArgsShape // off (post-#191 default) / v2_snapshot / v3_deltas
+    ToolResultRole              GeminiToolResultRole  // function (pre-3.6 default) / user
+    OmitSamplingParams          bool                  // suppress temperature (deprecated and ignored from 3.6 on)
+    ThinkingLevels              []string              // levels the model accepts; empty means unprobed, so anything passes
 }
 
 type OpenAIResponsesBehaviourFlags struct {
@@ -232,6 +235,30 @@ the existing `omitempty` tag rather than a custom `MarshalJSON` (unlike
 `openaiRequest`, which needs one for unrelated token-field-selection
 reasons). `StreamParams` carries no `top_p`/`top_k` fields today; the flag
 will cover them too if those are added later.
+
+`GeminiBehaviourFlags` gained three fields for the 3.6/3.7 families:
+
+- `ToolResultRole` selects the `contents[].role` carrying a
+  `functionResponse` part. Gemini 3.6 removed `function` from the
+  accepted role set, so a tool result sent on the historical role is an
+  HTTP 400 (`Role 'function' is not supported`) on the second turn of
+  every tool-using run. `user` is accepted by 3.5 and earlier as well,
+  but the flag is scoped to the families that require it rather than
+  applied globally, so the older families keep the shape their fixtures
+  and live captures were taken against.
+- `OmitSamplingParams` mirrors the Anthropic and OpenAI flags of the
+  same name, with a weaker justification: Gemini 3.6+ *ignores* a
+  deprecated `temperature` rather than rejecting it, so suppression is
+  trace hygiene, not a fix for a failing request. Without it a trace
+  records a sampling parameter the model never applied.
+- `ThinkingLevels` is the per-model allow-list for
+  `generationConfig.thinkingConfig.thinkingLevel`. The levels a model
+  accepts are model-specific — Gemini 3.7 Flash returns a 400 for
+  `minimal`, which 3.6 Flash accepts — so the adapter validates the
+  configured level against the resolved list and fails before any wire
+  bytes are sent, in the same spirit as `LintGeminiSchema`. An empty
+  list means the model has not been probed and any level passes
+  through: an unverified guess must not block a run.
 
 The typed per-adapter sub-struct is the design choice that replaces
 PR #196's original `StructuralFlags any`: it preserves compile-time
@@ -341,6 +368,8 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
+| `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
+| `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"`; omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k) |
 | `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k) |
@@ -362,6 +391,14 @@ current snapshot, and a wider glob risks a 400 on a deployment whose
 `gpt-4o` snapshot diverges from the guide. `TestBuiltinRulesStrictMode`
 pins the negative case (bare `gpt-4o` gets no rule) so widening the
 glob is a deliberate, tested edit rather than an accidental regression.
+
+The `gemini-3.6*` and `gemini-3.7*` rules sit alongside the broader
+`gemini-3*` rule rather than replacing it: glob resolution sorts by
+length ascending, so a 3.7 model accumulates the `gemini-3*`
+`thoughtSignature` replay *and* the family-specific flags. The two
+rules are separate despite sharing two of three flags because the
+thinking-level allow-lists differ, and merging them behind a wider glob
+would assert that `minimal` works on 3.7 — the one level it rejects.
 
 The `gemini-3*` schema-lint rule (`SchemaUnsupportedFeatures: pattern,
 format`) takes a conservative reject-at-build-time position: Gemini's
@@ -738,3 +775,19 @@ concerns are tracked separately:
    15:59 UTC; the reasoner rule carries a matching sunset note and
    no `deepseek-chat` rule exists (non-thinking, no
    `reasoning_content`).
+
+10. **Gemini 3.6/3.7 verification surface.** The role, sampling-param,
+    and thinking-level behaviours were probed live on 2026-08-13
+    against the AI Studio `generativelanguage.googleapis.com/v1beta`
+    `generateContent` endpoint, which shares the
+    `GenerateContentRequest` schema with the Vertex AI endpoint the
+    adapter actually calls. Vertex itself was not exercised, so a
+    Vertex-only divergence (a different accepted role set, a
+    different thinking-level enum) would not have been caught. The
+    `role:"function"` 400 was confirmed by sending it, not inferred
+    from the error message's role list. The thinking-level allow-lists
+    cover only the levels probed on each family; a level Google adds
+    later resolves as unsupported until the rule is updated, which
+    fails closed with a message naming the model and the accepted set.
+    The 180-day staleness window flags both rules for
+    re-verification.
