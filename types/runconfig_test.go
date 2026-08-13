@@ -898,6 +898,33 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ReasoningEffort pins the closed enum on the
+// provider-neutral reasoning knob. The four accepted values are the
+// union the targeted providers express natively; a wire-format spelling
+// like Gemini's THINKING_LEVEL_HIGH must be rejected here so an adapter
+// never has to guess which dialect a config was written in.
+func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
+	for _, v := range []string{"", "minimal", "low", "medium", "high"} {
+		t.Run("accepts/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningEffort = v
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for reasoningEffort=%q, got: %v", v, err)
+			}
+		})
+	}
+	for _, v := range []string{"THINKING_LEVEL_HIGH", "maximum", "High"} {
+		t.Run("rejects/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningEffort = v
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), "reasoningEffort") {
+				t.Fatalf("expected reasoningEffort error for %q, got: %v", v, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_SessionNameEmpty(t *testing.T) {
 	c := validConfig()
 	c.SessionName = ""
@@ -4093,47 +4120,6 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "threshold is required",
 		},
-		{
-			name: "every thinking level in the REST enum passes",
-			mutate: func(c *RunConfig) {
-				c.Provider.GeminiThinkingLevel = "minimal"
-			},
-			wantErr: false,
-		},
-		{
-			name: "high thinking level passes",
-			mutate: func(c *RunConfig) {
-				c.Provider.GeminiThinkingLevel = "high"
-			},
-			wantErr: false,
-		},
-		{
-			name: "empty thinking level passes (model default)",
-			mutate: func(c *RunConfig) {
-				c.Provider.GeminiThinkingLevel = ""
-			},
-			wantErr: false,
-		},
-		{
-			// The API's own enum is THINKING_LEVEL_HIGH; the config field
-			// takes the short lowercase form and the adapter uppercases it,
-			// so accepting the wire spelling here would produce a body
-			// reading "THINKING_LEVEL_HIGH" uppercased again.
-			name: "wire-format enum name rejected",
-			mutate: func(c *RunConfig) {
-				c.Provider.GeminiThinkingLevel = "THINKING_LEVEL_HIGH"
-			},
-			wantErr:   true,
-			errSubstr: "must be one of minimal, low, medium, high",
-		},
-		{
-			name: "bogus thinking level rejected",
-			mutate: func(c *RunConfig) {
-				c.Provider.GeminiThinkingLevel = "maximum"
-			},
-			wantErr:   true,
-			errSubstr: "geminiThinkingLevel",
-		},
 	}
 
 	for _, tc := range cases {
@@ -4669,11 +4655,6 @@ func TestValidateRunConfig_GeminiFieldsLeakRejected(t *testing.T) {
 				}
 			},
 			errSubstr: "geminiSafetySettings is only valid",
-		},
-		{
-			name:      "geminiThinkingLevel on anthropic",
-			mutate:    func(p *ProviderConfig) { p.GeminiThinkingLevel = "high" },
-			errSubstr: "geminiThinkingLevel is only valid",
 		},
 	}
 	for _, tc := range cases {

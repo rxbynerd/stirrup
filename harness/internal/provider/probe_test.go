@@ -144,7 +144,7 @@ func TestGeminiAdapter_Probe(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewGeminiAdapter(staticBearer("ya29.token"), "proj", "us-central1", nil, "")
+	adapter := NewGeminiAdapter(staticBearer("ya29.token"), "proj", "us-central1", nil)
 	adapter.baseURLOverride = srv.URL
 	if err := adapter.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe: unexpected error: %v", err)
@@ -220,7 +220,7 @@ func TestProbe_FailureStatuses(t *testing.T) {
 	t.Run("gemini", func(t *testing.T) {
 		srv := newServer()
 		defer srv.Close()
-		a := NewGeminiAdapter(staticBearer("ya29.bad"), "proj", "us-central1", nil, "")
+		a := NewGeminiAdapter(staticBearer("ya29.bad"), "proj", "us-central1", nil)
 		a.baseURLOverride = srv.URL
 		assertProbeStatusError(t, a.Probe(context.Background()), "gemini")
 	})

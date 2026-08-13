@@ -2944,68 +2944,65 @@ func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
 	if cfg.Provider.GCPLocation != "" {
 		t.Errorf("GCPLocation leaked onto anthropic provider: %q", cfg.Provider.GCPLocation)
 	}
-	if cfg.Provider.GeminiThinkingLevel != "" {
-		t.Errorf("GeminiThinkingLevel leaked onto anthropic provider: %q", cfg.Provider.GeminiThinkingLevel)
-	}
 }
 
-// TestBuildHarnessRunConfig_GeminiThinkingLevel pins the flag-only path
-// for --gemini-thinking-level: the value reaches Provider unchanged, in
-// the short lowercase form the config schema validates, rather than the
-// REST enum spelling the adapter derives from it.
-func TestBuildHarnessRunConfig_GeminiThinkingLevel(t *testing.T) {
+// TestBuildHarnessRunConfig_ReasoningEffort pins the flag-only path for
+// --reasoning-effort: the value lands on the top-level RunConfig field
+// (not any provider entry), in the short lowercase form the config
+// schema validates, rather than any provider's wire spelling.
+func TestBuildHarnessRunConfig_ReasoningEffort(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:               "test-run",
-		Mode:                "execution",
-		Prompt:              "test",
-		ProviderType:        "gemini",
-		Model:               "gemini-3.7-flash",
-		MaxTurns:            20,
-		Timeout:             600,
-		TransportType:       "stdio",
-		LogLevel:            "info",
-		GCPProject:          "my-project",
-		GCPLocation:         "global",
-		GeminiThinkingLevel: "high",
+		RunID:           "test-run",
+		Mode:            "execution",
+		Prompt:          "test",
+		ProviderType:    "gemini",
+		Model:           "gemini-3.7-flash",
+		MaxTurns:        20,
+		Timeout:         600,
+		TransportType:   "stdio",
+		LogLevel:        "info",
+		GCPProject:      "my-project",
+		GCPLocation:     "global",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
 	}
-	if cfg.Provider.GeminiThinkingLevel != "high" {
-		t.Errorf("GeminiThinkingLevel = %q, want %q", cfg.Provider.GeminiThinkingLevel, "high")
+	if cfg.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, "high")
 	}
 }
 
-// TestBuildHarnessRunConfig_GeminiThinkingLevelInvalid confirms a
-// value the flag accepts but the schema does not is rejected before the
-// run starts. The builder itself does not validate, so the assertion is
+// TestBuildHarnessRunConfig_ReasoningEffortInvalid confirms a value the
+// flag accepts but the schema does not is rejected before the run
+// starts. The builder itself does not validate, so the assertion is
 // against ValidateRunConfig on the config it produced — the same path
-// the harness command takes. The adapter's per-model allow-list is a
-// second, narrower gate; this one exists so a typo never reaches the
-// model-specific check disguised as an unprobed level.
-func TestBuildHarnessRunConfig_GeminiThinkingLevelInvalid(t *testing.T) {
+// the harness command takes. The Gemini adapter's per-model allow-list
+// is a second, narrower gate; this one exists so a typo never reaches
+// the model-specific check disguised as an unprobed level.
+func TestBuildHarnessRunConfig_ReasoningEffortInvalid(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:               "test-run",
-		Mode:                "execution",
-		Prompt:              "test",
-		ProviderType:        "gemini",
-		Model:               "gemini-3.7-flash",
-		MaxTurns:            20,
-		Timeout:             600,
-		TransportType:       "stdio",
-		LogLevel:            "info",
-		GCPProject:          "my-project",
-		GCPLocation:         "global",
-		GeminiThinkingLevel: "THINKING_LEVEL_HIGH",
+		RunID:           "test-run",
+		Mode:            "execution",
+		Prompt:          "test",
+		ProviderType:    "gemini",
+		Model:           "gemini-3.7-flash",
+		MaxTurns:        20,
+		Timeout:         600,
+		TransportType:   "stdio",
+		LogLevel:        "info",
+		GCPProject:      "my-project",
+		GCPLocation:     "global",
+		ReasoningEffort: "THINKING_LEVEL_HIGH",
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
 	}
 	err = types.ValidateRunConfig(cfg)
 	if err == nil {
-		t.Fatal("expected rejection of a REST-enum-spelled thinking level")
+		t.Fatal("expected rejection of a wire-enum-spelled reasoning effort")
 	}
-	if !strings.Contains(err.Error(), "geminiThinkingLevel") {
+	if !strings.Contains(err.Error(), "reasoningEffort") {
 		t.Errorf("error must name the offending field: %v", err)
 	}
 }
@@ -3034,14 +3031,14 @@ func TestApplyOverrides_GeminiFlags(t *testing.T) {
 	must("gcp-project", "from-flag")
 	must("gcp-location", "us-central1")
 	must("gcp-credentials-file", "/tmp/sa.json")
-	must("gemini-thinking-level", "low")
+	must("reasoning-effort", "low")
 
 	if err := applyOverrides(cmd, cfg, nil); err != nil {
 		t.Fatalf("applyOverrides: %v", err)
 	}
 
-	if cfg.Provider.GeminiThinkingLevel != "low" {
-		t.Errorf("GeminiThinkingLevel override failed: %q", cfg.Provider.GeminiThinkingLevel)
+	if cfg.ReasoningEffort != "low" {
+		t.Errorf("ReasoningEffort override failed: %q", cfg.ReasoningEffort)
 	}
 	if cfg.Provider.GCPProject != "from-flag" {
 		t.Errorf("GCPProject override failed: %q", cfg.Provider.GCPProject)

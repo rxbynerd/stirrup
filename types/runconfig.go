@@ -123,6 +123,19 @@ type RunConfig struct {
 	// and provider-specific caveats.
 	Temperature *float64 `json:"temperature,omitempty"`
 
+	// ReasoningEffort requests a reasoning depth from the model:
+	// "minimal", "low", "medium", or "high". Empty says nothing on the
+	// wire and leaves the model on its provider default. Like
+	// Temperature, this is provider-neutral: each adapter projects it
+	// onto its native control (the Gemini adapter maps it to
+	// generationConfig.thinkingConfig.thinkingLevel) and adapters with
+	// no probed native control ignore it, so one RunConfig stays
+	// portable across providers. Whether a *specific model* accepts a
+	// given level is narrower than this enum — e.g. Gemini 3.7 Flash
+	// rejects "minimal" — and is enforced by the provider quirks
+	// registry before any wire bytes are sent.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
 	// FollowUpGrace is the number of seconds to keep the transport open after
 	// the primary run completes, waiting for follow-up user_response events.
 	// A value of zero or nil disables the grace period (default behaviour).
@@ -623,16 +636,6 @@ type ProviderConfig struct {
 	// tooling, where false positives on code samples are operationally
 	// unacceptable.
 	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
-
-	// GeminiThinkingLevel sets generationConfig.thinkingConfig.thinkingLevel
-	// for the "gemini" provider: "minimal", "low", "medium", or "high".
-	// Empty means "say nothing on the wire" and the model applies its own
-	// default (medium for the 3.6/3.7 Flash families). Which levels a
-	// given model accepts is model-specific — Gemini 3.7 Flash rejects
-	// "minimal" with a 400 — so the quirks registry carries a per-model
-	// allow-list and the adapter fails the request before any wire bytes
-	// are sent. See docs/provider-quirks.md.
-	GeminiThinkingLevel string `json:"geminiThinkingLevel,omitempty"`
 
 	// Retry overrides the per-call retry policy applied by adapters that
 	// honour it. Nil = use defaults. Defaults are filled in by
@@ -1462,12 +1465,13 @@ var validGeminiSafetyThresholds = map[string]bool{
 	"BLOCK_ONLY_HIGH":        true,
 }
 
-// validGeminiThinkingLevels enumerates the thinkingLevel values the
-// Gemini REST enum defines, minus THINKING_LEVEL_UNSPECIFIED (which the
-// empty string already expresses). This is the union across models —
-// per-model acceptance is narrower and lives in the quirks registry,
-// because Gemini 3.7 Flash rejects "minimal" while 3.6 Flash accepts it.
-var validGeminiThinkingLevels = map[string]bool{
+// validReasoningEfforts enumerates the provider-neutral reasoning
+// depths. The set is the union of what the targeted providers express
+// natively (OpenAI reasoning_effort and the Gemini thinkingLevel REST
+// enum both spell exactly these four); per-model acceptance is narrower
+// and lives in the provider quirks registry, because e.g. Gemini 3.7
+// Flash rejects "minimal" while 3.6 Flash accepts it.
+var validReasoningEfforts = map[string]bool{
 	"minimal": true,
 	"low":     true,
 	"medium":  true,
@@ -2223,6 +2227,12 @@ func ValidateRunConfig(config *RunConfig) error {
 				errs = append(errs, fmt.Sprintf("temperature must be <= %.1f", maxTemperature))
 			}
 		}
+	}
+
+	if config.ReasoningEffort != "" && !validReasoningEfforts[config.ReasoningEffort] {
+		errs = append(errs, fmt.Sprintf(
+			"reasoningEffort %q must be one of minimal, low, medium, high",
+			config.ReasoningEffort))
 	}
 
 	validateRuleOfTwo(config, &errs)
@@ -3834,11 +3844,10 @@ func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string
 }
 
 // validateGeminiProviderFields enforces the cross-field constraints on
-// the five Vertex AI Gemini fields (GCPProject, GCPLocation,
-// GCPCredentialsFile, GeminiSafetySettings, GeminiThinkingLevel).
-// Guard rails:
+// the four Vertex AI Gemini fields (GCPProject, GCPLocation,
+// GCPCredentialsFile, GeminiSafetySettings). Guard rails:
 //
-//   - The five fields are scoped to type="gemini". Setting any of
+//   - The four fields are scoped to type="gemini". Setting any of
 //     them on a non-gemini provider is a hard error so a stale value
 //     does not silently linger across a provider-type change.
 //   - "gemini" requires both GCPProject and GCPLocation; the URL the
@@ -3856,9 +3865,6 @@ func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string
 //   - Each GeminiSafetySetting must reference a category and threshold
 //     from the closed Vertex AI set; values that pass through to the
 //     API verbatim would otherwise produce confusing 400s.
-//   - GeminiThinkingLevel must name a level the REST enum defines.
-//     Whether the *selected model* accepts that level is narrower still
-//     and belongs to the quirks registry, which knows the model name.
 func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]string) {
 	if cfg.Type != "gemini" {
 		// Reject leakage of gemini-shaped fields onto non-gemini providers.
@@ -3873,9 +3879,6 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		}
 		if len(cfg.GeminiSafetySettings) > 0 {
 			*errs = append(*errs, fmt.Sprintf("%s.geminiSafetySettings is only valid for provider type %q", path, "gemini"))
-		}
-		if cfg.GeminiThinkingLevel != "" {
-			*errs = append(*errs, fmt.Sprintf("%s.geminiThinkingLevel is only valid for provider type %q", path, "gemini"))
 		}
 		return
 	}
@@ -3938,12 +3941,6 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		} else if !validGeminiSafetyThresholds[s.Threshold] {
 			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
 		}
-	}
-
-	if cfg.GeminiThinkingLevel != "" && !validGeminiThinkingLevels[cfg.GeminiThinkingLevel] {
-		*errs = append(*errs, fmt.Sprintf(
-			"%s.geminiThinkingLevel %q must be one of minimal, low, medium, high",
-			path, cfg.GeminiThinkingLevel))
 	}
 }
 

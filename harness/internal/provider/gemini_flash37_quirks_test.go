@@ -91,7 +91,7 @@ func TestGeminiQuirks_ToolResultRole_ByFamily(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			params := geminiToolRoundTripParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
-			body, _, err := BuildGenerateContentRequest(params, nil, "", q)
+			body, _, err := BuildGenerateContentRequest(params, nil, q)
 			if err != nil {
 				t.Fatalf("BuildGenerateContentRequest: %v", err)
 			}
@@ -126,7 +126,7 @@ func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			params := geminiQuirksCanonicalParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
-			body, _, err := BuildGenerateContentRequest(params, nil, "", q)
+			body, _, err := BuildGenerateContentRequest(params, nil, q)
 			if err != nil {
 				t.Fatalf("BuildGenerateContentRequest: %v", err)
 			}
@@ -152,7 +152,8 @@ func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
 	params := geminiQuirksCanonicalParams("gemini-3.7-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
 
-	body, _, err := BuildGenerateContentRequest(params, nil, "high", q)
+	params.ReasoningEffort = "high"
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
@@ -160,10 +161,11 @@ func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
 		t.Errorf("thinkingConfig absent or malformed: %s", body)
 	}
 
-	// Empty level says nothing on the wire so the model keeps its own
+	// Empty effort says nothing on the wire so the model keeps its own
 	// default; an emitted THINKING_LEVEL_UNSPECIFIED would be a
 	// behaviour change disguised as a default.
-	bare, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	params.ReasoningEffort = ""
+	bare, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest (bare): %v", err)
 	}
@@ -194,7 +196,8 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			params := geminiQuirksCanonicalParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
-			_, _, err := BuildGenerateContentRequest(params, nil, tc.level, q)
+			params.ReasoningEffort = tc.level
+			_, _, err := BuildGenerateContentRequest(params, nil, q)
 			if tc.wantError {
 				if err == nil {
 					t.Fatalf("expected rejection of level %q on %s, got none", tc.level, tc.model)
@@ -217,7 +220,8 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	body, _, err := BuildGenerateContentRequest(params, nil, "low", q)
+	params.ReasoningEffort = "low"
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
@@ -230,7 +234,8 @@ func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
 func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
 	params := geminiToolRoundTripParams("gemini-3.6-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	body, _, err := BuildGenerateContentRequest(params, nil, "minimal", q)
+	params.ReasoningEffort = "minimal"
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
@@ -244,7 +249,7 @@ func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
 func TestGeminiQuirks_ThoughtSignatureSurvivesRoleSwitch(t *testing.T) {
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	body, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}

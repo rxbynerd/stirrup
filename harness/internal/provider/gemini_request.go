@@ -29,9 +29,6 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 // safety is the configured GeminiSafetySettings slice; empty defaults
 // all five HARM_CATEGORY_* to BLOCK_NONE.
 //
-// thinkingLevel is the configured GeminiThinkingLevel; empty omits
-// thinkingConfig entirely and leaves the model on its own default.
-//
 // q carries the resolved per-(provider, model) quirks: it selects the
 // wire value for functionCallingConfig.streamFunctionCallArguments, the
 // role a tool result rides on, whether the deprecated sampling params are
@@ -49,10 +46,9 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 func BuildGenerateContentRequest(
 	params types.StreamParams,
 	safety []types.GeminiSafetySetting,
-	thinkingLevel string,
 	q quirks.ProviderQuirks,
 ) (body []byte, toolNameByID map[string]string, err error) {
-	if err := validateGeminiThinkingLevel(thinkingLevel, params.Model, q); err != nil {
+	if err := validateGeminiThinkingLevel(params.ReasoningEffort, params.Model, q); err != nil {
 		return nil, nil, err
 	}
 
@@ -114,7 +110,7 @@ func BuildGenerateContentRequest(
 	// 0 as either a validation error or a hard zero-output cap, neither
 	// of which the caller wants.
 	sendTemperature := params.Temperature != nil && !q.BehaviourFlags.Gemini.OmitSamplingParams
-	if params.MaxTokens > 0 || sendTemperature || thinkingLevel != "" {
+	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" {
 		gc := &geminiGenerationConfig{}
 		if params.MaxTokens > 0 {
 			gc.MaxOutputTokens = params.MaxTokens
@@ -123,9 +119,9 @@ func BuildGenerateContentRequest(
 			t := *params.Temperature
 			gc.Temperature = &t
 		}
-		if thinkingLevel != "" {
+		if params.ReasoningEffort != "" {
 			gc.ThinkingConfig = &geminiThinkingConfig{
-				ThinkingLevel: strings.ToUpper(thinkingLevel),
+				ThinkingLevel: strings.ToUpper(params.ReasoningEffort),
 			}
 		}
 		req.GenerationConfig = gc

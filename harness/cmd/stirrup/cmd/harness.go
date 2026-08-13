@@ -117,12 +117,15 @@ type harnessCLIOptions struct {
 	// since cobra's Float64 store cannot represent absence.
 	Temperature *float64
 
+	// ReasoningEffort requests a provider-neutral reasoning depth
+	// (minimal/low/medium/high). Empty leaves the model on its default.
+	ReasoningEffort string
+
 	// Vertex AI Gemini provider fields; meaningful only when
 	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
-	GCPProject          string
-	GCPLocation         string
-	GCPCredentialsFile  string
-	GeminiThinkingLevel string
+	GCPProject         string
+	GCPLocation        string
+	GCPCredentialsFile string
 
 	// Anthropic Workload Identity Federation fields; meaningful only
 	// when ProviderType == "anthropic". Any of the four ID fields being
@@ -359,6 +362,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		t := *opts.Temperature
 		config.Temperature = &t
 	}
+	config.ReasoningEffort = opts.ReasoningEffort
 
 	// Scoped to gemini so --gcp-* flags left at their defaults do not
 	// leak onto non-gemini runs; the validator rejects them otherwise.
@@ -366,7 +370,6 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.Provider.GCPProject = opts.GCPProject
 		config.Provider.GCPLocation = opts.GCPLocation
 		config.Provider.GCPCredentialsFile = opts.GCPCredentialsFile
-		config.Provider.GeminiThinkingLevel = opts.GeminiThinkingLevel
 	}
 
 	// --gcp-credentials-file implies credential.type=gcp-service-account
@@ -793,6 +796,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if t := optionalFloat64Flag(cmd, "temperature"); t != nil {
 		cfg.Temperature = t
 	}
+	if changed("reasoning-effort") {
+		cfg.ReasoningEffort, _ = f.GetString("reasoning-effort")
+	}
 	if changed("log-level") {
 		cfg.LogLevel, _ = f.GetString("log-level")
 	}
@@ -837,9 +843,6 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// path; the flag-only path gets it for free from the cobra default.
 	if cfg.Provider.Type == "gemini" && cfg.Provider.GCPLocation == "" {
 		cfg.Provider.GCPLocation = "global"
-	}
-	if changed("gemini-thinking-level") {
-		cfg.Provider.GeminiThinkingLevel, _ = f.GetString("gemini-thinking-level")
 	}
 	if changed("gcp-credentials-file") {
 		path, _ := f.GetString("gcp-credentials-file")

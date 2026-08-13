@@ -31,7 +31,7 @@ func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
 			},
 		},
 	}
-	_, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	_, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -61,7 +61,7 @@ func TestGeminiSchemaLint_PassesCleanSchema(t *testing.T) {
 			},
 		},
 	}
-	body, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("clean schema rejected: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGeminiSchemaLint_IsNoOpForGemini25(t *testing.T) {
 			},
 		},
 	}
-	_, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	_, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Errorf("gemini-2.5 should accept schema with pattern (no lint rule), got error %v", err)
 	}

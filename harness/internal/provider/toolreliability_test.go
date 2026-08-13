@@ -253,7 +253,7 @@ func TestGemini_222_NoParallelNoExamples(t *testing.T) {
 		ParallelToolCalls: &disable, // unsupported on Gemini → no-op
 	}
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	body, _, err := BuildGenerateContentRequest(params, nil, "", q)
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}

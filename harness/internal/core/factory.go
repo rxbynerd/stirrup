@@ -684,10 +684,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			return nil, fmt.Errorf("gemini provider requires GCP credentials but the credential source produced none")
 		}
 		// No compat profiles for Gemini in v1; registry defaults to DefaultRegistry().
-		adapter := provider.NewGeminiAdapter(
-			cred.BearerToken, cfg.GCPProject, cfg.GCPLocation,
-			cfg.GeminiSafetySettings, cfg.GeminiThinkingLevel,
-		)
+		adapter := provider.NewGeminiAdapter(cred.BearerToken, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings)
 		adapter.RetryPolicy = retry
 		return adapter, nil
 	default:
