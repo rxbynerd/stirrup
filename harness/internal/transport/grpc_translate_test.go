@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -912,6 +913,57 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 				t.Errorf("Temperature: got %v, want %v", *rc.Temperature, *tc.set)
 			}
 		})
+	}
+}
+
+// TestRunConfigFromProto_ReasoningEffortCarried pins the new
+// provider-neutral reasoning knob across the wire boundary: a set value
+// must survive verbatim and an absent one must stay empty (say nothing
+// on the wire downstream).
+func TestRunConfigFromProto_ReasoningEffortCarried(t *testing.T) {
+	if got := runConfigFromProto(&pb.RunConfig{ReasoningEffort: "high"}).ReasoningEffort; got != "high" {
+		t.Errorf("ReasoningEffort: got %q, want %q", got, "high")
+	}
+	if got := runConfigFromProto(&pb.RunConfig{}).ReasoningEffort; got != "" {
+		t.Errorf("absent reasoning_effort translated to %q, want empty", got)
+	}
+}
+
+// TestProviderConfigFromProto_GeminiFieldsCarried pins that the four
+// Gemini provider fields survive the proto boundary. Before this test
+// existed they were silently dropped by providerConfigFromProto, which
+// locked the gemini provider out of the gRPC transport entirely: a
+// TaskAssignment carrying gcp_project/gcp_location failed
+// ValidateRunConfig ("gemini requires gcpProject") even though the
+// wire payload was complete, and configured safety settings vanished
+// without an error.
+func TestProviderConfigFromProto_GeminiFieldsCarried(t *testing.T) {
+	cfg := providerConfigFromProto(&pb.ProviderConfig{
+		Type:               "gemini",
+		GcpProject:         "proj-1",
+		GcpLocation:        "us-central1",
+		GcpCredentialsFile: "/etc/sa.json",
+		GeminiSafetySettings: []*pb.GeminiSafetySetting{
+			{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_ONLY_HIGH"},
+			nil, // wire payloads can carry nil entries; must not panic or emit a zero entry
+			{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
+		},
+	})
+	if cfg.GCPProject != "proj-1" {
+		t.Errorf("GCPProject: got %q, want %q", cfg.GCPProject, "proj-1")
+	}
+	if cfg.GCPLocation != "us-central1" {
+		t.Errorf("GCPLocation: got %q, want %q", cfg.GCPLocation, "us-central1")
+	}
+	if cfg.GCPCredentialsFile != "/etc/sa.json" {
+		t.Errorf("GCPCredentialsFile: got %q, want %q", cfg.GCPCredentialsFile, "/etc/sa.json")
+	}
+	want := []types.GeminiSafetySetting{
+		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_ONLY_HIGH"},
+		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
+	}
+	if !reflect.DeepEqual(cfg.GeminiSafetySettings, want) {
+		t.Errorf("GeminiSafetySettings: got %+v, want %+v", cfg.GeminiSafetySettings, want)
 	}
 }
 
