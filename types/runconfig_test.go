@@ -4093,6 +4093,47 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "threshold is required",
 		},
+		{
+			name: "every thinking level in the REST enum passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiThinkingLevel = "minimal"
+			},
+			wantErr: false,
+		},
+		{
+			name: "high thinking level passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiThinkingLevel = "high"
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty thinking level passes (model default)",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiThinkingLevel = ""
+			},
+			wantErr: false,
+		},
+		{
+			// The API's own enum is THINKING_LEVEL_HIGH; the config field
+			// takes the short lowercase form and the adapter uppercases it,
+			// so accepting the wire spelling here would produce a body
+			// reading "THINKING_LEVEL_HIGH" uppercased again.
+			name: "wire-format enum name rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiThinkingLevel = "THINKING_LEVEL_HIGH"
+			},
+			wantErr:   true,
+			errSubstr: "must be one of minimal, low, medium, high",
+		},
+		{
+			name: "bogus thinking level rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiThinkingLevel = "maximum"
+			},
+			wantErr:   true,
+			errSubstr: "geminiThinkingLevel",
+		},
 	}
 
 	for _, tc := range cases {
@@ -4628,6 +4669,11 @@ func TestValidateRunConfig_GeminiFieldsLeakRejected(t *testing.T) {
 				}
 			},
 			errSubstr: "geminiSafetySettings is only valid",
+		},
+		{
+			name:      "geminiThinkingLevel on anthropic",
+			mutate:    func(p *ProviderConfig) { p.GeminiThinkingLevel = "high" },
+			errSubstr: "geminiThinkingLevel is only valid",
 		},
 	}
 	for _, tc := range cases {

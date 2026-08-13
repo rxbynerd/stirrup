@@ -1,0 +1,94 @@
+# synthetic: derived from BuildGenerateContentRequest + DefaultRegistry().Resolve("gemini", "gemini-3.7-flash") — the harness has no live Vertex AI capture for this family. Pins the two divergences verified against the AI Studio v1beta generateContent surface on 2026-08-13: a tool result rides on role:"user" (role:"function" is a hard 400 from 3.6 on), and generationConfig carries no temperature because the sampling knobs are deprecated for this family.
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "read the file"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "read_file",
+            "args": {
+              "path": "main.go"
+            }
+          },
+          "thoughtSignature": "sig-abc"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "read_file",
+            "response": {
+              "content": ""
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "read_file",
+          "description": "read a file",
+          "parameters": {
+            "properties": {
+              "path": {
+                "type": "STRING"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "OBJECT"
+          }
+        }
+      ]
+    }
+  ],
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO"
+    }
+  },
+  "safetySettings": [
+    {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+      "threshold": "BLOCK_NONE"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 4096,
+    "thinkingConfig": {
+      "thinkingLevel": "LOW"
+    }
+  }
+}
