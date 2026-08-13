@@ -3655,6 +3655,10 @@ type PermissionPolicyConfig struct {
 	//
 	//	"allow-all"         — all tool calls are allowed without gating. Only
 	//	                      valid for "execution" mode.
+	//	"deny-all"          — all tool calls are denied. Intended as the
+	//	                      fallback of a permit-based Cedar allow-list
+	//	                      (the policy file grants, deny-all denies the
+	//	                      rest); rarely useful as the top-level policy.
 	//	"deny-side-effects" — denies tools that mutate the workspace. Read
 	//	                      tools and approval-required-but-non-mutating
 	//	                      tools (web_fetch, spawn_agent) are still
@@ -3678,8 +3682,9 @@ type PermissionPolicyConfig struct {
 	PolicyFile string `protobuf:"bytes,3,opt,name=policy_file,json=policyFile,proto3" json:"policy_file,omitempty"`
 	// For "policy-engine": the permission policy to consult when the
 	// Cedar engine returns "no decision". Must be one of "allow-all",
-	// "deny-side-effects", or "ask-upstream" — chained policy engines
-	// are not supported. Defaults to "deny-side-effects" (fail closed).
+	// "deny-all", "deny-side-effects", or "ask-upstream" — chained
+	// policy engines are not supported. Defaults to "deny-side-effects"
+	// (fail closed).
 	Fallback      string `protobuf:"bytes,4,opt,name=fallback,proto3" json:"fallback,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -1500,6 +1500,12 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 	switch cfg.Type {
 	case "allow-all":
 		return permission.NewAllowAll(), nil
+	case "deny-all":
+		// DenyAll rejects every tool call. Its practical use is as the
+		// fallback of a permit-based Cedar allow-list: the policy file
+		// grants, deny-all denies the rest — including non-mutating
+		// tools deny-side-effects would let through.
+		return permission.NewDenyAll(), nil
 	case "deny-side-effects":
 		// DenySideEffects rejects only tools that mutate workspace
 		// state. Tools whose only sensitivity is "operator should
