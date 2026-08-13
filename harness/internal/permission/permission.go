@@ -44,6 +44,14 @@ type PolicyEngineEnv struct {
 	Capabilities   []string
 	DynamicContext map[string]string
 	Security       SecurityEventEmitter
+
+	// ToolSchemas indexes every tool registered for this run by name,
+	// carrying the slice of its JSON Schema the policy linter needs. It
+	// must be populated after MCP tool discovery so remote tools are
+	// visible to the lint; an empty map disables the registry-aware lint
+	// tier entirely (the dry-run preflight's component build registers no
+	// tools). See LintPolicySetTools.
+	ToolSchemas map[string]ToolSchema
 }
 
 // New constructs a PermissionPolicy from cfg. It is the entry point for
@@ -95,8 +103,21 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 		return nil, errors.New("permission: policy-engine fallback may not itself be policy-engine")
 	}
 
+	// LoadPolicySetFromFile has already applied the structural lint tier
+	// and rejected its errors. Re-running it here costs a pure AST walk
+	// and is what surfaces the structural WARNINGS (an @stirrupLintIgnore
+	// downgrade) on the same audit path as the registry-aware tier.
+	source := fmt.Sprintf("policy file %q", cfg.PolicyFile)
 	policySet, err := LoadPolicySetFromFile(cfg.PolicyFile)
 	if err != nil {
+		return nil, err
+	}
+	findings := append(
+		LintPolicySetStructure(policySet),
+		LintPolicySetTools(policySet, env.ToolSchemas)...,
+	)
+	emitLintFindings(env.Security, cfg.PolicyFile, findings)
+	if err := LintErrors(source, findings); err != nil {
 		return nil, err
 	}
 

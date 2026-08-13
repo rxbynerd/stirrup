@@ -1527,6 +1527,12 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 			// String → String; per-entry sensitivity is not wired in yet.
 			DynamicContext: config.DynamicContextValues(),
 			Security:       secLogger,
+			// Populated from the live registry, so MCP-imported tools are
+			// in scope for the policy lint: MCP discovery (step 5 of
+			// BuildLoopWithTransport) completes before buildComponents
+			// reaches this call. Empty for the dry-run preflight, which
+			// builds components against an empty registry.
+			ToolSchemas: toolSchemaIndex(registry),
 			// ParentRunID and Capabilities are reserved for sub-agent
 			// wiring, populated by the spawn_agent path in a future wave.
 		}
@@ -1569,6 +1575,26 @@ func wrapPermissionPolicyMetrics(pp permission.PermissionPolicy, cfg types.Permi
 		return pp
 	}
 	return permission.NewMetricRecorder(pp, metrics, cfg.Type)
+}
+
+// toolSchemaIndex projects the registry into the name → input-schema map
+// the Cedar policy linter cross-references context.input attributes
+// against. A nil or empty registry yields an empty map, which disables
+// the registry-aware lint tier rather than reporting every attribute as
+// undeclared.
+func toolSchemaIndex(registry *tool.Registry) map[string]permission.ToolSchema {
+	if registry == nil {
+		return nil
+	}
+	defs := registry.List()
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make(map[string]permission.ToolSchema, len(defs))
+	for _, def := range defs {
+		out[def.Name] = permission.NewToolSchema(def.InputSchema)
+	}
+	return out
 }
 
 // mutatingToolSet returns the names of registered tools that mutate

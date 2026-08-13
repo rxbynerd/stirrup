@@ -130,7 +130,15 @@ func NewPolicyEnginePolicy(cfg PolicyEngineConfig) (*PolicyEnginePolicy, error) 
 
 // LoadPolicySetFromFile reads a Cedar policy file from disk and parses it
 // into a *cedar.PolicySet. Returns a wrapped error when the file is
-// missing or contains invalid Cedar syntax.
+// missing, contains invalid Cedar syntax, or fails the structural policy
+// lint (see LintPolicySetStructure).
+//
+// The lint is fail-closed by design: a policy that parses but can never
+// match is a control the operator believes is active and is not. The
+// structural tier is decidable from the policy alone, so it runs on every
+// load path — including the dry-run preflight, where no tools are
+// registered. The registry-aware tier runs later, at policy-engine
+// construction, once the tool set is known.
 func LoadPolicySetFromFile(path string) (*cedar.PolicySet, error) {
 	if path == "" {
 		return nil, errors.New("policy-engine: policy file path is empty")
@@ -142,6 +150,9 @@ func LoadPolicySetFromFile(path string) (*cedar.PolicySet, error) {
 	ps, err := cedar.NewPolicySetFromBytes(path, data)
 	if err != nil {
 		return nil, fmt.Errorf("policy-engine: parse policy file %q: %w", path, err)
+	}
+	if err := LintErrors(fmt.Sprintf("policy file %q", path), LintPolicySetStructure(ps)); err != nil {
+		return nil, err
 	}
 	return ps, nil
 }
