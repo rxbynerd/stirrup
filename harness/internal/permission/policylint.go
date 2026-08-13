@@ -8,15 +8,15 @@ import (
 
 	"github.com/cedar-policy/cedar-go"
 	cedartypes "github.com/cedar-policy/cedar-go/types"
-
-	// x/exp/ast is the only package exposing cedar-go's parsed node types.
-	// The stable cedar-go/ast package is a thin defined-type wrapper over
-	// it (ast.Policy is `type Policy internalast.Policy`), so walking a
-	// parsed policy structurally requires this import. cedar-go is pinned
-	// in go.mod, so an upstream shape change surfaces at upgrade time as a
-	// compile error rather than silently degrading the lint.
 	internalast "github.com/cedar-policy/cedar-go/x/exp/ast"
 )
+
+// x/exp/ast is the only package exposing cedar-go's parsed node types.
+// The stable cedar-go/ast package is a thin defined-type wrapper over it
+// (ast.Policy is `type Policy internalast.Policy`), so walking a parsed
+// policy structurally requires the experimental import. cedar-go is
+// pinned in go.mod, so an upstream shape change surfaces at upgrade time
+// as a compile error rather than silently degrading the lint.
 
 // Lint rule identifiers. These are the values an operator names in the
 // @stirrupLintIgnore annotation, and the "rule" field of every emitted

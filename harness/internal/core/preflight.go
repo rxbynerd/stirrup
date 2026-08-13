@@ -162,6 +162,15 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	// An empty registry and nil transport match the dry-run intent for the
 	// permission policy: construction (and any Cedar parse) is what is
 	// validated, not the run's tool set or upstream approval channel.
+	//
+	// Consequence for the Cedar policy linter: the structural tier runs
+	// here (LoadPolicySetFromFile applies it on every load path), but the
+	// registry-aware tier is disabled by the empty registry — a dry run
+	// cannot tell `context.input.cmd` from `context.input.command`. That
+	// tier fires at real-run construction instead, which is still before
+	// the first model turn and before any workspace mutation. Building a
+	// stand-in registry here would risk the worse failure: a dry run whose
+	// verdict diverges from the run it is meant to predict.
 	sink := &componentStepSink{ok: ok, failStep: fail}
 	// debugRedactionDisabled is always false here: a --dry-run preflight
 	// never disables redaction, regardless of --debug (dry-run has no
