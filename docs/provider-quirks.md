@@ -784,8 +784,12 @@ concerns are tracked separately:
     adapter actually calls. Vertex itself was not exercised, so a
     Vertex-only divergence (a different accepted role set, a
     different thinking-level enum) would not have been caught. The
-    `role:"function"` 400 was confirmed by sending it, not inferred
-    from the error message's role list. The thinking-level allow-lists
+    `role:"function"` and `MINIMAL` 400s were each confirmed by sending
+    them against an otherwise-valid body — the rejected value is the
+    only variable — rather than inferred from an error message or a
+    release note, and the positive path was exercised as a two-turn
+    exchange in which the model consumed a tool result delivered on
+    `role:"user"`. The thinking-level allow-lists
     cover only the levels probed on each family; a level Google adds
     later resolves as unsupported until the rule is updated, which
     fails closed with a message naming the model and the accepted set.
