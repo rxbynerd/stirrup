@@ -142,7 +142,7 @@ func buildComponents(
 	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
 	if err != nil {
 		if sink != nil {
-			sink.failStep("permission-policy", err, "check permissionPolicy.policyFile parses as Cedar")
+			sink.failStep("permission-policy", err, "check permissionPolicy.policyFile parses as Cedar and passes the policy lint (docs/safety-rings.md#load-time-policy-lint)")
 		}
 		return nil, fmt.Errorf("build permission policy: %w", err)
 	}

@@ -158,6 +158,7 @@ Quick map for "I need to change X" lookups:
 | Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
+| Cedar load-time lint (dead clauses, wildcard hosts) | `harness/internal/permission/policylint.go`; registry wiring in `core/factory.go::toolSchemaIndex` (operator doc: `docs/safety-rings.md#load-time-policy-lint`) |
 | Rule-of-Two runtime classifier (detector / monitor+latch / gate) | `harness/internal/security/sensitivepatterns.go`, `harness/internal/ruleoftwo/`, `harness/internal/permission/ruleoftwogate.go` (arming in `core/factory.go`; operator doc: `docs/safety-rings.md`) |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
 | K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go` (operator doc: `docs/executors/k8s.md`) |

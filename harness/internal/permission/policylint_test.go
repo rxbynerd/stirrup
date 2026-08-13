@@ -651,3 +651,78 @@ func TestLint_NilPolicySet(t *testing.T) {
 		t.Errorf("LintPolicySetTools(nil) = %v", got)
 	}
 }
+
+// The linter's vocabulary of request attributes is a hand-maintained
+// mirror of buildRequest. Drift in either direction is a silent failure:
+// a new context key the linter does not know about makes it reject valid
+// policies, and a removed one makes it accept dead ones. Pin both
+// directions against a request built by the real code path.
+func TestLintVocabularyMatchesBuildRequest(t *testing.T) {
+	p, err := NewPolicyEnginePolicy(PolicyEngineConfig{
+		PolicySet: mustParse(t, `permit (principal, action, resource);`),
+		Fallback:  NewDenyAll(),
+		RunID:     "run-1",
+		Mode:      "execution",
+		Workspace: "/workspace",
+		// Both optional principal attributes populated so the entity
+		// carries its widest shape.
+		ParentRunID:    "parent-1",
+		Capabilities:   []string{"shell"},
+		DynamicContext: map[string]string{"issue.title": "x"},
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyEnginePolicy: %v", err)
+	}
+
+	req, entities, err := p.buildRequest(types.ToolDefinition{Name: "run_command"}, []byte(`{"command":"ls"}`))
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+
+	gotContext := map[string]bool{}
+	for key := range req.Context.Keys() {
+		gotContext[string(key)] = true
+	}
+	if !sameKeys(gotContext, knownContextKeys) {
+		t.Errorf("context keys = %v, linter knows %v", gotContext, knownContextKeys)
+	}
+
+	gotPrincipal := map[string]bool{}
+	for key := range entities[req.Principal].Attributes.Keys() {
+		gotPrincipal[string(key)] = true
+	}
+	if !sameKeys(gotPrincipal, knownPrincipalAttrs) {
+		t.Errorf("principal attrs = %v, linter knows %v", gotPrincipal, knownPrincipalAttrs)
+	}
+
+	// Entity types and the action-ID prefix are what lintScopes rejects
+	// policies against, so pin them here too.
+	if req.Principal.Type != "User" || req.Action.Type != "Action" || req.Resource.Type != "Tool" {
+		t.Errorf("entity types = %s/%s/%s, linter expects User/Action/Tool",
+			req.Principal.Type, req.Action.Type, req.Resource.Type)
+	}
+	if !strings.HasPrefix(string(req.Action.ID), actionIDPrefix) {
+		t.Errorf("action ID %q does not carry the %q prefix the linter requires", req.Action.ID, actionIDPrefix)
+	}
+
+	// The action and resource entities must stay attribute-free, which is
+	// what makes the no-such-attribute rule sound.
+	if n := entities[req.Action].Attributes.Len(); n != 0 {
+		t.Errorf("action entity carries %d attributes; the no-such-attribute rule assumes none", n)
+	}
+	if n := entities[req.Resource].Attributes.Len(); n != 0 {
+		t.Errorf("resource entity carries %d attributes; the no-such-attribute rule assumes none", n)
+	}
+}
+
+func sameKeys(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
