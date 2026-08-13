@@ -28,8 +28,9 @@ type PermissionPolicy interface {
 // about Transport, registries, or tool sets — those live in
 // harness/internal/core.
 //
-// Valid input values: "allow-all", "deny-side-effects", "ask-upstream".
-// Implementations must reject "policy-engine" to prevent infinite chains.
+// Valid input values: "allow-all", "deny-all", "deny-side-effects",
+// "ask-upstream". Implementations must reject "policy-engine" to
+// prevent infinite chains.
 type FallbackBuilder func(typeName string) (PermissionPolicy, error)
 
 // PolicyEngineEnv carries the per-run identity passed through to a

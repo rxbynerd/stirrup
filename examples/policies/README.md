@@ -36,9 +36,16 @@ Configure `RunConfig.permissionPolicy` in your run config JSON:
 files, concatenate them — `cedar-go` accepts any number of `permit` /
 `forbid` statements per document.
 
-`fallback` must be one of `allow-all`, `deny-side-effects`, or
-`ask-upstream`. Chained policy engines are intentionally rejected to
-avoid no-decision loops.
+`fallback` must be one of `allow-all`, `deny-all`,
+`deny-side-effects`, or `ask-upstream`. Chained policy engines are
+intentionally rejected to avoid no-decision loops.
+
+The recommended mental model: **the policy file grants; the fallback
+handles the rest**. A permit-based allow-list paired with `deny-all`
+denies everything the file does not name — including non-mutating
+tools such as `web_fetch` that `deny-side-effects` would allow.
+`forbid` files are defence-in-depth backstops layered over a
+permissive fallback.
 
 ## Entity model (Cedar schema v1)
 
@@ -63,9 +70,9 @@ as `CedarSchemaVersion`. Bump it whenever the entity layout changes.
 
 | File | Effect | Purpose |
 |------|--------|---------|
-| `destructive-shell.cedar` | `forbid` | Blocks `run_command` calls whose `cmd` matches `*rm -rf*`, `*chmod -R*`, `*git push --force*`, `*mkfs*`, etc. Defence-in-depth against unintended history rewrites or filesystem-wide destruction. |
-| `github-only-fetch.cedar` | `permit` | Permits `web_fetch` only to `*.github.com`, `github.com`, `raw.githubusercontent.com`, and `docs.python.org`. Pair with a fallback of `deny-side-effects` to deny everything else. |
-| `no-secret-in-input.cedar` | `forbid` | Forbids any tool whose input contains common leaked-secret patterns (`sk-*`, `ghp_*`, `github_pat_*`, `aws_secret_*`) in the `cmd`, `content`, or `url` fields. Structural backstop for the LogScrubber. |
+| `destructive-shell.cedar` | `forbid` | Blocks `run_command` calls whose `command` matches `*rm -rf*`, `*chmod -R*`, `*git push --force*`, `*mkfs*`, etc. Defence-in-depth against unintended history rewrites or filesystem-wide destruction. Pair with an `allow-all` fallback when it is the only gate on `run_command` — a `deny-side-effects` fallback already denies every `run_command` on no-match. |
+| `github-only-fetch.cedar` | `permit` | Permits `web_fetch` only to `github.com`, `api.github.com`, `raw.githubusercontent.com`, and `docs.python.org`. Pair with a fallback of `deny-all` to deny everything else — `deny-side-effects` does not deny non-mutating `web_fetch`. |
+| `no-secret-in-input.cedar` | `forbid` | Forbids any tool whose input contains common leaked-secret patterns (`sk-*`, `ghp_*`, `github_pat_*`, `aws_secret_*`) in the `command`, `content`, or `url` fields. Structural backstop for the LogScrubber. |
 | `subagent-capability-cap.cedar` | `forbid` | Forbids `run_command` when `principal.parentRunId` is set, i.e. the caller is a sub-agent. Limits blast radius of `spawn_agent`. |
 
 ## Decision rules
@@ -83,6 +90,20 @@ Every decision is emitted as a `policy_decision` (allow / no-match) or
 
 ## Authoring conventions
 
+- **Key `context.input` clauses on the exact field names the tool's
+  JSON Schema declares** (`command` for `run_command`, `content` for
+  `write_file`, `url` for `web_fetch` — see
+  `harness/internal/tool/builtins/`). The schemas set
+  `additionalProperties: false`, so an input with any other field
+  name is rejected before Cedar runs: a clause keyed on an undeclared
+  name parses cleanly and never fires.
+  `harness/internal/tool/builtins/starter_policies_test.go` pins the
+  shipped starters against the real schemas.
+- **Anchor URL patterns as full `https://<host>/*` literals.**
+  Cedar's `like` wildcard matches every character including `/` and
+  `@`, so `https://*.github.com/*` also matches
+  `https://evil.example/x.github.com/y`. Never place a wildcard
+  before or inside the host.
 - Use `like` for prefix / suffix / substring matches (`*` is the only
   wildcard; `?` is not supported by Cedar's `like`).
 - Guard `context.input` field accesses with `has` — tools have wildly
@@ -91,4 +112,7 @@ Every decision is emitted as a `policy_decision` (allow / no-match) or
 - Match on `Action::"tool:<name>"` AND `Tool::"<name>"` for clarity even
   though one would suffice — readers grepping by tool name find both.
 - Keep one concern per file. Composition is via concatenation (or a
-  future loader that accepts a directory).
+  future loader that accepts a directory). Note the asymmetry:
+  `permit` statements union across files (a broad permit swallows a
+  narrower allow-list), while `forbid` statements compose safely (any
+  match denies).

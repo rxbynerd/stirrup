@@ -1158,7 +1158,7 @@ type VerifierConfig struct {
 
 // PermissionPolicyConfig selects the permission policy implementation.
 type PermissionPolicyConfig struct {
-	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream" | "policy-engine"
+	Type    string `json:"type"`              // "allow-all" | "deny-all" | "deny-side-effects" | "ask-upstream" | "policy-engine"
 	Timeout int    `json:"timeout,omitempty"` // ask-upstream: seconds to wait for a response (0 = 60s default)
 
 	// PolicyFile is the filesystem path to a Cedar policy file
@@ -1168,9 +1168,12 @@ type PermissionPolicyConfig struct {
 
 	// Fallback names the permission policy to consult when the Cedar
 	// engine returns "no decision" for a request. Must be one of the
-	// non-policy-engine types ("allow-all", "deny-side-effects",
-	// "ask-upstream"). When unset, callers should treat the default as
-	// "deny-side-effects" — fail closed.
+	// non-policy-engine types ("allow-all", "deny-all",
+	// "deny-side-effects", "ask-upstream"). When unset, callers should
+	// treat the default as "deny-side-effects" — fail closed. Pair a
+	// permit-based allow-list policy file with "deny-all" so everything
+	// the file does not grant is denied, including non-mutating tools
+	// that "deny-side-effects" would allow.
 	Fallback string `json:"fallback,omitempty"`
 }
 
@@ -1628,6 +1631,7 @@ var validVerifierTypes = map[string]bool{
 
 var validPermissionPolicyTypes = map[string]bool{
 	"allow-all":         true,
+	"deny-all":          true,
 	"deny-side-effects": true,
 	"ask-upstream":      true,
 	"policy-engine":     true,
@@ -1639,6 +1643,7 @@ var validPermissionPolicyTypes = map[string]bool{
 // scope and would loop on a no-decision response.
 var validFallbackPolicyTypes = map[string]bool{
 	"allow-all":         true,
+	"deny-all":          true,
 	"deny-side-effects": true,
 	"ask-upstream":      true,
 }
@@ -2152,9 +2157,17 @@ func ValidateRunConfig(config *RunConfig) error {
 		validateCredentialConfig(prov.Credential, fmt.Sprintf("providers[%s].credential", name), &errs)
 	}
 
-	// Read-only modes must use deny-side-effects or ask-upstream
-	if readOnlyModes[config.Mode] && config.PermissionPolicy.Type == "allow-all" {
-		errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy", config.Mode))
+	// Read-only modes must use a restrictive permission policy. A
+	// policy-engine whose fallback is allow-all is equivalent to
+	// allow-all whenever no policy matches (an empty policy file makes
+	// it exactly allow-all), so the same invariant covers the fallback.
+	if readOnlyModes[config.Mode] {
+		if config.PermissionPolicy.Type == "allow-all" {
+			errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy", config.Mode))
+		}
+		if config.PermissionPolicy.Type == "policy-engine" && config.PermissionPolicy.Fallback == "allow-all" {
+			errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy; permissionPolicy.fallback \"allow-all\" is equivalent to allow-all when no policy matches", config.Mode))
+		}
 	}
 
 	// Read-only modes must not enable write-capable tools.
@@ -2455,7 +2468,7 @@ func pathHasDotDotSegment(path string) bool {
 //   - PolicyFile set with a non-policy-engine type is a misconfiguration
 //     footgun: the file is silently ignored and the operator believes
 //     they have applied a Cedar policy. Reject it loudly.
-//   - Fallback, when set, must name one of the three non-policy-engine
+//   - Fallback, when set, must name one of the non-policy-engine
 //     policies. policy-engine -> policy-engine fallback would loop on a
 //     no-decision response, so it's rejected here.
 func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) {

@@ -2472,8 +2472,8 @@ func TestValidateRunConfig_PolicyEngineWithPolicyFilePasses(t *testing.T) {
 	}
 }
 
-func TestValidateRunConfig_FallbackAcceptsThreeNonEngineTypes(t *testing.T) {
-	for _, fallback := range []string{"allow-all", "deny-side-effects", "ask-upstream"} {
+func TestValidateRunConfig_FallbackAcceptsNonEngineTypes(t *testing.T) {
+	for _, fallback := range []string{"allow-all", "deny-all", "deny-side-effects", "ask-upstream"} {
 		t.Run(fallback, func(t *testing.T) {
 			c := validConfig()
 			c.PermissionPolicy = PermissionPolicyConfig{
@@ -2520,6 +2520,34 @@ func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fallback") || !strings.Contains(err.Error(), "lasso") {
 		t.Errorf("expected error to mention fallback and the bad value, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ReadOnlyModeRejectsAllowAllFallback pins that the
+// read-only-mode invariant covers the policy-engine's fallback too: an
+// empty policy file with fallback allow-all is exactly allow-all, so
+// permitting the combination would hollow out the invariant.
+func TestValidateRunConfig_ReadOnlyModeRejectsAllowAllFallback(t *testing.T) {
+	c := validConfig()
+	c.Mode = "planning"
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "/policies/main.cedar",
+		Fallback:   "allow-all",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for read-only mode with allow-all fallback")
+	}
+	if !strings.Contains(err.Error(), "restrictive permission policy") {
+		t.Errorf("expected error to mention restrictive permission policy, got: %v", err)
+	}
+
+	// The same config with a deny-all fallback validates.
+	c.PermissionPolicy.Fallback = "deny-all"
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected deny-all fallback to validate in read-only mode, got: %v", err)
 	}
 }
 

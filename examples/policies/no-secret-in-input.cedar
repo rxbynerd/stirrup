@@ -10,6 +10,11 @@
 // legitimately echoes a literal `sk-` substring) are an acceptable cost
 // for fail-closed behaviour.
 //
+// The guarded field names mirror the declared tool input schemas:
+// `command` (run_command), `content` (write_file), `url` (web_fetch).
+// A field name no schema declares can never reach Cedar — the schema
+// validator rejects the call first — so a clause keying on one is dead.
+//
 // Cedar schema version: v1
 
 forbid (
@@ -17,11 +22,11 @@ forbid (
     action,
     resource
 ) when {
-    (context.input has cmd && (
-        context.input.cmd like "*sk-*" ||
-        context.input.cmd like "*ghp_*" ||
-        context.input.cmd like "*github_pat_*" ||
-        context.input.cmd like "*aws_secret_*"
+    (context.input has command && (
+        context.input.command like "*sk-*" ||
+        context.input.command like "*ghp_*" ||
+        context.input.command like "*github_pat_*" ||
+        context.input.command like "*aws_secret_*"
     )) ||
     (context.input has content && (
         context.input.content like "*sk-*" ||
