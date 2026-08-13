@@ -141,6 +141,14 @@ to make a feature easier:
   variables directly, and must not access the filesystem. New
   behaviour goes behind an interface and is injected by the
   factory.
+- **The Cedar request shape has two owners that must agree.**
+  `policyengine.go::buildRequest` builds it; `policylint.go`'s
+  `knownContextKeys` / `knownPrincipalAttrs` / scope entity types
+  decide which policies are rejected as dead. Adding a context key or
+  principal attribute to one without the other is silent in both
+  directions — a new key makes the linter reject valid policies, a
+  removed one makes it accept dead ones.
+  `TestLintVocabularyMatchesBuildRequest` pins the pair.
 - **`harness/internal/*` is private.** The public Go API surface is
   `harness/harnessapi/`. Don't expand the embedding API
   unintentionally by exporting types from `internal/`.
