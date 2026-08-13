@@ -2,65 +2,45 @@
 {
   "contents": [
     {
-      "role": "user",
       "parts": [
         {
           "text": "read the file"
         }
-      ]
+      ],
+      "role": "user"
     },
     {
-      "role": "model",
       "parts": [
         {
           "functionCall": {
-            "name": "read_file",
             "args": {
               "path": "main.go"
-            }
+            },
+            "name": "read_file"
           },
           "thoughtSignature": "sig-abc"
         }
-      ]
+      ],
+      "role": "model"
     },
     {
-      "role": "user",
       "parts": [
         {
           "functionResponse": {
             "name": "read_file",
             "response": {
-              "content": ""
+              "content": "package main"
             }
           }
         }
-      ]
+      ],
+      "role": "user"
     }
   ],
-  "tools": [
-    {
-      "functionDeclarations": [
-        {
-          "name": "read_file",
-          "description": "read a file",
-          "parameters": {
-            "properties": {
-              "path": {
-                "type": "STRING"
-              }
-            },
-            "required": [
-              "path"
-            ],
-            "type": "OBJECT"
-          }
-        }
-      ]
-    }
-  ],
-  "toolConfig": {
-    "functionCallingConfig": {
-      "mode": "AUTO"
+  "generationConfig": {
+    "maxOutputTokens": 4096,
+    "thinkingConfig": {
+      "thinkingLevel": "LOW"
     }
   },
   "safetySettings": [
@@ -85,10 +65,30 @@
       "threshold": "BLOCK_NONE"
     }
   ],
-  "generationConfig": {
-    "maxOutputTokens": 4096,
-    "thinkingConfig": {
-      "thinkingLevel": "LOW"
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO"
     }
-  }
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "read a file",
+          "name": "read_file",
+          "parameters": {
+            "properties": {
+              "path": {
+                "type": "STRING"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "OBJECT"
+          }
+        }
+      ]
+    }
+  ]
 }

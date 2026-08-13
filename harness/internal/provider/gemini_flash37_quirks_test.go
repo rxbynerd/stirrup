@@ -32,7 +32,7 @@ func geminiToolRoundTripParams(model string) types.StreamParams {
 			{Role: "user", Content: []types.ContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: "gemini-0-0",
-				Text:      "package main",
+				Content:   "package main",
 			}}},
 		},
 		Tools: []types.ToolDefinition{
