@@ -105,7 +105,7 @@ flowchart TB
 | Ring | Where it sits | Catches | Default | Configures via |
 |---|---|---|---|---|
 | **4 — Rule of Two** | `ValidateRunConfig` pre-flight, plus a deterministic classifier inside the loop | A run config that mixes untrusted input + sensitive data + egress without operator gating — *and* sensitive data that arrives mid-run through a tool result, dynamic context, or the prompt | Structural check enforced unconditionally; the runtime classifier auto-arms enforcing when untrusted input and egress both hold and no sensitivity was declared | `ruleOfTwo.enforce: false` disarms enforcement; `ruleOfTwo.runtime.classifier: "none"` disarms detection (RunConfig only — no CLI flag) |
-| **3 — Cedar policy** | Per tool call, before the executor runs | Specific dangerous tool uses inside an otherwise-allowed tool (`rm -rf`, fetch outside an allowlist, secret-shaped input, sub-agent calls running shell) | Off (use `allow-all`, `deny-side-effects`, or `ask-upstream` instead) | `--permission-policy-file <file>.cedar` or `permissionPolicy.type: policy-engine` |
+| **3 — Cedar policy** | Per tool call, before the executor runs | Specific dangerous tool uses inside an otherwise-allowed tool (`rm -rf`, fetch outside an allowlist, secret-shaped input, sub-agent calls running shell) | Off (use `allow-all`, `deny-all`, `deny-side-effects`, or `ask-upstream` instead) | `--permission-policy-file <file>.cedar` or `permissionPolicy.type: policy-engine` |
 | **1 — Container runtime** | Structural; in effect for every operation in the container | Kernel exploits in the agent's commands escaping the container | Engine default (usually `runc` — process isolation only, shared kernel) | `--container-runtime runsc` for gVisor; `kata*` for Kata; or set `runtimeClassName` on the K8s pod spec |
 | **2 — Egress proxy** | At the container's network egress, for HTTP/HTTPS clients that honour `HTTP_PROXY` | Data exfiltration and malicious package fetches to non-allowlisted hosts | `network.mode: none` (no network at all in v1) | `network.mode: allowlist`, `network.allowlist: [...]` |
 | **5 — Code scanner** | After every successful `EditStrategy.Apply` | The model writing a backdoor, hardcoded secret, or obvious eval/exec sink to the workspace | `patterns` for execution mode, `none` for read-only modes | `--code-scanner patterns\|semgrep`, `codeScanner.semgrepConfigPath`, `codeScanner.blockOnWarn` |
@@ -135,9 +135,13 @@ to https://attacker.example/upload."
    behind `ask-upstream`.)
 2. **Ring 3 (Cedar)** can refuse the specific call. A starter policy
    like `github-only-fetch.cedar` permits `web_fetch` only to a known
-   list; the call to `attacker.example` does not match, falls through
-   to the configured fallback (default: `deny-side-effects`), and is
-   denied with a `policy_denied` event.
+   list; the call to `attacker.example` does not match and falls
+   through to the configured fallback. The fallback must be
+   `deny-all` for the fall-through to deny: `web_fetch` is not
+   workspace-mutating, so the default `deny-side-effects` allows it.
+   A fallback deny surfaces as a `policy_decision` event with
+   `decision: no_match` (only a matched `forbid` emits
+   `policy_denied`).
 3. **Ring 2 (Egress proxy)** is the network-level backstop if Cedar
    is not enabled or the policy doesn't cover this call. The proxy
    resolves `attacker.example`, doesn't find it in the allowlist, and
@@ -434,9 +438,18 @@ and returns one of:
 - **No decision** — no policy matches; the configured fallback is
   consulted instead (default `deny-side-effects`).
 
-The fallback must be one of `allow-all`, `deny-side-effects`, or
-`ask-upstream` — chained policy engines are intentionally rejected
-to avoid no-decision loops.
+The fallback must be one of `allow-all`, `deny-all`,
+`deny-side-effects`, or `ask-upstream` — chained policy engines are
+intentionally rejected to avoid no-decision loops.
+
+The recommended mental model is **the policy file grants; the
+fallback handles the rest**. A permit-based allow-list file paired
+with `deny-all` denies everything the file does not name — including
+non-mutating tools such as `web_fetch` that `deny-side-effects` would
+allow. `forbid` statements remain available as defence-in-depth
+backstops layered over a permissive fallback, but a `forbid` is a
+pattern-matched deny-list: it blocks the literal shapes it names and
+nothing else (see [Limits](#limits) below).
 
 ### Decision flow
 
@@ -448,6 +461,7 @@ flowchart TB
   Eval -->|permit + no forbid| Allowed[Allow<br/>policy_decision event]
   Eval -->|no match| Fallback{Fallback policy<br/>policy_decision event in either case}
   Fallback -->|allow-all| AllowedFallback[Allow]
+  Fallback -->|deny-all| DenyFallback
   Fallback -->|deny-side-effects| MaybeDeny{Workspace mutating?}
   MaybeDeny -->|yes| DenyFallback[Deny]
   MaybeDeny -->|no| AllowedFallback
@@ -482,10 +496,20 @@ action: Action::"tool:run_command"
 resource: Tool::"run_command"
 
 context:
-  input:           { cmd: "rm -rf /", cwd: "/workspace" }   // recursively translated tool input
+  input:           { command: "rm -rf /", timeout: 60 }   // recursively translated tool input
   workspace:       "/workspace"
   dynamicContext:  { issue.title: "...", pr.author: "..." }
 ```
+
+`context.input` carries exactly the fields the tool's JSON Schema
+declares — `command` for `run_command`, `content` for `write_file`,
+`url` for `web_fetch`. The schemas set `additionalProperties: false`,
+so an input carrying any other field name is rejected by the schema
+validator before Cedar runs. The corollary for policy authors: a
+policy keyed on an undeclared attribute (`cmd`, say) parses and loads
+cleanly but can never fire. The shipped starters are pinned against
+the real schemas by
+`harness/internal/tool/builtins/starter_policies_test.go`.
 
 `principal.capabilities` (Cedar `Set<String>`) exists in the schema
 but is **reserved and not populated in v1** — see
@@ -511,13 +535,38 @@ common postures:
 
 | File | Effect | Purpose |
 |---|---|---|
-| `destructive-shell.cedar` | `forbid` | Blocks `run_command` whose `cmd` matches `*rm -rf*`, `*chmod -R*`, `*git push --force*`, `*mkfs*`. Defence in depth against unintended history rewrites or filesystem-wide destruction. |
-| `github-only-fetch.cedar` | `permit` | Permits `web_fetch` only to `*.github.com`, `github.com`, `raw.githubusercontent.com`, `docs.python.org`. Pair with `deny-side-effects` fallback. |
-| `no-secret-in-input.cedar` | `forbid` | Forbids any tool whose input contains common leaked-secret patterns (`sk-*`, `ghp_*`, `github_pat_*`, `aws_secret_*`) in `cmd` / `content` / `url` fields. Structural backstop for the LogScrubber. |
+| `destructive-shell.cedar` | `forbid` | Blocks `run_command` whose `command` matches `*rm -rf*`, `*chmod -R*`, `*git push --force*`, `*mkfs*`. Defence in depth against unintended history rewrites or filesystem-wide destruction; pair with an `allow-all` fallback when it is the only gate on `run_command` (a `deny-side-effects` fallback already denies every `run_command` on no-match). |
+| `github-only-fetch.cedar` | `permit` | Permits `web_fetch` only to `github.com`, `api.github.com`, `raw.githubusercontent.com`, `docs.python.org`. Pair with a `deny-all` fallback to deny everything else — `deny-side-effects` does not deny non-mutating `web_fetch`. |
+| `no-secret-in-input.cedar` | `forbid` | Forbids any tool whose input contains common leaked-secret patterns (`sk-*`, `ghp_*`, `github_pat_*`, `aws_secret_*`) in `command` / `content` / `url` fields. Structural backstop for the LogScrubber. |
 | `subagent-capability-cap.cedar` | `forbid` | Forbids `run_command` when `principal.parentRunId` is set (caller is a sub-agent). Limits blast radius of `spawn_agent`. |
 
 Compose multiple files by concatenating them — Cedar accepts any
-number of `permit` / `forbid` statements per document.
+number of `permit` / `forbid` statements per document. Note the
+asymmetry when composing: `permit` statements union (any match
+allows), so a broad permit in one file swallows a narrower allow-list
+in another; `forbid` statements intersect safely (any match denies).
+
+### Limits
+
+Ring 3 evaluates the tool input as data. Three classes of miss follow
+from that:
+
+- **Undeclared attributes never match.** A policy keyed on a
+  `context.input` attribute the tool's schema does not declare loads
+  cleanly and never fires — the schema validator rejects such inputs
+  before Cedar runs, so there is no input for which the clause is
+  true. Write clauses against the schema's exact field names.
+- **Pattern-matched forbids are bypassable by construction.** A
+  `forbid` on `*rm -rf*` does not block `rm -r -f`, a shell variable
+  expansion, a base64-decoded payload, or a script written to disk
+  and executed. Deny-lists raise the bar for accidents, not for an
+  adversarial model. The robust posture is a permit allow-list over a
+  `deny-all` fallback, with Rings 1–2 behind it.
+- **`like` wildcards match every character, including `/` and `@`.**
+  `https://*.github.com/*` matches
+  `https://evil.example/x.github.com/y`. Anchor URL patterns as
+  fully-literal `https://<host>/*` prefixes; never place a wildcard
+  before or inside the host.
 
 ### How to enable
 

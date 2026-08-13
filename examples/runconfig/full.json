@@ -64,7 +64,7 @@
   "permissionPolicy": {
     "type": "policy-engine",
     "policyFile": "examples/policies/destructive-shell.cedar",
-    "fallback": "deny-side-effects"
+    "fallback": "allow-all"
   },
   "gitStrategy": {
     "type": "deterministic"

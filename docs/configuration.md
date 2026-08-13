@@ -625,7 +625,7 @@ configuration space — the common cases. Anything below requires
 |---|---|
 | `editStrategy` | `composite` (chains other strategies). |
 | `verifier` | `composite` (chains other verifiers). |
-| `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
+| `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field (`allow-all`, `deny-all`, `deny-side-effects`, `ask-upstream`) defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
 | `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. |
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
@@ -651,32 +651,39 @@ Tools carry two independent permission flags:
 `RequiresApproval` does not by itself mean "always prompt". The active
 `permissionPolicy` decides how to interpret the flag:
 
-| Tool examples | Flags | `allow-all` | `deny-side-effects` | `ask-upstream` |
-|---|---|---|---|---|
-| `read_file`, `list_directory`, `grep_files`, `find_files`, `git_status`, `git_changed_files`, `git_diff`, `git_show` | neither flag | Allow | Allow | Allow |
-| `web_fetch`, `spawn_agent` | `RequiresApproval` only | Allow | Allow | Prompt |
-| `run_command` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
-| `edit_file`, `write_file` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
+| Tool examples | Flags | `allow-all` | `deny-all` | `deny-side-effects` | `ask-upstream` |
+|---|---|---|---|---|---|
+| `read_file`, `list_directory`, `grep_files`, `find_files`, `git_status`, `git_changed_files`, `git_diff`, `git_show` | neither flag | Allow | Deny | Allow | Allow |
+| `web_fetch`, `spawn_agent` | `RequiresApproval` only | Allow | Deny | Allow | Prompt |
+| `run_command` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Deny | Prompt |
+| `edit_file`, `write_file` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Deny | Prompt |
 
 `policy-engine` evaluates the Cedar policy first. When Cedar returns
 no decision, the configured fallback (`deny-side-effects` by default)
 applies exactly the same rules as the corresponding non-Cedar policy.
 For example, a policy engine with `fallback: "deny-side-effects"`
 still allows `web_fetch` and `spawn_agent` unless a Cedar `forbid`
-matches them, because neither tool mutates the workspace.
+matches them, because neither tool mutates the workspace. Pair a
+permit-based allow-list policy file with `fallback: "deny-all"` when
+everything the file does not grant must be denied — including
+non-mutating tools like `web_fetch`.
 
 Choose `ask-upstream` when every `RequiresApproval` tool must prompt.
 Choose `deny-side-effects` when the goal is to block workspace
 mutation while still allowing non-mutating tools that may have network
-or budget exposure.
+or budget exposure. `deny-all` is rarely useful as the top-level
+policy (it denies read tools too); its role is the allow-list
+fallback described above.
 
 ## Read-only modes
 
 `planning`, `review`, `research`, and `toil` enforce a structural
 invariant via `ValidateRunConfig`: the tool list must exclude
 `write_file`, `run_command`, and `edit_file`, and the permission
-policy must not be `allow-all`. The validator rejects any
-`RunConfig` that violates this before any component is constructed.
+policy must not be `allow-all` — nor may a `policy-engine`'s
+`fallback` be `allow-all`, which would be equivalent whenever no
+policy matches. The validator rejects any `RunConfig` that violates
+this before any component is constructed.
 
 `planning` is the CLI default. A bare `stirrup harness --prompt "..."`
 invocation therefore lands in a read-only posture with no write or
@@ -1259,7 +1266,7 @@ passes `ValidateRunConfig` end-to-end.
 
 | File | What it demonstrates |
 |---|---|
-| [`examples/runconfig/full.json`](../examples/runconfig/full.json) | Container executor with `runsc` runtime, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, Cedar policy engine with `deny-side-effects` fallback, Granite Guardian guardrail, and one MCP server. The most comprehensive example. |
+| [`examples/runconfig/full.json`](../examples/runconfig/full.json) | Container executor with `runsc` runtime, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, Cedar destructive-shell backstop over an `allow-all` fallback (the pairing where the forbid is the run's only gate on `run_command` — a `deny-side-effects` fallback would deny every `run_command` on no-match), Granite Guardian guardrail, and one MCP server. The most comprehensive example. |
 | [`examples/runconfig/openai_responses.json`](../examples/runconfig/openai_responses.json) | OpenAI Responses API provider, local executor, multi edit strategy, JSONL trace emitter, static router on `gpt-4.1`. |
 | [`examples/runconfig/azure-openai.json`](../examples/runconfig/azure-openai.json) | Azure OpenAI Foundry's Responses endpoint via the `openai-responses` provider, with `apiKeyHeader: "api-key"` and `queryParams: {"api-version": "preview"}`. Switch the header to an empty string to use Entra ID bearer tokens. |
 | [`examples/runconfig/vertex-gemini.json`](../examples/runconfig/vertex-gemini.json) | Vertex AI Gemini on `gemini-2.5-pro`. Auth is GCP IAM via Application Default Credentials by default. |

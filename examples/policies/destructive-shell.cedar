@@ -7,7 +7,7 @@
 //
 // This is a defence-in-depth backstop, not an allow-list: it matches the
 // literal patterns below and nothing else, so an obfuscated command (see
-// docs/safety-rings.md, "What Ring 3 does not defend against") passes it.
+// docs/safety-rings.md, Ring 3 "Limits") passes it.
 // Pair with a fallback of `allow-all` when this backstop is the only gate
 // on run_command — with a `deny-side-effects` fallback every run_command
 // call is already denied on no-match, and this forbid only changes which
