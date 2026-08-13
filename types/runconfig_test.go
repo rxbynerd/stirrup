@@ -898,6 +898,33 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ReasoningEffort pins the closed enum on the
+// provider-neutral reasoning knob. The four accepted values are the
+// union the targeted providers express natively; a wire-format spelling
+// like Gemini's THINKING_LEVEL_HIGH must be rejected here so an adapter
+// never has to guess which dialect a config was written in.
+func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
+	for _, v := range []string{"", "minimal", "low", "medium", "high"} {
+		t.Run("accepts/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningEffort = v
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for reasoningEffort=%q, got: %v", v, err)
+			}
+		})
+	}
+	for _, v := range []string{"THINKING_LEVEL_HIGH", "maximum", "High"} {
+		t.Run("rejects/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningEffort = v
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), "reasoningEffort") {
+				t.Fatalf("expected reasoningEffort error for %q, got: %v", v, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_SessionNameEmpty(t *testing.T) {
 	c := validConfig()
 	c.SessionName = ""

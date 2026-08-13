@@ -500,6 +500,17 @@ message RunConfig {
   // pre_run / post_run semantics.
   HooksConfig hooks = 32;
 
+  // Optional. Provider-neutral reasoning depth requested from the model:
+  // "minimal", "low", "medium", or "high". Empty says nothing on the
+  // wire and leaves the model on its provider default. Like temperature,
+  // each adapter projects it onto its native control (the Gemini adapter
+  // maps it to generationConfig.thinkingConfig.thinkingLevel) and
+  // adapters with no probed native control ignore it, so one RunConfig
+  // stays portable across providers. Per-model acceptance may be
+  // narrower than the enum (e.g. Gemini 3.7 Flash rejects "minimal");
+  // the provider quirks registry enforces that before any wire bytes
+  // are sent.
+  string reasoning_effort = 33;
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.

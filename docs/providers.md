@@ -185,15 +185,28 @@ Key implementation notes:
   `provider/gemini_request.go`.
 - **Role mapping.** A user message with text becomes one
   `{role:"user"}` Content; a user message with `tool_result` blocks
-  emits a separate `{role:"function"}` Content per result (Vertex
-  requires this role for `functionResponse` parts and does not allow
-  user-text and function-response parts to share a Content). An
-  assistant message collapses into one `{role:"model"}` Content
-  preserving block order. When a user message has both text and
-  `tool_result` blocks, the function-response Contents are emitted
-  first, mirroring the OpenAI Responses adapter's ordering — otherwise
-  Vertex would receive a user-text turn before the function-response
-  it depends on.
+  emits a separate Content per result (Vertex does not allow user-text
+  and function-response parts to share a Content). The role on those
+  function-response Contents is model-dependent and comes from the
+  resolved quirks, not a literal: `function` through Gemini 3.5, and
+  `user` from 3.6 on. Vertex AI still accepts `function` for those
+  newer families; the AI Studio surface that shares this request
+  schema returns an HTTP 400 for it from 3.6 on, and `user` is
+  accepted everywhere, so the newer families use the shape that
+  survives Vertex adopting the stricter validator. An assistant
+  message collapses
+  into one `{role:"model"}` Content preserving block order. When a
+  user message has both text and `tool_result` blocks, the
+  function-response Contents are emitted first, mirroring the OpenAI
+  Responses adapter's ordering — otherwise Vertex would receive a
+  user-text turn before the function-response it depends on.
+- **Thinking level.** The provider-neutral `reasoningEffort` config
+  field projects to `generationConfig.thinkingConfig.thinkingLevel`.
+  Left empty, nothing is sent and the model applies its own default.
+  Accepted levels vary by model — Gemini 3.7 Flash rejects `minimal`,
+  which 3.6 Flash accepts — so the quirks registry carries a per-model
+  allow-list and the adapter fails the request before any wire bytes
+  are sent. See [`provider-quirks.md`](provider-quirks.md).
 
 **Intentional exclusions:** multimodal input, server-side built-in
 tools (`google_search`, `code_execution`, etc. — tracked as issue #93),

@@ -123,6 +123,19 @@ type RunConfig struct {
 	// and provider-specific caveats.
 	Temperature *float64 `json:"temperature,omitempty"`
 
+	// ReasoningEffort requests a reasoning depth from the model:
+	// "minimal", "low", "medium", or "high". Empty says nothing on the
+	// wire and leaves the model on its provider default. Like
+	// Temperature, this is provider-neutral: each adapter projects it
+	// onto its native control (the Gemini adapter maps it to
+	// generationConfig.thinkingConfig.thinkingLevel) and adapters with
+	// no probed native control ignore it, so one RunConfig stays
+	// portable across providers. Whether a *specific model* accepts a
+	// given level is narrower than this enum — e.g. Gemini 3.7 Flash
+	// rejects "minimal" — and is enforced by the provider quirks
+	// registry before any wire bytes are sent.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
 	// FollowUpGrace is the number of seconds to keep the transport open after
 	// the primary run completes, waiting for follow-up user_response events.
 	// A value of zero or nil disables the grace period (default behaviour).
@@ -1452,6 +1465,19 @@ var validGeminiSafetyThresholds = map[string]bool{
 	"BLOCK_ONLY_HIGH":        true,
 }
 
+// validReasoningEfforts enumerates the provider-neutral reasoning
+// depths. The set is the union of what the targeted providers express
+// natively (OpenAI reasoning_effort and the Gemini thinkingLevel REST
+// enum both spell exactly these four); per-model acceptance is narrower
+// and lives in the provider quirks registry, because e.g. Gemini 3.7
+// Flash rejects "minimal" while 3.6 Flash accepts it.
+var validReasoningEfforts = map[string]bool{
+	"minimal": true,
+	"low":     true,
+	"medium":  true,
+	"high":    true,
+}
+
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
 // HTTP token characters so a user cannot inject CRLF / colon / whitespace
 // into the request. The pattern intentionally excludes "_" and "."; if a
@@ -2201,6 +2227,12 @@ func ValidateRunConfig(config *RunConfig) error {
 				errs = append(errs, fmt.Sprintf("temperature must be <= %.1f", maxTemperature))
 			}
 		}
+	}
+
+	if config.ReasoningEffort != "" && !validReasoningEfforts[config.ReasoningEffort] {
+		errs = append(errs, fmt.Sprintf(
+			"reasoningEffort %q must be one of minimal, low, medium, high",
+			config.ReasoningEffort))
 	}
 
 	validateRuleOfTwo(config, &errs)

@@ -30,21 +30,32 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 // all five HARM_CATEGORY_* to BLOCK_NONE.
 //
 // q carries the resolved per-(provider, model) quirks: it selects the
-// wire value for functionCallingConfig.streamFunctionCallArguments and
-// gates whether StreamParams.ToolChoice is projected onto
+// wire value for functionCallingConfig.streamFunctionCallArguments, the
+// role a tool result rides on, whether the deprecated sampling params are
+// suppressed, and which thinking levels the model accepts; it also gates
+// whether StreamParams.ToolChoice is projected onto
 // functionCallingConfig.mode / allowedFunctionNames. A zero-value q
 // reproduces the no-quirk default (stream args off, mode AUTO with no
-// allow-list).
+// allow-list, tool results on role:"function", temperature passed
+// through, any thinking level accepted).
 //
 // Errors are tool schema conversion failures, role-mapping invariant
-// violations, or JSON marshalling errors. Safety-setting validation is
-// the types layer's responsibility.
+// violations, a thinking level the resolved model rejects, or JSON
+// marshalling errors. Safety-setting validation is the types layer's
+// responsibility.
 func BuildGenerateContentRequest(
 	params types.StreamParams,
 	safety []types.GeminiSafetySetting,
 	q quirks.ProviderQuirks,
 ) (body []byte, toolNameByID map[string]string, err error) {
-	contents, toolNameByID, err := translateMessagesGemini(params.System, params.Messages, q.StructuredToolResults)
+	if err := validateGeminiThinkingLevel(params.ReasoningEffort, params.Model, q); err != nil {
+		return nil, nil, err
+	}
+
+	contents, toolNameByID, err := translateMessagesGemini(
+		params.System, params.Messages, q.StructuredToolResults,
+		q.BehaviourFlags.Gemini.ToolResultRole.WireRole(),
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -98,14 +109,20 @@ func BuildGenerateContentRequest(
 	// MaxOutputTokens is only emitted when > 0: Vertex treats an explicit
 	// 0 as either a validation error or a hard zero-output cap, neither
 	// of which the caller wants.
-	if params.MaxTokens > 0 || params.Temperature != nil {
+	sendTemperature := params.Temperature != nil && !q.BehaviourFlags.Gemini.OmitSamplingParams
+	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" {
 		gc := &geminiGenerationConfig{}
 		if params.MaxTokens > 0 {
 			gc.MaxOutputTokens = params.MaxTokens
 		}
-		if params.Temperature != nil {
+		if sendTemperature {
 			t := *params.Temperature
 			gc.Temperature = &t
+		}
+		if params.ReasoningEffort != "" {
+			gc.ThinkingConfig = &geminiThinkingConfig{
+				ThinkingLevel: strings.ToUpper(params.ReasoningEffort),
+			}
 		}
 		req.GenerationConfig = gc
 	}
@@ -122,7 +139,16 @@ func BuildGenerateContentRequest(
 // from tool_use ID → tool name so the caller can correlate later
 // tool_result blocks back to their originating call. Role-mapping rules
 // are documented in docs/providers.md.
-func translateMessagesGemini(system string, messages []types.Message, cap quirks.StructuredToolResultCapability) ([]geminiContent, map[string]string, error) {
+//
+// toolResultRole is the contents[].role a functionResponse rides on,
+// resolved from the model's quirks because Gemini 3.6 and later reject
+// the historical "function".
+func translateMessagesGemini(
+	system string,
+	messages []types.Message,
+	cap quirks.StructuredToolResultCapability,
+	toolResultRole string,
+) ([]geminiContent, map[string]string, error) {
 	_ = system // consumed by geminiSystemFromMessages, not here
 	out := make([]geminiContent, 0, len(messages))
 	toolNameByID := make(map[string]string)
@@ -193,7 +219,7 @@ func translateMessagesGemini(system string, messages []types.Message, cap quirks
 						return nil, nil, fmt.Errorf("messages[%d].content[%d]: %w", i, j, err)
 					}
 					out = append(out, geminiContent{
-						Role: "function",
+						Role: toolResultRole,
 						Parts: []geminiPart{{
 							FunctionResponse: &geminiFunctionResponse{
 								Name:     name,

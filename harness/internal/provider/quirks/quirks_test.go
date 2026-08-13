@@ -53,6 +53,7 @@ func TestResolveEmptyRegistry(t *testing.T) {
 		},
 		Gemini: GeminiBehaviourFlags{
 			SchemaUnsupportedFeatures: []string{},
+			ThinkingLevels:            []string{},
 		},
 	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {

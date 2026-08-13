@@ -117,6 +117,10 @@ type harnessCLIOptions struct {
 	// since cobra's Float64 store cannot represent absence.
 	Temperature *float64
 
+	// ReasoningEffort requests a provider-neutral reasoning depth
+	// (minimal/low/medium/high). Empty leaves the model on its default.
+	ReasoningEffort string
+
 	// Vertex AI Gemini provider fields; meaningful only when
 	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
 	GCPProject         string
@@ -358,6 +362,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		t := *opts.Temperature
 		config.Temperature = &t
 	}
+	config.ReasoningEffort = opts.ReasoningEffort
 
 	// Scoped to gemini so --gcp-* flags left at their defaults do not
 	// leak onto non-gemini runs; the validator rejects them otherwise.
@@ -790,6 +795,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// --temperature would silently rewrite a file-provided value to 0.
 	if t := optionalFloat64Flag(cmd, "temperature"); t != nil {
 		cfg.Temperature = t
+	}
+	if changed("reasoning-effort") {
+		cfg.ReasoningEffort, _ = f.GetString("reasoning-effort")
 	}
 	if changed("log-level") {
 		cfg.LogLevel, _ = f.GetString("log-level")

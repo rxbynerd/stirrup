@@ -737,13 +737,14 @@ func (l *AgenticLoop) runInnerLoop(
 		pendingToolChoice = types.ToolChoiceAuto
 
 		ch, err := selectedProvider.Stream(spanCtx, types.StreamParams{
-			Model:       selection.Model,
-			System:      systemPrompt,
-			Messages:    preparedMessages,
-			Tools:       l.Tools.List(),
-			MaxTokens:   responseReserve,
-			Temperature: temperature,
-			ToolChoice:  turnToolChoice,
+			Model:           selection.Model,
+			System:          systemPrompt,
+			Messages:        preparedMessages,
+			Tools:           l.Tools.List(),
+			MaxTokens:       responseReserve,
+			Temperature:     temperature,
+			ReasoningEffort: config.ReasoningEffort,
+			ToolChoice:      turnToolChoice,
 		})
 		if err != nil {
 			// ScrubHandler doesn't cover OTel spans; scrub explicitly

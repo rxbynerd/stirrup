@@ -182,6 +182,15 @@ type StreamParams struct {
 	// Float64Ptr to construct a pointer from a literal.
 	Temperature *float64 `json:"temperature,omitempty"`
 
+	// ReasoningEffort requests a reasoning depth: "minimal", "low",
+	// "medium", or "high" (validated upstream by ValidateRunConfig).
+	// Empty means "say nothing on the wire". Adapters project it onto
+	// their native control where one has been probed — the Gemini
+	// adapter maps it to generationConfig.thinkingConfig.thinkingLevel,
+	// gated by the per-model quirks allow-list — and ignore it
+	// otherwise, so a config stays portable across providers.
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
 	// ToolChoice steers tool use for this turn. The zero value
 	// (ToolChoiceAuto) is omitted from the wire by every adapter. An
 	// adapter emits a native tool_choice field only when the resolved

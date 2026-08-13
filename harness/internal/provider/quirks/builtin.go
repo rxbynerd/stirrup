@@ -347,5 +347,40 @@ func BuiltinRules() []Rule {
 			LastVerified: Date("2026-07-01"),
 			Apply:        applyAnthropicNoSamplingParamsClass,
 		},
+
+		// The tool-result role is the one flag here not driven by a
+		// Vertex rejection: Vertex still accepts role:"function" for
+		// 3.6 and 3.7, while the AI Studio surface that shares this
+		// request schema stopped accepting it at 3.6. role:"user" is
+		// accepted by both surfaces across 3.5/3.6/3.7, so it is the
+		// shape that survives Vertex adopting the stricter validator.
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.6*",
+			Description:  "Gemini 3.6: tool results on role:\"user\" (role:\"function\" is a 400 on the AI Studio surface); omit deprecated sampling params; thinkingLevel minimal/low/medium/high",
+			LastVerified: Date("2026-08-13"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"minimal", "low", "medium", "high",
+				)
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.7*",
+			Description:  "Gemini 3.7: tool results on role:\"user\" (role:\"function\" is a 400 on the AI Studio surface); omit deprecated sampling params; thinkingLevel low/medium/high (minimal is a 400 on Vertex and AI Studio alike)",
+			LastVerified: Date("2026-08-13"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"low", "medium", "high",
+				)
+			},
+		},
 	}
 }

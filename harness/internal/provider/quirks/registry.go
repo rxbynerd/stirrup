@@ -86,6 +86,7 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 			},
 			Gemini: GeminiBehaviourFlags{
 				SchemaUnsupportedFeatures: []string{},
+				ThinkingLevels:            []string{},
 			},
 		},
 	}

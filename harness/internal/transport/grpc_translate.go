@@ -102,6 +102,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.Temperature != nil {
 		rc.Temperature = pc.Temperature
 	}
+	rc.ReasoningEffort = pc.ReasoningEffort
 	if pc.Timeout != nil {
 		v := int(*pc.Timeout)
 		rc.Timeout = &v
@@ -280,13 +281,28 @@ func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
 
 func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 	cfg := types.ProviderConfig{
-		Type:          pc.Type,
-		APIKeyRef:     pc.ApiKeyRef,
-		Region:        pc.Region,
-		Profile:       pc.Profile,
-		BaseURL:       pc.BaseUrl,
-		APIKeyHeader:  pc.ApiKeyHeader,
-		CompatProfile: pc.CompatProfile,
+		Type:               pc.Type,
+		APIKeyRef:          pc.ApiKeyRef,
+		Region:             pc.Region,
+		Profile:            pc.Profile,
+		BaseURL:            pc.BaseUrl,
+		APIKeyHeader:       pc.ApiKeyHeader,
+		CompatProfile:      pc.CompatProfile,
+		GCPProject:         pc.GcpProject,
+		GCPLocation:        pc.GcpLocation,
+		GCPCredentialsFile: pc.GcpCredentialsFile,
+	}
+	if len(pc.GeminiSafetySettings) > 0 {
+		cfg.GeminiSafetySettings = make([]types.GeminiSafetySetting, 0, len(pc.GeminiSafetySettings))
+		for _, s := range pc.GeminiSafetySettings {
+			if s == nil {
+				continue
+			}
+			cfg.GeminiSafetySettings = append(cfg.GeminiSafetySettings, types.GeminiSafetySetting{
+				Category:  s.Category,
+				Threshold: s.Threshold,
+			})
+		}
 	}
 	if len(pc.QueryParams) > 0 {
 		// Copy the proto-owned map so later mutations to the wire payload
