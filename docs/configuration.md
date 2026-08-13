@@ -275,6 +275,7 @@ reference.
 | `--max-turns` | `20` | Hard-capped at 100. |
 | `--timeout` | `600` | Wall-clock seconds; capped at 3600. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
+| `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, or `high`. Empty says nothing on the wire and leaves the model on its provider default. Adapters with a probed native control project it — the Gemini adapter maps it to `generationConfig.thinkingConfig.thinkingLevel` — and the rest ignore it, so a single config stays portable across providers. Per-model acceptance may be narrower than the enum (Gemini 3.7 Flash rejects `minimal`); the [provider quirks registry](provider-quirks.md) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Loop behaviour
@@ -367,7 +368,11 @@ upstream blip than from failing fast.
 | `--gcp-project` | (none) | GCP project ID. Required when `--provider=gemini`. |
 | `--gcp-location` | `global` | Vertex AI location: `global` or a region like `us-central1`. |
 | `--gcp-credentials-file` | (none) | Path to a Google service account JSON key file. When set, implies `credential.type=gcp-service-account`; otherwise the credential layer falls back to Application Default Credentials. |
-| `--gemini-thinking-level` | (none) | Thinking level: `minimal`, `low`, `medium`, or `high`, mapped to `generationConfig.thinkingConfig.thinkingLevel`. Empty leaves the model on its own default. Which levels a model accepts is model-specific — Gemini 3.7 Flash rejects `minimal` — so the request is rejected before it is sent when the resolved model is known not to accept the level. Sets `provider.geminiThinkingLevel`. |
+
+Gemini thinking depth is not a provider-scoped flag: the generic
+`--reasoning-effort` flag (see
+[Run identity and shape](#run-identity-and-shape)) projects onto
+`generationConfig.thinkingConfig.thinkingLevel` for Gemini models.
 
 ### Anthropic Workload Identity Federation
 
@@ -1238,6 +1243,14 @@ agentic loop forwards a non-nil value verbatim, including explicit
 `0.0` for greedy decoding. Reasoning models that reject `temperature`
 on the wire are handled separately by the provider adapter — the
 field on the run config still represents intent.
+
+`reasoningEffort` is the second provider-neutral model knob and
+follows the same contract: a closed enum (`minimal`, `low`, `medium`,
+`high`) validated at startup, projected onto the provider's native
+control by the adapter (Gemini `thinkingLevel`), ignored by adapters
+without a probed control, with per-model acceptance enforced by the
+[provider quirks registry](provider-quirks.md) before the request is
+sent.
 
 ## RunConfig examples
 

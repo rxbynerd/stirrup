@@ -110,6 +110,25 @@ to make a feature easier:
   list inherits the invariant. The CLI defaults `--mode` to
   `planning` so a bare invocation is safe-by-default; `execution`
   is the explicit opt-in for editable runs.
+- **Model-behaviour knobs are provider-neutral.** Knobs that tune
+  how a model behaves (`temperature`, `reasoningEffort`) are
+  top-level `RunConfig` fields threaded through
+  `types.StreamParams`; each adapter projects them onto its native
+  wire control (or ignores them when no control has been probed),
+  and per-model acceptance lives in the provider quirks registry.
+  `ProviderConfig` fields are for connection, endpoint, and
+  credential concerns only. Adding a provider-prefixed behaviour
+  field (`geminiXxx`, `openaiXxx`) leaks the abstraction that
+  models are interchangeable — extend the generic knob instead.
+- **A `RunConfig` surface change ships with its gRPC mirror.**
+  `proto/harness/v1/harness.proto` mirrors `RunConfig`
+  field-for-field, and the field must also be copied in
+  `harness/internal/transport/grpc_translate.go` — the proto
+  compiling is not enough. An unmapped proto field is silently
+  dropped at translation, locking the feature out of `stirrup job`
+  (this happened to all four Gemini provider fields until
+  2026-08-13). New CLI flags or `RunConfig` fields without the
+  proto + translate pair are incomplete.
 - **Hand-rolled HTTP over SDKs.** The container executor uses the
   Docker Engine REST API directly to avoid the `github.com/docker/docker`
   dependency tree. Provider adapters are stdlib HTTP+SSE for the

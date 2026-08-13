@@ -15,6 +15,11 @@ tmp/*
 # eval/baselines/ are the committed reference, not these run results.
 /eval/results/
 
+# memvid "Claude Mind" plugin state; its lock files appear in whatever
+# directory a tool call happens to be running in, not just the repo root.
+mind.mv2
+mind.mv2.lock
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

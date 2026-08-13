@@ -200,13 +200,13 @@ Key implementation notes:
   function-response Contents are emitted first, mirroring the OpenAI
   Responses adapter's ordering — otherwise Vertex would receive a
   user-text turn before the function-response it depends on.
-- **Thinking level.** `provider.geminiThinkingLevel` projects to
-  `generationConfig.thinkingConfig.thinkingLevel`. Left empty, nothing
-  is sent and the model applies its own default. Accepted levels vary
-  by model — Gemini 3.7 Flash rejects `minimal`, which 3.6 Flash
-  accepts — so the quirks registry carries a per-model allow-list and
-  the adapter fails the request before any wire bytes are sent. See
-  [`provider-quirks.md`](provider-quirks.md).
+- **Thinking level.** The provider-neutral `reasoningEffort` config
+  field projects to `generationConfig.thinkingConfig.thinkingLevel`.
+  Left empty, nothing is sent and the model applies its own default.
+  Accepted levels vary by model — Gemini 3.7 Flash rejects `minimal`,
+  which 3.6 Flash accepts — so the quirks registry carries a per-model
+  allow-list and the adapter fails the request before any wire bytes
+  are sent. See [`provider-quirks.md`](provider-quirks.md).
 
 **Intentional exclusions:** multimodal input, server-side built-in
 tools (`google_search`, `code_execution`, etc. — tracked as issue #93),
