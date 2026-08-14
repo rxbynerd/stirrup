@@ -1088,3 +1088,77 @@ func TestWildcardHostPattern_AnchoredSpellingsSurvive(t *testing.T) {
 		})
 	}
 }
+
+// Polarity must survive a negation expressed through a node the DNF walk
+// does not model. `X == false`, `X != true`, `if X then false else true`
+// and `[X].contains(false)` all mean `!X`; wrapped in an outer `!`, the
+// two negations cancel and the enclosed `like` is genuinely in a
+// widening position. An earlier walk passed the parent's polarity through
+// unrecognised nodes unchanged, so it flipped once instead of twice,
+// dropped the clause from the DNF, and reported a policy clean that the
+// real authorizer used to grant any host.
+//
+// Assertions run against cedar.Authorize, not just the lint result: this
+// class of bug is invisible to a test that only inspects findings for a
+// pattern it already expects to be flagged.
+func TestWildcardHostPattern_NegationThroughUnmodelledNodes(t *testing.T) {
+	const unanchored = `context.input.url like "*.github.com/*"`
+	cases := []struct {
+		name string
+		body string
+		want bool // want a wildcard-host finding
+	}{
+		{"double negation via == false", `!((` + unanchored + `) == false)`, true},
+		{"double negation via literal on the left", `!(false == (` + unanchored + `))`, true},
+		{"single negation via != false", `(` + unanchored + `) != false`, true},
+		{"double negation via if/then/else", `!(if (` + unanchored + `) then false else true)`, true},
+		{"double negation via contains", `!([` + unanchored + `].contains(false))`, true},
+		{"identity via == true is still widening", `(` + unanchored + `) == true`, true},
+
+		// The mirror: these genuinely narrow, and a fail-closed rule must
+		// not reject them.
+		{
+			name: "negation via == true narrows, alongside an anchor",
+			body: `!((context.input.url like "*evil*") == true) && context.input.url like "https://github.com/*"`,
+			want: false,
+		},
+		{
+			name: "plain negation narrows, alongside an anchor",
+			body: `!(context.input.url like "*evil*") && context.input.url like "https://github.com/*"`,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+				when { ` + tc.body + ` };`
+			ps := mustParse(t, src)
+			findings := LintPolicySetStructure(ps)
+			if got := len(findings) > 0; got != tc.want {
+				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
+			}
+
+			// Cross-check the claim the lint result stands for: a clean
+			// verdict must mean the authorizer denies another host.
+			if tc.want {
+				return
+			}
+			policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Allowed {
+				t.Fatalf("policy lints clean but authorizes an attacker host: %s", tc.body)
+			}
+		})
+	}
+}

@@ -707,13 +707,40 @@ func collectURLGroups(n internalast.IsNode, widening bool, budget *int) [][]urlL
 			pattern = cedarPattern{undecodable: true, source: strings.TrimSuffix(strings.TrimPrefix(string(t.Value.MarshalCedar()), `"`), `"`)}
 		}
 		return [][]urlLikeClause{{{path: strings.Join(path, "."), pattern: pattern}}}
+
+	// A comparison against a boolean literal is a negation in disguise:
+	// `X == false` and `X != true` both mean `!X`. Missing that let a
+	// double negation cancel out in Cedar while this walk flipped
+	// polarity only once, dropping the enclosed `like` from the DNF
+	// entirely — a policy that linted clean and authorized any host.
+	case internalast.NodeTypeEquals:
+		if other, literal, ok := boolComparisonOperand(t.Left, t.Right); ok {
+			return collectURLGroups(other, widening == literal, budget)
+		}
+	case internalast.NodeTypeNotEquals:
+		if other, literal, ok := boolComparisonOperand(t.Left, t.Right); ok {
+			return collectURLGroups(other, widening != literal, budget)
+		}
+
+	// An if/then/else is a boolean mux. Both branches are the value of
+	// the expression, so they inherit its polarity; the condition selects
+	// between them, and which way over-matching there cuts depends on the
+	// branches' runtime values, so it is analysed under both.
+	case internalast.NodeTypeIfThenElse:
+		out := append(
+			collectURLGroups(t.Then, widening, budget),
+			collectURLGroups(t.Else, widening, budget)...,
+		)
+		return append(out, bothPolarities(t.If, budget)...)
 	}
 
-	// Any other node type (comparisons, `in`, `if`/`then`/`else`,
-	// extension calls) is not boolean structure this function models, so
-	// its children are unioned rather than crossed. Union is the
-	// conservative direction: it requires each nested clause to anchor on
-	// its own.
+	// Any remaining node type — `in`, `contains`, extension calls, record
+	// and set literals — has semantics this walk does not model, so its
+	// children are analysed under BOTH polarities and unioned. Passing the
+	// parent's polarity through would assume the node is transparent to
+	// negation, which is exactly the assumption that made
+	// `!([X].contains(false))` lint clean. Union is the conservative
+	// direction: it can only produce more findings, never fewer.
 	var out [][]urlLikeClause
 	root := true
 	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {
@@ -721,13 +748,47 @@ func collectURLGroups(n internalast.IsNode, widening bool, budget *int) [][]urlL
 			root = false
 			return true
 		}
-		out = append(out, collectURLGroups(child, widening, budget)...)
+		out = append(out, bothPolarities(child, budget)...)
 		return false
 	})
 	if len(out) == 0 {
 		return none
 	}
 	return out
+}
+
+// bothPolarities analyses a subtree under each polarity and unions the
+// result, for nodes whose effect on polarity this walk cannot determine.
+func bothPolarities(n internalast.IsNode, budget *int) [][]urlLikeClause {
+	return append(
+		collectURLGroups(n, true, budget),
+		collectURLGroups(n, false, budget)...,
+	)
+}
+
+// boolComparisonOperand splits a comparison into its non-literal operand
+// and the boolean literal it is compared against. Returns ok=false when
+// neither side is a boolean literal, in which case the comparison's
+// polarity is genuinely indeterminate and the caller must fall through to
+// the conservative path.
+func boolComparisonOperand(left, right internalast.IsNode) (internalast.IsNode, bool, bool) {
+	if v, ok := boolLiteral(right); ok {
+		return left, v, true
+	}
+	if v, ok := boolLiteral(left); ok {
+		return right, v, true
+	}
+	return nil, false, false
+}
+
+// boolLiteral reports whether n is a literal true/false.
+func boolLiteral(n internalast.IsNode) (bool, bool) {
+	value, ok := n.(internalast.NodeValue)
+	if !ok {
+		return false, false
+	}
+	b, ok := value.Value.(cedartypes.Boolean)
+	return bool(b), ok
 }
 
 // crossURLGroups distributes a conjunction over two DNF group sets.
