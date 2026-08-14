@@ -572,7 +572,7 @@ every load path including `--dry-run`:
 | `unknown-principal-attribute` | A `principal.<attr>` the request never carries (only `runId`, `mode`, `parentRunId`, `capabilities` exist). |
 | `no-such-attribute` | Any attribute access on the action or resource entity; neither carries attributes. Match on the entity ID instead. |
 | `unknown-scope-entity` | A scope clause naming an entity type the harness never mints (`tool::` for `Tool::`, `Agent::` for `User::`) or an action ID missing the `tool:` prefix. |
-| `wildcard-host-pattern` | A `like` URL pattern that does not pin the whole authority with literal text — a wildcard in or before the host, including scheme-relative (`*.github.com/*`) and split-separator (`https:*/github.com/*`) spellings. |
+| `wildcard-host-pattern` | A `like` URL pattern that does not pin the whole authority with literal text. Everything before the first wildcard must literally contain `://` and a following `/`, `?`, or `#`; anything less leaves the host reachable by a wildcard. |
 
 **Registry-aware tier** — runs at policy-engine construction, once the
 run's tool set (built-ins plus every MCP-imported tool) is known:
@@ -655,6 +655,18 @@ from that:
   errs safe and is left alone; a wildcard host embedded in a
   `run_command` substring probe is not a URL allow-list and is left
   alone too.
+
+  The rule tests for *anchoring*, not for the presence of a wildcard,
+  because the near-misses are easy to write and hard to see:
+  `*.github.com/*` carries no scheme at all, and `https:*/github.com/*`
+  never produces a literal `://` (its literal segments concatenate to
+  `https:/github.com/`, one slash). Both are satisfied by
+  `https://evil.example/x.github.com/y`. Ports, userinfo, IPv6
+  literals, and an escaped literal asterisk (`\*`) are all
+  anchored spellings and pass. A schemeless pattern such as
+  `github.com/*` is reported as well; that clause is dead rather than
+  dangerous — a fetched URL always carries its scheme — and the
+  remedy is the same either way.
 
 ### How to enable
 

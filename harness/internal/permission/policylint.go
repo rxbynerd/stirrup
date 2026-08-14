@@ -847,17 +847,32 @@ func decodePattern(p cedartypes.Pattern) (cedarPattern, error) {
 }
 
 // anchorsAuthority reports whether the pattern pins the URL authority
-// with literal text: every byte up to and including the character that
-// terminates the authority must be literal, so no wildcard can extend the
-// host.
+// with literal text, so no wildcard can extend or replace the host.
 //
-// The authority begins after a literal "://" when the pattern has one and
-// at offset zero when it does not — a scheme-relative pattern such as
-// `*.github.com/*` is just as unanchored, and a pattern that splits the
-// separator (`https:*/github.com/*`) never produces the literal "://" at
-// all. Both were missed by an earlier formulation that only looked for a
-// wildcard AFTER a literal "://"; anchoring is the property worth
-// testing, not the presence of a wildcard.
+// The test is deliberately strict: everything before the first wildcard
+// must literally contain a full "://" separator AND a subsequent "/",
+// "?" or "#" that terminates the authority. Anything less leaves the
+// host reachable by a wildcard, and Cedar's `*` matches `/` and `@`, so
+// an attacker URL can embed the expected host in its path or userinfo.
+//
+// Two earlier formulations were weaker and both let real bypasses
+// through, so the reasoning is worth keeping:
+//
+//   - "is there a wildcard after a literal `://`" missed patterns that
+//     never produce the literal substring — `*.github.com/*` (no scheme
+//     at all) and `https:*/github.com/*` (whose literal segments
+//     concatenate to `https:/github.com/`, one slash).
+//   - Treating a pattern with no literal `://` as schemeless, and taking
+//     its first `/` as the authority terminator, then misread
+//     `https:/*p`: the `/` at offset 6 belongs to the scheme separator,
+//     not to the path, so the wildcard that follows it swallows the
+//     whole host.
+//
+// A consequence of the strict form: a genuinely schemeless pattern such
+// as `github.com/*` is reported too. That clause is dead rather than
+// dangerous — a `web_fetch` URL always carries its scheme, so nothing
+// matches it — and the remedy the finding prescribes (spell out the
+// full scheme://host/ prefix) is the right fix either way.
 func (p cedarPattern) anchorsAuthority() bool {
 	if p.undecodable {
 		return false
@@ -865,24 +880,12 @@ func (p cedarPattern) anchorsAuthority() bool {
 	if len(p.wildcards) == 0 {
 		return true
 	}
-	first := p.wildcards[0]
-	authStart := 0
-	if i := strings.Index(p.flat, "://"); i >= 0 {
-		authStart = i + len("://")
-		if first < authStart {
-			// The scheme or separator itself contains a wildcard.
-			return false
-		}
-	}
-	rel := strings.IndexAny(p.flat[authStart:], "/?#")
-	if rel < 0 {
-		// The authority is never terminated by literal text, so the
-		// trailing wildcard runs into the host.
+	literalPrefix := p.flat[:p.wildcards[0]]
+	sep := strings.Index(literalPrefix, "://")
+	if sep < 0 {
 		return false
 	}
-	// Strictly greater: a wildcard flush against the terminator
-	// (`https://github.com*/x`) still extends the host.
-	return first > authStart+rel
+	return strings.ContainsAny(literalPrefix[sep+len("://"):], "/?#")
 }
 
 // normaliseFindings sorts findings deterministically and drops exact

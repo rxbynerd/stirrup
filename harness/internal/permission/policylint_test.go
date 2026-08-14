@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cedar-policy/cedar-go"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -910,5 +912,126 @@ func TestLint_FindingsFollowSourceOrder(t *testing.T) {
 		if want := fmt.Sprintf("context.bad%02d", i); !strings.Contains(f.Message, want) {
 			t.Fatalf("finding %d names %q, want %s", i, f.Message, want)
 		}
+	}
+}
+
+// A differential probe over the wildcard-host rule: mechanically insert
+// wildcards at every position of a canonical allow-list URL, and for
+// every pattern the linter passes, assert the REAL Cedar authorizer
+// denies a corpus of attacker URLs. The rule's whole job is to make
+// "the linter said nothing" mean "the host is pinned", so that
+// implication is what gets tested rather than the rule's internals.
+//
+// Two formulations shipped inside this branch failed exactly here:
+// gating on a literal "://" let `*.github.com/*` and
+// `https:*/github.com/*` through, and treating a pattern with no
+// literal "://" as schemeless let `https:/*p` through — its `/` at
+// offset 6 belongs to the scheme separator, not the path.
+func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
+	const base = "https://github.com/p"
+	attacker := []string{
+		"https://evil.example/x.github.com/p",
+		"https://evil.example/github.com/p",
+		"https://evil.example//github.com/p",
+		"https://evil.example/p/https://github.com/p",
+		"https://evil.example/https://github.com/p",
+		"https://evil.example/?u=https://github.com/p",
+		"https://evil.example/p?https://github.com/p",
+		"https://evil.example/p#https://github.com/p",
+		"https://github.com@evil.example/p",
+		"https://github.com:pw@evil.example/p",
+		"https://user:pw@evil.example/p",
+		"https://github.com.evil.example/p",
+		"https://notgithub.com/p",
+		"https://evil.example/p",
+		"http://evil.example/p",
+		"HTTPS://evil.example/p",
+	}
+
+	var patterns []string
+	for i := 0; i <= len(base); i++ {
+		patterns = append(patterns, base[:i]+"*"+base[i:])
+		for j := i; j <= len(base); j++ {
+			patterns = append(patterns, base[:i]+"*"+base[j:])
+			patterns = append(patterns, base[:i]+"*"+base[i:j]+"*"+base[j:])
+		}
+	}
+	// Shapes the mechanical insertion cannot produce.
+	patterns = append(patterns,
+		"*", "*.github.com/*", "github.com*", "https:*/github.com/*",
+		"*://github.com/*", "https://*", "https://github.com*",
+		"HTTPS://github.com/*", "https://github.com:443/*",
+		"https://user@github.com/*", "https://[::1]/*",
+		`https://git\*hub.com/*`,
+	)
+
+	seen := map[string]bool{}
+	var clean int
+	for _, pattern := range patterns {
+		if seen[pattern] {
+			continue
+		}
+		seen[pattern] = true
+
+		src := fmt.Sprintf(`permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+			when { context.input.url like "%s" };`, pattern)
+		ps, err := cedar.NewPolicySetFromBytes("probe.cedar", []byte(src))
+		if err != nil {
+			continue // not a legal Cedar pattern literal
+		}
+		if len(LintPolicySetStructure(ps)) > 0 {
+			continue
+		}
+		clean++
+
+		policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+		if err != nil {
+			t.Fatalf("build policy for %q: %v", pattern, err)
+		}
+		for _, url := range attacker {
+			input, err := json.Marshal(map[string]string{"url": url})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+			if err != nil {
+				t.Fatalf("check %q against %q: %v", url, pattern, err)
+			}
+			if res.Allowed {
+				t.Errorf("pattern %q passes the lint but authorizes %q", pattern, url)
+			}
+		}
+	}
+	// Guards against the probe passing vacuously: if a future change
+	// flagged every pattern, no authorization would be exercised at all.
+	if clean == 0 {
+		t.Fatal("no pattern survived the lint — the probe authorized nothing and proves nothing")
+	}
+	t.Logf("%d of %d patterns passed the lint; none authorized an attacker URL", clean, len(seen))
+}
+
+// The mirror of the probe above: legitimate allow-list spellings must
+// survive a rule strict enough to reject everything else. Ports,
+// userinfo, IPv6 literals, an uppercase scheme, and an escaped literal
+// asterisk are all fully-anchored and must not be flagged.
+func TestWildcardHostPattern_AnchoredSpellingsSurvive(t *testing.T) {
+	for _, pattern := range []string{
+		`https://github.com/*`,
+		`https://github.com/p*`,
+		`https://github.com/*p*`,
+		`https://github.com:443/*`,
+		`https://user@github.com/*`,
+		`https://[::1]/*`,
+		`HTTPS://github.com/*`,
+		`https://git\*hub.com/*`,
+		`https://github.com?*`,
+		`https://github.com/#*`,
+	} {
+		t.Run(pattern, func(t *testing.T) {
+			src := `permit (principal, action, resource) when { context.input.url like "` + pattern + `" };`
+			if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
+				t.Fatalf("anchored pattern rejected: %v", findings)
+			}
+		})
 	}
 }
