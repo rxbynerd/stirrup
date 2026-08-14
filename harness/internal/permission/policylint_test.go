@@ -148,6 +148,21 @@ func TestLintPolicySetStructure_ScopeEntities(t *testing.T) {
 			want: []string{LintRuleUnknownScopeEntity + ":error"},
 		},
 		{
+			name: "principal is an entity type the harness never mints",
+			src:  `forbid (principal is Agent, action, resource);`,
+			want: []string{LintRuleUnknownScopeEntity + ":error"},
+		},
+		{
+			name: "resource is-in names a type the harness never mints",
+			src:  `forbid (principal, action, resource is Agent in Tool::"run_command");`,
+			want: []string{LintRuleUnknownScopeEntity + ":error"},
+		},
+		{
+			name: "well-formed is / is-in scopes",
+			src:  `forbid (principal is User, action, resource is Tool in Tool::"run_command");`,
+			want: nil,
+		},
+		{
 			name: "well-formed scopes",
 			src: `forbid (
 				principal in User::"any",

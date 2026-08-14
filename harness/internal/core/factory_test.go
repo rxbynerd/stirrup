@@ -77,9 +77,14 @@ func repoRootForTests(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller(0) failed")
 	}
-	// thisFile is .../harness/internal/core/factory_test.go; walk up four
-	// levels to reach the repo root.
-	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
+	// thisFile is .../harness/internal/core/factory_test.go: core →
+	// internal → harness → root is three levels. The helper this was
+	// copied from lives one directory deeper, and its fourth ".." came
+	// along with it — which resolved above the repo root and made every
+	// test guarded by this helper skip rather than fail, in CI as well as
+	// locally. Check the depth against this file's own path before
+	// mirroring it anywhere else.
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
 }
 
 // disableRuleOfTwo overrides the Rule-of-Two invariant so factory tests can
