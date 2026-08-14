@@ -918,8 +918,8 @@ func TestLint_FindingsFollowSourceOrder(t *testing.T) {
 // A differential probe over the wildcard-host rule: mechanically insert
 // wildcards at every position of a canonical allow-list URL, and for
 // every pattern the linter passes, assert the REAL Cedar authorizer
-// denies a corpus of attacker URLs. The rule's whole job is to make
-// "the linter said nothing" mean "the host is pinned", so that
+// denies a corpus of URLs on a DIFFERENT host. The rule's whole job is
+// to make "the linter said nothing" mean "the host is pinned", so that
 // implication is what gets tested rather than the rule's internals.
 //
 // Two formulations shipped inside this branch failed exactly here:
@@ -927,9 +927,21 @@ func TestLint_FindingsFollowSourceOrder(t *testing.T) {
 // `https:*/github.com/*` through, and treating a pattern with no
 // literal "://" as schemeless let `https:/*p` through — its `/` at
 // offset 6 belongs to the scheme separator, not the path.
+//
+// Scope note: this pins HOST anchoring only. A pattern that permits a
+// wider path on the same host (`https://github.com/*` reaching
+// /a and /b alike) is the allow-list working as written, not a defect,
+// so every probe URL below sits on a host the pattern never names.
 func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
-	const base = "https://github.com/p"
-	attacker := []string{
+	bases := []string{
+		"https://github.com/p",
+		"https://a.b-c.example.co.uk:8443/x/y?q=1#f",
+		"http://h/p",
+		"git+ssh://git@github.com/o/r",
+		"ftp://ftp.example.com/pub",
+		"https://1.2.3.4/p",
+	}
+	otherHost := []string{
 		"https://evil.example/x.github.com/p",
 		"https://evil.example/github.com/p",
 		"https://evil.example//github.com/p",
@@ -942,34 +954,24 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 		"https://github.com:pw@evil.example/p",
 		"https://user:pw@evil.example/p",
 		"https://github.com.evil.example/p",
+		"https://evil.example/x.b-c.example.co.uk/y",
+		"https://h@evil.example/p",
+		"https://evil.example/h/p",
+		"https://evil.example//h/p",
 		"https://notgithub.com/p",
 		"https://evil.example/p",
 		"http://evil.example/p",
 		"HTTPS://evil.example/p",
+		"ftp://evil.example/pub",
+		"git+ssh://git@evil.example/o/r",
 	}
-
-	var patterns []string
-	for i := 0; i <= len(base); i++ {
-		patterns = append(patterns, base[:i]+"*"+base[i:])
-		for j := i; j <= len(base); j++ {
-			patterns = append(patterns, base[:i]+"*"+base[j:])
-			patterns = append(patterns, base[:i]+"*"+base[i:j]+"*"+base[j:])
-		}
-	}
-	// Shapes the mechanical insertion cannot produce.
-	patterns = append(patterns,
-		"*", "*.github.com/*", "github.com*", "https:*/github.com/*",
-		"*://github.com/*", "https://*", "https://github.com*",
-		"HTTPS://github.com/*", "https://github.com:443/*",
-		"https://user@github.com/*", "https://[::1]/*",
-		`https://git\*hub.com/*`,
-	)
 
 	seen := map[string]bool{}
 	var clean int
-	for _, pattern := range patterns {
+	check := func(t *testing.T, pattern string) {
+		t.Helper()
 		if seen[pattern] {
-			continue
+			return
 		}
 		seen[pattern] = true
 
@@ -977,10 +979,10 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 			when { context.input.url like "%s" };`, pattern)
 		ps, err := cedar.NewPolicySetFromBytes("probe.cedar", []byte(src))
 		if err != nil {
-			continue // not a legal Cedar pattern literal
+			return // not a legal Cedar pattern literal
 		}
 		if len(LintPolicySetStructure(ps)) > 0 {
-			continue
+			return
 		}
 		clean++
 
@@ -988,7 +990,7 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build policy for %q: %v", pattern, err)
 		}
-		for _, url := range attacker {
+		for _, url := range otherHost {
 			input, err := json.Marshal(map[string]string{"url": url})
 			if err != nil {
 				t.Fatal(err)
@@ -1002,12 +1004,63 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 			}
 		}
 	}
+
+	for _, base := range bases {
+		for i := 0; i <= len(base); i++ {
+			check(t, base[:i]+"*"+base[i:])
+			for j := i; j <= len(base); j++ {
+				check(t, base[:i]+"*"+base[j:])
+				check(t, base[:i]+"*"+base[i:j]+"*"+base[j:])
+			}
+		}
+	}
+	// Shapes the mechanical insertion cannot produce.
+	for _, pattern := range []string{
+		"*", "*.github.com/*", "github.com*", "https:*/github.com/*",
+		"*://github.com/*", "https://*", "https://github.com*",
+		"HTTPS://github.com/*", "https://github.com:443/*",
+		"https://user@github.com/*", "https://[::1]/*",
+		`https://git\*hub.com/*`,
+	} {
+		check(t, pattern)
+	}
+
 	// Guards against the probe passing vacuously: if a future change
 	// flagged every pattern, no authorization would be exercised at all.
 	if clean == 0 {
 		t.Fatal("no pattern survived the lint — the probe authorized nothing and proves nothing")
 	}
-	t.Logf("%d of %d patterns passed the lint; none authorized an attacker URL", clean, len(seen))
+	t.Logf("%d of %d patterns passed the lint; none authorized another host", clean, len(seen))
+}
+
+// A URL attribute that is not a string must not slip past a policy that
+// constrains it: Cedar raises a type error on `like` against a Long or a
+// Record, the policy abstains, and the fallback decides. buildRequest
+// also wraps a non-object tool input as context.input.raw, which no
+// url clause names.
+func TestWildcardHostPattern_NonStringURLDoesNotAuthorize(t *testing.T) {
+	src := `permit (principal, action, resource) when { context.input.url like "https://github.com/*" };`
+	ps := mustParse(t, src)
+	if findings := LintPolicySetStructure(ps); len(findings) != 0 {
+		t.Fatalf("unexpected findings: %v", findings)
+	}
+	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{
+		`{"url":123}`, `{"url":{"a":1}}`, `{"url":["x"]}`, `{"url":null}`,
+		`{}`, `"a raw string"`, `null`, `123`,
+	} {
+		res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, json.RawMessage(input))
+		if err != nil {
+			t.Errorf("input %s: %v", input, err)
+			continue
+		}
+		if res.Allowed {
+			t.Errorf("input %s was authorized by a url-constrained permit", input)
+		}
+	}
 }
 
 // The mirror of the probe above: legitimate allow-list spellings must
