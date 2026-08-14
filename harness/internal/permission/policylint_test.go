@@ -10,6 +10,7 @@ import (
 
 	"github.com/cedar-policy/cedar-go"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -1527,4 +1528,48 @@ func TestWildcardHostPattern_CrossProductOracle(t *testing.T) {
 		t.Fatal("no policy survived the lint — the oracle proves nothing")
 	}
 	t.Logf("%d of %d generated policies lint clean; none authorized another host", clean, total)
+}
+
+// The undeclared-input-attribute rule asserts a clause is DEAD, and
+// aborts the run on that basis. The assertion rests on tool dispatch
+// validating input against the JSON Schema before consulting Cedar, so
+// it is only sound while NewToolSchema's cheap flat read of the schema
+// agrees with the real validator about which property names can reach
+// Cedar.
+//
+// MCP servers supply their own schemas, so the shapes below are ones a
+// remote server could plausibly send — including the composition forms
+// ($ref, allOf, anyOf) where a hand-rolled reader is most likely to
+// diverge. The failure that matters is one-directional: the linter must
+// never call an attribute dead that the validator would actually let
+// through, because that rejects a working policy.
+func TestNewToolSchema_AgreesWithTheRealValidator(t *testing.T) {
+	schemas := map[string]string{
+		"closed":                  `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
+		"open by omission":        `{"type":"object","properties":{"a":{"type":"string"}}}`,
+		"additionalProperties {}": `{"type":"object","properties":{"a":{}},"additionalProperties":{"type":"string"}}`,
+		"additionalProperties tr": `{"type":"object","properties":{"a":{}},"additionalProperties":true}`,
+		"properties via $ref":     `{"type":"object","$ref":"#/$defs/P","additionalProperties":false,"$defs":{"P":{"properties":{"a":{"type":"string"}}}}}`,
+		"properties via allOf":    `{"type":"object","allOf":[{"properties":{"a":{"type":"string"}}}],"additionalProperties":false}`,
+		"properties via anyOf":    `{"type":"object","anyOf":[{"properties":{"a":{}}},{"properties":{"b":{}}}],"additionalProperties":false}`,
+		"empty schema object":     `{}`,
+		"closed, no properties":   `{"type":"object","additionalProperties":false}`,
+		"non-object root":         `{"type":"string"}`,
+		"nested properties":       `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{}}}},"additionalProperties":false}`,
+	}
+
+	for name, raw := range schemas {
+		t.Run(name, func(t *testing.T) {
+			schema := NewToolSchema(json.RawMessage(raw))
+			// Would the linter call `context.input.a` dead for this tool?
+			callsItDead := schema.Closed && !schema.Properties["a"]
+			// Does the real validator let a call carrying `a` through?
+			validatorAccepts := security.ValidateJSONSchema(
+				json.RawMessage(`{"a":"x"}`), json.RawMessage(raw)) == nil
+
+			if callsItDead && validatorAccepts {
+				t.Fatalf("linter would reject a policy keyed on context.input.a as dead, but the validator accepts that input — a working policy would fail to load")
+			}
+		})
+	}
 }
