@@ -621,149 +621,252 @@ var urlAttributeSuffixes = []string{"url", "uri"}
 // The rule fires only where over-matching *widens* access — a `when` on
 // a permit, or an `unless` on a forbid. The mirror cases over-match in
 // the safe direction, and flagging them would push operators to narrow a
-// deny-list. Negation flips that polarity and is tracked.
+// deny-list. Negation flips that polarity and is tracked, including
+// negations expressed through nodes this walk does not model.
 //
-// Anchoring is judged per attribute per conjunctive group, not per
-// pattern, because `url like "https://github.com/*" && url like "*.json"`
-// is anchored by its first conjunct: the second constrains the same
-// already-anchored value and needs no host of its own. Disjuncts get no
-// such credit — either branch alone can satisfy the clause, so each must
-// anchor on its own.
+// Anchoring is judged per attribute, and a conjunction shares credit:
+// `url like "https://github.com/*" && url like "*.json"` is anchored by
+// its first conjunct, because the second constrains a value the first
+// already pinned. Disjuncts get no such credit — either branch alone can
+// satisfy the clause, so each must anchor on its own.
 func lintWildcardHosts(pl policyUnderLint) []LintFinding {
 	permits := pl.ast.Effect == internalast.EffectPermit
 	var findings []LintFinding
 	for _, cond := range pl.ast.Conditions {
 		widens := permits == (cond.Condition == internalast.ConditionWhen)
-		budget := maxURLGroupProduct
-		for _, group := range collectURLGroups(cond.Body, widens, &budget) {
-			for _, unanchored := range unanchoredPaths(group) {
-				findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
-					"matches %s against %s, which does not anchor the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — spell out the full scheme://host/ prefix as literal text and enumerate hosts one clause each",
-					unanchored.path, unanchored.patterns))
+		for _, path := range urlAttributePaths(cond.Body) {
+			offenders := &patternSet{}
+			if anchoring(cond.Body, path, widens, offenders) != anchoringUnanchored {
+				continue
 			}
+			findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
+				"matches %s against %s, which does not anchor the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — spell out the full scheme://host/ prefix as literal text and enumerate hosts one clause each",
+				path, offenders.join()))
 		}
 	}
 	return findings
 }
 
-// urlLikeClause is one `like` test against a URL-valued attribute, in a
-// position where over-matching widens access.
-type urlLikeClause struct {
-	path    string
-	pattern cedarPattern
+// anchoringVerdict is the three-valued result of asking "does every way
+// of satisfying this subtree pin the host of one attribute".
+//
+// The three values are what let conjunction and disjunction share credit
+// correctly without materialising disjunctive normal form. An earlier
+// implementation did build the DNF, which is exponential in the number of
+// conjoined disjunctions and needed a cross-product budget; past the
+// budget it degraded to treating conjuncts as disjuncts, which rejected
+// correct policies. This formulation is linear and needs no budget.
+type anchoringVerdict int
+
+const (
+	// anchoringVacuous: the subtree does not constrain this attribute at
+	// all. It neither anchors nor fails to; a disjunct that ignores the
+	// attribute is not a hole in the attribute's allow-list, and this
+	// rule is about wildcards rather than about whether a permit has
+	// other unconstrained paths.
+	anchoringVacuous anchoringVerdict = iota
+	// anchoringAnchored: every satisfying assignment pins the host.
+	anchoringAnchored
+	// anchoringUnanchored: some satisfying assignment leaves the host
+	// reachable by a wildcard.
+	anchoringUnanchored
+)
+
+// mergeConjunction combines two operands of `&&`. One anchoring conjunct
+// pins the value for the whole conjunction, so ANCHORED wins.
+func mergeConjunction(a, b anchoringVerdict) anchoringVerdict {
+	if a == anchoringAnchored || b == anchoringAnchored {
+		return anchoringAnchored
+	}
+	if a == anchoringUnanchored || b == anchoringUnanchored {
+		return anchoringUnanchored
+	}
+	return anchoringVacuous
 }
 
-// maxURLGroupProduct bounds the conjunctive cross-product below. A policy
-// deep enough to exceed it degrades to treating the operands as
-// disjuncts, which demands that each anchors independently — more
-// findings, never fewer, so the bound cannot hide a defect.
-const maxURLGroupProduct = 256
+// mergeDisjunction combines two operands of `||`. Either branch alone can
+// satisfy the clause, so a single unanchored branch is a hole and
+// UNANCHORED wins.
+func mergeDisjunction(a, b anchoringVerdict) anchoringVerdict {
+	if a == anchoringUnanchored || b == anchoringUnanchored {
+		return anchoringUnanchored
+	}
+	if a == anchoringAnchored || b == anchoringAnchored {
+		return anchoringAnchored
+	}
+	return anchoringVacuous
+}
 
-// collectURLGroups reduces a condition body to disjunctive normal form
-// over its URL `like` tests: each returned group is a set of clauses that
-// must hold together, and the groups themselves are alternatives.
-//
-// widening tracks whether over-matching at this node widens the clause.
-// Negation flips it and swaps the roles of `&&` and `||` (De Morgan), so
-// the DNF of a negated subtree comes out correct rather than approximated.
-// A negated `like` contributes nothing: narrowing a clause cannot anchor
-// a host.
-func collectURLGroups(n internalast.IsNode, widening bool, budget *int) [][]urlLikeClause {
-	none := [][]urlLikeClause{nil}
+// anchoring evaluates a condition body for one attribute path. widening
+// tracks whether over-matching at this node widens the clause's effect;
+// negation flips it and swaps the roles of `&&` and `||` (De Morgan), so
+// a negated subtree is evaluated correctly rather than approximated.
+func anchoring(n internalast.IsNode, path string, widening bool, offenders *patternSet) anchoringVerdict {
 	if n == nil {
-		return none
+		return anchoringVacuous
 	}
 	switch t := n.(type) {
 	case internalast.NodeTypeNot:
-		return collectURLGroups(t.Arg, !widening, budget)
+		return anchoring(t.Arg, path, !widening, offenders)
+
 	case internalast.NodeTypeAnd:
 		if widening {
-			return crossURLGroups(collectURLGroups(t.Left, true, budget), collectURLGroups(t.Right, true, budget), budget)
+			return mergeConjunction(anchoring(t.Left, path, true, offenders), anchoring(t.Right, path, true, offenders))
 		}
 		// !(A && B) == !A || !B
-		return append(collectURLGroups(t.Left, false, budget), collectURLGroups(t.Right, false, budget)...)
+		return mergeDisjunction(anchoring(t.Left, path, false, offenders), anchoring(t.Right, path, false, offenders))
+
 	case internalast.NodeTypeOr:
-		if !widening {
-			// !(A || B) == !A && !B
-			return crossURLGroups(collectURLGroups(t.Left, false, budget), collectURLGroups(t.Right, false, budget), budget)
+		if widening {
+			return mergeDisjunction(anchoring(t.Left, path, true, offenders), anchoring(t.Right, path, true, offenders))
 		}
-		return append(collectURLGroups(t.Left, true, budget), collectURLGroups(t.Right, true, budget)...)
+		// !(A || B) == !A && !B
+		return mergeConjunction(anchoring(t.Left, path, false, offenders), anchoring(t.Right, path, false, offenders))
+
 	case internalast.NodeTypeLike:
-		if !widening {
-			return none
+		clause, ok := urlLikeClauseOf(t)
+		if !ok || !widening || clause.path != path {
+			return anchoringVacuous
 		}
-		path, ok := attributePath(t.Arg)
-		if !ok || !isURLAttribute(path) {
-			return none
+		if clause.pattern.anchorsAuthority() {
+			return anchoringAnchored
 		}
-		pattern, err := decodePattern(t.Value)
-		if err != nil {
-			// Fail closed. decodePattern only fails on a component shape
-			// cedar-go does not currently produce, but if an upstream
-			// encoding change ever made it fail for every pattern, the
-			// alternative — skipping — would turn this rule silently
-			// inert. An undecodable pattern is treated as unanchored so
-			// the failure is loud.
-			pattern = cedarPattern{undecodable: true, source: strings.TrimSuffix(strings.TrimPrefix(string(t.Value.MarshalCedar()), `"`), `"`)}
-		}
-		return [][]urlLikeClause{{{path: strings.Join(path, "."), pattern: pattern}}}
+		offenders.add(clause.pattern.source)
+		return anchoringUnanchored
 
 	// A comparison against a boolean literal is a negation in disguise:
 	// `X == false` and `X != true` both mean `!X`. Missing that let a
 	// double negation cancel out in Cedar while this walk flipped
-	// polarity only once, dropping the enclosed `like` from the DNF
-	// entirely — a policy that linted clean and authorized any host.
+	// polarity only once, so the enclosed `like` was judged narrowing and
+	// the policy linted clean while authorizing any host.
 	case internalast.NodeTypeEquals:
 		if other, literal, ok := boolComparisonOperand(t.Left, t.Right); ok {
-			return collectURLGroups(other, widening == literal, budget)
+			return anchoring(other, path, widening == literal, offenders)
 		}
 	case internalast.NodeTypeNotEquals:
 		if other, literal, ok := boolComparisonOperand(t.Left, t.Right); ok {
-			return collectURLGroups(other, widening != literal, budget)
+			return anchoring(other, path, widening != literal, offenders)
 		}
 
 	// An if/then/else is a boolean mux. Both branches are the value of
-	// the expression, so they inherit its polarity; the condition selects
-	// between them, and which way over-matching there cuts depends on the
-	// branches' runtime values, so it is analysed under both.
+	// the expression, so they inherit its polarity and combine as
+	// alternatives; the condition selects between them, and which way
+	// over-matching there cuts depends on the branches' runtime values,
+	// so it is evaluated under both polarities.
 	case internalast.NodeTypeIfThenElse:
-		out := append(
-			collectURLGroups(t.Then, widening, budget),
-			collectURLGroups(t.Else, widening, budget)...,
-		)
-		return append(out, bothPolarities(t.If, budget)...)
+		branches := mergeDisjunction(anchoring(t.Then, path, widening, offenders), anchoring(t.Else, path, widening, offenders))
+		return mergeDisjunction(branches, bothPolarities(t.If, path, offenders))
 	}
 
 	// Any remaining node type — `in`, `contains`, extension calls, record
 	// and set literals — has semantics this walk does not model, so its
-	// children are analysed under BOTH polarities and unioned. Passing the
-	// parent's polarity through would assume the node is transparent to
-	// negation, which is exactly the assumption that made
-	// `!([X].contains(false))` lint clean. Union is the conservative
-	// direction: it can only produce more findings, never fewer.
-	var out [][]urlLikeClause
+	// children are evaluated under BOTH polarities and combined as
+	// alternatives. Passing the parent's polarity through would assume
+	// the node is transparent to negation, which is exactly the
+	// assumption that made `!([X].contains(false))` lint clean.
+	// Disjunctive merging is the conservative direction: it can only
+	// produce more findings, never fewer.
+	verdict := anchoringVacuous
 	root := true
 	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {
 		if root {
 			root = false
 			return true
 		}
-		out = append(out, bothPolarities(child, budget)...)
+		verdict = mergeDisjunction(verdict, bothPolarities(child, path, offenders))
 		return false
 	})
-	if len(out) == 0 {
-		return none
-	}
-	return out
+	return verdict
 }
 
-// bothPolarities analyses a subtree under each polarity and unions the
-// result, for nodes whose effect on polarity this walk cannot determine.
-func bothPolarities(n internalast.IsNode, budget *int) [][]urlLikeClause {
-	return append(
-		collectURLGroups(n, true, budget),
-		collectURLGroups(n, false, budget)...,
-	)
+// bothPolarities evaluates a subtree under each polarity and merges the
+// results as alternatives, for nodes whose effect on polarity this walk
+// cannot determine.
+func bothPolarities(n internalast.IsNode, path string, offenders *patternSet) anchoringVerdict {
+	return mergeDisjunction(anchoring(n, path, true, offenders), anchoring(n, path, false, offenders))
+}
+
+// patternSet accumulates the pattern literals that failed to anchor, in
+// first-seen order, so a finding names exactly the clauses at fault
+// rather than every pattern the condition happens to mention.
+type patternSet struct {
+	seen  map[string]bool
+	order []string
+}
+
+func (p *patternSet) add(source string) {
+	if p.seen == nil {
+		p.seen = map[string]bool{}
+	}
+	if p.seen[source] {
+		return
+	}
+	p.seen[source] = true
+	p.order = append(p.order, source)
+}
+
+func (p *patternSet) join() string {
+	quoted := make([]string, len(p.order))
+	for i, s := range p.order {
+		quoted[i] = strconv.Quote(s)
+	}
+	return strings.Join(quoted, " / ")
+}
+
+// urlAttributePaths lists the URL-valued attribute paths a condition
+// mentions, in first-seen order, so anchoring runs once per attribute.
+// Collection ignores polarity: an attribute mentioned anywhere is worth
+// evaluating, and anchoring itself decides whether the clauses that
+// mention it actually widen.
+func urlAttributePaths(body internalast.IsNode) []string {
+	if body == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var order []string
+	internalast.Inspect(internalast.NewNode(body), func(n internalast.IsNode) bool {
+		like, ok := n.(internalast.NodeTypeLike)
+		if !ok {
+			return true
+		}
+		clause, ok := urlLikeClauseOf(like)
+		if !ok || seen[clause.path] {
+			return true
+		}
+		seen[clause.path] = true
+		order = append(order, clause.path)
+		return true
+	})
+	return order
+}
+
+// urlLikeClause is one `like` test against a URL-valued attribute.
+type urlLikeClause struct {
+	path    string
+	pattern cedarPattern
+}
+
+// urlLikeClauseOf decodes a `like` node into its attribute path and
+// pattern, reporting false when the operand is not a URL-valued
+// attribute reference.
+func urlLikeClauseOf(n internalast.NodeTypeLike) (urlLikeClause, bool) {
+	path, ok := attributePath(n.Arg)
+	if !ok || !isURLAttribute(path) {
+		return urlLikeClause{}, false
+	}
+	pattern, err := decodePattern(n.Value)
+	if err != nil {
+		// Fail closed. decodePattern only fails on a component shape
+		// cedar-go does not currently produce, but if an upstream
+		// encoding change ever made it fail for every pattern, the
+		// alternative — skipping — would turn this rule silently inert.
+		// An undecodable pattern never anchors, so the failure is loud.
+		pattern = cedarPattern{
+			undecodable: true,
+			source:      strings.TrimSuffix(strings.TrimPrefix(string(n.Value.MarshalCedar()), `"`), `"`),
+		}
+	}
+	return urlLikeClause{path: strings.Join(path, "."), pattern: pattern}, true
 }
 
 // boolComparisonOperand splits a comparison into its non-literal operand
@@ -789,60 +892,6 @@ func boolLiteral(n internalast.IsNode) (bool, bool) {
 	}
 	b, ok := value.Value.(cedartypes.Boolean)
 	return bool(b), ok
-}
-
-// crossURLGroups distributes a conjunction over two DNF group sets.
-func crossURLGroups(left, right [][]urlLikeClause, budget *int) [][]urlLikeClause {
-	if len(left)*len(right) > *budget {
-		return append(left, right...)
-	}
-	*budget -= len(left) * len(right)
-	out := make([][]urlLikeClause, 0, len(left)*len(right))
-	for _, l := range left {
-		for _, r := range right {
-			merged := make([]urlLikeClause, 0, len(l)+len(r))
-			merged = append(merged, l...)
-			merged = append(merged, r...)
-			out = append(out, merged)
-		}
-	}
-	return out
-}
-
-// unanchoredFinding names one attribute whose patterns, taken together,
-// leave the host unanchored.
-type unanchoredFinding struct {
-	path     string
-	patterns string
-}
-
-// unanchoredPaths reports the attributes in a conjunctive group for which
-// no clause anchors the authority. Anchoring is per attribute: an anchored
-// pattern on `context.input.url` says nothing about `context.input.target`.
-func unanchoredPaths(group []urlLikeClause) []unanchoredFinding {
-	if len(group) == 0 {
-		return nil
-	}
-	anchored := map[string]bool{}
-	patterns := map[string][]string{}
-	var order []string
-	for _, c := range group {
-		if _, seen := patterns[c.path]; !seen {
-			order = append(order, c.path)
-		}
-		patterns[c.path] = append(patterns[c.path], strconv.Quote(c.pattern.source))
-		if c.pattern.anchorsAuthority() {
-			anchored[c.path] = true
-		}
-	}
-	var out []unanchoredFinding
-	for _, path := range order {
-		if anchored[path] {
-			continue
-		}
-		out = append(out, unanchoredFinding{path: path, patterns: strings.Join(patterns[path], " / ")})
-	}
-	return out
 }
 
 // isURLAttribute reports whether the final segment of an attribute path

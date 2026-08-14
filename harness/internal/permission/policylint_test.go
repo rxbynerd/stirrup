@@ -1244,3 +1244,56 @@ func TestWildcardHostPattern_EquivalentBodiesAgree(t *testing.T) {
 		})
 	}
 }
+
+// The rule is fail-closed, so a false positive bricks a run. These are
+// shapes an operator would plausibly write, all genuinely safe.
+func TestWildcardHostPattern_NoFalsePositives(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"forbid deny-list", `forbid (principal, action, resource) when { context.input.url like "*evil*" };`},
+		{"forbid deny-list via == true", `forbid (principal, action, resource) when { (context.input.url like "*evil*") == true };`},
+		{"forbid deny-list inside an if", `forbid (principal, action, resource) when { if principal.mode == "execution" then (context.input.url like "*evil*") else false };`},
+		{"permit with an unless deny-list", `permit (principal, action, resource) unless { context.input.url like "*evil*" };`},
+		{"has-guarded anchored allow-list", `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch") when { context.input has url && (context.input.url like "https://github.com/*" || context.input.url like "https://api.github.com/*") };`},
+		{"anchor in one condition, deny-list in another", `permit (principal, action, resource) when { context.input has url } unless { context.input.url like "*evil*" } when { context.input.url like "https://github.com/*" };`},
+		{"wildcard confined to the query", `permit (principal, action, resource) when { context.input.url like "https://api.github.com/search?q=*" };`},
+		{"three conjuncts, anchor last", `permit (principal, action, resource) when { context.input.url like "*.json" && context.input.url like "*v2*" && context.input.url like "https://github.com/*" };`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := LintPolicySetStructure(mustParse(t, tc.src)); len(findings) != 0 {
+				t.Fatalf("safe policy rejected: %v", findings)
+			}
+		})
+	}
+}
+
+// Anchoring is evaluated bottom-up over a three-valued lattice rather
+// than by materialising disjunctive normal form, which is exponential in
+// the number of conjoined disjunctions. The DNF version needed a
+// cross-product budget and, past it, degraded to treating conjuncts as
+// disjuncts — so an anchored policy with enough additional constraints
+// was rejected. Scale is therefore a correctness property, not just a
+// performance one.
+func TestWildcardHostPattern_WideConjunctionsStayLinear(t *testing.T) {
+	for _, n := range []int{4, 8, 16, 32, 64} {
+		t.Run(fmt.Sprintf("conjuncts=%d", n), func(t *testing.T) {
+			parts := []string{`context.input.url like "https://github.com/*"`}
+			for range n {
+				parts = append(parts, `(context.input.url like "*a*" || context.input.url like "*b*")`)
+			}
+			src := `permit (principal, action, resource) when { ` + strings.Join(parts, " && ") + ` };`
+			if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
+				t.Fatalf("anchored policy rejected at %d conjuncts: %v", n, findings)
+			}
+
+			// The mirror: drop the anchor and it must still be caught.
+			unanchored := `permit (principal, action, resource) when { ` + strings.Join(parts[1:], " && ") + ` };`
+			if findings := LintPolicySetStructure(mustParse(t, unanchored)); len(findings) == 0 {
+				t.Fatalf("unanchored policy accepted at %d conjuncts", n)
+			}
+		})
+	}
+}
