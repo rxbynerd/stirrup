@@ -1297,3 +1297,122 @@ func TestWildcardHostPattern_WideConjunctionsStayLinear(t *testing.T) {
 		})
 	}
 }
+
+// The operand of `like` need not be a bare attribute chain. An
+// if/then/else selecting between fields, or a record literal accessed by
+// member, both evaluate to the attribute at runtime — but neither
+// resolves through attributePath, and a clause the rule cannot resolve
+// used to be skipped rather than judged. That failed OPEN: both policies
+// below linted clean while the real authorizer granted any host.
+//
+// The mirror matters as much: an operand with no URL attribute anywhere
+// inside is still not this rule's business.
+func TestWildcardHostPattern_UnresolvableOperands(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "if/then/else selecting the same url field",
+			body: `(if principal.mode == "execution" then context.input.url else context.input.url) like "*.github.com/*"`,
+			want: true,
+		},
+		{
+			name: "if/then/else selecting between two fields",
+			body: `(if principal.mode == "execution" then context.input.url else context.input.callbackUri) like "*.github.com/*"`,
+			want: true,
+		},
+		{
+			name: "record literal accessed by member",
+			body: `{u: context.input.url}.u like "*.github.com/*"`,
+			want: true,
+		},
+		{
+			name: "anchored pattern through an unresolvable operand is fine",
+			body: `{u: context.input.url}.u like "https://github.com/*"`,
+			want: false,
+		},
+		{
+			name: "no URL attribute in the operand is not this rule's business",
+			body: `(if principal.mode == "execution" then context.input.command else context.input.command) like "*rm -rf*"`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+				when { ` + tc.body + ` };`
+			ps := mustParse(t, src)
+			findings := LintPolicySetStructure(ps)
+			if got := len(findings) > 0; got != tc.want {
+				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
+			}
+		})
+	}
+}
+
+// Metamorphic guard on the OPERAND axis, mirroring
+// TestWildcardHostPattern_EquivalentBodiesAgree on the body axis.
+// Wrapping the attribute reference in an expression that evaluates to
+// the same value must not change the verdict — a clause the walk cannot
+// resolve has to be judged, not skipped.
+func TestWildcardHostPattern_EquivalentOperandsAgree(t *testing.T) {
+	// Each entry rewrites %s — an attribute reference — into an
+	// expression with the same value.
+	equivalent := []string{
+		`%s`,
+		`(%s)`,
+		`(if true then %s else %s)`,
+		`(if principal.mode == "execution" then %s else %s)`,
+		`{u: %s}.u`,
+		`{a: {b: %s}}.a.b`,
+		`(if true then {u: %s}.u else %s)`,
+	}
+	clauses := []struct {
+		name    string
+		pattern string
+		want    bool
+	}{
+		{"unanchored", `*.github.com/*`, true},
+		{"anchored", `https://github.com/*`, false},
+	}
+
+	for _, clause := range clauses {
+		t.Run(clause.name, func(t *testing.T) {
+			for _, shape := range equivalent {
+				operand := strings.ReplaceAll(shape, "%s", "context.input.url")
+				body := fmt.Sprintf(`%s like "%s"`, operand, clause.pattern)
+				src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+					when { ` + body + ` };`
+				ps, err := cedar.NewPolicySetFromBytes("operand.cedar", []byte(src))
+				if err != nil {
+					t.Fatalf("parse %q: %v", body, err)
+				}
+				findings := LintPolicySetStructure(ps)
+				if got := len(findings) > 0; got != clause.want {
+					t.Errorf("operand %q: flagged = %v, want %v (%v)", operand, got, clause.want, findings)
+					continue
+				}
+				if clause.want {
+					continue
+				}
+				policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.Allowed {
+					t.Errorf("operand %q lints clean but authorizes an attacker host", operand)
+				}
+			}
+		})
+	}
+}

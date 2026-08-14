@@ -3,6 +3,7 @@ package permission
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -724,14 +725,14 @@ func anchoring(n internalast.IsNode, path string, widening bool, offenders *patt
 		return mergeConjunction(anchoring(t.Left, path, false, offenders), anchoring(t.Right, path, false, offenders))
 
 	case internalast.NodeTypeLike:
-		clause, ok := urlLikeClauseOf(t)
-		if !ok || !widening || clause.path != path {
+		paths, pattern, ok := urlLikeTargets(t)
+		if !ok || !widening || !slices.Contains(paths, path) {
 			return anchoringVacuous
 		}
-		if clause.pattern.anchorsAuthority() {
+		if pattern.anchorsAuthority() {
 			return anchoringAnchored
 		}
-		offenders.add(clause.pattern.source)
+		offenders.add(pattern.source)
 		return anchoringUnanchored
 
 	// A comparison against a boolean literal is a negation in disguise:
@@ -829,31 +830,50 @@ func urlAttributePaths(body internalast.IsNode) []string {
 		if !ok {
 			return true
 		}
-		clause, ok := urlLikeClauseOf(like)
-		if !ok || seen[clause.path] {
+		paths, _, ok := urlLikeTargets(like)
+		if !ok {
 			return true
 		}
-		seen[clause.path] = true
-		order = append(order, clause.path)
+		for _, path := range paths {
+			if !seen[path] {
+				seen[path] = true
+				order = append(order, path)
+			}
+		}
 		return true
 	})
 	return order
 }
 
-// urlLikeClause is one `like` test against a URL-valued attribute.
-type urlLikeClause struct {
-	path    string
-	pattern cedarPattern
-}
-
-// urlLikeClauseOf decodes a `like` node into its attribute path and
-// pattern, reporting false when the operand is not a URL-valued
-// attribute reference.
-func urlLikeClauseOf(n internalast.NodeTypeLike) (urlLikeClause, bool) {
-	path, ok := attributePath(n.Arg)
-	if !ok || !isURLAttribute(path) {
-		return urlLikeClause{}, false
+// urlLikeTargets returns every URL-valued attribute a `like` node tests,
+// together with the pattern it tests them against.
+//
+// Normally the operand is a plain attribute chain and there is exactly
+// one. When it is an expression attributePath cannot resolve — an
+// if/then/else selecting between two fields, a record literal accessed
+// by member — every URL attribute reachable inside it is returned
+// instead. Returning none there would fail OPEN: the clause would never
+// enter the anchoring fold, and
+//
+//	(if c then context.input.url else context.input.url) like "*.github.com/*"
+//
+// linted clean while the authorizer granted any host. An operand with no
+// URL attribute anywhere inside is still skipped, so a shell-command
+// substring probe wrapped in the same syntax is left alone.
+func urlLikeTargets(n internalast.NodeTypeLike) ([]string, cedarPattern, bool) {
+	var paths []string
+	if path, ok := attributePath(n.Arg); ok {
+		if !isURLAttribute(path) {
+			return nil, cedarPattern{}, false
+		}
+		paths = []string{strings.Join(path, ".")}
+	} else {
+		paths = urlAttributesWithin(n.Arg)
+		if len(paths) == 0 {
+			return nil, cedarPattern{}, false
+		}
 	}
+
 	pattern, err := decodePattern(n.Value)
 	if err != nil {
 		// Fail closed. decodePattern only fails on a component shape
@@ -866,7 +886,32 @@ func urlLikeClauseOf(n internalast.NodeTypeLike) (urlLikeClause, bool) {
 			source:      strings.TrimSuffix(strings.TrimPrefix(string(n.Value.MarshalCedar()), `"`), `"`),
 		}
 	}
-	return urlLikeClause{path: strings.Join(path, "."), pattern: pattern}, true
+	return paths, pattern, true
+}
+
+// urlAttributesWithin lists the URL-valued attribute paths reachable
+// inside an expression, in first-seen order. Used when a `like` operand
+// is not a bare attribute chain, so the clause is judged against every
+// attribute it could be testing rather than skipped.
+func urlAttributesWithin(n internalast.IsNode) []string {
+	if n == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var order []string
+	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {
+		path, ok := attributePath(child)
+		if !ok || !isURLAttribute(path) {
+			return true
+		}
+		joined := strings.Join(path, ".")
+		if !seen[joined] {
+			seen[joined] = true
+			order = append(order, joined)
+		}
+		return true
+	})
+	return order
 }
 
 // boolComparisonOperand splits a comparison into its non-literal operand
