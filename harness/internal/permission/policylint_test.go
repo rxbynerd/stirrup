@@ -1162,3 +1162,85 @@ func TestWildcardHostPattern_NegationThroughUnmodelledNodes(t *testing.T) {
 		})
 	}
 }
+
+// Metamorphic guard over the DNF walk. Rewriting a clause into a
+// logically equivalent form must not change the linter's verdict — if
+// `url like P` is flagged, so must every spelling that means the same
+// thing, however it is dressed up in comparisons, muxes, or paired
+// negations.
+//
+// This is the generalisation of the bypass that shipped in bd53dd82: a
+// probe that varies PATTERNS cannot find a bug in how policy BODIES are
+// walked, and three rounds of hand-written body cases each covered only
+// the shapes their author had thought of. Equivalence is a property the
+// walk must have for shapes nobody enumerated.
+func TestWildcardHostPattern_EquivalentBodiesAgree(t *testing.T) {
+	// Each entry rewrites %s — a clause — into an equivalent one.
+	equivalent := []string{
+		`%s`,
+		`(%s)`,
+		`!(!(%s))`,
+		`(%s) == true`,
+		`(%s) != false`,
+		`true == (%s)`,
+		`!((%s) == false)`,
+		`!((%s) != true)`,
+		`(%s) && true`,
+		`(%s) || false`,
+		`true && (%s)`,
+		`if (%s) then true else false`,
+		`!(if (%s) then false else true)`,
+		`[(%s)].contains(true)`,
+		`![(%s)].contains(false)`,
+		`(if (%s) then true else false) == true`,
+	}
+	// Both an unanchored clause (must be flagged) and an anchored one
+	// (must not be), so an implementation that flagged everything or
+	// nothing cannot satisfy the test.
+	clauses := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{"unanchored", `context.input.url like "*.github.com/*"`, true},
+		{"anchored", `context.input.url like "https://github.com/*"`, false},
+	}
+
+	for _, clause := range clauses {
+		t.Run(clause.name, func(t *testing.T) {
+			for _, shape := range equivalent {
+				body := fmt.Sprintf(shape, clause.expr)
+				src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+					when { ` + body + ` };`
+				ps, err := cedar.NewPolicySetFromBytes("equiv.cedar", []byte(src))
+				if err != nil {
+					t.Fatalf("parse %q: %v", body, err)
+				}
+				findings := LintPolicySetStructure(ps)
+				if got := len(findings) > 0; got != clause.want {
+					t.Errorf("body %q: flagged = %v, want %v (%v)", body, got, clause.want, findings)
+					continue
+				}
+				if clause.want {
+					continue
+				}
+				// A clean verdict must still mean the host is pinned.
+				policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.Allowed {
+					t.Errorf("body %q lints clean but authorizes an attacker host", body)
+				}
+			}
+		})
+	}
+}
