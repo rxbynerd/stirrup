@@ -130,6 +130,7 @@ func NewToolSchema(raw json.RawMessage) ToolSchema {
 	}
 	var doc struct {
 		Properties           map[string]json.RawMessage `json:"properties"`
+		PatternProperties    map[string]json.RawMessage `json:"patternProperties"`
 		AdditionalProperties *json.RawMessage           `json:"additionalProperties"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -140,6 +141,21 @@ func NewToolSchema(raw json.RawMessage) ToolSchema {
 	}
 	if doc.AdditionalProperties != nil {
 		out.Closed = strings.TrimSpace(string(*doc.AdditionalProperties)) == "false"
+	}
+	// patternProperties admits names no `properties` entry lists, so
+	// additionalProperties:false alongside it does NOT close the object —
+	// the real validator accepts `x-custom` against
+	// {"patternProperties":{"^x-":...},"additionalProperties":false}.
+	// Reading the schema as closed made the linter reject a working
+	// policy, aborting the run with a message blaming a typo that was not
+	// there. The regexes are deliberately NOT compiled to test attribute
+	// names against: they arrive from MCP servers, and compiling a remote
+	// server's regex at policy-load time is a denial-of-service surface
+	// this rule has no need to open. Treating the schema as open costs
+	// only precision — the attribute degrades to an
+	// unverifiable-input-attribute warning instead of an error.
+	if len(doc.PatternProperties) > 0 {
+		out.Closed = false
 	}
 	return out
 }
@@ -184,6 +200,7 @@ func LintPolicySetStructure(ps *cedar.PolicySet) []LintFinding {
 	forEachPolicy(ps, func(pl policyUnderLint) {
 		findings = append(findings, lintScopes(pl)...)
 		findings = append(findings, lintConditionAttributes(pl)...)
+		findings = append(findings, lintConditionEntities(pl)...)
 		findings = append(findings, lintWildcardHosts(pl)...)
 	})
 	return normaliseFindings(findings)
@@ -450,6 +467,67 @@ func lintConditionAttributes(pl policyUnderLint) []LintFinding {
 	return findings
 }
 
+// knownEntityTypes are the only entity types buildRequest ever mints. A
+// membership or type test against anything else is structurally
+// always-false.
+var knownEntityTypes = map[cedartypes.EntityType]bool{
+	"User":   true,
+	"Action": true,
+	"Tool":   true,
+}
+
+// lintConditionEntities checks `in` and `is` tests inside when/unless
+// bodies. lintScopes covers the scope head; a body-position test was
+// invisible to every rule, so Cedar's standard RBAC idiom —
+//
+//	forbid (...) when { principal in Group::"malicious-actor" };
+//
+// parsed, linted clean, loaded, and never fired. The harness gives the
+// principal exactly one parent (User::"any") and mints no Group or other
+// custom entity, so any such test is dead.
+func lintConditionEntities(pl policyUnderLint) []LintFinding {
+	var findings []LintFinding
+	report := func(typ cedartypes.EntityType, form string) {
+		if knownEntityTypes[typ] {
+			return
+		}
+		findings = append(findings, pl.finding(LintRuleUnknownScopeEntity, LintError,
+			"tests %s %s, but the harness mints no %s entity — the clause can never fire; principals carry only the parent User::\"%s\", and group membership has no equivalent in the Cedar request (see docs/safety-rings.md)",
+			form, typ, typ, rootUserAlias))
+	}
+	checkOperand := func(n internalast.IsNode, form string) {
+		switch v := n.(type) {
+		case internalast.NodeValue:
+			if uid, ok := v.Value.(cedartypes.EntityUID); ok {
+				report(uid.Type, form)
+			}
+		case internalast.NodeTypeSet:
+			for _, elem := range v.Elements {
+				if value, ok := elem.(internalast.NodeValue); ok {
+					if uid, ok := value.Value.(cedartypes.EntityUID); ok {
+						report(uid.Type, form)
+					}
+				}
+			}
+		}
+	}
+	for _, cond := range pl.ast.Conditions {
+		internalast.Inspect(internalast.NewNode(cond.Body), func(n internalast.IsNode) bool {
+			switch t := n.(type) {
+			case internalast.NodeTypeIn:
+				checkOperand(t.Right, "membership in")
+			case internalast.NodeTypeIs:
+				report(t.EntityType, "the entity type")
+			case internalast.NodeTypeIsIn:
+				report(t.EntityType, "the entity type")
+				checkOperand(t.Entity, "membership in")
+			}
+			return true
+		})
+	}
+	return findings
+}
+
 // lintInputAttributes is the registry-aware tier: every context.input
 // attribute must be declared by a tool the policy can actually apply to.
 func lintInputAttributes(pl policyUnderLint, schemas map[string]ToolSchema) []LintFinding {
@@ -515,7 +593,7 @@ func lintInputAttributes(pl policyUnderLint, schemas map[string]ToolSchema) []Li
 		}
 		if len(openTools) > 0 {
 			findings = append(findings, pl.finding(LintRuleUnverifiableInputAttribute, LintWarning,
-				"references context.input.%s, which no in-scope tool schema declares; %s permit undeclared properties, so the clause may still fire — verify the spelling against the tool's schema",
+				"references context.input.%s, which no in-scope tool schema declares; %s undeclared properties, so the clause may still fire — verify the spelling against the tool's schema",
 				attr, describeTools(openTools)))
 			continue
 		}
@@ -632,18 +710,41 @@ var urlAttributeSuffixes = []string{"url", "uri"}
 // satisfy the clause, so each must anchor on its own.
 func lintWildcardHosts(pl policyUnderLint) []LintFinding {
 	permits := pl.ast.Effect == internalast.EffectPermit
-	var findings []LintFinding
+
+	// Every condition block on a statement must hold for the policy to
+	// apply, so they form one conjunction and share anchoring credit.
+	// Evaluating each block separately reported
+	//
+	//	permit ... when { url like "*.github.com/*" }
+	//	           when { url like "https://github.com/*" };
+	//
+	// as unanchored, when Cedar requires both and the second pins the
+	// host.
+	var paths []string
+	seen := map[string]bool{}
 	for _, cond := range pl.ast.Conditions {
-		widens := permits == (cond.Condition == internalast.ConditionWhen)
 		for _, path := range urlAttributePaths(cond.Body) {
-			offenders := &patternSet{}
-			if anchoring(cond.Body, path, widens, offenders) != anchoringUnanchored {
-				continue
+			if !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
 			}
-			findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
-				"matches %s against %s, which does not anchor the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — spell out the full scheme://host/ prefix as literal text and enumerate hosts one clause each",
-				path, offenders.join()))
 		}
+	}
+
+	var findings []LintFinding
+	for _, path := range paths {
+		offenders := &patternSet{}
+		verdict := anchoringVacuous
+		for _, cond := range pl.ast.Conditions {
+			widens := permits == (cond.Condition == internalast.ConditionWhen)
+			verdict = mergeConjunction(verdict, anchoring(cond.Body, path, widens, offenders))
+		}
+		if verdict != anchoringUnanchored {
+			continue
+		}
+		findings = append(findings, pl.finding(LintRuleWildcardHostPattern, LintError,
+			"matches %s against %s, which does not anchor the URL authority; Cedar's `*` matches `/` and `@`, so an attacker URL that embeds the expected host in its path or userinfo satisfies the pattern — spell out the full scheme://host/ prefix as literal text and enumerate hosts one clause each",
+			path, offenders.join()))
 	}
 	return findings
 }
@@ -1102,11 +1203,11 @@ func joinSorted(set map[string]bool) string {
 // describeTools renders a tool-name list for a warning message.
 func describeTools(names []string) string {
 	if len(names) == 1 {
-		return fmt.Sprintf("tool %q's schema", names[0])
+		return fmt.Sprintf("tool %q's schema permits", names[0])
 	}
 	quoted := make([]string, len(names))
 	for i, n := range names {
 		quoted[i] = fmt.Sprintf("%q", n)
 	}
-	return fmt.Sprintf("the schemas of %s", strings.Join(quoted, ", "))
+	return fmt.Sprintf("the schemas of %s permit", strings.Join(quoted, ", "))
 }

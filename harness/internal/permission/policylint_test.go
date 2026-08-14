@@ -1573,3 +1573,127 @@ func TestNewToolSchema_AgreesWithTheRealValidator(t *testing.T) {
 		})
 	}
 }
+
+// Cedar's standard RBAC idiom is `principal in Group::"..."`, and it is
+// dead here: buildRequest gives the principal exactly one parent
+// (User::"any") and mints no Group entity. lintScopes only inspected the
+// scope head, so a body-position membership test was invisible to every
+// rule — the forbid below parsed, linted clean, loaded, and never fired.
+func TestLintConditionEntities_DeadMembershipTests(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"principal in a Group", `principal in Group::"malicious-actor"`, true},
+		{"principal is a Group", `principal is Group`, true},
+		{"principal is Group in a Group", `principal is Group in Group::"x"`, true},
+		{"membership in a set with one bad type", `principal in [User::"any", Group::"x"]`, true},
+
+		// The harness does mint these, so they must keep working.
+		{"principal in the root alias", `principal in User::"any"`, false},
+		{"principal is a User", `principal is User`, false},
+		{"resource in a Tool", `resource in Tool::"run_command"`, false},
+		{"action in an Action set", `action in [Action::"tool:run_command"]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `forbid (principal, action, resource) when { ` + tc.body + ` };`
+			findings := LintPolicySetStructure(mustParse(t, src))
+			if got := len(findings) > 0; got != tc.want {
+				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
+			}
+			if tc.want && findings[0].Rule != LintRuleUnknownScopeEntity {
+				t.Fatalf("rule = %s, want %s", findings[0].Rule, LintRuleUnknownScopeEntity)
+			}
+		})
+	}
+}
+
+// A dead forbid is the defect class issue #538 exists to catch, so pin
+// it against the authorizer rather than against the finding alone: the
+// policy really does fail to block what it names.
+func TestLintConditionEntities_DeadForbidIsProvenDead(t *testing.T) {
+	src := `forbid (principal, action == Action::"tool:run_command", resource == Tool::"run_command")
+		when { principal in Group::"malicious-actor" };`
+	ps := mustParse(t, src)
+	if findings := LintPolicySetStructure(ps); len(findings) == 0 {
+		t.Fatal("expected the dead membership test to be flagged")
+	}
+	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewAllowAll()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "run_command"}, json.RawMessage(`{"command":"rm -rf /"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("the forbid fired, so the finding would be a false positive — re-check knownEntityTypes against buildRequest")
+	}
+}
+
+// patternProperties admits names no `properties` entry lists, so
+// additionalProperties:false alongside it does not close the object. The
+// linter read such a schema as closed and rejected a working policy,
+// aborting the run with a message blaming a typo that was not there.
+func TestNewToolSchema_PatternPropertiesIsNotClosed(t *testing.T) {
+	raw := `{"type":"object","properties":{"url":{"type":"string"}},"patternProperties":{"^x-":{"type":"string"}},"additionalProperties":false}`
+
+	// The real validator accepts a pattern-matched property.
+	if err := security.ValidateJSONSchema(
+		json.RawMessage(`{"url":"https://example.com","x-custom":"hello"}`),
+		json.RawMessage(raw),
+	); err != nil {
+		t.Fatalf("validator rejected a pattern-matched property, so the premise no longer holds: %v", err)
+	}
+
+	if NewToolSchema(json.RawMessage(raw)).Closed {
+		t.Fatal("schema with patternProperties read as closed; a policy on a pattern-matched attribute would be rejected as dead")
+	}
+
+	src := `forbid (principal, action == Action::"tool:mytool", resource) when { context.input["x-custom"] like "*" };`
+	findings := LintPolicySetTools(mustParse(t, src), map[string]ToolSchema{
+		"mytool": NewToolSchema(json.RawMessage(raw)),
+	})
+	assertRules(t, findings, LintRuleUnverifiableInputAttribute+":warning")
+}
+
+// Every condition block on a statement must hold for the policy to
+// apply, so they form one conjunction and share anchoring credit.
+// Evaluating each block separately reported this as unanchored while
+// Cedar requires both and the second pins the host.
+func TestWildcardHostPattern_CreditSharedAcrossConditionBlocks(t *testing.T) {
+	src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+		when { context.input.url like "*.github.com/*" }
+		when { context.input.url like "https://github.com/*" };`
+	ps := mustParse(t, src)
+	if findings := LintPolicySetStructure(ps); len(findings) != 0 {
+		t.Fatalf("anchored-by-a-later-block policy rejected: %v", findings)
+	}
+
+	// And the clean verdict is honest — the authorizer really does deny.
+	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("lints clean but authorizes an attacker host")
+	}
+
+	// Drop the anchoring block and it must be caught again.
+	unanchored := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+		when { context.input.url like "*.github.com/*" }
+		when { context.input has url };`
+	if findings := LintPolicySetStructure(mustParse(t, unanchored)); len(findings) == 0 {
+		t.Fatal("unanchored policy accepted once split across condition blocks")
+	}
+}
