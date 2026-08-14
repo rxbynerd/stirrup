@@ -1416,3 +1416,115 @@ func TestWildcardHostPattern_EquivalentOperandsAgree(t *testing.T) {
 		})
 	}
 }
+
+// Cross-product oracle. Every wildcard-host defect found on this branch
+// was the same shape: some Cedar construct the walk does not model made
+// a clause vanish or be misjudged, and the policy linted clean while the
+// authorizer granted an attacker host. The single-axis tests above each
+// caught one such construct after it was known. This one generates the
+// combinations — pattern x operand wrapper x body wrapper x polarity —
+// and uses the real Cedar evaluator as the oracle, so a construct nobody
+// enumerated is still covered as long as it is built from these pieces.
+//
+// The property is one-directional on purpose: a lint-clean policy must
+// not authorize another host. A flagged policy is not asserted about,
+// because over-flagging is the safe direction and false positives are
+// pinned separately by TestWildcardHostPattern_NoFalsePositives.
+func TestWildcardHostPattern_CrossProductOracle(t *testing.T) {
+	operands := []string{
+		`context.input.url`,
+		`(context.input.url)`,
+		`(if true then context.input.url else context.input.url)`,
+		`(if principal.mode == "execution" then context.input.url else context.input.url)`,
+		`{u: context.input.url}.u`,
+		`{a: {b: context.input.url}}.a.b`,
+	}
+	// Each wraps a clause into a logically equivalent one.
+	bodies := []string{
+		`%s`,
+		`!(!(%s))`,
+		`(%s) == true`,
+		`(%s) != false`,
+		`!((%s) == false)`,
+		`!((%s) != true)`,
+		`(%s) && true`,
+		`true && (%s)`,
+		`(%s) || false`,
+		`if (%s) then true else false`,
+		`!(if (%s) then false else true)`,
+		`[(%s)].contains(true)`,
+		`![(%s)].contains(false)`,
+		`(%s) && context.input has url`,
+	}
+	patterns := []string{
+		`*.github.com/*`, `https://*.github.com/*`, `https:*/github.com/*`,
+		`*github.com*`, `github.com/*`, `https://*`, `*`,
+		`https://github.com/*`, `https://api.github.com/*`,
+	}
+	// Both widening arrangements: a `when` on a permit and an `unless` on
+	// a forbid. Only these can widen access, so only these must hold.
+	scopes := []struct{ effect, condition string }{
+		{"permit", "when"},
+		{"forbid", "unless"},
+	}
+	attacker := []string{
+		"https://evil.example/x.github.com/y",
+		"https://evil.example/github.com/y",
+		"https://github.com@evil.example/y",
+		"https://evil.example/?u=https://github.com/y",
+		"https://notgithub.com/y",
+	}
+
+	var clean, total int
+	for _, scope := range scopes {
+		for _, operand := range operands {
+			for _, bodyShape := range bodies {
+				for _, pattern := range patterns {
+					clause := fmt.Sprintf(`%s like "%s"`, operand, pattern)
+					body := strings.ReplaceAll(bodyShape, "%s", clause)
+					src := fmt.Sprintf(`%s (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch") %s { %s };`,
+						scope.effect, scope.condition, body)
+
+					ps, err := cedar.NewPolicySetFromBytes("oracle.cedar", []byte(src))
+					if err != nil {
+						continue // not a legal Cedar body
+					}
+					total++
+					if len(LintPolicySetStructure(ps)) > 0 {
+						continue
+					}
+					clean++
+
+					// A forbid/unless that lints clean is only meaningful
+					// paired with something that permits; the fallback
+					// stands in for that.
+					fallback := PermissionPolicy(NewDenyAll())
+					if scope.effect == "forbid" {
+						fallback = NewAllowAll()
+					}
+					policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: fallback})
+					if err != nil {
+						t.Fatalf("build policy for %q: %v", src, err)
+					}
+					for _, url := range attacker {
+						input, err := json.Marshal(map[string]string{"url": url})
+						if err != nil {
+							t.Fatal(err)
+						}
+						res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+						if err != nil {
+							t.Fatalf("check %q: %v", src, err)
+						}
+						if res.Allowed {
+							t.Errorf("lints clean but authorizes %q:\n%s", url, src)
+						}
+					}
+				}
+			}
+		}
+	}
+	if clean == 0 {
+		t.Fatal("no policy survived the lint — the oracle proves nothing")
+	}
+	t.Logf("%d of %d generated policies lint clean; none authorized another host", clean, total)
+}
