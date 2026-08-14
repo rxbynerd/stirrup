@@ -866,8 +866,10 @@ func anchoring(n internalast.IsNode, path string, widening bool, offenders *patt
 	// alternatives. Passing the parent's polarity through would assume
 	// the node is transparent to negation, which is exactly the
 	// assumption that made `!([X].contains(false))` lint clean.
-	// Disjunctive merging is the conservative direction: it can only
-	// produce more findings, never fewer.
+	// Disjunctive merging is the conservative direction for these
+	// children: it can only produce more findings than merging them
+	// conjunctively, never fewer. It is not a claim about the rule as a
+	// whole — see anchoringVacuous on what this rule does not judge.
 	verdict := anchoringVacuous
 	root := true
 	internalast.Inspect(internalast.NewNode(n), func(child internalast.IsNode) bool {

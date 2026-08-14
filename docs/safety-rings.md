@@ -668,6 +668,19 @@ from that:
   dangerous — a fetched URL always carries its scheme — and the
   remedy is the same either way.
 
+  The rule judges each URL pattern's own anchoring. It does not
+  report a `permit` that reaches the tool by some *other* path —
+  `url like "https://github.com/*" || context.input.method == "GET"`
+  is not flagged, because the second disjunct is a separate permit
+  written inline, and the equivalent two-statement spelling is not
+  flagged either. A permit whose satisfying assignments do not all
+  constrain the URL is a distinct defect from an unanchored pattern,
+  and catching it needs a whole-policy-set analysis this rule does
+  not attempt. When a URL allow-list is the intent, keep the host
+  constraint conjunctive (`&&`), and prefer a `deny-all` fallback so
+  an unconstrained path has to be written deliberately rather than
+  arrived at by refactoring.
+
 ### How to enable
 
 ```sh

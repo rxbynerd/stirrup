@@ -1697,3 +1697,64 @@ func TestWildcardHostPattern_CreditSharedAcrossConditionBlocks(t *testing.T) {
 		t.Fatal("unanchored policy accepted once split across condition blocks")
 	}
 }
+
+// TestWildcardHostPattern_UnconstrainedPathIsOutOfScope pins a scoping
+// decision that reads like a bypass and was reported as one during
+// review. `anchored || unrelated` authorizes any host, and the linter
+// says nothing.
+//
+// It stays that way because the rule judges a pattern's anchoring, not
+// whether a permit has an unconstrained path. `permit when {A || B}` is
+// the inline spelling of two permits, and neither the two-statement form
+// nor a bare unconstrained permit mentions a URL at all — so flagging
+// only the `||` would give three spellings of one policy three different
+// verdicts, and silencing the linter would be a refactor away. That is a
+// whole-policy-set rule, not this one.
+//
+// The last case is the boundary: an unanchored pattern inside a
+// disjunction is still this rule's business and must be flagged.
+func TestWildcardHostPattern_UnconstrainedPathIsOutOfScope(t *testing.T) {
+	const anchored = `context.input.url like "https://github.com/*"`
+	scope := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")`
+
+	equivalentSpellings := []struct{ name, src string }{
+		{"inline disjunction", fmt.Sprintf(`%s when { %s || context.input.method == "GET" };`, scope, anchored)},
+		{"two statements", fmt.Sprintf("%s when { %s };\n%s when { context.input.method == \"GET\" };", scope, anchored, scope)},
+		{"no url clause", scope + ";"},
+		{"mux with open else", fmt.Sprintf(`%s when { if principal.mode == "execution" then %s else true };`, scope, anchored)},
+	}
+	for _, tc := range equivalentSpellings {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := mustParse(t, tc.src)
+			if findings := LintPolicySetStructure(ps); len(findings) > 0 {
+				t.Fatalf("expected no findings, got %v", findings)
+			}
+			policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll(), Mode: "planning"})
+			if err != nil {
+				t.Fatalf("build policy: %v", err)
+			}
+			input, err := json.Marshal(map[string]string{"url": "https://evil.example/steal", "method": "GET"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+			if err != nil {
+				t.Fatalf("check: %v", err)
+			}
+			// Asserting the permissive outcome keeps the test honest: it
+			// documents what the clean verdict costs rather than implying
+			// the policy is safe.
+			if !res.Allowed {
+				t.Fatalf("expected the unconstrained path to authorize; a narrowing here means the scoping argument no longer holds and the comment above is stale")
+			}
+		})
+	}
+
+	t.Run("unanchored disjunct is still flagged", func(t *testing.T) {
+		src := fmt.Sprintf(`%s when { %s || context.input.url like "*.github.com/*" };`, scope, anchored)
+		findings := LintPolicySetStructure(mustParse(t, src))
+		if len(findings) != 1 || findings[0].Rule != LintRuleWildcardHostPattern {
+			t.Fatalf("expected one wildcard-host-pattern finding, got %v", findings)
+		}
+	})
+}
