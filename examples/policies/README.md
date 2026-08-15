@@ -88,22 +88,46 @@ The `policy-engine` evaluator returns:
 Every decision is emitted as a `policy_decision` (allow / no-match) or
 `policy_denied` (forbid) security event for audit.
 
+## Load-time lint
+
+Policy files are linted before the run starts, and a finding aborts
+construction. The rules, severities, and the `@stirrupLintIgnore`
+escape hatch are documented in
+[`docs/safety-rings.md`](../../docs/safety-rings.md#load-time-policy-lint).
+The two conventions below are the ones the linter enforces; the rest
+of this section is still on the author.
+
+To check a policy file without spending provider tokens:
+
+```sh
+stirrup harness --dry-run --no-probe-provider \
+  --permission-policy-file my-policy.cedar --prompt noop
+```
+
+A `--dry-run` pass runs the structural rules only — it builds
+components against an empty tool registry, so it cannot tell
+`context.input.cmd` from `context.input.command`. That check runs at
+real-run construction, still ahead of the first model turn.
+
 ## Authoring conventions
 
 - **Key `context.input` clauses on the exact field names the tool's
   JSON Schema declares** (`command` for `run_command`, `content` for
   `write_file`, `url` for `web_fetch` — see
-  `harness/internal/tool/builtins/`). The schemas set
+  `harness/internal/tool/builtins/`). The built-in schemas set
   `additionalProperties: false`, so an input with any other field
   name is rejected before Cedar runs: a clause keyed on an undeclared
-  name parses cleanly and never fires.
-  `harness/internal/tool/builtins/starter_policies_test.go` pins the
-  shipped starters against the real schemas.
+  name parses cleanly and never fires. The linter rejects these
+  (`undeclared-input-attribute`), and
+  `harness/internal/tool/builtins/starter_policies_test.go` runs the
+  same linter over the shipped starters.
 - **Anchor URL patterns as full `https://<host>/*` literals.**
   Cedar's `like` wildcard matches every character including `/` and
   `@`, so `https://*.github.com/*` also matches
   `https://evil.example/x.github.com/y`. Never place a wildcard
-  before or inside the host.
+  before or inside the host; enumerate hosts one clause each. The
+  linter rejects these in an allow-list position
+  (`wildcard-host-pattern`).
 - Use `like` for prefix / suffix / substring matches (`*` is the only
   wildcard; `?` is not supported by Cedar's `like`).
 - Guard `context.input` field accesses with `has` — tools have wildly

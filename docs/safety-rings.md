@@ -503,21 +503,23 @@ context:
 
 `context.input` carries exactly the fields the tool's JSON Schema
 declares — `command` for `run_command`, `content` for `write_file`,
-`url` for `web_fetch`. The schemas set `additionalProperties: false`,
-so an input carrying any other field name is rejected by the schema
-validator before Cedar runs. The corollary for policy authors: a
-policy keyed on an undeclared attribute (`cmd`, say) parses and loads
-cleanly but can never fire. The shipped starters are pinned against
-the real schemas by
-`harness/internal/tool/builtins/starter_policies_test.go`.
+`url` for `web_fetch`. The built-in schemas set
+`additionalProperties: false`, so an input carrying any other field
+name is rejected by the schema validator before Cedar runs. The
+corollary for policy authors: a policy keyed on an undeclared
+attribute (`cmd`, say) parses cleanly and can never fire. The
+load-time linter below rejects exactly that, so the defect no longer
+survives to runtime.
 
 `principal.capabilities` (Cedar `Set<String>`) exists in the schema
-but is **reserved and not populated in v1** — see
-`harness/internal/core/factory.go:791` ("ParentRunID and Capabilities
-are reserved for sub-agent wiring and capability propagation
-respectively"). A policy that references `principal.capabilities`
-will compile but never match in v1; treat it as a forward-compat
-seam, not something to write rules against today.
+but is **reserved and not populated in v1** — see the "reserved for
+sub-agent wiring" comment on the `PolicyEngineEnv` literal in
+`harness/internal/core/factory.go`. A policy that references
+`principal.capabilities` will compile but never match in v1; treat it
+as a forward-compat seam, not something to write rules against today.
+The load-time linter accepts it for that reason — it is part of the
+declared request shape, so it is not a spelling mistake — which means
+the linter will not warn about a rule that is inert today.
 
 JSON tool input is translated to Cedar values recursively: strings
 stay strings, integers become `Long`, booleans `Boolean`, arrays
@@ -546,16 +548,95 @@ asymmetry when composing: `permit` statements union (any match
 allows), so a broad permit in one file swallows a narrower allow-list
 in another; `forbid` statements intersect safely (any match denies).
 
+### Load-time policy lint
+
+A Cedar file that parses is not a Cedar file that fires. A clause
+keyed on an attribute the harness never populates — `context.inputs`
+for `context.input`, `principal.runID` for `principal.runId`,
+`context.input.cmd` for `run_command`'s declared `command` — loads
+without complaint and silently authorises nothing. That is worse than
+a policy that fails to load: the operator believes a control is
+active, the audit trail shows a policy engine running, and the control
+is not there. Issue #524 shipped exactly that defect in a starter.
+
+Every policy file is therefore linted before the run starts, and a
+finding **aborts construction**. The lint walks the parsed Cedar AST
+in two tiers, split by what each can decide:
+
+**Structural tier** — decidable from the policy alone, so it runs on
+every load path including `--dry-run`:
+
+| Rule | Fires on |
+|---|---|
+| `unknown-context-attribute` | A `context.<key>` the request never carries (only `input`, `workspace`, `dynamicContext` exist). |
+| `unknown-principal-attribute` | A `principal.<attr>` the request never carries (only `runId`, `mode`, `parentRunId`, `capabilities` exist). |
+| `no-such-attribute` | Any attribute access on the action or resource entity; neither carries attributes. Match on the entity ID instead. |
+| `unknown-scope-entity` | A scope clause naming an entity type the harness never mints (`tool::` for `Tool::`, `Agent::` for `User::`) or an action ID missing the `tool:` prefix. |
+| `wildcard-host-pattern` | A `like` URL pattern that does not pin the whole authority with literal text. Everything before the first wildcard must literally contain `://` and a following `/`, `?`, or `#`; anything less leaves the host reachable by a wildcard. |
+
+**Registry-aware tier** — runs at policy-engine construction, once the
+run's tool set (built-ins plus every MCP-imported tool) is known:
+
+| Rule | Severity | Fires on |
+|---|---|---|
+| `undeclared-input-attribute` | error | A `context.input.<attr>` no in-scope tool schema declares. Scoping follows the policy's `Action::"tool:X"` clause; a policy with an unconstrained action scope is checked against every registered tool. |
+| `unknown-tool` | warning | A policy scoped to a tool that is not registered for this run. Advisory rather than fatal: an MCP server that failed to connect is indistinguishable from a typo, and a transient outage must not become a hard run failure. |
+| `unverifiable-input-attribute` | warning | An in-scope schema permits additional properties, so the clause cannot be proven dead. MCP servers commonly ship open schemas. |
+
+The registry-aware tier is skipped under `--dry-run`, which builds
+components against an empty registry; the structural tier still runs
+there. A `--dry-run` pass is therefore not a guarantee that the
+registry-aware tier will pass, but the tier still fires before the
+first model turn and before any workspace mutation. Warning-severity
+findings are printed in the `permission-policy` step of the dry-run
+report, which is otherwise the one place they would go unseen — a dry
+run writes its security events to `io.Discard` so it cannot pollute a
+real run's audit trail.
+
+Both tiers emit a `policy_lint` security event per finding — errors
+included, so a run the linter aborted leaves the same evidence as one
+that continued.
+
+#### Accepting a rule
+
+A single policy may accept a single rule with an annotation:
+
+```cedar
+@stirrupLintIgnore("wildcard-host-pattern")
+permit (
+    principal,
+    action == Action::"tool:web_fetch",
+    resource == Tool::"web_fetch"
+) when {
+    context.input.url like "https://*.internal.example/*"
+};
+```
+
+The annotation is per-policy and per-rule; its value is a
+comma-separated rule list. It covers **every** finding of that rule in
+that policy statement, present and future — adding a second, unrelated
+defect of the same class to the same `when` clause later will be
+downgraded too, with no new signal. Keep ignoring policies small and
+single-purpose for that reason.
+
+An honoured ignore is never silent: the finding is downgraded to a
+warning, still emitted as a `policy_lint` event, and still printed in
+the `permission-policy` step of a `--dry-run` report — so an accepted
+risk stays visible both in the audit trail and at review time. There is
+no flag that disables the linter wholesale.
+
 ### Limits
 
 Ring 3 evaluates the tool input as data. Three classes of miss follow
 from that:
 
 - **Undeclared attributes never match.** A policy keyed on a
-  `context.input` attribute the tool's schema does not declare loads
-  cleanly and never fires — the schema validator rejects such inputs
-  before Cedar runs, so there is no input for which the clause is
-  true. Write clauses against the schema's exact field names.
+  `context.input` attribute the tool's schema does not declare can
+  never fire — the schema validator rejects such inputs before Cedar
+  runs, so there is no input for which the clause is true. The
+  load-time linter rejects these outright when the tool's schema is
+  closed; MCP tools with open schemas can only be warned about. Write
+  clauses against the schema's exact field names.
 - **Pattern-matched forbids are bypassable by construction.** A
   `forbid` on `*rm -rf*` does not block `rm -r -f`, a shell variable
   expansion, a base64-decoded payload, or a script written to disk
@@ -566,7 +647,39 @@ from that:
   `https://*.github.com/*` matches
   `https://evil.example/x.github.com/y`. Anchor URL patterns as
   fully-literal `https://<host>/*` prefixes; never place a wildcard
-  before or inside the host.
+  before or inside the host. The linter's `wildcard-host-pattern` rule
+  catches this where over-matching *widens* access — a `when` on a
+  `permit`, or an `unless` on a `forbid` — and only for URL-valued
+  attribute names (`url`, `uri`, and suffixed spellings such as
+  `webhookUrl`). An over-broad host pattern in a `forbid`'s `when`
+  errs safe and is left alone; a wildcard host embedded in a
+  `run_command` substring probe is not a URL allow-list and is left
+  alone too.
+
+  The rule tests for *anchoring*, not for the presence of a wildcard,
+  because the near-misses are easy to write and hard to see:
+  `*.github.com/*` carries no scheme at all, and `https:*/github.com/*`
+  never produces a literal `://` (its literal segments concatenate to
+  `https:/github.com/`, one slash). Both are satisfied by
+  `https://evil.example/x.github.com/y`. Ports, userinfo, IPv6
+  literals, and an escaped literal asterisk (`\*`) are all
+  anchored spellings and pass. A schemeless pattern such as
+  `github.com/*` is reported as well; that clause is dead rather than
+  dangerous — a fetched URL always carries its scheme — and the
+  remedy is the same either way.
+
+  The rule judges each URL pattern's own anchoring. It does not
+  report a `permit` that reaches the tool by some *other* path —
+  `url like "https://github.com/*" || context.input.method == "GET"`
+  is not flagged, because the second disjunct is a separate permit
+  written inline, and the equivalent two-statement spelling is not
+  flagged either. A permit whose satisfying assignments do not all
+  constrain the URL is a distinct defect from an unanchored pattern,
+  and catching it needs a whole-policy-set analysis this rule does
+  not attempt. When a URL allow-list is the intent, keep the host
+  constraint conjunctive (`&&`), and prefer a `deny-all` fallback so
+  an unconstrained path has to be written deliberately rather than
+  arrived at by refactoring.
 
 ### How to enable
 
@@ -597,6 +710,12 @@ Every Cedar decision emits one of:
 - `policy_decision` (level `info`) on Allow or no-match (with the
   fallback outcome included).
 - `policy_denied` (level `warn`) on Forbid (with matched policy IDs).
+
+Policy loading emits, once per finding, before the run starts:
+
+- `policy_lint` (level `error` or `warn`, matching the finding's
+  severity) carrying `policyFile`, `policyId`, `line`, `rule`,
+  `severity`, and the operator-facing `message`.
 
 ## Ring 1 — Container runtime class (kernel isolation)
 

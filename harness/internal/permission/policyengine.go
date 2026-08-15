@@ -70,6 +70,10 @@ type PolicyEngineConfig struct {
 	// principal.capabilities (Cedar Set<String>).
 	Capabilities []string
 
+	// LintWarnings are warning-severity findings from the policy lint,
+	// carried through so callers can surface them. Optional.
+	LintWarnings []LintFinding
+
 	// DynamicContext is exposed as context.dynamicContext (Cedar Record
 	// of String -> String). Optional; when empty an empty record is
 	// supplied.
@@ -100,6 +104,15 @@ type PolicyEnginePolicy struct {
 	// dynamicContext is stored as a Cedar Record so it does not need to
 	// be rebuilt per Check.
 	dynamicContext cedar.Record
+
+	// lintWarnings are the surviving warning-severity policy-lint
+	// findings. Error-severity findings never reach here — they abort
+	// construction — so this is exactly the set an operator accepted or
+	// could not have verified. Retained so a dry-run preflight can report
+	// them: its SecurityLogger writes to io.Discard by design, and a
+	// preflight that says nothing about an accepted risk is a preflight
+	// the operator over-trusts.
+	lintWarnings []LintFinding
 }
 
 // NewPolicyEnginePolicy constructs a PolicyEnginePolicy from cfg. Returns
@@ -125,13 +138,47 @@ func NewPolicyEnginePolicy(cfg PolicyEngineConfig) (*PolicyEnginePolicy, error) 
 		parentRunID:    cfg.ParentRunID,
 		capabilities:   append([]string(nil), cfg.Capabilities...),
 		dynamicContext: stringMapToRecord(cfg.DynamicContext),
+		lintWarnings:   append([]LintFinding(nil), cfg.LintWarnings...),
 	}, nil
 }
 
-// LoadPolicySetFromFile reads a Cedar policy file from disk and parses it
-// into a *cedar.PolicySet. Returns a wrapped error when the file is
-// missing or contains invalid Cedar syntax.
+// LintWarnings returns the warning-severity policy-lint findings this
+// policy was constructed with. Callers that render a construction report
+// (the dry-run preflight) use it to show what the linter accepted.
+func (p *PolicyEnginePolicy) LintWarnings() []LintFinding {
+	if p == nil {
+		return nil
+	}
+	return append([]LintFinding(nil), p.lintWarnings...)
+}
+
+// LoadPolicySetFromFile reads a Cedar policy file from disk, parses it,
+// and applies the structural policy lint (see LintPolicySetStructure).
+// Returns a wrapped error when the file is missing, contains invalid
+// Cedar syntax, or carries an error-severity structural finding.
+//
+// The lint is fail-closed by design: a policy that parses but can never
+// match is a control the operator believes is active and is not.
+//
+// This entry point has nowhere to emit audit events, so it is the wrong
+// one for a run: newPolicyEngineFromConfig uses parsePolicySetFile plus
+// an explicit lint pass so every finding reaches the SecurityEventEmitter
+// before any abort.
 func LoadPolicySetFromFile(path string) (*cedar.PolicySet, error) {
+	ps, err := parsePolicySetFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := LintErrors(policySourceName(path), LintPolicySetStructure(ps)); err != nil {
+		return nil, err
+	}
+	return ps, nil
+}
+
+// parsePolicySetFile reads and parses a Cedar policy file without linting
+// it, so a caller that owns an audit sink can emit every finding before
+// deciding whether to abort.
+func parsePolicySetFile(path string) (*cedar.PolicySet, error) {
 	if path == "" {
 		return nil, errors.New("policy-engine: policy file path is empty")
 	}
@@ -144,6 +191,11 @@ func LoadPolicySetFromFile(path string) (*cedar.PolicySet, error) {
 		return nil, fmt.Errorf("policy-engine: parse policy file %q: %w", path, err)
 	}
 	return ps, nil
+}
+
+// policySourceName labels a policy file in lint error text.
+func policySourceName(path string) string {
+	return fmt.Sprintf("policy file %q", path)
 }
 
 // Check evaluates the Cedar policy set against the tool call. See

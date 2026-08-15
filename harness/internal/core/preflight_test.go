@@ -4,11 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -442,5 +445,49 @@ func TestPreflight_TimeoutDefaulted(t *testing.T) {
 	}
 	if time.Since(start) > DefaultPreflightTimeout {
 		t.Errorf("preflight exceeded the default timeout budget")
+	}
+}
+
+// TestPreflight_LintWarningsReachTheDryRunReport pins the reason
+// permissionPolicyDetail exists. Preflight builds its SecurityLogger over
+// io.Discard, so the policy_lint audit events a real run emits go
+// nowhere here; without the step detail, an operator who accepted a
+// finding with @stirrupLintIgnore would see a clean dry run and no trace
+// of the risk they accepted.
+func TestPreflight_LintWarningsReachTheDryRunReport(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	policyFile := filepath.Join(t.TempDir(), "accepted.cedar")
+	policy := `@stirrupLintIgnore("wildcard-host-pattern")
+permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+    when { context.input.url like "https://*.github.com/*" };`
+	if err := os.WriteFile(policyFile, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: policyFile}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !report.OK {
+		t.Fatalf("an accepted finding must not fail the dry run; steps: %+v", report.Steps)
+	}
+
+	var detail string
+	for _, s := range report.Steps {
+		if s.Name == "permission-policy" {
+			detail = s.Detail
+		}
+	}
+	if !strings.Contains(detail, permission.LintRuleWildcardHostPattern) {
+		t.Errorf("permission-policy step detail = %q, want it to name the accepted rule", detail)
+	}
+	if !strings.Contains(detail, "warning") {
+		t.Errorf("permission-policy step detail = %q, want it to mark the finding as a warning", detail)
 	}
 }

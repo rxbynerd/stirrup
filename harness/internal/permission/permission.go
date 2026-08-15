@@ -44,6 +44,14 @@ type PolicyEngineEnv struct {
 	Capabilities   []string
 	DynamicContext map[string]string
 	Security       SecurityEventEmitter
+
+	// ToolSchemas indexes every tool registered for this run by name,
+	// carrying the slice of its JSON Schema the policy linter needs. It
+	// must be populated after MCP tool discovery so remote tools are
+	// visible to the lint; an empty map disables the registry-aware lint
+	// tier entirely (the dry-run preflight's component build registers no
+	// tools). See LintPolicySetTools.
+	ToolSchemas map[string]ToolSchema
 }
 
 // New constructs a PermissionPolicy from cfg. It is the entry point for
@@ -95,10 +103,25 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 		return nil, errors.New("permission: policy-engine fallback may not itself be policy-engine")
 	}
 
-	policySet, err := LoadPolicySetFromFile(cfg.PolicyFile)
+	// Parse and lint as two steps rather than going through
+	// LoadPolicySetFromFile: that entry point aborts on an error-severity
+	// structural finding before this function could emit anything, which
+	// would leave the audit trail silent for exactly the abort the linter
+	// exists to cause. Emitting first means a run the linter killed leaves
+	// the same evidence as one that continued.
+	policySet, err := parsePolicySetFile(cfg.PolicyFile)
 	if err != nil {
 		return nil, err
 	}
+	findings := append(
+		LintPolicySetStructure(policySet),
+		LintPolicySetTools(policySet, env.ToolSchemas)...,
+	)
+	emitLintFindings(env.Security, cfg.PolicyFile, findings)
+	if err := LintErrors(policySourceName(cfg.PolicyFile), findings); err != nil {
+		return nil, err
+	}
+	// LintErrors returned nil, so everything left is warning-severity.
 
 	fb, err := fallback(fallbackType)
 	if err != nil {
@@ -111,6 +134,7 @@ func newPolicyEngineFromConfig(cfg types.PermissionPolicyConfig, env PolicyEngin
 	return NewPolicyEnginePolicy(PolicyEngineConfig{
 		PolicySet:      policySet,
 		Fallback:       fb,
+		LintWarnings:   findings,
 		Security:       env.Security,
 		RunID:          env.RunID,
 		Mode:           env.Mode,

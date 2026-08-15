@@ -1,66 +1,38 @@
 package builtins
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
-var (
-	cedarInputAttrRe = regexp.MustCompile(`context\.input(?:\.(\w+)|\s+has\s+(\w+))`)
-	cedarToolRe      = regexp.MustCompile(`Action::"tool:(\w+)"`)
-)
-
-// TestStarterPolicies_InputAttrsMatchToolSchemas cross-checks every
-// `context.input` attribute referenced by the shipped Cedar starter
-// policies against the input schemas the built-in tools actually
-// declare. Tool schemas set additionalProperties:false, so an attribute
-// no schema declares can never reach Cedar — a policy keyed on one
-// parses, loads, and silently never fires. Issue #524 shipped exactly
-// that: destructive-shell.cedar keyed on `cmd` while run_command
-// declares `command`, so a plain `rm -rf /workspace` was allowed by the
-// policy that claimed to forbid it.
+// TestStarterPolicies_PassTheLoadTimeLinter runs the shipped Cedar
+// starters through the exact linter a run applies to an operator's policy
+// file (issue #538), with the schemas the built-in tools actually declare.
 //
-// Scoping rule: when a policy file names tools via Action::"tool:X",
-// each referenced attribute must be declared by at least one named
-// tool's schema; a file with no Action constraint (e.g.
-// no-secret-in-input.cedar applies to every tool) checks against the
-// union of all registered schemas.
+// This is the repo-side half of the guarantee: the linter protects
+// operator-authored files at load time, and this test protects the files
+// the project ships as the template for those. Issue #524 shipped
+// destructive-shell.cedar keyed on `cmd` while run_command declares
+// `command`, so a plain `rm -rf /workspace` was allowed by the policy that
+// claimed to forbid it.
 //
-// This covers the shipped starters only. Operator-authored policy files
-// get no equivalent load-time check yet — that follow-up is tracked on
-// issue #524.
-func TestStarterPolicies_InputAttrsMatchToolSchemas(t *testing.T) {
+// The starters are held to a stricter bar than the linter enforces at
+// runtime: warnings fail this test too. A shipped starter that warns is a
+// starter an operator would copy and then have to reason about.
+func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
 	registry := tool.NewRegistry()
 	registerAllForTest(registry, &mockExecutor{})
 
-	schemaProps := map[string]map[string]bool{}
-	union := map[string]bool{}
+	schemas := map[string]permission.ToolSchema{}
 	for _, def := range registry.List() {
-		var schema struct {
-			Properties map[string]json.RawMessage `json:"properties"`
-		}
-		if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
-			t.Fatalf("parse %s schema: %v", def.Name, err)
-		}
-		props := map[string]bool{}
-		for name := range schema.Properties {
-			props[name] = true
-			union[name] = true
-		}
-		schemaProps[def.Name] = props
+		schemas[def.Name] = permission.NewToolSchema(def.InputSchema)
 	}
 
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	policiesDir := filepath.Join(filepath.Clean(filepath.Join(wd, "..", "..", "..", "..")), "examples", "policies")
+	policiesDir := filepath.Join("..", "..", "..", "..", "examples", "policies")
 	entries, err := os.ReadDir(policiesDir)
 	if err != nil {
 		t.Fatalf("read %s: %v", policiesDir, err)
@@ -68,58 +40,44 @@ func TestStarterPolicies_InputAttrsMatchToolSchemas(t *testing.T) {
 
 	checked := 0
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".cedar") {
+		if filepath.Ext(entry.Name()) != ".cedar" {
 			continue
 		}
 		checked++
 		t.Run(entry.Name(), func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(policiesDir, entry.Name()))
+			ps, err := permission.LoadPolicySetFromFile(filepath.Join(policiesDir, entry.Name()))
 			if err != nil {
-				t.Fatalf("read policy: %v", err)
+				t.Fatalf("starter fails the structural lint: %v", err)
 			}
-			// Strip comment lines so prose mentioning field names or
-			// retired patterns is not parsed as a reference.
-			var code []string
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "//") {
-					continue
-				}
-				code = append(code, line)
-			}
-			source := strings.Join(code, "\n")
-
-			attrs := map[string]bool{}
-			for _, m := range cedarInputAttrRe.FindAllStringSubmatch(source, -1) {
-				if m[1] != "" {
-					attrs[m[1]] = true
-				}
-				if m[2] != "" {
-					attrs[m[2]] = true
-				}
-			}
-			if len(attrs) == 0 {
-				return // policy keys on principal/resource, not input
-			}
-
-			scoped := map[string]bool{}
-			for _, m := range cedarToolRe.FindAllStringSubmatch(source, -1) {
-				for name := range schemaProps[m[1]] {
-					scoped[name] = true
-				}
-			}
-			declared := scoped
-			if len(cedarToolRe.FindAllString(source, -1)) == 0 {
-				declared = union
-			}
-
-			for attr := range attrs {
-				if !declared[attr] {
-					t.Errorf("policy references context.input.%s, which no targeted tool schema declares — the clause can never fire (see issue #524)", attr)
-				}
+			findings := append(
+				permission.LintPolicySetStructure(ps),
+				permission.LintPolicySetTools(ps, schemas)...,
+			)
+			for _, f := range findings {
+				t.Errorf("%s", f)
 			}
 		})
 	}
 	if checked == 0 {
 		t.Fatalf("no .cedar files found in %s — directory moved?", policiesDir)
+	}
+}
+
+// TestBuiltinSchemasAreClosed pins the property the linter's
+// "can never fire" claim rests on: tool dispatch validates input against
+// the JSON Schema before consulting Cedar, so an undeclared property is
+// rejected before the policy engine sees it — but only when the schema
+// closes the object. A built-in that stops setting
+// additionalProperties:false would silently downgrade every
+// undeclared-input-attribute error against it to a warning.
+func TestBuiltinSchemasAreClosed(t *testing.T) {
+	registry := tool.NewRegistry()
+	registerAllForTest(registry, &mockExecutor{})
+
+	for _, def := range registry.List() {
+		schema := permission.NewToolSchema(def.InputSchema)
+		if !schema.Closed {
+			t.Errorf("tool %q does not set additionalProperties:false; the policy linter cannot prove a clause keyed on an undeclared attribute is dead", def.Name)
+		}
 	}
 }

@@ -668,6 +668,16 @@ permit-based allow-list policy file with `fallback: "deny-all"` when
 everything the file does not grant must be denied — including
 non-mutating tools like `web_fetch`.
 
+A `policy-engine` policy file is linted before the run starts, and a
+finding aborts construction rather than warning: a clause keyed on an
+attribute the harness never populates (`context.inputs`,
+`principal.runID`, `context.input.cmd` where `run_command` declares
+`command`) parses cleanly and silently authorises nothing. The rule
+table, the `@stirrupLintIgnore` escape hatch, and the two-tier split —
+structural rules run under `--dry-run`, tool-schema rules run at
+real-run construction — are documented in
+[`safety-rings.md`](safety-rings.md#load-time-policy-lint).
+
 Choose `ask-upstream` when every `RequiresApproval` tool must prompt.
 Choose `deny-side-effects` when the goal is to block workspace
 mutation while still allowing non-mutating tools that may have network
