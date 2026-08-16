@@ -762,6 +762,12 @@ suite "s" {
         type     = "granite-guardian"
         endpoint = "http://localhost:8000/v1/chat/completions"
       }
+
+      stage {
+        type        = "shieldstral"
+        endpoint    = "https://api.mistral.ai"
+        api_key_ref = "secret://MISTRAL_API_KEY"
+      }
     }
 
     trace_emitter {
@@ -846,8 +852,14 @@ suite "s" {
 	if rc.GuardRail == nil || rc.GuardRail.Type != "composite" {
 		t.Errorf("GuardRail = %#v, want composite", rc.GuardRail)
 	}
-	if rc.GuardRail == nil || len(rc.GuardRail.Stages) != 1 || rc.GuardRail.Stages[0].Type != "granite-guardian" {
-		t.Errorf("GuardRail.Stages = %#v, want one granite-guardian stage", rc.GuardRail.Stages)
+	if rc.GuardRail == nil || len(rc.GuardRail.Stages) != 2 || rc.GuardRail.Stages[0].Type != "granite-guardian" {
+		t.Errorf("GuardRail.Stages = %#v, want granite-guardian and shieldstral stages", rc.GuardRail.Stages)
+	}
+	if rc.GuardRail != nil && len(rc.GuardRail.Stages) == 2 {
+		ss := rc.GuardRail.Stages[1]
+		if ss.Type != "shieldstral" || ss.APIKeyRef != "secret://MISTRAL_API_KEY" {
+			t.Errorf("GuardRail.Stages[1] = %#v, want shieldstral with api_key_ref", ss)
+		}
 	}
 	if rc.TraceEmitter.Type != "otel" || rc.TraceEmitter.Endpoint != "http://collector:4317" || rc.TraceEmitter.Protocol != "grpc" {
 		t.Errorf("TraceEmitter = %#v, want otel/grpc/collector", rc.TraceEmitter)
@@ -892,6 +904,43 @@ suite "s" {
 		t.Errorf("error message %q does not mention secret:// scheme", err.Error())
 	}
 	if !strings.Contains(err.Error(), "provider.api_key_ref") {
+		t.Errorf("error message %q does not name the offending field", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_RejectsRawGuardRailAPIKey asserts the same parse-time
+// secret:// enforcement covers guard_rail.api_key_ref, including inside
+// composite stages.
+func TestLoadSuiteHCL_RejectsRawGuardRailAPIKey(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    guard_rail {
+      type = "composite"
+
+      stage {
+        type        = "shieldstral"
+        endpoint    = "https://api.mistral.ai"
+        api_key_ref = "sk-live-abc123"
+      }
+    }
+  }
+
+  task "t1" {
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "raw-guardrail-key.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatalf("LoadSuiteHCL: expected error for raw guard_rail api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "guard_rail.stage[0].api_key_ref") {
 		t.Errorf("error message %q does not name the offending field", err.Error())
 	}
 }

@@ -233,6 +233,7 @@ type guardRailSpec struct {
 	Type          string          `hcl:"type"`
 	Phases        []string        `hcl:"phases,optional"`
 	Endpoint      string          `hcl:"endpoint,optional"`
+	APIKeyRef     string          `hcl:"api_key_ref,optional"`
 	Model         string          `hcl:"model,optional"`
 	Threshold     float64         `hcl:"threshold,optional"`
 	Criteria      []string        `hcl:"criteria,optional"`
@@ -252,8 +253,8 @@ type observabilitySpec struct {
 // not a secret:// reference, duplicating the types.ValidateRunConfig rule
 // so authors see the diagnostic at HCL parse time with the field path
 // named. Must stay in lockstep with every secret-bearing field the HCL
-// grammar accepts (providerSpec / runConfigOverridesSpec / executorSpec)
-// or a new field creates a parse-time hole.
+// grammar accepts (providerSpec / runConfigOverridesSpec / executorSpec /
+// guardRailSpec) or a new field creates a parse-time hole.
 func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOverrides) error {
 	checkRef := func(path, ref string) error {
 		if ref == "" {
@@ -276,9 +277,29 @@ func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOv
 				return err
 			}
 		}
+		if err := checkGuardRailRefs(cfg.GuardRail, "guard_rail", checkRef); err != nil {
+			return err
+		}
 	}
 	if overrides != nil && overrides.Provider != nil {
 		if err := checkRef("run_config_overrides.provider.api_key_ref", overrides.Provider.APIKeyRef); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkGuardRailRefs walks the guard tree so composite stages get the same
+// parse-time secret:// enforcement as the top-level guard.
+func checkGuardRailRefs(cfg *types.GuardRailConfig, path string, checkRef func(path, ref string) error) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := checkRef(path+".api_key_ref", cfg.APIKeyRef); err != nil {
+		return err
+	}
+	for i := range cfg.Stages {
+		if err := checkGuardRailRefs(&cfg.Stages[i], fmt.Sprintf("%s.stage[%d]", path, i), checkRef); err != nil {
 			return err
 		}
 	}
@@ -580,6 +601,7 @@ func guardRailSpecToType(s guardRailSpec) types.GuardRailConfig {
 		Type:          s.Type,
 		Phases:        s.Phases,
 		Endpoint:      s.Endpoint,
+		APIKeyRef:     s.APIKeyRef,
 		Model:         s.Model,
 		Threshold:     s.Threshold,
 		Criteria:      s.Criteria,
