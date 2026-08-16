@@ -274,8 +274,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	var v verifier.Verifier
 
 	// 10. GuardRail, built after providers so cloud-judge can reuse the
-	// default ProviderAdapter.
-	gr, err := buildGuardRail(config.GuardRail, providers, prov)
+	// default ProviderAdapter, and shieldstral can resolve its apiKeyRef.
+	gr, err := buildGuardRail(ctx, config.GuardRail, providers, prov, secrets)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
@@ -1398,15 +1398,15 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 // buildGuardRail constructs the operator-configured GuardRail. A nil cfg
 // or an explicit "none" type returns the package-level Noop so the
 // loop's call sites can be unconditional. Cloud-judge reuses the default
-// provider adapter; granite-guardian builds its own HTTP client. The
+// provider adapter; granite-guardian and shieldstral build their own HTTP client. The
 // outer Phases gate (when non-empty) is applied after the inner guard
 // is built so a misconfigured PhaseGated does not silently bypass the
 // guard at non-listed phases.
-func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+func buildGuardRail(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore) (guard.GuardRail, error) {
 	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
 		return guard.NewNoop(), nil
 	}
-	return buildGuardRailNode(cfg, providers, defaultProvider)
+	return buildGuardRailNode(ctx, cfg, providers, defaultProvider, secrets)
 }
 
 // buildGuardRailNode is the recursive worker for buildGuardRail. It
@@ -1415,7 +1415,7 @@ func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.Pr
 // config validation time) — but we still defend in depth by returning
 // an error for any unsupported type so a non-CLI caller bypassing
 // validation gets a clear diagnostic instead of a silent allow.
-func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore) (guard.GuardRail, error) {
 	switch cfg.Type {
 	case "none":
 		return guard.NewNoop(), nil
@@ -1436,6 +1436,32 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 			return nil, err
 		}
 		return wrapWithPhases(gg, cfg.Phases), nil
+	case "shieldstral":
+		var apiKey string
+		if cfg.ApiKeyRef != "" {
+			if secrets == nil {
+				return nil, fmt.Errorf("shieldstral: secret store is required to resolve apiKeyRef %q", cfg.ApiKeyRef)
+			}
+			resolved, err := secrets.Resolve(ctx, cfg.ApiKeyRef)
+			if err != nil {
+				return nil, fmt.Errorf("shieldstral: resolve apiKeyRef %q: %w", cfg.ApiKeyRef, err)
+			}
+			apiKey = resolved
+		}
+		s, err := guard.NewShieldstral(guard.ShieldstralConfig{
+			Endpoint:       cfg.Endpoint,
+			APIKey:         apiKey,
+			Model:          cfg.Model,
+			Criteria:       cfg.Criteria,
+			CustomCriteria: cfg.CustomCriteria,
+			Threshold:      cfg.Threshold,
+			Timeout:        time.Duration(cfg.TimeoutMs) * time.Millisecond,
+			MinChunkChars:  cfg.MinChunkChars,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return wrapWithPhases(s, cfg.Phases), nil
 	case "cloud-judge":
 		// v1: always use the default provider. A future revision could
 		// route to a named provider in `providers` based on a future
@@ -1455,7 +1481,7 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 	case "composite":
 		guards := make([]guard.GuardRail, 0, len(cfg.Stages))
 		for i := range cfg.Stages {
-			stage, err := buildGuardRailNode(&cfg.Stages[i], providers, defaultProvider)
+			stage, err := buildGuardRailNode(ctx, &cfg.Stages[i], providers, defaultProvider, secrets)
 			if err != nil {
 				return nil, fmt.Errorf("composite stage %d: %w", i, err)
 			}

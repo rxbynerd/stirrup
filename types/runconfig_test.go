@@ -3771,6 +3771,63 @@ func TestValidateGuardRailConfig(t *testing.T) {
 			guard:   &GuardRailConfig{Type: "cloud-judge", Endpoint: "https://api.anthropic.com/v1/messages"},
 			wantErr: false,
 		},
+		{
+			name:      "shieldstral without endpoint",
+			guard:     &GuardRailConfig{Type: "shieldstral"},
+			wantErr:   true,
+			errSubstr: "requires endpoint",
+		},
+		{
+			name:    "shieldstral with endpoint",
+			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions"},
+			wantErr: false,
+		},
+		{
+			name:    "shieldstral with endpoint and valid apiKeyRef",
+			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", ApiKeyRef: "secret://MISTRAL_API_KEY"},
+			wantErr: false,
+		},
+		{
+			name:      "shieldstral with literal apiKeyRef",
+			guard:     &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", ApiKeyRef: "sk-literal-key"},
+			wantErr:   true,
+			errSubstr: "must be a secret reference",
+		},
+		{
+			name: "composite with shieldstral stage",
+			guard: &GuardRailConfig{
+				Type: "composite",
+				Stages: []GuardRailConfig{
+					{Type: "shieldstral", Endpoint: "https://api.mistral.ai", ApiKeyRef: "secret://MISTRAL_API_KEY"},
+					{Type: "none"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "composite with apiKeyRef on top level",
+			guard:     &GuardRailConfig{Type: "composite", ApiKeyRef: "secret://KEY", Stages: []GuardRailConfig{{Type: "none"}}},
+			wantErr:   true,
+			errSubstr: "apiKeyRef is not valid for type=composite",
+		},
+		{
+			name:      "none with apiKeyRef",
+			guard:     &GuardRailConfig{Type: "none", ApiKeyRef: "secret://KEY"},
+			wantErr:   true,
+			errSubstr: "apiKeyRef is not valid for type=none",
+		},
+		{
+			name:      "granite-guardian with apiKeyRef",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://localhost:8000", ApiKeyRef: "secret://KEY"},
+			wantErr:   true,
+			errSubstr: "apiKeyRef is not valid for type=granite-guardian",
+		},
+		{
+			name:      "cloud-judge with apiKeyRef",
+			guard:     &GuardRailConfig{Type: "cloud-judge", ApiKeyRef: "secret://KEY"},
+			wantErr:   true,
+			errSubstr: "apiKeyRef is not valid for type=cloud-judge",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5850,6 +5907,56 @@ func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *tes
 }
 
 // --- Redact() coverage for resultSink.attributes ---
+
+func TestRedact_GuardRailApiKeyRef(t *testing.T) {
+	rc := RunConfig{
+		GuardRail: &GuardRailConfig{
+			Type:      "composite",
+			Endpoint:  "",
+			ApiKeyRef: "",
+			Stages: []GuardRailConfig{
+				{
+					Type:      "shieldstral",
+					Endpoint:  "https://api.mistral.ai",
+					ApiKeyRef: "secret://MISTRAL_API_KEY",
+				},
+				{
+					Type:     "granite-guardian",
+					Endpoint: "http://localhost:8000",
+				},
+			},
+		},
+	}
+	redacted := rc.Redact()
+	if redacted.GuardRail == nil {
+		t.Fatal("GuardRail should not be nil after redact")
+	}
+	if len(redacted.GuardRail.Stages) != 2 {
+		t.Fatalf("Stages count = %d, want 2", len(redacted.GuardRail.Stages))
+	}
+	if redacted.GuardRail.Stages[0].ApiKeyRef != "secret://[REDACTED]" {
+		t.Errorf("Stages[0].ApiKeyRef = %q, want secret://[REDACTED]", redacted.GuardRail.Stages[0].ApiKeyRef)
+	}
+	if rc.GuardRail.Stages[0].ApiKeyRef != "secret://MISTRAL_API_KEY" {
+		t.Error("Redact mutated original GuardRail.Stages[0].ApiKeyRef")
+	}
+
+	// Single top-level shieldstral guard
+	singleRC := RunConfig{
+		GuardRail: &GuardRailConfig{
+			Type:      "shieldstral",
+			Endpoint:  "https://api.mistral.ai",
+			ApiKeyRef: "secret://MISTRAL_KEY",
+		},
+	}
+	singleRedacted := singleRC.Redact()
+	if singleRedacted.GuardRail.ApiKeyRef != "secret://[REDACTED]" {
+		t.Errorf("GuardRail.ApiKeyRef = %q, want secret://[REDACTED]", singleRedacted.GuardRail.ApiKeyRef)
+	}
+	if singleRC.GuardRail.ApiKeyRef != "secret://MISTRAL_KEY" {
+		t.Error("Redact mutated original singleRC GuardRail.ApiKeyRef")
+	}
+}
 
 func TestRedact_ResultSinkAttributes(t *testing.T) {
 	rc := RunConfig{

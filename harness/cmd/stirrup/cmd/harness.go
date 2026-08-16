@@ -192,10 +192,11 @@ type harnessCLIOptions struct {
 	// GuardRail escape hatches. An entirely-zero trio leaves
 	// config.GuardRail nil so the factory installs the no-op "none"
 	// guard. Composite stages require a --config file.
-	GuardRailType     string
-	GuardRailEndpoint string
-	GuardRailModel    string
-	GuardRailFailOpen bool
+	GuardRailType      string
+	GuardRailEndpoint  string
+	GuardRailApiKeyRef string
+	GuardRailModel     string
+	GuardRailFailOpen  bool
 
 	// Observability resource attributes. Empty values fall through to
 	// env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
@@ -415,12 +416,13 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	// Constructed only when the caller touched at least one GuardRail
 	// flag; an entirely-empty set leaves config.GuardRail nil so the
 	// factory installs the no-op "none" guard.
-	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen {
+	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailApiKeyRef != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen {
 		config.GuardRail = &types.GuardRailConfig{
-			Type:     opts.GuardRailType,
-			Endpoint: opts.GuardRailEndpoint,
-			Model:    opts.GuardRailModel,
-			FailOpen: opts.GuardRailFailOpen,
+			Type:      opts.GuardRailType,
+			Endpoint:  opts.GuardRailEndpoint,
+			ApiKeyRef: opts.GuardRailApiKeyRef,
+			Model:     opts.GuardRailModel,
+			FailOpen:  opts.GuardRailFailOpen,
 		}
 	}
 
@@ -1026,6 +1028,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.GuardRail = &types.GuardRailConfig{}
 		}
 		cfg.GuardRail.Endpoint = endpoint
+	}
+	if changed("guardrail-api-key-ref") {
+		apiKeyRef, _ := f.GetString("guardrail-api-key-ref")
+		if cfg.GuardRail == nil {
+			cfg.GuardRail = &types.GuardRailConfig{}
+		}
+		cfg.GuardRail.ApiKeyRef = apiKeyRef
 	}
 	if changed("guardrail-model") {
 		model, _ := f.GetString("guardrail-model")
