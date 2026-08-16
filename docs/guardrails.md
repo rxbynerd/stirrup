@@ -176,7 +176,7 @@ Skip when:
 
 ## Adapters
 
-Three adapter types ship in the harness, plus a no-op default:
+Four adapter types ship in the harness, plus a no-op default:
 
 ### `none` (default)
 
@@ -233,6 +233,43 @@ than "claims must be supported" — the latter is met by a good answer,
 so the classifier says `yes` and the adapter denies it.
 `builtInCriteria` in `harness/internal/guard/graniteguardian.go` is
 the reference for this phrasing.
+
+### `shieldstral`
+
+[Shieldstral](https://mistral.ai) (e.g. `shieldstral-1-0`,
+`mistralai/Shieldstral-8B`) safety classifier fine-tuned by Mistral AI
+for conversational and agentic safety intervention points. Accessible both
+as an open-weights model (runnable via vLLM, Ollama, or TGI) and as a
+managed cloud service (via Mistral AI's platform at `https://api.mistral.ai/v1`
+or OpenRouter at `https://openrouter.ai/api/v1`).
+
+Authentication with remote cloud endpoints is supported via `apiKeyRef`
+(resolving a `secret://...` reference via `security.SecretStore`).
+For unauthenticated local vLLM or Ollama instances, `apiKeyRef` can be omitted.
+
+Minimal cloud config:
+
+```json
+{
+  "guardRail": {
+    "type": "shieldstral",
+    "endpoint": "https://api.mistral.ai/v1/chat/completions",
+    "apiKeyRef": "secret://MISTRAL_API_KEY",
+    "model": "shieldstral-1-0"
+  }
+}
+```
+
+Or via flags:
+
+```sh
+stirrup harness \
+  --prompt "..." \
+  --guardrail shieldstral \
+  --guardrail-endpoint https://api.mistral.ai/v1/chat/completions \
+  --guardrail-api-key-ref secret://MISTRAL_API_KEY \
+  --guardrail-model shieldstral-1-0
+```
 
 ### `cloud-judge`
 
