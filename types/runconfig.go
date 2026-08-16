@@ -418,10 +418,10 @@ type GuardRailConfig struct {
 	// "composite", which have no transport of their own.
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// ApiKeyRef is the secret:// reference for authenticated endpoints (e.g.
+	// APIKeyRef is the secret:// reference for authenticated endpoints (e.g.
 	// "secret://MISTRAL_API_KEY" or "secret://OPENROUTER_API_KEY"). Supported
 	// by "shieldstral"; rejected for types that do not take a separate API key.
-	ApiKeyRef string `json:"apiKeyRef,omitempty"`
+	APIKeyRef string `json:"apiKeyRef,omitempty"`
 
 	// Model identifies the classifier model (e.g.
 	// "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0",
@@ -545,8 +545,8 @@ func (rc RunConfig) Redact() RunConfig {
 }
 
 func redactGuardRailConfig(gr GuardRailConfig) GuardRailConfig {
-	if gr.ApiKeyRef != "" {
-		gr.ApiKeyRef = "secret://[REDACTED]"
+	if gr.APIKeyRef != "" {
+		gr.APIKeyRef = "secret://[REDACTED]"
 	}
 	if len(gr.Stages) > 0 {
 		stages := make([]GuardRailConfig, len(gr.Stages))
@@ -3419,7 +3419,7 @@ func validateGuardRailAPIKeyRefs(cfg *GuardRailConfig, path string, check func(p
 	if cfg == nil {
 		return
 	}
-	check(path+".apiKeyRef", cfg.ApiKeyRef)
+	check(path+".apiKeyRef", cfg.APIKeyRef)
 	for i, stage := range cfg.Stages {
 		subPath := fmt.Sprintf("%s.stages[%d]", path, i)
 		validateGuardRailAPIKeyRefs(&stage, subPath, check)
@@ -4358,7 +4358,7 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 		if cfg.Endpoint != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=composite", path))
 		}
-		if cfg.ApiKeyRef != "" {
+		if cfg.APIKeyRef != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=composite", path))
 		}
 		for i, stage := range cfg.Stages {
@@ -4374,21 +4374,21 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 			if cfg.Endpoint != "" {
 				*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=none", path))
 			}
-			if cfg.ApiKeyRef != "" {
+			if cfg.APIKeyRef != "" {
 				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=none", path))
 			}
 		case "granite-guardian":
 			if cfg.Endpoint == "" {
 				*errs = append(*errs, fmt.Sprintf("%s.type %q requires endpoint", path, cfg.Type))
 			}
-			if cfg.ApiKeyRef != "" {
+			if cfg.APIKeyRef != "" {
 				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=granite-guardian", path))
 			}
 		case "cloud-judge":
 			// cloud-judge reuses an existing ProviderAdapter; an
 			// explicit endpoint is allowed but optional (the adapter
 			// resolves it from the underlying provider when omitted).
-			if cfg.ApiKeyRef != "" {
+			if cfg.APIKeyRef != "" {
 				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=cloud-judge", path))
 			}
 		case "shieldstral":
@@ -4463,7 +4463,7 @@ func guardRailHasAdapterFields(cfg *GuardRailConfig) bool {
 		return false
 	}
 	return cfg.Endpoint != "" ||
-		cfg.ApiKeyRef != "" ||
+		cfg.APIKeyRef != "" ||
 		cfg.Model != "" ||
 		cfg.Threshold != 0 ||
 		len(cfg.Criteria) > 0 ||

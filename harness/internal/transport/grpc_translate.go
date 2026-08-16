@@ -246,7 +246,7 @@ func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
 		Type:          pc.Type,
 		Phases:        append([]string(nil), pc.Phases...),
 		Endpoint:      pc.Endpoint,
-		ApiKeyRef:     pc.ApiKeyRef,
+		APIKeyRef:     pc.ApiKeyRef,
 		Model:         pc.Model,
 		Threshold:     pc.Threshold,
 		Criteria:      append([]string(nil), pc.Criteria...),

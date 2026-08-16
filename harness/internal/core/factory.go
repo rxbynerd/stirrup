@@ -1438,13 +1438,13 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 		return wrapWithPhases(gg, cfg.Phases), nil
 	case "shieldstral":
 		var apiKey string
-		if cfg.ApiKeyRef != "" {
+		if cfg.APIKeyRef != "" {
 			if secrets == nil {
-				return nil, fmt.Errorf("shieldstral: secret store is required to resolve apiKeyRef %q", cfg.ApiKeyRef)
+				return nil, fmt.Errorf("shieldstral: secret store is required to resolve apiKeyRef %q", cfg.APIKeyRef)
 			}
-			resolved, err := secrets.Resolve(ctx, cfg.ApiKeyRef)
+			resolved, err := secrets.Resolve(ctx, cfg.APIKeyRef)
 			if err != nil {
-				return nil, fmt.Errorf("shieldstral: resolve apiKeyRef %q: %w", cfg.ApiKeyRef, err)
+				return nil, fmt.Errorf("shieldstral: resolve apiKeyRef %q: %w", cfg.APIKeyRef, err)
 			}
 			apiKey = resolved
 		}

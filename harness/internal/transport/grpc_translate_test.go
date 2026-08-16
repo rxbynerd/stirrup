@@ -437,8 +437,8 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	if ss.Model != "shieldstral-1-0" {
 		t.Errorf("Stages[2].Model: got %q", ss.Model)
 	}
-	if ss.ApiKeyRef != "secret://MISTRAL_API_KEY" {
-		t.Errorf("Stages[2].ApiKeyRef: got %q", ss.ApiKeyRef)
+	if ss.APIKeyRef != "secret://MISTRAL_API_KEY" {
+		t.Errorf("Stages[2].APIKeyRef: got %q", ss.APIKeyRef)
 	}
 	if ss.TimeoutMs != 3000 {
 		t.Errorf("Stages[2].TimeoutMs: got %d", ss.TimeoutMs)

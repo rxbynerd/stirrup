@@ -699,7 +699,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 		cfg := &types.GuardRailConfig{
 			Type:      "shieldstral",
 			Endpoint:  "https://api.mistral.ai",
-			ApiKeyRef: "secret://TEST_MISTRAL_KEY",
+			APIKeyRef: "secret://TEST_MISTRAL_KEY",
 			Model:     "shieldstral-1-0",
 		}
 		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets)
@@ -715,7 +715,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 		cfg := &types.GuardRailConfig{
 			Type:      "shieldstral",
 			Endpoint:  "https://api.mistral.ai",
-			ApiKeyRef: "secret://SOME_KEY",
+			APIKeyRef: "secret://SOME_KEY",
 		}
 		_, err := buildGuardRail(ctx, cfg, nil, nil, nil)
 		if err == nil {

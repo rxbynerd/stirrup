@@ -2598,7 +2598,7 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 }
 
 // TestBuildHarnessRunConfig_ShieldstralFlags verifies that Shieldstral
-// flags (including ApiKeyRef) propagate from harnessCLIOptions into RunConfig.GuardRail.
+// flags (including APIKeyRef) propagate from harnessCLIOptions into RunConfig.GuardRail.
 func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:              "test-run",
@@ -2613,7 +2613,7 @@ func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 		LogLevel:           "info",
 		GuardRailType:      "shieldstral",
 		GuardRailEndpoint:  "https://api.mistral.ai",
-		GuardRailApiKeyRef: "secret://MISTRAL_API_KEY",
+		GuardRailAPIKeyRef: "secret://MISTRAL_API_KEY",
 		GuardRailModel:     "shieldstral-1-0",
 	})
 	if err != nil {
@@ -2629,8 +2629,8 @@ func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 	if cfg.GuardRail.Endpoint != "https://api.mistral.ai" {
 		t.Errorf("GuardRail.Endpoint = %q, want https://api.mistral.ai", cfg.GuardRail.Endpoint)
 	}
-	if cfg.GuardRail.ApiKeyRef != "secret://MISTRAL_API_KEY" {
-		t.Errorf("GuardRail.ApiKeyRef = %q, want secret://MISTRAL_API_KEY", cfg.GuardRail.ApiKeyRef)
+	if cfg.GuardRail.APIKeyRef != "secret://MISTRAL_API_KEY" {
+		t.Errorf("GuardRail.APIKeyRef = %q, want secret://MISTRAL_API_KEY", cfg.GuardRail.APIKeyRef)
 	}
 	if cfg.GuardRail.Model != "shieldstral-1-0" {
 		t.Errorf("GuardRail.Model = %q, want shieldstral-1-0", cfg.GuardRail.Model)
@@ -2722,8 +2722,8 @@ func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
 		t.Errorf("GuardRail.Endpoint override failed: %q", cfg.GuardRail.Endpoint)
 	}
-	if cfg.GuardRail.ApiKeyRef != "secret://FLAG_KEY" {
-		t.Errorf("GuardRail.ApiKeyRef override failed: %q", cfg.GuardRail.ApiKeyRef)
+	if cfg.GuardRail.APIKeyRef != "secret://FLAG_KEY" {
+		t.Errorf("GuardRail.APIKeyRef override failed: %q", cfg.GuardRail.APIKeyRef)
 	}
 	if !cfg.GuardRail.FailOpen {
 		t.Errorf("GuardRail.FailOpen override failed: got false")

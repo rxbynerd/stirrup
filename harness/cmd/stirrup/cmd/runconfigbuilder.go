@@ -324,7 +324,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	codeScannerType, _ := f.GetString("code-scanner")
 	guardRailType, _ := f.GetString("guardrail")
 	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
-	guardRailApiKeyRef, _ := f.GetString("guardrail-api-key-ref")
+	guardRailAPIKeyRef, _ := f.GetString("guardrail-api-key-ref")
 	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
@@ -447,7 +447,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		CodeScannerType:              codeScannerType,
 		GuardRailType:                guardRailType,
 		GuardRailEndpoint:            guardRailEndpoint,
-		GuardRailApiKeyRef:           guardRailApiKeyRef,
+		GuardRailAPIKeyRef:           guardRailAPIKeyRef,
 		GuardRailModel:               guardRailModel,
 		GuardRailFailOpen:            guardRailFailOpen,
 		DeploymentEnvironment:        deploymentEnvironment,
