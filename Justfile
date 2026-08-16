@@ -54,13 +54,20 @@ shieldstral-smoke:
     #!/usr/bin/env bash
     set -euo pipefail
     endpoint="${SHIELDSTRAL_ENDPOINT:-${MISTRAL_API_BASE:-http://127.0.0.1:8000}}"
+    # Normalise chat-completions / /v1 bases so the models probe never
+    # doubles the path (MISTRAL_API_BASE conventionally ends in /v1).
+    endpoint="${endpoint%/}"
+    endpoint="${endpoint%/chat/completions}"
+    endpoint="${endpoint%/v1}"
     api_key="${SHIELDSTRAL_API_KEY:-${MISTRAL_API_KEY:-}}"
     auth_header=()
     if [ -n "${api_key}" ]; then
         auth_header=(-H "Authorization: Bearer ${api_key}")
     fi
     echo "checking Shieldstral at ${endpoint}..."
-    if ! response=$(curl -fsS --max-time 5 "${auth_header[@]}" "${endpoint}/v1/models" 2>&1); then
+    # ${auth_header[@]+...} keeps the empty-array expansion legal under
+    # `set -u` on bash 3.2 (stock macOS).
+    if ! response=$(curl -fsS --max-time 5 ${auth_header[@]+"${auth_header[@]}"} "${endpoint}/v1/models" 2>&1); then
         echo "FAIL: cannot reach ${endpoint}/v1/models" >&2
         echo "  ${response}" >&2
         exit 1

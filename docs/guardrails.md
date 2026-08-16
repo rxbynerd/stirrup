@@ -186,6 +186,12 @@ Authentication with remote cloud endpoints is supported via `apiKeyRef`
 (resolving a `secret://...` reference via `security.SecretStore`).
 For unauthenticated local vLLM or Ollama instances, `apiKeyRef` can be omitted.
 
+The `endpoint` is either a bare host (`https://api.mistral.ai` —
+`/v1/chat/completions` is appended automatically) or a full
+chat-completions URL. A path-bearing endpoint is used as-is, so a bare
+`/v1` base such as `https://openrouter.ai/api/v1` will not resolve —
+use the full `.../api/v1/chat/completions` form.
+
 Minimal cloud config:
 
 ```json
@@ -222,8 +228,9 @@ attached vLLM.
 ### `composite` (operator escape hatch)
 
 Layers multiple stages, optionally restricted to specific phases.
-The harness only ships `granite-guardian` and `cloud-judge`, but
-the composite primitive lets operators add their own classifiers
+The harness only ships `granite-guardian`, `shieldstral`, and
+`cloud-judge`, but the composite primitive lets operators add their
+own classifiers
 (e.g. a fast-path Llama Prompt Guard 2 served via TEI in front of
 the slower Granite Guardian) without modifying the harness. See
 [§ Operator escape hatch](#operator-escape-hatch) below.

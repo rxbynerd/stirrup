@@ -741,8 +741,9 @@ message GuardRailConfig {
   // Adapter-defined default applies when empty.
   string model = 5;
 
-  // For "granite-guardian" / "shieldstral": the verdict threshold in [0.0, 1.0].
-  // Adapter-defined default applies when zero.
+  // For "granite-guardian" / "shieldstral": reserved. Validated to
+  // [0.0, 1.0] but currently ignored by both adapters (binary yes/no
+  // classifier heads); a non-zero value logs a startup warning.
   double threshold = 6;
 
   // For "granite-guardian" / "shieldstral": built-in criteria identifiers (e.g.
@@ -771,8 +772,8 @@ message GuardRailConfig {
   bool fail_open = 11;
 
   // For "granite-guardian" / "shieldstral": pre-turn chunks shorter than this are
-  // skipped (no HTTP call). Default 256 (applied at construction
-  // time); 0 disables. Range [0, 4096].
+  // skipped (no HTTP call). Zero (the default) disables skipping.
+  // Range [0, 4096].
   int32 min_chunk_chars = 12;
 
   // For "shieldstral": secret reference for API key (e.g. "secret://MISTRAL_API_KEY")

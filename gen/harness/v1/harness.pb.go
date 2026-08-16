@@ -1569,8 +1569,9 @@ type GuardRailConfig struct {
 	// (e.g. "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0", "mistralai/Shieldstral-8B").
 	// Adapter-defined default applies when empty.
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	// For "granite-guardian" / "shieldstral": the verdict threshold in [0.0, 1.0].
-	// Adapter-defined default applies when zero.
+	// For "granite-guardian" / "shieldstral": reserved. Validated to
+	// [0.0, 1.0] but currently ignored by both adapters (binary yes/no
+	// classifier heads); a non-zero value logs a startup warning.
 	Threshold float64 `protobuf:"fixed64,6,opt,name=threshold,proto3" json:"threshold,omitempty"`
 	// For "granite-guardian" / "shieldstral": built-in criteria identifiers (e.g.
 	// "harm", "jailbreak"). Adapter-defined per-phase default applies
@@ -1593,8 +1594,8 @@ type GuardRailConfig struct {
 	// closed).
 	FailOpen bool `protobuf:"varint,11,opt,name=fail_open,json=failOpen,proto3" json:"fail_open,omitempty"`
 	// For "granite-guardian" / "shieldstral": pre-turn chunks shorter than this are
-	// skipped (no HTTP call). Default 256 (applied at construction
-	// time); 0 disables. Range [0, 4096].
+	// skipped (no HTTP call). Zero (the default) disables skipping.
+	// Range [0, 4096].
 	MinChunkChars int32 `protobuf:"varint,12,opt,name=min_chunk_chars,json=minChunkChars,proto3" json:"min_chunk_chars,omitempty"`
 	// For "shieldstral": secret reference for API key (e.g. "secret://MISTRAL_API_KEY")
 	// used for authenticated cloud endpoints. Optional for local unauthenticated endpoints.
