@@ -151,5 +151,19 @@ func collectSecretRefs(config *types.RunConfig) []string {
 			refs = append(refs, srv.APIKeyRef)
 		}
 	}
+	refs = appendGuardRailSecretRefs(refs, config.GuardRail)
+	return refs
+}
+
+func appendGuardRailSecretRefs(refs []string, cfg *types.GuardRailConfig) []string {
+	if cfg == nil {
+		return refs
+	}
+	if cfg.APIKeyRef != "" {
+		refs = append(refs, cfg.APIKeyRef)
+	}
+	for i := range cfg.Stages {
+		refs = appendGuardRailSecretRefs(refs, &cfg.Stages[i])
+	}
 	return refs
 }
