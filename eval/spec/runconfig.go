@@ -230,18 +230,19 @@ type codeScannerSpec struct {
 }
 
 type guardRailSpec struct {
-	Type          string          `hcl:"type"`
-	Phases        []string        `hcl:"phases,optional"`
-	Endpoint      string          `hcl:"endpoint,optional"`
-	APIKeyRef     string          `hcl:"api_key_ref,optional"`
-	Model         string          `hcl:"model,optional"`
-	Threshold     float64         `hcl:"threshold,optional"`
-	Criteria      []string        `hcl:"criteria,optional"`
-	Think         *bool           `hcl:"think,optional"`
-	TimeoutMs     int             `hcl:"timeout_ms,optional"`
-	FailOpen      bool            `hcl:"fail_open,optional"`
-	MinChunkChars int             `hcl:"min_chunk_chars,optional"`
-	Stages        []guardRailSpec `hcl:"stage,block"`
+	Type           string            `hcl:"type"`
+	Phases         []string          `hcl:"phases,optional"`
+	Endpoint       string            `hcl:"endpoint,optional"`
+	APIKeyRef      string            `hcl:"api_key_ref,optional"`
+	Model          string            `hcl:"model,optional"`
+	Threshold      float64           `hcl:"threshold,optional"`
+	Criteria       []string          `hcl:"criteria,optional"`
+	CustomCriteria map[string]string `hcl:"custom_criteria,optional"`
+	Think          *bool             `hcl:"think,optional"`
+	TimeoutMs      int               `hcl:"timeout_ms,optional"`
+	FailOpen       bool              `hcl:"fail_open,optional"`
+	MinChunkChars  int               `hcl:"min_chunk_chars,optional"`
+	Stages         []guardRailSpec   `hcl:"stage,block"`
 }
 
 type observabilitySpec struct {
@@ -598,17 +599,18 @@ func traceEmitterSpecToType(s *traceEmitterSpec) types.TraceEmitterConfig {
 
 func guardRailSpecToType(s guardRailSpec) types.GuardRailConfig {
 	out := types.GuardRailConfig{
-		Type:          s.Type,
-		Phases:        s.Phases,
-		Endpoint:      s.Endpoint,
-		APIKeyRef:     s.APIKeyRef,
-		Model:         s.Model,
-		Threshold:     s.Threshold,
-		Criteria:      s.Criteria,
-		Think:         s.Think,
-		TimeoutMs:     s.TimeoutMs,
-		FailOpen:      s.FailOpen,
-		MinChunkChars: s.MinChunkChars,
+		Type:           s.Type,
+		Phases:         s.Phases,
+		Endpoint:       s.Endpoint,
+		APIKeyRef:      s.APIKeyRef,
+		Model:          s.Model,
+		Threshold:      s.Threshold,
+		Criteria:       s.Criteria,
+		CustomCriteria: s.CustomCriteria,
+		Think:          s.Think,
+		TimeoutMs:      s.TimeoutMs,
+		FailOpen:       s.FailOpen,
+		MinChunkChars:  s.MinChunkChars,
 	}
 	if len(s.Stages) > 0 {
 		out.Stages = make([]types.GuardRailConfig, 0, len(s.Stages))

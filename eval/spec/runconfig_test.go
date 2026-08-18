@@ -767,6 +767,10 @@ suite "s" {
         type        = "shieldstral"
         endpoint    = "https://api.mistral.ai"
         api_key_ref = "secret://MISTRAL_API_KEY"
+        criteria    = ["jailbreak", "no_internal_hosts"]
+        custom_criteria = {
+          "no_internal_hosts" = "The content references internal hostnames."
+        }
       }
     }
 
@@ -859,6 +863,9 @@ suite "s" {
 		ss := rc.GuardRail.Stages[1]
 		if ss.Type != "shieldstral" || ss.APIKeyRef != "secret://MISTRAL_API_KEY" {
 			t.Errorf("GuardRail.Stages[1] = %#v, want shieldstral with api_key_ref", ss)
+		}
+		if len(ss.Criteria) != 2 || ss.CustomCriteria["no_internal_hosts"] != "The content references internal hostnames." {
+			t.Errorf("GuardRail.Stages[1] criteria = %#v / customCriteria = %#v, want criteria pair with custom text", ss.Criteria, ss.CustomCriteria)
 		}
 	}
 	if rc.TraceEmitter.Type != "otel" || rc.TraceEmitter.Endpoint != "http://collector:4317" || rc.TraceEmitter.Protocol != "grpc" {
