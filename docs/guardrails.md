@@ -75,9 +75,10 @@ Skip when:
 The shipped Granite Guardian adapter applies a **batched** check at
 this phase by default: all untrusted chunks for a turn are
 concatenated under per-chunk delimiters and submitted in one
-outbound request, not one per chunk. Combined with the `MinChunkChars`
-skip threshold (default 256), this keeps the per-turn overhead bounded
-even when many small tool outputs are returned.
+outbound request, not one per chunk. Combined with the opt-in
+`minChunkChars` skip threshold (zero, meaning disabled, unless set),
+this keeps the per-turn overhead bounded even when many small tool
+outputs are returned.
 
 ### `pre_tool` (recommended for production)
 
@@ -405,7 +406,7 @@ throughput and prompt length; treat these as advisory.
 
 | Phase | p50 | p99 | Notes |
 |---|---|---|---|
-| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256). |
+| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256 for `granite-guardian`; `shieldstral` skips only when the threshold is set). |
 | `pre_tool`  | < 30 ms | < 200 ms | One call per tool invocation, after the deterministic checks. Adds up over many tool calls per turn. |
 | `post_turn` | < 50 ms | < 600 ms | Single composite-criterion call per turn end. |
 
@@ -424,11 +425,12 @@ offending content does not pass.
 The two load-bearing latency mitigations are:
 
 1. **`MinChunkChars` skip** at `pre_turn`. Chunks shorter than the
-   threshold (default 256 chars) are not sent to the classifier;
-   a `guard_skipped` event is emitted instead. Mid-run `user_response`
-   input is exempt: it is classified at any length, since it is one
-   call per turn boundary at most and a short relayed turn is exactly
-   the case that needs screening.
+   threshold (default 256 chars for `granite-guardian`; zero, which
+   disables the skip, for `shieldstral`) are not sent to the
+   classifier; a `guard_skipped` event is emitted instead. Mid-run
+   `user_response` input is exempt: it is classified at any length,
+   since it is one call per turn boundary at most and a short relayed
+   turn is exactly the case that needs screening.
 2. **Batched composite criterion** at `pre_turn` and `post_turn`.
    The default config issues one outbound request per phase per
    turn, regardless of chunk count.
