@@ -4347,6 +4347,14 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 		return
 	}
 
+	// apiKeyRef is only consumed by adapters that own an authenticated
+	// transport (currently shieldstral); on any other type it would be
+	// silently ignored, so reject loudly. Default-deny: a new adapter
+	// type accepts apiKeyRef only by being added here.
+	if cfg.APIKeyRef != "" && cfg.Type != "shieldstral" {
+		*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=%s", path, cfg.Type))
+	}
+
 	// composite vs leaf branching.
 	if cfg.Type == "composite" {
 		if len(cfg.Stages) == 0 {
@@ -4357,9 +4365,6 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 		// thought the field would propagate. Reject loudly.
 		if cfg.Endpoint != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=composite", path))
-		}
-		if cfg.APIKeyRef != "" {
-			*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=composite", path))
 		}
 		for i, stage := range cfg.Stages {
 			subPath := fmt.Sprintf("%s.stages[%d]", path, i)
@@ -4374,26 +4379,20 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 			if cfg.Endpoint != "" {
 				*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=none", path))
 			}
-			if cfg.APIKeyRef != "" {
-				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=none", path))
-			}
 		case "granite-guardian":
 			if cfg.Endpoint == "" {
 				*errs = append(*errs, fmt.Sprintf("%s.type %q requires endpoint", path, cfg.Type))
-			}
-			if cfg.APIKeyRef != "" {
-				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=granite-guardian", path))
 			}
 		case "cloud-judge":
 			// cloud-judge reuses an existing ProviderAdapter; an
 			// explicit endpoint is allowed but optional (the adapter
 			// resolves it from the underlying provider when omitted).
-			if cfg.APIKeyRef != "" {
-				*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef is not valid for type=cloud-judge", path))
-			}
 		case "shieldstral":
 			if cfg.Endpoint == "" {
 				*errs = append(*errs, fmt.Sprintf("%s.type %q requires endpoint", path, cfg.Type))
+			}
+			if cfg.Think != nil {
+				*errs = append(*errs, fmt.Sprintf("%s.think is not valid for type=shieldstral", path))
 			}
 		}
 	}

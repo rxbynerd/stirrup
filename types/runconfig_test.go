@@ -3828,6 +3828,12 @@ func TestValidateGuardRailConfig(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "apiKeyRef is not valid for type=cloud-judge",
 		},
+		{
+			name:      "shieldstral with think",
+			guard:     &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai", Think: &think},
+			wantErr:   true,
+			errSubstr: "think is not valid for type=shieldstral",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
