@@ -59,6 +59,12 @@ shieldstral-smoke:
     endpoint="${endpoint%/}"
     endpoint="${endpoint%/chat/completions}"
     endpoint="${endpoint%/v1}"
+    # A custom path (reverse proxy, gateway) is the full chat-completions
+    # target for the adapter; no /v1/models sibling is derivable from it.
+    if [[ "${endpoint#*://}" == */* ]]; then
+        echo "skip: ${endpoint} carries a custom path; no /v1/models probe is derivable — verify by running the harness against it"
+        exit 0
+    fi
     api_key="${SHIELDSTRAL_API_KEY:-${MISTRAL_API_KEY:-}}"
     auth_header=()
     if [ -n "${api_key}" ]; then
