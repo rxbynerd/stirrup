@@ -170,7 +170,7 @@ The `BearerToken` closure returned by `Resolved.BearerToken` is called on every 
 
 ### GuardRail
 
-The `guard` package (`guard/`) provides an LLM-based safety classifier called at three points in the agentic loop: pre-turn (before untrusted content enters context), pre-tool (before the model's proposed tool call is dispatched), and post-turn (after the assistant's response). Adapters: `none` (no-op), `granite-guardian` (IBM Granite Guardian via vLLM), `shieldstral` (Mistral AI Shieldstral via Mistral API/OpenRouter/vLLM), `cloud-judge` (reuses a configured ProviderAdapter), `composite`. See [`docs/guardrails.md`](docs/guardrails.md).
+The `guard` package (`guard/`) provides an LLM-based safety classifier called at three points in the agentic loop: pre-turn (before untrusted content enters context), pre-tool (before the model's proposed tool call is dispatched), and post-turn (after the assistant's response). Adapters: `none` (no-op), `granite-guardian` (IBM Granite Guardian via vLLM), `shieldstral` (Mistral AI Shieldstral, self-hosted via vLLM/Ollama/TGI), `cloud-judge` (reuses a configured ProviderAdapter), `composite`. See [`docs/guardrails.md`](docs/guardrails.md).
 
 ## Security Foundations
 

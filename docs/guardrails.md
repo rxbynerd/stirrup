@@ -176,31 +176,38 @@ stirrup harness \
 
 ### `shieldstral`
 
-[Shieldstral](https://mistral.ai) (e.g. `shieldstral-1-0`,
-`mistralai/Shieldstral-8B`) safety classifier fine-tuned by Mistral AI
-for conversational and agentic safety intervention points. Accessible both
-as an open-weights model (runnable via vLLM, Ollama, or TGI) and as a
-managed cloud service (via Mistral AI's platform at `https://api.mistral.ai/v1`
-or OpenRouter at `https://openrouter.ai/api/v1`).
+[Shieldstral](https://huggingface.co/mistralai/Shieldstral-1.0-3B)
+(e.g. `shieldstral-1-0`, `mistralai/Shieldstral-8B`) is an
+open-weights safety classifier fine-tuned by Mistral AI for
+conversational and agentic safety intervention points, self-hosted
+via vLLM, Ollama, TGI, or LM Studio using the OpenAI-compatible
+chat-completions API — the same shape as `granite-guardian`.
 
-Authentication with remote cloud endpoints is supported via `apiKeyRef`
-(resolving a `secret://...` reference via `security.SecretStore`).
-For unauthenticated local vLLM or Ollama instances, `apiKeyRef` can be omitted.
+As of writing, Shieldstral is not listed on Mistral AI's La
+Plateforme (`api.mistral.ai`) or on OpenRouter; both were checked
+live and neither serves a `shieldstral*` model. The `endpoint` /
+`apiKeyRef` fields exist for operators pointing at their own
+authenticated deployment (a private inference endpoint, a proxy in
+front of a self-hosted instance) — do not assume a Mistral-hosted or
+OpenRouter-hosted endpoint will resolve without first confirming the
+provider serves the model.
 
-The `endpoint` is either a bare host (`https://api.mistral.ai` —
-`/v1/chat/completions` is appended automatically) or a full
-chat-completions URL. A path-bearing endpoint is used as-is, so a bare
-`/v1` base such as `https://openrouter.ai/api/v1` will not resolve —
-use the full `.../api/v1/chat/completions` form.
+Authentication is supported via `apiKeyRef` (resolving a
+`secret://...` reference via `security.SecretStore`) for endpoints
+that require it. For unauthenticated local instances, `apiKeyRef`
+can be omitted.
 
-Minimal cloud config:
+The `endpoint` is either a bare host (`/v1/chat/completions` is
+appended automatically) or a full chat-completions URL. A
+path-bearing endpoint is used as-is.
+
+Minimal config:
 
 ```json
 {
   "guardRail": {
     "type": "shieldstral",
-    "endpoint": "https://api.mistral.ai/v1/chat/completions",
-    "apiKeyRef": "secret://MISTRAL_API_KEY",
+    "endpoint": "http://127.0.0.1:1234",
     "model": "shieldstral-1-0"
   }
 }
@@ -212,8 +219,7 @@ Or via flags:
 stirrup harness \
   --prompt "..." \
   --guardrail shieldstral \
-  --guardrail-endpoint https://api.mistral.ai/v1/chat/completions \
-  --guardrail-api-key-ref secret://MISTRAL_API_KEY \
+  --guardrail-endpoint http://127.0.0.1:1234 \
   --guardrail-model shieldstral-1-0
 ```
 

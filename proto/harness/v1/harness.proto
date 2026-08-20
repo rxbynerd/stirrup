@@ -708,9 +708,9 @@ message GuardRailConfig {
   //   "granite-guardian" — Granite Guardian 4.1-8B served via vLLM
   //                        using the OpenAI-compatible chat-completions
   //                        API. Requires endpoint.
-  //   "shieldstral"      — Shieldstral safety classifier (Mistral AI)
-  //                        served via Mistral API, OpenRouter, or vLLM.
-  //                        Requires endpoint.
+  //   "shieldstral"      — Shieldstral safety classifier (Mistral AI),
+  //                        an open-weights model self-hosted via vLLM
+  //                        or similar. Requires endpoint.
   //   "composite"        — sequential / parallel layering of stages.
   //                        Requires a non-empty stages list; each stage
   //                        must be a non-composite type.
