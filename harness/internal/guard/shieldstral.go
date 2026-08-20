@@ -18,8 +18,11 @@ import (
 )
 
 // Shieldstral adapter for Mistral AI's Shieldstral content-safety and moderation
-// models (e.g. shieldstral-1-0, mistralai/Shieldstral-8B) served via Mistral API,
-// OpenRouter, vLLM, or Ollama using the OpenAI-compatible chat-completions API.
+// models (e.g. shieldstral-1-0, mistralai/Shieldstral-8B), an open-weights model
+// self-hosted via vLLM, Ollama, TGI, or similar using the OpenAI-compatible
+// chat-completions API. Not known to be available on Mistral's own API or
+// OpenRouter as of writing — apiKeyRef exists for operators who point this
+// adapter at their own authenticated endpoint.
 
 const (
 	// defaultShieldstralModel is the default model identifier for Shieldstral.
