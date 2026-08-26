@@ -139,7 +139,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	loop, err := core.BuildLoopWithTransport(ctx, config, tp)
 	if err != nil {
-		return fmt.Errorf("building harness: %w", err)
+		// No loop exists to run its own error/done emission, so without
+		// this the control plane cannot tell a rejected config from a
+		// crashed pod or a dropped connection.
+		buildErr := fmt.Errorf("building harness: %w", err)
+		emitTerminalFailure(tp, buildErr)
+		return buildErr
 	}
 	defer func() { _ = loop.Close() }()
 
@@ -149,7 +154,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	runTrace, runErr := loop.Run(ctx, config)
 	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself failed).
+		// No trace was produced at all (e.g. the trace emitter itself
+		// failed). The loop emits "done" before finishing the trace on
+		// every path, so the control plane already has its terminal
+		// signal and must not receive a second one here.
 		return fmt.Errorf("running harness: %w", runErr)
 	}
 	printRunSummary(runTrace)
@@ -193,4 +201,24 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.
 	return runOutcomeError(runTrace)
+}
+
+// emitTerminalFailure sends the "error" then "done" pair that the
+// agentic loop emits on its own fatal paths, for failures that occur
+// after a task assignment but before the loop exists to emit them.
+// "done" is the control plane's terminal signal, so it must follow
+// "error" even here.
+//
+// Best-effort: emit failures are reported on stderr and never replace
+// the failure being signalled.
+func emitTerminalFailure(tp transport.Transport, cause error) {
+	if tp == nil {
+		return
+	}
+	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error()}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to send error event: %v\n", err)
+	}
+	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to send done event: %v\n", err)
+	}
 }
