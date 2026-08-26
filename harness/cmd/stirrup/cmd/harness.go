@@ -542,17 +542,20 @@ func retryDurationToMs(flagName string, d time.Duration) (int, error) {
 	return int(d / time.Millisecond), nil
 }
 
-// applyModeDefaults fills in PermissionPolicy and the read-only
-// Tools.BuiltIn list based on cfg.Mode, but only for fields the caller
-// has not set explicitly — an explicit conflicting choice is left for
-// ValidateRunConfig to reject rather than silently rewritten. Shared
-// between the flag-only and --config paths so both produce consistent
-// configs.
+// applyModeDefaults fills in the two mode-derived defaults the CLI owns,
+// but only for fields the caller has not set explicitly — an explicit
+// conflicting choice is left for ValidateRunConfig to reject rather than
+// silently rewritten. Shared between the flag-only and --config paths so
+// both produce consistent configs.
+//
+// The read-only PermissionPolicy default lives in
+// types.ValidateRunConfig so every entrypoint shares it. Its editable-
+// mode counterpart stays here: "allow-all" is a reasonable default for
+// an operator running the CLI against a local workspace, but the
+// validator refuses to infer it from a RunConfig that simply omitted the
+// field.
 func applyModeDefaults(cfg *types.RunConfig) {
 	if types.IsReadOnlyMode(cfg.Mode) {
-		if cfg.PermissionPolicy.Type == "" {
-			cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
-		}
 		// The validator rejects an empty Tools.BuiltIn for read-only
 		// modes; the default is executor-aware because executor.type="none"
 		// has no filesystem/shell capability at all (see
@@ -560,7 +563,9 @@ func applyModeDefaults(cfg *types.RunConfig) {
 		if len(cfg.Tools.BuiltIn) == 0 {
 			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInToolsForExecutor(cfg.Executor.Type)
 		}
-	} else if cfg.PermissionPolicy.Type == "" {
+		return
+	}
+	if cfg.PermissionPolicy.Type == "" {
 		cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
 	}
 }

@@ -1677,6 +1677,7 @@ func TestRunConfigFromProto_SandboxIdentityPassesValidation(t *testing.T) {
 				Hosts: []string{"github.com"},
 			},
 		},
+		PermissionPolicy: &pb.PermissionPolicyConfig{Type: "allow-all"},
 	}
 
 	rc := runConfigFromProto(pc)
