@@ -695,6 +695,13 @@ policy must not be `allow-all` — nor may a `policy-engine`'s
 policy matches. The validator rejects any `RunConfig` that violates
 this before any component is constructed.
 
+A read-only mode that names no `permissionPolicy.type` is resolved to
+`deny-side-effects` during validation, so every entrypoint — CLI, gRPC,
+and direct embedding — lands on the same policy. An editable mode is
+not defaulted: validation rejects an empty `permissionPolicy.type`
+rather than inferring `allow-all`, which the CLI applies only because
+`--mode execution` is itself an explicit choice.
+
 `planning` is the CLI default. A bare `stirrup harness --prompt "..."`
 invocation therefore lands in a read-only posture with no write or
 shell capability and the `deny-side-effects` permission policy.
