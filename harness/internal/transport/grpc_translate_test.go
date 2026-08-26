@@ -1335,3 +1335,352 @@ func TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil(t *testing.T) {
 		t.Errorf("AllowedMCPHosts should be empty when proto field absent, got %v", srv.AllowedMCPHosts)
 	}
 }
+
+// TestRunConfigFromProto_ExecutorSandboxFieldsPreserved pins the executor
+// fields that had no proto mirror at all until they were added: registry
+// pinning, workspace export, k8s egress wiring, and the sandbox identity /
+// git proxy blocks. Each is marshalled and unmarshalled first so a field
+// that compiles but never reaches the wire is caught here rather than at
+// deployment time.
+func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Executor: &pb.ExecutorConfig{
+			Type:              "k8s",
+			Image:             "ghcr.io/rxbynerd/stirrup:latest",
+			K8SNamespace:      "agents",
+			K8SEgressProxyUrl: "http://egress.agents.svc:3128",
+			RegistryAllowlist: []string{"ghcr.io/rxbynerd/*", "docker.io/library/*"},
+			WorkspaceExportTo: "gs://stirrup-workspaces/runs",
+			SandboxIdentity: &pb.SandboxIdentityConfig{
+				Source:   "control-plane",
+				Audience: "https://haybale.internal",
+				EnvVar:   "HAYBALE_TOKEN",
+			},
+			GitProxy: &pb.GitProxyConfig{
+				Url:         "https://haybale.internal",
+				Hosts:       []string{"github.com", "gitlab.com"},
+				RewriteSsh:  true,
+				TokenEnvVar: "HAYBALE_TOKEN",
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	ec := runConfigFromProto(&decoded).Executor
+
+	if ec.K8sEgressProxyURL != "http://egress.agents.svc:3128" {
+		t.Errorf("K8sEgressProxyURL: got %q", ec.K8sEgressProxyURL)
+	}
+	if ec.WorkspaceExportTo != "gs://stirrup-workspaces/runs" {
+		t.Errorf("WorkspaceExportTo: got %q", ec.WorkspaceExportTo)
+	}
+	wantRegistry := []string{"ghcr.io/rxbynerd/*", "docker.io/library/*"}
+	if !reflect.DeepEqual(ec.RegistryAllowlist, wantRegistry) {
+		t.Errorf("RegistryAllowlist: got %v, want %v", ec.RegistryAllowlist, wantRegistry)
+	}
+
+	if ec.SandboxIdentity == nil {
+		t.Fatal("SandboxIdentity nil after translation")
+	}
+	if ec.SandboxIdentity.Source != "control-plane" {
+		t.Errorf("SandboxIdentity.Source: got %q", ec.SandboxIdentity.Source)
+	}
+	if ec.SandboxIdentity.Audience != "https://haybale.internal" {
+		t.Errorf("SandboxIdentity.Audience: got %q", ec.SandboxIdentity.Audience)
+	}
+	if ec.SandboxIdentity.EnvVar != "HAYBALE_TOKEN" {
+		t.Errorf("SandboxIdentity.EnvVar: got %q", ec.SandboxIdentity.EnvVar)
+	}
+
+	if ec.GitProxy == nil {
+		t.Fatal("GitProxy nil after translation")
+	}
+	if ec.GitProxy.URL != "https://haybale.internal" {
+		t.Errorf("GitProxy.URL: got %q", ec.GitProxy.URL)
+	}
+	if !reflect.DeepEqual(ec.GitProxy.Hosts, []string{"github.com", "gitlab.com"}) {
+		t.Errorf("GitProxy.Hosts: got %v", ec.GitProxy.Hosts)
+	}
+	if !ec.GitProxy.RewriteSsh {
+		t.Error("GitProxy.RewriteSsh not propagated")
+	}
+	if ec.GitProxy.TokenEnvVar != "HAYBALE_TOKEN" {
+		t.Errorf("GitProxy.TokenEnvVar: got %q", ec.GitProxy.TokenEnvVar)
+	}
+}
+
+// TestRunConfigFromProto_ExecutorSandboxFieldsAbsentStayNil documents the
+// safe default: an ExecutorConfig that omits the new sub-messages must
+// leave the internal pointers nil, so "operator did not configure" stays
+// distinguishable from "configured empty" and the defaults apply.
+func TestRunConfigFromProto_ExecutorSandboxFieldsAbsentStayNil(t *testing.T) {
+	ec := runConfigFromProto(&pb.RunConfig{
+		Executor: &pb.ExecutorConfig{Type: "container"},
+	}).Executor
+
+	if ec.SandboxIdentity != nil {
+		t.Errorf("SandboxIdentity should be nil when proto field absent, got %+v", ec.SandboxIdentity)
+	}
+	if ec.GitProxy != nil {
+		t.Errorf("GitProxy should be nil when proto field absent, got %+v", ec.GitProxy)
+	}
+	if ec.RegistryAllowlist != nil {
+		t.Errorf("RegistryAllowlist should be nil when proto field absent, got %v", ec.RegistryAllowlist)
+	}
+	if ec.WorkspaceExportTo != "" {
+		t.Errorf("WorkspaceExportTo should be empty when proto field absent, got %q", ec.WorkspaceExportTo)
+	}
+	if ec.K8sEgressProxyURL != "" {
+		t.Errorf("K8sEgressProxyURL should be empty when proto field absent, got %q", ec.K8sEgressProxyURL)
+	}
+}
+
+// TestRunConfigFromProto_ExecutorSlicesNotAliased confirms the repeated
+// executor fields are copied rather than aliased, so mutating the wire
+// payload after translation cannot reach internal config state.
+func TestRunConfigFromProto_ExecutorSlicesNotAliased(t *testing.T) {
+	src := &pb.RunConfig{
+		Executor: &pb.ExecutorConfig{
+			Type:              "container",
+			RegistryAllowlist: []string{"ghcr.io/rxbynerd/*"},
+			SandboxIdentity:   &pb.SandboxIdentityConfig{Source: "control-plane"},
+			GitProxy: &pb.GitProxyConfig{
+				Url:   "https://haybale.internal",
+				Hosts: []string{"github.com"},
+			},
+		},
+	}
+
+	ec := runConfigFromProto(src).Executor
+
+	src.Executor.RegistryAllowlist[0] = "mutated"
+	src.Executor.GitProxy.Hosts[0] = "mutated"
+
+	if ec.RegistryAllowlist[0] != "ghcr.io/rxbynerd/*" {
+		t.Error("RegistryAllowlist shares backing array with proto source")
+	}
+	if ec.GitProxy.Hosts[0] != "github.com" {
+		t.Error("GitProxy.Hosts shares backing array with proto source")
+	}
+}
+
+// TestRunConfigFromProto_ResultSinkPreserved pins every ResultSinkConfig
+// field across a wire round-trip. The sink's type discriminator decides
+// whether the run's answer is delivered at all, so a silent drop here
+// looks like a working run that produced nothing.
+func TestRunConfigFromProto_ResultSinkPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		ResultSink: &pb.ResultSinkConfig{
+			Type:                       "gcp-pubsub",
+			Topic:                      "stirrup-results",
+			Attributes:                 map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"},
+			MaxFinalAssistantTextBytes: 4096,
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	sink := runConfigFromProto(&decoded).ResultSink
+	if sink == nil {
+		t.Fatal("ResultSink nil after translation")
+	}
+	if sink.Type != "gcp-pubsub" {
+		t.Errorf("ResultSink.Type: got %q", sink.Type)
+	}
+	if sink.Topic != "stirrup-results" {
+		t.Errorf("ResultSink.Topic: got %q", sink.Topic)
+	}
+	if sink.MaxFinalAssistantTextBytes != 4096 {
+		t.Errorf("ResultSink.MaxFinalAssistantTextBytes: got %d, want 4096", sink.MaxFinalAssistantTextBytes)
+	}
+	want := map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"}
+	if !reflect.DeepEqual(sink.Attributes, want) {
+		t.Errorf("ResultSink.Attributes: got %v, want %v", sink.Attributes, want)
+	}
+
+	// The attributes map must be copied, not aliased.
+	decoded.ResultSink.Attributes["tenant"] = "mutated"
+	if sink.Attributes["tenant"] != "team-a" {
+		t.Error("ResultSink.Attributes shares the proto-owned map")
+	}
+}
+
+// TestRunConfigFromProto_ResultSinkAbsentStaysNil documents that an absent
+// sub-message leaves ResultSink nil — the "sink disabled" state — rather
+// than synthesising a block whose empty Type fails validation.
+func TestRunConfigFromProto_ResultSinkAbsentStaysNil(t *testing.T) {
+	if sink := runConfigFromProto(&pb.RunConfig{}).ResultSink; sink != nil {
+		t.Errorf("ResultSink should be nil when proto field absent, got %+v", sink)
+	}
+}
+
+// TestRunConfigFromProto_ToolChoiceEscalationPreserved pins the escalation
+// block across a wire round-trip, including the empty-sub-message case:
+// present-but-unset must stay non-nil so it is distinguishable from absent.
+func TestRunConfigFromProto_ToolChoiceEscalationPreserved(t *testing.T) {
+	t.Run("populated", func(t *testing.T) {
+		original := &pb.RunConfig{
+			ToolChoiceEscalation: &pb.ToolChoiceEscalationConfig{
+				Enabled:    true,
+				MaxRetries: 3,
+			},
+		}
+		raw, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunConfig
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		esc := runConfigFromProto(&decoded).ToolChoiceEscalation
+		if esc == nil {
+			t.Fatal("ToolChoiceEscalation nil after translation")
+		}
+		if !esc.Enabled {
+			t.Error("ToolChoiceEscalation.Enabled not propagated")
+		}
+		if esc.MaxRetries != 3 {
+			t.Errorf("ToolChoiceEscalation.MaxRetries: got %d, want 3", esc.MaxRetries)
+		}
+	})
+
+	t.Run("empty sub-message stays non-nil", func(t *testing.T) {
+		esc := runConfigFromProto(&pb.RunConfig{
+			ToolChoiceEscalation: &pb.ToolChoiceEscalationConfig{},
+		}).ToolChoiceEscalation
+		if esc == nil {
+			t.Fatal("expected non-nil ToolChoiceEscalation for an empty sub-message")
+		}
+		if esc.Enabled {
+			t.Error("empty sub-message must not enable escalation")
+		}
+		if esc.MaxRetries != 0 {
+			t.Errorf("MaxRetries: got %d, want 0 (resolves to the default)", esc.MaxRetries)
+		}
+	})
+
+	t.Run("absent stays nil", func(t *testing.T) {
+		if esc := runConfigFromProto(&pb.RunConfig{}).ToolChoiceEscalation; esc != nil {
+			t.Errorf("ToolChoiceEscalation should be nil when proto field absent, got %+v", esc)
+		}
+	})
+}
+
+// TestRunConfigFromProto_LogsExportPreserved pins observability.logs_export,
+// which sits one level below a sub-message that was already translated —
+// exactly the shape a field-by-field mirror is most likely to miss.
+func TestRunConfigFromProto_LogsExportPreserved(t *testing.T) {
+	t.Run("populated", func(t *testing.T) {
+		original := &pb.RunConfig{
+			Observability: &pb.ObservabilityConfig{
+				Environment: "production",
+				LogsExport: &pb.LogsExportConfig{
+					Type:     "otlp",
+					Endpoint: "otel-collector.observability.svc:4317",
+				},
+			},
+		}
+		raw, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunConfig
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		obs := runConfigFromProto(&decoded).Observability
+		if obs.Environment != "production" {
+			t.Errorf("Environment: got %q", obs.Environment)
+		}
+		if obs.LogsExport.Type != "otlp" {
+			t.Errorf("LogsExport.Type: got %q, want otlp", obs.LogsExport.Type)
+		}
+		if obs.LogsExport.Endpoint != "otel-collector.observability.svc:4317" {
+			t.Errorf("LogsExport.Endpoint: got %q", obs.LogsExport.Endpoint)
+		}
+	})
+
+	t.Run("absent leaves stderr-only zero value", func(t *testing.T) {
+		obs := runConfigFromProto(&pb.RunConfig{
+			Observability: &pb.ObservabilityConfig{Environment: "staging"},
+		}).Observability
+		if obs.LogsExport.Type != "" {
+			t.Errorf("LogsExport.Type should be empty when absent, got %q", obs.LogsExport.Type)
+		}
+		if obs.LogsExport.Endpoint != "" {
+			t.Errorf("LogsExport.Endpoint should be empty when absent, got %q", obs.LogsExport.Endpoint)
+		}
+	})
+}
+
+// TestRunConfigFromProto_TransportIsGRPC pins the one field the translate
+// layer sets rather than copies. RunConfig.transport has no proto mirror by
+// design, but several cross-field rules key off it — sandbox identity and
+// ruleOfTwo.runtime.onDetect="ask-upstream" both require "grpc", and the
+// batch client dispatch switches on it. Leaving it empty would make those
+// features unreachable over the wire even once their config fields exist.
+func TestRunConfigFromProto_TransportIsGRPC(t *testing.T) {
+	if got := runConfigFromProto(&pb.RunConfig{}).Transport.Type; got != "grpc" {
+		t.Errorf("Transport.Type: got %q, want grpc", got)
+	}
+}
+
+// TestRunConfigFromProto_SandboxIdentityPassesValidation drives the mirrored
+// fields through ValidateRunConfig, the gate BuildLoopWithTransport applies
+// to every wire-delivered assignment. Translation alone is not enough: the
+// sandbox identity rules require transport "grpc", so a config that
+// translates cleanly but fails validation would leave the feature just as
+// unreachable as having no proto field at all.
+func TestRunConfigFromProto_SandboxIdentityPassesValidation(t *testing.T) {
+	timeout := int32(600)
+	pc := &pb.RunConfig{
+		RunId:    "run-1",
+		Mode:     "execution",
+		Prompt:   "fix the failing test",
+		MaxTurns: 10,
+		Timeout:  &timeout,
+		Provider: &pb.ProviderConfig{
+			Type:      "anthropic",
+			ApiKeyRef: "secret://ANTHROPIC_API_KEY",
+		},
+		Executor: &pb.ExecutorConfig{
+			Type:  "container",
+			Image: "ghcr.io/rxbynerd/stirrup:latest",
+			Network: &pb.NetworkConfig{
+				Mode:      "allowlist",
+				Allowlist: []string{"haybale.internal:443"},
+			},
+			SandboxIdentity: &pb.SandboxIdentityConfig{
+				Source:   "control-plane",
+				Audience: "https://haybale.internal",
+			},
+			GitProxy: &pb.GitProxyConfig{
+				Url:   "https://haybale.internal",
+				Hosts: []string{"github.com"},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+	if err := types.ValidateRunConfig(&rc); err != nil {
+		t.Fatalf("wire-delivered sandbox identity config rejected by validation: %v", err)
+	}
+}

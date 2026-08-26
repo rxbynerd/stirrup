@@ -219,6 +219,40 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			Environment:      pc.Observability.GetEnvironment(),
 			ServiceNamespace: pc.Observability.GetServiceNamespace(),
 		}
+		// LogsExport is value-typed on both sides; an absent sub-message
+		// leaves the zero value, which resolves to stderr-only.
+		if le := pc.Observability.GetLogsExport(); le != nil {
+			rc.Observability.LogsExport = types.LogsExportConfig{
+				Type:     le.GetType(),
+				Endpoint: le.GetEndpoint(),
+			}
+		}
+	}
+	if pc.ResultSink != nil {
+		// Only construct when present so a nil ResultSink (sink disabled)
+		// stays wire-distinguishable from an explicit block.
+		rc.ResultSink = &types.ResultSinkConfig{
+			Type:                       pc.ResultSink.GetType(),
+			Topic:                      pc.ResultSink.GetTopic(),
+			MaxFinalAssistantTextBytes: int(pc.ResultSink.GetMaxFinalAssistantTextBytes()),
+		}
+		if len(pc.ResultSink.Attributes) > 0 {
+			// Copy the proto-owned map so later mutations to the wire
+			// payload can't reach internal config state.
+			rc.ResultSink.Attributes = make(map[string]string, len(pc.ResultSink.Attributes))
+			for k, v := range pc.ResultSink.Attributes {
+				rc.ResultSink.Attributes[k] = v
+			}
+		}
+	}
+	if pc.ToolChoiceEscalation != nil {
+		// Nil stays nil: an absent sub-message is OFF, which is not the
+		// same as an explicit block with enabled=false (both disable the
+		// recovery, but the distinction survives a round-trip).
+		rc.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{
+			Enabled:    pc.ToolChoiceEscalation.GetEnabled(),
+			MaxRetries: int(pc.ToolChoiceEscalation.GetMaxRetries()),
+		}
 	}
 	if pc.ToolDispatch != nil {
 		// Only construct when present, so nil ToolDispatch stays
@@ -234,6 +268,15 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
 	rc.SessionName = pc.GetSessionName()
+
+	// Transport has no proto mirror: a RunConfig decoded here arrived over
+	// the gRPC control stream by construction, so the transport is a fact
+	// this layer owns rather than a value the control plane declares.
+	// Several cross-field rules key off it — executor.sandboxIdentity and
+	// ruleOfTwo.runtime.onDetect="ask-upstream" both require grpc, and the
+	// batch client dispatch switches on it — and would otherwise see the
+	// empty string and reject a valid assignment.
+	rc.Transport.Type = "grpc"
 
 	return rc
 }
@@ -412,6 +455,26 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		K8sKubeconfig:     pc.K8SKubeconfig,
 		K8sNodeSelector:   pc.K8SNodeSelector,
 		K8sServiceAccount: pc.K8SServiceAccount,
+		K8sEgressProxyURL: pc.K8SEgressProxyUrl,
+		WorkspaceExportTo: pc.WorkspaceExportTo,
+		RegistryAllowlist: append([]string(nil), pc.RegistryAllowlist...),
+	}
+	if pc.SandboxIdentity != nil {
+		ec.SandboxIdentity = &types.SandboxIdentityConfig{
+			Source:   pc.SandboxIdentity.GetSource(),
+			Audience: pc.SandboxIdentity.GetAudience(),
+			EnvVar:   pc.SandboxIdentity.GetEnvVar(),
+		}
+	}
+	if pc.GitProxy != nil {
+		// GitProxy without SandboxIdentity is a validation error, not a
+		// translation one; copy faithfully and let ValidateRunConfig say so.
+		ec.GitProxy = &types.GitProxyConfig{
+			URL:         pc.GitProxy.GetUrl(),
+			Hosts:       append([]string(nil), pc.GitProxy.GetHosts()...),
+			RewriteSsh:  pc.GitProxy.GetRewriteSsh(),
+			TokenEnvVar: pc.GitProxy.GetTokenEnvVar(),
+		}
 	}
 	if pc.VcsBackend != nil {
 		ec.VcsBackend = &types.VcsBackendConfig{
