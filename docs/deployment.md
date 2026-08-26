@@ -172,6 +172,14 @@ The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
 that is the source of truth for the wire contract.
 
+Every CI and release workflow run also publishes a compiled
+`google.protobuf.FileDescriptorSet` for that contract as the
+`proto-descriptor-set` workflow artifact (`stirrup-<label>.fds.binpb`,
+with a `.sha256` alongside). Clients that need the schema without
+checking out the repository or installing `buf` — `grpcurl`, Envoy
+gRPC-JSON transcoding, reflection-less generators — can download it
+from the run's artifact list.
+
 ### Sandbox identity token issuance (control-plane implementers)
 
 Some sandbox executors need a short-lived credential to authenticate

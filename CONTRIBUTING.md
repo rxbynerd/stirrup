@@ -160,6 +160,13 @@ The generated code is committed (`gen/` is a tracked module). Keep
 proto changes backwards-compatible where possible; `buf` will refuse to
 break wire compatibility on a tagged release without explicit override.
 
+CI rebuilds the descriptor set from `proto/` on every run and uploads
+it as the `proto-descriptor-set` artifact, so a `.proto` edit that does
+not compile fails the verify gate regardless of whether `gen/` was
+refreshed. The pinned `buf` version lives in
+[`.github/workflows/_verify.yml`](.github/workflows/_verify.yml);
+bump it there alongside any local toolchain bump.
+
 ## Touching the safety rings
 
 If you change anything under `harness/internal/permission/`,
