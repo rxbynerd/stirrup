@@ -142,6 +142,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 
 | Topic | Doc |
 |---|---|
+| Integrating stirrup as a workload runner (control planes, gRPC contract, cookbook) | [`docs/integration-guide.md`](docs/integration-guide.md) |
 | Component model, agentic loop, deep dives | [`docs/architecture.md`](docs/architecture.md) |
 | CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
