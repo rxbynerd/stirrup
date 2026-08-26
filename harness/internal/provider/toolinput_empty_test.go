@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,6 +134,117 @@ func TestGeminiAdapter_ZeroArgumentToolCall(t *testing.T) {
 		t.Fatalf("Stream() error: %v", err)
 	}
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
+}
+
+// TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip walks the reported
+// failure end to end on the adapter that 400s: stream a parameterless
+// tool_use, rebuild the assistant turn the way the loop does, and send it
+// back. The replayed request must carry an object, since Anthropic rejects
+// the entire conversation over a null tool input.
+func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
+	turns := []string{
+		joinLines(
+			makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_empty","name":"git_status"}}`),
+			makeSSE("content_block_stop", `{"index":0}`),
+			makeSSE("message_delta", `{"delta":{"stop_reason":"tool_use"}}`),
+			makeSSE("message_stop", `{}`),
+		),
+		joinLines(
+			makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+			makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"the tree is clean"}}`),
+			makeSSE("content_block_stop", `{"index":0}`),
+			makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+			makeSSE("message_stop", `{}`),
+		),
+	}
+
+	var requestBodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		idx := len(requestBodies)
+		requestBodies = append(requestBodies, string(body))
+		if idx >= len(turns) {
+			t.Errorf("unexpected request %d", idx)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, turns[idx])
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	messages := []types.Message{{
+		Role:    "user",
+		Content: []types.ContentBlock{{Type: "text", Text: "Report the working tree state."}},
+	}}
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-haiku-4-5",
+		MaxTokens: 1024,
+		Messages:  messages,
+	})
+	if err != nil {
+		t.Fatalf("Stream() turn 1: %v", err)
+	}
+
+	// Store the tool call's input unnormalized — a nil map marshals to null.
+	// The adapter is the last line of defence for history it did not build
+	// itself, so the null must not survive to the wire regardless.
+	var call types.StreamEvent
+	for _, ev := range collectEvents(t, ch) {
+		if ev.Type == "tool_call" {
+			call = ev
+		}
+	}
+	if call.Name != "git_status" {
+		t.Fatalf("turn 1 produced no git_status call: %+v", call)
+	}
+	inputBytes, err := json.Marshal(call.Input)
+	if err != nil {
+		t.Fatalf("marshal tool input: %v", err)
+	}
+
+	messages = append(messages,
+		types.Message{Role: "assistant", Content: []types.ContentBlock{{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: inputBytes,
+		}}},
+		types.Message{Role: "user", Content: []types.ContentBlock{{
+			Type:      "tool_result",
+			ToolUseID: call.ID,
+			Content:   "working tree clean",
+		}}},
+	)
+
+	ch, err = adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-haiku-4-5",
+		MaxTokens: 1024,
+		Messages:  messages,
+	})
+	if err != nil {
+		t.Fatalf("Stream() turn 2: %v", err)
+	}
+	collectEvents(t, ch)
+
+	if len(requestBodies) < 2 {
+		t.Fatalf("expected 2 requests, got %d", len(requestBodies))
+	}
+	replay := requestBodies[1]
+	if strings.Contains(replay, `"input":null`) {
+		t.Errorf("replayed turn carries a null tool input:\n%s", replay)
+	}
+	if !strings.Contains(replay, `"input":{}`) {
+		t.Errorf("replayed turn missing an empty tool input object:\n%s", replay)
+	}
 }
 
 // emptyToolInputForms are the shapes a stored tool_use block can carry for a
