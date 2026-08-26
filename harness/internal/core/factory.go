@@ -954,10 +954,13 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
-	// find_files is pure Go and never shells out; grep_files's native
-	// walker only needs read access (its ripgrep fast path checks
-	// CanExec internally). Gating on CanRead means a read-only sandboxed
-	// executor still gets working content/name search.
+	// Both tools search whichever tree the executor exposes: a host
+	// directory via the native walker (grep_files prefers ripgrep when the
+	// executor also has CanExec), or executor.TreeLister for an executor
+	// whose workspace has no host counterpart. Gating on CanRead means a
+	// read-only sandboxed executor still gets working content/name search,
+	// and an executor that offers neither tree fails with a clear error
+	// rather than searching the harness host.
 	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanRead {
 		registry.Register(builtins.GrepFilesTool(exec))
 	}

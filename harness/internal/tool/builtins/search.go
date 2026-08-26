@@ -210,32 +210,44 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			// cap; the probe element is trimmed before serialization.
 			probeMax := maxResults + 1
 			var matches []searchMatch
-			gotResult := false
-			if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-				rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
-				switch {
-				case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
-					// Context-cancellation must propagate — the caller asked
-					// to stop. Don't paper over it by re-walking natively.
-					return tool.StructuredResult{}, rgErr
-				case rgErr != nil:
-					// Executor transport failure (Docker socket timeout,
-					// container restart, etc.) is treated the same as an rg
-					// exit code >= 2: fall through to the native walker rather
-					// than treating a transient flake as fatal.
-					slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
-				case ok:
-					matches = rgMatches
-					gotResult = true
+			incomplete := false
+			if lister, ok := exec.(executor.TreeLister); ok {
+				treeMatches, treeIncomplete, treeErr := grepTree(ctx, lister, exec, resolvedDir, re, params.Include, params.Exclude, probeMax)
+				if treeErr != nil {
+					return tool.StructuredResult{}, treeErr
 				}
+				matches, incomplete = treeMatches, treeIncomplete
+			} else {
+				if err := requireHostSearchRoot(resolvedDir, searchDir); err != nil {
+					return tool.StructuredResult{}, err
+				}
+				gotResult := false
+				if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
+					rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+					switch {
+					case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
+						// Context-cancellation must propagate — the caller asked
+						// to stop. Don't paper over it by re-walking natively.
+						return tool.StructuredResult{}, rgErr
+					case rgErr != nil:
+						// Executor transport failure (Docker socket timeout,
+						// container restart, etc.) is treated the same as an rg
+						// exit code >= 2: fall through to the native walker rather
+						// than treating a transient flake as fatal.
+						slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
+					case ok:
+						matches = rgMatches
+						gotResult = true
+					}
 
-			}
-			if !gotResult {
-				nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, probeMax)
-				if nativeErr != nil {
-					return tool.StructuredResult{}, nativeErr
 				}
-				matches = nativeMatches
+				if !gotResult {
+					nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, probeMax)
+					if nativeErr != nil {
+						return tool.StructuredResult{}, nativeErr
+					}
+					matches = nativeMatches
+				}
 			}
 
 			truncated := len(matches) > maxResults
@@ -245,13 +257,13 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 
 			structured, marshalErr := json.Marshal(searchResult{
 				Matches:   matchesOrEmpty(matches),
-				Truncated: truncated,
+				Truncated: truncated || incomplete,
 			})
 			if marshalErr != nil {
 				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
 			return tool.StructuredResult{
-				Text:       renderGrepText(matches),
+				Text:       withIncompleteNotice(renderGrepText(matches), incomplete),
 				Structured: structured,
 				Kind:       kindSearchResult,
 			}, nil
@@ -346,9 +358,23 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			// the cap is not misreported as truncated; the probe path is
 			// trimmed before serialization.
 			probeMax := maxResults + 1
-			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
-			if err != nil {
-				return tool.StructuredResult{}, err
+			var paths []string
+			incomplete := false
+			if lister, ok := exec.(executor.TreeLister); ok {
+				treePaths, treeIncomplete, treeErr := findTree(ctx, lister, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
+				if treeErr != nil {
+					return tool.StructuredResult{}, treeErr
+				}
+				paths, incomplete = treePaths, treeIncomplete
+			} else {
+				if err := requireHostSearchRoot(resolvedDir, searchDir); err != nil {
+					return tool.StructuredResult{}, err
+				}
+				nativePaths, nativeErr := findNative(resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
+				if nativeErr != nil {
+					return tool.StructuredResult{}, nativeErr
+				}
+				paths = nativePaths
 			}
 
 			truncated := len(paths) > maxResults
@@ -358,13 +384,13 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 
 			structured, marshalErr := json.Marshal(findResult{
 				Paths:     pathsOrEmpty(paths),
-				Truncated: truncated,
+				Truncated: truncated || incomplete,
 			})
 			if marshalErr != nil {
 				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
 			return tool.StructuredResult{
-				Text:       renderFindText(paths),
+				Text:       withIncompleteNotice(renderFindText(paths), incomplete),
 				Structured: structured,
 				Kind:       kindFindResult,
 			}, nil
@@ -618,16 +644,44 @@ func findNative(dir, name string, include, exclude []string, maxResults int) ([]
 // this sentinel keeps the contract clear at the call site.
 var errStopWalk = errors.New("walk stopped: max results reached")
 
-// pathMatchesFilters applies include/exclude globs against the path. include
-// is permissive (empty = match all); exclude is restrictive (any match
-// vetoes). Both globs are matched against both the basename and the path
-// relative to `root` so callers can write either "*.go" or "internal/**.go".
+// requireHostSearchRoot rejects a search root the native walkers cannot
+// honour. filepath.WalkDir resolves a relative root against the harness
+// process's own working directory, so an executor whose ResolvePath yields a
+// relative path — one whose workspace has no host counterpart — would have
+// the harness host searched instead of the workspace. Such an executor must
+// implement executor.TreeLister to be searchable.
+func requireHostSearchRoot(resolved, requested string) error {
+	if filepath.IsAbs(resolved) {
+		return nil
+	}
+	return fmt.Errorf("cannot search %q: this executor does not expose a searchable workspace", requested)
+}
+
+// withIncompleteNotice appends the partial-scan notice to a rendering when the
+// search could not cover every candidate file.
+func withIncompleteNotice(text string, incomplete bool) string {
+	if !incomplete {
+		return text
+	}
+	return text + "\n" + treeSearchIncompleteNotice
+}
+
+// pathMatchesFilters applies include/exclude globs against a host path,
+// deriving the basename and the path relative to `root` that matchesFilters
+// compares against.
 func pathMatchesFilters(path, root string, include, exclude []string) bool {
-	base := filepath.Base(path)
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		rel = path
 	}
+	return matchesFilters(filepath.Base(path), rel, include, exclude)
+}
+
+// matchesFilters applies include/exclude globs. include is permissive (empty =
+// match all); exclude is restrictive (any match vetoes). Both globs are matched
+// against both the basename and the workspace-relative path so callers can
+// write either "*.go" or "internal/**.go".
+func matchesFilters(base, rel string, include, exclude []string) bool {
 	for _, g := range exclude {
 		if globHit(g, base, rel) {
 			return false
