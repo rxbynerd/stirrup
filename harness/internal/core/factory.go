@@ -939,11 +939,17 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 
 // buildVcsExecutor dispatches the "api" executor on vcsBackend.type. An
 // unrecognised type is an error rather than a fallback: reading a same-named
-// repository from the wrong forge would go unnoticed.
+// repository from the wrong forge would go unnoticed. An empty apiKeyRef
+// selects unauthenticated access, which both forges allow for public
+// repositories, so it is not resolved through the secret store.
 func buildVcsExecutor(ctx context.Context, cfg *types.VcsBackendConfig, secrets security.SecretStore) (executor.Executor, error) {
-	token, err := secrets.Resolve(ctx, cfg.APIKeyRef)
-	if err != nil {
-		return nil, fmt.Errorf("resolve VCS API key: %w", err)
+	var token string
+	if cfg.APIKeyRef != "" {
+		resolved, err := secrets.Resolve(ctx, cfg.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve executor.vcsBackend.apiKeyRef: %w", err)
+		}
+		token = resolved
 	}
 
 	switch cfg.Type {

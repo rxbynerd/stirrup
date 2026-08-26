@@ -1155,6 +1155,58 @@ func TestBuildExecutor_API_DispatchesOnBackendType(t *testing.T) {
 	}
 }
 
+// TestBuildExecutor_API_EmptyAPIKeyRefSkipsSecretResolution pins
+// unauthenticated public-repo access: an empty apiKeyRef must not reach the
+// secret store, which rejects a reference with no "secret://" scheme. The
+// store here resolves nothing, so any lookup fails the build.
+func TestBuildExecutor_API_EmptyAPIKeyRefSkipsSecretResolution(t *testing.T) {
+	for _, backend := range []struct {
+		backendType string
+		repo        string
+		wantExec    string
+	}{
+		{backendType: "github", repo: "owner/repo", wantExec: "*executor.APIExecutor"},
+		{backendType: "gitlab", repo: "group/project", wantExec: "*executor.GitLabExecutor"},
+	} {
+		t.Run(backend.backendType, func(t *testing.T) {
+			exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
+				Type: "api",
+				VcsBackend: &types.VcsBackendConfig{
+					Type: backend.backendType,
+					Repo: backend.repo,
+					Ref:  "main",
+				},
+			}, &stubSecretStore{}, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := fmt.Sprintf("%T", exec); got != backend.wantExec {
+				t.Fatalf("executor = %s, want %s", got, backend.wantExec)
+			}
+		})
+	}
+}
+
+// TestBuildExecutor_API_SecretResolutionFailureNamesTheField keeps the
+// failing config field in the error: "resolve VCS API key" left operators
+// guessing which of several apiKeyRefs the harness could not resolve.
+func TestBuildExecutor_API_SecretResolutionFailureNamesTheField(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type: "api",
+		VcsBackend: &types.VcsBackendConfig{
+			Type:      "github",
+			APIKeyRef: "secret://missing",
+			Repo:      "owner/repo",
+		},
+	}, &stubSecretStore{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for an unresolvable apiKeyRef")
+	}
+	if !strings.Contains(err.Error(), "executor.vcsBackend.apiKeyRef") {
+		t.Fatalf("error = %q, want it to name executor.vcsBackend.apiKeyRef", err.Error())
+	}
+}
+
 func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil, nil)
 	if err == nil {
