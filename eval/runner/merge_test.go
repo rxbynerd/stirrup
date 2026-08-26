@@ -22,10 +22,11 @@ import (
 func baselineRunConfig() *types.RunConfig {
 	timeout := 300
 	return &types.RunConfig{
-		Mode:     "execution",
-		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
-		MaxTurns: 10,
-		Timeout:  &timeout,
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         10,
+		Timeout:          &timeout,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 	}
 }
 
@@ -486,9 +487,10 @@ func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
 // validation via the timeout-injection contract.
 func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 	baseline := &types.RunConfig{
-		Mode:     "execution",
-		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
-		MaxTurns: 10,
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         10,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 	}
 	suite := types.EvalSuite{
 		ID:        "inline-no-timeout",
@@ -580,10 +582,11 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 	timeout := 300
 	baseline := &types.RunConfig{
-		Mode:     "execution",
-		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
-		MaxTurns: 10,
-		Timeout:  &timeout,
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         10,
+		Timeout:          &timeout,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 	}
 	// An override that flips the mode to planning without a compatible
 	// tools.builtIn list triggers the read-only-mode rule; the other
@@ -700,10 +703,11 @@ fi
 
 	timeout := 300
 	baseline := &types.RunConfig{
-		Mode:     "execution",
-		Provider: types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"},
-		MaxTurns: 10,
-		Timeout:  &timeout,
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"},
+		MaxTurns:         10,
+		Timeout:          &timeout,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 	}
 	suite := types.EvalSuite{
 		ID:        "wired",
@@ -1051,10 +1055,11 @@ fi
 
 	timeout := 300
 	baseline := &types.RunConfig{
-		Mode:     "execution",
-		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
-		MaxTurns: 10,
-		Timeout:  &timeout,
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         10,
+		Timeout:          &timeout,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 	}
 	suite := types.EvalSuite{
 		ID:        "redact-suite",

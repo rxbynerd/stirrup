@@ -94,10 +94,11 @@ suite "provider-quirks-openai" {
   run_config {
     // A suite-level run_config is the COMPLETE baseline RunConfig, not
     // an overlay on the harness defaults, so it must satisfy
-    // ValidateRunConfig on its own — mode and max_turns included. The
-    // per-task `mode` attribute reaches the harness as a --mode flag and
-    // does not help here, because validation runs against the merged
-    // config before any flag is applied.
+    // ValidateRunConfig on its own — mode, max_turns and
+    // permission_policy included. The per-task `mode` attribute reaches
+    // the harness as a --mode flag and does not help here, because
+    // validation runs against the merged config before any flag is
+    // applied.
     mode      = "execution"
     max_turns = 20
 
@@ -111,6 +112,10 @@ suite "provider-quirks-openai" {
       type     = "static"
       provider = "openai-compatible"
       model    = "openai/gpt-5.6-terra"
+    }
+
+    permission_policy {
+      type = "allow-all"
     }
   }
 
