@@ -364,11 +364,9 @@ func bedrockTranslateContentBlocks(blocks []types.ContentBlock) ([]brtypes.Conte
 			out = append(out, &brtypes.ContentBlockMemberText{Value: cb.Text})
 
 		case "tool_use":
-			var inputMap map[string]any
-			if len(cb.Input) > 0 {
-				if err := json.Unmarshal(cb.Input, &inputMap); err != nil {
-					return nil, fmt.Errorf("unmarshal tool_use input: %w", err)
-				}
+			inputMap := map[string]any{}
+			if err := json.Unmarshal(types.NormalizeToolInput(cb.Input), &inputMap); err != nil {
+				return nil, fmt.Errorf("unmarshal tool_use input: %w", err)
 			}
 			out = append(out, &brtypes.ContentBlockMemberToolUse{
 				Value: brtypes.ToolUseBlock{

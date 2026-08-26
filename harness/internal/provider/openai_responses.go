@@ -566,10 +566,7 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 				case "text":
 					textParts = append(textParts, block.Text)
 				case "tool_use":
-					args := string(block.Input)
-					if args == "" {
-						args = "{}"
-					}
+					args := string(types.NormalizeToolInput(block.Input))
 					calls = append(calls, responsesInput{
 						Type:      "function_call",
 						CallID:    block.ID,

@@ -173,7 +173,7 @@ func translateMessagesGemini(
 						ThoughtSignature: block.ThoughtSignature,
 					})
 				case "tool_use":
-					args := normaliseToolArgs(block.Input)
+					args := types.NormalizeToolInput(block.Input)
 
 					parts = append(parts, geminiPart{
 						FunctionCall: &geminiFunctionCall{
@@ -287,18 +287,6 @@ func geminiToolResultResponse(block types.ContentBlock, cap quirks.StructuredToo
 		return nil, fmt.Errorf("marshal functionResponse body: %w", err)
 	}
 	return raw, nil
-}
-
-// normaliseToolArgs returns an argument JSON object suitable for Gemini's
-// functionCall.args field. Empty or nil input maps to {} so Vertex sees a
-// well-formed (if vacuous) argument object rather than a missing field —
-// the API rejects functionCall items with no args at all.
-func normaliseToolArgs(in json.RawMessage) json.RawMessage {
-	trimmed := strings.TrimSpace(string(in))
-	if trimmed == "" || trimmed == "null" {
-		return json.RawMessage("{}")
-	}
-	return in
 }
 
 // geminiToolChoiceFromParams projects the provider-neutral
