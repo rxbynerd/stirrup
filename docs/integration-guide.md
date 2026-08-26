@@ -58,7 +58,7 @@ round-trips, and the terminal result.
 1. The harness (launched as `stirrup job` with `CONTROL_PLANE_ADDR`
    set) dials the control plane and opens the `RunTask` stream.
 2. The harness sends `HarnessEvent{type:"ready", harness_version}`.
-   When `CONTROL_PLANE_SESSION_ID` was set in the Pod environment,
+   When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
    session that launched the Pod.
 3. The control plane sends
@@ -373,7 +373,7 @@ answering every request interactively.
 - Policies are linted at load; error-severity findings (dead
   clauses, unanchored wildcard hosts) abort the run before any turn.
 - Starter policies: [`examples/policies/`](../examples/policies/).
-  Semantics: [`safety-rings.md`](safety-rings.md#ring-3--cedar-policy-engine).
+  Semantics: [`safety-rings.md`](safety-rings.md#ring-3--cedar-policy-engine-per-call-authorization).
 
 ### Injecting task context
 
@@ -418,7 +418,7 @@ Control-plane levers:
   emits an auditable `rule_of_two_disabled` security event. There
   is deliberately no CLI flag for this.
 
-Full design: [`safety-rings.md`](safety-rings.md#ring-4--agents-rule-of-two).
+Full design: [`safety-rings.md`](safety-rings.md#ring-4--rule-of-two-pre-flight-invariant--runtime-classifier).
 
 ### Custom system prompts
 
