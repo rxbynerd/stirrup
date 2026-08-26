@@ -469,11 +469,11 @@ message RunConfig {
   // model) stay span/instrument-level so metric series do not explode.
   ObservabilityConfig observability = 29;
 
-  // Optional. Tunes the async-tool dispatch loop: how many AsyncHandler
-  // tool calls the harness fans out concurrently within a single
-  // assistant turn. The knob governs ALL async-capable tools (today
-  // spawn_agent; future MCP/web-fetch additions inherit it), not just
-  // the spawn_agent sub-agent path the feature originally targeted.
+  // Optional. Tunes the async-tool dispatch loop: how many async tool
+  // calls the harness fans out concurrently within a single assistant
+  // turn. The knob governs ALL async-capable tools, which today means
+  // embedder-registered ones — no shipped built-in tool defers its
+  // result upstream.
   //
   // Zero max_parallel — or an absent sub-message — resolves to the
   // library default (currently 4 concurrent calls per turn). Neither
@@ -511,6 +511,29 @@ message RunConfig {
   // the provider quirks registry enforces that before any wire bytes
   // are sent.
   string reasoning_effort = 33;
+
+  // Optional. Destination for the run's *answer* — a small RunResult
+  // JSON payload — as distinct from the trace emitter's *evidence*.
+  // An absent sub-message is equivalent to type "none" (no sink); a
+  // gRPC control plane can rely on the `done` event instead and leave
+  // this unset.
+  ResultSinkConfig result_sink = 34;
+
+  // Optional. Bounded recovery from a first-turn no-tool answer on a
+  // workspace-dependent task. An absent sub-message is OFF, and a run
+  // that omits it behaves byte-for-byte as it did before the feature
+  // existed.
+  ToolChoiceEscalationConfig tool_choice_escalation = 35;
+
+  // RunConfig.transport is intentionally NOT mirrored. The transport is
+  // a property of how the harness was launched, not of the work being
+  // assigned: a config that arrives in a TaskAssignment arrived over
+  // the gRPC control stream by construction, so the harness sets
+  // transport "grpc" itself at translation time. Accepting a wire value
+  // would let a control plane declare a transport that contradicts the
+  // stream carrying the declaration.
+  //
+  // Next available field number: 36.
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -538,16 +561,93 @@ message DynamicContextValue {
 }
 
 // ToolDispatchConfig tunes the parallel async-tool dispatch loop. The
-// loop fans out async tool calls (any AsyncHandler-backed tool: today
-// spawn_agent, in future MCP / web-fetch / etc.) emitted within a
-// single assistant turn under a semaphore so a multi-worker query does
-// not serialise on the slowest worker.
+// loop fans out async tool calls — any tool registered with an async
+// handler, which defers the result to the control plane rather than
+// returning inline — emitted within a single assistant turn under a
+// semaphore so a multi-worker query does not serialise on the slowest
+// worker. No shipped built-in tool registers an async handler; the
+// knob governs embedder-registered tools and future MCP deferral.
 message ToolDispatchConfig {
   // Optional. Maximum number of async tool calls dispatched concurrently
   // in a single turn. Range: 1-16. Default: 4. Zero (or an absent
   // sub-message) resolves to the default at the harness; values outside
   // [1, 16] are rejected by ValidateRunConfig.
   int32 max_parallel = 1;
+}
+
+// ToolChoiceEscalationConfig configures recovery from a first-turn
+// no-tool answer on a workspace-dependent task: the harness forces
+// native required tool choice when the provider supports it, or falls
+// back to a stronger-prompt retry otherwise. OFF by default — an absent
+// sub-message, or enabled false, leaves the loop unchanged.
+message ToolChoiceEscalationConfig {
+  // Optional. Turns the recovery on. Default false: a bare run must not
+  // change behaviour.
+  bool enabled = 1;
+
+  // Optional. Caps forced retries per inner-loop run. Zero resolves to
+  // the harness default (1). Range: 0 (use default) or 1-3; the ceiling
+  // bounds the additional provider calls a single run can spend on
+  // missed-tool recovery. Values outside that range are rejected by
+  // ValidateRunConfig.
+  int32 max_retries = 2;
+}
+
+// ResultSinkConfig selects where the run's answer — a small RunResult
+// JSON payload with the outcome, token usage, capped final assistant
+// text, verifier verdict, and command-output archive pointer — is
+// delivered. Distinct from TraceEmitterConfig, which carries the full
+// event-by-event evidence. The discriminator is a closed set so
+// AWS/Azure adapters can land without a breaking change.
+message ResultSinkConfig {
+  // Required when the sub-message is present. The sink adapter.
+  // Valid values:
+  //   "none"        — disabled (equivalent to omitting the sub-message).
+  //   "stdout-json" — writes "STIRRUP_RESULT <json>" to stdout at
+  //                   end-of-run. Consumers must parse the LAST matching
+  //                   line; the sentinel is defence against a model
+  //                   echoing a fake one.
+  //   "gcp-pubsub", "gcs" — reserved. Accepted by the schema but
+  //                   rejected at config load as not yet implemented,
+  //                   so the wire contract is stable ahead of the
+  //                   adapters.
+  string type = 1;
+
+  // Optional. Pub/Sub topic name for the reserved "gcp-pubsub" adapter.
+  // Rejected by validation on every other type so a stale value cannot
+  // silently survive a type change.
+  string topic = 2;
+
+  // Optional. Extra message attributes for the reserved "gcp-pubsub"
+  // adapter. Values may be plaintext or a "secret://" reference resolved
+  // via the SecretStore; references are rewritten to
+  // "secret://[REDACTED]" by RunConfig.Redact() before any trace or
+  // recording is persisted. Rejected by validation on every other type.
+  map<string, string> attributes = 3;
+
+  // Optional. Byte cap on RunResult.final_assistant_text. Zero means the
+  // harness default (128 KiB). Unlike topic/attributes this bounds the
+  // RunResult itself rather than a per-adapter wire detail, so it
+  // applies on every type. Must be non-negative.
+  int32 max_final_assistant_text_bytes = 4;
+}
+
+// LogsExportConfig opts the run's structured logs into OTLP export
+// alongside the trace and metric exporters. Stderr emission is always
+// on; this only adds a second sink, so an absent sub-message keeps
+// stderr-only behaviour. The endpoint carries no credential — bearer
+// tokens for the collector ride on trace_emitter.headers as
+// "secret://" references, the same path traces and metrics use.
+message LogsExportConfig {
+  // Optional. The log-export mode.
+  // Valid values: "" (treated as "none"), "none" (stderr only), "otlp"
+  // (stderr plus an OTLP/gRPC log exporter).
+  string type = 1;
+
+  // Optional. OTLP/gRPC collector address for the log signal. When empty
+  // the harness falls back to trace_emitter.endpoint, so a single
+  // endpoint covers traces, metrics, and logs.
+  string endpoint = 2;
 }
 
 // HooksConfig configures operator-authored lifecycle hooks that run
@@ -794,6 +894,11 @@ message ObservabilityConfig {
   // back to the OTEL_SERVICE_NAMESPACE environment variable, then to
   // "stirrup". Values must match ^[A-Za-z0-9._-]{1,64}$.
   string service_namespace = 2;
+
+  // Optional. Ships the run's structured logs to an OTLP collector in
+  // addition to stderr. Absent (or type "none") keeps stderr-only
+  // behaviour, so an empty ObservabilityConfig changes nothing.
+  LogsExportConfig logs_export = 3;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution
@@ -1331,13 +1436,19 @@ message ContextStrategyConfig {
 message ExecutorConfig {
   // Optional. The executor implementation.
   // Valid values:
-  //   "local"     — direct filesystem and subprocess access (default).
-  //   "container" — Docker/Podman container sandbox (hardened: CapDrop ALL,
-  //                 no-new-privileges, NetworkMode none by default).
-  //   "k8s"       — Kubernetes sandbox Pod (hardened: CapDrop ALL,
-  //                 RunAsNonRoot, seccomp RuntimeDefault, no token automount).
-  //   "api"       — read-only, backed by a VCS API (e.g. GitHub Contents).
-  //                 WriteFile and Exec return errors.
+  //   "local"       — direct filesystem and subprocess access (default).
+  //   "container"   — Docker/Podman container sandbox (hardened: CapDrop
+  //                   ALL, no-new-privileges, NetworkMode none by default).
+  //   "k8s"         — Kubernetes sandbox Pod managed directly (hardened:
+  //                   CapDrop ALL, RunAsNonRoot, seccomp RuntimeDefault,
+  //                   no token automount).
+  //   "k8s-sandbox" — Kubernetes sandbox Pod provisioned via the Agent
+  //                   Sandbox CRD (agents.x-k8s.io/v1alpha1) rather than
+  //                   created directly; gVisor-only runtime.
+  //   "api"         — read-only, backed by a VCS API (e.g. GitHub
+  //                   Contents). WriteFile and Exec return errors.
+  //   "none"        — no execution surface at all; every container/k8s/api
+  //                   field is rejected by validation.
   string type = 1;
 
   // Required when type is "api". Configures the VCS backend for read-only
@@ -1385,6 +1496,99 @@ message ExecutorConfig {
   // For "k8s": the ServiceAccount name for the Pod. Empty uses the
   // namespace default. The token is never automounted regardless.
   string k8s_service_account = 12;
+
+  // For "k8s" and "k8s-sandbox": the URL the sandbox Pod's HTTP_PROXY and
+  // HTTPS_PROXY point at. The installed NetworkPolicy confines an
+  // allowlist-mode Pod to this proxy, so the field is REQUIRED when
+  // network.mode is "allowlist" (the run would otherwise have no route to
+  // the network) and REJECTED in every other mode.
+  string k8s_egress_proxy_url = 13;
+
+  // For "container": path.Match globs constraining which image references
+  // may run, matched against the normalised reference (registry host plus
+  // repo path, tag/digest stripped). "*" does not cross "/", so
+  // "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a deeper
+  // namespace. Empty falls back to the harness's built-in default list.
+  // Rejected for any other executor type.
+  repeated string registry_allowlist = 14;
+
+  // Optional. Destination URI for a tarball of the executor's workspace,
+  // uploaded at end-of-run. Only the "gs://bucket/path" scheme is accepted
+  // today; the bucket path must be non-empty. Rejected for the "api" and
+  // "none" executors, neither of which has a workspace. A run with an
+  // empty workspace skips the upload silently.
+  string workspace_export_to = 15;
+
+  // Optional. Requests a control-plane-issued sandbox identity token and
+  // injects it into the sandbox environment. Requires the gRPC transport
+  // — stdio has no upstream to ask — and an executor type that creates a
+  // sandbox the harness controls at creation time ("container", "k8s",
+  // "k8s-sandbox"). The token itself never enters RunConfig; it is
+  // exchanged over the sandbox_token_request / sandbox_token_response
+  // event pair.
+  SandboxIdentityConfig sandbox_identity = 16;
+
+  // Optional. Composes non-secret GIT_CONFIG_* environment pairs routing
+  // git traffic through a credential proxy authenticated with the sandbox
+  // identity token. Requires sandbox_identity — it is the only token
+  // source, so a git_proxy without it names a variable that would never be
+  // populated. Same transport and executor-type restrictions apply.
+  GitProxyConfig git_proxy = 17;
+
+  // Next available field number: 18.
+}
+
+// SandboxIdentityConfig requests a short-lived, control-plane-issued
+// credential for the sandbox. The harness sends one
+// sandbox_token_request after task assignment and before sandbox
+// creation, blocks fail-closed for up to 60 seconds on the matching
+// sandbox_token_response, then injects the returned JWT into the sandbox
+// environment. The JWT is never written to RunConfig, a trace, or a
+// transcript. Wire contract:
+// docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
+message SandboxIdentityConfig {
+  // Required. The token issuer. Closed set: only "control-plane" is
+  // supported — the harness asks the control plane it is already
+  // streaming to.
+  string source = 1;
+
+  // Optional. The intended JWT "aud" claim. Informational: the control
+  // plane validates it against its own allowlist and may override it.
+  string audience = 2;
+
+  // Optional. The sandbox environment variable the token is injected as.
+  // Empty resolves to "HAYBALE_TOKEN". Non-empty values must be legal
+  // POSIX environment variable names (^[A-Za-z_][A-Za-z0-9_]*$).
+  string env_var = 3;
+}
+
+// GitProxyConfig rewrites git operations against the named hosts through
+// a git-credential proxy, authenticating with the token
+// SandboxIdentityConfig requested. Every field here is non-secret: the
+// JWT travels only in the environment variable token_env_var names.
+message GitProxyConfig {
+  // Required when the sub-message is present. The proxy's base URL — an
+  // absolute http/https URL with a host, e.g.
+  // "http://haybale.internal:8466". In "allowlist" network mode the
+  // proxy's host:port must also appear in network.allowlist, or the
+  // sandbox has no egress route to it.
+  string url = 1;
+
+  // Required when the sub-message is present (at least one entry). Git
+  // hosts whose traffic is rewritten through the proxy, e.g.
+  // ["github.com"].
+  repeated string hosts = 2;
+
+  // Optional. Also rewrite the "git@<host>:" and "ssh://git@<host>/" URL
+  // forms, not just "https://<host>/". Default false.
+  bool rewrite_ssh = 3;
+
+  // Optional. The environment variable the composed git-credential helper
+  // reads the token from. Empty resolves to "HAYBALE_TOKEN", the same
+  // default sandbox_identity.env_var applies; the two must resolve to the
+  // same name or the config is rejected. Non-empty values must be legal
+  // POSIX environment variable names.
+  string token_env_var = 4;
 }
 
 // VcsBackendConfig selects the VCS API backend for the "api" executor.
@@ -1616,8 +1820,7 @@ message TraceEmitterConfig {
   // workload-identity against the host's metadata server, which is
   // appropriate for Cloud Run / GKE. Adding a wire-level credential
   // override requires a follow-up CredentialConfig sub-message and
-  // matching translation; tracked alongside the broader
-  // ResultSinkConfig wiring work.
+  // matching translation.
 }
 
 // ---------------------------------------------------------------------------
@@ -1631,17 +1834,26 @@ message ToolsConfig {
   // list excluding write tools).
   //
   // Valid built-in tool names:
-  //   "read_file"      — read file contents (up to 10MB).
-  //   "write_file"     — write/overwrite a file (side-effecting).
-  //   "search_replace" — find-and-replace within a file.
-  //   "apply_diff"     — apply a unified diff patch.
-  //   "edit_file"      — multi-strategy edit (explicit operation enum).
-  //   "list_directory"  — list directory contents.
-  //   "grep_files"     — search file contents with a regex.
-  //   "find_files"     — search file names with a glob.
-  //   "run_command"    — execute a shell command (side-effecting).
-  //   "web_fetch"      — fetch a URL via HTTP GET.
-  //   "spawn_agent"    — spawn a sub-agent with its own conversation loop.
+  //   "read_file"           — read file contents (up to 10MB).
+  //   "write_file"          — write/overwrite a file (side-effecting).
+  //   "search_replace"      — find-and-replace within a file.
+  //   "apply_diff"          — apply a unified diff patch.
+  //   "edit_file"           — multi-strategy edit (explicit operation enum).
+  //   "list_directory"      — list directory contents.
+  //   "grep_files"          — search file contents with a regex.
+  //   "find_files"          — search file names with a glob.
+  //   "run_command"         — execute a shell command (side-effecting).
+  //   "read_command_output" — read a scrubbed byte range from a
+  //                           stirrup://command-output reference returned
+  //                           by run_command.
+  //   "web_fetch"           — fetch a URL via HTTP GET.
+  //   "spawn_agent"         — spawn a sub-agent with its own conversation
+  //                           loop.
+  //   "git_status"          — porcelain working-tree status as structured
+  //                           entries.
+  //   "git_changed_files"   — changed paths with their name-status letter.
+  //   "git_diff"            — unified diff of the working tree or index.
+  //   "git_show"            — a git revision, or a file at that revision.
   repeated string built_in = 1;
 
   // Optional. MCP (Model Context Protocol) server connections for remote
