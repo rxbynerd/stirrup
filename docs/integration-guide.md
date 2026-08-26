@@ -577,10 +577,10 @@ The control plane must:
 The token is the one raw credential on the stream — plaintext in
 v0.1 — so this flow requires the trusted-network posture. This
 feature is exclusive to the `stirrup job` topology (a
-pre-established transport must exist before the executor is built);
-these `executor` fields travel in the file-based `RunConfig` today,
-not the proto (see [Features not on the wire](#features-not-on-the-wire)).
-Full contract:
+pre-established transport must exist before the executor is built),
+and both `executor` blocks ride on the proto, so a control plane can
+send them in the `task_assignment` that starts the run. Full
+contract:
 [`deployment.md`](deployment.md#sandbox-identity-token-issuance-control-plane-implementers).
 
 ### Batch mode (amortised token pricing)
@@ -632,9 +632,9 @@ Four independent channels; use the ones the topology supports:
 | Channel | Carries | Topology |
 |---|---|---|
 | `done` event | `RunTrace` metrics + outcome | gRPC. The primary result for a control plane. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage, `finalAssistantText` (capped 128 KiB), verifier verdict, command-output archive pointer | CLI / Cloud Run (`resultSink.type: "stdout-json"` or `--output json`). Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage, `finalAssistantText` (capped 128 KiB), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"` or `--output json`); the line lands on the process's stdout, so CLI and Cloud Run are where it is usually read. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). The `RunConfig` embedded in a trace is always `Redact()`-ed. |
-| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | CLI / Cloud Run today (not on the proto). Soft-fail by default; `--export-workspace-required` hardens it. |
+| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Soft-fail by default; `--export-workspace-required` hardens it on the CLI. |
 
 For OTel specifically: `sessionName` labels the run in logs, traces,
 and root spans; `observability.environment` / `serviceNamespace`
@@ -666,29 +666,28 @@ see [`guardrails.md`](guardrails.md).
 ## Features not on the wire
 
 The proto mirrors `RunConfig` field-for-field, with a small set of
-deliberate exceptions. These features exist on the JSON `RunConfig`
-(file/stdin topologies) but **cannot be expressed in a
-`task_assignment`** today; an integration that needs them supplies
-the config file itself (CLI or Cloud Run topology):
+exceptions. These fields exist on the JSON `RunConfig` (file/stdin
+topologies) but **cannot be expressed in a `task_assignment`**. Apart
+from `transport`, which is harness-local by design, an integration
+that needs one supplies the config file itself (CLI or Cloud Run
+topology):
 
-| Surface | Feature |
-|---|---|
-| `resultSink` | Sink selection (`stdout-json`). gRPC control planes read the `done` event instead. |
-| `executor.workspaceExportTo` | GCS workspace export. |
-| `executor.sandboxIdentity` / `executor.gitProxy` | Requested via file config; the token *exchange* itself runs over the gRPC stream. |
-| `executor.registryAllowlist` | Sandbox image registry pinning. |
-| `executor.k8sEgressProxyUrl` | K8s egress proxy wiring. |
-| `toolChoiceEscalation` | Bounded tool-choice recovery loop. |
-| `observability.logsExport` | OTLP log export. |
-| `transport` | Inherently harness-local. |
+| Surface | Feature | Why |
+|---|---|---|
+| `transport` | Transport selection. | Deliberate. It describes how the harness was launched, not the work assigned: a config arriving in a `task_assignment` came over the gRPC stream by construction, so the harness sets `grpc` itself. Accepting a wire value would let a control plane declare a transport contradicting the stream carrying the declaration. |
+| `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Both carry a `CredentialConfig`, and the runtime resolves those via workload identity against the host metadata server — which covers Cloud Run and GKE. Surfacing them needs a credential sub-message and matching translation. |
+| `tools.profile`, `tools.commandOutput` | Tool presentation profile; command-output capture bounds. | Not yet mirrored. |
 
-The `stirrup job` path composes with none of these except
-`sandboxIdentity` (whose event pair is on the wire); everything else
-requires the harness to have been started with a file-based config.
-When a field here becomes load-bearing for a control plane, the
-project invariant is that it ships with its proto mirror and
-translation — treat an entry in this table as "open an issue", not
-"work around silently".
+Everything else on `RunConfig` is expressible in a
+`task_assignment`, including the executor's
+`registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
+`sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
+`toolChoiceEscalation`, and `observability.logsExport`.
+
+When a field in this table becomes load-bearing for a control plane,
+the project invariant is that it ships with its proto mirror and
+translation — treat an entry here as "open an issue", not "work
+around silently".
 
 ## Compatibility
 
