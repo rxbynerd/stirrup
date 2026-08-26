@@ -2637,6 +2637,57 @@ func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_VcsBackendType pins the closed set of forges the api
+// executor dispatches to. The type decides which API the executor reads
+// from, so an unset or unrecognised value has to fail at config load rather
+// than resolve to whichever forge happens to be the default.
+func TestValidateRunConfig_VcsBackendType(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType string
+		apiKeyRef   string
+		wantErr     string
+	}{
+		{name: "github", backendType: "github", apiKeyRef: "secret://gh"},
+		{name: "gitlab", backendType: "gitlab", apiKeyRef: "secret://gl"},
+		{name: "unauthenticated", backendType: "github"},
+		{name: "unset", wantErr: "executor.vcsBackend type is required"},
+		{name: "unknown", backendType: "bitbucket", wantErr: `unsupported executor.vcsBackend type "bitbucket"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = "research"
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			c.Executor = ExecutorConfig{
+				Type: "api",
+				VcsBackend: &VcsBackendConfig{
+					Type:      tt.backendType,
+					APIKeyRef: tt.apiKeyRef,
+					Repo:      "owner/repo",
+					Ref:       "main",
+				},
+			}
+
+			err := ValidateRunConfig(c)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
 // --- CodeScannerConfig ---
 
 func TestValidateRunConfig_CodeScannerAcceptsClosedSet(t *testing.T) {
