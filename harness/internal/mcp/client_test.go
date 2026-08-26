@@ -1085,10 +1085,10 @@ func TestConnect_AllowedMCPHostsPin(t *testing.T) {
 		AllowedMCPHosts: []string{"only.example.com"},
 	}, secrets)
 	if err == nil {
-		t.Fatal("expected rejection: host not in allowedMCPHosts")
+		t.Fatal("expected rejection: host not in allowedMcpHosts")
 	}
-	if !strings.Contains(err.Error(), "allowedMCPHosts") {
-		t.Errorf("error = %q, want it to mention allowedMCPHosts", err.Error())
+	if !strings.Contains(err.Error(), "allowedMcpHosts") {
+		t.Errorf("error = %q, want it to mention allowedMcpHosts", err.Error())
 	}
 
 	// A pin that includes the actual host (127.0.0.1) must admit.
