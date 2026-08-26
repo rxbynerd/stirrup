@@ -100,3 +100,54 @@ jobs:
           go build -trimpath \
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             -o stirrup-eval ./eval/cmd/eval
+
+      # buf compiles proto/ independently of the committed gen/ output,
+      # so this step also catches a .proto edit that was never passed
+      # through `buf generate`.
+      - name: Install buf
+        env:
+          # Kept in lockstep with the version contributors run locally
+          # (CONTRIBUTING.md#touching-protobuf). BUF_SHA256 is the
+          # upstream-published checksum for this exact archive, from the
+          # release's sha256.txt; bump both together.
+          BUF_VERSION: 1.72.0
+          BUF_SHA256: a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
+        run: |
+          set -euo pipefail
+          archive="buf-Linux-x86_64.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "/tmp/${archive}" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/${archive}"
+          echo "${BUF_SHA256}  /tmp/${archive}" | sha256sum --check --strict -
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "/tmp/${archive}" -C "${HOME}/.local/bin" \
+            --strip-components=2 buf/bin/buf
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      # --as-file-descriptor-set emits a bare
+      # google.protobuf.FileDescriptorSet rather than a buf Image, so
+      # consumers that never install buf (grpcurl, Envoy, protoc
+      # plugins, reflection-less clients) can read it directly. Source
+      # info is retained so generated documentation keeps the comments.
+      - name: Build proto file descriptor set
+        env:
+          VERSION_LABEL: ${{ steps.ver.outputs.label }}
+        run: |
+          set -euo pipefail
+          out="stirrup-${VERSION_LABEL}.fds.binpb"
+          buf build --as-file-descriptor-set -o "$out"
+          sha256sum "$out" > "${out}.sha256"
+          ls -l "$out"
+
+      - name: Upload proto file descriptor set artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: proto-descriptor-set
+          path: |
+            stirrup-*.fds.binpb
+            stirrup-*.fds.binpb.sha256
+          if-no-files-found: error
+          # Longer than the release job's 7-day working artifacts: this
+          # one is a consumable published for downstream clients, not an
+          # intermediate handed between jobs in the same run.
+          retention-days: 30
