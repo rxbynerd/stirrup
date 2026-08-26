@@ -80,8 +80,10 @@ func (a *APIExecutor) WriteFile(_ context.Context, _ string, _ string) error {
 }
 
 // githubContentEntry represents a single entry in a GitHub directory listing.
+// Type is one of "file", "dir", "symlink", or "submodule".
 type githubContentEntry struct {
 	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // ListDirectory fetches the contents of a directory from the repository.
@@ -117,6 +119,13 @@ func (a *APIExecutor) ListDirectory(ctx context.Context, path string) ([]string,
 
 	names := make([]string, len(entries))
 	for i, e := range entries {
+		// The trailing slash is the cross-executor directory marker: the
+		// list_directory tool advertises it to the model and its recursive
+		// walk descends only into entries that carry it.
+		if e.Type == "dir" {
+			names[i] = e.Name + "/"
+			continue
+		}
 		names[i] = e.Name
 	}
 	return names, nil

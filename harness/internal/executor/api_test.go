@@ -97,6 +97,35 @@ func TestAPIExecutor_ListDirectory_Success(t *testing.T) {
 	}
 }
 
+func TestAPIExecutor_ListDirectory_MarksDirectoriesWithTrailingSlash(t *testing.T) {
+	entries := []githubContentEntry{
+		{Name: "docs", Type: "dir"},
+		{Name: "go.work", Type: "file"},
+		{Name: "link", Type: "symlink"},
+		{Name: "vendored", Type: "submodule"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(entries)
+	}))
+	defer server.Close()
+
+	e := newTestAPIExecutor(server.URL)
+	names, err := e.ListDirectory(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"docs/", "go.work", "link", "vendored"}
+	if len(names) != len(want) {
+		t.Fatalf("got %d entries (%v), want %d", len(names), names, len(want))
+	}
+	for i, name := range names {
+		if name != want[i] {
+			t.Errorf("entry %d: got %q, want %q", i, name, want[i])
+		}
+	}
+}
+
 func TestAPIExecutor_ListDirectory_Empty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
