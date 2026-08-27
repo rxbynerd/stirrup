@@ -80,8 +80,10 @@ func (a *APIExecutor) WriteFile(_ context.Context, _ string, _ string) error {
 }
 
 // githubContentEntry represents a single entry in a GitHub directory listing.
+// Type is one of "file", "dir", "symlink", or "submodule".
 type githubContentEntry struct {
 	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // ListDirectory fetches the contents of a directory from the repository.
@@ -117,9 +119,85 @@ func (a *APIExecutor) ListDirectory(ctx context.Context, path string) ([]string,
 
 	names := make([]string, len(entries))
 	for i, e := range entries {
+		// The trailing slash is the cross-executor directory marker: the
+		// list_directory tool advertises it to the model and its recursive
+		// walk descends only into entries that carry it.
+		if e.Type == "dir" {
+			names[i] = e.Name + "/"
+			continue
+		}
 		names[i] = e.Name
 	}
 	return names, nil
+}
+
+// githubTreeResponse is the subset of the git/trees response the executor
+// consumes. Truncated is set by GitHub when the repository tree exceeds the
+// endpoint's entry or response-size limit.
+type githubTreeResponse struct {
+	Tree []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+		Size int64  `json:"size"`
+	} `json:"tree"`
+	Truncated bool `json:"truncated"`
+}
+
+// ListTree enumerates every file in the repository at the configured ref.
+// The git/trees endpoint returns the whole tree in a single request, so a
+// full enumeration costs one API call rather than one per directory.
+func (a *APIExecutor) ListTree(ctx context.Context, root string) (TreeListing, error) {
+	treeURL, err := a.treeURL()
+	if err != nil {
+		return TreeListing{}, fmt.Errorf("api executor: build request URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, treeURL, nil)
+	if err != nil {
+		return TreeListing{}, fmt.Errorf("api executor: create request: %w", err)
+	}
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return TreeListing{}, fmt.Errorf("api executor: list tree: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return TreeListing{}, fmt.Errorf("api executor: list tree: HTTP %d", resp.StatusCode)
+	}
+
+	var payload githubTreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return TreeListing{}, fmt.Errorf("api executor: list tree: decode response: %w", err)
+	}
+
+	prefix := normalizeGitHubContentPath(root)
+	if prefix != "" {
+		prefix += "/"
+	}
+	entries := make([]TreeEntry, 0, len(payload.Tree))
+	for _, e := range payload.Tree {
+		// Only "blob" entries are files. Skipping "tree" keeps directories
+		// out, and skipping "commit" keeps submodule pointers out — their
+		// content lives in another repository and is not readable here.
+		if e.Type != "blob" {
+			continue
+		}
+		rel := e.Path
+		if prefix != "" {
+			if !strings.HasPrefix(rel, prefix) {
+				continue
+			}
+			rel = strings.TrimPrefix(rel, prefix)
+		}
+		entries = append(entries, TreeEntry{Path: rel, Size: e.Size})
+	}
+	return TreeListing{Entries: entries, Truncated: payload.Truncated}, nil
 }
 
 // Exec is not supported by the API executor.
@@ -167,6 +245,32 @@ func (a *APIExecutor) contentsURL(contentPath string) (string, error) {
 		query.Set("ref", a.ref)
 		baseURL.RawQuery = query.Encode()
 	}
+	return baseURL.String(), nil
+}
+
+// treeURL builds the recursive git/trees request URL. An unset ref falls back
+// to HEAD, which the endpoint resolves to the repository's default branch. A
+// ref containing slashes ("docs/guide") is passed through segment-escaped and
+// still resolves as a single ref.
+func (a *APIExecutor) treeURL() (string, error) {
+	baseURL, err := url.Parse(a.baseURL)
+	if err != nil {
+		return "", err
+	}
+
+	ref := a.ref
+	if ref == "" {
+		ref = "HEAD"
+	}
+	basePath := strings.TrimRight(baseURL.Path, "/")
+	baseURL.Path = fmt.Sprintf("%s/repos/%s/%s/git/trees/%s", basePath, a.owner, a.repo, ref)
+	baseURL.RawPath = fmt.Sprintf("%s/repos/%s/%s/git/trees/%s",
+		escapeURLPath(basePath),
+		url.PathEscape(a.owner),
+		url.PathEscape(a.repo),
+		escapeGitHubContentPath(ref),
+	)
+	baseURL.RawQuery = url.Values{"recursive": []string{"1"}}.Encode()
 	return baseURL.String(), nil
 }
 
