@@ -27,8 +27,7 @@ perfectly interchangeable. The CLI applies convenience defaults that
 the gRPC path does not, and a few JSON fields have no proto mirror (see
 [Features not on the wire](#features-not-on-the-wire)). For equivalent
 fields, protobuf JSON uses lower-camel-case names such as `runId` and
-`maxTurns`, matching the file-config form except for the compatibility
-exception noted below.
+`maxTurns`, matching the file-config form.
 
 ## The wire contract
 
@@ -284,10 +283,9 @@ Azure/Anthropic/OpenAI WIF) are configured via
 ## Cookbook
 
 Each recipe uses protobuf JSON's lower-camel-case field names, which
-also work in CLI config files except for the `allowedMCPHosts` spelling
-noted under [Compatibility](#compatibility). Fields covered by an
-earlier recipe are elided with `…`; those fragments are explanatory,
-not complete standalone JSON documents.
+also work in CLI config files. Fields covered by an earlier recipe are
+elided with `…`; those fragments are explanatory, not complete
+standalone JSON documents.
 
 ### Read-only triage run (safe default posture)
 
@@ -314,9 +312,9 @@ Goal: investigate, review, or plan without any write surface.
   when listed; gate them with `ask-upstream` or Cedar if that
   matters.
 - The `api` executor (`executor.type: "api"` + `vcsBackend`) can read
-  a GitHub repository without a local workspace. GitLab is accepted by
-  the config type but is not implemented by the executor. Git tools
-  require a real checkout, so omit them for an API-executor run.
+  a GitHub or GitLab repository without a local workspace. Content
+  tools operate through the remote API, but the `git_*` tools require a
+  real checkout, so omit them for an API-executor run.
 
 ### Editable run in a container sandbox
 
@@ -747,11 +745,10 @@ around silently".
 - `ready.harness_version` carries the build label
   (`v1.2.3 (abc1234)` for releases). Gate task assignment on it if
   the control plane depends on contract features by version.
-- For mirrored fields, file-config JSON and protobuf JSON generally use
-  the same lower-camel-case names. The current exception is
-  `tools.mcpServers[].allowedMCPHosts` in file JSON versus
-  `allowedMcpHosts` in protobuf JSON. Generated protobuf clients avoid
-  this spelling issue.
+- For mirrored fields, file-config JSON and protobuf JSON use the same
+  lower-camel-case names. The MCP host allowlist spelling is
+  `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
+  `allowedMCPHosts` is no longer accepted.
 - File-config JSON rejects unknown fields (`DisallowUnknownFields`).
   Protobuf binary compatibility is different: an older harness ignores
   unknown fields. Gate assignment on `ready.harness_version` when a
