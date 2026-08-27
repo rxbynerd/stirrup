@@ -18,8 +18,9 @@ sequenceDiagram
     K-->>H: Pod scheduled
     H->>CP: Dial gRPC, open RunTask stream
     H->>CP: HarnessEvent{type:"ready", harness_version}
-    H->>H: Write /tmp/healthy (liveness probe)
+    H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig}
+    H->>H: Remove /tmp/ready
     opt Sandbox identity token requested
         H->>CP: sandbox_token_request
         CP-->>H: sandbox_token_response
@@ -119,13 +120,17 @@ IMDS, GitHub Actions OIDC). See
 2. **Ready.** The harness sends a `HarnessEvent{type:"ready", harness_version}`
    so the control plane can verify the binary version before
    dispatching work.
-3. **Liveness.** A liveness probe file is written to `/tmp/healthy`
-   so the K8s readiness/liveness probes have something to inspect.
+3. **Health probes.** Two marker files are written: `/tmp/healthy`
+   (liveness — present from here until process exit) and
+   `/tmp/ready` (readiness — present only while idle and waiting for
+   a task). See [Health probes](#health-probes).
 4. **Wait for assignment.** The harness blocks on a
    `ControlEvent{type:"task_assignment"}` carrying the `RunConfig`,
    with a 5-minute timeout. A `cancel` event received before
    assignment is honoured: the harness exits cleanly without
-   running anything.
+   running anything. Receiving the assignment removes `/tmp/ready`:
+   the pod runs one task to completion rather than accepting more
+   work.
 5. **Sandbox identity token** *(optional)*. When the run wants a
    sandbox identity token (e.g. to authenticate a git proxy such as
    Haybale), the harness sends a
@@ -171,6 +176,37 @@ IMDS, GitHub Actions OIDC). See
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
 that is the source of truth for the wire contract.
+
+### Health probes
+
+The published harness image is distroless — no shell, no `test`
+binary — so an exec probe cannot run `test -f /tmp/healthy` against
+it. `stirrup healthcheck` exists for this: it checks a marker file
+and exits 0 (present) or non-zero (absent, or an I/O error reading an
+existing-but-unreadable marker), and it can be exec'd directly since
+it's the same static binary already in the image.
+
+`stirrup job` (`harness/internal/health/probe.go`) maintains two
+markers with different lifetimes:
+
+| Marker | Meaning | Present |
+|---|---|---|
+| `/tmp/healthy` | Liveness — the process is alive. | From just after the control-plane connection (step 3 above) until process exit. |
+| `/tmp/ready` | Readiness — idle and assignable. | Only during the assignment wait (step 4); removed the instant a `task_assignment` arrives. |
+
+The distinction matters because a K8s Job pod does one task and
+exits: liveness should hold through the whole run so a hung process
+still gets restarted, but readiness should drop once a task is
+assigned, since the pod is no longer available to accept more work.
+
+```yaml
+livenessProbe:
+  exec:
+    command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/healthy"]
+readinessProbe:
+  exec:
+    command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/ready"]
+```
 
 Every CI and release workflow run also publishes a compiled
 `google.protobuf.FileDescriptorSet` for that contract as the
@@ -362,9 +398,10 @@ Before deploying:
 3. Configure observability: OTLP/gRPC to your collector or OTLP/HTTP
    to a managed gateway. See
    [`observability-cloud.md`](observability-cloud.md).
-4. Set `livenessProbe.exec.command: ["sh", "-c", "test -f /tmp/healthy"]`
-   on the Pod. (The image has no shell, so use `[""]` style probes
-   only when adding a debug sidecar.)
+4. Set `livenessProbe`/`readinessProbe` to exec `stirrup healthcheck`
+   against `/tmp/healthy` and `/tmp/ready` respectively — see [Health
+   probes](#health-probes). The image has no shell or `test` binary,
+   so a `["sh", "-c", "test -f ..."]` probe cannot run against it.
 5. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
    `RunConfig.timeout` so K8s reaps any stuck Pod even if the
    harness's own wall-clock timeout fails to fire.

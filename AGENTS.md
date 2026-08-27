@@ -38,7 +38,7 @@ stirrup/
       guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
-      health/                # File-based K8s liveness probes
+      health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
       security/              # SecretStore, LogScrubber, input validation
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework

@@ -35,6 +35,14 @@ func init() {
 	rootCmd.AddCommand(jobCmd)
 }
 
+// livenessMarkerPath and readinessMarkerPath are the health.WriteProbe
+// targets runJob uses. Tests override these to a t.TempDir()-scoped path
+// so they don't race a real /tmp/healthy or /tmp/ready on the host.
+var (
+	livenessMarkerPath  = health.LivenessMarker
+	readinessMarkerPath = health.ReadinessMarker
+)
+
 func runJob(cmd *cobra.Command, args []string) error {
 	addr := os.Getenv("CONTROL_PLANE_ADDR")
 	if addr == "" {
@@ -68,10 +76,19 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 
-	if err := health.WriteProbe("/tmp/healthy"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to write health probe: %v\n", err)
+	if err := health.WriteProbe(livenessMarkerPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write liveness probe: %v\n", err)
 	}
-	defer func() { _ = health.RemoveProbe("/tmp/healthy") }()
+	defer func() { _ = health.RemoveProbe(livenessMarkerPath) }()
+
+	// Readiness spans only the assignment wait below: it signals the pod
+	// is idle and assignable, not merely alive. It is dropped the moment
+	// a task arrives, since the pod then runs one task to completion
+	// rather than accepting more work.
+	if err := health.WriteProbe(readinessMarkerPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write readiness probe: %v\n", err)
+	}
+	defer func() { _ = health.RemoveProbe(readinessMarkerPath) }()
 
 	// A cancel event before any task_assignment exits cleanly — the control
 	// plane may want to abort a pod that hasn't been dispatched yet.
@@ -101,7 +118,8 @@ func runJob(cmd *cobra.Command, args []string) error {
 	var config *types.RunConfig
 	select {
 	case config = <-configCh:
-		// Assignment received.
+		// Assignment received; the pod is no longer idle-and-assignable.
+		_ = health.RemoveProbe(readinessMarkerPath)
 	case <-preTaskCancelCh:
 		fmt.Fprintln(os.Stderr, "cancel received before task assignment; exiting")
 		return nil

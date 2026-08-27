@@ -1,8 +1,18 @@
 package cmd
 
 import (
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+
+	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/harness/internal/health"
 )
 
 // TestRunJob_MissingControlPlaneAddrIsPlain checks that the
@@ -23,4 +33,206 @@ func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
 	if strings.Contains(msg, "\x1b[") {
 		t.Errorf("job error must not contain ANSI escapes (log aggregators ingest it verbatim): %q", msg)
 	}
+}
+
+// fakeControlPlane implements just enough of HarnessServiceServer to drive
+// runJob through the assignment wait and into a task_assignment carrying
+// the given RunConfig.
+type fakeControlPlane struct {
+	pb.UnimplementedHarnessServiceServer
+	readyRecv chan struct{}
+	task      *pb.RunConfig
+}
+
+func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	close(s.readyRecv)
+
+	return stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task})
+}
+
+// startFakeControlPlane serves srv over a real TCP listener (runJob only
+// takes CONTROL_PLANE_ADDR as a string, so bufconn's dial-option injection
+// isn't reachable here) and points CONTROL_PLANE_ADDR at it.
+func startFakeControlPlane(t *testing.T, srv *fakeControlPlane) {
+	t.Helper()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	pb.RegisterHarnessServiceServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(lis) }()
+	t.Cleanup(grpcServer.Stop)
+
+	t.Setenv("CONTROL_PLANE_ADDR", lis.Addr().String())
+}
+
+// useTempMarkerPaths points the package-level marker paths at t.TempDir()
+// for the duration of the test, so it can't collide with a real
+// /tmp/healthy or /tmp/ready on the host (or with another test/process
+// sharing it).
+func useTempMarkerPaths(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	origLiveness, origReadiness := livenessMarkerPath, readinessMarkerPath
+	livenessMarkerPath = dir + "/healthy"
+	readinessMarkerPath = dir + "/ready"
+	t.Cleanup(func() {
+		livenessMarkerPath, readinessMarkerPath = origLiveness, origReadiness
+	})
+}
+
+// waitForProbe polls CheckProbe until it matches want (present/absent) or
+// the deadline elapses, absorbing the small delay between the client's
+// WriteProbe/RemoveProbe call and this goroutine observing it — the two
+// run concurrently with no happens-before edge between them.
+func waitForProbe(t *testing.T, path string, wantPresent bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := health.CheckProbe(path)
+		if wantPresent && err == nil {
+			return
+		}
+		if !wantPresent && err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("marker %s present=%v after deadline, want present=%v", path, err == nil, wantPresent)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestRunJob_ReadinessMarkerScopedToAssignmentWait drives runJob against a
+// fake control plane and asserts that the readiness marker exists only
+// while the harness is waiting for a task assignment, while the liveness
+// marker spans the whole call.
+func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
+	useTempMarkerPaths(t)
+
+	srv := &fakeControlPlane{
+		readyRecv: make(chan struct{}),
+		// An invalid Mode fails types.ValidateRunConfig immediately inside
+		// core.BuildLoopWithTransport, so runJob returns without any
+		// provider/executor I/O.
+		task: &pb.RunConfig{Mode: "bogus-mode"},
+	}
+	startFakeControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+
+	select {
+	case <-srv.readyRecv:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake control plane never received the ready event")
+	}
+
+	// The harness is now blocked waiting for task_assignment: both
+	// markers should be present.
+	waitForProbe(t, livenessMarkerPath, true)
+	waitForProbe(t, readinessMarkerPath, true)
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "building harness") {
+			t.Fatalf("runJob() error = %v, want a building-harness failure from the invalid RunConfig", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runJob did not return after the invalid task_assignment")
+	}
+
+	// runJob returned, so its deferred cleanup (mirroring process exit in
+	// the real "stirrup job" binary) has run: both markers are gone.
+	waitForProbe(t, readinessMarkerPath, false)
+	waitForProbe(t, livenessMarkerPath, false)
+}
+
+// TestRunJob_LivenessOutlivesReadinessDuringExecution drives runJob through
+// a valid task_assignment against a fake provider that blocks mid-request,
+// and asserts that — while a turn is actually in flight — the readiness
+// marker is already gone but the liveness marker is not: readiness reflects
+// only the idle assignment wait, liveness spans execution too.
+func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
+	useTempMarkerPaths(t)
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+
+	requestReceived := make(chan struct{})
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: "+
+			`{"id":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`+
+			"\n\ndata: "+
+			`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+
+			"\n\ndata: [DONE]\n\n")
+	}))
+	defer provider.Close()
+
+	timeout := int32(30)
+	enforce := false
+	srv := &fakeControlPlane{
+		readyRecv: make(chan struct{}),
+		task: &pb.RunConfig{
+			RunId:            "job-test-mid-execution",
+			Mode:             "execution",
+			Prompt:           "Say hello.",
+			Provider:         &pb.ProviderConfig{Type: "openai-compatible", ApiKeyRef: "secret://TEST_OPENAI_KEY", BaseUrl: provider.URL},
+			ModelRouter:      &pb.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o-mini"},
+			PromptBuilder:    &pb.PromptBuilderConfig{Type: "default"},
+			ContextStrategy:  &pb.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+			Executor:         &pb.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+			EditStrategy:     &pb.EditStrategyConfig{Type: "whole-file"},
+			Verifier:         &pb.VerifierConfig{Type: "none"},
+			PermissionPolicy: &pb.PermissionPolicyConfig{Type: "allow-all"},
+			GitStrategy:      &pb.GitStrategyConfig{Type: "none"},
+			TraceEmitter:     &pb.TraceEmitterConfig{Type: "jsonl"},
+			RuleOfTwo:        &pb.RuleOfTwoConfig{Enforce: &enforce},
+			MaxTurns:         1,
+			Timeout:          &timeout,
+		},
+	}
+	startFakeControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+
+	select {
+	case <-srv.readyRecv:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake control plane never received the ready event")
+	}
+
+	select {
+	case <-requestReceived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider never received a request; the loop did not reach execution")
+	}
+
+	// A turn is now actually in flight against the (blocked) provider:
+	// the task was assigned, so readiness is gone, but liveness holds
+	// through execution.
+	waitForProbe(t, readinessMarkerPath, false)
+	waitForProbe(t, livenessMarkerPath, true)
+
+	close(release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runJob() error = %v, want a successful single-turn run", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runJob did not return after the provider responded")
+	}
+
+	waitForProbe(t, readinessMarkerPath, false)
+	waitForProbe(t, livenessMarkerPath, false)
 }
