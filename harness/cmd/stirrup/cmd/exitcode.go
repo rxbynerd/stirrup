@@ -3,8 +3,8 @@ package cmd
 import "errors"
 
 // CLI exit-code scheme: a single closed set of codes applied across
-// `harness`, `job`, and `run-config` so a wrapper script can branch on
-// the failure class without parsing stderr:
+// `harness`, `job`, `run-config`, and `healthcheck` so a wrapper script
+// can branch on the failure class without parsing stderr:
 //
 //	0  success
 //	1  validation failed (ValidateRunConfig / run-config --validate)
