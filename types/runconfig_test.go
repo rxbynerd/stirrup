@@ -387,12 +387,12 @@ func TestValidateRunConfig_MCPServers(t *testing.T) {
 		{
 			name:    "allowedhost_with_scheme",
 			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"https://evil.example.com"}},
-			wantErr: "allowedMCPHosts[0]",
+			wantErr: "allowedMcpHosts[0]",
 		},
 		{
 			name:    "allowedhost_empty",
 			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{" "}},
-			wantErr: "allowedMCPHosts[0]",
+			wantErr: "allowedMcpHosts[0]",
 		},
 		{
 			name:   "allowedhost_ipv6_literal_valid",

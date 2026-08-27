@@ -1386,7 +1386,7 @@ type MCPServerConfig struct {
 	// (exact, case-insensitive match) in addition to passing the SSRF guard.
 	// It is an operator-side defence against a server URI being repointed at
 	// an unexpected host. Empty/unset applies no host pinning.
-	AllowedMCPHosts []string `json:"allowedMCPHosts,omitempty"`
+	AllowedMCPHosts []string `json:"allowedMcpHosts,omitempty"`
 }
 
 var validProviderTypes = map[string]bool{
@@ -3327,7 +3327,7 @@ func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
 		for j, host := range server.AllowedMCPHosts {
 			trimmed := strings.TrimSpace(host)
 			if trimmed == "" {
-				*errs = append(*errs, fmt.Sprintf("%s.allowedMCPHosts[%d] must not be empty", path, j))
+				*errs = append(*errs, fmt.Sprintf("%s.allowedMcpHosts[%d] must not be empty", path, j))
 				continue
 			}
 			// An IP literal (including IPv6, which legitimately contains
@@ -3339,7 +3339,7 @@ func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
 			}
 			if host != trimmed || strings.ContainsAny(host, "/:") {
 				*errs = append(*errs, fmt.Sprintf(
-					"%s.allowedMCPHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
+					"%s.allowedMcpHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
 			}
 		}
 		for j, name := range server.AllowedTools {

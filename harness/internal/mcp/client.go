@@ -248,7 +248,7 @@ func validateMCPHost(config types.MCPServerConfig) error {
 			}
 		}
 		if !permitted {
-			return fmt.Errorf("mcp: server %q host %q is not in allowedMCPHosts", config.Name, host)
+			return fmt.Errorf("mcp: server %q host %q is not in allowedMcpHosts", config.Name, host)
 		}
 	}
 	return nil
