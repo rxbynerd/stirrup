@@ -471,7 +471,18 @@ func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *tes
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// Strip the time attribute: the value-leak assertion below matches the
+	// raw output for "0.5", and a timestamp's fractional seconds can
+	// otherwise produce that substring.
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) == 0 && a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
 
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
