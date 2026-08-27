@@ -118,8 +118,10 @@ an overlay on the harness defaults.** It must satisfy
 `ValidateRunConfig` by itself, which means `mode` and `max_turns` are
 required even though a task's own `mode` attribute reaches the harness
 as a `--mode` flag — validation runs against the merged config before
-any flag is applied. Omitting them fails every task with `mode type is
-required; maxTurns must be positive` before a single request is sent.
+any flag is applied. An editable `mode` (`execution`) additionally
+requires a `permission_policy` block; the read-only modes default to
+`deny-side-effects`. Omitting any of them fails every task before a
+single request is sent.
 
 **A per-task `run_config_overrides` block replaces a whole struct, it
 does not merge fields.** `mergeOverrides` assigns `*overlay.ModelRouter`

@@ -55,10 +55,9 @@ suite "openai-responses-empty-tool-output-regression" {
   run_config {
     // A suite-level run_config is the COMPLETE baseline RunConfig, not
     // an overlay on the harness defaults, so it must satisfy
-    // ValidateRunConfig on its own. Without these two the suite errored
-    // every task with "mode type is required; maxTurns must be
-    // positive" before reaching the API — which went unnoticed because
-    // the suite is unbaselined and therefore never runs in CI.
+    // ValidateRunConfig on its own: mode, max_turns and
+    // permission_policy are all required here. Omitting any of them
+    // errors every task before a request is sent.
     mode      = "execution"
     max_turns = 20
 
@@ -71,6 +70,10 @@ suite "openai-responses-empty-tool-output-regression" {
       type     = "static"
       provider = "openai-responses"
       model    = "gpt-5.4-nano"
+    }
+
+    permission_policy {
+      type = "allow-all"
     }
   }
 

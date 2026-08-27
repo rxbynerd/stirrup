@@ -24,6 +24,10 @@ suite "command-output-ab-off" {
       model    = "claude-haiku-4-5"
     }
 
+    permission_policy {
+      type = "allow-all"
+    }
+
     tools {
       command_output {
         enabled = false

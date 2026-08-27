@@ -138,16 +138,25 @@ turn counts, token usage, duration, verifier details, and final
 assistant text from a configured `resultSink`, process stdout, or a
 trace emitter instead. `cost_usd` is not calculated by the harness.
 
-A `done` is emitted only after the loop has been constructed, and its
-send is necessarily best-effort if the transport is failing. Config
-validation, secret resolution, policy loading, sandbox-token exchange,
-or other component-construction failures close the stream and exit
-non-zero without an `error`/`done` pair. Validate configs before
-sending (for example with `stirrup run-config --validate` or
-`types.ValidateRunConfig`) and treat stream closure before `done` as a
-setup or transport failure. With follow-ups enabled, each run has its
+A `done` is emitted for every failure that happens after the task
+assignment arrives, including a `RunConfig` rejected on arrival: the
+harness emits `error` carrying the cause — config validation, secret
+resolution, policy loading, sandbox-token exchange, or any other
+component-construction failure — then `done{stop_reason:"error"}`,
+before exiting non-zero. A pre-loop `done` carries no `trace` (no run
+started) and no `RunResult` reaches the `resultSink`, so a consumer
+that reads `done.trace` unconditionally must tolerate its absence.
+Sending the pair is best-effort if the transport is failing, and
+failures before the stream exists (dialling the control plane) have
+nowhere to send it, so treat stream closure without a `done` as a
+crashed or killed harness. With follow-ups enabled, each run has its
 own `done`; it is terminal for the run, not necessarily for the
 stream.
+
+Validating control-plane-side before dispatch is still worthwhile: it
+turns a pod launch into an immediate API error. Mirror the harness with
+`stirrup run-config --validate`, or call `types.ValidateRunConfig` from
+Go.
 
 ### Transport security posture (v0.1)
 
@@ -244,13 +253,17 @@ explicit about fields the CLI would have filled:
 | `provider.type` | Required: `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
 | `max_turns` | Required, 1–100. The CLI default of 20 is **not** applied on the wire. |
 | `timeout` | Required, 1–3600 seconds. The CLI default of 600 is **not** applied on the wire. |
-| `permission_policy.type` | **Set it explicitly.** An empty type passes validation but fails at loop construction (`unsupported permissionPolicy.type ""`). |
+| `permission_policy.type` | Required for `execution`; validation rejects an empty type rather than inferring the CLI's `allow-all`. Read-only modes default to `deny-side-effects`. |
 | `tools.built_in` | Required (non-empty) for read-only modes, and must exclude the mutating tools. Optional for `execution` (empty enables all built-ins). |
 
 Validation fills sensible defaults for the rest: `editStrategy.type`
 → `multi`, `codeScanner` → `patterns` in execution mode / `none` in
+read-only modes, `permissionPolicy.type` → `deny-side-effects` in
 read-only modes, provider retry policy → 3 attempts with capped
-exponential backoff. `executor.type` defaults to `local`.
+exponential backoff. `executor.type` defaults to `local`. Defaults
+that only ever loosen a run are left to the caller: `allow-all` is
+what the CLI picks for `--mode execution`, but the harness will not
+infer it from an omitted field.
 
 Built-in tool names accepted in `tools.built_in`:
 

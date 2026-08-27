@@ -62,11 +62,16 @@ const (
 //
 //	"done"
 //	  - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
-//	                 "stalled", "tool_failures", "cancelled", "budget_exceeded").
-//	  - trace:       RunTrace with execution metrics.
+//	                 "stalled", "tool_failures", "cancelled", "budget_exceeded",
+//	                 "error", "setup_failed", "hook_failed").
+//	  - trace:       RunTrace with execution metrics. Absent when the run
+//	                 failed before the loop was built (a rejected RunConfig),
+//	                 since no trace was ever started.
+//	  Always the last event of a run, including the failure paths below.
 //
 //	"error"
-//	  - message: human-readable error description.
+//	  - message: human-readable error description. Followed by a "done"
+//	             event carrying stop_reason "error".
 //
 //	"warning"
 //	  - message: human-readable warning (non-fatal).
@@ -135,11 +140,13 @@ type HarnessEvent struct {
 	// Why the run ended. Set on "done" events.
 	// Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
 	//
-	//	"cancelled", "budget_exceeded".
+	//	"cancelled", "budget_exceeded", "error", "setup_failed",
+	//	"hook_failed".
 	StopReason string `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	// Human-readable message. Set on "error" and "warning" events.
 	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
-	// Execution metrics. Set on "done" events.
+	// Execution metrics. Set on "done" events, except when the run failed
+	// before a trace was started.
 	Trace *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
 	// Unique request ID for correlation. Set on "permission_request" and
 	// "tool_result_request" events. The control plane must echo this back in

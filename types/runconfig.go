@@ -2097,20 +2097,24 @@ type ModePreset struct {
 // happen anyway). It also fills EditStrategy.Type with "multi" when
 // the caller has not selected a strategy, so every entrypoint (CLI,
 // gRPC, direct RunConfig embedding) lands on the same edit-tool
-// surface. ProviderRetryConfig defaults are applied to Provider.Retry
-// and each entry in Providers so adapters never have to nil-check the
-// per-call retry policy.
+// surface. Read-only modes get PermissionPolicy.Type
+// "deny-side-effects" for the same reason; editable modes must name a
+// policy explicitly. ProviderRetryConfig defaults are applied to
+// Provider.Retry and each entry in Providers so adapters never have to
+// nil-check the per-call retry policy.
 //
 // Note: ValidateRunConfig mutates its argument in place to apply
 // per-provider defaults (Provider.Retry fields, Provider.Batch.MaxWaitSeconds
-// when Batch.Enabled=true, CodeScanner type, EditStrategy.Type — the
-// last applied by applyEditStrategyDefault). Callers that need an
-// unmodified copy must clone before calling. Redact() deep-copies the
-// affected pointer fields so a snapshot taken before validation does
-// not alias the live config.
+// when Batch.Enabled=true, CodeScanner type, EditStrategy.Type,
+// PermissionPolicy.Type — the last two applied by
+// applyEditStrategyDefault and applyPermissionPolicyDefault). Callers
+// that need an unmodified copy must clone before calling. Redact()
+// deep-copies the affected pointer fields so a snapshot taken before
+// validation does not alias the live config.
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
 	applyEditStrategyDefault(config)
+	applyPermissionPolicyDefault(config)
 	retryDefaulted := applyProviderRetryDefaults(config)
 
 	var errs []string
@@ -2142,6 +2146,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
+	validatePermissionPolicyRequired(config, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateGitStrategyExecutorCompat(config.GitStrategy.Type, config.Executor.Type, &errs)
@@ -2801,6 +2806,42 @@ func applyEditStrategyDefault(config *RunConfig) {
 	if config.EditStrategy.Type == "" {
 		config.EditStrategy.Type = "multi"
 	}
+}
+
+// applyPermissionPolicyDefault fills PermissionPolicy.Type for read-only
+// modes, whose safe default is "deny-side-effects" — the most permissive
+// policy the read-only invariant still accepts. Defaulting here rather
+// than at the CLI layer means gRPC and embedding callers land on the
+// same policy as the CLI for the same config.
+//
+// Editable modes are deliberately not defaulted: their only usable
+// default is "allow-all", which is a safe choice to type on a command
+// line but never a safe choice to infer from an omitted wire field.
+// validatePermissionPolicyRequired rejects those instead.
+//
+// Runs before the read-only invariant checks so the defaulted value is
+// what those checks see.
+func applyPermissionPolicyDefault(config *RunConfig) {
+	if config.PermissionPolicy.Type == "" && readOnlyModes[config.Mode] {
+		config.PermissionPolicy.Type = "deny-side-effects"
+	}
+}
+
+// validatePermissionPolicyRequired rejects an omitted
+// permissionPolicy.type in an editable mode. The mode gate keeps the
+// error off configs whose mode is itself invalid or read-only —
+// validateRequiredType already reports the former and
+// applyPermissionPolicyDefault has handled the latter.
+func validatePermissionPolicyRequired(config *RunConfig, errs *[]string) {
+	if config.PermissionPolicy.Type != "" {
+		return
+	}
+	if !validRunModes[config.Mode] || readOnlyModes[config.Mode] {
+		return
+	}
+	*errs = append(*errs, fmt.Sprintf(
+		"permissionPolicy.type is required for mode %q; must be one of %s",
+		config.Mode, strings.Join(sortedKeys(validPermissionPolicyTypes), ", ")))
 }
 
 // validateEditStrategyFuzzyThreshold bounds FuzzyThreshold to (0, 1]. The

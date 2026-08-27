@@ -2376,14 +2376,14 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 	if cfg.Mode != "planning" {
 		t.Fatalf("Mode override failed: %q", cfg.Mode)
 	}
-	if cfg.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("read-only mode should default to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
-	}
 	if len(cfg.Tools.BuiltIn) == 0 {
 		t.Errorf("read-only mode should default Tools.BuiltIn to a non-empty list")
 	}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Errorf("post-defaulted config should validate, got: %v", err)
+	}
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("read-only mode should resolve to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
 	}
 }
 

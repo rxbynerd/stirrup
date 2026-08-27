@@ -15,8 +15,11 @@ package stirrup.harness.v1;
 //      tool_result, heartbeat, permission_request, warning).
 //   5. Control plane sends ControlEvents as needed (user_response,
 //      permission_response, cancel).
-//   6. Harness sends a final HarnessEvent with type "done" (includes trace)
-//      or "error", then the stream closes.
+//   6. Harness sends a final HarnessEvent with type "done" (includes trace),
+//      then the stream closes. A failure sends "error" first and then "done",
+//      so "done" is the terminal signal on every path — including a
+//      task_assignment whose RunConfig is rejected, which reaches step 6
+//      without ever reaching step 4.
 service HarnessService {
   // RunTask opens a bidirectional stream. The control plane sends a
   // TaskAssignment as the first ControlEvent; the harness streams
@@ -70,11 +73,16 @@ service HarnessService {
 //
 //   "done"
 //     - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
-//                    "stalled", "tool_failures", "cancelled", "budget_exceeded").
-//     - trace:       RunTrace with execution metrics.
+//                    "stalled", "tool_failures", "cancelled", "budget_exceeded",
+//                    "error", "setup_failed", "hook_failed").
+//     - trace:       RunTrace with execution metrics. Absent when the run
+//                    failed before the loop was built (a rejected RunConfig),
+//                    since no trace was ever started.
+//     Always the last event of a run, including the failure paths below.
 //
 //   "error"
-//     - message: human-readable error description.
+//     - message: human-readable error description. Followed by a "done"
+//                event carrying stop_reason "error".
 //
 //   "warning"
 //     - message: human-readable warning (non-fatal).
@@ -147,13 +155,15 @@ message HarnessEvent {
 
   // Why the run ended. Set on "done" events.
   // Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
-  //         "cancelled", "budget_exceeded".
+  //         "cancelled", "budget_exceeded", "error", "setup_failed",
+  //         "hook_failed".
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
   string message = 9;
 
-  // Execution metrics. Set on "done" events.
+  // Execution metrics. Set on "done" events, except when the run failed
+  // before a trace was started.
   RunTrace trace = 10;
 
   // Unique request ID for correlation. Set on "permission_request" and

@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +15,25 @@ import (
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
+	"github.com/rxbynerd/stirrup/types"
 )
+
+// recordingTransport captures emitted HarnessEvents and optionally fails
+// every Emit, so the terminal-signal helper can be exercised without a
+// control plane.
+type recordingTransport struct {
+	events  []types.HarnessEvent
+	emitErr error
+}
+
+func (r *recordingTransport) Emit(event types.HarnessEvent) error {
+	r.events = append(r.events, event)
+	return r.emitErr
+}
+
+func (r *recordingTransport) OnControl(func(types.ControlEvent)) {}
+
+func (r *recordingTransport) Close() error { return nil }
 
 // TestRunJob_MissingControlPlaneAddrIsPlain checks that the
 // "CONTROL_PLANE_ADDR environment variable is required" error stays
@@ -235,4 +255,151 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 
 	waitForProbe(t, readinessMarkerPath, false)
 	waitForProbe(t, livenessMarkerPath, false)
+}
+
+// TestEmitTerminalFailure_EmitsErrorThenDone pins the terminal pair a
+// control plane relies on when a post-assignment failure happens before
+// the loop exists: "error" carrying the cause, then "done" with
+// stop_reason "error".
+func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
+	tp := &recordingTransport{}
+
+	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"))
+
+	if len(tp.events) != 2 {
+		t.Fatalf("emitted %d events (%v), want exactly error then done", len(tp.events), tp.events)
+	}
+	if tp.events[0].Type != "error" {
+		t.Errorf("first event type = %q, want %q", tp.events[0].Type, "error")
+	}
+	if !strings.Contains(tp.events[0].Message, "config validation: bad") {
+		t.Errorf("error event message = %q, want it to carry the cause", tp.events[0].Message)
+	}
+	if tp.events[1].Type != "done" {
+		t.Errorf("second event type = %q, want %q", tp.events[1].Type, "done")
+	}
+	if tp.events[1].StopReason != "error" {
+		t.Errorf("done stop_reason = %q, want %q", tp.events[1].StopReason, "error")
+	}
+}
+
+// TestEmitTerminalFailure_EmitFailureStillAttemptsDone checks that a
+// failed "error" emit does not abandon the "done" event: "done" is the
+// terminal signal, so a control plane that missed the diagnostic still
+// needs the run closed out.
+func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
+	tp := &recordingTransport{emitErr: errors.New("stream closed")}
+
+	emitTerminalFailure(tp, errors.New("building harness: boom"))
+
+	if len(tp.events) != 2 {
+		t.Fatalf("emitted %d events (%v), want both attempted despite emit failure", len(tp.events), tp.events)
+	}
+	if tp.events[1].Type != "done" {
+		t.Errorf("second event type = %q, want %q", tp.events[1].Type, "done")
+	}
+}
+
+// TestEmitTerminalFailure_NilTransport confirms the helper is safe when
+// no transport was established, so the caller never has to guard it.
+func TestEmitTerminalFailure_NilTransport(t *testing.T) {
+	emitTerminalFailure(nil, errors.New("boom"))
+}
+
+// rejectingControlPlane assigns a RunConfig that cannot pass validation
+// and records every HarnessEvent the harness sends back, returning once
+// it has seen the terminal "done".
+type rejectingControlPlane struct {
+	pb.UnimplementedHarnessServiceServer
+
+	mu       sync.Mutex
+	received []*pb.HarnessEvent
+	doneCh   chan struct{}
+}
+
+func (s *rejectingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
+	if err := stream.Send(&pb.ControlEvent{
+		Type: "task_assignment",
+		// Missing provider, maxTurns and timeout: rejected by
+		// types.ValidateRunConfig before any component is built.
+		Task: &pb.RunConfig{Mode: "execution"},
+	}); err != nil {
+		return err
+	}
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			return nil
+		}
+		s.mu.Lock()
+		s.received = append(s.received, ev)
+		s.mu.Unlock()
+		if ev.Type == "done" {
+			close(s.doneCh)
+			return nil
+		}
+	}
+}
+
+func (s *rejectingControlPlane) events() []*pb.HarnessEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.HarnessEvent(nil), s.received...)
+}
+
+// TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup
+// job` against a real gRPC control plane and pins that a RunConfig
+// rejected on arrival still produces the error/done pair. Stream closure
+// alone is indistinguishable from a crashed pod, so the control plane
+// must be told the config was the problem.
+func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
+	useTempMarkerPaths(t)
+
+	srv := &rejectingControlPlane{doneCh: make(chan struct{})}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	pb.RegisterHarnessServiceServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(lis) }()
+	t.Cleanup(grpcServer.Stop)
+
+	t.Setenv("CONTROL_PLANE_ADDR", lis.Addr().String())
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+
+	select {
+	case <-srv.doneCh:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control plane never received a done event for the rejected config")
+	}
+
+	select {
+	case runErr := <-errCh:
+		if runErr == nil {
+			t.Error("runJob returned nil, want the build failure to fail the process")
+		} else if !strings.Contains(runErr.Error(), "building harness") {
+			t.Errorf("runJob error = %v, want it to report the build failure", runErr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("runJob did not return after signalling the control plane")
+	}
+
+	var sawError bool
+	for _, ev := range srv.events() {
+		if ev.Type != "error" {
+			continue
+		}
+		sawError = true
+		if !strings.Contains(ev.Message, "config validation") {
+			t.Errorf("error event message = %q, want the validation failure", ev.Message)
+		}
+	}
+	if !sawError {
+		t.Errorf("no error event received; got %v", srv.events())
+	}
 }

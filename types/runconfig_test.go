@@ -306,6 +306,85 @@ func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ReadOnlyModeDefaultsPermissionPolicy pins that an
+// omitted permissionPolicy.type resolves to deny-side-effects for every
+// read-only mode, so gRPC and embedding callers land where the CLI does.
+func TestValidateRunConfig_ReadOnlyModeDefaultsPermissionPolicy(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("read-only mode without a policy should validate, got: %v", err)
+			}
+			if c.PermissionPolicy.Type != "deny-side-effects" {
+				t.Errorf("permissionPolicy.type = %q, want %q", c.PermissionPolicy.Type, "deny-side-effects")
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_ReadOnlyModeDefaultRespectsExplicitPolicy confirms
+// the default never overwrites a caller's stricter choice.
+func TestValidateRunConfig_ReadOnlyModeDefaultRespectsExplicitPolicy(t *testing.T) {
+	c := validConfig()
+	c.Mode = "planning"
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-all"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("deny-all should be accepted for a read-only mode, got: %v", err)
+	}
+	if c.PermissionPolicy.Type != "deny-all" {
+		t.Errorf("permissionPolicy.type = %q, want the explicit %q", c.PermissionPolicy.Type, "deny-all")
+	}
+}
+
+// TestValidateRunConfig_EditableModeRequiresPermissionPolicy pins that an
+// omitted permissionPolicy.type is rejected outside the read-only modes.
+// The only default an editable run could take is allow-all, which must be
+// an explicit choice rather than something inferred from a missing field.
+func TestValidateRunConfig_EditableModeRequiresPermissionPolicy(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected an error for execution mode without a permission policy")
+	}
+	if !strings.Contains(err.Error(), "permissionPolicy.type is required") {
+		t.Errorf("expected the required-field error, got: %v", err)
+	}
+	for _, name := range []string{"allow-all", "deny-all", "deny-side-effects", "ask-upstream", "policy-engine"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("expected the error to name %q as a valid value, got: %v", name, err)
+		}
+	}
+	if c.PermissionPolicy.Type != "" {
+		t.Errorf("permissionPolicy.type = %q, want it left empty rather than defaulted", c.PermissionPolicy.Type)
+	}
+}
+
+// TestValidateRunConfig_UnknownModeSkipsPermissionPolicyRequirement keeps
+// the required-policy error off configs whose mode is itself invalid, so
+// the reported cause stays the mode.
+func TestValidateRunConfig_UnknownModeSkipsPermissionPolicyRequirement(t *testing.T) {
+	for _, mode := range []string{"", "excution"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatal("expected an error for an invalid mode")
+			}
+			if strings.Contains(err.Error(), "permissionPolicy.type is required") {
+				t.Errorf("invalid mode should not also report a missing permission policy, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_UnknownPermissionPolicy(t *testing.T) {
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effect"}

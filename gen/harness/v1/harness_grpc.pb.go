@@ -39,8 +39,11 @@ const (
 //     tool_result, heartbeat, permission_request, warning).
 //  5. Control plane sends ControlEvents as needed (user_response,
 //     permission_response, cancel).
-//  6. Harness sends a final HarnessEvent with type "done" (includes trace)
-//     or "error", then the stream closes.
+//  6. Harness sends a final HarnessEvent with type "done" (includes trace),
+//     then the stream closes. A failure sends "error" first and then "done",
+//     so "done" is the terminal signal on every path — including a
+//     task_assignment whose RunConfig is rejected, which reaches step 6
+//     without ever reaching step 4.
 type HarnessServiceClient interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams
@@ -87,8 +90,11 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 //     tool_result, heartbeat, permission_request, warning).
 //  5. Control plane sends ControlEvents as needed (user_response,
 //     permission_response, cancel).
-//  6. Harness sends a final HarnessEvent with type "done" (includes trace)
-//     or "error", then the stream closes.
+//  6. Harness sends a final HarnessEvent with type "done" (includes trace),
+//     then the stream closes. A failure sends "error" first and then "done",
+//     so "done" is the terminal signal on every path — including a
+//     task_assignment whose RunConfig is rejected, which reaches step 6
+//     without ever reaching step 4.
 type HarnessServiceServer interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams
