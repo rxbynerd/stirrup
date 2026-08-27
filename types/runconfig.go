@@ -921,7 +921,11 @@ type ExecutorConfig struct {
 	GitProxy        *GitProxyConfig        `json:"gitProxy,omitempty"`
 }
 
-// VcsBackendConfig selects the VCS backend for the API executor.
+// VcsBackendConfig selects the VCS backend for the API executor. Type is
+// required — it picks the forge API the executor reads from. An empty
+// APIKeyRef selects unauthenticated access, which both forges allow for
+// public repositories at a reduced rate limit. Repo is "owner/repo" for
+// GitHub and the full project path ("group/subgroup/project") for GitLab.
 type VcsBackendConfig struct {
 	Type      string `json:"type"` // "github" | "gitlab"
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
@@ -1542,6 +1546,11 @@ var validContextStrategyTypes = map[string]bool{
 	"offload-to-file": true,
 }
 
+var validVcsBackendTypes = map[string]bool{
+	"github": true,
+	"gitlab": true,
+}
+
 var validExecutorTypes = map[string]bool{
 	"api":         true,
 	"local":       true,
@@ -2127,6 +2136,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
+	validateVcsBackend(config.Executor.VcsBackend, &errs)
 	validateResourceLimits(config.Executor.Resources, &errs)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
@@ -4975,6 +4985,17 @@ func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 			cfg.WorkspaceExportTo,
 		))
 	}
+}
+
+// validateVcsBackend enforces the closed set of forges the "api" executor
+// can dispatch to. The type selects which API the executor reads from, so an
+// unset or unrecognised value has to fail at config load — falling back to a
+// forge the operator did not name reads the wrong repository silently.
+func validateVcsBackend(cfg *VcsBackendConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	validateRequiredType("executor.vcsBackend", cfg.Type, validVcsBackendTypes, errs)
 }
 
 // validateExecutorRegistryAllowlist checks the optional

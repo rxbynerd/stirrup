@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1080,39 +1081,129 @@ func TestBuildExecutor_API_MissingVcsBackend(t *testing.T) {
 	}
 }
 
-func TestBuildExecutor_API_BadRepoFormat(t *testing.T) {
-	secrets := &stubSecretStore{secrets: map[string]string{"secret://token": "tok"}}
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
-		Type: "api",
-		VcsBackend: &types.VcsBackendConfig{
-			APIKeyRef: "secret://token",
-			Repo:      "invalid-no-slash",
-			Ref:       "main",
+// TestBuildExecutor_API_DispatchesOnBackendType pins that vcsBackend.type
+// selects the forge client and that an unrecognised type is rejected: a
+// silent GitHub fallback reads a same-named repository from the wrong forge.
+func TestBuildExecutor_API_DispatchesOnBackendType(t *testing.T) {
+	tests := []struct {
+		name     string
+		backend  types.VcsBackendConfig
+		wantExec string
+		wantErr  string
+	}{
+		{
+			name:     "github",
+			backend:  types.VcsBackendConfig{Type: "github", APIKeyRef: "secret://token", Repo: "owner/repo", Ref: "main"},
+			wantExec: "*executor.APIExecutor",
 		},
-	}, secrets, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for bad repo format")
+		{
+			name:     "gitlab",
+			backend:  types.VcsBackendConfig{Type: "gitlab", APIKeyRef: "secret://token", Repo: "group/project", Ref: "main"},
+			wantExec: "*executor.GitLabExecutor",
+		},
+		{
+			name:     "gitlab subgroup path",
+			backend:  types.VcsBackendConfig{Type: "gitlab", APIKeyRef: "secret://token", Repo: "group/subgroup/project"},
+			wantExec: "*executor.GitLabExecutor",
+		},
+		{
+			name:    "github rejects a repo without an owner",
+			backend: types.VcsBackendConfig{Type: "github", APIKeyRef: "secret://token", Repo: "invalid-no-slash"},
+			wantErr: "expected 'owner/repo'",
+		},
+		{
+			name:    "gitlab rejects a bare project name",
+			backend: types.VcsBackendConfig{Type: "gitlab", APIKeyRef: "secret://token", Repo: "project"},
+			wantErr: "expected a project path",
+		},
+		{
+			name:    "unknown backend type",
+			backend: types.VcsBackendConfig{Type: "bitbucket", APIKeyRef: "secret://token", Repo: "owner/repo"},
+			wantErr: "unsupported executor.vcsBackend.type",
+		},
+		{
+			name:    "unset backend type",
+			backend: types.VcsBackendConfig{APIKeyRef: "secret://token", Repo: "owner/repo"},
+			wantErr: "unsupported executor.vcsBackend.type",
+		},
 	}
-	if !strings.Contains(err.Error(), "expected 'owner/repo'") {
-		t.Fatalf("unexpected error: %v", err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secrets := &stubSecretStore{secrets: map[string]string{"secret://token": "tok"}}
+			exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
+				Type:       "api",
+				VcsBackend: &tt.backend,
+			}, secrets, nil, nil)
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got executor %T", tt.wantErr, exec)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := fmt.Sprintf("%T", exec); got != tt.wantExec {
+				t.Fatalf("executor = %s, want %s", got, tt.wantExec)
+			}
+		})
 	}
 }
 
-func TestBuildExecutor_API_ValidConfig(t *testing.T) {
-	secrets := &stubSecretStore{secrets: map[string]string{"secret://token": "tok"}}
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
+// TestBuildExecutor_API_EmptyAPIKeyRefSkipsSecretResolution pins
+// unauthenticated public-repo access: an empty apiKeyRef must not reach the
+// secret store, which rejects a reference with no "secret://" scheme. The
+// store here resolves nothing, so any lookup fails the build.
+func TestBuildExecutor_API_EmptyAPIKeyRefSkipsSecretResolution(t *testing.T) {
+	for _, backend := range []struct {
+		backendType string
+		repo        string
+		wantExec    string
+	}{
+		{backendType: "github", repo: "owner/repo", wantExec: "*executor.APIExecutor"},
+		{backendType: "gitlab", repo: "group/project", wantExec: "*executor.GitLabExecutor"},
+	} {
+		t.Run(backend.backendType, func(t *testing.T) {
+			exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
+				Type: "api",
+				VcsBackend: &types.VcsBackendConfig{
+					Type: backend.backendType,
+					Repo: backend.repo,
+					Ref:  "main",
+				},
+			}, &stubSecretStore{}, nil, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := fmt.Sprintf("%T", exec); got != backend.wantExec {
+				t.Fatalf("executor = %s, want %s", got, backend.wantExec)
+			}
+		})
+	}
+}
+
+// TestBuildExecutor_API_SecretResolutionFailureNamesTheField keeps the
+// failing config field in the error: "resolve VCS API key" left operators
+// guessing which of several apiKeyRefs the harness could not resolve.
+func TestBuildExecutor_API_SecretResolutionFailureNamesTheField(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type: "api",
 		VcsBackend: &types.VcsBackendConfig{
-			APIKeyRef: "secret://token",
+			Type:      "github",
+			APIKeyRef: "secret://missing",
 			Repo:      "owner/repo",
-			Ref:       "main",
 		},
-	}, secrets, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	}, &stubSecretStore{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for an unresolvable apiKeyRef")
 	}
-	if _, ok := exec.(*executor.APIExecutor); !ok {
-		t.Fatalf("expected APIExecutor, got %T", exec)
+	if !strings.Contains(err.Error(), "executor.vcsBackend.apiKeyRef") {
+		t.Fatalf("error = %q, want it to name executor.vcsBackend.apiKeyRef", err.Error())
 	}
 }
 
