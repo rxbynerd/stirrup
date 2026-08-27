@@ -18,6 +18,18 @@ func TestWriteProbe_CreatesFile(t *testing.T) {
 	}
 }
 
+// TestWriteProbe_MissingParentDirReturnsError pins the caller-visible
+// contract runJob relies on: a write failure (e.g. a read-only or absent
+// /tmp) is reported, not silently swallowed, so the caller can choose to
+// warn and continue rather than crash the job.
+func TestWriteProbe_MissingParentDirReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-parent", "healthy")
+
+	if err := WriteProbe(path); err == nil {
+		t.Fatal("WriteProbe() = nil, want an error when the parent directory is missing")
+	}
+}
+
 func TestWriteProbe_Idempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
 
