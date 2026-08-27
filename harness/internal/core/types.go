@@ -599,6 +599,11 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				inText = false
 				currentText = ""
 			}
+			// Every adapter converges here, so this is the one place a
+			// zero-argument call's nil Input map becomes history bytes.
+			// Without normalisation it marshals as null, which fails the
+			// tool's schema gate and is rejected by the provider when the
+			// turn is replayed.
 			inputBytes, _ := json.Marshal(event.Input)
 			// ThoughtSignature is provider-opaque state the harness must
 			// echo back unchanged on the next request so the model can
@@ -608,7 +613,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Type:             "tool_use",
 				ID:               event.ID,
 				Name:             event.Name,
-				Input:            json.RawMessage(inputBytes),
+				Input:            types.NormalizeToolInput(inputBytes),
 				ThoughtSignature: event.ThoughtSignature,
 			})
 

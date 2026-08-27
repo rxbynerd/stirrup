@@ -272,7 +272,7 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 				Text:      b.Text,
 				ID:        b.ID,
 				Name:      b.Name,
-				Input:     b.Input,
+				Input:     anthropicToolUseInput(b),
 				ToolUseID: b.ToolUseID,
 				Content:   anthropicToolResultContent(b, cap),
 				IsError:   b.IsError,
@@ -284,6 +284,17 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 		}
 	}
 	return out
+}
+
+// anthropicToolUseInput renders the `input` field of one content block for
+// the Anthropic wire. For non-tool_use blocks it returns nil so the key is
+// omitted. A tool_use block is always given an object, since the API rejects
+// a null input on a replayed assistant turn.
+func anthropicToolUseInput(b types.ContentBlock) json.RawMessage {
+	if b.Type != "tool_use" {
+		return nil
+	}
+	return types.NormalizeToolInput(b.Input)
 }
 
 // anthropicToolResultContent renders the `content` field of one content
