@@ -14,6 +14,9 @@ docs are:
   reference and `RunConfig` schema.
 - [`docs/deployment.md`](docs/deployment.md) — `stirrup job`, gRPC
   contract, container image, releases.
+- [`docs/integration-guide.md`](docs/integration-guide.md) —
+  control-plane integrator view of the gRPC contract and a
+  cookbook for the major features.
 - [`docs/security.md`](docs/security.md) and
   [`docs/safety-rings.md`](docs/safety-rings.md) — security
   foundations and the five operator-configurable rings.
