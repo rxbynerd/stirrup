@@ -20,12 +20,15 @@ field reference, [`configuration.md`](configuration.md).
 | **gRPC control plane** (`stirrup job`) | The harness dials out and opens one `RunTask` bidi stream; the control plane sends a `RunConfig` and consumes events. | Multi-run orchestration, human-in-the-loop approvals, follow-up turns, sandbox identity tokens, provider batch bundling. The primary integration surface. |
 | **CLI composition** (`stirrup harness`, `stirrup run-config`) | `RunConfig` via flags, file, or stdin; results via exit code, `STIRRUP_RESULT` stdout line, traces, and sinks. | CI pipelines, cron jobs, shell-driven automation, and any feature not yet carried on the proto (see [Features not on the wire](#features-not-on-the-wire)). |
 | **Serverless job** (Cloud Run) | The unmodified container runs `stirrup harness --config` with a secret-mounted `RunConfig`; results leave via stdout logging, GCS traces, and workspace export. | Elastic burst capacity with no cluster to run. Walkthrough: [`cloud-run-jobs.md`](cloud-run-jobs.md). |
-| **Go embedding** (`harness/harnessapi`) | `BuildLoopWithTransport(ctx, config, transport)` runs the loop in-process. | Single-binary tools bundling their own control-plane logic. Everything under `harness/internal/*` is not public API. |
+| **Go embedding** (`harness/harnessapi`) | `BuildLoopWithTransport(ctx, config, transport)` constructs an in-process loop; `Loop.Run` executes it. | Single-binary tools bundling their own control-plane logic. Everything under `harness/internal/*` is not public API. |
 
-The four surfaces consume the same `RunConfig` composition root, so a
-config developed interactively with the CLI transfers to the gRPC
-path field-for-field — the JSON field names are the proto field
-names.
+The four surfaces use the same `RunConfig` concepts, but they are not
+perfectly interchangeable. The CLI applies convenience defaults that
+the gRPC path does not, and a few JSON fields have no proto mirror (see
+[Features not on the wire](#features-not-on-the-wire)). For equivalent
+fields, protobuf JSON uses lower-camel-case names such as `runId` and
+`maxTurns`, matching the file-config form except for the compatibility
+exception noted below.
 
 ## The wire contract
 
@@ -38,10 +41,10 @@ service HarnessService {
 ```
 
 The **control plane implements the server**; the harness is the
-client and connects outbound. There is no inbound port on the
-harness, no service mesh hop, and no shared filesystem. One stream
-carries the whole run: task assignment, streaming output, permission
-round-trips, and the terminal result.
+client and connects outbound. There is no inbound port on the harness
+and no shared filesystem. One stream carries the whole run: task
+assignment, streaming output, permission round-trips, and the terminal
+status.
 
 ### Getting the schema
 
@@ -66,20 +69,22 @@ round-trips, and the terminal result.
    must be the first `ControlEvent`. The harness waits at most
    **5 minutes** for it, then exits. A `cancel` sent before
    assignment makes the harness exit cleanly without running.
-4. If the `RunConfig` opts in, the harness sends one
+4. If the `RunConfig` opts in, loop construction sends one
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
    `sandbox_token_response` before creating the sandbox.
 5. During execution the harness streams `text_delta`, `tool_call`,
-   `tool_result`, `warning`, and a `heartbeat` every **30 seconds**.
-   Depending on configuration it may also emit `permission_request`,
-   `tool_result_request`, `batch_submission`, `batch_waiting`, and
-   `batch_cancel_request`.
-6. The run ends with `HarnessEvent{type:"done", stop_reason, trace}`.
-   On a fatal error an `error` event (human-readable `message`)
-   precedes the `done` — `done` is always the terminal signal.
+   `tool_result`, occasional `warning` events, and a `heartbeat` every
+   **30 seconds**. Depending on configuration it may also emit
+   `permission_request`, `tool_result_request`, `batch_submission`,
+   `batch_waiting`, and `batch_cancel_request`.
+6. A built loop ends by emitting `HarnessEvent{type:"done",
+   stop_reason}`. Some early run failures emit a human-readable `error`
+   event first. The current `stirrup job` path does **not** attach the
+   proto's optional `trace` field to `done`.
 7. If a follow-up grace window is configured, the stream stays open
-   for `user_response` events that trigger additional runs;
-   otherwise the stream closes and the process exits.
+   for `user_response` events that trigger fresh runs in the same
+   process and workspace; otherwise the stream closes and the process
+   exits.
 
 ### Events from the harness
 
@@ -93,8 +98,8 @@ round-trips, and the terminal result.
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
 | `warning` | `message` | Log; non-fatal. |
-| `error` | `message` | Record; a `done` follows. |
-| `done` | `stop_reason`, `trace` | Terminal. Read `trace.outcome` for the canonical status. |
+| `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
+| `done` | `stop_reason` | Terminal status for that run. The proto has a `trace` field, but `stirrup job` does not currently populate it. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
 | `batch_waiting` | `request_id` | Batch keep-alive (roughly every 5 minutes) distinguishing "provider batch still pending" from a stall. |
 | `batch_cancel_request` | `request_id` | Best-effort: cancel the provider-side batch. The harness does not wait for a reply. |
@@ -105,10 +110,10 @@ round-trips, and the terminal result.
 | `type` | Fields | Semantics |
 |---|---|---|
 | `task_assignment` | `task` (RunConfig) | First event on the stream. Duplicate assignments are ignored. |
-| `user_response` | `user_response` | Free text injected as a user message. Mid-run: next turn. During the follow-up grace window: starts a follow-up run. |
+| `user_response` | `user_response` | During the follow-up grace window, starts a fresh run with this text as its prompt. Events sent during an active run are currently ignored. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
-| `batch_result` | `request_id`, `content` (BatchResult JSON), `is_error` | Completes a `batch_submission`. |
+| `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err`; the current batch client ignores `is_error`. |
 | `sandbox_token_response` | `request_id`, `token`, `expires_at`, `is_error`, `reason` | The signed sandbox identity JWT, or an explicit refusal. |
 | `cancel` | — | Abort the run within one turn boundary. Git finalisation still runs; the final `done` carries `stop_reason:"cancelled"`. |
 
@@ -118,29 +123,32 @@ responses are matched by ID, not order.
 
 ### Terminal semantics
 
-`done.trace` is a `RunTrace`: `run_id`, `turns`, `input_tokens`,
-`output_tokens`, `cost_usd`, `duration_ms`, `stop_reason`, and
-`outcome`. Read **`trace.outcome`** — it is the canonical terminal
-status for analytics:
+For the current `stirrup job` implementation, read
+**`done.stop_reason`** as the run outcome. Values include `success`,
+`error`, `max_turns`, `verification_failed`, `verification_error`,
+`budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
+`max_tokens`, and feature-specific outcomes such as `setup_failed`,
+`hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
+Consumers should preserve unknown values so outcomes can be added
+without breaking the protocol.
 
-```
-success | error | max_turns | verification_failed | verification_error |
-budget_exceeded | stalled | tool_failures | cancelled | timeout | max_tokens
-```
+The proto also defines `done.trace`, but the job path currently emits
+`done` before trace finalisation and leaves that field unset (tracked in
+[issue #453](https://github.com/rxbynerd/stirrup/issues/453)). Obtain
+turn counts, token usage, duration, verifier details, and final
+assistant text from a configured `resultSink`, process stdout, or a
+trace emitter instead. `cost_usd` is not calculated by the harness.
 
-`trace.stop_reason` mirrors `outcome` for backward compatibility.
-The top-level `done.stop_reason` additionally surfaces
-`setup_failed` (a `preRun` hook or git setup failed before any turn)
-and `hook_failed` (a fatal `postRun` hook overrode an otherwise
-successful run).
-
-One caveat: `done` is guaranteed only once the loop has been built.
-A `RunConfig` that fails validation on arrival never produces a
-loop — the process exits non-zero and the stream closes with no
-`error`/`done` pair. Validate configs control-plane-side before
-sending (mirror the harness with `stirrup run-config --validate`, or
-call `types.ValidateRunConfig` from Go) rather than treating stream
-closure as a result.
+A `done` is emitted only after the loop has been constructed, and its
+send is necessarily best-effort if the transport is failing. Config
+validation, secret resolution, policy loading, sandbox-token exchange,
+or other component-construction failures close the stream and exit
+non-zero without an `error`/`done` pair. Validate configs before
+sending (for example with `stirrup run-config --validate` or
+`types.ValidateRunConfig`) and treat stream closure before `done` as a
+setup or transport failure. With follow-ups enabled, each run has its
+own `done`; it is terminal for the run, not necessarily for the
+stream.
 
 ### Transport security posture (v0.1)
 
@@ -152,9 +160,10 @@ same-host loopback, a private network, or mesh-provided mTLS
 `secret://` references and outbound events are scrubbed for
 secret-shaped strings), but prompts, tool results, and especially
 the raw sandbox identity JWT do. Do not point a harness at a control
-plane across an untrusted network. TLS at the config surface is
-planned; Go embedders can already wire
-`transport.WithTLSCredentials` directly. Full discussion:
+plane across an untrusted network. TLS at the binary/config surface is
+planned. The public embedding API accepts a caller-provided `Transport`,
+so an embedder can supply its own authenticated transport; the built-in
+TLS constructor is internal. Full discussion:
 [`deployment.md`](deployment.md#transport-security-posture-v01).
 
 ## A minimal control plane
@@ -168,7 +177,13 @@ The smallest correct `RunTask` implementation:
 4. Answer every `permission_request` (even a blanket deny keeps the
    contract; an unanswered request stalls the tool call until the
    timeout auto-denies it).
-5. On `done`, record `trace.outcome` and close.
+5. On `done`, record `stop_reason` and close. (A server that supports
+   follow-up runs keeps the stream open instead.)
+
+This sketch supports one run with optional `ask-upstream` approvals; it
+does not opt into sandbox identity, batching, async results, or
+follow-ups. Add handlers for those events before enabling the
+corresponding config.
 
 Sketch (server side, generated stubs from `buf generate`):
 
@@ -188,13 +203,15 @@ func (s *Server) RunTask(stream pb.HarnessService_RunTaskServer) error {
 				return err
 			}
 		case "permission_request":
-			stream.Send(&pb.ControlEvent{
+			if err := stream.Send(&pb.ControlEvent{
 				Type:      "permission_response",
 				RequestId: ev.RequestId,
 				Allowed:   &pb.OptionalBool{Value: s.decide(ev.ToolName, ev.Input)},
-			})
+			}); err != nil {
+				return err
+			}
 		case "done":
-			s.recordOutcome(ev.Trace)
+			s.recordOutcome(ev.StopReason)
 			return nil
 		}
 	}
@@ -203,11 +220,13 @@ func (s *Server) RunTask(stream pb.HarnessService_RunTaskServer) error {
 
 Launch the harness as a Kubernetes Job running `stirrup job` with
 `CONTROL_PLANE_ADDR` pointing at this server. Set
-`Job.spec.activeDeadlineSeconds` slightly above `RunConfig.timeout`
-so Kubernetes reaps a stuck Pod even if the harness's own wall-clock
-timeout fails, and probe liveness with
-`test -f /tmp/healthy`. See the
-[operator checklist](deployment.md#operator-checklist).
+`Job.spec.activeDeadlineSeconds` above `RunConfig.timeout`, allowing
+additional time for the pre-assignment wait (up to five minutes),
+component construction, post-run hooks, and result/export flushing.
+The process writes `/tmp/healthy`, but the published distroless image
+contains no `test` or shell binary; inspect that file from a sidecar
+sharing the volume, or use a custom image/probe helper. The 30-second
+wire heartbeat is the control plane's direct run-liveness signal.
 
 ## Composing a RunConfig
 
@@ -245,23 +264,30 @@ run_command  read_command_output  web_fetch  spawn_agent
 
 The mutating set rejected in read-only modes is `write_file`,
 `run_command`, `edit_file`, `search_replace`, `apply_diff`.
+`read_command_output` additionally requires
+`tools.commandOutput.enabled`; that command-output config is not yet
+available on the proto.
 
-Secrets follow one rule: **credentials never appear in a
-`RunConfig`**. Every `apiKeyRef` must be a `secret://` reference —
-`secret://NAME` (environment variable on the harness),
-`secret://file:///path`, or `secret://ssm:///param-name` (AWS SSM) —
-resolved harness-side at runtime. A literal key is rejected by
-validation, and `RunConfig.Redact()` strips references before any
-trace is persisted. Cross-cloud alternatives (IRSA, GKE Workload
-Identity, Azure/Anthropic/OpenAI WIF) are configured via
-`provider.credential` — see
+Secret **values** must never appear in a `RunConfig`; references and
+credential-federation settings do. When an `apiKeyRef` is used, it must
+be a `secret://` reference — `secret://NAME` (environment variable on
+the harness), `secret://file:///path`, or
+`secret://ssm:///param-name` (AWS SSM) — resolved harness-side at
+runtime. A literal key is rejected by validation. Production trace
+emitters persist `RunConfig.Redact()` rather than the live config;
+debug builds can explicitly relax trace redaction. Cross-cloud
+alternatives (IRSA, GKE Workload Identity,
+Azure/Anthropic/OpenAI WIF) are configured via
+`provider.credential`; see
 [`credential-federation.md`](credential-federation.md).
 
 ## Cookbook
 
-Each recipe shows the JSON shape of the `task_assignment` payload
-(field names are identical on the proto and in CLI config files).
-Fields covered by an earlier recipe are elided with `…`.
+Each recipe uses protobuf JSON's lower-camel-case field names, which
+also work in CLI config files except for the `allowedMCPHosts` spelling
+noted under [Compatibility](#compatibility). Fields covered by an
+earlier recipe are elided with `…`; those fragments are explanatory,
+not complete standalone JSON documents.
 
 ### Read-only triage run (safe default posture)
 
@@ -287,8 +313,10 @@ Goal: investigate, review, or plan without any write surface.
 - `deny-side-effects` still permits `web_fetch` and `spawn_agent`
   when listed; gate them with `ask-upstream` or Cedar if that
   matters.
-- The `api` executor (`executor.type: "api"` + `vcsBackend`) runs
-  this shape against a GitHub/GitLab repo with no workspace at all.
+- The `api` executor (`executor.type: "api"` + `vcsBackend`) can read
+  a GitHub repository without a local workspace. GitLab is accepted by
+  the config type but is not implemented by the executor. Git tools
+  require a real checkout, so omit them for an API-executor run.
 
 ### Editable run in a container sandbox
 
@@ -316,11 +344,13 @@ container instead of the harness host.
 ```
 
 - The container is hardened unconditionally: `CapDrop ALL`,
-  `no-new-privileges`, read-only rootfs, nobody-uid, no network by
-  default. `runtime: "runsc"` (gVisor) adds a kernel boundary.
-- `network.mode: "allowlist"` + `network.allowlist` starts an
-  in-process egress proxy enforcing an FQDN allowlist; `none` means
-  no network at all.
+  `no-new-privileges`, a read-only rootfs, and the nobody uid.
+  `runtime: "runsc"` (gVisor) adds a kernel boundary when that OCI
+  runtime is installed on the host.
+- Sandbox executors require an explicit `network` block. Use
+  `network.mode: "none"` for no network. `mode: "allowlist"` plus
+  `network.allowlist` starts an in-process egress proxy enforcing an
+  FQDN allowlist.
 - `gitStrategy: "deterministic"` creates a branch from the run ID
   and commits the result — the natural handoff artifact for a
   control plane that opens PRs.
@@ -363,9 +393,9 @@ answering every request interactively.
 }
 ```
 
-- `policyFile` is read by the **harness process** at boot — stage it
-  via ConfigMap mount or bake it into the image. Policy text cannot
-  be shipped inside the `RunConfig`.
+- `policyFile` is read by the **harness process** during loop
+  construction. Stage it via a ConfigMap mount or bake it into the
+  image. Policy text cannot be shipped inside the `RunConfig`.
 - Cedar answers allow/deny/no-decision; `fallback` decides
   no-decisions. A permit-based allowlist is only meaningful with
   `fallback: "deny-all"` — the default `deny-side-effects` would
@@ -378,7 +408,7 @@ answering every request interactively.
 ### Injecting task context
 
 Goal: give the agent issue bodies, retrieved documents, or customer
-records without granting them instruction authority.
+records while marking the content as untrusted.
 
 ```json
 "dynamicContext": {
@@ -387,9 +417,10 @@ records without granting them instruction authority.
 }
 ```
 
-- Every entry is wrapped in `<untrusted_context>` blocks by the
-  prompt builder and treated as data, not instructions. Entries are
-  sanitised (tag stripping, 50 KB cap).
+- Every entry is sanitised (tag stripping, 50 KB cap) and wrapped in
+  `<untrusted_context>` blocks. The system prompt tells the model to
+  treat it as data rather than instructions; the delimiter is a prompt
+  defence, not a hard security boundary.
 - `sensitive: true` per entry — or `sensitiveData: true` at the top
   level — declares the "sensitive data" leg of the Rule of Two.
   Declare honestly: the harness deliberately does not infer
@@ -397,11 +428,11 @@ records without granting them instruction authority.
 
 ### Rule of Two: the posture invariant
 
-A run must not simultaneously hold **untrusted input**, **sensitive
-data**, and **external communication** unless every dangerous call
-is gated by `ask-upstream`. `ValidateRunConfig` rejects the
-all-three combination outright; two legs produce a
-`rule_of_two_warning` security event.
+A run should not simultaneously hold **untrusted input**, **sensitive
+data**, and **external communication**. `ValidateRunConfig` rejects
+the all-three combination unless the policy is `ask-upstream` or the
+operator explicitly sets `ruleOfTwo.enforce: false`; two legs produce
+a `rule_of_two_warning` security event.
 
 Control-plane levers:
 
@@ -464,11 +495,14 @@ hard — or different providers per mode.
 ```
 
 - Router types: `static` (one model), `per-mode` (`modeModels` map),
-  `dynamic` (escalate on turn count, token usage, or a stop reason
-  outside `cheapStopReasons`).
+  and `dynamic`. The dynamic router chooses the cheap model when the
+  previous stop reason is in `cheapStopReasons`, the expensive model
+  after a configured turn/output-token threshold, and the default
+  model otherwise.
 - Behaviour knobs are provider-neutral: `temperature` and
-  `reasoningEffort` sit at the top level of `RunConfig` and each
-  adapter projects them onto its native wire control.
+  `reasoningEffort` sit at the top level of `RunConfig`. Adapters with
+  a supported native control project them; other adapters may ignore
+  `reasoningEffort`.
 - Provider-specific wire quirks (Azure headers/query params, Z.ai
   compat profile, Gemini safety settings) live on `ProviderConfig`.
   See [`providers.md`](providers.md).
@@ -479,20 +513,22 @@ hard — or different providers per mode.
 "maxTurns": 40,
 "timeout": 1800,
 "maxTokenBudget": 2000000,
-"maxCostBudget": 5.0,
 "contextStrategy": { "type": "summarise", "maxTokens": 150000 }
 ```
 
-- Token/cost budgets terminate the run with
-  `outcome: "budget_exceeded"`; wall-clock expiry yields `timeout`.
-  Ceilings: 50 M tokens, $100, 3600 s.
+- The token budget is enforced between provider calls and terminates
+  the run with `outcome: "budget_exceeded"`; wall-clock expiry yields
+  `timeout`. Ceilings are 50 M tokens and 3600 s.
+- `maxCostBudget` is accepted and capped at $100, but the harness does
+  not currently calculate cost or enforce that budget. Enforce money
+  limits in the control plane using provider billing/pricing data.
 - `contextStrategy` bounds the conversation itself:
   `sliding-window` (default), `summarise`, or `offload-to-file`.
 - Pair `timeout` with an infrastructure-level deadline
-  (`activeDeadlineSeconds`) — defence in depth against a wedged
-  process.
+  (`activeDeadlineSeconds`) that also allows for assignment, setup,
+  and teardown.
 
-### Verification: don't trust "done"
+### Verification: use the terminal outcome
 
 ```json
 "verifier": {
@@ -504,33 +540,44 @@ hard — or different providers per mode.
 }
 ```
 
-A run that ends `end_turn` but fails verification reports
-`outcome: "verification_failed"` — the control plane can retry,
-escalate to a stronger model, or route to a human without parsing
-any output.
+A model turn that ends `end_turn` but fails verification produces
+`done.stop_reason: "verification_failed"`; the control plane can retry,
+escalate to a stronger model, or route to a human without parsing model
+output.
 
 ### Follow-up turns
 
-Goal: keep the conversation alive after the run completes — cheap
-steering without re-provisioning a sandbox.
+Goal: run another prompt in the same process and workspace without
+re-provisioning the sandbox.
 
-- Set `followUpGrace` (seconds, ≤ 3600) in the `RunConfig`, or
-  `STIRRUP_FOLLOWUP_GRACE` in the Pod environment (the config field
-  wins).
+- Set a positive `followUpGrace` (seconds, ≤ 3600) in the `RunConfig`,
+  or set `STIRRUP_FOLLOWUP_GRACE` in the Pod environment. A positive
+  config value wins; zero or unset falls back to the environment.
 - After `done`, the stream stays open for the grace window. A
-  `user_response` ControlEvent starts a follow-up run in the same
-  process and workspace; each follow-up ends with its own `done`.
-- A `cancel` during the grace window closes the stream promptly
-  without an extra `done`.
+  `user_response` starts a fresh run with a new run ID and the response
+  text as its prompt. Current follow-ups **do not preserve the previous
+  run's conversation history**.
+- Send `user_response` only after `done`; one sent during an active run
+  is ignored. Each accepted follow-up ends with its own `done` and
+  resets the grace timer.
+- Follow-ups share the primary run's original context deadline; the
+  `timeout` budget does not restart. The job also does not re-run its
+  `resultSink` or workspace-export steps for follow-ups, so consume each
+  follow-up's `done` and configure a trace emitter when those runs need
+  durable detail.
+- A `cancel` during the grace window closes the stream promptly without
+  an extra `done`.
 
 ### Cancelling a run
 
-Send `ControlEvent{type:"cancel"}` at any time. The harness stops
-within one turn boundary: in-flight provider streams and tool calls
-are cancelled via context, git finalisation still runs, and the
-final `done` carries `stop_reason:"cancelled"`. Infrastructure-level
-kill (SIGTERM) is the fallback; the harness flushes traces and the
-result sink on a bounded shutdown grace.
+During an active run, send `ControlEvent{type:"cancel"}`. The harness
+cancels in-flight provider streams and tool calls via context, runs git
+finalisation, and emits `done` with `stop_reason:"cancelled"`. Before
+assignment, `cancel` exits cleanly without `done`; during follow-up
+wait it closes without another `done`. Cancellation during synchronous
+component construction is not a reliable boundary, so retain an
+infrastructure deadline/SIGTERM fallback. On process shutdown, the job
+uses bounded contexts to flush traces and the result sink.
 
 ### Control-plane-fulfilled tools (`tool_result_request`)
 
@@ -541,9 +588,11 @@ a per-call timeout; the control plane answers with
 `tool_result_response` (`content`, optional `is_error: true` to
 surface a failure to the model). Concurrent async calls in one turn
 fan out under the `toolDispatch.maxParallel` semaphore (default 4,
-ceiling 16). No shipped built-in tool defers upstream today — the
-mechanism is the extension point for embedder-registered tools and
-future MCP deferral.
+ceiling 16). No shipped built-in tool defers upstream today, and the
+public embedding API does not expose custom tool registration. A
+control plane therefore need not implement this response path unless
+it is paired with a future or internally extended harness that emits
+the request.
 
 ### Sandbox identity tokens (authenticated git egress)
 
@@ -574,13 +623,14 @@ The control plane must:
 4. Set `expires_at` so the harness can warn when the token expires
    before the run's wall-clock budget.
 
-The token is the one raw credential on the stream — plaintext in
-v0.1 — so this flow requires the trusted-network posture. This
-feature is exclusive to the `stirrup job` topology (a
-pre-established transport must exist before the executor is built),
-and both `executor` blocks ride on the proto, so a control plane can
-send them in the `task_assignment` that starts the run. Full
-contract:
+The token is the one intentionally raw credential on the stream —
+plaintext in v0.1 — so this flow requires the trusted-network posture.
+The feature requires a pre-established gRPC transport before the
+executor is built; `stirrup job` is the normal topology, while an
+embedder may supply an equivalent transport. Both `executor` blocks
+ride on the proto, so a control plane can send them in the
+`task_assignment` that starts the run. A timeout or refusal fails loop
+construction and closes the stream without `done`. Full contract:
 [`deployment.md`](deployment.md#sandbox-identity-token-issuance-control-plane-implementers).
 
 ### Batch mode (amortised token pricing)
@@ -592,7 +642,7 @@ bundle many runs' turns into provider-side batches.
 ```json
 "provider": {
   "type": "anthropic", "apiKeyRef": "secret://ANTHROPIC_API_KEY",
-  "batch": { "enabled": true, "maxWaitSeconds": 86400 }
+  "batch": { "enabled": true, "maxWaitSeconds": 3600 }
 }
 ```
 
@@ -613,13 +663,16 @@ Control-plane responsibilities:
   from concurrent runs into shared batches.
 - Reply with `batch_result` echoing `request_id`; `content` is
   `{"response": …}` on success or
-  `{"err": {"type": "batch_expired" | "batch_cancelled" | "invalid_request_error" | "server_error", …}}`
-  with `is_error: true`. Responses over 4 MiB are rejected
-  harness-side as an `invalid_request_error`.
-- `batch_waiting` heartbeats mark the wait as healthy; the harness
-  gives up after `maxWaitSeconds` (default 24 h) with
-  `batch_expired`, optionally falling back to streaming
-  (`fallbackOnTimeout`).
+  `{"err": {"type": "batch_expired" | "batch_cancelled" | "invalid_request_error" | "server_error", …}}`.
+  The error discriminator must be inside `content`; the current client
+  ignores the ControlEvent's `is_error` field. Responses over 4 MiB are
+  rejected harness-side as an `invalid_request_error`.
+- `batch_waiting` heartbeats mark the wait as healthy. The batch
+  client gives up after `maxWaitSeconds` (default 24 h), optionally
+  falling back to streaming (`fallbackOnTimeout`), but the task's
+  `timeout` context wins first. Because `stirrup job` limits `timeout`
+  to 3600 s, a gRPC batch wait cannot currently reach the 24-hour
+  default.
 
 Mode gating: `execution` never batches; `research`/`toil` batch
 freely; `planning`/`review` need `allowInteractiveModes: true`.
@@ -631,9 +684,9 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | `RunTrace` metrics + outcome | gRPC. The primary result for a control plane. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage, `finalAssistantText` (capped 128 KiB), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"` or `--output json`); the line lands on the process's stdout, so CLI and Cloud Run are where it is usually read. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
-| Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). The `RunConfig` embedded in a trace is always `Redact()`-ed. |
+| `done` event | Outcome in `stop_reason` | gRPC. The primary terminal signal for a control plane; its `trace` field is currently unset. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage, duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Soft-fail by default; `--export-workspace-required` hardens it on the CLI. |
 
 For OTel specifically: `sessionName` labels the run in logs, traces,
@@ -651,8 +704,8 @@ The five operator-configurable rings, from
 | Ring | Surface | Default |
 |---|---|---|
 | 1 — Sandbox runtime class | `executor.runtime` (gVisor/Kata) | Engine default (`runc`); hardening flags always on |
-| 2 — Egress allowlist | `executor.network` + proxy / NetworkPolicy | `none` (no network) |
-| 3 — Cedar policy engine | `permissionPolicy.type: "policy-engine"` | Off (simple policies) |
+| 2 — Egress allowlist | `executor.network` + proxy / NetworkPolicy | Must be explicit for sandbox executors; `none` gives no network |
+| 3 — Cedar policy engine | `permissionPolicy.type: "policy-engine"` | Off; select a non-Cedar permission policy explicitly |
 | 4 — Rule of Two | `ruleOfTwo`, `sensitiveData` | Enforced; classifier auto-arms |
 | 5 — Code scanner | `codeScanner` | `patterns` in execution mode |
 
@@ -675,7 +728,7 @@ topology):
 | Surface | Feature | Why |
 |---|---|---|
 | `transport` | Transport selection. | Deliberate. It describes how the harness was launched, not the work assigned: a config arriving in a `task_assignment` came over the gRPC stream by construction, so the harness sets `grpc` itself. Accepting a wire value would let a control plane declare a transport contradicting the stream carrying the declaration. |
-| `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Both carry a `CredentialConfig`, and the runtime resolves those via workload identity against the host metadata server — which covers Cloud Run and GKE. Surfacing them needs a credential sub-message and matching translation. |
+| `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Not yet mapped into the existing proto credential types and translation layer. |
 | `tools.profile`, `tools.commandOutput` | Tool presentation profile; command-output capture bounds. | Not yet mirrored. |
 
 Everything else on `RunConfig` is expressible in a
@@ -694,10 +747,15 @@ around silently".
 - `ready.harness_version` carries the build label
   (`v1.2.3 (abc1234)` for releases). Gate task assignment on it if
   the control plane depends on contract features by version.
-- JSON `RunConfig` field names are the proto field names — configs
-  are portable between the CLI, Cloud Run, and gRPC surfaces modulo
-  the table above.
-- Unknown JSON fields are rejected (`DisallowUnknownFields`), so a
-  config written for a newer harness fails loudly on an older one.
+- For mirrored fields, file-config JSON and protobuf JSON generally use
+  the same lower-camel-case names. The current exception is
+  `tools.mcpServers[].allowedMCPHosts` in file JSON versus
+  `allowedMcpHosts` in protobuf JSON. Generated protobuf clients avoid
+  this spelling issue.
+- File-config JSON rejects unknown fields (`DisallowUnknownFields`).
+  Protobuf binary compatibility is different: an older harness ignores
+  unknown fields. Gate assignment on `ready.harness_version` when a
+  task depends on a newly added wire field; do not assume it will fail
+  loudly.
 - The container image is distroless (`nonroot`, no shell):
   `ghcr.io/rxbynerd/stirrup:<tag>` per release, `:main` per merge.
