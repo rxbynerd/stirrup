@@ -60,6 +60,32 @@ type Executor interface {
 	Capabilities() ExecutorCapabilities
 }
 
+// TreeEntry is one file in an executor-served file tree. Path is relative to
+// the root passed to ListTree and is always slash-separated. Size is the
+// file's byte length, which lets callers skip oversized files without
+// fetching them.
+type TreeEntry struct {
+	Path string
+	Size int64
+}
+
+// TreeListing is the result of enumerating a workspace file tree. Truncated
+// reports that the backing store capped the enumeration, so the entry list
+// must be treated as incomplete.
+type TreeListing struct {
+	Entries   []TreeEntry
+	Truncated bool
+}
+
+// TreeLister is the optional whole-tree enumeration capability. Executors
+// whose workspace has no counterpart on the harness host's filesystem must
+// implement it: without it, tools that enumerate files would have to walk
+// ResolvePath's result, which for such an executor names a remote or virtual
+// tree and would instead read the harness process's own filesystem.
+type TreeLister interface {
+	ListTree(ctx context.Context, root string) (TreeListing, error)
+}
+
 // StreamingExecutor is the optional full-output execution capability used by
 // run_command. Exec remains bounded for hooks, verifiers, git helpers, and
 // legacy callers; production executors implement this interface to stream

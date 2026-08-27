@@ -253,7 +253,7 @@ a compromised or misconfigured server can do (`MCPServerConfig`):
   through the shared SSRF guard above, so a server URI resolving to a
   private or reserved address is refused at connect. `ValidateRunConfig`
   rejects the malformed-config cases (missing name/uri, bad scheme,
-  non-`https` remote, malformed `allowedMCPHosts`) before a run starts.
+  non-`https` remote, malformed `allowedMcpHosts`) before a run starts.
 - **`allowedTools`:** an optional per-server allowlist matched against
   the server-reported tool name. When set, any advertised tool not on
   the list is refused at registration with a logged reason, so a
@@ -261,7 +261,7 @@ a compromised or misconfigured server can do (`MCPServerConfig`):
   The filter runs before the per-server tool-count cap. An unset list
   registers every advertised tool (the historical, backward-compatible
   behaviour).
-- **`allowedMCPHosts`:** an optional host pin. When set, the URI host
+- **`allowedMcpHosts`:** an optional host pin. When set, the URI host
   must appear in the list (exact, case-insensitive) in addition to
   passing the SSRF guard — a defence against a server URI being
   repointed at an unexpected host.

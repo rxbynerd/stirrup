@@ -387,12 +387,12 @@ func TestValidateRunConfig_MCPServers(t *testing.T) {
 		{
 			name:    "allowedhost_with_scheme",
 			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"https://evil.example.com"}},
-			wantErr: "allowedMCPHosts[0]",
+			wantErr: "allowedMcpHosts[0]",
 		},
 		{
 			name:    "allowedhost_empty",
 			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{" "}},
-			wantErr: "allowedMCPHosts[0]",
+			wantErr: "allowedMcpHosts[0]",
 		},
 		{
 			name:   "allowedhost_ipv6_literal_valid",
@@ -2632,6 +2632,57 @@ func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "container") {
 				t.Errorf("expected error to mention executor.runtime and container, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_VcsBackendType pins the closed set of forges the api
+// executor dispatches to. The type decides which API the executor reads
+// from, so an unset or unrecognised value has to fail at config load rather
+// than resolve to whichever forge happens to be the default.
+func TestValidateRunConfig_VcsBackendType(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType string
+		apiKeyRef   string
+		wantErr     string
+	}{
+		{name: "github", backendType: "github", apiKeyRef: "secret://gh"},
+		{name: "gitlab", backendType: "gitlab", apiKeyRef: "secret://gl"},
+		{name: "unauthenticated", backendType: "github"},
+		{name: "unset", wantErr: "executor.vcsBackend type is required"},
+		{name: "unknown", backendType: "bitbucket", wantErr: `unsupported executor.vcsBackend type "bitbucket"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = "research"
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			c.Executor = ExecutorConfig{
+				Type: "api",
+				VcsBackend: &VcsBackendConfig{
+					Type:      tt.backendType,
+					APIKeyRef: tt.apiKeyRef,
+					Repo:      "owner/repo",
+					Ref:       "main",
+				},
+			}
+
+			err := ValidateRunConfig(c)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
 			}
 		})
 	}

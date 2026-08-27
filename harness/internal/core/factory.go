@@ -929,19 +929,44 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 		if cfg.VcsBackend == nil {
 			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
 		}
-		token, err := secrets.Resolve(ctx, cfg.VcsBackend.APIKeyRef)
-		if err != nil {
-			return nil, fmt.Errorf("resolve VCS API key: %w", err)
-		}
-		parts := strings.SplitN(cfg.VcsBackend.Repo, "/", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid repo format %q, expected 'owner/repo'", cfg.VcsBackend.Repo)
-		}
-		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
+		return buildVcsExecutor(ctx, cfg.VcsBackend, secrets)
 	case "none":
 		return executor.NewNoneExecutor(), nil
 	default:
 		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, k8s-sandbox, api, none)", cfg.Type)
+	}
+}
+
+// buildVcsExecutor dispatches the "api" executor on vcsBackend.type. An
+// unrecognised type is an error rather than a fallback: reading a same-named
+// repository from the wrong forge would go unnoticed. An empty apiKeyRef
+// selects unauthenticated access, which both forges allow for public
+// repositories, so it is not resolved through the secret store.
+func buildVcsExecutor(ctx context.Context, cfg *types.VcsBackendConfig, secrets security.SecretStore) (executor.Executor, error) {
+	var token string
+	if cfg.APIKeyRef != "" {
+		resolved, err := secrets.Resolve(ctx, cfg.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve executor.vcsBackend.apiKeyRef: %w", err)
+		}
+		token = resolved
+	}
+
+	switch cfg.Type {
+	case "github":
+		parts := strings.SplitN(cfg.Repo, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid executor.vcsBackend.repo %q, expected 'owner/repo'", cfg.Repo)
+		}
+		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.Ref), nil
+	case "gitlab":
+		project := strings.Trim(cfg.Repo, "/")
+		if !strings.Contains(project, "/") {
+			return nil, fmt.Errorf("invalid executor.vcsBackend.repo %q, expected a project path such as 'group/project'", cfg.Repo)
+		}
+		return executor.NewGitLabExecutor(token, project, cfg.Ref), nil
+	default:
+		return nil, fmt.Errorf("unsupported executor.vcsBackend.type: %q (supported: github, gitlab)", cfg.Type)
 	}
 }
 
@@ -954,10 +979,13 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
-	// find_files is pure Go and never shells out; grep_files's native
-	// walker only needs read access (its ripgrep fast path checks
-	// CanExec internally). Gating on CanRead means a read-only sandboxed
-	// executor still gets working content/name search.
+	// Both tools search whichever tree the executor exposes: a host
+	// directory via the native walker (grep_files prefers ripgrep when the
+	// executor also has CanExec), or executor.TreeLister for an executor
+	// whose workspace has no host counterpart. Gating on CanRead means a
+	// read-only sandboxed executor still gets working content/name search,
+	// and an executor that offers neither tree fails with a clear error
+	// rather than searching the harness host.
 	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanRead {
 		registry.Register(builtins.GrepFilesTool(exec))
 	}

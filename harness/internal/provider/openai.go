@@ -726,10 +726,7 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 				case "text":
 					textParts = append(textParts, block.Text)
 				case "tool_use":
-					args := string(block.Input)
-					if args == "" {
-						args = "{}"
-					}
+					args := string(types.NormalizeToolInput(block.Input))
 					toolCalls = append(toolCalls, openaiToolCall{
 						ID:   block.ID,
 						Type: "function",

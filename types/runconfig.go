@@ -921,7 +921,11 @@ type ExecutorConfig struct {
 	GitProxy        *GitProxyConfig        `json:"gitProxy,omitempty"`
 }
 
-// VcsBackendConfig selects the VCS backend for the API executor.
+// VcsBackendConfig selects the VCS backend for the API executor. Type is
+// required — it picks the forge API the executor reads from. An empty
+// APIKeyRef selects unauthenticated access, which both forges allow for
+// public repositories at a reduced rate limit. Repo is "owner/repo" for
+// GitHub and the full project path ("group/subgroup/project") for GitLab.
 type VcsBackendConfig struct {
 	Type      string `json:"type"` // "github" | "gitlab"
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
@@ -1382,7 +1386,7 @@ type MCPServerConfig struct {
 	// (exact, case-insensitive match) in addition to passing the SSRF guard.
 	// It is an operator-side defence against a server URI being repointed at
 	// an unexpected host. Empty/unset applies no host pinning.
-	AllowedMCPHosts []string `json:"allowedMCPHosts,omitempty"`
+	AllowedMCPHosts []string `json:"allowedMcpHosts,omitempty"`
 }
 
 var validProviderTypes = map[string]bool{
@@ -1540,6 +1544,11 @@ var validContextStrategyTypes = map[string]bool{
 	"sliding-window":  true,
 	"summarise":       true,
 	"offload-to-file": true,
+}
+
+var validVcsBackendTypes = map[string]bool{
+	"github": true,
+	"gitlab": true,
 }
 
 var validExecutorTypes = map[string]bool{
@@ -2127,6 +2136,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
+	validateVcsBackend(config.Executor.VcsBackend, &errs)
 	validateResourceLimits(config.Executor.Resources, &errs)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
@@ -3317,7 +3327,7 @@ func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
 		for j, host := range server.AllowedMCPHosts {
 			trimmed := strings.TrimSpace(host)
 			if trimmed == "" {
-				*errs = append(*errs, fmt.Sprintf("%s.allowedMCPHosts[%d] must not be empty", path, j))
+				*errs = append(*errs, fmt.Sprintf("%s.allowedMcpHosts[%d] must not be empty", path, j))
 				continue
 			}
 			// An IP literal (including IPv6, which legitimately contains
@@ -3329,7 +3339,7 @@ func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
 			}
 			if host != trimmed || strings.ContainsAny(host, "/:") {
 				*errs = append(*errs, fmt.Sprintf(
-					"%s.allowedMCPHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
+					"%s.allowedMcpHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
 			}
 		}
 		for j, name := range server.AllowedTools {
@@ -4975,6 +4985,17 @@ func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 			cfg.WorkspaceExportTo,
 		))
 	}
+}
+
+// validateVcsBackend enforces the closed set of forges the "api" executor
+// can dispatch to. The type selects which API the executor reads from, so an
+// unset or unrecognised value has to fail at config load — falling back to a
+// forge the operator did not name reads the wrong repository silently.
+func validateVcsBackend(cfg *VcsBackendConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	validateRequiredType("executor.vcsBackend", cfg.Type, validVcsBackendTypes, errs)
 }
 
 // validateExecutorRegistryAllowlist checks the optional
