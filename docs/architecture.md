@@ -700,9 +700,16 @@ consecutive failures.
 ## Heartbeat and health probes
 
 The agentic loop emits `heartbeat` events on the transport every 30
-seconds during execution. For K8s jobs, a file-based liveness probe
-(`harness/internal/health/probe.go`) writes `/tmp/healthy` after the
-ready event and removes it on shutdown.
+seconds during execution. For K8s jobs, file-based probes
+(`harness/internal/health/probe.go`) distinguish liveness from
+readiness: `/tmp/healthy` is written after the ready event and
+removed only on shutdown (liveness — alive through the whole run),
+while `/tmp/ready` is written at the same time but removed as soon as
+a `task_assignment` arrives (readiness — idle and assignable). The
+`stirrup healthcheck` subcommand checks a marker file and exits 0/1,
+for use as a Kubernetes exec probe against the distroless image,
+which has no shell. See [deployment.md's Health
+probes](deployment.md#health-probes) for the full recipe.
 
 ## Eval framework
 

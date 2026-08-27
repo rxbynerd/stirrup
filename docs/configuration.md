@@ -578,15 +578,15 @@ with `--dry-run`; otherwise the report goes to stderr.
 
 The CLI distinguishes failure classes through the process exit code so
 a wrapper script can branch on *why* a command failed without parsing
-stderr. The scheme is uniform across `harness`, `job`, and
-`run-config`:
+stderr. The scheme is uniform across `harness`, `job`, `run-config`,
+and `healthcheck`:
 
 | Code | Class | Examples |
 |---|---|---|
-| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome. |
-| `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`. Also the default for any failure not in a more specific class. |
+| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome; for `healthcheck`, the marker file is present and readable. |
+| `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`; `healthcheck`'s marker file is absent. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
-| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure. |
+| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; `healthcheck`'s marker file exists but could not be opened (e.g. a permission error). |
 | `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
