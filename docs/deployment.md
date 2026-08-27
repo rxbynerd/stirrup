@@ -202,10 +202,10 @@ assigned, since the pod is no longer available to accept more work.
 ```yaml
 livenessProbe:
   exec:
-    command: ["/stirrup", "healthcheck", "--file=/tmp/healthy"]
+    command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/healthy"]
 readinessProbe:
   exec:
-    command: ["/stirrup", "healthcheck", "--file=/tmp/ready"]
+    command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/ready"]
 ```
 
 Every CI and release workflow run also publishes a compiled

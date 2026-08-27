@@ -706,10 +706,10 @@ readiness: `/tmp/healthy` is written after the ready event and
 removed only on shutdown (liveness — alive through the whole run),
 while `/tmp/ready` is written at the same time but removed as soon as
 a `task_assignment` arrives (readiness — idle and assignable). The
-`stirrup healthcheck` subcommand checks a marker file and exits 0/1,
-for use as a Kubernetes exec probe against the distroless image,
-which has no shell. See [deployment.md's Health
-probes](deployment.md#health-probes) for the full recipe.
+`stirrup healthcheck` subcommand checks a marker file and exits 0 or
+non-zero for use as a Kubernetes exec probe against the distroless image,
+which has no shell. See [`deployment.md`'s "Health
+probes"](deployment.md#health-probes) for the full recipe.
 
 ## Eval framework
 

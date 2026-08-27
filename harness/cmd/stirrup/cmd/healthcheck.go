@@ -9,8 +9,6 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 )
 
-var healthcheckFile string
-
 var healthcheckCmd = &cobra.Command{
 	Use:   "healthcheck",
 	Short: "Check a stirrup job health probe marker file",
@@ -32,10 +30,10 @@ Example Pod probe config:
 
   livenessProbe:
     exec:
-      command: ["/stirrup", "healthcheck", "--file=/tmp/healthy"]
+      command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/healthy"]
   readinessProbe:
     exec:
-      command: ["/stirrup", "healthcheck", "--file=/tmp/ready"]
+      command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/ready"]
 
 See docs/deployment.md for the full recipe.`,
 	Args: cobra.NoArgs,
@@ -43,16 +41,17 @@ See docs/deployment.md for the full recipe.`,
 }
 
 func init() {
-	healthcheckCmd.Flags().StringVar(&healthcheckFile, "file", health.LivenessMarker, "path to the health probe marker file to check")
+	healthcheckCmd.Flags().String("file", health.LivenessMarker, "path to the health probe marker file to check")
 	rootCmd.AddCommand(healthcheckCmd)
 }
 
-func runHealthcheck(_ *cobra.Command, _ []string) error {
-	if err := health.CheckProbe(healthcheckFile); err != nil {
+func runHealthcheck(cmd *cobra.Command, _ []string) error {
+	path, _ := cmd.Flags().GetString("file")
+	if err := health.CheckProbe(path); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("health probe marker %s not present", healthcheckFile)
+			return fmt.Errorf("health probe marker %s not present", path)
 		}
-		return ioError(fmt.Errorf("health probe marker %s: %w", healthcheckFile, err))
+		return ioError(fmt.Errorf("health probe marker %s: %w", path, err))
 	}
 	return nil
 }
