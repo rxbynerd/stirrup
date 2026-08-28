@@ -25,6 +25,14 @@ var conformanceFixture = map[string]string{
 type conformanceTarget struct {
 	name        string
 	newExecutor func(t *testing.T) Executor
+	// capabilitiesOnly restricts the run to the Capabilities subtest.
+	// ContainerExecutor and the k8s/k8s-sandbox executors need a live
+	// daemon/cluster for ListDirectory/ReadFile/ListTree, but the
+	// HostPathWorkspace declaration is a pure type property checkable on a
+	// bare struct literal — and it's the load-bearing #567-class
+	// regression guard, so it belongs in this table rather than only in a
+	// synthetic fake's shape.
+	capabilitiesOnly bool
 	// wantHostPathWorkspace pins whether the executor is expected to
 	// declare HostPathWorkspace, forcing a future executor author to
 	// decide explicitly rather than inheriting the capability by accident.
@@ -37,10 +45,10 @@ type conformanceTarget struct {
 }
 
 // TestExecutorConformance runs the shared contract suite against every
-// executor buildable without an external daemon. ContainerExecutor and the
-// k8s/k8s-sandbox executors require a live Docker/Kubernetes endpoint and
-// are covered by their own build-tagged integration suites instead; adding
-// them here only needs a newExecutor factory entry in this table.
+// executor buildable without an external daemon. The container/k8s/
+// k8s-sandbox targets only run the Capabilities subtest (see
+// conformanceTarget.capabilitiesOnly); their I/O contracts are covered by
+// their own build-tagged integration suites instead.
 func TestExecutorConformance(t *testing.T) {
 	targets := []conformanceTarget{
 		{
@@ -55,6 +63,24 @@ func TestExecutorConformance(t *testing.T) {
 			wantHostPathWorkspace: false,
 			wantTraversalRejected: false,
 		},
+		{
+			name:                  "container",
+			newExecutor:           func(*testing.T) Executor { return &ContainerExecutor{workspace: containerWorkspace} },
+			capabilitiesOnly:      true,
+			wantHostPathWorkspace: false,
+		},
+		{
+			name:                  "k8s",
+			newExecutor:           func(*testing.T) Executor { return &K8sExecutor{} },
+			capabilitiesOnly:      true,
+			wantHostPathWorkspace: false,
+		},
+		{
+			name:                  "k8s-sandbox",
+			newExecutor:           func(*testing.T) Executor { return &AgentSandboxExecutor{} },
+			capabilitiesOnly:      true,
+			wantHostPathWorkspace: false,
+		},
 	}
 
 	for _, target := range targets {
@@ -68,85 +94,99 @@ func runExecutorConformance(t *testing.T, target conformanceTarget) {
 	t.Helper()
 	exec := target.newExecutor(t)
 
-	t.Run("ListDirectory marks directories with a trailing slash", func(t *testing.T) {
-		names, err := exec.ListDirectory(context.Background(), ".")
-		if err != nil {
-			t.Fatalf("ListDirectory: %v", err)
-		}
-		var gotDir, gotFile bool
-		for _, name := range names {
-			switch name {
-			case "sub/":
-				gotDir = true
-			case "top.txt":
-				gotFile = true
-			}
-		}
-		if !gotDir {
-			t.Errorf("expected \"sub/\" marked as a directory, got %v", names)
-		}
-		if !gotFile {
-			t.Errorf("expected \"top.txt\" listed without a trailing slash, got %v", names)
-		}
-	})
-
-	t.Run("ReadFile round-trips fixture content", func(t *testing.T) {
-		got, err := exec.ReadFile(context.Background(), "top.txt")
-		if err != nil {
-			t.Fatalf("ReadFile: %v", err)
-		}
-		if got != conformanceFixture["top.txt"] {
-			t.Errorf("ReadFile(top.txt) = %q, want %q", got, conformanceFixture["top.txt"])
-		}
-	})
-
-	t.Run("ResolvePath traversal", func(t *testing.T) {
-		_, err := exec.ResolvePath("../escape")
-		switch {
-		case target.wantTraversalRejected && err == nil:
-			t.Error("expected traversal outside the workspace to be rejected")
-		case !target.wantTraversalRejected && err != nil:
-			t.Errorf("executor has no filesystem boundary to escape; expected no error, got: %v", err)
-		}
-	})
-
-	if lister, ok := exec.(TreeLister); ok {
-		t.Run("ListTree covers the fixture tree", func(t *testing.T) {
-			listing, err := lister.ListTree(context.Background(), ".")
+	if !target.capabilitiesOnly {
+		t.Run("ListDirectory marks directories with a trailing slash", func(t *testing.T) {
+			names, err := exec.ListDirectory(context.Background(), ".")
 			if err != nil {
-				t.Fatalf("ListTree: %v", err)
+				t.Fatalf("ListDirectory: %v", err)
 			}
-			if listing.Truncated {
-				t.Error("a small fixture tree must not report Truncated")
+			var gotDir, gotFile bool
+			for _, name := range names {
+				switch name {
+				case "sub/":
+					gotDir = true
+				case "top.txt":
+					gotFile = true
+				}
 			}
-			seen := make(map[string]int64, len(listing.Entries))
-			for _, e := range listing.Entries {
-				if strings.Contains(e.Path, "\\") {
-					t.Errorf("entry path must be slash-separated, got %q", e.Path)
-				}
-				if strings.HasPrefix(e.Path, "/") {
-					t.Errorf("entry path must be root-relative, got %q", e.Path)
-				}
-				if e.Size < 0 {
-					t.Errorf("entry size must be non-negative, got %d for %q", e.Size, e.Path)
-				}
-				seen[e.Path] = e.Size
+			if !gotDir {
+				t.Errorf("expected \"sub/\" marked as a directory, got %v", names)
 			}
-			for path := range conformanceFixture {
-				if _, ok := seen[path]; !ok {
-					t.Errorf("fixture file %q missing from tree listing: %v", path, seen)
-				}
+			if !gotFile {
+				t.Errorf("expected \"top.txt\" listed without a trailing slash, got %v", names)
 			}
 		})
+
+		t.Run("ReadFile round-trips fixture content", func(t *testing.T) {
+			got, err := exec.ReadFile(context.Background(), "top.txt")
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if got != conformanceFixture["top.txt"] {
+				t.Errorf("ReadFile(top.txt) = %q, want %q", got, conformanceFixture["top.txt"])
+			}
+		})
+
+		t.Run("ResolvePath traversal", func(t *testing.T) {
+			_, err := exec.ResolvePath("../escape")
+			switch {
+			case target.wantTraversalRejected && err == nil:
+				t.Error("expected traversal outside the workspace to be rejected")
+			case !target.wantTraversalRejected && err != nil:
+				t.Errorf("executor has no filesystem boundary to escape; expected no error, got: %v", err)
+			}
+		})
+
+		if lister, ok := exec.(TreeLister); ok {
+			t.Run("ListTree covers the fixture tree", func(t *testing.T) {
+				listing, err := lister.ListTree(context.Background(), ".")
+				if err != nil {
+					t.Fatalf("ListTree: %v", err)
+				}
+				if listing.Truncated {
+					t.Error("a small fixture tree must not report Truncated")
+				}
+				seen := make(map[string]int64, len(listing.Entries))
+				for _, e := range listing.Entries {
+					if strings.Contains(e.Path, "\\") {
+						t.Errorf("entry path must be slash-separated, got %q", e.Path)
+					}
+					if strings.HasPrefix(e.Path, "/") {
+						t.Errorf("entry path must be root-relative, got %q", e.Path)
+					}
+					if e.Size < 0 {
+						t.Errorf("entry size must be non-negative, got %d for %q", e.Size, e.Path)
+					}
+					seen[e.Path] = e.Size
+				}
+				for path := range conformanceFixture {
+					if _, ok := seen[path]; !ok {
+						t.Errorf("fixture file %q missing from tree listing: %v", path, seen)
+					}
+				}
+			})
+		}
 	}
 
 	t.Run("Capabilities", func(t *testing.T) {
 		if !exec.Capabilities().CanRead {
 			t.Error("expected CanRead true")
 		}
-		_, hasHostPathWorkspace := exec.(HostPathWorkspace)
+		hostPathWorkspace, hasHostPathWorkspace := exec.(HostPathWorkspace)
 		if hasHostPathWorkspace != target.wantHostPathWorkspace {
 			t.Errorf("implements HostPathWorkspace = %v, want %v", hasHostPathWorkspace, target.wantHostPathWorkspace)
+		}
+		// A declaring executor's HostWorkspaceRoot() must actually name its
+		// resolved workspace root, not just satisfy the interface shape —
+		// ResolvePath(".") is that root by construction for every executor.
+		if hasHostPathWorkspace && !target.capabilitiesOnly {
+			resolvedRoot, err := exec.ResolvePath(".")
+			if err != nil {
+				t.Fatalf("ResolvePath(\".\"): %v", err)
+			}
+			if got := hostPathWorkspace.HostWorkspaceRoot(); got != resolvedRoot {
+				t.Errorf("HostWorkspaceRoot() = %q, want it to match ResolvePath(\".\") = %q", got, resolvedRoot)
+			}
 		}
 	})
 }
