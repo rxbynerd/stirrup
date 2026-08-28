@@ -33,6 +33,7 @@ var grepFilesSchema = json.RawMessage(`{
 	"properties": {
 		"pattern": {
 			"type": "string",
+			"maxLength": 1000,
 			"description": "A regular expression (RE2 syntax) to match against file contents."
 		},
 		"path": {
@@ -41,12 +42,14 @@ var grepFilesSchema = json.RawMessage(`{
 		},
 		"include": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns (e.g. '*.go') a file path must match to be considered."
 		},
 		"exclude": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns a file path must NOT match."
 		},
 		"max_results": {
@@ -68,6 +71,7 @@ var findFilesSchema = json.RawMessage(`{
 	"properties": {
 		"name": {
 			"type": "string",
+			"maxLength": 255,
 			"description": "A shell-style glob (filepath.Match syntax) matched against each file's basename only — e.g. '*.go', 'handler_*.ts'. Does not support '**'. To narrow by path, use the include field instead."
 		},
 		"path": {
@@ -76,12 +80,14 @@ var findFilesSchema = json.RawMessage(`{
 		},
 		"include": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns the full file path must additionally match."
 		},
 		"exclude": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns the full file path must NOT match."
 		},
 		"max_results": {

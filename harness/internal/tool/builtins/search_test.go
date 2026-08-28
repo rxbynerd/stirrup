@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
@@ -927,4 +928,61 @@ func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Schema bound tests ---
+
+// TestGrepFilesTool_SchemaBoundsPatternAndGlobs pins the maxLength/maxItems
+// bounds on pattern and include/exclude, enforced by the loop's
+// security.ValidateJSONSchema call before the handler ever runs — these are
+// runtime-enforced limits, not documentation.
+func TestGrepFilesTool_SchemaBoundsPatternAndGlobs(t *testing.T) {
+	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
+
+	t.Run("pattern within bound", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1000)})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err != nil {
+			t.Errorf("expected a 1000-char pattern to validate, got: %v", err)
+		}
+	})
+	t.Run("pattern over bound rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1001)})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected an over-length pattern to be rejected")
+		}
+	})
+	t.Run("too many include globs rejected", func(t *testing.T) {
+		globs := make([]string, 51)
+		for i := range globs {
+			globs[i] = "*.go"
+		}
+		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": globs})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected more than 50 include globs to be rejected")
+		}
+	})
+	t.Run("over-length glob rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": []string{strings.Repeat("a", 501)}})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected an over-length glob to be rejected")
+		}
+	})
+}
+
+// TestFindFilesTool_SchemaBoundsNameAndGlobs is the find_files analogue.
+func TestFindFilesTool_SchemaBoundsNameAndGlobs(t *testing.T) {
+	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
+
+	t.Run("name within bound", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 255)})
+		if err := security.ValidateJSONSchema(input, find.InputSchema); err != nil {
+			t.Errorf("expected a 255-char name to validate, got: %v", err)
+		}
+	})
+	t.Run("name over bound rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 256)})
+		if err := security.ValidateJSONSchema(input, find.InputSchema); err == nil {
+			t.Error("expected an over-length name to be rejected")
+		}
+	})
 }
