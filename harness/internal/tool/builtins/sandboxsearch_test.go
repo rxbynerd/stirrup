@@ -461,3 +461,52 @@ func TestFindFilesTool_SandboxExecOutputCapMarksIncomplete(t *testing.T) {
 		t.Error("an executor-level output cap must mark the listing incomplete")
 	}
 }
+
+// TestSandboxRipgrepProbe_TransportErrorNotCached pins the retry-on-flake
+// contract: a transport error on the probe (Exec itself failing, not a
+// definitive nonzero exit) must not be cached — the next call retries
+// rather than staying permanently stuck on the grep fallback.
+func TestSandboxRipgrepProbe_TransportErrorNotCached(t *testing.T) {
+	callCount := 0
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, fmt.Errorf("transport hiccup")
+			}
+			return &executor.ExecResult{ExitCode: 0}, nil
+		},
+	}
+	probe := &sandboxRipgrepProbe{}
+	if got := probe.detect(context.Background(), fe); got {
+		t.Error("first (transport-failing) probe must report absent")
+	}
+	if got := probe.detect(context.Background(), fe); !got {
+		t.Error("second probe must retry and report present, not stay cached on the transport failure")
+	}
+	if callCount != 2 {
+		t.Errorf("expected the probe to run exactly twice (retry after transport error), got %d", callCount)
+	}
+}
+
+// TestSandboxRipgrepProbe_DefinitiveAbsentIsCached is the inverse: once the
+// probe actually ran and reported a definitive nonzero exit ("rg not
+// found"), that answer must be cached — no repeated probing on every call.
+func TestSandboxRipgrepProbe_DefinitiveAbsentIsCached(t *testing.T) {
+	callCount := 0
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			callCount++
+			return &executor.ExecResult{ExitCode: 127}, nil
+		},
+	}
+	probe := &sandboxRipgrepProbe{}
+	probe.detect(context.Background(), fe)
+	probe.detect(context.Background(), fe)
+	probe.detect(context.Background(), fe)
+	if callCount != 1 {
+		t.Errorf("expected a definitive absent result to be cached after one probe, got %d calls", callCount)
+	}
+}

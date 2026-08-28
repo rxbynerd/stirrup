@@ -689,16 +689,33 @@ func implementsHostPathWorkspace(exec executor.Executor) bool {
 // available inside. One probe is constructed per tool instance (tools are
 // built fresh per run per executor), so a cached miss never survives past
 // the run that produced it.
+//
+// Only a definitive answer (the probe command actually ran and reported an
+// exit code) is cached. A transport failure — a slow sandbox cold-start, an
+// Exec hiccup, ctx cancellation on that first probe — is not: caching that
+// as "rg absent" for the tool instance's whole lifetime would silently and
+// permanently degrade every subsequent call to the slower grep fallback
+// over a one-off flake, so detect retries on the next call instead and
+// logs the transient failure.
 type sandboxRipgrepProbe struct {
-	once    sync.Once
+	mu      sync.Mutex
+	decided bool
 	present bool
 }
 
 func (p *sandboxRipgrepProbe) detect(ctx context.Context, exec executor.Executor) bool {
-	p.once.Do(func() {
-		result, err := exec.Exec(ctx, "rg --version", searchTimeout)
-		p.present = err == nil && result.ExitCode == 0
-	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.decided {
+		return p.present
+	}
+	result, err := exec.Exec(ctx, "rg --version", searchTimeout)
+	if err != nil {
+		slog.WarnContext(ctx, "sandboxed rg probe failed, retrying on next call", "err", err)
+		return false
+	}
+	p.present = result.ExitCode == 0
+	p.decided = true
 	return p.present
 }
 
