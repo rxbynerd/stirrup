@@ -246,11 +246,11 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 					matches = nativeMatches
 				}
 			case exec.Capabilities().CanExec:
-				sandboxMatches, sandboxErr := grepSandboxed(ctx, exec, &sandboxRG, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+				sandboxMatches, sandboxIncomplete, sandboxErr := grepSandboxed(ctx, exec, &sandboxRG, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
 				if sandboxErr != nil {
 					return tool.StructuredResult{}, sandboxErr
 				}
-				matches = sandboxMatches
+				matches, incomplete = sandboxMatches, sandboxIncomplete
 			default:
 				lister, ok := exec.(executor.TreeLister)
 				if !ok {
@@ -381,11 +381,11 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 				}
 				paths = nativePaths
 			case exec.Capabilities().CanExec:
-				sandboxPaths, sandboxErr := findViaExec(ctx, exec, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
+				sandboxPaths, sandboxIncomplete, sandboxErr := findViaExec(ctx, exec, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
 				if sandboxErr != nil {
 					return tool.StructuredResult{}, sandboxErr
 				}
-				paths = sandboxPaths
+				paths, incomplete = sandboxPaths, sandboxIncomplete
 			default:
 				lister, ok := exec.(executor.TreeLister)
 				if !ok {
@@ -698,17 +698,18 @@ func (p *sandboxRipgrepProbe) detect(ctx context.Context, exec executor.Executor
 // filesystem counterpart (container, k8s, k8s-sandbox): the walk happens
 // entirely inside the sandbox via exec.Exec. It prefers rg, probed through
 // the executor, and falls back to a portable `grep -r -n -E` invocation
-// understood by both GNU and busybox grep.
-func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRipgrepProbe, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, error) {
+// understood by both GNU and busybox grep. The bool reports whether the
+// scan is known to be incomplete, mirroring the tree-backed path.
+func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRipgrepProbe, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
 	if probe.detect(ctx, exec) {
 		matches, ok, err := grepViaRipgrep(ctx, exec, dir, pattern, include, exclude, maxResults)
 		switch {
 		case err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
-			return nil, err
+			return nil, false, err
 		case err != nil:
 			slog.WarnContext(ctx, "sandboxed rg invocation failed, falling back to grep", "err", err)
 		case ok:
-			return matches, nil
+			return matches, false, nil
 		}
 	}
 	return grepViaShellGrep(ctx, exec, dir, pattern, include, exclude, maxResults)
@@ -721,66 +722,101 @@ func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRi
 // following inside the sandboxed walk is bounded by the sandbox's own
 // filesystem view; the CWE-59 host-symlink guard grepNative needs has no
 // counterpart here because this walk never touches the harness host.
-func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, error) {
+func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
 	cmd := fmt.Sprintf("grep -r -n -E -e %s %s", shellQuote(pattern), shellQuote(dir))
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("grep invocation failed: %w", err)
+		return nil, false, fmt.Errorf("grep invocation failed: %w", err)
 	}
 	// grep's exit-code convention mirrors rg's: 0 == matches found, 1 ==
-	// no matches (clean), 2+ == a real error (bad regex, IO failure).
-	switch result.ExitCode {
-	case 0, 1:
-		return parseGrepOutput(result.Stdout, dir, include, exclude, maxResults), nil
+	// no matches (clean), 2+ == a real error (bad regex, IO failure). A
+	// nonzero exit alongside a mid-walk read error (e.g. one unreadable
+	// subdirectory) still carries every match grep reached before hitting
+	// it — discarding that would be strictly worse than the tree-backed
+	// path's graceful degradation, so only an empty stdout on a hard exit
+	// is treated as a fatal invocation failure; anything else is reported
+	// as a partial result.
+	switch {
+	case result.ExitCode == 0 || result.ExitCode == 1:
+		matches, incomplete := parseGrepOutput(result.Stdout, dir, include, exclude, maxResults)
+		return matches, incomplete, nil
+	case strings.TrimSpace(result.Stdout) == "":
+		return nil, false, fmt.Errorf("grep failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	default:
-		return nil, fmt.Errorf("grep failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+		matches, _ := parseGrepOutput(result.Stdout, dir, include, exclude, maxResults)
+		return matches, true, nil
 	}
 }
 
 // parseGrepOutput parses `grep -n` output ("path:line:text" per line) into
-// searchMatch structs. Sandboxed grep output is not under our control the
-// way rg's --json events are, and matched text may legitimately contain
-// colons, so each line is split into at most three parts and a line that
-// doesn't fit the shape is skipped rather than treated as fatal.
-func parseGrepOutput(stdout, dir string, include, exclude []string, maxResults int) []searchMatch {
+// searchMatch structs. The bool reports whether any line failed to parse,
+// so a dropped match is signalled as incompleteness rather than vanishing
+// silently.
+func parseGrepOutput(stdout, dir string, include, exclude []string, maxResults int) ([]searchMatch, bool) {
 	var matches []searchMatch
+	incomplete := false
 	for _, line := range strings.Split(stdout, "\n") {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
+		pathPart, lineNum, textPart, ok := splitGrepLine(line)
+		if !ok {
+			incomplete = true
 			continue
 		}
-		lineNum, err := strconv.Atoi(parts[1])
-		if err != nil {
-			continue
-		}
-		rel := relativeToSandboxPath(parts[0], dir)
+		rel := relativeToSandboxPath(pathPart, dir)
 		if !matchesFilters(path.Base(rel), rel, include, exclude) {
 			continue
 		}
-		matches = append(matches, searchMatch{Path: rel, Line: lineNum, Text: parts[2]})
+		matches = append(matches, searchMatch{Path: rel, Line: lineNum, Text: textPart})
 		if len(matches) >= maxResults {
 			break
 		}
 	}
-	return matches
+	return matches, incomplete
+}
+
+// splitGrepLine parses one "path:line:text" line of `grep -n` output. A file
+// path may itself contain a colon, so the split point can't be assumed to be
+// the first colon in the line: this scans each colon as a candidate
+// path/line-number boundary and takes the first one whose next
+// colon-delimited field parses as an integer — the same left-to-right rule
+// grep itself uses to locate the line-number field.
+func splitGrepLine(line string) (pathPart string, lineNum int, textPart string, ok bool) {
+	offset := 0
+	for {
+		idx := strings.IndexByte(line[offset:], ':')
+		if idx < 0 {
+			return "", 0, "", false
+		}
+		colonPos := offset + idx
+		afterColon := line[colonPos+1:]
+		nextIdx := strings.IndexByte(afterColon, ':')
+		if nextIdx >= 0 {
+			if n, err := strconv.Atoi(afterColon[:nextIdx]); err == nil {
+				return line[:colonPos], n, afterColon[nextIdx+1:], true
+			}
+		}
+		offset = colonPos + 1
+	}
 }
 
 // findViaExec lists files under dir inside the sandbox via `find <dir>
 // -type f`: busybox-compatible, no -printf or -maxdepth games. Name
 // matching against the basename and include/exclude filtering happen
-// client-side, mirroring findNative and findTree.
-func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, include, exclude []string, maxResults int) ([]string, error) {
+// client-side, mirroring findNative and findTree. The bool reports whether
+// the listing is known to be incomplete (a nonzero exit that still produced
+// output, e.g. one unreadable subdirectory).
+func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, include, exclude []string, maxResults int) ([]string, bool, error) {
 	cmd := fmt.Sprintf("find %s -type f", shellQuote(dir))
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("find invocation failed: %w", err)
+		return nil, false, fmt.Errorf("find invocation failed: %w", err)
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("find failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	if result.ExitCode != 0 && strings.TrimSpace(result.Stdout) == "" {
+		return nil, false, fmt.Errorf("find failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
+	incomplete := result.ExitCode != 0
 	var results []string
 	for _, line := range strings.Split(result.Stdout, "\n") {
 		if line == "" {
@@ -789,7 +825,7 @@ func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, 
 		rel := relativeToSandboxPath(line, dir)
 		matched, matchErr := filepath.Match(name, path.Base(rel))
 		if matchErr != nil {
-			return nil, fmt.Errorf("match name pattern: %w", matchErr)
+			return nil, false, fmt.Errorf("match name pattern: %w", matchErr)
 		}
 		if !matched {
 			continue
@@ -802,7 +838,7 @@ func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, 
 			break
 		}
 	}
-	return results, nil
+	return results, incomplete, nil
 }
 
 // relativeToSandboxPath converts an absolute in-sandbox path emitted by a
