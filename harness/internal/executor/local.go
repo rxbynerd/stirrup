@@ -134,6 +134,16 @@ func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
 	return resolved, nil
 }
 
+// HostWorkspaceRoot returns the executor's absolute, symlink-resolved
+// workspace root, declaring the HostPathWorkspace capability: LocalExecutor
+// is the only Executor whose workspace is a directory on the harness host's
+// own filesystem.
+func (e *LocalExecutor) HostWorkspaceRoot() string {
+	return e.workspace
+}
+
+var _ HostPathWorkspace = (*LocalExecutor)(nil)
+
 // ReadFile reads a file from the workspace. The file must be within the
 // workspace and no larger than 10 MB.
 func (e *LocalExecutor) ReadFile(ctx context.Context, path string) (string, error) {

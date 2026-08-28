@@ -86,6 +86,17 @@ type TreeLister interface {
 	ListTree(ctx context.Context, root string) (TreeListing, error)
 }
 
+// HostPathWorkspace is the optional capability marking an executor whose
+// workspace is a directory on the harness host's own filesystem, so a
+// ResolvePath result may be dereferenced with host filesystem APIs
+// (filepath.WalkDir, os.ReadFile). Executors whose workspace lives behind a
+// sandbox or API boundary must not implement it, even when the workspace
+// happens to be bind-mounted from the host: the sandbox boundary is the
+// point, and searches on those executors must run inside the sandbox.
+type HostPathWorkspace interface {
+	HostWorkspaceRoot() string
+}
+
 // StreamingExecutor is the optional full-output execution capability used by
 // run_command. Exec remains bounded for hooks, verifiers, git helpers, and
 // legacy callers; production executors implement this interface to stream
