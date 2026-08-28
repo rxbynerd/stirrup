@@ -3,7 +3,10 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -511,5 +514,358 @@ func TestSandboxRipgrepProbe_DefinitiveAbsentIsCached(t *testing.T) {
 	probe.detect(context.Background(), fe)
 	if callCount != 1 {
 		t.Errorf("expected a definitive absent result to be cached after one probe, got %d calls", callCount)
+	}
+}
+
+// --- Sandbox-branch rg transport-error / cancellation mirrors ---
+
+// TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep mirrors
+// TestGrepViaRipgrep_TransportErrorFallsBackToNative for the sandbox
+// branch: the rg probe reports present, but the rg invocation itself fails
+// at the transport level (not a bad exit code) — this must fall back to
+// the grep fallback rather than hard-erroring.
+func TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 0}, nil
+			case strings.HasPrefix(command, "rg "):
+				return nil, fmt.Errorf("docker socket: connection refused")
+			case strings.HasPrefix(command, "grep "):
+				return &executor.ExecResult{ExitCode: 0, Stdout: "/workspace/a.go:1:needle\n"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	out, err := invokeText(context.Background(), grep, input)
+	if err != nil {
+		t.Fatalf("transport error must not surface; expected grep fallback, got: %v", err)
+	}
+	if out != "a.go:1:needle" {
+		t.Errorf("expected grep fallback match, got %q", out)
+	}
+}
+
+// TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates mirrors
+// TestGrepViaRipgrep_ContextCancelPropagates for the sandbox branch: a
+// context.Canceled from the rg invocation must propagate, not trigger a
+// silent grep fallback.
+func TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 0}, nil
+			case strings.HasPrefix(command, "rg "):
+				return nil, context.Canceled
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	_, err := invokeText(context.Background(), grep, input)
+	if err == nil {
+		t.Fatal("expected context.Canceled to propagate")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+// --- Sandbox-branch include/exclude and max_results end-to-end ---
+
+// TestGrepFilesTool_SandboxExecAppliesIncludeExclude exercises client-side
+// include/exclude filtering end-to-end through the grep fallback, rather
+// than only against matchesFilters in isolation — a wiring bug (e.g.
+// swapped base/rel arguments) would not be caught by the unit-level filter
+// tests alone.
+func TestGrepFilesTool_SandboxExecAppliesIncludeExclude(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 127}, nil
+			case strings.HasPrefix(command, "grep "):
+				return &executor.ExecResult{
+					ExitCode: 0,
+					Stdout: "/workspace/a.go:1:needle\n" +
+						"/workspace/a.txt:1:needle\n" +
+						"/workspace/skip.go:1:needle\n",
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{
+		"pattern": "needle",
+		"include": []string{"*.go"},
+		"exclude": []string{"skip.go"},
+	})
+	out, err := invokeText(context.Background(), grep, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "a.go:1:needle" {
+		t.Errorf("got %q, want only a.go:1:needle", out)
+	}
+}
+
+// TestFindFilesTool_SandboxExecAppliesIncludeExclude is the find-side
+// analogue.
+func TestFindFilesTool_SandboxExecAppliesIncludeExclude(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{
+				ExitCode: 0,
+				Stdout:   "/workspace/a.go\n/workspace/a.txt\n/workspace/skip.go\n",
+			}, nil
+		},
+	}
+	find := FindFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{
+		"name":    "*.go",
+		"exclude": []string{"skip.go"},
+	})
+	out, err := invokeText(context.Background(), find, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "a.go" {
+		t.Errorf("got %q, want only a.go", out)
+	}
+}
+
+// TestGrepFilesTool_SandboxExecTruncatedBoundary exercises the look-ahead
+// probe end-to-end through the grep fallback: a count landing exactly on
+// max_results must report Truncated:false; one past must report true and
+// trim the probe element. Mirrors TestGrepFilesTool_TruncatedBoundary_Native
+// / _Ripgrep for the sandbox-exec branch.
+func TestGrepFilesTool_SandboxExecTruncatedBoundary(t *testing.T) {
+	const maxResults = 3
+	cases := []struct {
+		name          string
+		lines         int
+		wantTruncated bool
+		wantMatches   int
+	}{
+		{"below cap", maxResults - 1, false, maxResults - 1},
+		{"exactly at cap", maxResults, false, maxResults},
+		{"one past cap", maxResults + 1, true, maxResults},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout strings.Builder
+			for i := 0; i < tc.lines; i++ {
+				fmt.Fprintf(&stdout, "/workspace/f%d.go:1:hit\n", i)
+			}
+			fe := &sandboxExecExecutor{
+				resolvedDir: "/workspace",
+				execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+					switch {
+					case strings.HasPrefix(command, "rg --version"):
+						return &executor.ExecResult{ExitCode: 127}, nil
+					case strings.HasPrefix(command, "grep "):
+						return &executor.ExecResult{ExitCode: 0, Stdout: stdout.String()}, nil
+					default:
+						return nil, fmt.Errorf("unexpected command: %q", command)
+					}
+				},
+			}
+			grep := GrepFilesTool(fe)
+			input, _ := json.Marshal(map[string]any{"pattern": "hit", "max_results": maxResults})
+			sr := decodeSearchResult(t, grep, input)
+			if sr.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", sr.Truncated, tc.wantTruncated)
+			}
+			if len(sr.Matches) != tc.wantMatches {
+				t.Errorf("len(Matches) = %d, want %d", len(sr.Matches), tc.wantMatches)
+			}
+		})
+	}
+}
+
+// TestFindFilesTool_SandboxExecTruncatedBoundary is the find-side analogue.
+func TestFindFilesTool_SandboxExecTruncatedBoundary(t *testing.T) {
+	const maxResults = 3
+	cases := []struct {
+		name          string
+		lines         int
+		wantTruncated bool
+		wantPaths     int
+	}{
+		{"below cap", maxResults - 1, false, maxResults - 1},
+		{"exactly at cap", maxResults, false, maxResults},
+		{"one past cap", maxResults + 1, true, maxResults},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout strings.Builder
+			for i := 0; i < tc.lines; i++ {
+				fmt.Fprintf(&stdout, "/workspace/f%d.go\n", i)
+			}
+			fe := &sandboxExecExecutor{
+				resolvedDir: "/workspace",
+				execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+					return &executor.ExecResult{ExitCode: 0, Stdout: stdout.String()}, nil
+				},
+			}
+			find := FindFilesTool(fe)
+			input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": maxResults})
+			fr := decodeFindResult(t, find, input)
+			if fr.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", fr.Truncated, tc.wantTruncated)
+			}
+			if len(fr.Paths) != tc.wantPaths {
+				t.Errorf("len(Paths) = %d, want %d", len(fr.Paths), tc.wantPaths)
+			}
+		})
+	}
+}
+
+// --- Dispatch precedence: HostPathWorkspace > CanExec > TreeLister ---
+
+// hostAndExecExecutor implements both HostPathWorkspace and CanExec at
+// once. No production executor combines these today (LocalExecutor is the
+// only HostPathWorkspace implementer), but nothing proves the dispatch
+// switch's ordering without a fixture that forces the choice. Exec panics,
+// so a regression that lets CanExec win fails loudly instead of silently
+// routing through the sandbox-exec branch.
+type hostAndExecExecutor struct {
+	root string
+}
+
+func (e *hostAndExecExecutor) ReadFile(context.Context, string) (string, error) {
+	return "", fmt.Errorf("not used by these tests")
+}
+
+func (e *hostAndExecExecutor) WriteFile(context.Context, string, string) error {
+	return fmt.Errorf("write operations not supported")
+}
+
+func (e *hostAndExecExecutor) ListDirectory(context.Context, string) ([]string, error) {
+	return nil, fmt.Errorf("not used by these tests")
+}
+
+func (e *hostAndExecExecutor) Exec(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+	panic("Exec must not be called: HostPathWorkspace must win over CanExec")
+}
+
+func (e *hostAndExecExecutor) ResolvePath(relativePath string) (string, error) {
+	if relativePath == "." || relativePath == "" {
+		return e.root, nil
+	}
+	return filepath.Join(e.root, relativePath), nil
+}
+
+func (e *hostAndExecExecutor) Capabilities() executor.ExecutorCapabilities {
+	return executor.ExecutorCapabilities{CanRead: true, CanExec: true, MaxTimeout: time.Minute}
+}
+
+func (e *hostAndExecExecutor) HostWorkspaceRoot() string { return e.root }
+
+func TestGrepFilesTool_HostPathWorkspaceWinsOverCanExec(t *testing.T) {
+	withRipgrepProbe(t, false)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	grep := GrepFilesTool(&hostAndExecExecutor{root: dir})
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	out, err := invokeText(context.Background(), grep, input)
+	if err != nil {
+		t.Fatalf("unexpected error (Exec must not have been reached): %v", err)
+	}
+	if !strings.Contains(out, "a.go") {
+		t.Errorf("expected native walker match, got %q", out)
+	}
+}
+
+func TestFindFilesTool_HostPathWorkspaceWinsOverCanExec(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	find := FindFilesTool(&hostAndExecExecutor{root: dir})
+	input, _ := json.Marshal(map[string]any{"name": "*.go"})
+	out, err := invokeText(context.Background(), find, input)
+	if err != nil {
+		t.Fatalf("unexpected error (Exec must not have been reached): %v", err)
+	}
+	if !strings.Contains(out, "a.go") {
+		t.Errorf("expected native walker match, got %q", out)
+	}
+}
+
+// execAndTreeListerExecutor implements both CanExec and TreeLister at once,
+// pinning that the sandbox-exec branch takes priority over remote-tree
+// enumeration when an executor exposes both. ListTree panics so a
+// regression that reorders the switch fails loudly instead of silently
+// picking the slower, network-bound tree path.
+type execAndTreeListerExecutor struct {
+	sandboxExecExecutor
+}
+
+func (e *execAndTreeListerExecutor) ListTree(context.Context, string) (executor.TreeListing, error) {
+	panic("ListTree must not be called: CanExec must win over TreeLister")
+}
+
+func TestGrepFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
+	fe := &execAndTreeListerExecutor{sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 0}, nil
+			case strings.HasPrefix(command, "rg "):
+				return &executor.ExecResult{
+					ExitCode: 0,
+					Stdout:   `{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"needle\n"},"line_number":1}}` + "\n",
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	out, err := invokeText(context.Background(), grep, input)
+	if err != nil {
+		t.Fatalf("unexpected error (ListTree must not have been reached): %v", err)
+	}
+	if !strings.Contains(out, "a.go") {
+		t.Errorf("expected exec-backed match, got %q", out)
+	}
+}
+
+func TestFindFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
+	fe := &execAndTreeListerExecutor{sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			if !strings.HasPrefix(command, "find ") {
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+			return &executor.ExecResult{ExitCode: 0, Stdout: "/workspace/a.go\n"}, nil
+		},
+	}}
+	find := FindFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"name": "*.go"})
+	out, err := invokeText(context.Background(), find, input)
+	if err != nil {
+		t.Fatalf("unexpected error (ListTree must not have been reached): %v", err)
+	}
+	if !strings.Contains(out, "a.go") {
+		t.Errorf("expected exec-backed match, got %q", out)
 	}
 }
