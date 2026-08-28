@@ -143,6 +143,9 @@ func TestGrepFilesTool_SandboxExecFallsBackToGrepWhenRipgrepMissing(t *testing.T
 	if strings.Contains(fe.commands[1], "--include") || strings.Contains(fe.commands[1], "--exclude") {
 		t.Errorf("grep fallback must not use GNU-only include/exclude flags, got %q", fe.commands[1])
 	}
+	if !strings.Contains(fe.commands[1], " -I ") {
+		t.Errorf("grep fallback must pass -I to honour the binary-files-skipped contract, got %q", fe.commands[1])
+	}
 }
 
 // TestGrepFilesTool_SandboxExecGrepHardErrorSurfaces pins the exit-code

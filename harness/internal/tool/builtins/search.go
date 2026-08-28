@@ -740,15 +740,18 @@ func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRi
 	return grepViaShellGrep(ctx, exec, dir, pattern, include, exclude, maxResults)
 }
 
-// grepViaShellGrep runs `grep -r -n -E` inside the sandbox when rg is not
+// grepViaShellGrep runs `grep -r -n -I -E` inside the sandbox when rg is not
 // available there. It deliberately avoids GNU-only flags such as
 // --include/--exclude (busybox grep lacks them) and applies include/exclude
-// filtering client-side instead, matching the other search paths. Symlink
-// following inside the sandboxed walk is bounded by the sandbox's own
-// filesystem view; the CWE-59 host-symlink guard grepNative needs has no
-// counterpart here because this walk never touches the harness host.
+// filtering client-side instead, matching the other search paths. -I is
+// supported by GNU, BSD, and busybox grep alike and keeps this branch
+// honouring the tools' documented "binary files are skipped" contract the
+// same way rg (skips binary by default) and grepNative (looksBinary) do.
+// Symlink following inside the sandboxed walk is bounded by the sandbox's
+// own filesystem view; the CWE-59 host-symlink guard grepNative needs has
+// no counterpart here because this walk never touches the harness host.
 func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
-	cmd := fmt.Sprintf("grep -r -n -E -e %s %s", shellQuote(pattern), shellQuote(dir))
+	cmd := fmt.Sprintf("grep -r -n -I -E -e %s %s", shellQuote(pattern), shellQuote(dir))
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
 	if err != nil {
 		return nil, false, fmt.Errorf("grep invocation failed: %w", err)
