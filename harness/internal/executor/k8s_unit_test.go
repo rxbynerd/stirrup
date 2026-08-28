@@ -410,6 +410,55 @@ func TestWriteCapBuffer(t *testing.T) {
 	})
 }
 
+// TestTimeoutExecResult_OutputTruncated pins the ctx-ending branch of
+// podExecCore.Exec: a deadline/cancellation racing the output cap must set
+// OutputTruncated on the (still-returned, not discarded) partial result.
+// podExecCore.Exec itself is exercised over a real pods/exec stream, so
+// this drives the extracted result-construction logic directly with
+// writeCapBuffer state built the same way Exec's Write calls would leave
+// it, rather than requiring a fake streaming apparatus.
+func TestTimeoutExecResult_OutputTruncated(t *testing.T) {
+	t.Run("neither stream capped", func(t *testing.T) {
+		var stdout, stderr writeCapBuffer
+		stdout.limit, stderr.limit = 16, 16
+		_, _ = stdout.Write([]byte("hello"))
+
+		result := timeoutExecResult(&stdout, &stderr)
+		if result.OutputTruncated {
+			t.Error("OutputTruncated = true, want false when neither stream hit its cap")
+		}
+		if result.Stdout != "hello" {
+			t.Errorf("Stdout = %q, want %q", result.Stdout, "hello")
+		}
+	})
+
+	t.Run("stdout capped", func(t *testing.T) {
+		var stdout, stderr writeCapBuffer
+		stdout.limit, stderr.limit = 4, 4
+		_, _ = stdout.Write([]byte("abcdefgh"))
+
+		result := timeoutExecResult(&stdout, &stderr)
+		if !result.OutputTruncated {
+			t.Error("OutputTruncated = false, want true when stdout crossed its cap")
+		}
+	})
+
+	t.Run("stderr capped", func(t *testing.T) {
+		var stdout, stderr writeCapBuffer
+		stdout.limit, stderr.limit = 4, 4
+		_, _ = stderr.Write([]byte("abcdefgh"))
+
+		result := timeoutExecResult(&stdout, &stderr)
+		if !result.OutputTruncated {
+			t.Error("OutputTruncated = false, want true when stderr crossed its cap")
+		}
+	})
+
+	if result := timeoutExecResult(&writeCapBuffer{}, &writeCapBuffer{}); result.ExitCode != -1 {
+		t.Errorf("ExitCode = %d, want -1 (sentinel for a ctx-ended exec)", result.ExitCode)
+	}
+}
+
 // TestClassifyTarError covers the missing-file mapping that ReadFile and
 // ListDirectory depend on: a tar/ls "No such file or directory" stderr must
 // surface as fs.ErrNotExist so callers can branch with errors.Is. Other

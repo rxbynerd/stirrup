@@ -236,6 +236,22 @@ func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]stri
 	return entries, nil
 }
 
+// timeoutExecResult builds the ExecResult returned when ctx ends (deadline
+// or cancellation) during Exec. A deadline/cancellation can race the output
+// cap: streamExec may have already dropped bytes past the cap before ctx
+// ended, and unlike the stdout.exceeded branch in Exec this path returns a
+// real ExecResult (partial output is deliberately preserved on timeout)
+// rather than erroring, so OutputTruncated must be set explicitly here
+// rather than inferred from a nil result.
+func timeoutExecResult(stdout, stderr *writeCapBuffer) *ExecResult {
+	return &ExecResult{
+		ExitCode:        -1,
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		OutputTruncated: stdout.exceeded || stderr.exceeded,
+	}
+}
+
 // Exec runs `command` via `/bin/sh -c` in the agent container over the
 // pods/exec subresource. A zero timeout uses the default; timeouts are
 // clamped to MaxTimeout. On deadline or cancellation, classifyExecCtxErr
@@ -260,17 +276,7 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, &stdout, &stderr)
 
 	if ctx.Err() != nil {
-		// A deadline/cancellation can race the output cap: streamExec may
-		// have already dropped bytes past the cap before ctx ended, and
-		// unlike the stdout.exceeded branch below this path returns a real
-		// ExecResult (partial output is deliberately preserved on timeout)
-		// rather than erroring, so OutputTruncated must be set explicitly.
-		return &ExecResult{
-			ExitCode:        -1,
-			Stdout:          stdout.String(),
-			Stderr:          stderr.String(),
-			OutputTruncated: stdout.exceeded || stderr.exceeded,
-		}, classifyExecCtxErr(ctx, timeout)
+		return timeoutExecResult(&stdout, &stderr), classifyExecCtxErr(ctx, timeout)
 	}
 	if stdout.exceeded || stderr.exceeded {
 		if e.Security != nil {
