@@ -45,6 +45,14 @@ func (f *fsExecutor) Capabilities() executor.ExecutorCapabilities {
 	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: f.canExec, MaxTimeout: time.Minute}
 }
 
+// HostWorkspaceRoot declares the HostPathWorkspace capability: fsExecutor
+// stands in for LocalExecutor, resolving paths onto a real temp directory on
+// the host, so it belongs on the host-backed dispatch branch the same way
+// LocalExecutor does.
+func (f *fsExecutor) HostWorkspaceRoot() string {
+	return f.root
+}
+
 // TestGrepNative_PermissionDeniedSubdirSkipped covers the fs.ErrPermission
 // branch in grepNative. A 0000-mode subdirectory inside the workspace must
 // be skipped silently (returning fs.SkipDir from the callback) so that
