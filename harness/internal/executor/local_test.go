@@ -351,6 +351,9 @@ func TestExec_OutputTruncation(t *testing.T) {
 	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
 		t.Errorf("expected truncation suffix on large output, got last 50 chars: %q", result.Stdout[len(result.Stdout)-50:])
 	}
+	if !result.OutputTruncated {
+		t.Error("expected ExecResult.OutputTruncated true on capped output")
+	}
 }
 
 // capturingEmitter records the originalSize argument of the most recent

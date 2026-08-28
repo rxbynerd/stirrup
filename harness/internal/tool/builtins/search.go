@@ -221,7 +221,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			case implementsHostPathWorkspace(exec):
 				gotResult := false
 				if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-					rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+					rgMatches, ok, _, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
 					switch {
 					case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
 						// Context-cancellation must propagate — the caller asked
@@ -477,11 +477,13 @@ func (t rgJSONText) value() string {
 }
 
 // grepViaRipgrep runs `rg --json` and builds searchMatch structs directly from
-// the structured events rather than parsing rendered text. The bool return
-// reports whether rg produced a usable answer (true) or hit an unexpected error
-// code that warrants falling back to the Go-native walker (false). Error
-// returns are reserved for executor failures that the caller surfaces directly.
-func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
+// the structured events rather than parsing rendered text. The first bool
+// reports whether rg produced a usable answer (true) or hit an unexpected
+// error code that warrants falling back to the Go-native walker (false). The
+// second bool reports whether the executor's own output cap truncated rg's
+// stdout before this call saw it. Error returns are reserved for executor
+// failures that the caller surfaces directly.
+func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, bool, error) {
 	var args []string
 	args = append(args, "rg", "--json", "--color", "never",
 		"--max-count", fmt.Sprintf("%d", maxResults),
@@ -497,7 +499,7 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
 	if err != nil {
-		return nil, false, fmt.Errorf("rg invocation failed: %w", err)
+		return nil, false, false, fmt.Errorf("rg invocation failed: %w", err)
 	}
 	// rg exit code 0 == matches found; 1 == no matches (clean); 2+ ==
 	// real error (bad regex, IO failure, etc.). We treat 2+ as a soft
@@ -505,11 +507,11 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 	switch result.ExitCode {
 	case 0:
 		matches := parseRipgrepJSON(result.Stdout, maxResults)
-		return matches, true, nil
+		return matches, true, result.OutputTruncated, nil
 	case 1:
-		return nil, true, nil
+		return nil, true, result.OutputTruncated, nil
 	default:
-		return nil, false, nil
+		return nil, false, result.OutputTruncated, nil
 	}
 }
 
@@ -702,14 +704,14 @@ func (p *sandboxRipgrepProbe) detect(ctx context.Context, exec executor.Executor
 // scan is known to be incomplete, mirroring the tree-backed path.
 func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRipgrepProbe, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
 	if probe.detect(ctx, exec) {
-		matches, ok, err := grepViaRipgrep(ctx, exec, dir, pattern, include, exclude, maxResults)
+		matches, ok, truncated, err := grepViaRipgrep(ctx, exec, dir, pattern, include, exclude, maxResults)
 		switch {
 		case err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
 			return nil, false, err
 		case err != nil:
 			slog.WarnContext(ctx, "sandboxed rg invocation failed, falling back to grep", "err", err)
 		case ok:
-			return matches, false, nil
+			return matches, truncated, nil
 		}
 	}
 	return grepViaShellGrep(ctx, exec, dir, pattern, include, exclude, maxResults)
@@ -739,7 +741,7 @@ func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern 
 	switch {
 	case result.ExitCode == 0 || result.ExitCode == 1:
 		matches, incomplete := parseGrepOutput(result.Stdout, dir, include, exclude, maxResults)
-		return matches, incomplete, nil
+		return matches, incomplete || result.OutputTruncated, nil
 	case strings.TrimSpace(result.Stdout) == "":
 		return nil, false, fmt.Errorf("grep failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	default:
@@ -816,7 +818,7 @@ func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, 
 	if result.ExitCode != 0 && strings.TrimSpace(result.Stdout) == "" {
 		return nil, false, fmt.Errorf("find failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 	}
-	incomplete := result.ExitCode != 0
+	incomplete := result.ExitCode != 0 || result.OutputTruncated
 	var results []string
 	for _, line := range strings.Split(result.Stdout, "\n") {
 		if line == "" {

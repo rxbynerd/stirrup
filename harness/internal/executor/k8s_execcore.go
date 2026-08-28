@@ -260,10 +260,16 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, &stdout, &stderr)
 
 	if ctx.Err() != nil {
+		// A deadline/cancellation can race the output cap: streamExec may
+		// have already dropped bytes past the cap before ctx ended, and
+		// unlike the stdout.exceeded branch below this path returns a real
+		// ExecResult (partial output is deliberately preserved on timeout)
+		// rather than erroring, so OutputTruncated must be set explicitly.
 		return &ExecResult{
-			ExitCode: -1,
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
+			ExitCode:        -1,
+			Stdout:          stdout.String(),
+			Stderr:          stderr.String(),
+			OutputTruncated: stdout.exceeded || stderr.exceeded,
 		}, classifyExecCtxErr(ctx, timeout)
 	}
 	if stdout.exceeded || stderr.exceeded {

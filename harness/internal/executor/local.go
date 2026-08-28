@@ -229,9 +229,10 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	}
 	result.Stdout = stdout.result()
 	result.Stderr = stderr.result()
-	if e.Security != nil {
-		combinedSize := stdout.seen() + stderr.seen()
-		if combinedSize > maxOutputSize {
+	combinedSize := stdout.seen() + stderr.seen()
+	if combinedSize > maxOutputSize {
+		result.OutputTruncated = true
+		if e.Security != nil {
 			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
 		}
 	}

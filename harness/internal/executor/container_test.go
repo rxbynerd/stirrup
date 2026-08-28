@@ -532,6 +532,9 @@ func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
 	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
 		t.Error("expected truncation suffix on large output")
 	}
+	if !result.OutputTruncated {
+		t.Error("expected ExecResult.OutputTruncated true on capped output")
+	}
 }
 
 // hangingExecStartHandler returns a "POST /exec/*/start" handler that

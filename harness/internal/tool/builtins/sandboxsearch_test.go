@@ -368,3 +368,96 @@ func TestFindFilesTool_SandboxExecPartialResultsOnMidWalkError(t *testing.T) {
 		t.Error("a mid-walk find error must be reported as an incomplete/truncated scan")
 	}
 }
+
+// TestGrepFilesTool_SandboxExecRipgrepOutputCapMarksIncomplete pins the
+// ExecResult.OutputTruncated wiring: an executor-level output cap that cut
+// off rg's stdout must surface as an incomplete scan, even though the
+// invocation itself succeeded (exit 0) and every match up to the cap parsed
+// cleanly — a clean parse of a truncated stream is not a complete result.
+func TestGrepFilesTool_SandboxExecRipgrepOutputCapMarksIncomplete(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 0}, nil
+			case strings.HasPrefix(command, "rg "):
+				return &executor.ExecResult{
+					ExitCode:        0,
+					Stdout:          `{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n",
+					OutputTruncated: true,
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
+	sr := decodeSearchResult(t, grep, input)
+	if len(sr.Matches) != 1 {
+		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
+	}
+	if !sr.Truncated {
+		t.Error("an executor-level output cap must mark the scan incomplete")
+	}
+}
+
+// TestGrepFilesTool_SandboxExecGrepFallbackOutputCapMarksIncomplete is the
+// grep-fallback analogue of the rg output-cap test above.
+func TestGrepFilesTool_SandboxExecGrepFallbackOutputCapMarksIncomplete(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 127}, nil
+			case strings.HasPrefix(command, "grep "):
+				return &executor.ExecResult{
+					ExitCode:        0,
+					Stdout:          "/workspace/a.go:1:hit\n",
+					OutputTruncated: true,
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
+	sr := decodeSearchResult(t, grep, input)
+	if len(sr.Matches) != 1 {
+		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
+	}
+	if !sr.Truncated {
+		t.Error("an executor-level output cap must mark the scan incomplete")
+	}
+}
+
+// TestFindFilesTool_SandboxExecOutputCapMarksIncomplete is find_files'
+// analogue: `find`'s own successful output, capped by the executor before
+// find_files ever saw it, must not be reported as an exhaustive listing.
+func TestFindFilesTool_SandboxExecOutputCapMarksIncomplete(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{
+				ExitCode:        0,
+				Stdout:          "/workspace/a.go\n",
+				OutputTruncated: true,
+			}, nil
+		},
+	}
+
+	find := FindFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"name": "*.go"})
+	fr := decodeFindResult(t, find, input)
+	if len(fr.Paths) != 1 || fr.Paths[0] != "a.go" {
+		t.Fatalf("expected the one listed path, got %v", fr.Paths)
+	}
+	if !fr.Truncated {
+		t.Error("an executor-level output cap must mark the listing incomplete")
+	}
+}

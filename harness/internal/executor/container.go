@@ -550,9 +550,10 @@ func (e *ContainerExecutor) truncateAndReport(command string, result *ExecResult
 	result.Stdout = truncate(result.Stdout, maxOutputSize)
 	result.Stderr = truncate(result.Stderr, maxOutputSize)
 
-	if e.Security != nil {
-		combinedSize := originalStdoutLen + originalStderrLen
-		if combinedSize > maxOutputSize {
+	combinedSize := originalStdoutLen + originalStderrLen
+	if combinedSize > maxOutputSize {
+		result.OutputTruncated = true
+		if e.Security != nil {
 			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
 		}
 	}

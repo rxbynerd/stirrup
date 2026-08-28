@@ -37,6 +37,12 @@ type ExecResult struct {
 	ExitCode int
 	Stdout   string
 	Stderr   string
+	// OutputTruncated reports that Stdout and/or Stderr were cut off by the
+	// executor's own output cap (e.g. maxOutputSize/k8sMaxOutput) before
+	// this result was returned. A caller that parses Stdout line-by-line
+	// must treat a truncated result as incomplete, not exhaustive — the
+	// last line may be a partial record.
+	OutputTruncated bool
 }
 
 // ExecutorCapabilities describes what operations an executor supports.
