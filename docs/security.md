@@ -281,9 +281,17 @@ All three `Executor` implementations enforce workspace containment:
 The `grep_files` and `find_files` tools call `ResolvePath` on the
 search root before any directory walk begins, so a workspace-relative
 path that escapes the workspace is rejected before the walker sees
-it. `grep_files` additionally uses `shellQuote()` on every value
-interpolated into the `rg` invocation. Tested against
-`../../../etc/passwd`, symlink escapes, and absolute paths.
+it. Which walker runs is chosen by declared executor capability, not
+by inspecting `ResolvePath`'s return shape: a `HostPathWorkspace`
+executor (`local`) walks the resolved host path directly; a `CanExec`
+executor with no host counterpart (`container`, `k8s`) searches
+inside the sandbox via `Exec`; a `TreeLister` executor (`api`)
+enumerates through the remote tree. An executor exposing none of
+these fails closed with a clear tool error rather than falling back
+to the harness host's own filesystem. `grep_files` additionally uses
+`shellQuote()` on every value interpolated into the `rg`/`grep`
+invocation. Tested against `../../../etc/passwd`, symlink escapes,
+and absolute paths.
 
 The workspace exporter (`harness/internal/workspaceexport`) applies
 the same containment check when building the export tarball: any
