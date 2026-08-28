@@ -744,12 +744,15 @@ func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRi
 // available there. It deliberately avoids GNU-only flags such as
 // --include/--exclude (busybox grep lacks them) and applies include/exclude
 // filtering client-side instead, matching the other search paths. -I is
-// supported by GNU, BSD, and busybox grep alike and keeps this branch
-// honouring the tools' documented "binary files are skipped" contract the
-// same way rg (skips binary by default) and grepNative (looksBinary) do.
-// Symlink following inside the sandboxed walk is bounded by the sandbox's
-// own filesystem view; the CWE-59 host-symlink guard grepNative needs has
-// no counterpart here because this walk never touches the harness host.
+// accepted by GNU and BSD grep and honoured; busybox grep (verified live
+// against golang:1.27.0-alpine's busybox grep 1.37.0) accepts -I but
+// silently ignores it, still matching inside NUL-containing files — so
+// parseGrepOutput applies its own NUL-byte check to keep the tools'
+// documented "binary files are skipped" contract on builds where -I is a
+// no-op. Symlink following inside the sandboxed walk is bounded by the
+// sandbox's own filesystem view; the CWE-59 host-symlink guard grepNative
+// needs has no counterpart here because this walk never touches the
+// harness host.
 func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
 	cmd := fmt.Sprintf("grep -r -n -I -E -e %s %s", shellQuote(pattern), shellQuote(dir))
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
@@ -779,7 +782,11 @@ func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern 
 // parseGrepOutput parses `grep -n` output ("path:line:text" per line) into
 // searchMatch structs. The bool reports whether any line failed to parse,
 // so a dropped match is signalled as incompleteness rather than vanishing
-// silently.
+// silently. A matched line containing a NUL byte is dropped without
+// flagging incompleteness — same as grepNative's looksBinary skip — because
+// -I is a documented no-op on busybox grep (see grepViaShellGrep) and this
+// is the client-side backstop for the tools' "binary files are skipped"
+// contract on such a build.
 func parseGrepOutput(stdout, dir string, include, exclude []string, maxResults int) ([]searchMatch, bool) {
 	var matches []searchMatch
 	incomplete := false
@@ -790,6 +797,9 @@ func parseGrepOutput(stdout, dir string, include, exclude []string, maxResults i
 		pathPart, lineNum, textPart, ok := splitGrepLine(line)
 		if !ok {
 			incomplete = true
+			continue
+		}
+		if strings.IndexByte(textPart, 0) >= 0 {
 			continue
 		}
 		rel := relativeToSandboxPath(pathPart, dir)

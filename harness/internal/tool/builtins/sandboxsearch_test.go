@@ -255,6 +255,41 @@ func TestGrepFilesTool_SandboxExecGrepFallback_ColonInPathParsedCorrectly(t *tes
 	}
 }
 
+// TestGrepFilesTool_SandboxExecGrepFallback_NULByteMatchSkipped pins the
+// client-side backstop for the binary-files-skipped contract: -I is a
+// documented no-op on busybox grep (verified live against
+// golang:1.27.0-alpine's busybox grep 1.37.0, which still matched inside a
+// NUL-containing file despite -I), so a matched line whose text contains a
+// NUL byte must still be dropped rather than surfaced to the model.
+func TestGrepFilesTool_SandboxExecGrepFallback_NULByteMatchSkipped(t *testing.T) {
+	fe := &sandboxExecExecutor{
+		resolvedDir: "/workspace",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 127}, nil
+			case strings.HasPrefix(command, "grep "):
+				return &executor.ExecResult{
+					ExitCode: 0,
+					Stdout:   "/workspace/blob.bin:1:needle\x00binary\n/workspace/text.txt:1:needle\n",
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	sr := decodeSearchResult(t, grep, input)
+	if sr.Truncated {
+		t.Error("a NUL-byte skip is an intentional binary filter, not an incomplete scan")
+	}
+	if len(sr.Matches) != 1 || sr.Matches[0].Path != "text.txt" {
+		t.Fatalf("expected only the non-binary match, got %+v", sr.Matches)
+	}
+}
+
 // TestGrepFilesTool_SandboxExecGrepFallback_UnparseableLineMarksIncomplete
 // covers the inverse of the colon fix: a line that genuinely cannot be
 // parsed into path/line/text (no colon-delimited integer field at all) must
