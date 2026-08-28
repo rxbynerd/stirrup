@@ -895,6 +895,38 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 	}
 }
 
+// TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete pins the
+// HostPathWorkspace branch's OutputTruncated wiring: an executor-level
+// output cap that cut off rg's stdout must surface as an incomplete scan
+// even though the invocation itself succeeded and every match up to the
+// cap parsed cleanly. LocalExecutor's own 1 MB cap is the smallest and
+// most-used in the codebase, so this signal being dropped here would be
+// the most impactful instance of the gap.
+func TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete(t *testing.T) {
+	withRipgrepProbe(t, true)
+	fe := &fsExecutor{
+		root:    t.TempDir(),
+		canExec: true,
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{
+				ExitCode:        0,
+				Stdout:          `{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n",
+				OutputTruncated: true,
+			}, nil
+		},
+	}
+
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
+	sr := decodeSearchResult(t, grep, input)
+	if len(sr.Matches) != 1 {
+		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
+	}
+	if !sr.Truncated {
+		t.Error("an executor-level output cap must mark the scan incomplete")
+	}
+}
+
 // TestFindFilesTool_TruncatedBoundary exercises the look-ahead probe on the
 // find walker across the same three boundary cases.
 func TestFindFilesTool_TruncatedBoundary(t *testing.T) {

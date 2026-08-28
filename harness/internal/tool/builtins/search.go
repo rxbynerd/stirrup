@@ -227,7 +227,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			case implementsHostPathWorkspace(exec):
 				gotResult := false
 				if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-					rgMatches, ok, _, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+					rgMatches, ok, rgTruncated, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
 					switch {
 					case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
 						// Context-cancellation must propagate — the caller asked
@@ -240,7 +240,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 						// than treating a transient flake as fatal.
 						slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
 					case ok:
-						matches = rgMatches
+						matches, incomplete = rgMatches, incomplete || rgTruncated
 						gotResult = true
 					}
 				}
