@@ -1801,6 +1801,9 @@ type GuardRailConfig struct {
 	//	"granite-guardian" — Granite Guardian 4.1-8B served via vLLM
 	//	                     using the OpenAI-compatible chat-completions
 	//	                     API. Requires endpoint.
+	//	"shieldstral"      — Shieldstral safety classifier (Mistral AI),
+	//	                     an open-weights model self-hosted via vLLM
+	//	                     or similar. Requires endpoint.
 	//	"composite"        — sequential / parallel layering of stages.
 	//	                     Requires a non-empty stages list; each stage
 	//	                     must be a non-composite type.
@@ -1816,24 +1819,25 @@ type GuardRailConfig struct {
 	// Valid values: "pre_turn", "pre_tool", "post_turn". Duplicates are
 	// rejected.
 	Phases []string `protobuf:"bytes,3,rep,name=phases,proto3" json:"phases,omitempty"`
-	// For "granite-guardian" / "cloud-judge": the endpoint URL. Must
+	// For "granite-guardian" / "shieldstral" / "cloud-judge": the endpoint URL. Must
 	// parse with net/url and use scheme http or https; a path component
 	// is allowed (vLLM typically serves at /v1/chat/completions).
 	// Rejected for type="none" / type="composite" because those types
 	// have no transport of their own.
 	Endpoint string `protobuf:"bytes,4,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	// For "granite-guardian" / "cloud-judge": the model identifier
-	// (e.g. "ibm-granite/granite-guardian-4.1-8b"). Adapter-defined
-	// default applies when empty.
+	// For "granite-guardian" / "shieldstral" / "cloud-judge": the model identifier
+	// (e.g. "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0", "mistralai/Shieldstral-8B").
+	// Adapter-defined default applies when empty.
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	// For "granite-guardian": the verdict threshold in [0.0, 1.0].
-	// Adapter-defined default applies when zero.
+	// For "granite-guardian" / "shieldstral": reserved. Validated to
+	// [0.0, 1.0] but currently ignored by both adapters (binary yes/no
+	// classifier heads); a non-zero value logs a startup warning.
 	Threshold float64 `protobuf:"fixed64,6,opt,name=threshold,proto3" json:"threshold,omitempty"`
-	// For "granite-guardian": built-in criteria identifiers (e.g.
+	// For "granite-guardian" / "shieldstral": built-in criteria identifiers (e.g.
 	// "harm", "jailbreak"). Adapter-defined per-phase default applies
 	// when empty. Each entry must be non-empty.
 	Criteria []string `protobuf:"bytes,7,rep,name=criteria,proto3" json:"criteria,omitempty"`
-	// For "granite-guardian": natural-language criteria keyed by ID.
+	// For "granite-guardian" / "shieldstral": natural-language criteria keyed by ID.
 	// IDs must conform to [a-z][a-z0-9_]*.
 	CustomCriteria map[string]string `protobuf:"bytes,8,rep,name=custom_criteria,json=customCriteria,proto3" json:"custom_criteria,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// For "granite-guardian": when true, request reasoning traces
@@ -1841,7 +1845,7 @@ type GuardRailConfig struct {
 	// (faster). Optional so unset is wire-distinguishable from explicit
 	// false — same rationale as RuleOfTwoConfig.enforce.
 	Think *bool `protobuf:"varint,9,opt,name=think,proto3,oneof" json:"think,omitempty"`
-	// For "granite-guardian" / "cloud-judge": per-call timeout in
+	// For "granite-guardian" / "shieldstral" / "cloud-judge": per-call timeout in
 	// milliseconds. Range [50, 30000]. Zero means "use the adapter
 	// default".
 	TimeoutMs int32 `protobuf:"varint,10,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
@@ -1849,10 +1853,13 @@ type GuardRailConfig struct {
 	// a security event rather than blocking. Default false (fail
 	// closed).
 	FailOpen bool `protobuf:"varint,11,opt,name=fail_open,json=failOpen,proto3" json:"fail_open,omitempty"`
-	// For "granite-guardian": pre-turn chunks shorter than this are
-	// skipped (no HTTP call). Default 256 (applied at construction
-	// time); 0 disables. Range [0, 4096].
+	// For "granite-guardian" / "shieldstral": pre-turn chunks shorter than this are
+	// skipped (no HTTP call). Zero (the default) disables skipping.
+	// Range [0, 4096].
 	MinChunkChars int32 `protobuf:"varint,12,opt,name=min_chunk_chars,json=minChunkChars,proto3" json:"min_chunk_chars,omitempty"`
+	// For "shieldstral": secret reference for API key (e.g. "secret://MISTRAL_API_KEY")
+	// used for authenticated cloud endpoints. Optional for local unauthenticated endpoints.
+	ApiKeyRef     string `protobuf:"bytes,13,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1969,6 +1976,13 @@ func (x *GuardRailConfig) GetMinChunkChars() int32 {
 		return x.MinChunkChars
 	}
 	return 0
+}
+
+func (x *GuardRailConfig) GetApiKeyRef() string {
+	if x != nil {
+		return x.ApiKeyRef
+	}
+	return ""
 }
 
 // ObservabilityConfig carries operator-supplied attributes that ride on
@@ -4774,7 +4788,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bscanners\x18\x02 \x03(\tR\bscanners\x12\"\n" +
 	"\rblock_on_warn\x18\x03 \x01(\bR\vblockOnWarn\x12.\n" +
-	"\x13semgrep_config_path\x18\x04 \x01(\tR\x11semgrepConfigPath\"\x94\x04\n" +
+	"\x13semgrep_config_path\x18\x04 \x01(\tR\x11semgrepConfigPath\"\xb4\x04\n" +
 	"\x0fGuardRailConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12;\n" +
 	"\x06stages\x18\x02 \x03(\v2#.stirrup.harness.v1.GuardRailConfigR\x06stages\x12\x16\n" +
@@ -4789,7 +4803,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"timeout_ms\x18\n" +
 	" \x01(\x05R\ttimeoutMs\x12\x1b\n" +
 	"\tfail_open\x18\v \x01(\bR\bfailOpen\x12&\n" +
-	"\x0fmin_chunk_chars\x18\f \x01(\x05R\rminChunkChars\x1aA\n" +
+	"\x0fmin_chunk_chars\x18\f \x01(\x05R\rminChunkChars\x12\x1e\n" +
+	"\vapi_key_ref\x18\r \x01(\tR\tapiKeyRef\x1aA\n" +
 	"\x13CustomCriteriaEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +

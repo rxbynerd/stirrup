@@ -818,6 +818,9 @@ message GuardRailConfig {
   //   "granite-guardian" — Granite Guardian 4.1-8B served via vLLM
   //                        using the OpenAI-compatible chat-completions
   //                        API. Requires endpoint.
+  //   "shieldstral"      — Shieldstral safety classifier (Mistral AI),
+  //                        an open-weights model self-hosted via vLLM
+  //                        or similar. Requires endpoint.
   //   "composite"        — sequential / parallel layering of stages.
   //                        Requires a non-empty stages list; each stage
   //                        must be a non-composite type.
@@ -836,28 +839,29 @@ message GuardRailConfig {
   // rejected.
   repeated string phases = 3;
 
-  // For "granite-guardian" / "cloud-judge": the endpoint URL. Must
+  // For "granite-guardian" / "shieldstral" / "cloud-judge": the endpoint URL. Must
   // parse with net/url and use scheme http or https; a path component
   // is allowed (vLLM typically serves at /v1/chat/completions).
   // Rejected for type="none" / type="composite" because those types
   // have no transport of their own.
   string endpoint = 4;
 
-  // For "granite-guardian" / "cloud-judge": the model identifier
-  // (e.g. "ibm-granite/granite-guardian-4.1-8b"). Adapter-defined
-  // default applies when empty.
+  // For "granite-guardian" / "shieldstral" / "cloud-judge": the model identifier
+  // (e.g. "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0", "mistralai/Shieldstral-8B").
+  // Adapter-defined default applies when empty.
   string model = 5;
 
-  // For "granite-guardian": the verdict threshold in [0.0, 1.0].
-  // Adapter-defined default applies when zero.
+  // For "granite-guardian" / "shieldstral": reserved. Validated to
+  // [0.0, 1.0] but currently ignored by both adapters (binary yes/no
+  // classifier heads); a non-zero value logs a startup warning.
   double threshold = 6;
 
-  // For "granite-guardian": built-in criteria identifiers (e.g.
+  // For "granite-guardian" / "shieldstral": built-in criteria identifiers (e.g.
   // "harm", "jailbreak"). Adapter-defined per-phase default applies
   // when empty. Each entry must be non-empty.
   repeated string criteria = 7;
 
-  // For "granite-guardian": natural-language criteria keyed by ID.
+  // For "granite-guardian" / "shieldstral": natural-language criteria keyed by ID.
   // IDs must conform to [a-z][a-z0-9_]*.
   map<string, string> custom_criteria = 8;
 
@@ -867,7 +871,7 @@ message GuardRailConfig {
   // false — same rationale as RuleOfTwoConfig.enforce.
   optional bool think = 9;
 
-  // For "granite-guardian" / "cloud-judge": per-call timeout in
+  // For "granite-guardian" / "shieldstral" / "cloud-judge": per-call timeout in
   // milliseconds. Range [50, 30000]. Zero means "use the adapter
   // default".
   int32 timeout_ms = 10;
@@ -877,10 +881,14 @@ message GuardRailConfig {
   // closed).
   bool fail_open = 11;
 
-  // For "granite-guardian": pre-turn chunks shorter than this are
-  // skipped (no HTTP call). Default 256 (applied at construction
-  // time); 0 disables. Range [0, 4096].
+  // For "granite-guardian" / "shieldstral": pre-turn chunks shorter than this are
+  // skipped (no HTTP call). Zero (the default) disables skipping.
+  // Range [0, 4096].
   int32 min_chunk_chars = 12;
+
+  // For "shieldstral": secret reference for API key (e.g. "secret://MISTRAL_API_KEY")
+  // used for authenticated cloud endpoints. Optional for local unauthenticated endpoints.
+  string api_key_ref = 13;
 }
 
 // ObservabilityConfig carries operator-supplied attributes that ride on

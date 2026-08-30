@@ -361,6 +361,13 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 					Model:     "claude-haiku-4-5-20251001",
 					TimeoutMs: 5000,
 				},
+				{
+					Type:      "shieldstral",
+					Endpoint:  "https://api.mistral.ai",
+					Model:     "shieldstral-1-0",
+					ApiKeyRef: "secret://MISTRAL_API_KEY",
+					TimeoutMs: 3000,
+				},
 			},
 		},
 	}
@@ -385,8 +392,8 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	if rc.GuardRail.MinChunkChars != 256 {
 		t.Errorf("MinChunkChars: got %d, want 256", rc.GuardRail.MinChunkChars)
 	}
-	if len(rc.GuardRail.Stages) != 2 {
-		t.Fatalf("Stages: got %d, want 2", len(rc.GuardRail.Stages))
+	if len(rc.GuardRail.Stages) != 3 {
+		t.Fatalf("Stages: got %d, want 3", len(rc.GuardRail.Stages))
 	}
 
 	gg := rc.GuardRail.Stages[0]
@@ -418,6 +425,23 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	}
 	if cj.TimeoutMs != 5000 {
 		t.Errorf("Stages[1].TimeoutMs: got %d", cj.TimeoutMs)
+	}
+
+	ss := rc.GuardRail.Stages[2]
+	if ss.Type != "shieldstral" {
+		t.Errorf("Stages[2].Type: got %q", ss.Type)
+	}
+	if ss.Endpoint != "https://api.mistral.ai" {
+		t.Errorf("Stages[2].Endpoint: got %q", ss.Endpoint)
+	}
+	if ss.Model != "shieldstral-1-0" {
+		t.Errorf("Stages[2].Model: got %q", ss.Model)
+	}
+	if ss.APIKeyRef != "secret://MISTRAL_API_KEY" {
+		t.Errorf("Stages[2].APIKeyRef: got %q", ss.APIKeyRef)
+	}
+	if ss.TimeoutMs != 3000 {
+		t.Errorf("Stages[2].TimeoutMs: got %d", ss.TimeoutMs)
 	}
 }
 
