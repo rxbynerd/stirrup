@@ -196,7 +196,7 @@ jobs:
       # to an immutable commit defends against an upstream tag being
       # silently retargeted to attacker-controlled code.
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
           format: spdx-json
@@ -205,7 +205,7 @@ jobs:
           upload-release-assets: false
 
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
           format: cyclonedx-json
@@ -522,7 +522,7 @@ jobs:
       # (already logged in via docker/login-action above), not via
       # this token.
       - name: Generate image SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
           format: spdx-json
@@ -532,7 +532,7 @@ jobs:
           github-token: ""
 
       - name: Generate image CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
           format: cyclonedx-json
@@ -670,7 +670,7 @@ jobs:
       # harness image: the Debian base is where the CVEs live. Same
       # digest-form URI requirement and IAM posture as publish-container.
       - name: Generate image SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
           format: spdx-json
@@ -680,7 +680,7 @@ jobs:
           github-token: ""
 
       - name: Generate image CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
           format: cyclonedx-json
