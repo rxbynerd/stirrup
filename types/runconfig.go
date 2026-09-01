@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -1304,6 +1305,40 @@ type ToolsConfig struct {
 	// CommandOutput controls compliant capture of run_command stdout/stderr.
 	// Zero values resolve to the documented defaults during validation.
 	CommandOutput CommandOutputConfig `json:"commandOutput,omitempty"`
+
+	// ControlPlane declares tools the control plane fulfils over the gRPC
+	// stream. Each entry is registered as an async tool: a call emits
+	// tool_result_request and blocks on the matching tool_result_response.
+	// Requires transport.type == "grpc".
+	ControlPlane []ControlPlaneToolConfig `json:"controlPlane,omitempty"`
+}
+
+// ControlPlaneToolConfig declares one tool whose result the control plane
+// supplies. The model sees Name, Description, and InputSchema exactly as it
+// would for a built-in tool; dispatch never runs harness-side code beyond
+// input validation and the permission check. See
+// docs/integration-guide.md#control-plane-fulfilled-tools-tool_result_request.
+type ControlPlaneToolConfig struct {
+	// Name is the tool name as the model sees it. It must not collide with
+	// a built-in tool name and must not carry the "mcp_" prefix reserved for
+	// MCP-imported tools.
+	Name string `json:"name"`
+
+	// Description is the tool description shown to the model.
+	Description string `json:"description"`
+
+	// InputSchema is a JSON Schema object (type "object") the model's
+	// input is validated against before the request is emitted.
+	InputSchema json.RawMessage `json:"inputSchema"`
+
+	// TimeoutSeconds bounds the wait for tool_result_response. Zero selects
+	// the loop's default async timeout (60 s).
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+
+	// RequiresApproval routes every call through the run's permission
+	// policy (Cedar, ask-upstream) before the request is emitted. Unset,
+	// calls dispatch without a permission check, like read-only built-ins.
+	RequiresApproval bool `json:"requiresApproval,omitempty"`
 }
 
 // CommandOutputConfig bounds full command-output capture. The byte caps are
@@ -2161,6 +2196,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
+	validateControlPlaneTools(config, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCommandOutputConfig(config.Tools, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
@@ -3330,6 +3366,75 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 		if !validBuiltInToolNames[name] {
 			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
 		}
+	}
+}
+
+// controlPlaneToolNamePattern bounds ControlPlaneToolConfig.Name to the
+// intersection of the provider tool-name grammars (a leading letter or
+// underscore, then letters, digits, underscores, or hyphens, 64 max).
+var controlPlaneToolNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`)
+
+// maxControlPlaneToolTimeoutSeconds caps ControlPlaneToolConfig.TimeoutSeconds
+// at the run timeout ceiling; a longer per-call wait could never complete.
+const maxControlPlaneToolTimeoutSeconds = 3600
+
+// validateControlPlaneTools enforces the invariants on Tools.ControlPlane:
+// gRPC transport (only a control plane can answer tool_result_request),
+// well-formed unique names that cannot shadow a built-in or MCP tool, a
+// description, and an object-typed JSON Schema. Read-only modes accept
+// these tools because dispatch never touches the workspace.
+func validateControlPlaneTools(config *RunConfig, errs *[]string) {
+	tools := config.Tools.ControlPlane
+	if len(tools) == 0 {
+		return
+	}
+	if config.Transport.Type != "grpc" {
+		*errs = append(*errs, "tools.controlPlane requires transport=grpc (only a control plane on the RunTask stream can answer tool_result_request)")
+	}
+	seen := make(map[string]int, len(tools))
+	for i, ct := range tools {
+		path := fmt.Sprintf("tools.controlPlane[%d]", i)
+		switch {
+		case ct.Name == "":
+			*errs = append(*errs, path+".name is required")
+		case !controlPlaneToolNamePattern.MatchString(ct.Name):
+			*errs = append(*errs, fmt.Sprintf("%s.name %q must match %s", path, ct.Name, controlPlaneToolNamePattern.String()))
+		case validBuiltInToolNames[ct.Name]:
+			*errs = append(*errs, fmt.Sprintf("%s.name %q collides with a built-in tool", path, ct.Name))
+		case strings.HasPrefix(ct.Name, "mcp_"):
+			*errs = append(*errs, fmt.Sprintf("%s.name %q must not use the mcp_ prefix reserved for MCP-imported tools", path, ct.Name))
+		default:
+			if prev, dup := seen[ct.Name]; dup {
+				*errs = append(*errs, fmt.Sprintf("%s.name %q duplicates tools.controlPlane[%d]", path, ct.Name, prev))
+			} else {
+				seen[ct.Name] = i
+			}
+		}
+		if strings.TrimSpace(ct.Description) == "" {
+			*errs = append(*errs, path+".description is required")
+		}
+		validateControlPlaneInputSchema(ct.InputSchema, path+".inputSchema", errs)
+		if ct.TimeoutSeconds < 0 || ct.TimeoutSeconds > maxControlPlaneToolTimeoutSeconds {
+			*errs = append(*errs, fmt.Sprintf("%s.timeoutSeconds must be between 0 and %d", path, maxControlPlaneToolTimeoutSeconds))
+		}
+	}
+}
+
+// validateControlPlaneInputSchema requires a JSON object whose "type" is
+// "object". Full schema compilation happens at dispatch; this layer catches
+// the malformed-config cases an operator can fix before a run starts.
+func validateControlPlaneInputSchema(schema json.RawMessage, path string, errs *[]string) {
+	if len(schema) == 0 {
+		*errs = append(*errs, path+" is required")
+		return
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(schema, &doc); err != nil || doc == nil {
+		*errs = append(*errs, path+" must be a JSON Schema object")
+		return
+	}
+	if typ, _ := doc["type"].(string); typ != "object" {
+		*errs = append(*errs, path+` must declare "type": "object"`)
 	}
 }
 

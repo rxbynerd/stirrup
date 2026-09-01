@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package stirrup.harness.v1;
 
+import "google/protobuf/struct.proto";
+
 // HarnessService is the bidirectional streaming interface between the harness
 // (client) and the control plane (server). The harness connects outbound and
 // opens a single bidi stream for the lifetime of a task run.
@@ -1870,6 +1872,47 @@ message ToolsConfig {
   // tool discovery. Tools from MCP servers are prefixed as
   // "mcp_{serverName}_{toolName}" to avoid naming collisions.
   repeated MCPServerConfig mcp_servers = 2;
+
+  // Optional. Tools the control plane fulfils over the RunTask stream.
+  // Each entry is registered as an async tool: a call emits a
+  // tool_result_request HarnessEvent (tool_name = name, tool_use_id,
+  // request_id, input = the model's JSON input, already validated
+  // against input_schema) and blocks on the ControlEvent
+  // tool_result_response echoing request_id. `content` is delivered to
+  // the model verbatim; `is_error: true` surfaces it as a tool failure.
+  // Only meaningful on the gRPC transport: a config arriving in
+  // task_assignment satisfies that by construction.
+  repeated ControlPlaneToolConfig control_plane = 3;
+}
+
+// ControlPlaneToolConfig declares one tool whose result the control plane
+// supplies. The harness never runs tool-side code for it beyond JSON
+// Schema input validation and the permission check.
+message ControlPlaneToolConfig {
+  // Required. Tool name as the model sees it. Letters, digits, underscore
+  // and hyphen, 64 characters max, not starting with a digit. Must not
+  // collide with a built-in tool name, must not carry the "mcp_" prefix,
+  // and must be unique within control_plane.
+  string name = 1;
+
+  // Required. Tool description shown to the model.
+  string description = 2;
+
+  // Required. JSON Schema for the tool input; must declare
+  // "type": "object". Carried as a Struct so the JSON RunConfig mirror
+  // holds a plain JSON object under `inputSchema`.
+  google.protobuf.Struct input_schema = 3;
+
+  // Optional. Per-call wait for tool_result_response, in seconds
+  // (0..3600). Zero selects the harness default of 60 seconds. Expiry
+  // surfaces to the model as a tool failure; the run continues.
+  int32 timeout_seconds = 4;
+
+  // Optional. When true, every call is checked against the run's
+  // permission policy (Cedar rules, or an ask-upstream permission_request)
+  // before the tool_result_request is emitted. When false the call
+  // dispatches without a permission check, like read-only built-ins.
+  bool requires_approval = 5;
 }
 
 // MCPServerConfig describes a single MCP server connection. The harness

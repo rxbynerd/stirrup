@@ -1,6 +1,11 @@
 package transport
 
 import (
+	"encoding/json"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
+
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -583,5 +588,27 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			AllowedMCPHosts: srv.AllowedMcpHosts,
 		})
 	}
+	for _, ct := range pc.ControlPlane {
+		tc.ControlPlane = append(tc.ControlPlane, types.ControlPlaneToolConfig{
+			Name:             ct.Name,
+			Description:      ct.Description,
+			InputSchema:      structToJSON(ct.InputSchema),
+			TimeoutSeconds:   int(ct.TimeoutSeconds),
+			RequiresApproval: ct.RequiresApproval,
+		})
+	}
 	return tc
+}
+
+// structToJSON renders a Struct as its JSON object form, or nil when the
+// field is unset so ValidateRunConfig reports the missing schema.
+func structToJSON(s *structpb.Struct) json.RawMessage {
+	if s == nil {
+		return nil
+	}
+	raw, err := protojson.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(raw)
 }

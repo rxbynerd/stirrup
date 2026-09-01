@@ -1027,6 +1027,9 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if editToolEnabled(cfg.BuiltIn, es.ToolDefinition().Name) && caps.CanWrite {
 		registry.Register(editStrategyTool(es, exec))
 	}
+	for _, ct := range cfg.ControlPlane {
+		registry.Register(tool.ControlPlaneTool(ct))
+	}
 	return registry
 }
 
