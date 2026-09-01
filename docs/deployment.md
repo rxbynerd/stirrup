@@ -155,7 +155,8 @@ IMDS, GitHub Actions OIDC). See
 7. **Stream events.** Throughout the run the harness emits
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
-   events. Async tools may emit `tool_result_request`.
+   events. Tools declared in `tools.controlPlane` emit
+   `tool_result_request` and block on `tool_result_response`.
 8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
    carries the run metrics and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
