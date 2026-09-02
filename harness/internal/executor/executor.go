@@ -37,6 +37,12 @@ type ExecResult struct {
 	ExitCode int
 	Stdout   string
 	Stderr   string
+	// OutputTruncated reports that Stdout and/or Stderr were cut off by the
+	// executor's own output cap (e.g. maxOutputSize/k8sMaxOutput) before
+	// this result was returned. A caller that parses Stdout line-by-line
+	// must treat a truncated result as incomplete, not exhaustive — the
+	// last line may be a partial record.
+	OutputTruncated bool
 }
 
 // ExecutorCapabilities describes what operations an executor supports.
@@ -84,6 +90,17 @@ type TreeListing struct {
 // tree and would instead read the harness process's own filesystem.
 type TreeLister interface {
 	ListTree(ctx context.Context, root string) (TreeListing, error)
+}
+
+// HostPathWorkspace is the optional capability marking an executor whose
+// workspace is a directory on the harness host's own filesystem, so a
+// ResolvePath result may be dereferenced with host filesystem APIs
+// (filepath.WalkDir, os.ReadFile). Executors whose workspace lives behind a
+// sandbox or API boundary must not implement it, even when the workspace
+// happens to be bind-mounted from the host: the sandbox boundary is the
+// point, and searches on those executors must run inside the sandbox.
+type HostPathWorkspace interface {
+	HostWorkspaceRoot() string
 }
 
 // StreamingExecutor is the optional full-output execution capability used by

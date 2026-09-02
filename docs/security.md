@@ -268,22 +268,38 @@ a compromised or misconfigured server can do (`MCPServerConfig`):
 
 ## Path traversal prevention
 
-All three `Executor` implementations enforce workspace containment:
+Every `Executor` implementation enforces workspace containment
+appropriate to its own boundary:
 
 - **`local`** uses `filepath.EvalSymlinks` to resolve symlinks
   before the path is checked, so symlink-based escapes are caught.
-- **`container`** is structurally sandboxed by the container
-  itself; the workspace is bind-mounted at a fixed path.
-- **`api`** validates workspace-relative paths and uses
-  `url.PathEscape` on every path segment before constructing the
-  GitHub Contents API URL.
+- **`container`** and **`k8s`**/**`k8s-sandbox`** are structurally
+  sandboxed by the container/Pod itself; the workspace is bind-mounted
+  or provisioned at a fixed path, and `ResolvePath` textually rejects
+  anything that doesn't stay under it.
+- **`api`** uses `url.PathEscape` on every path segment before
+  constructing the GitHub Contents API URL.
 
 The `grep_files` and `find_files` tools call `ResolvePath` on the
 search root before any directory walk begins, so a workspace-relative
 path that escapes the workspace is rejected before the walker sees
-it. `grep_files` additionally uses `shellQuote()` on every value
-interpolated into the `rg` invocation. Tested against
-`../../../etc/passwd`, symlink escapes, and absolute paths.
+it. Which walker runs is chosen by declared executor capability, not
+by inspecting `ResolvePath`'s return shape: a `HostPathWorkspace`
+executor (`local`) walks the resolved host path directly; a `CanExec`
+executor with no host counterpart (`container`, `k8s`) searches
+inside the sandbox via `Exec`; a `TreeLister` executor (`api`)
+enumerates through the remote tree. An executor exposing none of
+these fails closed with a clear tool error rather than falling back
+to the harness host's own filesystem. `grep_files` additionally uses
+`shellQuote()` on every value interpolated into the `rg`/`grep`
+invocation. Tested against `../../../etc/passwd` and absolute paths
+across every dispatch branch. Symlink-escape protection (CWE-59) is
+specific to the `HostPathWorkspace` branch's native walker, which
+explicitly skips symlink entries before reading file content; a
+sandboxed executor's `rg`/`grep`/`find` invocation instead delegates
+symlink-following behavior to the tools running inside the sandbox,
+bounded by the sandbox's own filesystem namespace rather than a
+host-side guard.
 
 The workspace exporter (`harness/internal/workspaceexport`) applies
 the same containment check when building the export tarball: any

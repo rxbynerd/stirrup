@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
@@ -43,6 +44,14 @@ func (f *fsExecutor) ResolvePath(relativePath string) (string, error) {
 }
 func (f *fsExecutor) Capabilities() executor.ExecutorCapabilities {
 	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: f.canExec, MaxTimeout: time.Minute}
+}
+
+// HostWorkspaceRoot declares the HostPathWorkspace capability: fsExecutor
+// stands in for LocalExecutor, resolving paths onto a real temp directory on
+// the host, so it belongs on the host-backed dispatch branch the same way
+// LocalExecutor does.
+func (f *fsExecutor) HostWorkspaceRoot() string {
+	return f.root
 }
 
 // TestGrepNative_PermissionDeniedSubdirSkipped covers the fs.ErrPermission
@@ -886,6 +895,38 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 	}
 }
 
+// TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete pins the
+// HostPathWorkspace branch's OutputTruncated wiring: an executor-level
+// output cap that cut off rg's stdout must surface as an incomplete scan
+// even though the invocation itself succeeded and every match up to the
+// cap parsed cleanly. LocalExecutor's own 1 MB cap is the smallest and
+// most-used in the codebase, so this signal being dropped here would be
+// the most impactful instance of the gap.
+func TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete(t *testing.T) {
+	withRipgrepProbe(t, true)
+	fe := &fsExecutor{
+		root:    t.TempDir(),
+		canExec: true,
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{
+				ExitCode:        0,
+				Stdout:          `{"type":"match","data":{"path":{"text":"a.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n",
+				OutputTruncated: true,
+			}, nil
+		},
+	}
+
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
+	sr := decodeSearchResult(t, grep, input)
+	if len(sr.Matches) != 1 {
+		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
+	}
+	if !sr.Truncated {
+		t.Error("an executor-level output cap must mark the scan incomplete")
+	}
+}
+
 // TestFindFilesTool_TruncatedBoundary exercises the look-ahead probe on the
 // find walker across the same three boundary cases.
 func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
@@ -919,4 +960,61 @@ func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Schema bound tests ---
+
+// TestGrepFilesTool_SchemaBoundsPatternAndGlobs pins the maxLength/maxItems
+// bounds on pattern and include/exclude, enforced by the loop's
+// security.ValidateJSONSchema call before the handler ever runs — these are
+// runtime-enforced limits, not documentation.
+func TestGrepFilesTool_SchemaBoundsPatternAndGlobs(t *testing.T) {
+	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
+
+	t.Run("pattern within bound", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1000)})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err != nil {
+			t.Errorf("expected a 1000-char pattern to validate, got: %v", err)
+		}
+	})
+	t.Run("pattern over bound rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1001)})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected an over-length pattern to be rejected")
+		}
+	})
+	t.Run("too many include globs rejected", func(t *testing.T) {
+		globs := make([]string, 51)
+		for i := range globs {
+			globs[i] = "*.go"
+		}
+		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": globs})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected more than 50 include globs to be rejected")
+		}
+	})
+	t.Run("over-length glob rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": []string{strings.Repeat("a", 501)}})
+		if err := security.ValidateJSONSchema(input, grep.InputSchema); err == nil {
+			t.Error("expected an over-length glob to be rejected")
+		}
+	})
+}
+
+// TestFindFilesTool_SchemaBoundsNameAndGlobs is the find_files analogue.
+func TestFindFilesTool_SchemaBoundsNameAndGlobs(t *testing.T) {
+	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
+
+	t.Run("name within bound", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 255)})
+		if err := security.ValidateJSONSchema(input, find.InputSchema); err != nil {
+			t.Errorf("expected a 255-char name to validate, got: %v", err)
+		}
+	})
+	t.Run("name over bound rejected", func(t *testing.T) {
+		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 256)})
+		if err := security.ValidateJSONSchema(input, find.InputSchema); err == nil {
+			t.Error("expected an over-length name to be rejected")
+		}
+	})
 }

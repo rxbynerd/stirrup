@@ -9,8 +9,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +33,7 @@ var grepFilesSchema = json.RawMessage(`{
 	"properties": {
 		"pattern": {
 			"type": "string",
+			"maxLength": 1000,
 			"description": "A regular expression (RE2 syntax) to match against file contents."
 		},
 		"path": {
@@ -39,12 +42,14 @@ var grepFilesSchema = json.RawMessage(`{
 		},
 		"include": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns (e.g. '*.go') a file path must match to be considered."
 		},
 		"exclude": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns a file path must NOT match."
 		},
 		"max_results": {
@@ -66,6 +71,7 @@ var findFilesSchema = json.RawMessage(`{
 	"properties": {
 		"name": {
 			"type": "string",
+			"maxLength": 255,
 			"description": "A shell-style glob (filepath.Match syntax) matched against each file's basename only — e.g. '*.go', 'handler_*.ts'. Does not support '**'. To narrow by path, use the include field instead."
 		},
 		"path": {
@@ -74,12 +80,14 @@ var findFilesSchema = json.RawMessage(`{
 		},
 		"include": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns the full file path must additionally match."
 		},
 		"exclude": {
 			"type": "array",
-			"items": {"type": "string"},
+			"items": {"type": "string", "maxLength": 500},
+			"maxItems": 50,
 			"description": "Optional. Glob patterns the full file path must NOT match."
 		},
 		"max_results": {
@@ -101,8 +109,11 @@ const (
 	findAbsoluteMax       = 1000
 )
 
-// ripgrepDetector caches the result of probing for `rg` so we only run the
-// version check once per process. The detection is best-effort: if the probe
+// ripgrepDetector caches the result of probing for `rg` on the harness
+// host's PATH so we only run the version check once per process. It backs
+// only the HostPathWorkspace search branch, where Exec runs on the host too;
+// a CanExec sandboxed executor is probed separately, through the executor
+// itself, by sandboxRipgrepProbe. The detection is best-effort: if the probe
 // fails for any reason we fall back to the Go-native implementation. Tests
 // can override the probe function before any call to detectRipgrep.
 type ripgrepDetector struct {
@@ -122,10 +133,10 @@ func (d *ripgrepDetector) detect() bool {
 	return d.present.Load()
 }
 
-// probeRipgrepLocal checks whether `rg` is on PATH. It probes at the host
-// level (exec.LookPath) rather than through the workspace executor, since the
-// rg binary, when present, lives on the host; executors that lack rg fall
-// through to the Go-native search path regardless of host state.
+// probeRipgrepLocal checks whether `rg` is on the harness host's PATH via
+// exec.LookPath. This is only valid for the HostPathWorkspace branch: a
+// sandboxed executor's Exec runs inside the sandbox, so its rg availability
+// is a separate, per-executor question (see sandboxRipgrepProbe).
 func probeRipgrepLocal() bool {
 
 	if _, err := lookPath("rg"); err != nil {
@@ -146,6 +157,7 @@ var lookPath = func(name string) (string, error) {
 // for its richer ignore-file handling — and falls back to a Go-native
 // implementation when rg is not on PATH.
 func GrepFilesTool(exec executor.Executor) *tool.Tool {
+	var sandboxRG sandboxRipgrepProbe
 	return &tool.Tool{
 		Name: "grep_files",
 		Description: "Search file contents in the workspace for a regular expression (Go RE2 syntax). Returns one 'path:line:match' line per hit. " +
@@ -211,19 +223,11 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			probeMax := maxResults + 1
 			var matches []searchMatch
 			incomplete := false
-			if lister, ok := exec.(executor.TreeLister); ok {
-				treeMatches, treeIncomplete, treeErr := grepTree(ctx, lister, exec, resolvedDir, re, params.Include, params.Exclude, probeMax)
-				if treeErr != nil {
-					return tool.StructuredResult{}, treeErr
-				}
-				matches, incomplete = treeMatches, treeIncomplete
-			} else {
-				if err := requireHostSearchRoot(resolvedDir, searchDir); err != nil {
-					return tool.StructuredResult{}, err
-				}
+			switch {
+			case implementsHostPathWorkspace(exec):
 				gotResult := false
 				if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-					rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+					rgMatches, ok, rgTruncated, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
 					switch {
 					case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
 						// Context-cancellation must propagate — the caller asked
@@ -236,10 +240,9 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 						// than treating a transient flake as fatal.
 						slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
 					case ok:
-						matches = rgMatches
+						matches, incomplete = rgMatches, incomplete || rgTruncated
 						gotResult = true
 					}
-
 				}
 				if !gotResult {
 					nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, probeMax)
@@ -248,6 +251,22 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 					}
 					matches = nativeMatches
 				}
+			case exec.Capabilities().CanExec:
+				sandboxMatches, sandboxIncomplete, sandboxErr := grepSandboxed(ctx, exec, &sandboxRG, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
+				if sandboxErr != nil {
+					return tool.StructuredResult{}, sandboxErr
+				}
+				matches, incomplete = sandboxMatches, sandboxIncomplete
+			default:
+				lister, ok := exec.(executor.TreeLister)
+				if !ok {
+					return tool.StructuredResult{}, fmt.Errorf("cannot search %q: this executor does not expose a searchable workspace", searchDir)
+				}
+				treeMatches, treeIncomplete, treeErr := grepTree(ctx, lister, exec, resolvedDir, re, params.Include, params.Exclude, probeMax)
+				if treeErr != nil {
+					return tool.StructuredResult{}, treeErr
+				}
+				matches, incomplete = treeMatches, treeIncomplete
 			}
 
 			truncated := len(matches) > maxResults
@@ -360,21 +379,29 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			probeMax := maxResults + 1
 			var paths []string
 			incomplete := false
-			if lister, ok := exec.(executor.TreeLister); ok {
-				treePaths, treeIncomplete, treeErr := findTree(ctx, lister, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
-				if treeErr != nil {
-					return tool.StructuredResult{}, treeErr
-				}
-				paths, incomplete = treePaths, treeIncomplete
-			} else {
-				if err := requireHostSearchRoot(resolvedDir, searchDir); err != nil {
-					return tool.StructuredResult{}, err
-				}
+			switch {
+			case implementsHostPathWorkspace(exec):
 				nativePaths, nativeErr := findNative(resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
 				if nativeErr != nil {
 					return tool.StructuredResult{}, nativeErr
 				}
 				paths = nativePaths
+			case exec.Capabilities().CanExec:
+				sandboxPaths, sandboxIncomplete, sandboxErr := findViaExec(ctx, exec, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
+				if sandboxErr != nil {
+					return tool.StructuredResult{}, sandboxErr
+				}
+				paths, incomplete = sandboxPaths, sandboxIncomplete
+			default:
+				lister, ok := exec.(executor.TreeLister)
+				if !ok {
+					return tool.StructuredResult{}, fmt.Errorf("cannot search %q: this executor does not expose a searchable workspace", searchDir)
+				}
+				treePaths, treeIncomplete, treeErr := findTree(ctx, lister, resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
+				if treeErr != nil {
+					return tool.StructuredResult{}, treeErr
+				}
+				paths, incomplete = treePaths, treeIncomplete
 			}
 
 			truncated := len(paths) > maxResults
@@ -456,11 +483,13 @@ func (t rgJSONText) value() string {
 }
 
 // grepViaRipgrep runs `rg --json` and builds searchMatch structs directly from
-// the structured events rather than parsing rendered text. The bool return
-// reports whether rg produced a usable answer (true) or hit an unexpected error
-// code that warrants falling back to the Go-native walker (false). Error
-// returns are reserved for executor failures that the caller surfaces directly.
-func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
+// the structured events rather than parsing rendered text. The first bool
+// reports whether rg produced a usable answer (true) or hit an unexpected
+// error code that warrants falling back to the Go-native walker (false). The
+// second bool reports whether the executor's own output cap truncated rg's
+// stdout before this call saw it. Error returns are reserved for executor
+// failures that the caller surfaces directly.
+func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, bool, error) {
 	var args []string
 	args = append(args, "rg", "--json", "--color", "never",
 		"--max-count", fmt.Sprintf("%d", maxResults),
@@ -476,7 +505,7 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 
 	result, err := exec.Exec(ctx, cmd, searchTimeout)
 	if err != nil {
-		return nil, false, fmt.Errorf("rg invocation failed: %w", err)
+		return nil, false, false, fmt.Errorf("rg invocation failed: %w", err)
 	}
 	// rg exit code 0 == matches found; 1 == no matches (clean); 2+ ==
 	// real error (bad regex, IO failure, etc.). We treat 2+ as a soft
@@ -484,11 +513,11 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 	switch result.ExitCode {
 	case 0:
 		matches := parseRipgrepJSON(result.Stdout, maxResults)
-		return matches, true, nil
+		return matches, true, result.OutputTruncated, nil
 	case 1:
-		return nil, true, nil
+		return nil, true, result.OutputTruncated, nil
 	default:
-		return nil, false, nil
+		return nil, false, result.OutputTruncated, nil
 	}
 }
 
@@ -644,17 +673,226 @@ func findNative(dir, name string, include, exclude []string, maxResults int) ([]
 // this sentinel keeps the contract clear at the call site.
 var errStopWalk = errors.New("walk stopped: max results reached")
 
-// requireHostSearchRoot rejects a search root the native walkers cannot
-// honour. filepath.WalkDir resolves a relative root against the harness
-// process's own working directory, so an executor whose ResolvePath yields a
-// relative path — one whose workspace has no host counterpart — would have
-// the harness host searched instead of the workspace. Such an executor must
-// implement executor.TreeLister to be searchable.
-func requireHostSearchRoot(resolved, requested string) error {
-	if filepath.IsAbs(resolved) {
-		return nil
+// implementsHostPathWorkspace reports whether exec declares the
+// HostPathWorkspace capability — the only executors whose ResolvePath result
+// may be walked with host filesystem APIs.
+func implementsHostPathWorkspace(exec executor.Executor) bool {
+	_, ok := exec.(executor.HostPathWorkspace)
+	return ok
+}
+
+// sandboxRipgrepProbe caches whether `rg` is available inside a CanExec
+// sandboxed executor's own environment (container, k8s). Unlike
+// defaultRipgrepDetector, which probes the harness host's PATH, this probe
+// runs `rg --version` through the executor: for these executors Exec targets
+// the sandbox, not the host, so host PATH state says nothing about what's
+// available inside. One probe is constructed per tool instance (tools are
+// built fresh per run per executor), so a cached miss never survives past
+// the run that produced it.
+//
+// Only a definitive answer (the probe command actually ran and reported an
+// exit code) is cached. A transport failure — a slow sandbox cold-start, an
+// Exec hiccup, ctx cancellation on that first probe — is not: caching that
+// as "rg absent" for the tool instance's whole lifetime would silently and
+// permanently degrade every subsequent call to the slower grep fallback
+// over a one-off flake, so detect retries on the next call instead and
+// logs the transient failure.
+type sandboxRipgrepProbe struct {
+	mu      sync.Mutex
+	decided bool
+	present bool
+}
+
+func (p *sandboxRipgrepProbe) detect(ctx context.Context, exec executor.Executor) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.decided {
+		return p.present
 	}
-	return fmt.Errorf("cannot search %q: this executor does not expose a searchable workspace", requested)
+	result, err := exec.Exec(ctx, "rg --version", searchTimeout)
+	if err != nil {
+		slog.WarnContext(ctx, "sandboxed rg probe failed, retrying on next call", "err", err)
+		return false
+	}
+	p.present = result.ExitCode == 0
+	p.decided = true
+	return p.present
+}
+
+// grepSandboxed searches file contents on a CanExec executor with no host
+// filesystem counterpart (container, k8s, k8s-sandbox): the walk happens
+// entirely inside the sandbox via exec.Exec. It prefers rg, probed through
+// the executor, and falls back to a portable `grep -r -n -E` invocation
+// understood by both GNU and busybox grep. The bool reports whether the
+// scan is known to be incomplete, mirroring the tree-backed path.
+func grepSandboxed(ctx context.Context, exec executor.Executor, probe *sandboxRipgrepProbe, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
+	if probe.detect(ctx, exec) {
+		matches, ok, truncated, err := grepViaRipgrep(ctx, exec, dir, pattern, include, exclude, maxResults)
+		switch {
+		case err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+			return nil, false, err
+		case err != nil:
+			slog.WarnContext(ctx, "sandboxed rg invocation failed, falling back to grep", "err", err)
+		case ok:
+			return matches, truncated, nil
+		}
+	}
+	return grepViaShellGrep(ctx, exec, dir, pattern, include, exclude, maxResults)
+}
+
+// grepViaShellGrep runs `grep -r -n -I -E` inside the sandbox when rg is not
+// available there. It deliberately avoids GNU-only flags such as
+// --include/--exclude (busybox grep lacks them) and applies include/exclude
+// filtering client-side instead, matching the other search paths. -I is
+// accepted by GNU and BSD grep and honoured; busybox grep (verified live
+// against golang:1.27.0-alpine's busybox grep 1.37.0) accepts -I but
+// silently ignores it, still matching inside NUL-containing files — so
+// parseGrepOutput applies its own NUL-byte check to keep the tools'
+// documented "binary files are skipped" contract on builds where -I is a
+// no-op. Symlink following inside the sandboxed walk is bounded by the
+// sandbox's own filesystem view; the CWE-59 host-symlink guard grepNative
+// needs has no counterpart here because this walk never touches the
+// harness host.
+func grepViaShellGrep(ctx context.Context, exec executor.Executor, dir, pattern string, include, exclude []string, maxResults int) ([]searchMatch, bool, error) {
+	cmd := fmt.Sprintf("grep -r -n -I -E -e %s %s", shellQuote(pattern), shellQuote(dir))
+	result, err := exec.Exec(ctx, cmd, searchTimeout)
+	if err != nil {
+		return nil, false, fmt.Errorf("grep invocation failed: %w", err)
+	}
+	// grep's exit-code convention mirrors rg's: 0 == matches found, 1 ==
+	// no matches (clean), 2+ == a real error (bad regex, IO failure). A
+	// nonzero exit alongside a mid-walk read error (e.g. one unreadable
+	// subdirectory) still carries every match grep reached before hitting
+	// it — discarding that would be strictly worse than the tree-backed
+	// path's graceful degradation, so only an empty stdout on a hard exit
+	// is treated as a fatal invocation failure; anything else is reported
+	// as a partial result.
+	switch {
+	case result.ExitCode == 0 || result.ExitCode == 1:
+		matches, incomplete := parseGrepOutput(result.Stdout, dir, include, exclude, maxResults)
+		return matches, incomplete || result.OutputTruncated, nil
+	case strings.TrimSpace(result.Stdout) == "":
+		return nil, false, fmt.Errorf("grep failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	default:
+		matches, _ := parseGrepOutput(result.Stdout, dir, include, exclude, maxResults)
+		return matches, true, nil
+	}
+}
+
+// parseGrepOutput parses `grep -n` output ("path:line:text" per line) into
+// searchMatch structs. The bool reports whether any line failed to parse,
+// so a dropped match is signalled as incompleteness rather than vanishing
+// silently. A matched line containing a NUL byte is dropped without
+// flagging incompleteness — same as grepNative's looksBinary skip — because
+// -I is a documented no-op on busybox grep (see grepViaShellGrep) and this
+// is the client-side backstop for the tools' "binary files are skipped"
+// contract on such a build.
+func parseGrepOutput(stdout, dir string, include, exclude []string, maxResults int) ([]searchMatch, bool) {
+	var matches []searchMatch
+	incomplete := false
+	for _, line := range strings.Split(stdout, "\n") {
+		if line == "" {
+			continue
+		}
+		pathPart, lineNum, textPart, ok := splitGrepLine(line)
+		if !ok {
+			incomplete = true
+			continue
+		}
+		if strings.IndexByte(textPart, 0) >= 0 {
+			continue
+		}
+		rel := relativeToSandboxPath(pathPart, dir)
+		if !matchesFilters(path.Base(rel), rel, include, exclude) {
+			continue
+		}
+		matches = append(matches, searchMatch{Path: rel, Line: lineNum, Text: textPart})
+		if len(matches) >= maxResults {
+			break
+		}
+	}
+	return matches, incomplete
+}
+
+// splitGrepLine parses one "path:line:text" line of `grep -n` output. A file
+// path may itself contain a colon, so the split point can't be assumed to be
+// the first colon in the line: this scans each colon as a candidate
+// path/line-number boundary and takes the first one whose next
+// colon-delimited field parses as an integer — the same left-to-right rule
+// grep itself uses to locate the line-number field.
+func splitGrepLine(line string) (pathPart string, lineNum int, textPart string, ok bool) {
+	offset := 0
+	for {
+		idx := strings.IndexByte(line[offset:], ':')
+		if idx < 0 {
+			return "", 0, "", false
+		}
+		colonPos := offset + idx
+		afterColon := line[colonPos+1:]
+		nextIdx := strings.IndexByte(afterColon, ':')
+		if nextIdx >= 0 {
+			if n, err := strconv.Atoi(afterColon[:nextIdx]); err == nil {
+				return line[:colonPos], n, afterColon[nextIdx+1:], true
+			}
+		}
+		offset = colonPos + 1
+	}
+}
+
+// findViaExec lists files under dir inside the sandbox via `find <dir>
+// -type f`: busybox-compatible, no -printf or -maxdepth games. Name
+// matching against the basename and include/exclude filtering happen
+// client-side, mirroring findNative and findTree. The bool reports whether
+// the listing is known to be incomplete (a nonzero exit that still produced
+// output, e.g. one unreadable subdirectory).
+func findViaExec(ctx context.Context, exec executor.Executor, dir, name string, include, exclude []string, maxResults int) ([]string, bool, error) {
+	cmd := fmt.Sprintf("find %s -type f", shellQuote(dir))
+	result, err := exec.Exec(ctx, cmd, searchTimeout)
+	if err != nil {
+		return nil, false, fmt.Errorf("find invocation failed: %w", err)
+	}
+	if result.ExitCode != 0 && strings.TrimSpace(result.Stdout) == "" {
+		return nil, false, fmt.Errorf("find failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	incomplete := result.ExitCode != 0 || result.OutputTruncated
+	var results []string
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		if line == "" {
+			continue
+		}
+		rel := relativeToSandboxPath(line, dir)
+		matched, matchErr := filepath.Match(name, path.Base(rel))
+		if matchErr != nil {
+			return nil, false, fmt.Errorf("match name pattern: %w", matchErr)
+		}
+		if !matched {
+			continue
+		}
+		if !matchesFilters(path.Base(rel), rel, include, exclude) {
+			continue
+		}
+		results = append(results, rel)
+		if len(results) >= maxResults {
+			break
+		}
+	}
+	return results, incomplete, nil
+}
+
+// relativeToSandboxPath converts an absolute in-sandbox path emitted by a
+// sandboxed rg/grep/find invocation into a path relative to the search root,
+// matching the rendering every other search path (native, tree) produces.
+// Sandboxed executors always resolve to POSIX paths regardless of the
+// harness host's OS, so this uses the "path" package rather than
+// "path/filepath".
+func relativeToSandboxPath(p, dir string) string {
+	if p == dir {
+		return path.Base(p)
+	}
+	if rel := strings.TrimPrefix(p, dir+"/"); rel != p {
+		return rel
+	}
+	return strings.TrimPrefix(p, "/")
 }
 
 // withIncompleteNotice appends the partial-scan notice to a rendering when the
