@@ -62,6 +62,12 @@ type fakeControlPlane struct {
 	pb.UnimplementedHarnessServiceServer
 	readyRecv chan struct{}
 	task      *pb.RunConfig
+
+	// sendTask, if non-nil, gates the task_assignment send on the test
+	// closing it. Without this, the assignment can reach runJob and clear
+	// the readiness marker before the test observes it set, racing the
+	// marker-scoped-to-assignment-wait assertion.
+	sendTask chan struct{}
 }
 
 func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
@@ -69,6 +75,10 @@ func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error
 		return err
 	}
 	close(s.readyRecv)
+
+	if s.sendTask != nil {
+		<-s.sendTask
+	}
 
 	return stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task})
 }
@@ -137,6 +147,7 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 
 	srv := &fakeControlPlane{
 		readyRecv: make(chan struct{}),
+		sendTask:  make(chan struct{}),
 		// An invalid Mode fails types.ValidateRunConfig immediately inside
 		// core.BuildLoopWithTransport, so runJob returns without any
 		// provider/executor I/O.
@@ -157,6 +168,10 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 	// markers should be present.
 	waitForProbe(t, livenessMarkerPath, true)
 	waitForProbe(t, readinessMarkerPath, true)
+
+	// Only now let the fake control plane send the assignment, so it
+	// can't race the marker assertions above.
+	close(srv.sendTask)
 
 	select {
 	case err := <-errCh:
