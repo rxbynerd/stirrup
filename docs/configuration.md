@@ -631,6 +631,7 @@ configuration space — the common cases. Anything below requires
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
+| `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
 | `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
 | `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
@@ -657,6 +658,7 @@ Tools carry two independent permission flags:
 | `web_fetch`, `spawn_agent` | `RequiresApproval` only | Allow | Deny | Allow | Prompt |
 | `run_command` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Deny | Prompt |
 | `edit_file`, `write_file` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Deny | Prompt |
+| `tools.controlPlane[]` entries | neither flag, or `RequiresApproval` when `requiresApproval: true` | Allow | Deny | Allow | Allow, or Prompt with `requiresApproval` |
 
 `policy-engine` evaluates the Cedar policy first. When Cedar returns
 no decision, the configured fallback (`deny-side-effects` by default)
@@ -718,6 +720,37 @@ The read-only modes differ from each other only in prompt template:
 `planning` for "describe and reason before acting" first-touch use,
 `review` for change-review tasks, `research` for investigation across
 a codebase or the web, and `toil` for structured-briefing workflows.
+
+## Control-plane tools
+
+`tools.controlPlane` declares tools whose result the control plane
+supplies over the gRPC stream instead of the harness computing it.
+Each entry becomes an async tool: a call validates the model's input
+against `inputSchema`, emits a `tool_result_request` event, and
+blocks on the matching `tool_result_response`. The block is
+file-configurable and mirrored on the proto (`ToolsConfig.control_plane`),
+so a control plane can send it in `task_assignment`; there is no CLI
+flag because the CLI topology has no control plane to answer.
+
+| Field | Required | Semantics |
+|---|---|---|
+| `name` | yes | Tool name as the model sees it. `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`; must not collide with a built-in tool name, carry the `mcp_` prefix, or repeat within the list. |
+| `description` | yes | Tool description shown to the model. |
+| `inputSchema` | yes | JSON Schema object with `"type": "object"`. Input is validated against it before any request is emitted. |
+| `timeoutSeconds` | no | Wait for the response, 0–3600. `0` selects the harness default of 60 s. Expiry is a tool failure the model sees; the run continues. |
+| `requiresApproval` | no | When `true`, each call goes through the permission policy first (see the table above). |
+
+Validation rejects the block unless `transport.type` is `grpc`, the
+same rule as `executor.sandboxIdentity`. Control-plane tools are
+never `WorkspaceMutating`, so the read-only modes admit them next to
+an explicit `tools.builtIn` list. Registration order is built-ins,
+then control-plane tools, then MCP-imported tools. A toolset profile
+aliases only built-in IDs; a control-plane tool named after an alias
+target (`grep`, `find`, `bash` under `coding-classic`) is renamed by
+the presenter's collision resolution, so avoid those names when a
+profile is set. The control-plane side of the contract — response shape,
+`is_error`, cancellation — is in
+[`integration-guide.md`](integration-guide.md#control-plane-fulfilled-tools-tool_result_request).
 
 ## System prompt templating
 

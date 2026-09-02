@@ -8497,3 +8497,140 @@ func TestRunConfig_DoesNotExposeDebugFields(t *testing.T) {
 		}
 	}
 }
+
+func controlPlaneToolFixture(name string) ControlPlaneToolConfig {
+	return ControlPlaneToolConfig{
+		Name:        name,
+		Description: "fixture",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
+	}
+}
+
+func TestValidateRunConfig_ControlPlaneTools_RequiresGRPC(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport string
+		wantErr   bool
+	}{
+		{"grpc_passes", "grpc", false},
+		{"stdio_fails", "stdio", true},
+		{"empty_transport_fails", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Transport = TransportConfig{Type: tc.transport}
+			c.Tools.ControlPlane = []ControlPlaneToolConfig{controlPlaneToolFixture("search_memory")}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "tools.controlPlane requires transport=grpc") {
+					t.Fatalf("expected transport rejection, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected pass on grpc, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ControlPlaneTools_ReadOnlyModesAdmit(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.Transport = TransportConfig{Type: "grpc"}
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{
+				BuiltIn:      []string{"read_file"},
+				ControlPlane: []ControlPlaneToolConfig{controlPlaneToolFixture("save_memory")},
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("read-only mode %s should admit control-plane tools, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ControlPlaneTools_EntryRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*ControlPlaneToolConfig)
+		wantErr string
+	}{
+		{"missing_name", func(ct *ControlPlaneToolConfig) { ct.Name = "" }, "tools.controlPlane[0].name is required"},
+		{"bad_name_chars", func(ct *ControlPlaneToolConfig) { ct.Name = "has space" }, "must match"},
+		{"leading_digit", func(ct *ControlPlaneToolConfig) { ct.Name = "1tool" }, "must match"},
+		{"too_long", func(ct *ControlPlaneToolConfig) { ct.Name = strings.Repeat("a", 65) }, "must match"},
+		{"builtin_collision", func(ct *ControlPlaneToolConfig) { ct.Name = "read_file" }, "collides with a built-in tool"},
+		{"mcp_prefix", func(ct *ControlPlaneToolConfig) { ct.Name = "mcp_search_lookup" }, "mcp_ prefix"},
+		{"missing_description", func(ct *ControlPlaneToolConfig) { ct.Description = "  " }, "description is required"},
+		{"missing_schema", func(ct *ControlPlaneToolConfig) { ct.InputSchema = nil }, "inputSchema is required"},
+		{"schema_not_object", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`["x"]`) }, "must be a JSON Schema object"},
+		{"schema_invalid_json", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{`) }, "must be a JSON Schema object"},
+		{"schema_wrong_type", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{"type":"string"}`) }, `must declare "type": "object"`},
+		{"negative_timeout", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = -1 }, "timeoutSeconds must be between 0 and 3600"},
+		{"timeout_over_cap", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = 3601 }, "timeoutSeconds must be between 0 and 3600"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Transport = TransportConfig{Type: "grpc"}
+			ct := controlPlaneToolFixture("search_memory")
+			tc.mutate(&ct)
+			c.Tools.ControlPlane = []ControlPlaneToolConfig{ct}
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+
+	t.Run("valid_entries_pass", func(t *testing.T) {
+		c := validConfig()
+		c.Transport = TransportConfig{Type: "grpc"}
+		full := controlPlaneToolFixture("save-memory_v2")
+		full.TimeoutSeconds = 3600
+		full.RequiresApproval = true
+		c.Tools.ControlPlane = []ControlPlaneToolConfig{controlPlaneToolFixture("_search"), full}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected pass, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_ControlPlaneTools_DuplicateNames(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Tools.ControlPlane = []ControlPlaneToolConfig{
+		controlPlaneToolFixture("search_memory"),
+		controlPlaneToolFixture("search_memory"),
+	}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), `tools.controlPlane[1].name "search_memory" duplicates tools.controlPlane[0]`) {
+		t.Fatalf("expected duplicate rejection, got: %v", err)
+	}
+}
+
+func TestRunConfig_ControlPlaneToolsJSONRoundTrip(t *testing.T) {
+	raw := `{"tools":{"builtIn":["read_file"],"controlPlane":[{"name":"search_memory","description":"d","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"timeoutSeconds":30,"requiresApproval":true}]}}`
+	var c RunConfig
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(c.Tools.ControlPlane) != 1 {
+		t.Fatalf("got %d entries", len(c.Tools.ControlPlane))
+	}
+	ct := c.Tools.ControlPlane[0]
+	if ct.Name != "search_memory" || ct.TimeoutSeconds != 30 || !ct.RequiresApproval {
+		t.Fatalf("entry = %+v", ct)
+	}
+	out, err := json.Marshal(c.Tools)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`) {
+		t.Fatalf("inputSchema not preserved verbatim: %s", out)
+	}
+}

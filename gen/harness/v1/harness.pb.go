@@ -9,6 +9,7 @@ package harnessv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -4493,7 +4494,17 @@ type ToolsConfig struct {
 	// Optional. MCP (Model Context Protocol) server connections for remote
 	// tool discovery. Tools from MCP servers are prefixed as
 	// "mcp_{serverName}_{toolName}" to avoid naming collisions.
-	McpServers    []*MCPServerConfig `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	McpServers []*MCPServerConfig `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	// Optional. Tools the control plane fulfils over the RunTask stream.
+	// Each entry is registered as an async tool: a call emits a
+	// tool_result_request HarnessEvent (tool_name = name, tool_use_id,
+	// request_id, input = the model's JSON input, already validated
+	// against input_schema) and blocks on the ControlEvent
+	// tool_result_response echoing request_id. `content` is delivered to
+	// the model verbatim; `is_error: true` surfaces it as a tool failure.
+	// Only meaningful on the gRPC transport: a config arriving in
+	// task_assignment satisfies that by construction.
+	ControlPlane  []*ControlPlaneToolConfig `protobuf:"bytes,3,rep,name=control_plane,json=controlPlane,proto3" json:"control_plane,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4542,6 +4553,107 @@ func (x *ToolsConfig) GetMcpServers() []*MCPServerConfig {
 	return nil
 }
 
+func (x *ToolsConfig) GetControlPlane() []*ControlPlaneToolConfig {
+	if x != nil {
+		return x.ControlPlane
+	}
+	return nil
+}
+
+// ControlPlaneToolConfig declares one tool whose result the control plane
+// supplies. The harness never runs tool-side code for it beyond JSON
+// Schema input validation and the permission check.
+type ControlPlaneToolConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Tool name as the model sees it. Letters, digits, underscore
+	// and hyphen, 64 characters max, not starting with a digit. Must not
+	// collide with a built-in tool name, must not carry the "mcp_" prefix,
+	// and must be unique within control_plane.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Required. Tool description shown to the model.
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Required. JSON Schema for the tool input; must declare
+	// "type": "object". Carried as a Struct so the JSON RunConfig mirror
+	// holds a plain JSON object under `inputSchema`.
+	InputSchema *structpb.Struct `protobuf:"bytes,3,opt,name=input_schema,json=inputSchema,proto3" json:"input_schema,omitempty"`
+	// Optional. Per-call wait for tool_result_response, in seconds
+	// (0..3600). Zero selects the harness default of 60 seconds. Expiry
+	// surfaces to the model as a tool failure; the run continues.
+	TimeoutSeconds int32 `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	// Optional. When true, every call is checked against the run's
+	// permission policy (Cedar rules, or an ask-upstream permission_request)
+	// before the tool_result_request is emitted. When false the call
+	// dispatches without a permission check, like read-only built-ins.
+	RequiresApproval bool `protobuf:"varint,5,opt,name=requires_approval,json=requiresApproval,proto3" json:"requires_approval,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ControlPlaneToolConfig) Reset() {
+	*x = ControlPlaneToolConfig{}
+	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ControlPlaneToolConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ControlPlaneToolConfig) ProtoMessage() {}
+
+func (x *ControlPlaneToolConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ControlPlaneToolConfig.ProtoReflect.Descriptor instead.
+func (*ControlPlaneToolConfig) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ControlPlaneToolConfig) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ControlPlaneToolConfig) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *ControlPlaneToolConfig) GetInputSchema() *structpb.Struct {
+	if x != nil {
+		return x.InputSchema
+	}
+	return nil
+}
+
+func (x *ControlPlaneToolConfig) GetTimeoutSeconds() int32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+func (x *ControlPlaneToolConfig) GetRequiresApproval() bool {
+	if x != nil {
+		return x.RequiresApproval
+	}
+	return false
+}
+
 // MCPServerConfig describes a single MCP server connection. The harness
 // connects via Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST).
 type MCPServerConfig struct {
@@ -4570,7 +4682,7 @@ type MCPServerConfig struct {
 
 func (x *MCPServerConfig) Reset() {
 	*x = MCPServerConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	mi := &file_harness_v1_harness_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4582,7 +4694,7 @@ func (x *MCPServerConfig) String() string {
 func (*MCPServerConfig) ProtoMessage() {}
 
 func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	mi := &file_harness_v1_harness_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4595,7 +4707,7 @@ func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerConfig.ProtoReflect.Descriptor instead.
 func (*MCPServerConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{38}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *MCPServerConfig) GetName() string {
@@ -4637,7 +4749,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\"\x9a\x03\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x9a\x03\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -4981,11 +5093,18 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"n\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x01\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
-	"mcpServers\"\xa8\x01\n" +
+	"mcpServers\x12O\n" +
+	"\rcontrol_plane\x18\x03 \x03(\v2*.stirrup.harness.v1.ControlPlaneToolConfigR\fcontrolPlane\"\xe0\x01\n" +
+	"\x16ControlPlaneToolConfig\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12:\n" +
+	"\finput_schema\x18\x03 \x01(\v2\x17.google.protobuf.StructR\vinputSchema\x12'\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12+\n" +
+	"\x11requires_approval\x18\x05 \x01(\bR\x10requiresApproval\"\xa8\x01\n" +
 	"\x0fMCPServerConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x1e\n" +
@@ -5008,7 +5127,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),               // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),               // 1: stirrup.harness.v1.ControlEvent
@@ -5048,24 +5167,26 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*GitStrategyConfig)(nil),          // 35: stirrup.harness.v1.GitStrategyConfig
 	(*TraceEmitterConfig)(nil),         // 36: stirrup.harness.v1.TraceEmitterConfig
 	(*ToolsConfig)(nil),                // 37: stirrup.harness.v1.ToolsConfig
-	(*MCPServerConfig)(nil),            // 38: stirrup.harness.v1.MCPServerConfig
-	nil,                                // 39: stirrup.harness.v1.RunConfig.DynamicContextEntry
-	nil,                                // 40: stirrup.harness.v1.RunConfig.ProvidersEntry
-	nil,                                // 41: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	nil,                                // 42: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
-	nil,                                // 43: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	nil,                                // 44: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	nil,                                // 45: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
-	nil,                                // 46: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	(*ControlPlaneToolConfig)(nil),     // 38: stirrup.harness.v1.ControlPlaneToolConfig
+	(*MCPServerConfig)(nil),            // 39: stirrup.harness.v1.MCPServerConfig
+	nil,                                // 40: stirrup.harness.v1.RunConfig.DynamicContextEntry
+	nil,                                // 41: stirrup.harness.v1.RunConfig.ProvidersEntry
+	nil,                                // 42: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	nil,                                // 43: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	nil,                                // 44: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	nil,                                // 45: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                                // 46: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	nil,                                // 47: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	(*structpb.Struct)(nil),            // 48: google.protobuf.Struct
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	16, // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
 	3,  // 1: stirrup.harness.v1.ControlEvent.task:type_name -> stirrup.harness.v1.RunConfig
 	2,  // 2: stirrup.harness.v1.ControlEvent.allowed:type_name -> stirrup.harness.v1.OptionalBool
 	2,  // 3: stirrup.harness.v1.ControlEvent.is_error:type_name -> stirrup.harness.v1.OptionalBool
-	39, // 4: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
+	40, // 4: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
 	17, // 5: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
-	40, // 6: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
+	41, // 6: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
 	23, // 7: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
 	24, // 8: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
 	25, // 9: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
@@ -5084,38 +5205,40 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	9,  // 22: stirrup.harness.v1.RunConfig.hooks:type_name -> stirrup.harness.v1.HooksConfig
 	7,  // 23: stirrup.harness.v1.RunConfig.result_sink:type_name -> stirrup.harness.v1.ResultSinkConfig
 	6,  // 24: stirrup.harness.v1.RunConfig.tool_choice_escalation:type_name -> stirrup.harness.v1.ToolChoiceEscalationConfig
-	41, // 25: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	42, // 25: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
 	10, // 26: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
 	10, // 27: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
 	12, // 28: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
 	14, // 29: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
-	42, // 30: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	43, // 30: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
 	8,  // 31: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
 	19, // 32: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	43, // 33: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	44, // 33: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
 	21, // 34: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
 	22, // 35: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
 	18, // 36: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
 	20, // 37: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	44, // 38: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	45, // 38: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
 	29, // 39: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
 	30, // 40: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
 	31, // 41: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	45, // 42: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	46, // 42: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
 	27, // 43: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
 	28, // 44: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
 	33, // 45: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	46, // 46: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	38, // 47: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	4,  // 48: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	17, // 49: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 50: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 51: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	51, // [51:52] is the sub-list for method output_type
-	50, // [50:51] is the sub-list for method input_type
-	50, // [50:50] is the sub-list for extension type_name
-	50, // [50:50] is the sub-list for extension extendee
-	0,  // [0:50] is the sub-list for field type_name
+	47, // 46: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	39, // 47: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	38, // 48: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	48, // 49: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	4,  // 50: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	17, // 51: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 52: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 53: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	53, // [53:54] is the sub-list for method output_type
+	52, // [52:53] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -5136,7 +5259,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   47,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

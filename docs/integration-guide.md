@@ -592,18 +592,100 @@ uses bounded contexts to flush traces and the result sink.
 
 ### Control-plane-fulfilled tools (`tool_result_request`)
 
-The async-tool contract lets a tool's *result* come from the control
-plane instead of the harness: the loop emits `tool_result_request`
-(`request_id`, `tool_use_id`, `tool_name`, `input`) and blocks under
-a per-call timeout; the control plane answers with
-`tool_result_response` (`content`, optional `is_error: true` to
-surface a failure to the model). Concurrent async calls in one turn
-fan out under the `toolDispatch.maxParallel` semaphore (default 4,
-ceiling 16). No shipped built-in tool defers upstream today, and the
-public embedding API does not expose custom tool registration. A
-control plane therefore need not implement this response path unless
-it is paired with a future or internally extended harness that emits
-the request.
+Goal: give the model a tool whose *result* the control plane
+computes — a memory store, an internal search index, a ticket
+system — without the harness holding credentials for it or the
+sandbox reaching it over the network.
+
+```json
+"tools": {
+  "builtIn": ["read_file", "run_command"],
+  "controlPlane": [
+    {
+      "name": "search_memory",
+      "description": "Search long-term memory for prior events and facts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "limit": {"type": "integer"}
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "save_memory",
+      "description": "Persist a memory for future runs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "content": {"type": "string"},
+          "kind": {"type": "string", "enum": ["event", "fact"]}
+        },
+        "required": ["content"]
+      },
+      "timeoutSeconds": 30,
+      "requiresApproval": true
+    }
+  ]
+}
+```
+
+Each entry is registered as an async tool. The model sees `name`,
+`description`, and `inputSchema` exactly as it would a built-in. A
+call validates the input against the schema harness-side, then emits
+`tool_result_request` (`request_id`, `tool_use_id`,
+`tool_name` = `name`, `input` = the validated JSON) and blocks on the
+matching `tool_result_response`. Concurrent calls in one turn fan out
+under the `toolDispatch.maxParallel` semaphore (default 4, ceiling
+16), so the control plane may receive several requests before it has
+answered the first.
+
+Control-plane responsibilities:
+
+- Answer every request with `tool_result_response` echoing
+  `request_id`. `content` reaches the model verbatim (truncated with
+  a marker beyond 1 MiB); choose a shape the description tells the
+  model to expect, JSON or prose. `is_error: true` surfaces `content`
+  to the model as a failed tool call, after secret scrubbing; the
+  model may retry or move on, and the run continues.
+- Answer within the per-entry `timeoutSeconds` (0–3600; `0` selects
+  the harness default of 60 s). Expiry is a tool failure the model
+  sees, not a run failure. A response arriving after expiry is
+  dropped.
+- Expect no request after `cancel` or the run timeout: dispatch
+  aborts under the run context, the model sees a cancelled tool
+  failure, and the run winds down as usual. A request that could not
+  be written to the stream (transport disconnect) fails the call
+  the same way.
+
+Validation (`ValidateRunConfig`) rejects the block unless
+`transport.type` is `grpc` — a config arriving in `task_assignment`
+satisfies that by construction, the CLI and Cloud Run topologies
+cannot use it — and rejects a `name` that collides with a built-in
+tool, carries the `mcp_` prefix, repeats within the list, or fails
+the provider-portable grammar (`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`);
+`description` and an object-typed `inputSchema` are required.
+
+Posture notes:
+
+- Control-plane tools never mutate the workspace, so read-only
+  modes (`planning`, `review`, `research`, `toil`) admit them beside
+  an explicit `tools.builtIn` list.
+- `requiresApproval: true` sends each call through the permission
+  policy first — a Cedar `forbid` denies it, `ask-upstream` raises a
+  `permission_request` — on the same footing as `web_fetch`. Unset,
+  calls dispatch without a permission check, like read-only
+  built-ins.
+- The Rule-of-Two runtime gate does not revoke these tools: the
+  control plane already receives every `tool_call` input on the
+  stream, so a control-plane tool opens no channel it did not have.
+- Sub-agents spawned by `spawn_agent` have no live control-plane
+  transport; a control-plane tool called from a sub-agent fails
+  fast with a tool error rather than waiting out the timeout.
+
+Field reference: [`configuration.md`](configuration.md#control-plane-tools).
+Wire contract for the event pair: [`deployment.md`](deployment.md).
 
 ### Sandbox identity tokens (authenticated git egress)
 

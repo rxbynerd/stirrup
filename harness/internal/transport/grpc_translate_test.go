@@ -1,11 +1,13 @@
 package transport
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/types"
@@ -1683,5 +1685,84 @@ func TestRunConfigFromProto_SandboxIdentityPassesValidation(t *testing.T) {
 	rc := runConfigFromProto(pc)
 	if err := types.ValidateRunConfig(&rc); err != nil {
 		t.Fatalf("wire-delivered sandbox identity config rejected by validation: %v", err)
+	}
+}
+
+// TestRunConfigFromProto_ControlPlaneToolsPreserved pins the wire mapping
+// of ToolsConfig.control_plane, including the Struct → JSON projection of
+// input_schema, through a real marshal/unmarshal cycle.
+func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
+	schema, err := structpb.NewStruct(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string"},
+			"limit": map[string]any{"type": "integer"},
+		},
+		"required": []any{"query"},
+	})
+	if err != nil {
+		t.Fatalf("NewStruct: %v", err)
+	}
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			BuiltIn: []string{"read_file"},
+			ControlPlane: []*pb.ControlPlaneToolConfig{
+				{
+					Name:             "search_memory",
+					Description:      "Search long-term memory.",
+					InputSchema:      schema,
+					TimeoutSeconds:   30,
+					RequiresApproval: true,
+				},
+				{
+					Name:        "save_memory",
+					Description: "Persist a memory.",
+				},
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+	if len(rc.Tools.ControlPlane) != 2 {
+		t.Fatalf("ControlPlane: got %d entries, want 2", len(rc.Tools.ControlPlane))
+	}
+
+	first := rc.Tools.ControlPlane[0]
+	if first.Name != "search_memory" || first.Description != "Search long-term memory." {
+		t.Errorf("first entry = %+v", first)
+	}
+	if first.TimeoutSeconds != 30 || !first.RequiresApproval {
+		t.Errorf("first timeout/approval = %d/%v, want 30/true", first.TimeoutSeconds, first.RequiresApproval)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(first.InputSchema, &got); err != nil {
+		t.Fatalf("inputSchema is not a JSON object: %v (%s)", err, first.InputSchema)
+	}
+	if got["type"] != "object" {
+		t.Errorf("inputSchema.type = %v, want object", got["type"])
+	}
+	props, _ := got["properties"].(map[string]any)
+	if _, ok := props["query"]; !ok {
+		t.Errorf("inputSchema.properties.query missing: %s", first.InputSchema)
+	}
+	if req, _ := got["required"].([]any); len(req) != 1 || req[0] != "query" {
+		t.Errorf("inputSchema.required = %v, want [query]", got["required"])
+	}
+
+	second := rc.Tools.ControlPlane[1]
+	if second.InputSchema != nil {
+		t.Errorf("unset input_schema should map to nil, got %s", second.InputSchema)
+	}
+	if second.TimeoutSeconds != 0 || second.RequiresApproval {
+		t.Errorf("second entry defaults = %+v", second)
 	}
 }
