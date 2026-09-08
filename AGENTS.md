@@ -35,7 +35,7 @@ stirrup/
       git/                   # GitStrategy: none, deterministic
       hook/                  # Lifecycle hooks: Runner, Noop, ExecRunner (pre/post-run exec, #461)
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
-      guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
+      guard/                 # GuardRail: none, granite-guardian, shieldstral, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
@@ -115,7 +115,7 @@ plus a base via stdin or `--config <path>`. See
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP)
-13. **GuardRail** — LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, cloud-judge, composite)
+13. **GuardRail** — LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, shieldstral, cloud-judge, composite)
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
 
@@ -170,7 +170,7 @@ The `BearerToken` closure returned by `Resolved.BearerToken` is called on every 
 
 ### GuardRail
 
-The `guard` package (`guard/`) provides an LLM-based safety classifier called at three points in the agentic loop: pre-turn (before untrusted content enters context), pre-tool (before the model's proposed tool call is dispatched), and post-turn (after the assistant's response). Adapters: `none` (no-op), `granite-guardian` (IBM Granite Guardian via vLLM), `cloud-judge` (reuses a configured ProviderAdapter), `composite`. See [`docs/guardrails.md`](docs/guardrails.md).
+The `guard` package (`guard/`) provides an LLM-based safety classifier called at three points in the agentic loop: pre-turn (before untrusted content enters context), pre-tool (before the model's proposed tool call is dispatched), and post-turn (after the assistant's response). Adapters: `none` (no-op), `granite-guardian` (IBM Granite Guardian via vLLM), `shieldstral` (Mistral AI Shieldstral, self-hosted via vLLM/Ollama/TGI), `cloud-judge` (reuses a configured ProviderAdapter), `composite`. See [`docs/guardrails.md`](docs/guardrails.md).
 
 ## Security Foundations
 

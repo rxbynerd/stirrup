@@ -2597,6 +2597,46 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_ShieldstralFlags verifies that Shieldstral
+// flags (including APIKeyRef) propagate from harnessCLIOptions into RunConfig.GuardRail.
+func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:              "test-run",
+		Mode:               "execution",
+		Prompt:             "test",
+		ProviderType:       "anthropic",
+		APIKeyRef:          "secret://ANTHROPIC_API_KEY",
+		Model:              "claude-sonnet-4-6",
+		MaxTurns:           20,
+		Timeout:            600,
+		TransportType:      "stdio",
+		LogLevel:           "info",
+		GuardRailType:      "shieldstral",
+		GuardRailEndpoint:  "https://api.mistral.ai",
+		GuardRailAPIKeyRef: "secret://MISTRAL_API_KEY",
+		GuardRailModel:     "shieldstral-1-0",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	if cfg.GuardRail == nil {
+		t.Fatalf("expected non-nil GuardRail config, got nil")
+	}
+	if cfg.GuardRail.Type != "shieldstral" {
+		t.Errorf("GuardRail.Type = %q, want shieldstral", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "https://api.mistral.ai" {
+		t.Errorf("GuardRail.Endpoint = %q, want https://api.mistral.ai", cfg.GuardRail.Endpoint)
+	}
+	if cfg.GuardRail.APIKeyRef != "secret://MISTRAL_API_KEY" {
+		t.Errorf("GuardRail.APIKeyRef = %q, want secret://MISTRAL_API_KEY", cfg.GuardRail.APIKeyRef)
+	}
+	if cfg.GuardRail.Model != "shieldstral-1-0" {
+		t.Errorf("GuardRail.Model = %q, want shieldstral-1-0", cfg.GuardRail.Model)
+	}
+}
+
 // TestBuildHarnessRunConfig_GuardRailDefaultNil verifies that the
 // flag-only build path leaves config.GuardRail nil when no GuardRail
 // flags are set, so the factory installs the no-op "none" guard.
@@ -2668,6 +2708,7 @@ func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 	}
 	must("guardrail-endpoint", "http://flag-endpoint:1234")
 	must("guardrail-fail-open", "true")
+	must("guardrail-api-key-ref", "secret://FLAG_KEY")
 
 	if err := applyOverrides(cmd, cfg, nil); err != nil {
 		t.Fatalf("applyOverrides: %v", err)
@@ -2680,6 +2721,9 @@ func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 	}
 	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
 		t.Errorf("GuardRail.Endpoint override failed: %q", cfg.GuardRail.Endpoint)
+	}
+	if cfg.GuardRail.APIKeyRef != "secret://FLAG_KEY" {
+		t.Errorf("GuardRail.APIKeyRef override failed: %q", cfg.GuardRail.APIKeyRef)
 	}
 	if !cfg.GuardRail.FailOpen {
 		t.Errorf("GuardRail.FailOpen override failed: got false")

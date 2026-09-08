@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -579,7 +580,8 @@ func (nilDecisionGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision
 // buildGuardRail rather than BuildLoop because the latter needs full
 // secret resolution and provider construction.
 func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
-	g, err := buildGuardRail(nil, nil, nil)
+	ctx := context.Background()
+	g, err := buildGuardRail(ctx, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail(nil): %v", err)
 	}
@@ -587,7 +589,7 @@ func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 		t.Errorf("expected Noop, got %T", g)
 	}
 
-	g, err = buildGuardRail(&types.GuardRailConfig{Type: "none"}, nil, nil)
+	g, err = buildGuardRail(ctx, &types.GuardRailConfig{Type: "none"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail(none): %v", err)
 	}
@@ -601,11 +603,12 @@ func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 // Endpoint is a localhost URL so no network call happens at
 // construction time.
 func TestBuildGuardRail_GraniteGuardianBuildsAdapter(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:     "granite-guardian",
 		Endpoint: "http://localhost:9999",
 	}
-	g, err := buildGuardRail(cfg, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -620,12 +623,13 @@ func TestBuildGuardRail_GraniteGuardianBuildsAdapter(t *testing.T) {
 // TestBuildGuardRail_PhasesWrapsWithPhaseGated asserts that a non-empty
 // Phases slice produces a PhaseGated wrapper around the inner adapter.
 func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:     "granite-guardian",
 		Endpoint: "http://localhost:9999",
 		Phases:   []string{"post_turn"},
 	}
-	g, err := buildGuardRail(cfg, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -644,7 +648,8 @@ func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
 // validation is the canonical gate, but defence-in-depth at the
 // constructor catches any bypass.
 func TestBuildGuardRail_UnknownTypeIsError(t *testing.T) {
-	_, err := buildGuardRail(&types.GuardRailConfig{Type: "future-thing"}, nil, nil)
+	ctx := context.Background()
+	_, err := buildGuardRail(ctx, &types.GuardRailConfig{Type: "future-thing"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown type, got nil")
 	}
@@ -665,18 +670,76 @@ func (stubProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan type
 	return ch, nil
 }
 
+// TestBuildGuardRail_Shieldstral asserts that Shieldstral is correctly constructed
+// by buildGuardRailNode.
+func TestBuildGuardRail_Shieldstral(t *testing.T) {
+	ctx := context.Background()
+	t.Run("without apiKeyRef", func(t *testing.T) {
+		cfg := &types.GuardRailConfig{
+			Type:      "shieldstral",
+			Endpoint:  "http://127.0.0.1:8000",
+			Model:     "mistralai/Shieldstral-8B",
+			TimeoutMs: 1500,
+		}
+		g, err := buildGuardRail(ctx, cfg, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("buildGuardRail: %v", err)
+		}
+		if g == nil {
+			t.Fatal("expected non-nil GuardRail")
+		}
+		if _, ok := g.(*guard.Shieldstral); !ok {
+			t.Errorf("expected *guard.Shieldstral, got %T", g)
+		}
+	})
+
+	t.Run("with resolved apiKeyRef", func(t *testing.T) {
+		t.Setenv("TEST_MISTRAL_KEY", "mistral-secret-key-123")
+		secrets := security.NewEnvSecretStore()
+		cfg := &types.GuardRailConfig{
+			Type:      "shieldstral",
+			Endpoint:  "https://api.mistral.ai",
+			APIKeyRef: "secret://TEST_MISTRAL_KEY",
+			Model:     "shieldstral-1-0",
+		}
+		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets)
+		if err != nil {
+			t.Fatalf("buildGuardRail: %v", err)
+		}
+		if _, ok := g.(*guard.Shieldstral); !ok {
+			t.Errorf("expected *guard.Shieldstral, got %T", g)
+		}
+	})
+
+	t.Run("with apiKeyRef but nil secret store", func(t *testing.T) {
+		cfg := &types.GuardRailConfig{
+			Type:      "shieldstral",
+			Endpoint:  "https://api.mistral.ai",
+			APIKeyRef: "secret://SOME_KEY",
+		}
+		_, err := buildGuardRail(ctx, cfg, nil, nil, nil)
+		if err == nil {
+			t.Fatal("expected error when secrets is nil and apiKeyRef is set, got nil")
+		}
+		if !strings.Contains(err.Error(), "secret store is required") {
+			t.Errorf("expected error to mention secret store, got: %v", err)
+		}
+	})
+}
+
 // TestBuildGuardRail_CloudJudge asserts that the cloud-judge arm of
 // buildGuardRailNode constructs a *guard.CloudJudge backed by the
 // supplied default provider. Without coverage here, a regression
 // could silently substitute a Noop or a wrong provider — both of
 // which would weaken the guard without surfacing an error.
 func TestBuildGuardRail_CloudJudge(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:      "cloud-judge",
 		Model:     "claude-haiku-4-5-20251001",
 		TimeoutMs: 1500,
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -692,8 +755,9 @@ func TestBuildGuardRail_CloudJudge(t *testing.T) {
 // adapter constructor's "Provider is required" guard surfaces as a
 // build error rather than producing a nil-deref guardrail at runtime.
 func TestBuildGuardRail_CloudJudge_NilProviderIsError(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{Type: "cloud-judge"}
-	_, err := buildGuardRail(cfg, nil, nil)
+	_, err := buildGuardRail(ctx, cfg, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error when default provider is nil")
 	}
@@ -704,14 +768,16 @@ func TestBuildGuardRail_CloudJudge_NilProviderIsError(t *testing.T) {
 // constructed via its own arm. Coverage here protects against a
 // regression that silently dropped a stage or substituted Noops.
 func TestBuildGuardRail_Composite(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type: "composite",
 		Stages: []types.GuardRailConfig{
 			{Type: "granite-guardian", Endpoint: "http://classifier-a.local:9999"},
+			{Type: "shieldstral", Endpoint: "https://api.mistral.ai"},
 			{Type: "cloud-judge", Model: "claude-haiku-4-5-20251001"},
 		},
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -719,14 +785,17 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *guard.Sequential, got %T", g)
 	}
-	if len(seq.Guards) != 2 {
-		t.Fatalf("expected 2 stages, got %d", len(seq.Guards))
+	if len(seq.Guards) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(seq.Guards))
 	}
 	if _, ok := seq.Guards[0].(*guard.GraniteGuardian); !ok {
 		t.Errorf("Guards[0]: expected *guard.GraniteGuardian, got %T", seq.Guards[0])
 	}
-	if _, ok := seq.Guards[1].(*guard.CloudJudge); !ok {
-		t.Errorf("Guards[1]: expected *guard.CloudJudge, got %T", seq.Guards[1])
+	if _, ok := seq.Guards[1].(*guard.Shieldstral); !ok {
+		t.Errorf("Guards[1]: expected *guard.Shieldstral, got %T", seq.Guards[1])
+	}
+	if _, ok := seq.Guards[2].(*guard.CloudJudge); !ok {
+		t.Errorf("Guards[2]: expected *guard.CloudJudge, got %T", seq.Guards[2])
 	}
 }
 
@@ -735,6 +804,7 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 // inner is the Sequential composite — so the phase restriction
 // applies to the composite as a whole, not to each stage individually.
 func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
+	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:   "composite",
 		Phases: []string{"post_turn"},
@@ -742,7 +812,7 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 			{Type: "granite-guardian", Endpoint: "http://classifier.local:9999"},
 		},
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}

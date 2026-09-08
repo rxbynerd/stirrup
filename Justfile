@@ -47,6 +47,44 @@ guardian-smoke:
     fi
     echo "ok: granite-guardian available at ${endpoint}"
 
+# Smoke test: confirm Shieldstral (issue #539) is reachable on the
+# configured endpoint (default: http://127.0.0.1:8000 or MISTRAL_API_BASE).
+# Supports optional MISTRAL_API_KEY / SHIELDSTRAL_API_KEY authentication.
+shieldstral-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    endpoint="${SHIELDSTRAL_ENDPOINT:-${MISTRAL_API_BASE:-http://127.0.0.1:8000}}"
+    # Normalise chat-completions / /v1 bases so the models probe never
+    # doubles the path (MISTRAL_API_BASE conventionally ends in /v1).
+    endpoint="${endpoint%/}"
+    endpoint="${endpoint%/chat/completions}"
+    endpoint="${endpoint%/v1}"
+    # A custom path (reverse proxy, gateway) is the full chat-completions
+    # target for the adapter; no /v1/models sibling is derivable from it.
+    if [[ "${endpoint#*://}" == */* ]]; then
+        echo "skip: ${endpoint} carries a custom path; no /v1/models probe is derivable — verify by running the harness against it"
+        exit 0
+    fi
+    api_key="${SHIELDSTRAL_API_KEY:-${MISTRAL_API_KEY:-}}"
+    auth_header=()
+    if [ -n "${api_key}" ]; then
+        auth_header=(-H "Authorization: Bearer ${api_key}")
+    fi
+    echo "checking Shieldstral at ${endpoint}..."
+    # ${auth_header[@]+...} keeps the empty-array expansion legal under
+    # `set -u` on bash 3.2 (stock macOS).
+    if ! response=$(curl -fsS --max-time 5 ${auth_header[@]+"${auth_header[@]}"} "${endpoint}/v1/models" 2>&1); then
+        echo "FAIL: cannot reach ${endpoint}/v1/models" >&2
+        echo "  ${response}" >&2
+        exit 1
+    fi
+    if ! printf '%s' "${response}" | grep -qi 'shieldstral'; then
+        echo "FAIL: ${endpoint} responded but no shieldstral model is listed" >&2
+        echo "  /v1/models payload: ${response}" >&2
+        exit 1
+    fi
+    echo "ok: shieldstral available at ${endpoint}"
+
 clean:
     rm -f stirrup stirrup-eval
 

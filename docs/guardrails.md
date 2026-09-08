@@ -75,9 +75,10 @@ Skip when:
 The shipped Granite Guardian adapter applies a **batched** check at
 this phase by default: all untrusted chunks for a turn are
 concatenated under per-chunk delimiters and submitted in one
-outbound request, not one per chunk. Combined with the `MinChunkChars`
-skip threshold (default 256), this keeps the per-turn overhead bounded
-even when many small tool outputs are returned.
+outbound request, not one per chunk. Combined with the opt-in
+`minChunkChars` skip threshold (zero, meaning disabled, unless set),
+this keeps the per-turn overhead bounded even when many small tool
+outputs are returned.
 
 ### `pre_tool` (recommended for production)
 
@@ -127,7 +128,7 @@ Skip when:
 
 ## Adapters
 
-Three adapter types ship in the harness, plus a no-op default:
+Four adapter types ship in the harness, plus a no-op default:
 
 ### `none` (default)
 
@@ -173,6 +174,55 @@ stirrup harness \
   --guardrail-endpoint http://127.0.0.1:1234
 ```
 
+### `shieldstral`
+
+[Shieldstral](https://huggingface.co/mistralai/Shieldstral-1.0-3B)
+(e.g. `shieldstral-1-0`, `mistralai/Shieldstral-8B`) is an
+open-weights safety classifier fine-tuned by Mistral AI for
+conversational and agentic safety intervention points, self-hosted
+via vLLM, Ollama, TGI, or LM Studio using the OpenAI-compatible
+chat-completions API — the same shape as `granite-guardian`.
+
+As of writing, Shieldstral is not listed on Mistral AI's La
+Plateforme (`api.mistral.ai`) or on OpenRouter; both were checked
+live and neither serves a `shieldstral*` model. The `endpoint` /
+`apiKeyRef` fields exist for operators pointing at their own
+authenticated deployment (a private inference endpoint, a proxy in
+front of a self-hosted instance) — do not assume a Mistral-hosted or
+OpenRouter-hosted endpoint will resolve without first confirming the
+provider serves the model.
+
+Authentication is supported via `apiKeyRef` (resolving a
+`secret://...` reference via `security.SecretStore`) for endpoints
+that require it. For unauthenticated local instances, `apiKeyRef`
+can be omitted.
+
+The `endpoint` is either a bare host (`/v1/chat/completions` is
+appended automatically) or a full chat-completions URL. A
+path-bearing endpoint is used as-is.
+
+Minimal config:
+
+```json
+{
+  "guardRail": {
+    "type": "shieldstral",
+    "endpoint": "http://127.0.0.1:1234",
+    "model": "shieldstral-1-0"
+  }
+}
+```
+
+Or via flags:
+
+```sh
+stirrup harness \
+  --prompt "..." \
+  --guardrail shieldstral \
+  --guardrail-endpoint http://127.0.0.1:1234 \
+  --guardrail-model shieldstral-1-0
+```
+
 ### `cloud-judge`
 
 Reuses an existing `ProviderAdapter` (Anthropic, OpenAI-compatible)
@@ -185,8 +235,9 @@ attached vLLM.
 ### `composite` (operator escape hatch)
 
 Layers multiple stages, optionally restricted to specific phases.
-The harness only ships `granite-guardian` and `cloud-judge`, but
-the composite primitive lets operators add their own classifiers
+The harness only ships `granite-guardian`, `shieldstral`, and
+`cloud-judge`, but the composite primitive lets operators add their
+own classifiers
 (e.g. a fast-path Llama Prompt Guard 2 served via TEI in front of
 the slower Granite Guardian) without modifying the harness. See
 [§ Operator escape hatch](#operator-escape-hatch) below.
@@ -210,7 +261,7 @@ length; treat these as advisory.
 
 | Phase | p50 | p99 | Notes |
 |---|---|---|---|
-| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256). |
+| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `minChunkChars` when the threshold is set (zero, the default, disables the skip). |
 | `pre_tool`  | < 30 ms | < 200 ms | One call per tool invocation. Adds up over many tool calls per turn. |
 | `post_turn` | < 50 ms | < 600 ms | Single composite-criterion call per turn end. |
 
@@ -221,9 +272,10 @@ produces a `Deny` and the offending content does not pass.
 
 The two load-bearing latency mitigations are:
 
-1. **`MinChunkChars` skip** at `pre_turn`. Chunks shorter than the
-   threshold (default 256 chars) are not sent to the classifier;
-   a `guard_skipped` event is emitted instead.
+1. **`minChunkChars` skip** at `pre_turn`. When the threshold is set
+   (zero, the default, disables it), chunks shorter than the threshold
+   are not sent to the classifier; a `guard_skipped` event is emitted
+   instead.
 2. **Batched composite criterion** at `pre_turn` and `post_turn`.
    The default config issues one outbound request per phase per
    turn, regardless of chunk count.

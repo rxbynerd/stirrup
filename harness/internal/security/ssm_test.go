@@ -263,6 +263,30 @@ func TestNeedsSSM(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "SSM in guardrail apiKeyRef",
+			config: &types.RunConfig{
+				GuardRail: &types.GuardRailConfig{
+					Type:      "shieldstral",
+					Endpoint:  "https://api.mistral.ai",
+					APIKeyRef: "secret://ssm:///mistral-key",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "SSM in composite guardrail stage",
+			config: &types.RunConfig{
+				GuardRail: &types.GuardRailConfig{
+					Type: "composite",
+					Stages: []types.GuardRailConfig{
+						{Type: "granite-guardian", Endpoint: "http://localhost:8000"},
+						{Type: "shieldstral", Endpoint: "https://api.mistral.ai", APIKeyRef: "secret://ssm:///mistral-key"},
+					},
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
