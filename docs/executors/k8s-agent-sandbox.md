@@ -165,7 +165,9 @@ The `k8s-sandbox` executor installs the **same per-Pod egress
 `egressPolicyFor`/`podLabels` helpers. Mode `none` installs a deny-all
 egress policy; mode `allowlist` installs a policy permitting egress only
 to DNS and the in-cluster egress proxy, and injects
-`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` into the container. The proxy
+`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` — and their lower-case spellings,
+which are the only ones `git` honours for a plain-http proxy URL — into
+the container. The proxy
 Deployment and its allowlist `ConfigMap` are the ones under
 [`examples/k8s/egress-proxy/`](../../examples/k8s/egress-proxy/);
 the full egress model is documented in [`k8s.md`](k8s.md#egress).

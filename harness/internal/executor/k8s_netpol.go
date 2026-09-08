@@ -145,9 +145,10 @@ func egressPolicyFor(network *types.NetworkConfig, namespace, podName string) (*
 	}
 }
 
-// proxyEnvFor returns the HTTP_PROXY/HTTPS_PROXY/NO_PROXY entries to inject
-// for the given network mode. Mode=="allowlist" requires a non-empty
-// proxyURL; mode=="none" injects nothing.
+// proxyEnvFor returns the proxy entries to inject for the given network mode.
+// Mode=="allowlist" requires a non-empty proxyURL; mode=="none" injects
+// nothing. Both spellings of each variable are set: libcurl — and therefore
+// git — honours only the lower-case http_proxy for plain-http destinations.
 func proxyEnvFor(network *types.NetworkConfig, proxyURL string) ([]corev1.EnvVar, error) {
 	if network == nil {
 		return nil, fmt.Errorf("k8s executor: network config is required (fail-closed)")
@@ -159,10 +160,14 @@ func proxyEnvFor(network *types.NetworkConfig, proxyURL string) ([]corev1.EnvVar
 		if proxyURL == "" {
 			return nil, fmt.Errorf("k8s executor: network mode \"allowlist\" requires an egress proxy URL (set executor.k8sEgressProxyUrl / --k8s-egress-proxy-url)")
 		}
+		const noProxy = "localhost,127.0.0.1,::1"
 		return []corev1.EnvVar{
 			{Name: "HTTP_PROXY", Value: proxyURL},
+			{Name: "http_proxy", Value: proxyURL},
 			{Name: "HTTPS_PROXY", Value: proxyURL},
-			{Name: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
+			{Name: "https_proxy", Value: proxyURL},
+			{Name: "NO_PROXY", Value: noProxy},
+			{Name: "no_proxy", Value: noProxy},
 		}, nil
 	default:
 		return nil, fmt.Errorf("k8s executor: unsupported network mode %q (want \"none\" or \"allowlist\")", network.Mode)

@@ -218,10 +218,16 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 
 		hc.NetworkMode = "bridge"
 		hc.ExtraHosts = []string{hostGatewayHost + ":host-gateway"}
+		// Both spellings are set: libcurl — and therefore git — honours
+		// only the lower-case http_proxy for plain-http destinations.
+		const noProxy = "localhost,127.0.0.1,::1"
 		env = []string{
 			"HTTP_PROXY=" + proxyURL,
+			"http_proxy=" + proxyURL,
 			"HTTPS_PROXY=" + proxyURL,
-			"NO_PROXY=localhost,127.0.0.1,::1",
+			"https_proxy=" + proxyURL,
+			"NO_PROXY=" + noProxy,
+			"no_proxy=" + noProxy,
 		}
 		// TODO(#42 follow-up): fail-closed depends on the in-container
 		// client honouring HTTP_PROXY/HTTPS_PROXY; a raw-TCP client can

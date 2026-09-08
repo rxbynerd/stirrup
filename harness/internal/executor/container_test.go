@@ -1115,7 +1115,8 @@ func TestContainerExecutor_Runtime(t *testing.T) {
 //
 //   - set NetworkMode to "bridge" (so the container can dial the host),
 //   - inject ExtraHosts so host.docker.internal resolves to the host gateway,
-//   - populate HTTP_PROXY / HTTPS_PROXY / NO_PROXY env in the container.
+//   - populate both spellings of HTTP_PROXY / HTTPS_PROXY / NO_PROXY env in
+//     the container.
 //
 // The proxy itself is started on a real local port; we don't exercise it
 // over the wire here (a planted-curl integration test belongs behind a
@@ -1171,19 +1172,29 @@ func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
 			envSeen[parts[0]] = parts[1]
 		}
 	}
-	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+	// Both spellings are injected: git honours only the lower-case
+	// http_proxy for plain-http destinations.
+	for _, k := range []string{
+		"HTTP_PROXY", "http_proxy",
+		"HTTPS_PROXY", "https_proxy",
+		"NO_PROXY", "no_proxy",
+	} {
 		if _, ok := envSeen[k]; !ok {
 			t.Errorf("missing env var %s; got Env=%v", k, receivedBody.Env)
 		}
 	}
-	if !strings.HasPrefix(envSeen["HTTP_PROXY"], "http://host.docker.internal:") {
-		t.Errorf("HTTP_PROXY: got %q, want prefix http://host.docker.internal:<port>", envSeen["HTTP_PROXY"])
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+		if !strings.HasPrefix(envSeen[k], "http://host.docker.internal:") {
+			t.Errorf("%s: got %q, want prefix http://host.docker.internal:<port>", k, envSeen[k])
+		}
+		if envSeen[k] != envSeen["HTTP_PROXY"] {
+			t.Errorf("%s should match HTTP_PROXY; got %q vs %q", k, envSeen[k], envSeen["HTTP_PROXY"])
+		}
 	}
-	if envSeen["HTTP_PROXY"] != envSeen["HTTPS_PROXY"] {
-		t.Errorf("HTTP_PROXY and HTTPS_PROXY should match; got %q vs %q", envSeen["HTTP_PROXY"], envSeen["HTTPS_PROXY"])
-	}
-	if !strings.Contains(envSeen["NO_PROXY"], "127.0.0.1") {
-		t.Errorf("NO_PROXY should at least cover 127.0.0.1; got %q", envSeen["NO_PROXY"])
+	for _, k := range []string{"NO_PROXY", "no_proxy"} {
+		if !strings.Contains(envSeen[k], "127.0.0.1") {
+			t.Errorf("%s should at least cover 127.0.0.1; got %q", k, envSeen[k])
+		}
 	}
 
 	// Hardening defaults should still be present alongside the egress wiring.

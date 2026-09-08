@@ -124,8 +124,8 @@ The pieces and their lifecycle:
   Running Pod would otherwise have cluster-default egress). Mode `none`
   installs a deny-all egress policy; mode `allowlist` installs a policy
   permitting egress only to DNS and the in-cluster egress proxy, and
-  injects `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` into the container. See
-  [Egress](#egress).
+  injects `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` — plus their lower-case
+  spellings — into the container. See [Egress](#egress).
 
 The label contract knits these together: every sandbox Pod carries
 `stirrup-sandbox: "true"` and `stirrup.dev/pod: <pod-name>`, and the
@@ -545,9 +545,17 @@ applies. The executor injects:
 
 ```
 HTTP_PROXY  = <k8sEgressProxyUrl>
+http_proxy  = <k8sEgressProxyUrl>
 HTTPS_PROXY = <k8sEgressProxyUrl>
+https_proxy = <k8sEgressProxyUrl>
 NO_PROXY    = localhost,127.0.0.1,::1
+no_proxy    = localhost,127.0.0.1,::1
 ```
+
+Each variable is injected in both cases because libcurl — and therefore
+`git` — honours only the lower-case `http_proxy` for plain-http
+destinations, so a plain-http proxy URL would be ignored if only
+`HTTP_PROXY` were set.
 
 The `NO_PROXY` set (`localhost,127.0.0.1,::1`) is fixed in the executor
 and not flag-configurable.
