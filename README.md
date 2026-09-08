@@ -85,7 +85,7 @@ The agent runs inside one of six executors, selected with
 | `container` | a Docker/Podman container | Single-host sandbox with an in-process egress proxy. |
 | `k8s` | a Pod on a Kubernetes cluster | Pod-per-run with a hardened `securityContext`, per-tenant RuntimeClass, and `NetworkPolicy` egress. See [`docs/executors/k8s.md`](docs/executors/k8s.md). |
 | `k8s-sandbox` | a Pod provisioned via the Agent Sandbox CRD | Variant of `k8s`: the GKE Agent Sandbox controller creates the Pod from an `agents.x-k8s.io` `Sandbox` resource; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md). |
-| `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. |
+| `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. See [`docs/executors/api.md`](docs/executors/api.md). |
 | `none` | no execution surface at all | No local filesystem or shell access, not even read-only. For MCP-only / server-side-tool runs. Not to be confused with `executor.network.mode: "none"` (deny-all egress on a filesystem-capable executor) — see [`docs/configuration.md`](docs/configuration.md#components). |
 
 The relevant executor flags are:
@@ -148,6 +148,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
 | Kubernetes executor (Pod-per-run sandbox) | [`docs/executors/k8s.md`](docs/executors/k8s.md) |
 | Kubernetes Agent Sandbox executor (`k8s-sandbox`) | [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md) |
+| API executor (VCS-backed, read-only, sandbox-less) | [`docs/executors/api.md`](docs/executors/api.md) |
 | Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |
 | Five safety rings (operator guide) | [`docs/safety-rings.md`](docs/safety-rings.md) |
 | In-harness security foundations | [`docs/security.md`](docs/security.md) |

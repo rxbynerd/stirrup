@@ -327,7 +327,9 @@ Goal: investigate, review, or plan without any write surface.
 - The `api` executor (`executor.type: "api"` + `vcsBackend`) can read
   a GitHub or GitLab repository without a local workspace. Content
   tools operate through the remote API, but the `git_*` tools require a
-  real checkout, so omit them for an API-executor run.
+  real checkout, so omit them for an API-executor run. Those reads are
+  direct HTTPS calls from the harness to the Git host, never fulfilled
+  over the control stream; see [`executors/api.md`](executors/api.md).
 
 ### Editable run in a container sandbox
 
