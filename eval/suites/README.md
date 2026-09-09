@@ -139,10 +139,11 @@ run_config_overrides {
 ```
 
 Validate both with `--dry-run` before spending any credits — it runs
-the same merge and validation path without issuing a request:
+the same merge and validation path without issuing a request, and
+writes no artifacts:
 
 ```sh
-./stirrup-eval run --suite eval/suites/<name>.hcl --dry-run --output /tmp/dry
+./stirrup-eval run --suite eval/suites/<name>.hcl --dry-run
 ```
 
 ## Promoting a mined suite

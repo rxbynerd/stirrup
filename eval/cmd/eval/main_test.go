@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -43,8 +44,24 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
-// TestCmdRun_DualWrite pins the backward-compatibility guarantee that
-// `eval run` writes result.json in two places: <outputDir>/result.json
+// writeFakeHarness writes body as a POSIX-shell harness double and returns
+// its path. Skipped on non-Unix runners since /bin/sh is not portable to
+// Windows.
+func writeFakeHarness(t *testing.T, body string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake harness uses /bin/sh; skipped on Windows")
+	}
+	harnessDir := t.TempDir()
+	path := filepath.Join(harnessDir, "fake-harness")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestCmdRun_DualWrite pins the backward-compatibility guarantee that a
+// live `eval run` writes result.json in two places: <outputDir>/result.json
 // (the legacy location existing CI workflows read) and
 // <outputDir>/<suiteID>/result.json (the per-suite canonical location
 // that lives alongside per-task artifact directories). Both must exist
@@ -52,11 +69,21 @@ func TestRun_Version(t *testing.T) {
 // reader sees a stale snapshot. A regression that, for example, dropped
 // the top-level write would silently break downstream tooling without
 // any test catching it.
-//
-// We use --dry-run to avoid needing a fake harness binary; dry-run
-// still walks the output-directory creation and both writeJSON calls
-// in cmdRun, which is the surface this test is here to cover.
 func TestCmdRun_DualWrite(t *testing.T) {
+	harnessPath := writeFakeHarness(t, `#!/bin/sh
+shift
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
+fi
+`)
+
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "dual-write.hcl")
 	hclSrc := `
@@ -86,15 +113,15 @@ suite "dual-write-suite" {
 
 	outputDir := filepath.Join(dir, "out")
 	// Note: cmdRun uses log.Fatalf on error, which would os.Exit the
-	// test binary. The success path with --dry-run does not hit that
-	// branch, so we can exercise it from inside a test. If this ever
-	// regresses to call log.Fatalf on the happy path, the test process
-	// will die loudly — which is itself a useful signal.
+	// test binary. The success path does not hit that branch, so we can
+	// exercise it from inside a test. If this ever regresses to call
+	// log.Fatalf on the happy path, the test process will die loudly —
+	// which is itself a useful signal.
 	exitCode := run([]string{
 		"run",
 		"--suite", suitePath,
+		"--harness", harnessPath,
 		"--output", outputDir,
-		"--dry-run",
 	}, io.Discard)
 	if exitCode != 0 {
 		t.Fatalf("run() exit code = %d, want 0", exitCode)
@@ -134,6 +161,108 @@ suite "dual-write-suite" {
 	}
 	if per.SuiteID != "dual-write-suite" {
 		t.Errorf("per-suite SuiteID = %q, want %q", per.SuiteID, "dual-write-suite")
+	}
+}
+
+// TestCmdRun_DryRunWritesNoArtifacts pins #501: `eval run --dry-run`
+// without --output must not create result.json (top-level or per-suite)
+// anywhere, in particular not in the process's working directory. The
+// test runs from a temp cwd and asserts it stays empty.
+func TestCmdRun_DryRunWritesNoArtifacts(t *testing.T) {
+	cwd := t.TempDir()
+	suiteDir := t.TempDir()
+	suitePath := filepath.Join(suiteDir, "dry-run.hcl")
+	hclSrc := `
+suite "dry-run-suite" {
+  description = "fixture for TestCmdRun_DryRunWritesNoArtifacts"
+
+  task "task-a" {
+    prompt = "do task a"
+    judge {
+      type = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(origWD); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// cmdRun's summary output goes to the real os.Stdout (only --version
+	// writes through the injected io.Writer), so this test asserts on
+	// exit code and filesystem side effects rather than captured output.
+	exitCode := run([]string{
+		"run",
+		"--suite", suitePath,
+		"--dry-run",
+	}, io.Discard)
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d, want 0", exitCode)
+	}
+
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatalf("reading cwd: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("cwd is not empty after --dry-run: %v", names)
+	}
+}
+
+// TestCmdRun_DryRunIgnoresExplicitOutput pins that --dry-run writes no
+// artifacts even when --output is passed explicitly, rather than only
+// suppressing the implicit cwd default.
+func TestCmdRun_DryRunIgnoresExplicitOutput(t *testing.T) {
+	dir := t.TempDir()
+	suitePath := filepath.Join(dir, "dry-run.hcl")
+	hclSrc := `
+suite "dry-run-suite" {
+  description = "fixture for TestCmdRun_DryRunIgnoresExplicitOutput"
+
+  task "task-a" {
+    prompt = "do task a"
+    judge {
+      type = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := filepath.Join(dir, "out")
+	exitCode := run([]string{
+		"run",
+		"--suite", suitePath,
+		"--output", outputDir,
+		"--dry-run",
+	}, io.Discard)
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d, want 0", exitCode)
+	}
+
+	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
+		t.Errorf("--output directory %q should not be created under --dry-run, stat err = %v", outputDir, err)
 	}
 }
 

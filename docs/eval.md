@@ -219,7 +219,9 @@ validator's message in `JudgeVerdict.Reason`) without aborting
 the suite; sibling tasks are still validated and reported. A
 suite with no `run_config_file` and no inline `run_config`
 preserves the legacy dry-run shape: every task is reported as a
-synthetic `"pass"` with reason `"dry run — skipped"`.
+synthetic `"pass"` with reason `"dry run — skipped"`. A dry run
+writes no artifacts: it prints the summary and exits. `--output`
+is ignored under `--dry-run`, with a warning to stderr if set.
 
 **Replay-mode caveat.** `ReplayProvider` re-emits recorded
 `TurnRecord.ModelOutput` entries and never speaks HTTP. A suite
@@ -466,10 +468,10 @@ tree gains a `run_config.redacted.json` per task. See
 | Flag             | Default          | Description                                                  |
 |------------------|------------------|--------------------------------------------------------------|
 | `--suite`        | required         | Path to `EvalSuite` HCL file (`.hcl`).                       |
-| `--output`       | current dir      | Directory for `result.json` and per-task artifacts.          |
+| `--output`       | current dir      | Directory for `result.json` and per-task artifacts. Ignored under `--dry-run`, which writes no artifacts. |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of tasks executed in parallel. Workers preserve suite order in `result.json`. Values larger than the task count cap at `len(tasks)`. Concurrent invocations talking to the same provider hit rate limits faster — pick a value that respects your provider account's per-minute caps. |
-| `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
+| `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
 | `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block. |
