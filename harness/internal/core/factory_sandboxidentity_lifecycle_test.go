@@ -92,20 +92,14 @@ func TestRunFollowUpLoop_SandboxIdentity_ReusesRefresher(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		RunFollowUpLoop(ctx, loop, config, 10)
+		RunFollowUpLoop(ctx, loop, config, 10, FollowUpOptions{})
 	}()
-	// The follow-up loop registers its control handler on entry; a
-	// user_response delivered before that would fan out to nobody.
-	deadline := time.Now().Add(5 * time.Second)
-	for tp.handlerCount() <= handlersBefore {
-		if time.Now().After(deadline) {
-			t.Fatal("RunFollowUpLoop never registered its control handler")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// The loop's control handler is registered once at build, so input
+	// delivered before the follow-up loop reaches its select is queued
+	// rather than fanned out to nobody.
 	tp.deliver(types.ControlEvent{Type: "user_response", UserResponse: "again"})
 
-	deadline = time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for len(tp.emittedOfType("done")) < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("follow-up run never completed")
@@ -130,5 +124,8 @@ func TestRunFollowUpLoop_SandboxIdentity_ReusesRefresher(t *testing.T) {
 	}
 	if got := len(loop.ownedClosers); got != closersBefore {
 		t.Errorf("follow-up changed the owned closers from %d to %d; the refresher must be built once", closersBefore, got)
+	}
+	if got := tp.handlerCount(); got != handlersBefore {
+		t.Errorf("follow-up left %d control handler(s) registered, want %d; the loop registers one at build and shares it", got, handlersBefore)
 	}
 }
