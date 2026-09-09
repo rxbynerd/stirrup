@@ -292,6 +292,85 @@ func TestLoop_ToolUseAndContinue(t *testing.T) {
 	}
 }
 
+// TestLoop_ToolCallEventsPrecedeMatchingToolResults is the regression test
+// for issue #593: the transport must see a tool_call event for every
+// dispatched tool, carrying the same id the matching tool_result later
+// echoes back as tool_use_id, and the tool_call must appear first. The
+// ordering holds regardless of dispatch mode: the emit happens inside
+// streamEventsToResult, which fully drains the provider stream before
+// planAndDispatch is ever called, so it precedes both the synchronous
+// dispatch this test's three sync-handler calls take and the async
+// fan-out exercised separately by
+// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults.
+func TestLoop_ToolCallEventsPrecedeMatchingToolResults(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{"n": 1}},
+				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{"n": 2}},
+				{Type: "tool_call", ID: "tc_3", Name: "test_tool", Input: map[string]any{"n": 3}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+
+	var transportBuf bytes.Buffer
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Transport = transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
+
+	config := buildTestConfig()
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(transportBuf.String()), "\n")
+	var events []types.HarnessEvent
+	for _, line := range lines {
+		var e types.HarnessEvent
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("unmarshal event %q: %v", line, err)
+		}
+		events = append(events, e)
+	}
+
+	toolCallIdx := map[string]int{}
+	toolResultIdx := map[string]int{}
+	for i, e := range events {
+		switch e.Type {
+		case "tool_call":
+			toolCallIdx[e.ID] = i
+			if string(e.Input) != `{"n":1}` && string(e.Input) != `{"n":2}` && string(e.Input) != `{"n":3}` {
+				t.Errorf("tool_call %s Input = %q, want one of {n:1,2,3}", e.ID, e.Input)
+			}
+		case "tool_result":
+			toolResultIdx[e.ToolUseID] = i
+		}
+	}
+
+	wantIDs := []string{"tc_1", "tc_2", "tc_3"}
+	if len(toolCallIdx) != len(wantIDs) {
+		t.Fatalf("expected %d tool_call events, got %d: %+v", len(wantIDs), len(toolCallIdx), toolCallIdx)
+	}
+	for _, id := range wantIDs {
+		callIdx, ok := toolCallIdx[id]
+		if !ok {
+			t.Fatalf("missing tool_call event for %q", id)
+		}
+		resultIdx, ok := toolResultIdx[id]
+		if !ok {
+			t.Fatalf("missing tool_result event for %q", id)
+		}
+		if callIdx >= resultIdx {
+			t.Errorf("tool_call for %q at index %d did not precede its tool_result at index %d", id, callIdx, resultIdx)
+		}
+	}
+}
+
 func TestLoop_MaxTurns(t *testing.T) {
 	// Provider always requests tool calls, never stops.
 	prov := &infiniteToolCallProvider{}
@@ -1543,6 +1622,93 @@ func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
 	plain := appendAssistantContent(nil, result.Blocks, nil)
 	if plain[0].ReplayFields != nil {
 		t.Errorf("nil replay state must stay nil on the Message, got %v", plain[0].ReplayFields)
+	}
+}
+
+// TestStreamEventsToResult_EmitsToolCallEvent is the regression test for
+// issue #593: the "tool_call" case must call tp.Emit with the same
+// normalised input bytes appended to history, so a control plane's view of
+// a call's input matches what the provider replays on the next turn. A nil
+// Input map exercises NormalizeToolInput's null-to-{} rewrite on both
+// paths.
+func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
+	var transportBuf bytes.Buffer
+	tp := transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
+
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: nil}
+	ch <- types.StreamEvent{Type: "message_complete"}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	if len(result.Blocks) != 1 || result.Blocks[0].Type != "tool_use" {
+		t.Fatalf("expected 1 tool_use block, got %+v", result.Blocks)
+	}
+
+	lines := strings.Split(strings.TrimSpace(transportBuf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 emitted event, got %d:\n%s", len(lines), transportBuf.String())
+	}
+	var e types.HarnessEvent
+	if err := json.Unmarshal([]byte(lines[0]), &e); err != nil {
+		t.Fatalf("unmarshal emitted event: %v", err)
+	}
+	if e.Type != "tool_call" {
+		t.Errorf("emitted event Type = %q, want tool_call", e.Type)
+	}
+	if e.ID != "tc_1" {
+		t.Errorf("emitted event ID = %q, want tc_1", e.ID)
+	}
+	if e.Name != "read_file" {
+		t.Errorf("emitted event Name = %q, want read_file", e.Name)
+	}
+	if string(e.Input) != string(result.Blocks[0].Input) {
+		t.Errorf("emitted event Input = %q, want it to match the history block's Input %q byte-for-byte", e.Input, result.Blocks[0].Input)
+	}
+	if string(e.Input) != "{}" {
+		t.Errorf("emitted event Input = %q, want normalised nil input {}", e.Input)
+	}
+}
+
+// TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory guards
+// against the emitted event and the history ContentBlock sharing one
+// backing array. A Transport implementation is free to redact or mutate
+// its event.Input in place (transport.Transport is exported publicly as
+// harnessapi.Transport); if the two shared a buffer, that mutation would
+// silently rewrite the assistant turn the harness replays to the provider.
+// Uses asyncTestTransport, which stores the raw types.HarnessEvent rather
+// than a JSON round-trip, so a shared backing array would survive into the
+// assertion below undetected by any JSON-level test.
+func TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory(t *testing.T) {
+	tr := newAsyncTestTransport()
+
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: map[string]any{"path": "x"}}
+	ch <- types.StreamEvent{Type: "message_complete"}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, tr, slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+
+	events := tr.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 emitted event, got %d", len(events))
+	}
+	eventInput := events[0].Input
+	historyInput := result.Blocks[0].Input
+
+	if &eventInput[0] == &historyInput[0] {
+		t.Fatal("emitted event Input and history block Input share a backing array (should be cloned)")
+	}
+
+	eventInput[0] = '!'
+	if historyInput[0] == '!' {
+		t.Error("mutating the emitted event's Input mutated the history block's Input")
 	}
 }
 

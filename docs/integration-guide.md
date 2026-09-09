@@ -91,7 +91,7 @@ status.
 |---|---|---|
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
-| `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. |
+| `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `content` | Informational. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
