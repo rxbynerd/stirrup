@@ -75,7 +75,10 @@ const (
 //	             event carrying stop_reason "error".
 //
 //	"warning"
-//	  - message: human-readable warning (non-fatal).
+//	  - message:    human-readable warning (non-fatal).
+//	  - request_id: set when the warning reports a dropped user_response
+//	                (empty text, or the queue of 16 was full); echoes that
+//	                ControlEvent's request_id so the sender can retry.
 //
 //	"heartbeat"
 //	  - (no additional fields) Sent every 30 seconds during execution to
@@ -152,6 +155,8 @@ type HarnessEvent struct {
 	// Unique request ID for correlation. Set on "permission_request" and
 	// "tool_result_request" events. The control plane must echo this back in
 	// the corresponding permission_response / tool_result_response ControlEvent.
+	// Also set on a "warning" that reports a dropped user_response, echoing
+	// that ControlEvent's request_id.
 	RequestId string `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The tool name. Set on "permission_request" (tool requesting permission)
 	// and "tool_result_request" (async tool whose result is being requested).
@@ -305,9 +310,22 @@ func (x *HarnessEvent) GetAudience() string {
 //	          the first ControlEvent sent after the stream opens.
 //
 //	"user_response"
-//	  - user_response: free-text response to a model prompt that asked for
-//	                   user input. Injected into the conversation as a user
-//	                   message on the next turn.
+//	  - user_response: free-text operator input for the model. During an
+//	                   active run it is queued (bounded FIFO of 16) and
+//	                   injected as a user message at the run's next turn
+//	                   boundary — after the pending tool results are
+//	                   appended and before the next model call — in
+//	                   arrival order. If the model ends its turn while
+//	                   input is queued, the run continues with that input
+//	                   instead of finishing. With no run active inside the
+//	                   follow-up grace window, it starts a fresh run with
+//	                   the text as its prompt. An empty text, or one
+//	                   arriving when the queue is full, is dropped and
+//	                   reported by a "warning" HarnessEvent echoing
+//	                   request_id; nothing is dropped silently. A "cancel"
+//	                   discards queued input.
+//	  - request_id:    optional client-chosen correlation token, echoed on
+//	                   the "warning" that reports a dropped user_response.
 //
 //	"permission_response"
 //	  - request_id: must match the request_id from the corresponding
@@ -331,8 +349,9 @@ func (x *HarnessEvent) GetAudience() string {
 //	    harness terminates the run within one turn boundary: any in-flight
 //	    provider stream or tool call is cancelled via context propagation,
 //	    no further turns are started, git finalisation still runs, and the
-//	    final "done" HarnessEvent carries stop_reason="cancelled". If the
-//	    harness is in the follow-up grace window (no active run), the
+//	    final "done" HarnessEvent carries stop_reason="cancelled". Queued
+//	    user_response input is discarded; cancel always wins over it. If
+//	    the harness is in the follow-up grace window (no active run), the
 //	    stream closes promptly without an additional "done" event.
 //
 //	"batch_result"
@@ -374,11 +393,16 @@ type ControlEvent struct {
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
 	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
-	// Free-text user response. Set on "user_response" events.
+	// Free-text operator input. Set on "user_response" events. Queued and
+	// injected at the active run's next turn boundary, or the prompt of the
+	// next run in the follow-up grace window; see the "user_response" entry
+	// above for the queue bound and rejection reporting.
 	UserResponse string `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
 	// Correlates the response with the originating request HarnessEvent.
 	// Set on "permission_response" and "tool_result_response" events. Must
-	// match a previously received HarnessEvent.request_id.
+	// match a previously received HarnessEvent.request_id. Optional on
+	// "user_response" as a client-chosen token echoed on the "warning" that
+	// reports the event dropped.
 	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The permission decision. Set on "permission_response" events.
 	// True = allow the tool call to proceed. False = deny.

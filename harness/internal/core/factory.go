@@ -532,6 +532,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}
+	// Registered at build rather than at Run so a user_response that
+	// arrives while the loop is still being assembled is queued for the
+	// first turn instead of being dropped.
+	loop.ensureControlRouting()
+
 	// Assigned only for a live store: a nil *commandoutput.Store stored in
 	// the CommandOutputFinalizer interface would defeat the loop's nil check.
 	if commandOutputStore != nil {

@@ -115,13 +115,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	runCtx, cancelRun := context.WithCancelCause(ctx)
 	defer cancelRun(nil)
 
-	// OnControl fan-out is supported by all production transports;
-	// sub-agents use NullTransport whose OnControl is a no-op.
-	l.Transport.OnControl(func(event types.ControlEvent) {
-		if event.Type == "cancel" {
-			cancelRun(ErrCancelledByControlPlane)
-		}
-	})
+	// One routing handler per loop: "cancel" reaches this run through
+	// cancelActive while it is in flight, and "user_response" is queued
+	// for the next turn boundary. Sub-agents use NullTransport whose
+	// OnControl is a no-op.
+	l.ensureControlRouting()
+	l.setActiveRun(cancelRun)
+	defer l.setActiveRun(nil)
 
 	l.Trace.Start(config.RunID, config)
 
@@ -544,6 +544,12 @@ func (l *AgenticLoop) runInnerLoop(
 		case <-ctx.Done():
 			return messages, outcomeCtxDone, finalAssistantText
 		default:
+		}
+
+		// Turn boundary: operator input that arrived since the last
+		// model call joins the history before this turn's request.
+		if _, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages); blocked != "" {
+			return messages, blocked, finalAssistantText
 		}
 
 		// See collectUntrustedChunks / docs/guardrails.md for what
@@ -971,6 +977,16 @@ func (l *AgenticLoop) runInnerLoop(
 					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
+			// The run does not end while unconsumed operator input
+			// exists: queued user_response text becomes the next user
+			// turn instead of a "done".
+			injected, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages)
+			if blocked != "" {
+				return messages, blocked, finalAssistantText
+			}
+			if injected > 0 {
+				continue
+			}
 			return messages, "success", finalAssistantText
 		}
 		if sr.StopReason != "tool_use" {
@@ -1117,37 +1133,24 @@ type FollowUpOptions struct {
 
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
-// each new prompt. Exits on grace-period timeout, ctx cancellation, or
-// a "cancel" control event. graceSecs must be > 0; the transport must
-// support fan-out OnControl (GRPCTransport and StdioTransport do).
+// each one as the prompt of a fresh run. Exits on grace-period
+// timeout, ctx cancellation, or a "cancel" control event received while
+// no run is active. graceSecs <= 0 returns immediately.
 //
-// ctx must carry cancellation and shutdown only, not the primary run's
-// deadline: each follow-up is a run in its own right and gets a fresh
-// opts.RunTimeout budget derived from ctx. The grace timer measures
-// idle time — it restarts after each follow-up completes, so a long
-// follow-up does not consume the window meant for the next one.
+// Input arriving while a follow-up run is active is queued for that
+// run's next turn boundary rather than held for another run — the same
+// contract Run applies to the primary run — so the loop's shared queue
+// is the only consumer here. ctx must carry cancellation and shutdown
+// only, not the primary run's deadline: each follow-up is a run in its
+// own right and gets a fresh opts.RunTimeout budget derived from ctx.
+// The grace timer measures idle time — it restarts after each
+// follow-up completes, so a long follow-up does not consume the window
+// meant for the next one.
 func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int, opts FollowUpOptions) {
-	followUpCh := make(chan string, 1)
-	cancelCh := make(chan struct{}, 1)
-
-	loop.Transport.OnControl(func(event types.ControlEvent) {
-		switch event.Type {
-		case "user_response":
-			select {
-			case followUpCh <- event.UserResponse:
-			default:
-				// Already queued; control plane should wait for "done"
-				// before sending another request.
-			}
-		case "cancel":
-			// In-flight Run has its own cancel handler and terminates on
-			// the next turn boundary.
-			select {
-			case cancelCh <- struct{}{}:
-			default:
-			}
-		}
-	})
+	if graceSecs <= 0 {
+		return
+	}
+	loop.ensureControlRouting()
 
 	grace := time.Duration(graceSecs) * time.Second
 	timer := time.NewTimer(grace)
@@ -1155,7 +1158,13 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 
 	for {
 		select {
-		case newPrompt := <-followUpCh:
+		case <-loop.userInput.notify:
+			next, ok := loop.userInput.pop()
+			if !ok {
+				// Already drained into the run that was active when it
+				// arrived.
+				continue
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -1165,7 +1174,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 
 			// Issue a fresh run ID so traces don't collide.
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
-			config.Prompt = newPrompt
+			config.Prompt = next.Text
 
 			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
 			runTrace, err := loop.Run(runCtx, config)
@@ -1179,7 +1188,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			}
 			timer.Reset(grace)
 
-		case <-cancelCh:
+		case <-loop.idleCancel:
 			return
 
 		case <-timer.C:

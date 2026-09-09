@@ -28,7 +28,7 @@ every turn:
 
 | Phase | Where in the loop | What it inspects | What a deny does |
 |---|---|---|---|
-| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
+| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, and mid-run `user_response` input at the turn it is injected) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
 | `pre_tool`  | Inside the tool dispatch loop, before each tool call is sent to the executor | The model-proposed tool name and JSON input | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
 | `post_turn` | After `end_turn` stop reason, before the assistant text leaves the loop | The final assistant message | Aborts the run with outcome `guardrail_blocked` |
 

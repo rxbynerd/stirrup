@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,10 +160,8 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 }
 
 // TestRunFollowUpLoop_CancelControlEventExitsWait verifies that a "cancel"
-// ControlEvent arriving during the grace window causes RunFollowUpLoop to
-// exit promptly via its cancelCh select arm, without waiting for the grace
-// timer to expire. This exercises both the cancel handler registered
-// inside RunFollowUpLoop and the <-cancelCh receive in its select loop.
+// ControlEvent arriving during the grace window — with no run active —
+// ends the session promptly rather than waiting for the grace timer.
 func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 	loop, tr := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
@@ -182,7 +181,7 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 
 	select {
 	case <-done:
-		// Good — returned promptly via the cancelCh select arm.
+		// Good — returned promptly via the idle-cancel route.
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunFollowUpLoop did not return within 2s of cancel ControlEvent")
 	}
@@ -404,5 +403,56 @@ func TestRunFollowUpLoop_GraceCountsIdleTimeAfterRun(t *testing.T) {
 	// arrival-reset timer would allow.
 	if elapsed := time.Since(fired); elapsed < 2*time.Second {
 		t.Fatalf("returned %v after the follow-up arrived; the grace window should restart after the run completes", elapsed)
+	}
+}
+
+// TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun pins that the
+// mid-run contract applies to follow-up runs too: input arriving while a
+// follow-up is active is injected into that run at its next turn
+// boundary, not held back as the prompt of yet another run.
+func TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	config := buildTestConfig()
+	prov.onCall = func(i int) {
+		if i == 0 {
+			tr.FireControl(userResponse("while you are at it", "r2"))
+		}
+	}
+
+	completed := make(chan struct{}, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(*types.RunConfig, *types.RunTrace, error) { completed <- struct{}{} },
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	tr.FireControl(userResponse("start a follow-up", "r1"))
+	select {
+	case <-completed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up run did not complete")
+	}
+	// Anything still queued would start another run here.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	if n := len(completed); n != 0 {
+		t.Fatalf("%d extra follow-up run(s) started; the mid-run input should have joined the active run", n)
+	}
+	calls := prov.params()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2 (one run, continued once with the injected input)", len(calls))
+	}
+	if calls[0].Messages[0].Content[0].Text != "start a follow-up" {
+		t.Errorf("follow-up prompt = %q", calls[0].Messages[0].Content[0].Text)
+	}
+	if got := strings.Join(textBlocks(lastMessage(t, calls[1])), ""); got != "while you are at it" {
+		t.Errorf("turn-1 injected input = %q", got)
 	}
 }

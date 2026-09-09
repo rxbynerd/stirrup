@@ -255,8 +255,9 @@ func (sl *SecurityLogger) GuardError(phase, guardID, errorMessage string) {
 // reports sensitive content. patterns carries pattern NAMES only —
 // never matched content (the same no-content contract as GuardDenied).
 // source is the provenance ("prompt", "dynamic_context", "tool_result",
-// or "guard:<id>" for the LLM-guard ratchet); transition is true on the
-// event that flipped the run's sensitive-data latch.
+// "user_response" for mid-run operator input, or "guard:<id>" for the
+// LLM-guard ratchet); transition is true on the event that flipped the
+// run's sensitive-data latch.
 func (sl *SecurityLogger) SensitiveDataDetected(patterns []string, tier, source string, turn int, action string, transition bool) {
 	sl.Emit("warn", "sensitive_data_detected", map[string]any{
 		"patterns":   patterns,

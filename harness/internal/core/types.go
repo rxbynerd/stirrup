@@ -139,6 +139,15 @@ type AgenticLoop struct {
 	asyncOnce       sync.Once
 	asyncCorrelator atomic.Pointer[transport.Correlator]
 
+	// Control routing for "cancel" and "user_response": one handler per
+	// loop (controlOnce), dispatched by whether a run is active. See
+	// ensureControlRouting / routeControl in userinput.go.
+	controlOnce  sync.Once
+	controlMu    sync.Mutex
+	cancelActive context.CancelCauseFunc
+	userInput    *userInputQueue
+	idleCancel   chan struct{}
+
 	// asyncExtractorOverride, when non-nil, replaces extractAsyncToolResult
 	// on the async correlator. Test-only seam: the production extractor
 	// never delivers a non-asyncToolResult payload, so the defensive
