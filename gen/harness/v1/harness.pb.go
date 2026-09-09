@@ -623,8 +623,10 @@ type RunConfig struct {
 	// terminates with stop_reason "budget_exceeded" if this is hit.
 	// Max: 50,000,000.
 	MaxTokenBudget *int32 `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
-	// Optional. Maximum cost in USD for the run. The loop terminates with
-	// stop_reason "budget_exceeded" if this is hit. Max: 100.00.
+	// Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
+	// computes no cost, so no run terminates on this budget. Setting it logs a
+	// warning at config validation. Cap spend in the control plane from
+	// provider billing data.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	// Required. Wall-clock timeout in seconds for the entire run. The loop
 	// terminates with stop_reason "timeout" when this expires.
@@ -2064,7 +2066,8 @@ type RunTrace struct {
 	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	// Total output tokens consumed across all provider calls.
 	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	// Estimated total cost in USD for the run (based on per-model pricing).
+	// Reserved for a future cost implementation. The harness carries no
+	// pricing table and computes no cost, so this field is always 0.
 	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	// Wall-clock duration of the run in milliseconds.
 	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`

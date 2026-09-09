@@ -865,6 +865,66 @@ func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_CostBudgetBoundAndWarning pins both halves of the
+// maxCostBudget contract: the $100 bound still rejects, and any value at
+// all produces the warning that says the budget is not enforced, so the
+// field can never look like a working spend cap.
+func TestValidateRunConfig_CostBudgetBoundAndWarning(t *testing.T) {
+	const wantMsg = "maxCostBudget is accepted and bounded but not enforced"
+	for _, tc := range []struct {
+		name    string
+		set     bool
+		budget  float64
+		wantErr bool
+	}{
+		{"unset_no_warn", false, 0, false},
+		{"within_cap_warns", true, 10, false},
+		{"at_cap_warns", true, 100, false},
+		{"above_cap_errors_and_warns", true, 100.01, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			originalLogger := slog.Default()
+			t.Cleanup(func() { slog.SetDefault(originalLogger) })
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+			c := validConfig()
+			if tc.set {
+				budget := tc.budget
+				c.MaxCostBudget = &budget
+			}
+
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for maxCostBudget=%v", tc.budget)
+				}
+				if !strings.Contains(err.Error(), "maxCostBudget") {
+					t.Errorf("expected error to mention maxCostBudget, got: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("expected no error for maxCostBudget=%v, got: %v", tc.budget, err)
+			}
+
+			logs := logBuf.String()
+			if tc.set {
+				if !strings.Contains(logs, "level=WARN") {
+					t.Errorf("expected slog WARN, got: %s", logs)
+				}
+				if !strings.Contains(logs, wantMsg) {
+					t.Errorf("expected static warning message %q, got: %s", wantMsg, logs)
+				}
+				wantAttr := fmt.Sprintf("maxCostBudget=%v", tc.budget)
+				if !strings.Contains(logs, wantAttr) {
+					t.Errorf("expected %q attr in warning, got: %s", wantAttr, logs)
+				}
+			} else if strings.Contains(logs, wantMsg) {
+				t.Errorf("did not expect unenforced-budget warning, got: %s", logs)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	c := validConfig()
 	c.FollowUpGrace = nil
