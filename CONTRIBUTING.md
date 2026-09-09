@@ -8,9 +8,12 @@ in [`AGENTS.md`](AGENTS.md).
 
 ## Environment
 
-- **Go 1.26.1+.** Workspace minimum is `1.26.1` (`go.work`); the
-  Dockerfile pins `golang:1.26.3-alpine` for reproducible CI builds.
-  Anything older than 1.26.1 will fail to compile.
+- **Go 1.27.1+.** Workspace minimum is `1.27.1` (`go.work` and every
+  module's `go.mod`); the Dockerfile pins `golang:1.27.1-alpine` for
+  reproducible CI builds. Anything older than 1.27.1 will fail to
+  compile. The `go` directive is kept in lockstep with the
+  Dockerfile's base image version so the `govulncheck` CI gate scans
+  the same standard-library toolchain the release image ships.
 - **[just](https://github.com/casey/just)** for the convenience targets
   in the [`Justfile`](Justfile). Optional but used throughout this doc.
 - **[Buf](https://buf.build)** if you touch any `.proto` files.
