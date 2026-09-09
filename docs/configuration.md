@@ -1015,12 +1015,34 @@ a primary reason keeps that outcome. Under `"bestEffort"` later commands
 keep capturing, the run outcome is never overridden, and the failure stays
 visible in the archive manifest and per-command trace records.
 
-Raw bytes are spooled to run-scoped files (0600, under a 0700 temporary
-directory) while a command streams and are deleted at command completion,
-after whole-stream redaction; an unclean shutdown (crash, SIGKILL) can leave
-raw spool files in the OS temp directory until it is cleared. Archives
-contain scrubbed streams only, while raw byte counts and SHA-256 hashes
-remain as integrity metadata.
+Output is redacted on the way to disk. Each stream passes through a chunked
+scrubber before it reaches its run-scoped spool file (0600, under a 0700
+temporary directory), and that file is the archive member — there is no
+second, unredacted copy at any point, so an unclean shutdown (crash,
+SIGKILL) cannot leave a secret in the OS temp directory. Archives contain
+scrubbed streams only, while raw byte counts and SHA-256 hashes, taken from
+an in-flight hash of the stream as the command produces it, remain as
+integrity metadata.
+
+The scrubber buffers up to 64 KiB plus a 16 KiB carry window, cutting each
+chunk on a line boundary where one is available. The carry window is what
+lets a secret split across two chunks still be redacted as one span; every
+pattern the scrubber knows matches a span far shorter than the window, a
+fat JWT included. Two consequences follow:
+
+- **Residual.** A single secret longer than the buffer as a whole cannot be
+  held for reassembly. Its leading portion is redacted and the remainder
+  reaches the spool. No pattern in the current set matches a span of that
+  size, so this is a bound on future patterns rather than a live gap.
+- **Trailing output on a crash.** Up to one buffer of the most recent output
+  is still in memory when a process is killed and is lost rather than
+  spooled. A crashed run writes no archive, so the spool is forensic
+  material only.
+
+Creating a store also sweeps the OS temp directory for spool roots
+(`stirrup-command-output-*`) whose modification time is over 24 hours old,
+reclaiming what a crashed run left behind. The age gate keeps the sweep
+clear of runs still in flight.
 
 The `eval/suites/command-output-ab-{on,off}.hcl` pair measures the
 pipeline's context-saving claim: identical tasks with capture forced to
