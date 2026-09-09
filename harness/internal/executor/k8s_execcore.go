@@ -57,7 +57,7 @@ func (e *podExecCore) WriteSandboxIdentityToken(ctx context.Context, token strin
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	if err := e.streamExec(ctx, sandboxIdentityWriteCommand, strings.NewReader(token), &stdout, &stderr); err != nil {
+	if err := e.streamExec(ctx, sandboxIdentityWriteCommand(len(token)), strings.NewReader(token), &stdout, &stderr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return fmt.Errorf("write sandbox identity token: exit %d: %s", code, strings.TrimSpace(stderr.String()))
 		}
@@ -105,10 +105,10 @@ func (e *podExecCore) resolveFilePath(relativePath string) (string, error) {
 	return resolved, nil
 }
 
-// ReadFile streams the file out of the Pod with `tar -cf - <path>` over the
-// exec subresource and reads the single archived entry. A missing file maps
-// to fs.ErrNotExist; a directory target is rejected. Content is capped at
-// 10 MB.
+// ReadFile streams the file out of the Pod with workspaceReadCommand over
+// the exec subresource and reads the single archived entry. A missing file
+// maps to fs.ErrNotExist; a directory target is rejected. Content is capped
+// at 10 MB.
 func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, error) {
 	resolved, err := e.resolveFilePath(filePath)
 	if err != nil {
@@ -122,11 +122,7 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 	stdout.limit = k8sMaxOutput
 	var stderr bytes.Buffer
 
-	// Stripping the leading slash avoids tar's "removing leading /" stderr
-	// warning; `--` stops a path starting with `-` from being parsed as a
-	// tar option.
-	arcPath := strings.TrimPrefix(resolved, "/")
-	execErr := e.streamExec(ctx, []string{"tar", "-C", "/", "-cf", "-", "--", arcPath}, nil, &stdout, &stderr)
+	execErr := e.streamExec(ctx, workspaceReadCommand(k8sWorkspace, resolved), nil, &stdout, &stderr)
 	if stdout.exceeded {
 		e.emitFileSizeLimit(filePath, k8sMaxOutput)
 		return "", errK8sOutputCap
@@ -134,39 +130,24 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 	if execErr != nil {
 		code, ok := extractExitCode(execErr)
 		if ok && code != 0 {
-			return "", classifyTarError(filePath, stderr.String())
+			return "", classifyWorkspaceReadExit(code, stderr.String(), filePath, k8sWorkspace, e.Security)
 		}
 		return "", execErr
 	}
 
-	tr := tar.NewReader(bytes.NewReader(stdout.Bytes()))
-	header, err := tr.Next()
-	if errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("read file %s: %w", filePath, fs.ErrNotExist)
-	}
-	if err != nil {
-		return "", fmt.Errorf("read tar header: %w", err)
-	}
-	if header.Typeflag == tar.TypeDir {
+	content, size, err := decodeSingleFileArchive(stdout.Bytes(), k8sMaxOutput)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("read file %s: %w", filePath, err)
+	case errors.Is(err, errArchiveEntryIsDir):
 		return "", fmt.Errorf("read file %s: is a directory", filePath)
-	}
-	if header.Size > k8sMaxOutput {
-		e.emitFileSizeLimit(filePath, header.Size)
+	case errors.Is(err, errArchiveEntryTooLarge):
+		e.emitFileSizeLimit(filePath, size)
 		return "", errK8sOutputCap
+	case err != nil:
+		return "", err
 	}
-
-	// Read one byte past the cap so an over-cap payload is detectable by
-	// length even when the tar header under-reported its size (that read
-	// may surface as io.ErrUnexpectedEOF).
-	data, err := io.ReadAll(io.LimitReader(tr, k8sMaxOutput+1))
-	if int64(len(data)) > k8sMaxOutput || (errors.Is(err, io.ErrUnexpectedEOF) && int64(len(data)) >= k8sMaxOutput) {
-		e.emitFileSizeLimit(filePath, int64(len(data)))
-		return "", errK8sOutputCap
-	}
-	if err != nil {
-		return "", fmt.Errorf("read file from tar: %w", err)
-	}
-	return string(data), nil
+	return content, nil
 }
 
 // WriteFile streams a one-entry tar archive into the Pod via

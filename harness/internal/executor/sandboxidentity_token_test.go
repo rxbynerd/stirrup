@@ -3,12 +3,15 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -155,19 +158,43 @@ func TestContainerExecutor_WriteSandboxIdentityToken_StdinNotArgv(t *testing.T) 
 	if !create.AttachStdin {
 		t.Error("exec create must attach stdin")
 	}
-	if strings.Join(create.Cmd, " ") != strings.Join(sandboxIdentityWriteCommand, " ") {
-		t.Errorf("exec Cmd = %q, want the token write command", create.Cmd)
+	want := sandboxIdentityWriteCommand(len(token))
+	if strings.Join(create.Cmd, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("exec Cmd = %q, want the token write command %q", create.Cmd, want)
 	}
 	for _, arg := range create.Cmd {
 		if strings.Contains(arg, token) {
 			t.Fatalf("token appeared in exec argv: %q", arg)
 		}
 	}
-	if !strings.Contains(create.Cmd[2], "umask 077") || !strings.Contains(create.Cmd[2], "mv -f") {
-		t.Errorf("write command %q must set umask 077 and rename into place", create.Cmd[2])
+	script := create.Cmd[2]
+	for _, need := range []string{"umask 077", `wc -c < "$2"`, `-eq "$3"`, `mv -f -- "$2" "$1"`, `rm -f -- "$2"`, "exit 4"} {
+		if !strings.Contains(script, need) {
+			t.Errorf("write script missing %q:\n%s", need, script)
+		}
 	}
-	if !strings.Contains(create.Cmd[2], SandboxIdentityTokenPath) {
-		t.Errorf("write command %q must target %s", create.Cmd[2], SandboxIdentityTokenPath)
+	if create.Cmd[4] != SandboxIdentityTokenPath || create.Cmd[5] != sandboxIdentityTokenStaging || create.Cmd[6] != strconv.Itoa(len(token)) {
+		t.Errorf("write argv tail = %q, want the final path, the staging path, and the byte length %d", create.Cmd[3:], len(token))
+	}
+}
+
+// TestContainerExecutor_WriteSandboxIdentityToken_ShortStreamSurfaces
+// asserts that a stdin copy which ends before the announced length is
+// reported even when the in-container command reports success, so a
+// truncated delivery can never pass as a complete one.
+func TestContainerExecutor_WriteSandboxIdentityToken_ShortStreamSurfaces(t *testing.T) {
+	capture := &stdinExecCapture{}
+	exec, cleanup := newMockContainerExecutor(t, stdinExecHandlers(t, capture, 0, ""))
+	defer cleanup()
+	exec.sandboxIdentity = true
+
+	aborted := io.MultiReader(strings.NewReader("eyJhbGciOiJFUzI1NiJ9.half"), iotest.ErrReader(errors.New("client aborted")))
+	_, err := exec.execInContainerInput(context.Background(), sandboxIdentityWriteCommand(64), exec.workspace, aborted, containerFileIOTimeout)
+	if err == nil {
+		t.Fatal("expected the aborted stdin copy to surface as an error")
+	}
+	if !strings.Contains(err.Error(), "client aborted") {
+		t.Errorf("error %q should carry the stdin reader's failure", err)
 	}
 }
 

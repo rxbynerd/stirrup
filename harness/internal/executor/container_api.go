@@ -406,6 +406,9 @@ type hijackedExecStream struct {
 	reader *bufio.Reader
 	conn   net.Conn
 	stop   func() bool
+
+	copyDone chan struct{}
+	copyErr  error
 }
 
 func (s *hijackedExecStream) Read(p []byte) (int, error) { return s.reader.Read(p) }
@@ -413,6 +416,19 @@ func (s *hijackedExecStream) Read(p []byte) (int, error) { return s.reader.Read(
 func (s *hijackedExecStream) Close() error {
 	s.stop()
 	return s.conn.Close()
+}
+
+// stdinErr reports how the stdin copy ended once it has finished: nil for
+// a complete copy, otherwise the reader's or the connection's error. It
+// waits for the copy, which the process's exit unblocks by closing the
+// daemon's side of the connection.
+func (s *hijackedExecStream) stdinErr(ctx context.Context) error {
+	select {
+	case <-s.copyDone:
+		return s.copyErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // startExecWithStdin starts an exec instance over a hijacked connection
@@ -423,13 +439,13 @@ func (s *hijackedExecStream) Close() error {
 // over, so stdin could not be delivered and the call fails rather than
 // running the command without its input. Bounded by ctx only, like
 // startExec.
-func (c *containerAPIClient) startExecWithStdin(ctx context.Context, execID string, stdin io.Reader) (io.ReadCloser, error) {
+func (c *containerAPIClient) startExecWithStdin(ctx context.Context, execID string, stdin io.Reader) (*hijackedExecStream, error) {
 	conn, err := dialContainerSocket(ctx, c.socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial container socket: %w", err)
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	fail := func(err error) (io.ReadCloser, error) {
+	fail := func(err error) (*hijackedExecStream, error) {
 		stop()
 		_ = conn.Close()
 		return nil, err
@@ -460,14 +476,16 @@ func (c *containerAPIClient) startExecWithStdin(ctx context.Context, execID stri
 			req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body))))
 	}
 
+	stream := &hijackedExecStream{reader: reader, conn: conn, stop: stop, copyDone: make(chan struct{})}
 	go func() {
-		_, _ = io.Copy(conn, stdin)
+		defer close(stream.copyDone)
+		_, stream.copyErr = io.Copy(conn, stdin)
 		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
 	}()
 
-	return &hijackedExecStream{reader: reader, conn: conn, stop: stop}, nil
+	return stream, nil
 }
 
 type execInspectResponse struct {
@@ -475,9 +493,40 @@ type execInspectResponse struct {
 	Running  bool `json:"Running"`
 }
 
-// inspectExec is a short metadata read (fetch the exit code after the
-// command finished streaming), so it gets the control-plane timeout.
+var (
+	// execInspectRetries and execInspectRetryDelay bound how long inspectExec
+	// waits for the daemon to record an exit: the output stream can end a
+	// moment before the daemon marks the instance finished, and an exit code
+	// read while Running is still true is a placeholder, not a result.
+	execInspectRetries    = 20
+	execInspectRetryDelay = 50 * time.Millisecond
+)
+
+// inspectExec fetches the exit code after the command finished streaming,
+// retrying briefly while the daemon still reports the instance as running.
 func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (int, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := c.inspectExecOnce(ctx, execID)
+		if err != nil {
+			return -1, err
+		}
+		if !result.Running {
+			return result.ExitCode, nil
+		}
+		if attempt >= execInspectRetries {
+			return -1, fmt.Errorf("exec %s still running after its output ended", execID)
+		}
+		select {
+		case <-ctx.Done():
+			return -1, classifyControlPlaneErr(ctx, ctx.Err())
+		case <-time.After(execInspectRetryDelay):
+		}
+	}
+}
+
+// inspectExecOnce is a single short metadata read, so it gets the
+// control-plane timeout.
+func (c *containerAPIClient) inspectExecOnce(ctx context.Context, execID string) (execInspectResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
 	defer cancel()
 
@@ -485,20 +534,20 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 		c.url(fmt.Sprintf("/exec/%s/json", execID)),
 		nil)
 	if err != nil {
-		return -1, err
+		return execInspectResponse{}, err
 	}
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return -1, classifyControlPlaneErr(ctx, err)
+		return execInspectResponse{}, classifyControlPlaneErr(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var result execInspectResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return -1, fmt.Errorf("decode exec inspect response: %w", err)
+		return execInspectResponse{}, fmt.Errorf("decode exec inspect response: %w", err)
 	}
-	return result.ExitCode, nil
+	return result, nil
 }
 
 // putArchive uploads a tar archive to a path inside the container.
@@ -518,21 +567,4 @@ func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPa
 	}
 	_ = resp.Body.Close()
 	return nil
-}
-
-// getArchive downloads a tar archive of a path from inside the container.
-// The caller must close the returned ReadCloser. Bounded by ctx only, same
-// rationale as putArchive.
-func (c *containerAPIClient) getArchive(ctx context.Context, containerID, srcPath string) (io.ReadCloser, error) {
-	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(srcPath))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(url), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.doRequest(req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
 }

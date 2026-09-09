@@ -60,9 +60,10 @@ var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 // factory under ExecutorConfig.Type == "k8s". See docs/executors/k8s.md for
 // the network/egress posture and the kindnet enforcement caveat.
 type K8sExecutorConfig struct {
-	// Image must ship a POSIX shell at /bin/sh plus `tar` and `ls` on PATH:
-	// command execution runs `/bin/sh -c`, and file I/O streams `tar` over
-	// the pods/exec subresource.
+	// Image must ship a POSIX shell at /bin/sh plus `tar`, `ls`, and
+	// `readlink` on PATH: command execution runs `/bin/sh -c`, file I/O
+	// streams `tar` over the pods/exec subresource, and workspace reads
+	// resolve the real path with `readlink -f` first.
 	Image              string
 	Namespace          string
 	Kubeconfig         string

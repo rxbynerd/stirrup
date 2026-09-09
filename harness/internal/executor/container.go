@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 	"time"
@@ -368,10 +370,13 @@ func (e *ContainerExecutor) ResolvePath(relativePath string) (string, error) {
 	return resolved, nil
 }
 
-// ReadFile reads a file from inside the container using the archive API.
-// The file must be within /workspace and no larger than 10 MB. The whole
-// operation is bounded by containerFileIOTimeout since the archive
-// endpoints have no timeout of their own (see container_api.go).
+// ReadFile reads a file from inside the container by running
+// workspaceReadCommand over the exec API and decoding the tar stream it
+// returns. The engine's archive endpoint is not used for reads: it
+// dereferences symlinks, so a link committed into the workspace would
+// hand back any file the sandbox uid can read. The file must be within
+// /workspace and no larger than 10 MB; the whole operation is bounded by
+// containerFileIOTimeout.
 func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
 	resolved, err := e.ResolvePath(filePath)
 	if err != nil {
@@ -381,37 +386,37 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
 	defer cancel()
 
-	tarStream, err := e.api.getArchive(ctx, e.containerID, resolved)
+	stdout := &writeCapBuffer{limit: maxFileSize + tarSingleEntryOverhead}
+	stderr := &writeCapBuffer{limit: maxOutputSize}
+	result, err := e.execInContainerStream(ctx, workspaceReadCommand(e.workspace, resolved), e.workspace, containerFileIOTimeout, stdout, stderr)
 	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "get archive", err)
+		return "", classifyFileIOCtxErr(ctx, "read file", err)
 	}
-	defer func() { _ = tarStream.Close() }()
-
-	tr := tar.NewReader(tarStream)
-	header, err := tr.Next()
-	if err == io.EOF {
-		return "", fmt.Errorf("file not found in archive: %s", filePath)
-	}
-	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "read tar header", err)
-	}
-
-	if header.Typeflag == tar.TypeDir {
-		return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
-	}
-
-	if header.Size > maxFileSize {
+	if stdout.exceeded {
 		if e.Security != nil {
-			e.Security.FileSizeLimitExceeded(filePath, header.Size, maxFileSize)
+			e.Security.FileSizeLimitExceeded(filePath, stdout.limit, maxFileSize)
 		}
-		return "", fmt.Errorf("file too large: %d bytes (max %d)", header.Size, maxFileSize)
+		return "", fmt.Errorf("file too large: exceeds %d bytes", maxFileSize)
+	}
+	if result.ExitCode != 0 {
+		return "", classifyWorkspaceReadExit(result.ExitCode, stderr.String(), filePath, e.workspace, e.Security)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
-	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "read file from tar", err)
+	content, size, err := decodeSingleFileArchive(stdout.Bytes(), maxFileSize)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("read file %s: %w", filePath, err)
+	case errors.Is(err, errArchiveEntryIsDir):
+		return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
+	case errors.Is(err, errArchiveEntryTooLarge):
+		if e.Security != nil {
+			e.Security.FileSizeLimitExceeded(filePath, size, maxFileSize)
+		}
+		return "", fmt.Errorf("file too large: %d bytes (max %d)", size, maxFileSize)
+	case err != nil:
+		return "", err
 	}
-	return string(data), nil
+	return content, nil
 }
 
 // classifyFileIOCtxErr wraps a ReadFile/WriteFile failure through the
@@ -590,7 +595,7 @@ func (e *ContainerExecutor) WriteSandboxIdentityToken(ctx context.Context, token
 	if !e.sandboxIdentity {
 		return fmt.Errorf("write sandbox identity token: container was created without the sandbox identity mount")
 	}
-	result, err := e.execInContainerInput(ctx, sandboxIdentityWriteCommand, e.workspace, strings.NewReader(token), containerFileIOTimeout)
+	result, err := e.execInContainerInput(ctx, sandboxIdentityWriteCommand(len(token)), e.workspace, strings.NewReader(token), containerFileIOTimeout)
 	if err != nil {
 		return fmt.Errorf("write sandbox identity token: %w", err)
 	}
@@ -649,9 +654,15 @@ func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []stri
 		return nil, fmt.Errorf("create exec: %w", err)
 	}
 
-	var stream io.ReadCloser
+	var (
+		stream   io.ReadCloser
+		hijacked *hijackedExecStream
+	)
 	if stdin != nil {
-		stream, err = e.api.startExecWithStdin(ctx, execID, stdin)
+		hijacked, err = e.api.startExecWithStdin(ctx, execID, stdin)
+		if hijacked != nil {
+			stream = hijacked
+		}
 	} else {
 		stream, err = e.api.startExec(ctx, execID)
 	}
@@ -680,6 +691,15 @@ func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []stri
 		return result, fmt.Errorf("inspect exec: %w", err)
 	}
 	result.ExitCode = exitCode
+
+	// A process that exited 0 without receiving all of its input reported
+	// success on partial data; the copy's error is the only record of that.
+	// A non-zero exit already carries the command's own diagnosis.
+	if hijacked != nil && exitCode == 0 {
+		if err := hijacked.stdinErr(ctx); err != nil {
+			return result, fmt.Errorf("write exec stdin: %w", err)
+		}
+	}
 
 	return result, nil
 }

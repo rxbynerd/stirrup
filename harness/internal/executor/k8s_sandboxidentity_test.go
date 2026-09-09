@@ -68,4 +68,20 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 	if _, err := exec.ReadFile(ctx, SandboxIdentityTokenPath); err == nil {
 		t.Error("ReadFile reached the token through the workspace-scoped file API")
 	}
+
+	// A symlink committed into the workspace must not reach the token
+	// either, whether it names the file or a directory above it.
+	setup := "ln -sf " + SandboxIdentityTokenPath + " /workspace/link && ln -sf " + SandboxIdentityTokenDir + " /workspace/dirlink"
+	if res, err := exec.Exec(ctx, setup, 30*time.Second); err != nil || res.ExitCode != 0 {
+		t.Fatalf("symlink setup failed: err=%v result=%+v", err, res)
+	}
+	for _, probe := range []string{"link", "dirlink/token"} {
+		content, err := exec.ReadFile(ctx, probe)
+		if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
+			t.Errorf("ReadFile(%s) = (%q, %v), want a workspace-escape error", probe, content, err)
+		}
+		if strings.Contains(content, second) {
+			t.Errorf("ReadFile(%s) disclosed the token", probe)
+		}
+	}
 }
