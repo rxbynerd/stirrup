@@ -1,8 +1,9 @@
 name: Lint
 
-# Gates pull requests on `just lint` (golangci-lint v2). Runs on every
-# PR open / synchronize / reopen so a reviewer never has to point out
-# a lint regression by hand. Also runs on push to main as a
+# Gates pull requests on `just lint` (golangci-lint v2) and `just vuln`
+# (govulncheck). Runs on every PR open / synchronize / reopen so a
+# reviewer never has to point out a lint regression or a reachable Go
+# module vulnerability by hand. Also runs on push to main as a
 # defence-in-depth check — a direct push or a merge-queue path that
 # somehow lands without PR review still trips the gate before
 # downstream consumers (eval-gate, publish-container) start.
@@ -66,3 +67,46 @@ jobs:
         # `just` to match the existing `_verify.yml` convention of
         # running go tooling without an extra wrapper install step.
         run: golangci-lint run ./harness/... ./types/... ./eval/...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+            gen/go.mod
+
+      - name: Install govulncheck
+        env:
+          # Kept in lockstep with the `just vuln` recipe so a local
+          # pass implies a CI pass.
+          GOVULNCHECK_VERSION: 1.8.0
+        run: go install "golang.org/x/vuln/cmd/govulncheck@v${GOVULNCHECK_VERSION}"
+
+      # govulncheck scans one module's build graph per invocation, so
+      # each workspace module (go.work) gets its own pass rather than a
+      # single ./... sweep from the repo root.
+      - name: Run govulncheck (types)
+        working-directory: types
+        run: govulncheck ./...
+
+      - name: Run govulncheck (gen)
+        working-directory: gen
+        run: govulncheck ./...
+
+      - name: Run govulncheck (harness)
+        working-directory: harness
+        run: govulncheck ./...
+
+      - name: Run govulncheck (eval)
+        working-directory: eval
+        run: govulncheck ./...

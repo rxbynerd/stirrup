@@ -42,6 +42,7 @@ just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
 just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint v2
+just vuln         # govulncheck across all four workspace modules
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # docker build -t stirrup .

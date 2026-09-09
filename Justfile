@@ -17,6 +17,17 @@ test-race:
 lint:
     golangci-lint run ./harness/... ./types/... ./eval/...
 
+# Go module vulnerability scan, mirroring the CI govulncheck job.
+# govulncheck scans one module's build graph per invocation, so each
+# workspace module (go.work) gets its own pass.
+vuln:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for mod in types gen harness eval; do
+        echo "==> govulncheck (${mod})"
+        (cd "${mod}" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...)
+    done
+
 proto:
     buf generate
 
