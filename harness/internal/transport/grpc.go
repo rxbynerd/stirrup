@@ -2,8 +2,10 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -25,10 +27,16 @@ type GRPCTransport struct {
 	mu        sync.Mutex // serialises writes to the stream
 	handlerMu sync.Mutex // serialises handler registration
 	handlers  []func(types.ControlEvent)
+	closed    bool                     // guarded by mu; set once the stream is half-closed
 	done      chan struct{}            // closed when the read loop exits
 	startOnce sync.Once                // ensures the read goroutine is started exactly once
 	Security  *security.SecurityLogger // optional; emits SecretRedactedInOutput when scrubbing fires
 }
+
+// ErrTransportClosed is returned by Emit once Close has half-closed the
+// stream. Emitters that outlive the run (the heartbeat, say) can use it
+// to distinguish an orderly shutdown from a transport failure.
+var ErrTransportClosed = errors.New("transport closed")
 
 // GRPCTransportOption configures a GRPCTransport.
 type GRPCTransportOption func(*grpcTransportConfig)
@@ -109,6 +117,14 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// A Send after the half-close is not merely rejected: grpc-go's
+	// SendMsg calls finish() on the stream, which aborts the RPC and
+	// would cut short Close's wait for the peer to acknowledge the
+	// events already queued.
+	if g.closed {
+		return ErrTransportClosed
+	}
+
 	if err := g.stream.Send(pe); err != nil {
 		return fmt.Errorf("send harness event: %w", err)
 	}
@@ -176,8 +192,13 @@ func (g *GRPCTransport) startReadLoop() {
 }
 
 // streamEndGrace bounds how long Close waits for the RPC to end after the
-// half-close before tearing the connection down anyway.
-const streamEndGrace = 2 * time.Second
+// half-close before tearing the connection down anyway. A var so tests can
+// shrink it.
+//
+// The transport is closed ahead of the executor in the factory's LIFO
+// closer order, so raising this eats into the sandbox teardown budget on
+// the shutdown-watchdog path.
+var streamEndGrace = 2 * time.Second
 
 // Close sends CloseSend on the stream to signal the harness is done
 // sending, waits (up to streamEndGrace) for the control plane to end the
@@ -189,13 +210,21 @@ const streamEndGrace = 2 * time.Second
 // whenever the writer goroutine has not been scheduled yet. A control
 // plane that keeps the stream open past the half-close (one serving
 // follow-ups) pays streamEndGrace at process exit instead.
+//
+// The guarantee is best-effort and covers an orderly close only. A
+// cancelled stream context (the harness's own SIGTERM path) has already
+// killed the RPC, and a peer that stops reading stalls the writer behind
+// HTTP/2 flow control until the grace expires; both discard whatever was
+// still queued.
 func (g *GRPCTransport) Close() error {
 	g.mu.Lock()
+	g.closed = true
+	// grpc-go's CloseSend cannot fail, but the field is an interface:
+	// a half-close that did not happen means no stream end to wait for.
 	closeSendErr := g.stream.CloseSend()
 	g.mu.Unlock()
 
 	if closeSendErr != nil {
-		// Still close the connection even if CloseSend fails.
 		_ = g.conn.Close()
 		return fmt.Errorf("close send: %w", closeSendErr)
 	}
@@ -208,15 +237,25 @@ func (g *GRPCTransport) Close() error {
 // awaitStreamEnd blocks until the reader observes the end of the stream
 // or streamEndGrace elapses. It starts the reader when no caller
 // registered a control handler, since nothing else would consume the
-// stream to its end.
+// stream to its end — so the reader serves two lifecycles: dispatching
+// control events during a run, and observing the peer's acknowledgement
+// at close.
+//
+// Timing out means the peer never ended the RPC, so anything the writer
+// had not flushed is about to be discarded. That is the shape a lost
+// terminal "done" takes, so it is reported rather than swallowed.
 func (g *GRPCTransport) awaitStreamEnd() {
 	g.startReadLoop()
 
+	start := time.Now()
 	timer := time.NewTimer(streamEndGrace)
 	defer timer.Stop()
 	select {
 	case <-g.done:
+		slog.Debug("grpc transport drained", "duration", time.Since(start))
 	case <-timer.C:
+		slog.Warn("grpc transport close timed out waiting for the control plane to end the RPC; queued events may be lost",
+			"grace", streamEndGrace)
 	}
 }
 
