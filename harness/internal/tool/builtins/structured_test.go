@@ -339,7 +339,8 @@ func TestGrepFilesTool_RipgrepJSONPath(t *testing.T) {
 	withRipgrepProbe(t, true)
 	rgJSON := strings.Join([]string{
 		`{"type":"begin","data":{"path":{"text":"/ws/a:b/c.go"}}}`,
-		`{"type":"match","data":{"path":{"text":"/ws/a:b/c.go"},"lines":{"text":"key: needle: value\n"},"line_number":7}}`,
+		`{"type":"match","data":{"path":{"text":"/ws/a:b/c.go"},"lines":{"text":"key: needle: value\n"},"line_number":7,` +
+			`"submatches":[{"match":{"text":"needle"},"start":5,"end":11}]}}`,
 		`{"type":"end","data":{"path":{"text":"/ws/a:b/c.go"}}}`,
 		`{"type":"summary","data":{}}`,
 	}, "\n")
@@ -361,7 +362,7 @@ func TestGrepFilesTool_RipgrepJSONPath(t *testing.T) {
 	if err := json.Unmarshal(res.Structured, &got); err != nil {
 		t.Fatalf("structured payload is not a searchResult: %v", err)
 	}
-	want := searchMatch{Path: "/ws/a:b/c.go", Line: 7, Text: "key: needle: value"}
+	want := searchMatch{Path: "/ws/a:b/c.go", Line: 7, Column: 6, Text: "key: needle: value"}
 	if len(got.Matches) != 1 || got.Matches[0] != want {
 		t.Fatalf("rg --json match wrong: %+v", got.Matches)
 	}
@@ -512,5 +513,70 @@ func TestGrepFilesTool_RealRipgrepColumn(t *testing.T) {
 	}
 	if idx := m.Column - 1; idx < 0 || idx > len(m.Text) || !strings.HasPrefix(m.Text[idx:], "needle") {
 		t.Errorf("column %d does not point at the match in %q", m.Column, m.Text)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONMultipleSubmatches pins Column to the leftmost
+// span when a line matches several times. rg emits one match event per line
+// carrying every span, ordered by position, so taking the first must not drift
+// to the last or the widest.
+func TestGrepFilesTool_RipgrepJSONMultipleSubmatches(t *testing.T) {
+	withRipgrepProbe(t, true)
+	// Offsets copied from real rg output for the line below.
+	rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},"line_number":1,` +
+		`"submatches":[{"match":{"text":"needle"},"start":0,"end":6},{"match":{"text":"needle"},"start":11,"end":17}]}}`
+	exec := &fsExecutor{
+		root:    "/ws",
+		canExec: true,
+		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+		},
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	got := decodeSearchResult(t, GrepFilesTool(exec), input)
+	want := searchMatch{Path: "/ws/m.txt", Line: 1, Column: 1, Text: "needle and needle"}
+	if len(got.Matches) != 1 || got.Matches[0] != want {
+		t.Fatalf("expected one match at the leftmost span\n got: %+v\nwant: %+v", got.Matches, want)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONColumnBounds covers both edges of the offset
+// guard: a zero-width match at end of line legitimately reports len(Text)+1,
+// while an offset outside the line can only be malformed output and is dropped
+// rather than emitted as a nonsense column.
+func TestGrepFilesTool_RipgrepJSONColumnBounds(t *testing.T) {
+	tests := []struct {
+		name       string
+		submatches string
+		wantColumn int
+	}{
+		// Offsets copied from real rg output for pattern "$" on this line.
+		{"zero width at end of line", `[{"match":{"text":""},"start":17,"end":17}]`, 18},
+		{"offset past end of line", `[{"match":{"text":""},"start":99,"end":99}]`, 0},
+		{"negative offset", `[{"match":{"text":""},"start":-1,"end":-1}]`, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withRipgrepProbe(t, true)
+			rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},` +
+				`"line_number":1,"submatches":` + tc.submatches + `}}`
+			exec := &fsExecutor{
+				root:    "/ws",
+				canExec: true,
+				execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+					return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+				},
+			}
+
+			input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+			got := decodeSearchResult(t, GrepFilesTool(exec), input)
+			if len(got.Matches) != 1 {
+				t.Fatalf("expected one match, got %+v", got.Matches)
+			}
+			if got.Matches[0].Column != tc.wantColumn {
+				t.Errorf("expected column %d, got %d", tc.wantColumn, got.Matches[0].Column)
+			}
+		})
 	}
 }

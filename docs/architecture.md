@@ -397,14 +397,17 @@ that text is the fallback every provider can accept and is never
 dropped. Tools that can describe their output as stable fields
 additionally populate an optional typed envelope — `Structured`
 (a `json.RawMessage`) plus a `Kind` discriminator naming the payload's
-shape. The built-in producers emit eight shapes: `command_result`
+shape. The built-in producers emit nine shapes: `command_result`
 (`stdout`, `stderr`, `exit_code`, timeout metadata), `search_result`
-(per-match `path`/`line`/`column`/`text`), `find_result`
+(per-match `path`/`line`/`column`/`text`, where `column` is a
+1-indexed byte offset present only on the ripgrep path), `find_result`
 (workspace-relative paths), `file_excerpt` (line window with
 truncation state), `git_status` (current branch plus porcelain
 entries with per-path staged/unstaged status letters), `git_changed_files`
 (name-status letters per path), `git_diff` (bounded unified-diff text
-with a truncation flag), and `git_show` (bounded revision output).
+with a truncation flag), `git_show` (bounded revision output), and
+`command_output_chunk` (a byte range of spilled command output with
+its stream, EOF flag, and content digests).
 Each shape is a concrete Go struct in
 `harness/internal/tool/builtins/structured.go`, not a `map[string]any`,
 so the JSON contract is reviewable and stable.

@@ -552,13 +552,16 @@ func parseRipgrepJSON(stdout string, maxResults int) []searchMatch {
 		// native walker and rg's own text mode produce. A CRLF line keeps its
 		// "\r" (the native walker splits on "\n" only), so we do NOT strip it.
 		text := strings.TrimSuffix(ev.Data.Lines.value(), "\n")
-		// rg reports each match span as a 0-based byte offset; shift to
-		// 1-indexed so Column reads the same way as Line. A match event with no
-		// submatches, or a negative offset from malformed output, leaves Column
-		// 0 for `omitempty` to drop rather than emitting a nonsense column.
+		// Submatches are ordered by position, so [0] is the leftmost match.
+		// An offset outside the line can only come from malformed output;
+		// leave Column 0 for `omitempty` to drop rather than emitting a
+		// nonsense column. len(text) itself is in range: a zero-width match at
+		// end of line legitimately yields len(text)+1.
 		column := 0
-		if len(ev.Data.Submatches) > 0 && ev.Data.Submatches[0].Start >= 0 {
-			column = ev.Data.Submatches[0].Start + 1
+		if len(ev.Data.Submatches) > 0 {
+			if start := ev.Data.Submatches[0].Start; start >= 0 && start <= len(text) {
+				column = start + 1
+			}
 		}
 		matches = append(matches, searchMatch{
 			Path:   ev.Data.Path.value(),
