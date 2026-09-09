@@ -63,10 +63,20 @@ type commandOutputChunkResult struct {
 	RedactionCount int    `json:"redaction_count,omitempty"`
 }
 
-// searchMatch is a single hit from grep_files. Column is 1-indexed and present
-// only when the search path can report it; the byte-offset is omitted (column
-// 0) for the Go-native walker and the rg path, neither of which currently
-// emits column information. Text is the full matched line, verbatim.
+// searchMatch is a single hit from grep_files. Text is the full matched line,
+// verbatim.
+//
+// Column is the 1-indexed *byte* offset of the leftmost match on the line —
+// ripgrep's convention, not a rune or display column, so a multi-byte prefix
+// counts its bytes. A line matching several times yields one entry, positioned
+// at the first span. A zero-width match at end of line gives len(Text)+1.
+// It is present only on the rg --json search path; every other search path
+// omits it (column 0).
+//
+// Column indexes the bytes as ripgrep produced them, before any Ring-4
+// redaction or trace scrubbing rewrites Text. Those rewrites replace spans
+// in-place without re-deriving Column, so a consumer must not assume the offset
+// still locates the match in a redacted payload.
 type searchMatch struct {
 	Path   string `json:"path"`
 	Line   int    `json:"line"`

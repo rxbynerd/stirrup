@@ -339,3 +339,19 @@ func TestSearchTools_ExecutorWithoutHostPathOrTreeFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestGrepFilesTool_TreeListerOmitsColumn pins the TreeLister branch's half of
+// the searchMatch.Column contract: it matches with a regexp and keeps no match
+// offset, so the field must be absent rather than defaulted to 0.
+func TestGrepFilesTool_TreeListerOmitsColumn(t *testing.T) {
+	exec := newTreeExecutor(map[string]string{
+		"a.go": "package a\nvar needle = 1\n",
+	})
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertNoColumnKey(t, res.Structured)
+}

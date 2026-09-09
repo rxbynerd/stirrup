@@ -339,7 +339,8 @@ func TestGrepFilesTool_RipgrepJSONPath(t *testing.T) {
 	withRipgrepProbe(t, true)
 	rgJSON := strings.Join([]string{
 		`{"type":"begin","data":{"path":{"text":"/ws/a:b/c.go"}}}`,
-		`{"type":"match","data":{"path":{"text":"/ws/a:b/c.go"},"lines":{"text":"key: needle: value\n"},"line_number":7}}`,
+		`{"type":"match","data":{"path":{"text":"/ws/a:b/c.go"},"lines":{"text":"key: needle: value\n"},"line_number":7,` +
+			`"submatches":[{"match":{"text":"needle"},"start":5,"end":11}]}}`,
 		`{"type":"end","data":{"path":{"text":"/ws/a:b/c.go"}}}`,
 		`{"type":"summary","data":{}}`,
 	}, "\n")
@@ -361,12 +362,113 @@ func TestGrepFilesTool_RipgrepJSONPath(t *testing.T) {
 	if err := json.Unmarshal(res.Structured, &got); err != nil {
 		t.Fatalf("structured payload is not a searchResult: %v", err)
 	}
-	want := searchMatch{Path: "/ws/a:b/c.go", Line: 7, Text: "key: needle: value"}
+	want := searchMatch{Path: "/ws/a:b/c.go", Line: 7, Column: 6, Text: "key: needle: value"}
 	if len(got.Matches) != 1 || got.Matches[0] != want {
 		t.Fatalf("rg --json match wrong: %+v", got.Matches)
 	}
 	if wantText := "/ws/a:b/c.go:7:key: needle: value"; res.Text != wantText {
 		t.Errorf("rg text mismatch\n got: %q\nwant: %q", res.Text, wantText)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONColumnIsByteOffset pins searchMatch.Column to a
+// 1-indexed *byte* column. The matched line carries a multi-byte "é" before the
+// match, so a rune-indexed implementation would report a smaller column.
+func TestGrepFilesTool_RipgrepJSONColumnIsByteOffset(t *testing.T) {
+	withRipgrepProbe(t, true)
+	// "héllo " is 7 bytes but 6 runes, so rg's 0-based byte start is 7 and the
+	// 1-indexed byte column is 8; a rune column would be 7.
+	rgJSON := strings.Join([]string{
+		`{"type":"begin","data":{"path":{"text":"/ws/u.go"}}}`,
+		`{"type":"match","data":{"path":{"text":"/ws/u.go"},"lines":{"text":"héllo needle here\n"},"line_number":3,` +
+			`"submatches":[{"match":{"text":"needle"},"start":7,"end":13}]}}`,
+		`{"type":"end","data":{"path":{"text":"/ws/u.go"}}}`,
+	}, "\n")
+	exec := &fsExecutor{
+		root:    "/ws",
+		canExec: true,
+		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+		},
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got searchResult
+	if err := json.Unmarshal(res.Structured, &got); err != nil {
+		t.Fatalf("structured payload is not a searchResult: %v", err)
+	}
+	want := searchMatch{Path: "/ws/u.go", Line: 3, Column: 8, Text: "héllo needle here"}
+	if len(got.Matches) != 1 || got.Matches[0] != want {
+		t.Fatalf("rg --json match wrong\n got: %+v\nwant: %+v", got.Matches, want)
+	}
+	// The byte column must index into the raw bytes of Text, not its runes.
+	if idx := got.Matches[0].Column - 1; !strings.HasPrefix(got.Matches[0].Text[idx:], "needle") {
+		t.Errorf("column %d does not point at the match in %q", got.Matches[0].Column, got.Matches[0].Text)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONNoSubmatchesOmitsColumn asserts a match event
+// carrying no submatches leaves "column" out of the payload entirely rather
+// than emitting a meaningless 0 or 1.
+func TestGrepFilesTool_RipgrepJSONNoSubmatchesOmitsColumn(t *testing.T) {
+	withRipgrepProbe(t, true)
+	rgJSON := `{"type":"match","data":{"path":{"text":"/ws/a.go"},"lines":{"text":"needle\n"},"line_number":1}}`
+	exec := &fsExecutor{
+		root:    "/ws",
+		canExec: true,
+		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+		},
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertNoColumnKey(t, res.Structured)
+}
+
+// TestGrepFilesTool_NativeWalkerOmitsColumn pins the Go-native walker's half of
+// the searchMatch.Column contract: it has no match-offset tracking, so the
+// field must be absent rather than defaulted.
+func TestGrepFilesTool_NativeWalkerOmitsColumn(t *testing.T) {
+	withRipgrepProbe(t, false)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\nvar needle = 1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	res, err := GrepFilesTool(&fsExecutor{root: dir}).StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertNoColumnKey(t, res.Structured)
+}
+
+// assertNoColumnKey fails unless every match in a marshalled searchResult
+// leaves the "column" key out. Decoding into searchMatch cannot tell an absent
+// key from a zero value, so this inspects the raw JSON.
+func assertNoColumnKey(t *testing.T, structured json.RawMessage) {
+	t.Helper()
+	var raw struct {
+		Matches []map[string]json.RawMessage `json:"matches"`
+	}
+	if err := json.Unmarshal(structured, &raw); err != nil {
+		t.Fatalf("structured payload is not a searchResult: %v", err)
+	}
+	if len(raw.Matches) == 0 {
+		t.Fatalf("expected at least one match, got payload %s", structured)
+	}
+	for i, m := range raw.Matches {
+		if _, ok := m["column"]; ok {
+			t.Errorf("match %d unexpectedly carries a column: %s", i, structured)
+		}
 	}
 }
 
@@ -380,4 +482,101 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestGrepFilesTool_RealRipgrepColumn drives the rg --json path against the
+// real ripgrep binary rather than a hand-written fixture, so the byte-offset
+// contract is pinned to rg's actual output rather than an assumption about it.
+func TestGrepFilesTool_RealRipgrepColumn(t *testing.T) {
+	if _, err := lookPath("rg"); err != nil {
+		t.Skip("ripgrep not on PATH")
+	}
+	withRipgrepProbe(t, true)
+	dir := t.TempDir()
+	// "héllo " occupies 7 bytes but 6 runes.
+	if err := os.WriteFile(filepath.Join(dir, "u.txt"), []byte("héllo needle here\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	got := decodeSearchResult(t, GrepFilesTool(exec), input)
+	if len(got.Matches) != 1 {
+		t.Fatalf("expected exactly one match, got %+v", got.Matches)
+	}
+	m := got.Matches[0]
+	if m.Column != 8 {
+		t.Errorf("expected 1-indexed byte column 8, got %d (7 would be a rune column)", m.Column)
+	}
+	if idx := m.Column - 1; idx < 0 || idx > len(m.Text) || !strings.HasPrefix(m.Text[idx:], "needle") {
+		t.Errorf("column %d does not point at the match in %q", m.Column, m.Text)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONMultipleSubmatches pins Column to the leftmost
+// span when a line matches several times. rg emits one match event per line
+// carrying every span, ordered by position, so taking the first must not drift
+// to the last or the widest.
+func TestGrepFilesTool_RipgrepJSONMultipleSubmatches(t *testing.T) {
+	withRipgrepProbe(t, true)
+	// Offsets copied from real rg output for the line below.
+	rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},"line_number":1,` +
+		`"submatches":[{"match":{"text":"needle"},"start":0,"end":6},{"match":{"text":"needle"},"start":11,"end":17}]}}`
+	exec := &fsExecutor{
+		root:    "/ws",
+		canExec: true,
+		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+			return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+		},
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	got := decodeSearchResult(t, GrepFilesTool(exec), input)
+	want := searchMatch{Path: "/ws/m.txt", Line: 1, Column: 1, Text: "needle and needle"}
+	if len(got.Matches) != 1 || got.Matches[0] != want {
+		t.Fatalf("expected one match at the leftmost span\n got: %+v\nwant: %+v", got.Matches, want)
+	}
+}
+
+// TestGrepFilesTool_RipgrepJSONColumnBounds covers both edges of the offset
+// guard: a zero-width match at end of line legitimately reports len(Text)+1,
+// while an offset outside the line can only be malformed output and is dropped
+// rather than emitted as a nonsense column.
+func TestGrepFilesTool_RipgrepJSONColumnBounds(t *testing.T) {
+	tests := []struct {
+		name       string
+		submatches string
+		wantColumn int
+	}{
+		// Offsets copied from real rg output for pattern "$" on this line.
+		{"zero width at end of line", `[{"match":{"text":""},"start":17,"end":17}]`, 18},
+		{"offset past end of line", `[{"match":{"text":""},"start":99,"end":99}]`, 0},
+		{"negative offset", `[{"match":{"text":""},"start":-1,"end":-1}]`, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withRipgrepProbe(t, true)
+			rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},` +
+				`"line_number":1,"submatches":` + tc.submatches + `}}`
+			exec := &fsExecutor{
+				root:    "/ws",
+				canExec: true,
+				execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+					return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+				},
+			}
+
+			input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+			got := decodeSearchResult(t, GrepFilesTool(exec), input)
+			if len(got.Matches) != 1 {
+				t.Fatalf("expected one match, got %+v", got.Matches)
+			}
+			if got.Matches[0].Column != tc.wantColumn {
+				t.Errorf("expected column %d, got %d", tc.wantColumn, got.Matches[0].Column)
+			}
+		})
+	}
 }
