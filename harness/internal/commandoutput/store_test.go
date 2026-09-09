@@ -11,8 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -70,9 +72,21 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	if captured.Record.Stdout.RedactionCount != 1 {
 		t.Fatalf("redactions=%d", captured.Record.Stdout.RedactionCount)
 	}
-	rawFiles, err := filepath.Glob(filepath.Join(store.root, "commands", "*", "*.raw"))
-	if err != nil || len(rawFiles) != 0 {
-		t.Fatalf("raw spools remain: %v err=%v", rawFiles, err)
+	spooled, err := filepath.Glob(filepath.Join(store.root, "commands", "*", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range spooled {
+		if filepath.Ext(path) != ".txt" {
+			t.Fatalf("only canonical scrubbed members belong under commands/: %s", path)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "sk-ant-") {
+			t.Fatalf("secret reached %s", path)
+		}
 	}
 
 	if err := store.RecordInitial(&captured.Record, "model-visible initial"); err != nil {
@@ -352,7 +366,10 @@ func TestStoreDiskAndUploadFailuresFailClosed(t *testing.T) {
 		if err := capture.stdout.file.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := capture.Stdout().Write([]byte("x")); err == nil {
+		// Enough output to force a chunk flush inside Write: the scrubbing
+		// writer holds a short stream in memory until close, so the disk
+		// failure surfaces only once a chunk is due.
+		if _, err := capture.Stdout().Write([]byte(strings.Repeat("x", 128<<10))); err == nil {
 			t.Fatal("expected closed-file write failure")
 		}
 		if store.FatalError() == nil || context.Cause(ctx) == nil {
@@ -392,6 +409,152 @@ func TestStoreDiskAndUploadFailuresFailClosed(t *testing.T) {
 			t.Fatalf("manifest=%+v", got)
 		}
 	})
+}
+
+// TestStoreSpoolIsScrubbedBeforeCompletion is the crash-window guarantee: a
+// SIGKILL mid-command can only leave behind what is on disk at that instant,
+// so the spool must never hold an unscrubbed byte.
+func TestStoreSpoolIsScrubbedBeforeCompletion(t *testing.T) {
+	store, err := New(Options{RunID: "crash", Config: testConfig(), ArchivePath: filepath.Join(t.TempDir(), "crash.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "crash", ToolUseID: "tool"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "gh" + "p_crashWindowFixture0123456789"
+	spool := capture.stdout.file.Name()
+	writes := []string{"leading output " + secret + " trailing output\n"}
+	for i := 0; i < 16; i++ {
+		writes = append(writes, strings.Repeat("filler line\n", 1<<10))
+	}
+	sawFlush := false
+	for _, chunk := range writes {
+		if _, err := capture.Stdout().Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+		onDisk, err := os.ReadFile(spool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(onDisk), secret) {
+			t.Fatal("unscrubbed secret reached the spool file")
+		}
+		if len(onDisk) > 0 {
+			sawFlush = true
+			if !strings.Contains(string(onDisk), "[REDACTED]") {
+				t.Fatalf("flushed spool lost the redaction marker: %.64q", onDisk)
+			}
+		}
+	}
+	if !sawFlush {
+		t.Fatal("no chunk reached disk mid-command; the crash-window claim was not exercised")
+	}
+	captured, err := capture.Complete(Completion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := sha256.Sum256([]byte(strings.Join(writes, "")))
+	if captured.Record.Stdout.RawSHA256 != hex.EncodeToString(raw[:]) {
+		t.Fatal("raw digest must still describe the stream as produced")
+	}
+	final, err := os.ReadFile(spool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := security.Scrub(strings.Join(writes, "")); string(final) != want {
+		t.Fatalf("scrubbed spool diverges from a whole-stream scrub: %d bytes want %d", len(final), len(want))
+	}
+	scrubbed := sha256.Sum256(final)
+	if captured.Record.Stdout.ScrubbedSHA256 != hex.EncodeToString(scrubbed[:]) ||
+		captured.Record.Stdout.ScrubbedBytes != int64(len(final)) {
+		t.Fatalf("scrubbed metadata does not describe the archived member: %+v", captured.Record.Stdout)
+	}
+	if captured.Record.Stdout.RedactionCount != 1 ||
+		len(captured.Record.Stdout.RedactionPatterns) != 1 || captured.Record.Stdout.RedactionPatterns[0] != "github_pat" {
+		t.Fatalf("redaction statistics=%+v", captured.Record.Stdout)
+	}
+}
+
+// TestStoreCompletionAllocationIsBoundedByChunk pins the second half of the
+// scrub-on-write change: completion no longer reads the stream back, so its
+// cost is independent of stream size.
+func TestStoreCompletionAllocationIsBoundedByChunk(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxBytesPerStream = 32 << 20
+	cfg.MaxBytesPerRun = 64 << 20
+	store, err := New(Options{RunID: "alloc", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "alloc.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "alloc", ToolUseID: "tool"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := []byte(strings.Repeat("command output line\n", 1<<10))
+	streamed := 0
+	for i := 0; i < 400; i++ {
+		if _, err := capture.Stdout().Write(block); err != nil {
+			t.Fatal(err)
+		}
+		streamed += len(block)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	captured, err := capture.Complete(Completion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+		t.Fatalf("completion allocated %d bytes for a %d byte stream", allocated, streamed)
+	}
+	if captured.Record.Stdout.ScrubbedBytes != int64(streamed) {
+		t.Fatalf("scrubbed bytes=%d want %d", captured.Record.Stdout.ScrubbedBytes, streamed)
+	}
+}
+
+func TestSweepOrphanedSpoolsRemovesOnlyAgedRoots(t *testing.T) {
+	tmp := t.TempDir()
+	aged := filepath.Join(tmp, spoolPrefix+"aged")
+	live := filepath.Join(tmp, spoolPrefix+"live")
+	foreign := filepath.Join(tmp, "unrelated-temp-dir")
+	for _, dir := range []string{aged, live, foreign} {
+		if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	for _, dir := range []string{aged, foreign} {
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// New sweeps the OS temp directory, so pointing TMPDIR at the fixture
+	// exercises the real entry point rather than the helper alone.
+	t.Setenv("TMPDIR", tmp)
+	store, err := New(Options{RunID: "sweep", Config: testConfig(), ArchivePath: filepath.Join(t.TempDir(), "sweep.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, err := os.Stat(aged); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("aged spool root survived the sweep: %v", err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("a spool root younger than the age gate must survive: %v", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("the sweep must not touch unrelated temp directories: %v", err)
+	}
+	if _, err := os.Stat(store.root); err != nil {
+		t.Fatalf("the new store root must outlive its own sweep: %v", err)
+	}
 }
 
 func readArchive(t *testing.T, path string) map[string][]byte {
