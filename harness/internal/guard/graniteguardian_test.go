@@ -412,6 +412,72 @@ func TestGraniteGuardianPolarityConvention(t *testing.T) {
 	}
 }
 
+// TestBuiltInCriteriaPolarityConvention pins the same polarity invariant
+// as TestGraniteGuardianPolarityConvention, but per-ID over builtInCriteria
+// rather than the composite defaultPhaseCriteria text. groundedness and
+// answer_relevance previously used requirement-form phrasing ("must be
+// supported", "directly addresses"), which meant a benign response met the
+// requirement, the classifier said "yes", and the adapter denied a good
+// answer. Any criterion added to the registry must be risk-phrased, so
+// this test iterates the map rather than a fixed ID list.
+func TestBuiltInCriteriaPolarityConvention(t *testing.T) {
+	antimarkers := []string{
+		"must be",
+		"must not",
+		"must satisfy",
+		"directly addresses",
+	}
+	for id, text := range builtInCriteria {
+		t.Run(id, func(t *testing.T) {
+			if text == "" {
+				t.Fatalf("criterion %q has empty text", id)
+			}
+			for _, antimarker := range antimarkers {
+				if strings.Contains(strings.ToLower(text), antimarker) {
+					t.Errorf("criterion %q contains requirement-form anti-marker %q — under the scoring schema this maps a benign response to deny. Criterion: %s", id, antimarker, text)
+				}
+			}
+		})
+	}
+}
+
+// TestBuiltInCriteriaRoutesRiskPhrasedText confirms groundedness and
+// answer_relevance route through GraniteGuardianConfig.Criteria into the
+// emitted prompt using their corrected, risk-phrased text — guarding
+// against a future edit reintroducing requirement-form phrasing.
+func TestBuiltInCriteriaRoutesRiskPhrasedText(t *testing.T) {
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"groundedness", "are not supported by the documents"},
+		{"answer_relevance", "fails to address the user's most recent request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
+			g, err := NewGraniteGuardian(GraniteGuardianConfig{
+				Endpoint: fs.srv.URL,
+				Criteria: []string{tc.id},
+			})
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if d.Verdict != VerdictAllow {
+				t.Fatalf("verdict = %q, want allow", d.Verdict)
+			}
+			got := fs.firstUserMessageContent(t)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("prompt for criterion %q missing risk-phrased text %q; got: %s", tc.id, tc.want, got)
+			}
+		})
+	}
+}
+
 // TestGraniteGuardianBenignPostTurnAllowed pins the parser+criterion
 // contract end-to-end: with a risk-form criterion, a benign response
 // gets "no" from the classifier and the verdict is allow.
