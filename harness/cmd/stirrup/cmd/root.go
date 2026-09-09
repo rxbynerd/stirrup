@@ -74,6 +74,24 @@ func runTimeoutFor(cfg *types.RunConfig) time.Duration {
 	return time.Duration(*cfg.Timeout) * time.Second
 }
 
+// cliSessionFollowUps is the number of follow-up runs, each preceded by
+// a full idle grace window, that `stirrup harness` budgets for a
+// session on top of the primary run. `stirrup job` relies on the
+// orchestrator's deadline instead; the CLI has none behind it, so the
+// session must bound itself.
+const cliSessionFollowUps = 10
+
+// cliSessionBudget is the wall-clock bound on a `stirrup harness`
+// session once the primary run has completed: zero (no bound) without
+// a follow-up window, otherwise room for cliSessionFollowUps follow-up
+// runs each waited for through a full grace window.
+func cliSessionBudget(runTimeout time.Duration, graceSecs int) time.Duration {
+	if graceSecs <= 0 {
+		return 0
+	}
+	return cliSessionFollowUps * (runTimeout + time.Duration(graceSecs)*time.Second)
+}
+
 // withRunTimeout derives one run's context from the cancel-only
 // parent: a fresh deadline when timeout is positive, plain
 // cancellation otherwise.
@@ -308,21 +326,25 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string, exp
 //	gs://bucket/runs/r1/workspace.tar.gz → gs://bucket/runs/r1/<runID>/workspace.tar.gz
 //
 // The object's file name is preserved so consumers keyed on it keep
-// working. An empty base stays empty (export disabled).
+// working. A base with no object name (a bucket, or a prefix ending in
+// "/") gains the run ID as its final segment instead. An empty base
+// stays empty (export disabled).
 func followUpExportURI(base, runID string) string {
 	if base == "" {
 		return ""
 	}
 	scheme, rest, ok := strings.Cut(base, "://")
 	if !ok {
-		return base + "/" + runID
+		return strings.TrimSuffix(base, "/") + "/" + runID
 	}
 	dir, file, ok := strings.Cut(rest, "/")
-	if !ok || file == "" {
-		return base + "/" + runID
+	if ok {
+		if i := strings.LastIndex(file, "/"); i >= 0 {
+			dir, file = dir+"/"+file[:i], file[i+1:]
+		}
 	}
-	if i := strings.LastIndex(file, "/"); i >= 0 {
-		dir, file = dir+"/"+file[:i], file[i+1:]
+	if !ok || file == "" {
+		return strings.TrimSuffix(base, "/") + "/" + runID
 	}
 	return scheme + "://" + dir + "/" + runID + "/" + file
 }
@@ -336,6 +358,28 @@ type postRunPolicy struct {
 	// exportRequired selects the workspace export failure semantics;
 	// see exportWorkspace.
 	exportRequired bool
+	// firstFollowUpErr is the first required-export failure among the
+	// follow-up runs, surfaced as the process's exit status once the
+	// follow-up window closes. A follow-up's own run error is not
+	// recorded: it is already on that run's "done" and RunResult, and
+	// the exit status reports the assigned task (the primary run).
+	firstFollowUpErr error
+}
+
+// finaliseFollowUp applies the policy to one completed follow-up run,
+// exporting to a run-scoped object path, and records the first
+// required-export failure for followUpErr.
+func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrace, runErr error) {
+	err := p.finalise(cfg, rt, runErr, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+	if err != nil && runErr == nil && p.firstFollowUpErr == nil {
+		p.firstFollowUpErr = err
+	}
+}
+
+// followUpErr reports the first required-export failure among the
+// follow-up runs, nil when none failed or export was not required.
+func (p *postRunPolicy) followUpErr() error {
+	return p.firstFollowUpErr
 }
 
 // finalise applies the policy to one completed run. Both steps get
@@ -349,7 +393,7 @@ type postRunPolicy struct {
 // or a required-export failure; nil otherwise. A nil trace means the
 // loop produced none at all; it has already emitted its terminal
 // "done", so nothing is emitted here to avoid a second one.
-func (p postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error, exportTo string) error {
+func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error, exportTo string) error {
 	if rt == nil {
 		return fmt.Errorf("running harness: %w", runErr)
 	}

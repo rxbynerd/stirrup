@@ -1707,7 +1707,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	policy := postRunPolicy{
+	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			emitRunOutput(ctx, cfg, rt, opts.outputMode)
 		},
@@ -1719,28 +1719,25 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		return err
 	}
 
-	// A required export that fails on a follow-up must fail the process
-	// the same way it would for the primary run; the first such failure
-	// is returned once the follow-up window closes.
-	var followUpErr error
 	graceSecs := 0
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		graceSecs = *config.FollowUpGrace
 	}
+	// The CLI has no orchestrator deadline behind it, so the session as a
+	// whole is bounded here; see cliSessionBudget.
+	sessionCtx, sessionCancel := withRunTimeout(ctx, cliSessionBudget(runTimeout, graceSecs))
+	defer sessionCancel()
 	// Called even with no grace window so user_response events that
 	// arrived after the run's last turn boundary are rejected with a
 	// warning rather than lost at exit.
-	core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
-		RunTimeout: runTimeout,
-		OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
-			ferr := policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
-			if ferr != nil && err == nil && followUpErr == nil {
-				followUpErr = ferr
-			}
-		},
+	core.RunFollowUpLoop(sessionCtx, loop, config, graceSecs, core.FollowUpOptions{
+		RunTimeout:    runTimeout,
+		OnRunComplete: policy.finaliseFollowUp,
 	})
-	if followUpErr != nil {
-		return followUpErr
+	// A required export that fails on a follow-up fails the process the
+	// same way it would for the primary run.
+	if err := policy.followUpErr(); err != nil {
+		return err
 	}
 	// A non-success outcome reached here (runErr == nil but e.g.
 	// Outcome == "error" or "hook_failed") must still fail the process.

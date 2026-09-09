@@ -216,7 +216,17 @@ Five limits bound a `stirrup job` session; whichever fires first wins.
 | `followUpGrace` / `STIRRUP_FOLLOWUP_GRACE` | Idle time between runs, restarted after every run is finalised. A run in progress never consumes it. | The stream closes and the process exits with the primary run's exit code. |
 | `cancel` ControlEvent | The session. | An active run ends with `done{stop_reason:"cancelled"}`; queued `user_response` input is discarded (each reported by a `warning`); no follow-up window opens. With no run active — between a run's `done` and the next run, or inside the grace window — the stream closes without another `done`. One `cancel` always stops the harness. |
 | SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog closes the loop within 5 s. |
-| `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. |
+| `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap for `stirrup job`. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. (`stirrup harness`, which has no orchestrator behind it, bounds its own session at 10 × (`timeout` + `followUpGrace`) after the primary run.) |
+
+Exit status reports the assigned task: the process exits 0 when the
+primary run succeeded, regardless of how any follow-up ended. A
+follow-up's outcome is on its own `done` and `RunResult`, and a
+follow-up whose run fails outright ends the session; neither changes
+the exit status, so an orchestrator's retry decision is about the
+assignment, not the interactive session that followed it. The one
+exception is the CLI's `--export-workspace-required`: a required
+workspace export failing on any run, follow-up included, fails the
+process. `stirrup job` never requires export.
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —

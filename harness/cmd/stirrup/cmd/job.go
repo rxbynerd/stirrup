@@ -172,7 +172,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
 	// an exit-failing job doesn't lose the trace/resultSink before an
 	// operator can correlate it.
-	policy := postRunPolicy{
+	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			printRunSummary(rt)
 			emitRunResult(ctx, cfg, rt)
@@ -197,14 +197,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// arrived after the run's last turn boundary are rejected with a
 	// warning rather than lost at exit.
 	core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
-		RunTimeout: runTimeout,
-		OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
-			// Export is never required here, so the only error finalise
-			// can return is the run's own, already reported via the
-			// transport and the result sink.
-			_ = policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
-		},
+		RunTimeout:    runTimeout,
+		OnRunComplete: policy.finaliseFollowUp,
 	})
+	// Export is never required for a job, so this is nil today; the
+	// guard keeps the two entrypoints' exit-status policy identical.
+	if err := policy.followUpErr(); err != nil {
+		return err
+	}
 
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.

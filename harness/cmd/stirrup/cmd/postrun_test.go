@@ -51,7 +51,8 @@ func TestFollowUpExportURI(t *testing.T) {
 		{"nested object", "gs://bucket/runs/r1/workspace.tar.gz", "run-2", "gs://bucket/runs/r1/run-2/workspace.tar.gz"},
 		{"object at bucket root", "gs://bucket/workspace.tar.gz", "run-2", "gs://bucket/run-2/workspace.tar.gz"},
 		{"bucket only", "gs://bucket", "run-2", "gs://bucket/run-2"},
-		{"trailing slash", "gs://bucket/runs/", "run-2", "gs://bucket/runs/run-2/"},
+		{"trailing slash", "gs://bucket/runs/", "run-2", "gs://bucket/runs/run-2"},
+		{"bucket with trailing slash", "gs://bucket/", "run-2", "gs://bucket/run-2"},
 		{"empty base stays disabled", "", "run-2", ""},
 	}
 	for _, tc := range cases {
@@ -71,7 +72,7 @@ func TestPostRunPolicy_FinaliseEmitsThenExports(t *testing.T) {
 	installRecordingExporter(t, rec)
 
 	var emitted []string
-	policy := postRunPolicy{
+	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, rt *types.RunTrace) {
 			emitted = append(emitted, rt.ID)
 		},
@@ -109,7 +110,7 @@ func TestPostRunPolicy_FinaliseFailedRunEmitsButSkipsExport(t *testing.T) {
 	installRecordingExporter(t, rec)
 
 	emitted := 0
-	policy := postRunPolicy{
+	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
 	}
 	cfg := &types.RunConfig{}
@@ -133,7 +134,7 @@ func TestPostRunPolicy_FinaliseFailedRunEmitsButSkipsExport(t *testing.T) {
 // terminal "done", and a second result would be a fabricated one).
 func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
 	emitted := 0
-	policy := postRunPolicy{
+	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
 	}
 	runErr := errors.New("finish trace: boom")
@@ -158,14 +159,56 @@ func TestPostRunPolicy_FinaliseRequiredExportFailurePropagates(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 	noop := func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}
 
-	required := postRunPolicy{emit: noop, exportRequired: true}
+	required := &postRunPolicy{emit: noop, exportRequired: true}
 	if err := required.finalise(cfg, finaliseTestTrace("run-2"), nil, followUpExportURI(cfg.Executor.WorkspaceExportTo, "run-2")); !errors.Is(err, sentinel) {
 		t.Errorf("required: error = %v, want the export failure", err)
 	}
 
-	optional := postRunPolicy{emit: noop, exportRequired: false}
+	optional := &postRunPolicy{emit: noop, exportRequired: false}
 	if err := optional.finalise(cfg, finaliseTestTrace("run-3"), nil, followUpExportURI(cfg.Executor.WorkspaceExportTo, "run-3")); err != nil {
 		t.Errorf("optional: error = %v, want nil", err)
+	}
+}
+
+// TestCLISessionBudget pins the CLI's self-imposed session bound: none
+// without a follow-up window, otherwise room for ten follow-ups each
+// waited for through a full grace window.
+func TestCLISessionBudget(t *testing.T) {
+	if got := cliSessionBudget(30*time.Second, 0); got != 0 {
+		t.Errorf("budget without a window = %v, want 0 (unbounded; the primary run has its own timeout)", got)
+	}
+	if got, want := cliSessionBudget(30*time.Second, 60), 10*(30*time.Second+60*time.Second); got != want {
+		t.Errorf("budget with a 60 s window = %v, want %v", got, want)
+	}
+}
+
+// TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures pins the
+// exit-status contract for follow-ups: a follow-up's own run error is
+// already on its done/RunResult and is not recorded, while the first
+// required-export failure is.
+func TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures(t *testing.T) {
+	sentinel := errors.New("simulated GCS upload failure")
+	rec := &recordingExporter{err: sentinel}
+	installRecordingExporter(t, rec)
+	noop := func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}
+	cfg := &types.RunConfig{RunID: "run-2"}
+	cfg.Executor.Workspace = t.TempDir()
+	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
+
+	policy := &postRunPolicy{emit: noop, exportRequired: true}
+	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), errors.New("git setup: boom"))
+	if err := policy.followUpErr(); err != nil {
+		t.Fatalf("a follow-up's run error was recorded as the exit status: %v", err)
+	}
+	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-3"), nil)
+	if err := policy.followUpErr(); !errors.Is(err, sentinel) {
+		t.Fatalf("required-export failure not recorded: %v", err)
+	}
+
+	optional := &postRunPolicy{emit: noop}
+	optional.finaliseFollowUp(cfg, finaliseTestTrace("run-4"), nil)
+	if err := optional.followUpErr(); err != nil {
+		t.Fatalf("soft-fail export recorded as the exit status: %v", err)
 	}
 }
 

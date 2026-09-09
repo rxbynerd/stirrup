@@ -612,8 +612,10 @@ re-provisioning the sandbox.
 - Each follow-up is a run in its own right: it receives a fresh `timeout`
   budget when its `user_response` is taken up, and the grace timer
   restarts after it completes, so the window measures idle time and a
-  follow-up that outlives the grace period does not close it. There is
-  no session-wide cap; bound the Pod with `activeDeadlineSeconds`. The
+  follow-up that outlives the grace period does not close it. `stirrup
+  job` has no session-wide cap of its own; bound the Pod with
+  `activeDeadlineSeconds`. (`stirrup harness` bounds its own session at
+  10 × (`timeout` + `followUpGrace`) after the primary run.) The
   precedence of every limit is tabulated in
   [`deployment.md`](deployment.md#run-budgets-and-precedence).
 - Every run — primary and each follow-up — is finalised the same way:
