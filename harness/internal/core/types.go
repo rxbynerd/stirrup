@@ -605,6 +605,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			// tool's schema gate and is rejected by the provider when the
 			// turn is replayed.
 			inputBytes, _ := json.Marshal(event.Input)
+			normalizedInput := types.NormalizeToolInput(inputBytes)
 			// ThoughtSignature is provider-opaque state the harness must
 			// echo back unchanged on the next request so the model can
 			// resume its prior reasoning. Adapters that do not emit it
@@ -613,9 +614,21 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Type:             "tool_use",
 				ID:               event.ID,
 				Name:             event.Name,
-				Input:            types.NormalizeToolInput(inputBytes),
+				Input:            normalizedInput,
 				ThoughtSignature: event.ThoughtSignature,
 			})
+			// event.Name is the presented (aliased) tool name the model
+			// used; dispatch correlates the eventual tool_result back to
+			// this event's ID via ToolUseID, matching the proto's
+			// documented "id"/"name" fields for tool_call.
+			if err := tp.Emit(types.HarnessEvent{
+				Type:  "tool_call",
+				ID:    event.ID,
+				Name:  event.Name,
+				Input: normalizedInput,
+			}); err != nil {
+				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
+			}
 
 		case "message_complete":
 			if inText {

@@ -438,6 +438,43 @@ func TestGRPCTransport_EmitScrubsInput(t *testing.T) {
 	}
 }
 
+// TestGRPCTransport_EmitScrubsToolCallInput is the regression test for
+// issue #593: now that the core loop emits "tool_call" on the transport,
+// its Input must go through the same scrub path as permission_request and
+// tool_result_request rather than a new, unscrubbed seam.
+func TestGRPCTransport_EmitScrubsToolCallInput(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	event := types.HarnessEvent{
+		Type:  "tool_call",
+		ID:    "tc_1",
+		Name:  "run_command",
+		Input: json.RawMessage(`{"command":"echo AKIAQWERTYUIOPASDFGH"}`),
+	}
+	if err := tr.Emit(event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	received := srv.getReceived()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 received event, got %d", len(received))
+	}
+	if strings.Contains(string(received[0].Input), "AKIAQWERTYUIOPASDFGH") {
+		t.Errorf("live-shaped AWS key was not scrubbed from tool_call Input: %q", received[0].Input)
+	}
+	if !json.Valid(received[0].Input) {
+		t.Errorf("scrubbed Input is not valid JSON: %q", received[0].Input)
+	}
+	if received[0].Id != "tc_1" {
+		t.Errorf("Id = %q, want tc_1 (scrubbing must not disturb other fields)", received[0].Id)
+	}
+}
+
 func TestGRPCTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)

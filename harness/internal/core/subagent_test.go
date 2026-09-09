@@ -478,6 +478,24 @@ func TestCaptureTransport_EmptyWhenNoTextDeltas(t *testing.T) {
 	}
 }
 
+// TestCaptureTransport_ToolCallEventIsNoOp is the regression test for issue
+// #593 on the sub-agent path: captureTransport has no case for "tool_call",
+// so the new emit from streamEventsToResult must fall through as a no-op
+// rather than panicking or perturbing accumulated text.
+func TestCaptureTransport_ToolCallEventIsNoOp(t *testing.T) {
+	ct := newCaptureTransport()
+
+	_ = ct.Emit(types.HarnessEvent{Type: "text_delta", Text: "before "})
+	if err := ct.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: json.RawMessage(`{}`)}); err != nil {
+		t.Errorf("Emit(tool_call) returned error: %v", err)
+	}
+	_ = ct.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"})
+
+	if text := ct.lastText(); text != "before after" {
+		t.Errorf("expected 'before after', got %q", text)
+	}
+}
+
 // TestSpawnSubAgent_TraceEventsForwardedToParent is the regression test
 // for issue #55 acceptance criterion #1: sub-agent JSONL trace events
 // must appear on the parent's trace emitter rather than being dropped
