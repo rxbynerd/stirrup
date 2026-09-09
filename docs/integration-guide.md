@@ -153,6 +153,14 @@ crashed or killed harness. With follow-ups enabled, each run has its
 own `done`; it is terminal for the run, not necessarily for the
 stream.
 
+On exit the harness half-closes the stream and waits briefly for the
+control plane to end the RPC before closing the connection, so events
+emitted immediately before exit are not lost to an abrupt teardown. A
+control plane that ends `RunTask` once it has its terminal `done`
+releases the harness immediately; one that holds the stream open —
+serving follow-ups, say — delays the harness's exit by that grace
+window and no longer.
+
 Validating control-plane-side before dispatch is still worthwhile: it
 turns a pod launch into an immediate API error. Mirror the harness with
 `stirrup run-config --validate`, or call `types.ValidateRunConfig` from
