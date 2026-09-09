@@ -2,6 +2,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -619,13 +620,14 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			})
 			// event.Name is the presented (aliased) tool name the model
 			// used; dispatch correlates the eventual tool_result back to
-			// this event's ID via ToolUseID, matching the proto's
-			// documented "id"/"name" fields for tool_call.
+			// this event's ID via ToolUseID. Clone the input so a
+			// Transport that redacts in place cannot mutate the history
+			// block sharing the same backing array.
 			if err := tp.Emit(types.HarnessEvent{
 				Type:  "tool_call",
 				ID:    event.ID,
 				Name:  event.Name,
-				Input: normalizedInput,
+				Input: bytes.Clone(normalizedInput),
 			}); err != nil {
 				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
 			}

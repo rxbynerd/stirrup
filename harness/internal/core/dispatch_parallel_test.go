@@ -841,3 +841,79 @@ func TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace(t *testing.T) {
 		t.Errorf("ErrorReason did not show evidence of scrubbing (expected [REDACTED]): %q", recordedCalls[0].ErrorReason)
 	}
 }
+
+// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults drives a full
+// AgenticLoop.Run() with three calls against an AsyncHandler-backed tool,
+// so Phase 2's goroutine fan-out genuinely runs (dispatch.go's
+// asyncIndices path) — unlike TestLoop_ToolCallEventsPrecedeMatchingToolResults
+// in loop_test.go, whose synchronous test_tool never leaves Phase 1. This
+// is the regression test for issue #593's ordering guarantee under real
+// concurrent dispatch, not just the inline path.
+func TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
+	loop.Provider = &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "async_echo", Input: map[string]any{"n": 1}},
+				{Type: "tool_call", ID: "tc_2", Name: "async_echo", Input: map[string]any{"n": 2}},
+				{Type: "tool_call", ID: "tc_3", Name: "async_echo", Input: map[string]any{"n": 3}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+
+	config := buildTestConfig()
+	config.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: 3}
+
+	ids := []string{"tc_1", "tc_2", "tc_3"}
+	for _, id := range ids {
+		id := id
+		go fireResponseWhenEmitted(t, tr, id, 20*time.Millisecond, "result-for-"+id)
+	}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	events := tr.Events()
+
+	requestIdx := map[string]int{}
+	toolCallIdx := map[string]int{}
+	toolResultIdx := map[string]int{}
+	for i, e := range events {
+		switch e.Type {
+		case "tool_call":
+			toolCallIdx[e.ID] = i
+		case "tool_result_request":
+			requestIdx[e.ToolUseID] = i
+		case "tool_result":
+			toolResultIdx[e.ToolUseID] = i
+		}
+	}
+
+	for _, id := range ids {
+		// tool_result_request only fires from dispatch.go's AsyncHandler
+		// path (dispatchAsyncToolCall), so its presence is the proof this
+		// test exercised Phase 2's fan-out rather than Phase 1's inline
+		// dispatch.
+		if _, ok := requestIdx[id]; !ok {
+			t.Fatalf("missing tool_result_request for %q; async fan-out did not run", id)
+		}
+		callIdx, ok := toolCallIdx[id]
+		if !ok {
+			t.Fatalf("missing tool_call event for %q", id)
+		}
+		resultIdx, ok := toolResultIdx[id]
+		if !ok {
+			t.Fatalf("missing tool_result event for %q", id)
+		}
+		if callIdx >= resultIdx {
+			t.Errorf("tool_call for %q at index %d did not precede its tool_result at index %d", id, callIdx, resultIdx)
+		}
+	}
+}

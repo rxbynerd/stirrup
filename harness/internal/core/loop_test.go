@@ -295,10 +295,13 @@ func TestLoop_ToolUseAndContinue(t *testing.T) {
 // TestLoop_ToolCallEventsPrecedeMatchingToolResults is the regression test
 // for issue #593: the transport must see a tool_call event for every
 // dispatched tool, carrying the same id the matching tool_result later
-// echoes back as tool_use_id, and the tool_call must appear first. Three
-// calls in one turn exercise the default parallel-dispatch fan-out
-// (DefaultToolDispatchMaxParallel), so this also proves the emit survives
-// concurrent dispatch rather than only the serial path.
+// echoes back as tool_use_id, and the tool_call must appear first. The
+// ordering holds regardless of dispatch mode: the emit happens inside
+// streamEventsToResult, which fully drains the provider stream before
+// planAndDispatch is ever called, so it precedes both the synchronous
+// dispatch this test's three sync-handler calls take and the async
+// fan-out exercised separately by
+// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults.
 func TestLoop_ToolCallEventsPrecedeMatchingToolResults(t *testing.T) {
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -1667,6 +1670,45 @@ func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
 	}
 	if string(e.Input) != "{}" {
 		t.Errorf("emitted event Input = %q, want normalised nil input {}", e.Input)
+	}
+}
+
+// TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory guards
+// against the emitted event and the history ContentBlock sharing one
+// backing array. A Transport implementation is free to redact or mutate
+// its event.Input in place (transport.Transport is exported publicly as
+// harnessapi.Transport); if the two shared a buffer, that mutation would
+// silently rewrite the assistant turn the harness replays to the provider.
+// Uses asyncTestTransport, which stores the raw types.HarnessEvent rather
+// than a JSON round-trip, so a shared backing array would survive into the
+// assertion below undetected by any JSON-level test.
+func TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory(t *testing.T) {
+	tr := newAsyncTestTransport()
+
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: map[string]any{"path": "x"}}
+	ch <- types.StreamEvent{Type: "message_complete"}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, tr, slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+
+	events := tr.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 emitted event, got %d", len(events))
+	}
+	eventInput := events[0].Input
+	historyInput := result.Blocks[0].Input
+
+	if &eventInput[0] == &historyInput[0] {
+		t.Fatal("emitted event Input and history block Input share a backing array (should be cloned)")
+	}
+
+	eventInput[0] = '!'
+	if historyInput[0] == '!' {
+		t.Error("mutating the emitted event's Input mutated the history block's Input")
 	}
 }
 

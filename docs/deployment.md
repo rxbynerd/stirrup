@@ -156,7 +156,13 @@ IMDS, GitHub Actions OIDC). See
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
    events. Tools declared in `tools.controlPlane` emit
-   `tool_result_request` and block on `tool_result_response`.
+   `tool_result_request` and block on `tool_result_response`. A
+   `tool_call` is not guaranteed a matching `tool_result`: a
+   cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn
+   can orphan one, so `done` is the terminal close for any pending
+   state keyed on a `tool_call`'s `id`. See the field reference in
+   [`integration-guide.md`](integration-guide.md#events-from-the-harness)
+   for the untrusted-input and presented-name caveats on `tool_call`.
 8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
    carries the run metrics and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
