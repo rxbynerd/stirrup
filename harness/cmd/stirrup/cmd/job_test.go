@@ -116,13 +116,27 @@ func useTempMarkerPaths(t *testing.T) {
 	})
 }
 
+// The real-gRPC tests below run runJob on a background goroutine and wait
+// on wall-clock deadlines. The budgets are sized for a contended CI runner,
+// not a developer machine: a cold-cache GitHub Actions job compiles and
+// runs package test binaries concurrently, and seconds of scheduling delay
+// there say nothing about a regression. Every wait either succeeds in
+// microseconds or has genuinely failed, so a generous budget costs nothing
+// on a passing run. runJob prints phase timings on the terminal-failure
+// path, which is what a recurrence should be diagnosed from.
+const (
+	probeWaitBudget    = 10 * time.Second
+	eventWaitBudget    = 15 * time.Second
+	terminalWaitBudget = 30 * time.Second
+)
+
 // waitForProbe polls CheckProbe until it matches want (present/absent) or
 // the deadline elapses, absorbing the small delay between the client's
 // WriteProbe/RemoveProbe call and this goroutine observing it — the two
 // run concurrently with no happens-before edge between them.
 func waitForProbe(t *testing.T, path string, wantPresent bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(probeWaitBudget)
 	for {
 		err := health.CheckProbe(path)
 		if wantPresent && err == nil {
@@ -160,7 +174,7 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 
 	select {
 	case <-srv.readyRecv:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitBudget):
 		t.Fatal("fake control plane never received the ready event")
 	}
 
@@ -178,7 +192,7 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "building harness") {
 			t.Fatalf("runJob() error = %v, want a building-harness failure from the invalid RunConfig", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitBudget):
 		t.Fatal("runJob did not return after the invalid task_assignment")
 	}
 
@@ -241,13 +255,13 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 
 	select {
 	case <-srv.readyRecv:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitBudget):
 		t.Fatal("fake control plane never received the ready event")
 	}
 
 	select {
 	case <-requestReceived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitBudget):
 		t.Fatal("provider never received a request; the loop did not reach execution")
 	}
 
@@ -264,7 +278,7 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runJob() error = %v, want a successful single-turn run", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWaitBudget):
 		t.Fatal("runJob did not return after the provider responded")
 	}
 
@@ -389,7 +403,7 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 
 	select {
 	case <-srv.doneCh:
-	case <-time.After(30 * time.Second):
+	case <-time.After(terminalWaitBudget):
 		t.Fatal("control plane never received a done event for the rejected config")
 	}
 
@@ -400,7 +414,7 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 		} else if !strings.Contains(runErr.Error(), "building harness") {
 			t.Errorf("runJob error = %v, want it to report the build failure", runErr)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(terminalWaitBudget):
 		t.Fatal("runJob did not return after signalling the control plane")
 	}
 
