@@ -36,9 +36,8 @@ type ruleScope struct {
 	// basenames are lower-cased file names, matched exactly or as the
 	// stem of a variant name ("dockerfile" matches "Dockerfile.dev").
 	basenames []string
-	// interpreters are program names matched against the `#!` line of
-	// a file that has no extension, tolerating a version suffix
-	// ("python" matches "python3.12").
+	// interpreters are program names matched against the `#!` line,
+	// tolerating a version suffix ("python" matches "python3.12").
 	interpreters []string
 }
 
@@ -57,6 +56,15 @@ var (
 	jsScope = ruleScope{
 		exts:         []string{".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"},
 		interpreters: []string{"node"},
+	}
+	// evalScope covers every language that spells dynamic evaluation
+	// `eval(` / `exec(`. Shell is absent because its `eval` takes no
+	// parentheses, so the pattern cannot match it.
+	evalScope = ruleScope{
+		exts: slices.Concat(pythonScope.exts, jsScope.exts,
+			[]string{".php", ".phtml", ".rb", ".erb", ".html", ".htm", ".vue", ".svelte"}),
+		interpreters: slices.Concat(pythonScope.interpreters, jsScope.interpreters,
+			[]string{"php", "ruby"}),
 	}
 )
 
@@ -103,18 +111,18 @@ var sinkRules = []patternRule{
 		scope:    pythonScope,
 	},
 	{
-		id:       "sink/python_eval",
+		id:       "sink/dynamic_eval",
 		re:       regexp.MustCompile(`(^|[^A-Za-z0-9_.])eval\s*\(`),
 		severity: SeverityWarn,
 		message:  "eval() use: dynamic code execution risk",
-		scope:    pythonScope,
+		scope:    evalScope,
 	},
 	{
-		id:       "sink/python_exec",
+		id:       "sink/dynamic_exec",
 		re:       regexp.MustCompile(`(^|[^A-Za-z0-9_.])exec\s*\(`),
 		severity: SeverityWarn,
 		message:  "exec() use: dynamic code execution risk",
-		scope:    pythonScope,
+		scope:    evalScope,
 	},
 	{
 		// Matches `new Function(` / `Function(`, commonly used to eval strings.
@@ -184,21 +192,20 @@ type fileIdentity struct {
 	interp string
 }
 
-// identifyFile derives the scope inputs for path. The shebang is read
-// only when the path carries no extension, which is where it is the
-// sole signal of file type.
+// identifyFile derives the scope inputs for path, which is the path the
+// edit tool was given rather than a symlink-resolved one. The shebang is
+// read whatever the extension: a file opening `#!/bin/bash` is shell
+// however it is named, and an extension the content contradicts is the
+// weaker signal.
 func identifyFile(path string, content []byte) fileIdentity {
 	base := strings.ToLower(filepath.Base(path))
 	ext := strings.ToLower(filepath.Ext(base))
-	if ext == base {
-		// A leading dot names the file (".bashrc"); it is not an extension.
+	if ext == base || ext == "." {
+		// A leading dot names the file (".bashrc") and a trailing dot
+		// ends one ("deploy."); neither is an extension.
 		ext = ""
 	}
-	f := fileIdentity{base: base, ext: ext}
-	if ext == "" {
-		f.interp = shebangInterpreter(content)
-	}
-	return f
+	return fileIdentity{base: base, ext: ext, interp: shebangInterpreter(content)}
 }
 
 // matches reports whether the scope covers f. An empty scope covers
@@ -229,6 +236,9 @@ func matchesInterpreter(interp string, names []string) bool {
 	return false
 }
 
+// maxShebangLine bounds how much of a leading `#!` line is parsed.
+const maxShebangLine = 256
+
 // shebangInterpreter returns the lower-cased program name from a
 // leading `#!` line, resolving `/usr/bin/env prog` to prog. It returns
 // "" when content does not open with a shebang.
@@ -240,6 +250,11 @@ func shebangInterpreter(content []byte) string {
 	if i := bytes.IndexByte(line, '\n'); i >= 0 {
 		line = line[:i]
 	}
+	// The kernel truncates the shebang line; bounding it here keeps a
+	// newline-free 10 MB file from being split into tokens.
+	if len(line) > maxShebangLine {
+		line = line[:maxShebangLine]
+	}
 	fields := strings.Fields(string(line))
 	if len(fields) == 0 {
 		return ""
@@ -249,7 +264,12 @@ func shebangInterpreter(content []byte) string {
 		return prog
 	}
 	for _, arg := range fields[1:] {
-		if strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
+		if v, ok := strings.CutPrefix(arg, "--split-string="); ok {
+			arg = v
+		} else if strings.HasPrefix(arg, "-") || strings.Contains(arg, "=") {
+			continue
+		}
+		if arg == "" {
 			continue
 		}
 		return strings.ToLower(filepath.Base(arg))

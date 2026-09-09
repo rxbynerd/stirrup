@@ -2,6 +2,8 @@ package codescanner
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,7 +50,7 @@ func TestPatternScanner_BlocksOnAWSKey(t *testing.T) {
 	}
 }
 
-func TestPatternScanner_WarnsOnPythonEvalSink(t *testing.T) {
+func TestPatternScanner_WarnsOnDynamicEvalSink(t *testing.T) {
 	s := NewPatternScanner()
 	content := []byte("def run(expr):\n    return eval(expr)\n")
 
@@ -62,7 +64,7 @@ func TestPatternScanner_WarnsOnPythonEvalSink(t *testing.T) {
 
 	var found bool
 	for _, f := range res.Findings {
-		if f.Rule == "sink/python_eval" {
+		if f.Rule == "sink/dynamic_eval" {
 			if f.Severity != SeverityWarn {
 				t.Errorf("expected severity %q, got %q", SeverityWarn, f.Severity)
 			}
@@ -73,7 +75,7 @@ func TestPatternScanner_WarnsOnPythonEvalSink(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected python_eval finding, got: %+v", res.Findings)
+		t.Errorf("expected dynamic_eval finding, got: %+v", res.Findings)
 	}
 }
 
@@ -128,8 +130,8 @@ func TestPatternScanner_DoesNotMatchMethodCallNamedEval(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 	for _, f := range res.Findings {
-		if f.Rule == "sink/python_eval" {
-			t.Errorf("obj.eval should not match python_eval rule: %+v", f)
+		if f.Rule == "sink/dynamic_eval" {
+			t.Errorf("obj.eval should not match dynamic_eval rule: %+v", f)
 		}
 	}
 }
@@ -195,6 +197,11 @@ func TestPatternScanner_ShellBacktickScope(t *testing.T) {
 		{"extensionless sh shebang", "bin/deploy", "#!/bin/sh\n" + backtickSubstitution, 1},
 		{"extensionless node shebang", "bin/tool", "#!/usr/bin/env node\n" + templateLiteral, 0},
 		{"extensionless without shebang", "NOTES", backtickSubstitution, 0},
+		{"bash shebang under a text extension", "deploy.txt", "#!/bin/bash\n" + backtickSubstitution, 1},
+		{"bash shebang under a js extension", "deploy.js", "#!/bin/bash\n" + backtickSubstitution, 1},
+		{"node shebang under a js extension", "app.js", "#!/usr/bin/env node\n" + templateLiteral, 0},
+		{"trailing dot with shebang", "deploy.", "#!/bin/bash\n" + backtickSubstitution, 1},
+		{"trailing dot without shebang", "deploy.", backtickSubstitution, 0},
 	}
 
 	for _, tc := range cases {
@@ -232,6 +239,44 @@ func TestPatternScanner_PythonSinkScope(t *testing.T) {
 	}
 }
 
+// eval() and exec() are spelled the same way in several languages, so
+// the rules covering them span all of those file types rather than
+// Python alone.
+func TestPatternScanner_DynamicEvalScope(t *testing.T) {
+	const evalCall = "const r = eval(userInput);\n"
+
+	fires := []string{
+		"x.py", "x.pyi", "app.js", "app.jsx", "app.mjs", "app.cjs",
+		"app.ts", "app.tsx", "widget.vue", "widget.svelte",
+		"index.html", "index.htm", "legacy.php", "legacy.phtml",
+		"job.rb", "view.erb", "bin/task",
+	}
+	for _, path := range fires {
+		t.Run("fires/"+path, func(t *testing.T) {
+			content := evalCall
+			if filepath.Ext(path) == "" {
+				content = "#!/usr/bin/env ruby\n" + content
+			}
+			if got := countRule(t, path, content, "sink/dynamic_eval"); got != 1 {
+				t.Errorf("sink/dynamic_eval findings = %d, want 1", got)
+			}
+		})
+	}
+
+	quiet := []string{"notes.md", "notes.txt", "main.go", "data.json", "deploy.sh"}
+	for _, path := range quiet {
+		t.Run("quiet/"+path, func(t *testing.T) {
+			if got := countRule(t, path, evalCall, "sink/dynamic_eval"); got != 0 {
+				t.Errorf("sink/dynamic_eval findings = %d, want 0", got)
+			}
+		})
+	}
+
+	if got := countRule(t, "legacy.php", "exec($cmd);\n", "sink/dynamic_exec"); got != 1 {
+		t.Errorf("sink/dynamic_exec findings on .php = %d, want 1", got)
+	}
+}
+
 func TestPatternScanner_FunctionConstructorScope(t *testing.T) {
 	const fnCtor = "const fn = new Function('return 1');\n"
 
@@ -261,6 +306,32 @@ func TestPatternScanner_SecretRulesIgnoreFileType(t *testing.T) {
 	}
 }
 
+// Scope entries are compared against a lower-cased, dot-prefixed
+// extension and a lower-cased basename, so an entry written any other
+// way silently stops its rule from ever firing. This pins the shape of
+// every entry, and pins secret rules as unscoped.
+func TestRuleScopeInvariants(t *testing.T) {
+	for _, r := range NewPatternScanner().rules {
+		scoped := len(r.scope.exts)+len(r.scope.basenames)+len(r.scope.interpreters) > 0
+		if strings.HasPrefix(r.id, "secret/") && scoped {
+			t.Errorf("%s: secret rules must stay unscoped", r.id)
+		}
+		if strings.HasPrefix(r.id, "sink/") && !scoped {
+			t.Errorf("%s: sink rules must declare a scope", r.id)
+		}
+		for _, e := range r.scope.exts {
+			if !strings.HasPrefix(e, ".") || e != strings.ToLower(e) {
+				t.Errorf("%s: ext %q must be lower-case and dot-prefixed", r.id, e)
+			}
+		}
+		for _, n := range slices.Concat(r.scope.basenames, r.scope.interpreters) {
+			if n != strings.ToLower(n) {
+				t.Errorf("%s: %q must be lower-case", r.id, n)
+			}
+		}
+	}
+}
+
 func TestShebangInterpreter(t *testing.T) {
 	cases := []struct {
 		content string
@@ -269,6 +340,7 @@ func TestShebangInterpreter(t *testing.T) {
 		{"#!/bin/bash\n", "bash"},
 		{"#!/usr/bin/env bash\n", "bash"},
 		{"#!/usr/bin/env -S python3 -u\n", "python3"},
+		{"#!/usr/bin/env --split-string=bash -e\n", "bash"},
 		{"#!/usr/bin/env FOO=1 node\n", "node"},
 		{"#!/bin/sh -e\n", "sh"},
 		{"#!/usr/bin/env\n", ""},

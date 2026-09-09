@@ -6,8 +6,9 @@
 // Three implementations are provided:
 //
 //   - NoneScanner   — a no-op (used when scanning is disabled).
-//   - PatternScanner — pure-Go regex pack covering hardcoded secrets and
-//     a small set of obviously-dangerous eval/exec sinks.
+//   - PatternScanner — pure-Go regex pack covering hardcoded secrets
+//     (every file) and a small set of obviously-dangerous eval/exec
+//     sinks (scoped to the file types whose syntax they describe).
 //   - SemgrepScanner — shells out to a local `semgrep` binary if present.
 //   - CompositeScanner — unions findings from a set of child scanners.
 //

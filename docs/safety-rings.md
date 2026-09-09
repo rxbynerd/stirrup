@@ -942,30 +942,38 @@ Rules in the `patterns` pack fall into two classes:
 | Rule | Applies to |
 |---|---|
 | `secret/*` | every file |
-| `sink/python_os_system`, `sink/python_subprocess_shell_true`, `sink/python_eval`, `sink/python_exec` | `.py`, `.pyi`; `python` shebang |
+| `sink/python_os_system`, `sink/python_subprocess_shell_true` | `.py`, `.pyi`; `python` shebang |
+| `sink/dynamic_eval`, `sink/dynamic_exec` | `.py`, `.pyi`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`, `.php`, `.phtml`, `.rb`, `.erb`, `.html`, `.htm`, `.vue`, `.svelte`; `python`, `node`, `php`, `ruby` shebang |
 | `sink/js_function_constructor` | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`; `node` shebang |
-| `sink/shell_backtick` | `.sh`, `.bash`, `.zsh`, `.ksh`, `.mk`, `.yml`, `.yaml`, `.dockerfile`; `Dockerfile`, `Containerfile`, `Makefile`, `GNUmakefile` and their `.variant` forms; `sh`, `bash`, `zsh`, `ksh`, `dash` shebang |
+| `sink/shell_backtick` | `.sh`, `.bash`, `.zsh`, `.ksh`, `.mk`, `.yml`, `.yaml`, `.dockerfile`; `Dockerfile`, `Containerfile`, `Makefile`, `GNUmakefile`, and any name extending one of those with a dot (`Dockerfile.dev`); `sh`, `bash`, `zsh`, `ksh`, `dash` shebang |
 
 A scoped rule matches a file three ways, all case-insensitive:
 
 1. **Extension.** The final `.suffix` of the file name. A leading dot
    names the file rather than an extension, so `.bashrc` counts as
-   having no extension.
-2. **Basename.** An exact name (`Makefile`) or that name with a
-   variant suffix (`Dockerfile.dev`).
-3. **Shebang.** For a file with no extension only, the interpreter on
-   a leading `#!` line, resolved through `/usr/bin/env` and tolerant
-   of a version suffix (`python3.12` matches `python`). This is what
-   keeps `bin/deploy`-style scripts in scope.
+   having no extension; so does a trailing dot (`deploy.`).
+2. **Basename.** An exact name (`Makefile`) or that name followed by a
+   dot and anything else (`Dockerfile.dev` — and, as the rule is a
+   plain prefix match, `Makefile.txt` too).
+3. **Shebang.** The interpreter on a leading `#!` line, resolved
+   through `/usr/bin/env` and tolerant of a version suffix
+   (`python3.12` matches `python`). It is read whatever the extension,
+   because a file opening `#!/bin/bash` is shell however it is named.
+   This is what keeps `bin/deploy`-style scripts in scope.
 
-A file that matches none of the three — an unknown extension, or an
-extensionless file with no shebang — is scanned by the secret rules
-alone. That is the deliberate default: scoped patterns produce noise
-outside the language they were written for, and noise trains
-operators to ignore the rule where it matters. The cost is that
-shell fragments quoted in prose (a `.md` runbook, a `.txt` note) are
-not flagged. Reach for `semgrep` with a rule bundle when broader
-language coverage is required.
+A file that matches none of the three — an unknown extension and no
+shebang — is scanned by the secret rules alone. That is the deliberate
+default: scoped patterns produce noise outside the language they were
+written for, and noise trains operators to ignore the rule where it
+matters. The cost is that shell fragments quoted in prose (a `.md`
+runbook, a `.txt` note) are not flagged. Reach for `semgrep` with a
+rule bundle when broader language coverage is required.
+
+Scope is derived from the path the edit tool was given, not from the
+path the write ultimately resolved to. Where a workspace symlink
+points one file type at another, the name in the tool call decides
+which rules ran — the file content's shebang is the only signal that
+crosses the link.
 
 ### How to enable
 
