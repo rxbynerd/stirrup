@@ -272,8 +272,9 @@ same plaintext-by-default `RunTask` stream as every other event (see
 Requesting a sandbox identity token therefore requires, at minimum,
 the same-host / private-network / mesh-mTLS posture described there:
 the token is a bearer credential and unencrypted by default, so it is
-a materially higher-value payload than the rest of the stream. Do not opt a run into the sandbox identity token
-flow across an untrusted network until transport TLS — the internal
+a materially higher-value payload than the rest of the stream. Do not
+opt a run into the sandbox identity token flow across an untrusted
+network until transport TLS — the internal
 transport already accepts `transport.WithTLSCredentials`, but there
 is no `RunConfig` / CLI surface to reach it yet — is wired to a
 config surface.

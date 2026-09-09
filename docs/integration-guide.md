@@ -741,6 +741,14 @@ The control plane must:
    short-lived (≤15 min) tokens then work for runs of any permitted
    length. Without it the token as issued must outlive the run.
 
+Inside the sandbox the token lives in two places: the `envVar`
+environment variable (`HAYBALE_TOKEN` by default) holds the token as
+issued at creation and is never updated, so it is expired after the
+first refresh; the file named by `<envVar>_FILE`
+(`HAYBALE_TOKEN_FILE`) is what the composed git credential helper
+reads and what every refresh rewrites. Lifecycle hooks and any other
+consumer must read the file, not the variable.
+
 The token is the one intentionally raw credential on the stream —
 plaintext in v0.1 — so this flow requires the trusted-network posture.
 The feature requires a pre-established gRPC transport before the

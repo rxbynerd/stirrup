@@ -1326,51 +1326,82 @@ helper reads the file on every invocation, never the variable, so a
 refreshed token is presented on the next git operation without
 recreating the sandbox.
 
+The `envVar` copy is never updated: after the first refresh it holds
+an expired token, and nothing warns when that happens. Anything other
+than the composed git configuration that needs the token — a
+lifecycle hook, a `curl` against the proxy, an agent instruction —
+must read `<envVar>_FILE` rather than `envVar`.
+
 The file lives outside `/workspace` on a private memory-backed mount
 (a dedicated tmpfs on the container executor, a `medium: Memory`
-`emptyDir` on `k8s`/`k8s-sandbox`), so `read_file` cannot reach it,
-a workspace export never includes it, and a `git add -A` never sweeps
-it up; it is replaced by an atomic rename so a credential-helper read
-racing a refresh sees the old token or the new one, never a torn
-file. Each delivery runs `sh -c 'umask 077 && cat > … && mv -f …'`
-inside the sandbox with the token on the command's stdin, so the
-token never appears in an exec argv — which the Docker daemon records
-on the exec instance and the Kubernetes API server records in its
-audit log. Inside the sandbox the file is exactly as reachable as the
+`emptyDir` on `k8s`/`k8s-sandbox`), so a workspace export never
+includes it and a `git add -A` never sweeps it up. `read_file` cannot
+reach it either — not by path, and not through a symlink committed
+into the workspace: every workspace read resolves the real path
+inside the sandbox first (`readlink -f`) and refuses anything that
+resolves outside `/workspace`, on both the container and the
+Kubernetes executors, because the engine archive API and `tar` would
+otherwise follow such a link. The file is replaced by an atomic
+rename so a credential-helper read racing a refresh sees the old
+token or the new one, never a torn file, and the rename only happens
+once the staged file's byte count matches the length the harness
+announced, so an interrupted delivery leaves the previous token in
+place rather than a truncated one. Each delivery runs `sh -c 'umask
+077 && cat > … && mv -f …'` inside the sandbox with the token on the
+command's stdin and only its byte length in argv, so the token never
+appears in an exec argv — which the Docker daemon records on the exec
+instance and the Kubernetes API server records in its audit log.
+Inside the sandbox the file is exactly as reachable as the
 environment variable already was (`run_command` can `cat` either),
 so this adds no exposure to the model.
 
 Refresh is driven by `sandbox_token_response.expires_at`. When the
 control plane sets it, the harness schedules a new
 `sandbox_token_request` once 80% of the token's remaining lifetime
-has elapsed (a 15-minute token is refreshed after 12), delivers the
-new token to the file, and repeats from the new expiry. A run sends
-at most **eight** `sandbox_token_request`s in total — the initial
-exchange plus up to seven refreshes, matching the control plane's
-per-stream cap — which covers the longest permitted `timeout` (3600
-s) with 12-minute refreshes. When `expires_at` is absent no refresh is
-scheduled and the token as issued stands for the whole run.
+has elapsed (a 15-minute token is refreshed after 12, with up to 5%
+jitter so runs whose tokens were minted together do not refresh in
+lockstep), delivers the new token to the file, and repeats from the
+new expiry. A run sends at most **eight** `sandbox_token_request`s in
+total — the initial exchange plus up to seven refreshes, matching the
+control plane's per-stream cap. With an issuer lifetime of ten minutes
+or more that budget outlasts the longest permitted `timeout` (3600 s);
+a shorter lifetime exhausts it earlier and the run warns at that
+point. When `expires_at` is absent no refresh is scheduled and the
+token as issued stands for the whole run.
+
+The 20% of lifetime left after the scheduled refresh is working
+slack: a refresh whose request times out or cannot be sent is retried
+after half of whatever lifetime then remains, for as long as any
+remains and the request budget allows. A control plane that answers
+— with a decline, an empty, oversized, or malformed token — is never
+retried, since it would only answer the same way.
 
 Every terminal outcome that leaves a token in the sandbox past its
-expiry is reported, never silent: a declined or timed-out refresh, a
-delivery failure, or an exhausted request budget while the run's
-wall-clock budget still exceeds the token's expiry each emits a
-transport `warning` event and a `warn`-level log line naming the
-expiry, and the schedule stops rather than retrying. The previous
-token stays in place — it remains valid until its own expiry. A
-refreshed token that arrives without `expires_at` is delivered and
-ends the schedule.
+expiry is reported, never silent: a declined refresh, a transient
+failure with no lifetime left to retry in, a delivery failure, or an
+exhausted request budget while the run's wall-clock budget still
+exceeds the token's expiry each emits a transport `warning` event and
+a `warn`-level log line naming the expiry, and the schedule stops. The
+previous token stays in place — it remains valid until its own
+expiry. A refreshed token that arrives without `expires_at` is
+delivered and ends the schedule.
 
-**Sandbox image prerequisites (documented, not enforced).** The
-composed git configuration relies on the sandbox image providing
-`git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` support, and
-a POSIX shell with `cat` and `mv`, for the inline `!f() { ... }; f`
-credential-helper form and the token-file delivery command. None of
-this is checked by `ValidateRunConfig` — an older `git` fails at
+**Sandbox image and engine prerequisites (documented, not
+enforced).** The composed git configuration relies on the sandbox
+image providing `git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`
+support, and a POSIX shell with `cat`, `mv`, `wc`, `tr`, and `rm`,
+for the inline `!f() { ... }; f` credential-helper form and the
+token-file delivery command; workspace reads additionally need
+`readlink` and `tar`, which every sandbox image already needs. On the
+container executor the engine must answer an exec start with a
+`101 Switching Protocols` upgrade so stdin can be streamed — Docker
+and Podman do; a socket proxy in front of the engine that does not
+forward upgrades fails the initial token delivery. None of this is
+checked by `ValidateRunConfig` — an older `git` fails at
 git-invocation time inside the sandbox, and a shell-less image (e.g.
-a fully static distroless image with no `/bin/sh`) fails the initial
-token delivery at loop-build time, which tears the sandbox down. The
-default sandbox image
+a fully static distroless image with no `/bin/sh`) or a non-upgrading
+engine fails the initial token delivery at loop-build time, which
+tears the sandbox down. The default sandbox image
 ([`ghcr.io/rxbynerd/stirrup-sandbox`](container-publishing.md))
 qualifies.
 

@@ -89,8 +89,9 @@ spec:
       # file I/O target this container by name over the pods/exec subresource, so
       # the name is load-bearing, not cosmetic.
       name: agent
-      # image from --image / executor.image. MUST ship /bin/sh, tar, and ls:
-      # Exec runs `/bin/sh -c`, file I/O streams tar, and ListDirectory runs ls.
+      # image from --image / executor.image. MUST ship /bin/sh, tar, ls, and
+      # readlink: Exec runs `/bin/sh -c`, file I/O streams tar (reads resolve
+      # the real path with readlink -f first), and ListDirectory runs ls.
       # A shell-less distroless static image will not work.
       image: ghcr.io/rxbynerd/stirrup-sandbox:latest
       # The executor holds the container open with a sleep; all real work runs
@@ -105,7 +106,8 @@ spec:
         - name: workspace
           mountPath: /workspace
         # Present ONLY with executor.sandboxIdentity (see spec.volumes). Outside
-        # /workspace so ResolvePath — and therefore read_file — cannot reach it.
+        # /workspace, and workspace reads refuse any path that resolves outside
+        # it, so read_file cannot reach the token even through a symlink.
         - name: sandbox-identity
           mountPath: /run/stirrup/sandbox-identity
       # env is populated by proxyEnvFor ONLY in network mode "allowlist".

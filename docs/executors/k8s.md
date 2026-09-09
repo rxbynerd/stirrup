@@ -117,11 +117,13 @@ The pieces and their lifecycle:
 
 - **Command execution and file I/O** both ride the `pods/exec`
   subresource. `Exec` runs `/bin/sh -c`; `ReadFile`/`WriteFile` stream a
-  `tar` archive over exec; `ListDirectory` runs `ls -A1`. The image must
-  therefore ship a POSIX shell at `/bin/sh` plus `tar` and `ls` on
-  `PATH` — a shell-less distroless static image will not work. Output
-  and file payloads are capped at 10 MB (matching the container
-  executor).
+  `tar` archive over exec, and a read first resolves the real path with
+  `readlink -f` and refuses anything outside `/workspace`, so a symlink
+  committed into the workspace cannot pull in a file from elsewhere on
+  the Pod; `ListDirectory` runs `ls -A1`. The image must therefore ship
+  a POSIX shell at `/bin/sh` plus `tar`, `ls`, and `readlink` on `PATH`
+  — a shell-less distroless static image will not work. Output and
+  file payloads are capped at 10 MB (matching the container executor).
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
   installs *before* the Pod is created (closing the window in which a
@@ -677,9 +679,12 @@ every refreshed one, is also written to
 `emptyDir` — never node disk — by running the write command over
 `pods/exec` with the token on stdin; the exec's `command=` query
 parameters, which the API server records in its audit log at the
-default `Metadata` level, carry only paths. Refreshed tokens exist
-only in that file: the Pod env keeps the initial token, which expires
-on its own schedule.
+default `Metadata` level, carry only paths and the token's byte
+length. Refreshed tokens exist only in that file: the Pod env keeps
+the initial token, which expires on its own schedule. The volume is
+outside `/workspace` and workspace reads refuse any path that
+resolves outside it, so `read_file` cannot reach the file even
+through a symlink committed into the workspace.
 
 The initial token's presence in the Pod spec broadens its exposure
 relative to a `Secret`-backed credential:
