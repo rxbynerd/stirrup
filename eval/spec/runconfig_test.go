@@ -206,6 +206,123 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_TraceEmitterArchiveBlock asserts trace_emitter.archive
+// round-trips into a *types.TraceArchiveConfig (issue #498), covering both
+// the "gcs" and "local" archive types since validateTraceArchiveConfig
+// treats their field sets as mutually exclusive.
+func TestLoadSuiteHCL_TraceEmitterArchiveBlock(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "anthropic"
+      model    = "claude-haiku-4-5"
+    }
+
+    trace_emitter {
+      type = "jsonl"
+
+      archive {
+        type          = "gcs"
+        bucket        = "stirrup-traces"
+        object_prefix = "command-output/"
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-trace-archive.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil")
+	}
+	wantArchive := &types.TraceArchiveConfig{
+		Type:         "gcs",
+		Bucket:       "stirrup-traces",
+		ObjectPrefix: "command-output/",
+	}
+	if !reflect.DeepEqual(got.RunConfig.TraceEmitter.Archive, wantArchive) {
+		t.Fatalf("TraceEmitter.Archive mismatch\n got:  %#v\n want: %#v", got.RunConfig.TraceEmitter.Archive, wantArchive)
+	}
+}
+
+// TestLoadSuiteHCL_TraceEmitterArchiveLocalBlock covers the "local" archive
+// type, whose field set (file_path) is disjoint from the "gcs" type
+// exercised in TestLoadSuiteHCL_TraceEmitterArchiveBlock.
+func TestLoadSuiteHCL_TraceEmitterArchiveLocalBlock(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "anthropic"
+      model    = "claude-haiku-4-5"
+    }
+
+    trace_emitter {
+      type = "jsonl"
+
+      archive {
+        type      = "local"
+        file_path = "/var/log/stirrup/command-output.tar.gz"
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-trace-archive-local.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil")
+	}
+	wantArchive := &types.TraceArchiveConfig{
+		Type:     "local",
+		FilePath: "/var/log/stirrup/command-output.tar.gz",
+	}
+	if !reflect.DeepEqual(got.RunConfig.TraceEmitter.Archive, wantArchive) {
+		t.Fatalf("TraceEmitter.Archive mismatch\n got:  %#v\n want: %#v", got.RunConfig.TraceEmitter.Archive, wantArchive)
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigMutuallyExclusive asserts that setting both
 // `run_config_file` and `run_config` on the same suite is a parse error
 // naming the suite ID and both offending fields.

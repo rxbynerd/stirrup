@@ -201,6 +201,16 @@ explicitly in their CI script (e.g.
 `stirrup-eval run --suite "$REPO/eval/suites/foo.hcl"` after `cd`
 into the repo root).
 
+**Trace archive.** `trace_emitter.archive { type, file_path, bucket,
+object_prefix }` mirrors `types.TraceArchiveConfig`, so a suite can
+pin an explicit local or GCS destination for command-output sidecars
+inline instead of falling back to `run_config_file`. `type` is
+`"local"` (requires `file_path`) or `"gcs"` (requires `bucket`;
+`object_prefix` is optional). Credential overrides for the GCS
+destination are not exposed on this block; set them via
+`run_config_file` when the default `gcp-workload-identity`
+credential does not apply.
+
 **Retention.** When `--output` is set, each retained task
 directory carries a `run_config.redacted.json` companion next to
 `trace.jsonl`, `harness.stdout.txt`, and `harness.stderr.txt`. The

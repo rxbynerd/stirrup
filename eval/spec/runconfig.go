@@ -192,6 +192,18 @@ type traceEmitterSpec struct {
 	MetricsEndpoint string            `hcl:"metrics_endpoint,optional"`
 	Protocol        string            `hcl:"protocol,optional"`
 	Headers         map[string]string `hcl:"headers,optional"`
+	Archive         *traceArchiveSpec `hcl:"archive,block"`
+}
+
+// traceArchiveSpec mirrors types.TraceArchiveConfig so suites can pin an
+// explicit local/GCS sidecar destination inline instead of falling back to
+// run_config_file. Credential overrides are not exposed here, matching
+// TraceEmitterConfig.Credential's omission from this grammar.
+type traceArchiveSpec struct {
+	Type         string `hcl:"type"`
+	FilePath     string `hcl:"file_path,optional"`
+	Bucket       string `hcl:"bucket,optional"`
+	ObjectPrefix string `hcl:"object_prefix,optional"`
 }
 
 type toolsSpec struct {
@@ -565,7 +577,7 @@ func permissionPolicySpecToType(s *permissionPolicySpec) types.PermissionPolicyC
 }
 
 func traceEmitterSpecToType(s *traceEmitterSpec) types.TraceEmitterConfig {
-	return types.TraceEmitterConfig{
+	out := types.TraceEmitterConfig{
 		Type:            s.Type,
 		FilePath:        s.FilePath,
 		Endpoint:        s.Endpoint,
@@ -573,6 +585,15 @@ func traceEmitterSpecToType(s *traceEmitterSpec) types.TraceEmitterConfig {
 		Protocol:        s.Protocol,
 		Headers:         s.Headers,
 	}
+	if s.Archive != nil {
+		out.Archive = &types.TraceArchiveConfig{
+			Type:         s.Archive.Type,
+			FilePath:     s.Archive.FilePath,
+			Bucket:       s.Archive.Bucket,
+			ObjectPrefix: s.Archive.ObjectPrefix,
+		}
+	}
+	return out
 }
 
 func guardRailSpecToType(s guardRailSpec) types.GuardRailConfig {
