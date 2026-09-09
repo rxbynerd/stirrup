@@ -545,14 +545,26 @@ escapes U+2028 and U+2029 to a 6-byte `\uXXXX` sequence regardless of
 that setting, so a payload dense in those runes can still encode past
 the intended ceiling. The `stdout-json` sink closes the remaining gap
 itself: it bounds the fully-encoded `STIRRUP_RESULT` line (sentinel,
-JSON, and newline together) to 256 KiB, truncating
-`FinalAssistantText` further and re-encoding — setting
-`FinalAssistantTextTruncated` to `true` — until the line fits. This
-second cap is internal to the sink and not operator-configurable; it
-is a backstop against escaping inflation, not a replacement for
-`maxFinalAssistantTextBytes`, and it only protects the emitted line —
-an embedder reading `RunResult` directly still relies on
-`maxFinalAssistantTextBytes` alone.
+JSON, and newline together) to 250 KiB — below, not at, Cloud
+Logging's ~256 KiB per-entry ceiling, since that ceiling wraps the
+whole log entry (timestamp, `insertId`, resource labels, and other
+fields the logging agent adds around this payload) and Google
+documents it as approximate — truncating `VerifierVerdict.Feedback`
+and then `FinalAssistantText` and re-encoding until the line fits,
+setting `FinalAssistantTextTruncated` to `true` when the latter is
+touched. This second cap is internal to the sink and not
+operator-configurable; it is a backstop against escaping inflation,
+not a replacement for `maxFinalAssistantTextBytes`, and it only
+protects the emitted line — an embedder reading `RunResult` directly
+still relies on `maxFinalAssistantTextBytes` alone.
+
+The bound is best-effort, not absolute: if the rest of the
+`RunResult` envelope — the fields other than `FinalAssistantText` and
+`VerifierVerdict.Feedback` — alone exceeds 250 KiB, there is nothing
+left for the sink to truncate, and it emits the over-cap line rather
+than dropping the result entirely. That case logs a warning naming
+the encoded size and the cap so the condition is visible rather than
+silently exceeding the intended bound.
 
 ### Workspace export
 

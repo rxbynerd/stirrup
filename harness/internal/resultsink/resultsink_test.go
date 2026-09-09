@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -101,9 +103,9 @@ func TestStdoutJSONSink_FinalAssistantText(t *testing.T) {
 }
 
 // TestStdoutJSONSink_FinalAssistantTextTruncated pins the wire
-// behaviour of the issue #463 truncation flag through the sink: for a
-// payload well under maxEncodedResultBytes the sink is a pure
-// passthrough (the upstream buildRunResult cap already ran), so a
+// behaviour of the truncation flag through the sink: for a payload
+// well under maxEncodedResultBytes the sink is a pure passthrough
+// (the upstream buildRunResult cap already ran), so a
 // FinalAssistantTextTruncated=true round-trips through the emitted
 // JSON and a false value is omitted by the omitempty tag.
 func TestStdoutJSONSink_FinalAssistantTextTruncated(t *testing.T) {
@@ -233,10 +235,10 @@ func TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation(t *testing.
 	}
 }
 
-// TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped pins the fix for
-// issue #504: disabling SetEscapeHTML means "<", ">", and "&" encode
-// 1:1 instead of expanding 6x, so a payload full of them that fits
-// under maxEncodedResultBytes is emitted whole rather than needlessly
+// TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped pins that
+// disabling SetEscapeHTML means "<", ">", and "&" encode 1:1 instead
+// of expanding 6x, so a payload full of them that fits under
+// maxEncodedResultBytes is emitted whole rather than needlessly
 // truncated by escaping inflation.
 func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
 	text := strings.Repeat("<a>&", maxEncodedResultBytes/8) // well under the cap even unescaped
@@ -250,7 +252,11 @@ func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
 
 	payload := strings.TrimSpace(strings.TrimPrefix(buf.String(), StdoutResultSentinel))
 	if !strings.Contains(payload, `<a>&`) {
-		t.Errorf("HTML characters were escaped despite SetEscapeHTML(false): %q", payload[:200])
+		preview := payload
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		t.Errorf("HTML characters were escaped despite SetEscapeHTML(false): %q", preview)
 	}
 
 	var decoded types.RunResult
@@ -262,6 +268,141 @@ func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
 	}
 	if decoded.FinalAssistantText != text {
 		t.Error("FinalAssistantText was altered despite fitting under the cap")
+	}
+}
+
+// TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText pins
+// the truncation priority: VerifierVerdict.Feedback is sacrificed
+// before FinalAssistantText, since the run's own answer is more
+// valuable than a judge's secondary verdict. A large Feedback should
+// be truncated while a modest FinalAssistantText is preserved intact.
+func TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText(t *testing.T) {
+	answer := "the final answer is 42"
+	result := types.RunResult{
+		SchemaVersion:      1,
+		RunID:              "run-priority",
+		Outcome:            "success",
+		FinalAssistantText: answer,
+		VerifierVerdict: &types.VerifierResult{
+			Passed:   false,
+			Feedback: strings.Repeat("x", maxEncodedResultBytes),
+		},
+	}
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), result); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := buf.Len(); got > maxEncodedResultBytes {
+		t.Fatalf("emitted line length = %d, want <= %d", got, maxEncodedResultBytes)
+	}
+
+	var decoded types.RunResult
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.FinalAssistantText != answer {
+		t.Errorf("FinalAssistantText was truncated even though Feedback should absorb the cut first: got %q, want %q", decoded.FinalAssistantText, answer)
+	}
+	if decoded.FinalAssistantTextTruncated {
+		t.Error("FinalAssistantTextTruncated should stay false when Feedback alone can absorb the cut")
+	}
+	if decoded.VerifierVerdict == nil || len(decoded.VerifierVerdict.Feedback) >= len(result.VerifierVerdict.Feedback) {
+		gotLen := -1
+		if decoded.VerifierVerdict != nil {
+			gotLen = len(decoded.VerifierVerdict.Feedback)
+		}
+		t.Errorf("VerifierVerdict.Feedback was not truncated: got length %d, original length %d", gotLen, len(result.VerifierVerdict.Feedback))
+	}
+}
+
+// TestStdoutJSONSink_Emit_EnvelopeAloneOverCap covers the fallback
+// path: when VerifierVerdict.Feedback alone (with FinalAssistantText
+// already empty) exceeds the cap even fully truncated, Emit does not
+// hang, still emits a decodable line, and logs a warning naming the
+// encoded size and the cap rather than failing silently.
+func TestStdoutJSONSink_Emit_EnvelopeAloneOverCap(t *testing.T) {
+	// Error is neither Feedback nor FinalAssistantText, so it is not
+	// truncated by either search stage: an oversized Error is the
+	// simplest way to construct the "nothing left to shrink" case.
+	result := types.RunResult{
+		SchemaVersion: 1,
+		RunID:         "run-envelope-over-cap",
+		Outcome:       "internal-error",
+		Error:         strings.Repeat("e", 300*1024),
+	}
+
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), result); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	if got := buf.Len(); got <= maxEncodedResultBytes {
+		t.Fatalf("expected the fixture to exceed the cap even after truncation (got %d, cap %d) — test no longer exercises the fallback path", got, maxEncodedResultBytes)
+	}
+
+	var decoded types.RunResult
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("emitted line does not decode: %v\nline=%q", err, buf.String())
+	}
+	if decoded.RunID != result.RunID {
+		t.Errorf("decoded RunID = %q, want %q", decoded.RunID, result.RunID)
+	}
+
+	if !strings.Contains(logBuf.String(), "encoded line cap") {
+		t.Errorf("expected a warning naming the encoded line cap, got log output: %s", logBuf.String())
+	}
+	wantCap := fmt.Sprintf(`"cap":%d`, maxEncodedResultBytes)
+	if !strings.Contains(logBuf.String(), wantCap) {
+		t.Errorf("expected the warning to name the cap (%s), got: %s", wantCap, logBuf.String())
+	}
+}
+
+// TestStdoutJSONSink_Emit_AlreadyTruncatedInput covers a
+// FinalAssistantText that already carries the upstream truncation
+// marker (buildRunResult's raw-size cap already fired) and is still
+// over the encoded cap. Emit must not duplicate the marker and must
+// leave the truncated flag set.
+func TestStdoutJSONSink_Emit_AlreadyTruncatedInput(t *testing.T) {
+	const marker = "... [truncated by harness]"
+	// The run of "x" is far longer than the marker, so the binary
+	// search's cut point lands deep inside it rather than inside the
+	// marker itself, clear of the edge case where a cut inside a
+	// pre-existing marker would nest one marker inside another.
+	text := strings.Repeat("x", 300*1024) + marker
+	result := types.RunResult{
+		SchemaVersion:               1,
+		RunID:                       "run-already-truncated",
+		Outcome:                     "success",
+		FinalAssistantText:          text,
+		FinalAssistantTextTruncated: true,
+	}
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), result); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := buf.Len(); got > maxEncodedResultBytes {
+		t.Fatalf("emitted line length = %d, want <= %d", got, maxEncodedResultBytes)
+	}
+
+	var decoded types.RunResult
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.FinalAssistantTextTruncated {
+		t.Error("FinalAssistantTextTruncated should remain true")
+	}
+	if count := strings.Count(decoded.FinalAssistantText, marker); count != 1 {
+		t.Errorf("expected exactly one truncation marker, got %d in %q", count, decoded.FinalAssistantText)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -93,12 +94,15 @@ func NewStdoutJSONSinkTo(w io.Writer) *StdoutJSONSink {
 }
 
 // maxEncodedResultBytes bounds the emitted line — sentinel, JSON
-// payload, and trailing newline together — mirroring the ~256 KiB
-// entry ceiling most log transports enforce (Cloud Logging's among
-// them). Unlike ResultSinkConfig.MaxFinalAssistantTextBytes this is
-// not operator-configurable: it is Emit's own backstop against JSON
+// payload, and trailing newline together. Set below, not at, Cloud
+// Logging's ~256 KiB per-entry ceiling: that ceiling applies to the
+// whole LogEntry (timestamp, insertId, resource labels, trace, and
+// other fields the logging agent wraps the line in, not just this
+// payload), and Google documents it as approximate. Unlike
+// ResultSinkConfig.MaxFinalAssistantTextBytes this is not
+// operator-configurable: it is Emit's own backstop against JSON
 // escaping inflating an already-capped RunResult past that ceiling.
-const maxEncodedResultBytes = 256 * 1024
+const maxEncodedResultBytes = 250 * 1024
 
 // Emit renders result as "STIRRUP_RESULT <json>\n" and writes it to
 // the configured writer. Encoding errors are wrapped so the caller
@@ -114,12 +118,12 @@ const maxEncodedResultBytes = 256 * 1024
 // SetEscapeHTML, turning a 3-byte rune into a 6-byte \u2028 or
 // \u2029 escape. Rather than assume that residual expansion away,
 // Emit bounds the *encoded* line to maxEncodedResultBytes, truncating
-// result.FinalAssistantText — the only field whose size is
-// caller-controlled — as far as needed and re-encoding until the line
-// fits, the same way types.CapFinalAssistantText caps the raw string
-// upstream in buildRunResult.
-func (s *StdoutJSONSink) Emit(_ context.Context, result types.RunResult) error {
-	line, err := encodeResultLine(result)
+// result.VerifierVerdict.Feedback and result.FinalAssistantText — the
+// two variable-size fields — as far as needed and re-encoding until
+// the line fits, the same way types.CapFinalAssistantText caps
+// FinalAssistantText's raw string upstream in buildRunResult.
+func (s *StdoutJSONSink) Emit(ctx context.Context, result types.RunResult) error {
+	line, err := encodeResultLine(ctx, result)
 	if err != nil {
 		return fmt.Errorf("marshal RunResult: %w", err)
 	}
@@ -143,19 +147,21 @@ func (s *StdoutJSONSink) Emit(_ context.Context, result types.RunResult) error {
 }
 
 // encodeResultLine renders result as "STIRRUP_RESULT <json>\n",
-// shrinking result.FinalAssistantText as needed so the returned line
-// never exceeds maxEncodedResultBytes. Binary searches the truncation
-// point rather than guessing a byte budget from the escaping's
-// worst-case expansion factor, since types.CapFinalAssistantText's
-// truncated length is monotonic in the byte budget it is given, and
-// re-marshalling at each candidate is the only way to know the actual
-// encoded cost given the payload's specific escape density.
+// shrinking result's variable-size fields as needed so the returned
+// line never exceeds maxEncodedResultBytes.
 //
-// If even an empty FinalAssistantText does not bring the line under
-// the cap, the fixed RunResult envelope alone exceeds it; the line is
-// returned as-is since FinalAssistantText is the only field this
-// function truncates.
-func encodeResultLine(result types.RunResult) ([]byte, error) {
+// VerifierVerdict.Feedback is shrunk before FinalAssistantText: the
+// judge's verdict is secondary to the run's own answer, so it is the
+// first field sacrificed. If fully truncating Feedback still does not
+// fit, FinalAssistantText is shrunk next, with Feedback held at its
+// floor.
+//
+// If even the smallest candidate (both fields at their truncation
+// marker) does not bring the line under the cap, the rest of the
+// RunResult envelope exceeds it on its own; encodeResultLine logs a
+// warning and returns the over-cap line, since it has no further
+// field left to shrink.
+func encodeResultLine(ctx context.Context, result types.RunResult) ([]byte, error) {
 	line, err := marshalResultLine(result)
 	if err != nil {
 		return nil, err
@@ -164,25 +170,83 @@ func encodeResultLine(result types.RunResult) ([]byte, error) {
 		return line, nil
 	}
 
-	original := result.FinalAssistantText
-	best := line
-	lo, hi := 0, len(original)
-	for lo <= hi {
-		mid := lo + (hi-lo)/2
-		candidate := result
-		candidate.FinalAssistantText, candidate.FinalAssistantTextTruncated = types.CapFinalAssistantText(original, mid)
-		encoded, err := marshalResultLine(candidate)
+	if result.VerifierVerdict != nil && result.VerifierVerdict.Feedback != "" {
+		original := result.VerifierVerdict.Feedback
+		encoded, ok, err := searchTruncation(result, original, func(candidate *types.RunResult, budget int) {
+			verdict := *result.VerifierVerdict
+			verdict.Feedback, _ = types.CapFinalAssistantText(original, budget)
+			candidate.VerifierVerdict = &verdict
+		})
 		if err != nil {
 			return nil, err
 		}
+		if ok {
+			return encoded, nil
+		}
+		// Even a fully-truncated Feedback does not fit; carry that
+		// floor forward and let FinalAssistantText absorb the rest.
+		verdict := *result.VerifierVerdict
+		verdict.Feedback, _ = types.CapFinalAssistantText(original, 0)
+		result.VerifierVerdict = &verdict
+		if line, err = marshalResultLine(result); err != nil {
+			return nil, err
+		}
+	}
+
+	encoded, ok, err := searchTruncation(result, result.FinalAssistantText, func(candidate *types.RunResult, budget int) {
+		candidate.FinalAssistantText, candidate.FinalAssistantTextTruncated = types.CapFinalAssistantText(result.FinalAssistantText, budget)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return encoded, nil
+	}
+
+	slog.WarnContext(ctx, "resultSink: RunResult envelope exceeds the encoded line cap after truncating all variable-size fields; emitting over-cap line",
+		"bytes", len(line), "cap", maxEncodedResultBytes)
+	return line, nil
+}
+
+// searchTruncation binary-searches the largest byte budget in
+// [0, len(original)-1] for which apply(candidate, budget) — mutating
+// a copy of result and re-encoding — brings the line to at most
+// maxEncodedResultBytes. Binary search rather than a budget guessed
+// from the escaping's worst-case expansion factor, since
+// types.CapFinalAssistantText's truncated length is monotonic in the
+// budget it is given on that range, and re-marshalling at each
+// candidate is the only way to know the actual encoded cost given the
+// field's specific escape density. hi is clamped to
+// maxEncodedResultBytes: a raw prefix already longer than the cap
+// encodes to at least that many bytes, so the search never needs to
+// probe further out regardless of how large original is.
+//
+// Returns ok=false, with line unset, if no budget in that range fits
+// — including the trivial len(original) == 0 case, which the caller
+// handles by moving on to the next field or reporting the envelope
+// alone as over-cap.
+func searchTruncation(result types.RunResult, original string, apply func(candidate *types.RunResult, budget int)) (line []byte, ok bool, err error) {
+	hi := len(original) - 1
+	if hi > maxEncodedResultBytes {
+		hi = maxEncodedResultBytes
+	}
+	lo := 0
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		candidate := result
+		apply(&candidate, mid)
+		encoded, err := marshalResultLine(candidate)
+		if err != nil {
+			return nil, false, err
+		}
 		if len(encoded) <= maxEncodedResultBytes {
-			best = encoded
+			line, ok = encoded, true
 			lo = mid + 1
 		} else {
 			hi = mid - 1
 		}
 	}
-	return best, nil
+	return line, ok, nil
 }
 
 // marshalResultLine renders result as a single "STIRRUP_RESULT
