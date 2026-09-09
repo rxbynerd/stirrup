@@ -318,7 +318,9 @@ func (g *GraniteGuardian) Check(ctx context.Context, in Input) (*Decision, error
 
 	// PhasePreTurn skip: tiny chunks rarely contain prompt-injection
 	// payloads and dominate per-turn guard latency if classified.
-	if in.Phase == PhasePreTurn && g.minChunkChars > 0 && len(in.Content) < g.minChunkChars {
+	// Operator input opts out: a short relayed turn is exactly what
+	// needs screening there.
+	if in.Phase == PhasePreTurn && !in.IgnoreMinChunk && g.minChunkChars > 0 && len(in.Content) < g.minChunkChars {
 		return &Decision{
 			Verdict: VerdictAllow,
 			GuardID: guardianGuardID,

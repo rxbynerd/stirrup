@@ -96,7 +96,7 @@ status.
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
-| `warning` | `message`, `request_id` (on a dropped `user_response`) | Log; non-fatal. A `warning` carrying `request_id` means that `user_response` was not accepted (empty text, or the queue of 16 was full) — retry after the next turn. |
+| `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
 | `done` | `stop_reason` | Terminal status for that run. The proto has a `trace` field, but `stirrup job` does not currently populate it. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
@@ -109,7 +109,7 @@ status.
 | `type` | Fields | Semantics |
 |---|---|---|
 | `task_assignment` | `task` (RunConfig) | First event on the stream. Duplicate assignments are ignored. |
-| `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: starts a fresh run with this text as its prompt. Empty text, or a full queue, drops the event with a `warning` echoing `request_id`; nothing is dropped silently. |
+| `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a fresh run with its text as the prompt, and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
 | `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err` — `content` is the canonical discriminator. `is_error` is optional and must agree with it. |
@@ -599,10 +599,16 @@ re-provisioning the sandbox.
   not end while input is queued: an `end_turn` with input waiting
   becomes another turn instead of `done`, so a control plane that keeps
   talking keeps the run alive, bounded by `maxTurns` and `timeout`. Mid-run
-  input is screened like the initial prompt (Rule-of-Two observation and
-  the pre-turn guard). Empty text, or input beyond the queue bound, is
-  rejected with a `warning` echoing the event's `request_id`. Each
-  accepted follow-up ends with its own `done`.
+  input gets the `dynamicContext` treatment on arrival — XML/HTML tags
+  stripped, capped at 50,000 bytes, each alteration reported by a
+  `warning` — and is then screened like the initial prompt: Rule-of-Two
+  observation, and the pre-turn guard, which classifies it regardless of
+  its length (the `MinChunkChars` skip does not apply). Empty text, or
+  input beyond the queue bound, is rejected with a `warning` echoing the
+  event's `request_id`. Each accepted follow-up ends with its own `done`.
+  A control plane relaying end-user chat into `user_response` is placing
+  untrusted text on the operator channel; the guard screens it, but the
+  model treats it as the operator's instruction.
 - Each follow-up is a run in its own right: it receives a fresh `timeout`
   budget when its `user_response` is taken up, and the grace timer
   restarts after it completes, so the window measures idle time and a

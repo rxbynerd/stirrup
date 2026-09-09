@@ -210,14 +210,26 @@ message HarnessEvent {
 //                      arrival order. If the model ends its turn while
 //                      input is queued, the run continues with that input
 //                      instead of finishing. With no run active inside the
-//                      follow-up grace window, it starts a fresh run with
-//                      the text as its prompt. An empty text, or one
-//                      arriving when the queue is full, is dropped and
-//                      reported by a "warning" HarnessEvent echoing
-//                      request_id; nothing is dropped silently. A "cancel"
-//                      discards queued input.
+//                      follow-up grace window, the oldest queued event
+//                      starts a fresh run with its text as the prompt and
+//                      anything queued behind it joins that run at its
+//                      first turn boundary. The text gets the same
+//                      treatment as dynamicContext — XML/HTML tags
+//                      stripped, capped at 50,000 bytes — with each
+//                      alteration reported by a "warning" echoing
+//                      request_id whose message starts
+//                      "user_response sanitized:". An empty text (before
+//                      or after that treatment), one arriving when the
+//                      queue is full, or one arriving after a "cancel" is
+//                      dropped and reported by a "warning" whose message
+//                      starts "user_response dropped:"; nothing is dropped
+//                      silently, including input still queued when the
+//                      session ends. Injected text is screened like the
+//                      initial prompt (Rule-of-Two observation and the
+//                      pre-turn guard, which classifies it regardless of
+//                      its length).
 //     - request_id:    optional client-chosen correlation token, echoed on
-//                      the "warning" that reports a dropped user_response.
+//                      every "warning" about this user_response.
 //
 //   "permission_response"
 //     - request_id: must match the request_id from the corresponding

@@ -260,13 +260,18 @@ type HarnessEvent struct {
 // A "user_response" received during an active run is queued (bounded
 // FIFO of 16) and injected as a user message at the run's next turn
 // boundary, in arrival order; the run continues past end_turn while
-// input is queued. Received in the follow-up grace window, it starts a
-// fresh run with UserResponse as the prompt. An empty UserResponse, or
-// one arriving when the queue is full, is dropped and reported by a
-// "warning" HarnessEvent echoing RequestID, which is otherwise optional
-// on this type. A "cancel" ends the session: it discards queued input
-// (each reported by a "warning"), cancels any active run, and opens no
-// follow-up window.
+// input is queued. Received in the follow-up grace window, the oldest
+// queued event starts a fresh run with UserResponse as the prompt and
+// anything queued behind it joins that run. UserResponse is sanitised
+// like dynamic context on arrival (XML/HTML tags stripped, capped at
+// 50,000 bytes), each alteration reported by a "warning" HarnessEvent
+// whose Message starts "user_response sanitized:". An empty
+// UserResponse, one arriving when the queue is full, one arriving after
+// a "cancel", or one still queued when the session ends is dropped and
+// reported by a "warning" whose Message starts "user_response
+// dropped:". Every such "warning" echoes RequestID, which is otherwise
+// optional on this type. A "cancel" ends the session: it discards
+// queued input, cancels any active run, and opens no follow-up window.
 //
 // On "sandbox_token_response", Token is SENSITIVE: never log, trace,
 // transcribe, or write it to a RunConfig.

@@ -172,6 +172,19 @@ func (sl *SecurityLogger) DynamicContextSanitized(event DynamicContextSanitizati
 	})
 }
 
+// UserResponseSanitized emits when a mid-run user_response was altered
+// before injection — the same markup stripping and byte cap applied to
+// dynamic context. requestID is the control plane's correlation token
+// for the event; the content itself is never recorded.
+func (sl *SecurityLogger) UserResponseSanitized(requestID string, event DynamicContextSanitizationEvent) {
+	sl.Emit("warn", "user_response_sanitized", map[string]any{
+		"requestId":       requestID,
+		"originalLength":  event.OriginalLength,
+		"sanitizedLength": event.SanitizedLength,
+		"reasons":         event.Reasons,
+	})
+}
+
 // PermissionDenied emits when a permission policy refuses a tool call.
 // This is distinct from a tool error: the tool was never invoked. The
 // reason field is the human-readable string returned by the policy.

@@ -73,6 +73,12 @@ type Input struct {
 	Mode      string
 	RunID     string
 	Metadata  map[string]string
+
+	// IgnoreMinChunk asks an adapter to classify Content even when it is
+	// shorter than its MinChunkChars gate. Set for mid-run user_response
+	// input, where a short turn is the norm and the per-turn cost that
+	// motivates the gate for tool output does not apply.
+	IgnoreMinChunk bool
 }
 
 // GuardRail evaluates Input and returns a Decision. Implementations

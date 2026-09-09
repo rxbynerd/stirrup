@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -190,6 +191,10 @@ func (l *AgenticLoop) setActiveRun(cancel context.CancelCauseFunc) {
 // enqueueUserInput accepts a user_response into the queue or rejects
 // it observably: a rejection is never silent, since the control plane
 // otherwise cannot distinguish "queued for the next turn" from "lost".
+// Accepted text gets the dynamic-context treatment — markup stripped,
+// capped at security.MaxOperatorTextBytes — since both arrive over the
+// same channel at the same trust tier; an alteration is reported as a
+// security event and a "warning" echoing the requestId.
 func (l *AgenticLoop) enqueueUserInput(event types.ControlEvent) {
 	text := strings.TrimSpace(event.UserResponse)
 	if text == "" {
@@ -200,8 +205,39 @@ func (l *AgenticLoop) enqueueUserInput(event types.ControlEvent) {
 		l.rejectUserInput(event.RequestID, "session cancelled")
 		return
 	}
-	if !l.userInput.push(queuedUserInput{RequestID: event.RequestID, Text: text}) {
+	sanitized, reasons := security.SanitizeOperatorText(text)
+	if len(reasons) > 0 {
+		l.reportUserInputSanitized(event.RequestID, len(text), len(sanitized), reasons)
+		sanitized = strings.TrimSpace(sanitized)
+		if sanitized == "" {
+			l.rejectUserInput(event.RequestID, "empty after sanitisation")
+			return
+		}
+	}
+	if !l.userInput.push(queuedUserInput{RequestID: event.RequestID, Text: sanitized}) {
 		l.rejectUserInput(event.RequestID, fmt.Sprintf("user input queue full (%d pending)", maxQueuedUserInput))
+	}
+}
+
+// reportUserInputSanitized records an altered user_response in the
+// security log and, via the emitter goroutine, as a "warning" the
+// control plane can correlate. Safe to call from the control handler.
+func (l *AgenticLoop) reportUserInputSanitized(requestID string, originalLen, sanitizedLen int, reasons []string) {
+	l.Logger.Warn("user_response sanitized", "requestId", requestID, "reasons", reasons)
+	if l.Security != nil {
+		l.Security.UserResponseSanitized(requestID, security.DynamicContextSanitizationEvent{
+			Key: "user_response", OriginalLength: originalLen, SanitizedLength: sanitizedLen, Reasons: reasons,
+		})
+	}
+	ev := types.HarnessEvent{
+		Type:      "warning",
+		RequestID: requestID,
+		Message:   "user_response sanitized: " + strings.Join(reasons, ", "),
+	}
+	select {
+	case l.rejections <- ev:
+	default:
+		l.Logger.Warn("sanitisation warning not emitted: emitter backlog full", "requestId", requestID)
 	}
 }
 
@@ -267,11 +303,12 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 		return len(inputs), "rule_of_two_violation"
 	}
 	in := guard.Input{
-		Phase:   guard.PhasePreTurn,
-		Content: batchUntrustedChunks(texts),
-		Source:  fmt.Sprintf("user_response:n=%d", len(texts)),
-		Mode:    config.Mode,
-		RunID:   config.RunID,
+		Phase:          guard.PhasePreTurn,
+		Content:        batchUntrustedChunks(texts),
+		Source:         fmt.Sprintf("user_response:n=%d", len(texts)),
+		Mode:           config.Mode,
+		RunID:          config.RunID,
+		IgnoreMinChunk: true,
 	}
 	allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
 	l.ratchetRuleOfTwo(ctx, config, decision, turn)
