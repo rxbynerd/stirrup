@@ -93,37 +93,82 @@ func (q *userInputQueue) pending() int {
 	return len(q.items)
 }
 
+// maxPendingRejections bounds the warnings waiting for the emitter
+// goroutine. Rejections are rare (an over-full queue or empty input),
+// so the bound only matters against a control plane flooding the
+// stream; beyond it the log line is the record.
+const maxPendingRejections = 64
+
 // ensureControlRouting registers the loop's single control-event
-// handler with the transport exactly once. Every Run on the loop and
-// RunFollowUpLoop share it, so an event is routed by the loop's state
-// (active run or idle) rather than by which handler happened to be
-// registered when it arrived. Safe to call repeatedly.
+// handler with the transport exactly once and starts the goroutine
+// that emits rejection warnings on the handler's behalf. Every Run on
+// the loop and RunFollowUpLoop share the handler, so an event is
+// routed by the loop's state (active run or idle) rather than by which
+// handler happened to be registered when it arrived. Safe to call
+// repeatedly.
 func (l *AgenticLoop) ensureControlRouting() {
 	l.controlOnce.Do(func() {
 		l.userInput = newUserInputQueue()
 		l.idleCancel = make(chan struct{}, 1)
+		l.rejections = make(chan types.HarnessEvent, maxPendingRejections)
+		l.controlStop = make(chan struct{})
+		go l.emitRejections()
 		l.Transport.OnControl(l.routeControl)
 	})
 }
 
-// routeControl dispatches one control event. "cancel" always wins over
-// queued input: the queue is discarded, then the active run is
-// cancelled or, with no run active, the idle consumer is told to end
-// the session. Every other control type has its own consumer
+// stopControlRouting ends the rejection emitter; pending warnings are
+// dropped since the transport is closing with them.
+func (l *AgenticLoop) stopControlRouting() {
+	if l.controlStop == nil {
+		return
+	}
+	l.controlStopOnce.Do(func() { close(l.controlStop) })
+}
+
+// emitRejections is the only goroutine that emits on behalf of the
+// control handler. Transport handlers run on the transport's read
+// goroutine and must not call Emit: Emit takes the write mutex the
+// loop holds while streaming tokens, and under full-duplex flow
+// control a blocked read goroutine can wedge the whole stream — with
+// cancel undeliverable.
+func (l *AgenticLoop) emitRejections() {
+	for {
+		select {
+		case ev := <-l.rejections:
+			l.emitWarning(ev)
+		case <-l.controlStop:
+			return
+		}
+	}
+}
+
+func (l *AgenticLoop) emitWarning(ev types.HarnessEvent) {
+	if err := l.Transport.Emit(ev); err != nil {
+		l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+	}
+}
+
+// routeControl dispatches one control event. "cancel" ends the
+// session: queued input is rejected (cancel always wins over it), the
+// active run — if any — is cancelled, and the idle consumer is woken so
+// no further run starts; the cancellation is sticky for the loop's
+// lifetime. Every other control type has its own consumer
 // (permission, async tool, sandbox-token correlators) and is ignored
-// here.
+// here. Runs on the transport's read goroutine: nothing here blocks or
+// emits.
 func (l *AgenticLoop) routeControl(event types.ControlEvent) {
 	switch event.Type {
 	case "cancel":
-		if n := l.userInput.clear(); n > 0 {
-			l.Logger.Info("queued user input discarded by cancel", "count", n)
+		l.sessionCancelled.Store(true)
+		for _, in := range l.userInput.drain() {
+			l.rejectUserInput(in.RequestID, "discarded by cancel")
 		}
 		l.controlMu.Lock()
 		cancel := l.cancelActive
 		l.controlMu.Unlock()
 		if cancel != nil {
 			cancel(ErrCancelledByControlPlane)
-			return
 		}
 		select {
 		case l.idleCancel <- struct{}{}:
@@ -146,25 +191,52 @@ func (l *AgenticLoop) setActiveRun(cancel context.CancelCauseFunc) {
 // it observably: a rejection is never silent, since the control plane
 // otherwise cannot distinguish "queued for the next turn" from "lost".
 func (l *AgenticLoop) enqueueUserInput(event types.ControlEvent) {
-	if strings.TrimSpace(event.UserResponse) == "" {
+	text := strings.TrimSpace(event.UserResponse)
+	if text == "" {
 		l.rejectUserInput(event.RequestID, "empty user_response")
 		return
 	}
-	if !l.userInput.push(queuedUserInput{RequestID: event.RequestID, Text: event.UserResponse}) {
+	if l.sessionCancelled.Load() {
+		l.rejectUserInput(event.RequestID, "session cancelled")
+		return
+	}
+	if !l.userInput.push(queuedUserInput{RequestID: event.RequestID, Text: text}) {
 		l.rejectUserInput(event.RequestID, fmt.Sprintf("user input queue full (%d pending)", maxQueuedUserInput))
 	}
 }
 
-// rejectUserInput reports a dropped user_response on the transport as
-// a "warning" carrying the event's requestId, and in the log.
+// rejectUserInput reports a dropped user_response in the log and, via
+// the emitter goroutine, as a "warning" carrying the event's requestId.
+// Safe to call from the control handler.
 func (l *AgenticLoop) rejectUserInput(requestID, reason string) {
 	l.Logger.Warn("user_response dropped", "requestId", requestID, "reason", reason)
-	if err := l.Transport.Emit(types.HarnessEvent{
+	ev := userInputDroppedEvent(requestID, reason)
+	select {
+	case l.rejections <- ev:
+	default:
+		l.Logger.Warn("rejection warning not emitted: emitter backlog full", "requestId", requestID)
+	}
+}
+
+func userInputDroppedEvent(requestID, reason string) types.HarnessEvent {
+	return types.HarnessEvent{
 		Type:      "warning",
 		RequestID: requestID,
 		Message:   "user_response dropped: " + reason,
-	}); err != nil {
-		l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+	}
+}
+
+// flushQueuedUserInput rejects everything still queued, emitting each
+// warning synchronously. For the loop's own goroutines (never the
+// control handler), at points after which no consumer will drain the
+// queue — so nothing is dropped silently.
+func (l *AgenticLoop) flushQueuedUserInput(reason string) {
+	if l.userInput == nil {
+		return
+	}
+	for _, in := range l.userInput.drain() {
+		l.Logger.Warn("user_response dropped", "requestId", in.RequestID, "reason", reason)
+		l.emitWarning(userInputDroppedEvent(in.RequestID, reason))
 	}
 }
 

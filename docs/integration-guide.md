@@ -114,7 +114,7 @@ status.
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
 | `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err` — `content` is the canonical discriminator. `is_error` is optional and must agree with it. |
 | `sandbox_token_response` | `request_id`, `token`, `expires_at`, `is_error`, `reason` | The signed sandbox identity JWT, or an explicit refusal. |
-| `cancel` | — | Abort the run within one turn boundary. Git finalisation still runs; the final `done` carries `stop_reason:"cancelled"`. Queued `user_response` input is discarded — `cancel` always wins over it. |
+| `cancel` | — | End the session. An active run aborts within one turn boundary (git finalisation still runs; its `done` carries `stop_reason:"cancelled"`), queued `user_response` input is discarded with a `warning` each, and no follow-up window opens. With no run active the stream closes without another `done`. One `cancel` is always enough. |
 
 Correlation rule: every `*_request` event carries a `request_id`
 that the response **must echo verbatim**. Requests may interleave;
@@ -622,19 +622,25 @@ re-provisioning the sandbox.
   `runId` on its `RunResult`. Export failures follow the same soft-fail
   policy as the primary run (`--export-workspace-required` hardens both
   on the CLI).
-- A `cancel` during the grace window closes the stream promptly without
-  an extra `done`.
+- A `cancel` ends the session wherever it lands: during a run it
+  cancels that run and no grace window opens afterwards; during the
+  grace window it closes the stream promptly without an extra `done`.
+- A follow-up whose run fails outright (the loop returns an error, as
+  opposed to a non-success outcome such as `timeout`) ends the session;
+  the failure is on that run's `done` and `RunResult`.
 
 ### Cancelling a run
 
-During an active run, send `ControlEvent{type:"cancel"}`. The harness
-cancels in-flight provider streams and tool calls via context, runs git
-finalisation, and emits `done` with `stop_reason:"cancelled"`. Any
-`user_response` input queued for that run is discarded. `cancel`
-is scoped to the active run: with a follow-up grace window configured,
-the window still opens after a cancelled run. Before assignment,
-`cancel` exits cleanly without `done`; during follow-up wait it closes
-the session without another `done`. Cancellation during synchronous
+Send `ControlEvent{type:"cancel"}` at any point after assignment; it
+ends the session. During an active run the harness cancels in-flight
+provider streams and tool calls via context, runs git finalisation, and
+emits `done` with `stop_reason:"cancelled"`; any `user_response` input
+queued for that run is discarded, each reported by a `warning`. No
+follow-up window opens after a cancelled run. With no run active —
+between a run's `done` and the next run, or inside the grace window —
+the stream closes without another `done`. One `cancel` is always
+enough; a control plane never needs to send it twice. Before
+assignment, `cancel` exits cleanly without `done`. Cancellation during synchronous
 component construction is not a reliable boundary, so retain an
 infrastructure deadline/SIGTERM fallback. On process shutdown, the job
 uses bounded contexts to flush traces and the result sink.

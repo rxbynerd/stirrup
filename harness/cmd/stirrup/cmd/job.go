@@ -193,17 +193,18 @@ func runJob(cmd *cobra.Command, args []string) error {
 			graceSecs = n
 		}
 	}
-	if graceSecs > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
-			RunTimeout: runTimeout,
-			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
-				// Export is never required here, so the only error finalise
-				// can return is the run's own, already reported via the
-				// transport and the result sink.
-				_ = policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
-			},
-		})
-	}
+	// Called even with no grace window so user_response events that
+	// arrived after the run's last turn boundary are rejected with a
+	// warning rather than lost at exit.
+	core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
+		RunTimeout: runTimeout,
+		OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
+			// Export is never required here, so the only error finalise
+			// can return is the run's own, already reported via the
+			// transport and the result sink.
+			_ = policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+		},
+	})
 
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.

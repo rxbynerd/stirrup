@@ -1723,17 +1723,22 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	// the same way it would for the primary run; the first such failure
 	// is returned once the follow-up window closes.
 	var followUpErr error
+	graceSecs := 0
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace, core.FollowUpOptions{
-			RunTimeout: runTimeout,
-			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
-				ferr := policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
-				if ferr != nil && err == nil && followUpErr == nil {
-					followUpErr = ferr
-				}
-			},
-		})
+		graceSecs = *config.FollowUpGrace
 	}
+	// Called even with no grace window so user_response events that
+	// arrived after the run's last turn boundary are rejected with a
+	// warning rather than lost at exit.
+	core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
+		RunTimeout: runTimeout,
+		OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
+			ferr := policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+			if ferr != nil && err == nil && followUpErr == nil {
+				followUpErr = ferr
+			}
+		},
+	})
 	if followUpErr != nil {
 		return followUpErr
 	}

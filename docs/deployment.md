@@ -214,7 +214,7 @@ Five limits bound a `stirrup job` session; whichever fires first wins.
 |---|---|---|
 | `RunConfig.timeout` | One run. The primary run's budget starts at task assignment and includes component construction; each follow-up run receives a fresh budget of the same length when its `user_response` is taken up. | The run ends with `done{stop_reason:"timeout"}`. The follow-up window still opens afterwards. |
 | `followUpGrace` / `STIRRUP_FOLLOWUP_GRACE` | Idle time between runs, restarted after every run is finalised. A run in progress never consumes it. | The stream closes and the process exits with the primary run's exit code. |
-| `cancel` ControlEvent | The active run; with no run active, the session. | An active run ends with `done{stop_reason:"cancelled"}`, queued `user_response` input is discarded, and the follow-up window opens as usual. In the grace window the stream closes without another `done`. |
+| `cancel` ControlEvent | The session. | An active run ends with `done{stop_reason:"cancelled"}`; queued `user_response` input is discarded (each reported by a `warning`); no follow-up window opens. With no run active — between a run's `done` and the next run, or inside the grace window — the stream closes without another `done`. One `cancel` always stops the harness. |
 | SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog closes the loop within 5 s. |
 | `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. |
 

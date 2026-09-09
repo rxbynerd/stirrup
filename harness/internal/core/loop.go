@@ -122,6 +122,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.ensureControlRouting()
 	l.setActiveRun(cancelRun)
 	defer l.setActiveRun(nil)
+	// A cancel that arrived while no run was active ended the session;
+	// this run must not proceed to component work on its behalf.
+	if l.sessionCancelled.Load() {
+		cancelRun(ErrCancelledByControlPlane)
+	}
 
 	l.Trace.Start(config.RunID, config)
 
@@ -420,6 +425,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		),
 	)
 
+	// "done" is the control plane's cue to send its next control event;
+	// from here the run is no longer cancellable, so a cancel must route
+	// as idle rather than to this run's context.
+	l.setActiveRun(nil)
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,
@@ -1134,8 +1143,11 @@ type FollowUpOptions struct {
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
 // each one as the prompt of a fresh run. Exits on grace-period
-// timeout, ctx cancellation, or a "cancel" control event received while
-// no run is active. graceSecs <= 0 returns immediately.
+// timeout, ctx cancellation, a "cancel" control event (whenever it
+// arrived: a cancelled session opens no follow-up window), or a
+// follow-up run that fails. Whatever is still queued on exit is
+// rejected with a warning per event, so nothing is dropped silently;
+// with graceSecs <= 0 that flush is all the call does.
 //
 // Input arriving while a follow-up run is active is queued for that
 // run's next turn boundary rather than held for another run — the same
@@ -1147,10 +1159,15 @@ type FollowUpOptions struct {
 // follow-up completes, so a long follow-up does not consume the window
 // meant for the next one.
 func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int, opts FollowUpOptions) {
+	loop.ensureControlRouting()
 	if graceSecs <= 0 {
+		loop.flushQueuedUserInput("no follow-up window is configured")
 		return
 	}
-	loop.ensureControlRouting()
+	defer loop.flushQueuedUserInput("session ended before the input was taken up")
+	if loop.sessionCancelled.Load() {
+		return
+	}
 
 	grace := time.Duration(graceSecs) * time.Second
 	timer := time.NewTimer(grace)
@@ -1159,6 +1176,9 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 	for {
 		select {
 		case <-loop.userInput.notify:
+			if loop.sessionCancelled.Load() {
+				return
+			}
 			next, ok := loop.userInput.pop()
 			if !ok {
 				// Already drained into the run that was active when it
@@ -1184,6 +1204,9 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			}
 			if err != nil {
 				// Transport already carries the error event from finishWithError.
+				return
+			}
+			if loop.sessionCancelled.Load() {
 				return
 			}
 			timer.Reset(grace)

@@ -264,7 +264,9 @@ type HarnessEvent struct {
 // fresh run with UserResponse as the prompt. An empty UserResponse, or
 // one arriving when the queue is full, is dropped and reported by a
 // "warning" HarnessEvent echoing RequestID, which is otherwise optional
-// on this type. A "cancel" discards queued input.
+// on this type. A "cancel" ends the session: it discards queued input
+// (each reported by a "warning"), cancels any active run, and opens no
+// follow-up window.
 //
 // On "sandbox_token_response", Token is SENSITIVE: never log, trace,
 // transcribe, or write it to a RunConfig.

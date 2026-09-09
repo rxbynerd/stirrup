@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -104,6 +105,20 @@ func warningEvents(tr *cancellableTransport) []types.HarnessEvent {
 		}
 	}
 	return out
+}
+
+// awaitWarnings polls for at least n warnings: the control handler
+// hands rejections to the loop's emitter goroutine, so a warning lands
+// on the transport shortly after, not synchronously with, the event.
+func awaitWarnings(t *testing.T, tr *cancellableTransport, n int) []types.HarnessEvent {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if w := warningEvents(tr); len(w) >= n || time.Now().After(deadline) {
+			return w
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func lastMessage(t *testing.T, params types.StreamParams) types.Message {
@@ -334,7 +349,7 @@ func TestLoop_UserResponseOverflowIsReportedNotSilent(t *testing.T) {
 		tr.FireControl(userResponse(fmt.Sprintf("message %d", i), fmt.Sprintf("r%d", i)))
 	}
 
-	w := warningEvents(tr)
+	w := awaitWarnings(t, tr, 1)
 	if len(w) != 1 {
 		t.Fatalf("warnings = %d (%+v), want exactly one for the overflow", len(w), w)
 	}
@@ -393,7 +408,7 @@ func TestLoop_EmptyUserResponseIsRejectedWithWarning(t *testing.T) {
 	loop, tr := buildUserInputTestLoop(&recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}})
 	tr.FireControl(userResponse("   ", "r-empty"))
 
-	w := warningEvents(tr)
+	w := awaitWarnings(t, tr, 1)
 	if len(w) != 1 || w[0].RequestID != "r-empty" {
 		t.Fatalf("warnings = %+v, want one echoing r-empty", w)
 	}

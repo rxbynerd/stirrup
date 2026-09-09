@@ -141,12 +141,19 @@ type AgenticLoop struct {
 
 	// Control routing for "cancel" and "user_response": one handler per
 	// loop (controlOnce), dispatched by whether a run is active. See
-	// ensureControlRouting / routeControl in userinput.go.
-	controlOnce  sync.Once
-	controlMu    sync.Mutex
-	cancelActive context.CancelCauseFunc
-	userInput    *userInputQueue
-	idleCancel   chan struct{}
+	// ensureControlRouting / routeControl in userinput.go. A cancel is
+	// sticky (sessionCancelled): it ends the session, so no later run on
+	// this loop starts. rejections carries warnings the control handler
+	// must not emit inline; controlStop ends the goroutine draining it.
+	controlOnce      sync.Once
+	controlMu        sync.Mutex
+	cancelActive     context.CancelCauseFunc
+	sessionCancelled atomic.Bool
+	userInput        *userInputQueue
+	idleCancel       chan struct{}
+	rejections       chan types.HarnessEvent
+	controlStop      chan struct{}
+	controlStopOnce  sync.Once
 
 	// asyncExtractorOverride, when non-nil, replaces extractAsyncToolResult
 	// on the async correlator. Test-only seam: the production extractor
@@ -673,6 +680,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 // Close releases resources owned by the loop, such as container executors,
 // internally-created transports, and closable trace emitters.
 func (l *AgenticLoop) Close() error {
+	l.stopControlRouting()
 	var errs []string
 	for i := len(l.ownedClosers) - 1; i >= 0; i-- {
 		if err := l.ownedClosers[i].Close(); err != nil {

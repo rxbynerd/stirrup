@@ -237,14 +237,17 @@ message HarnessEvent {
 //                   see as a tool error rather than a successful result.
 //
 //   "cancel"
-//     - (no additional fields) Signals that the run should be aborted. The
-//       harness terminates the run within one turn boundary: any in-flight
-//       provider stream or tool call is cancelled via context propagation,
-//       no further turns are started, git finalisation still runs, and the
-//       final "done" HarnessEvent carries stop_reason="cancelled". Queued
-//       user_response input is discarded; cancel always wins over it. If
-//       the harness is in the follow-up grace window (no active run), the
-//       stream closes promptly without an additional "done" event.
+//     - (no additional fields) Ends the session. An active run terminates
+//       within one turn boundary: any in-flight provider stream or tool
+//       call is cancelled via context propagation, no further turns are
+//       started, git finalisation still runs, and the final "done"
+//       HarnessEvent carries stop_reason="cancelled". Queued user_response
+//       input is discarded (each is reported by a "warning"); cancel always
+//       wins over it. No follow-up grace window opens after a cancelled run,
+//       and a cancel received with no run active — including in the window
+//       between a run's "done" and the next run, or inside the grace window
+//       — closes the stream promptly without an additional "done". One
+//       cancel is always enough to stop the harness.
 //
 //   "batch_result"
 //     - request_id: must match a previously received batch_submission
