@@ -210,7 +210,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if graceSecs > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
+		core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{})
 	}
 
 	// A non-success outcome (runErr == nil) must still fail the process so

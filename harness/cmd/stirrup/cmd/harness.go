@@ -1733,7 +1733,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	}
 
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)
+		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace, core.FollowUpOptions{})
 	}
 	// A non-success outcome reached here (runErr == nil but e.g.
 	// Outcome == "error" or "hook_failed") must still fail the process.

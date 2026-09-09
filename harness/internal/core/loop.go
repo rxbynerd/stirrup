@@ -1095,12 +1095,23 @@ func (l *AgenticLoop) applyEscalation(
 	return messages
 }
 
+// FollowUpOptions configures RunFollowUpLoop.
+type FollowUpOptions struct {
+	// OnRunComplete, when non-nil, is called after every follow-up run
+	// with the config the run used (RunID and Prompt already refreshed
+	// for that run), its trace, and its error — the same pair Run
+	// returns. It runs on the RunFollowUpLoop goroutine before the next
+	// follow-up is accepted, so the caller's per-run finalisation
+	// (result sink, workspace export) sees a stable config.
+	OnRunComplete func(config *types.RunConfig, trace *types.RunTrace, err error)
+}
+
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
 // each new prompt. Exits on grace-period timeout, ctx cancellation, or
 // a "cancel" control event. graceSecs must be > 0; the transport must
 // support fan-out OnControl (GRPCTransport and StdioTransport do).
-func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int) {
+func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int, opts FollowUpOptions) {
 	followUpCh := make(chan string, 1)
 	cancelCh := make(chan struct{}, 1)
 
@@ -1143,7 +1154,11 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 			config.Prompt = newPrompt
 
-			if _, err := loop.Run(ctx, config); err != nil {
+			runTrace, err := loop.Run(ctx, config)
+			if opts.OnRunComplete != nil {
+				opts.OnRunComplete(config, runTrace, err)
+			}
+			if err != nil {
 				// Transport already carries the error event from finishWithError.
 				return
 			}

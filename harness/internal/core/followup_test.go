@@ -59,7 +59,7 @@ func TestRunFollowUpLoop_ZeroGracePeriod(t *testing.T) {
 	config := buildTestConfig()
 
 	start := time.Now()
-	RunFollowUpLoop(context.Background(), loop, config, 0)
+	RunFollowUpLoop(context.Background(), loop, config, 0, FollowUpOptions{})
 	elapsed := time.Since(start)
 
 	if elapsed > 500*time.Millisecond {
@@ -78,7 +78,7 @@ func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
 		defer close(done)
 		// Long grace period: the test exits via context cancellation, not
 		// the timer, proving the follow-up path was taken.
-		RunFollowUpLoop(ctx, loop, config, 30)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{})
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -113,7 +113,7 @@ func TestRunFollowUpLoop_GracePeriodExpiresNoFollowUp(t *testing.T) {
 	originalRunID := config.RunID
 
 	start := time.Now()
-	RunFollowUpLoop(context.Background(), loop, config, 1) // 1-second grace
+	RunFollowUpLoop(context.Background(), loop, config, 1, FollowUpOptions{}) // 1-second grace
 	elapsed := time.Since(start)
 
 	// Should have waited approximately 1 second (the grace period).
@@ -142,7 +142,7 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunFollowUpLoop(ctx, loop, config, 30) // long grace — should not be reached
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{}) // long grace — should not be reached
 	}()
 
 	// Give the goroutine time to enter the select loop.
@@ -171,7 +171,7 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 		defer close(done)
 		// Long grace period — if the cancel arm is not wired correctly,
 		// the test will hang for the full 30s and the timeout below fires.
-		RunFollowUpLoop(context.Background(), loop, config, 30)
+		RunFollowUpLoop(context.Background(), loop, config, 30, FollowUpOptions{})
 	}()
 
 	// Give OnControl registration a moment to take effect.
@@ -184,5 +184,76 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 		// Good — returned promptly via the cancelCh select arm.
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunFollowUpLoop did not return within 2s of cancel ControlEvent")
+	}
+}
+
+// TestRunFollowUpLoop_OnRunCompleteReceivesEachRun pins the per-run
+// result contract: the callback fires once per accepted follow-up with
+// the config the run used (fresh RunID, the follow-up prompt) and the
+// trace the run produced, in arrival order.
+func TestRunFollowUpLoop_OnRunCompleteReceivesEachRun(t *testing.T) {
+	loop, tr := buildFollowUpTestLoop(t)
+	config := buildTestConfig()
+
+	type completed struct {
+		runID, prompt string
+		trace         *types.RunTrace
+		err           error
+	}
+	var mu sync.Mutex
+	var seen []completed
+	ran := make(chan struct{}, 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
+				mu.Lock()
+				seen = append(seen, completed{runID: cfg.RunID, prompt: cfg.Prompt, trace: rt, err: err})
+				mu.Unlock()
+				ran <- struct{}{}
+			},
+		})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	for _, prompt := range []string{"first follow-up", "second follow-up"} {
+		tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: prompt})
+		select {
+		case <-ran:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("OnRunComplete not called for %q", prompt)
+		}
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("OnRunComplete called %d times, want 2", len(seen))
+	}
+	for i, want := range []string{"first follow-up", "second follow-up"} {
+		got := seen[i]
+		if got.prompt != want {
+			t.Errorf("call %d prompt = %q, want %q", i, got.prompt, want)
+		}
+		if got.err != nil {
+			t.Errorf("call %d err = %v, want nil", i, got.err)
+		}
+		if got.trace == nil {
+			t.Fatalf("call %d trace is nil", i)
+		}
+		if got.trace.ID != got.runID {
+			t.Errorf("call %d trace.ID = %q, want the run's config.RunID %q", i, got.trace.ID, got.runID)
+		}
+		if got.runID == "test-run-1" {
+			t.Errorf("call %d still carries the primary RunID", i)
+		}
+	}
+	if seen[0].runID == seen[1].runID {
+		t.Errorf("both follow-ups share RunID %q; each run must get its own", seen[0].runID)
 	}
 }
