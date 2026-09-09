@@ -369,6 +369,42 @@ func TestGRPCTransport_Close(t *testing.T) {
 	}
 }
 
+// TestGRPCTransport_CloseDeliversPendingEvents pins that events emitted
+// immediately before Close still reach the peer. Send only queues a frame
+// for the writer goroutine, so tearing down the connection without
+// waiting for the stream to end drops the terminal "error"/"done" pair a
+// control plane needs to tell a rejected config from a crashed harness.
+// Repeated because the loss depends on writer scheduling: a single
+// attempt succeeds most of the time even when the wait is absent.
+func TestGRPCTransport_CloseDeliversPendingEvents(t *testing.T) {
+	const attempts = 50
+
+	for attempt := range attempts {
+		srv := newTestServer()
+		tr, _, cleanup := setupTestTransport(t, srv)
+
+		if err := tr.Emit(types.HarnessEvent{Type: "error", Message: "config validation: bad"}); err != nil {
+			t.Fatalf("attempt %d: Emit error event: %v", attempt, err)
+		}
+		if err := tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
+			t.Fatalf("attempt %d: Emit done event: %v", attempt, err)
+		}
+		if err := tr.Close(); err != nil {
+			t.Fatalf("attempt %d: Close: %v", attempt, err)
+		}
+
+		received := srv.getReceived()
+		if len(received) != 2 {
+			t.Fatalf("attempt %d: server received %d events (%v), want the error/done pair", attempt, len(received), received)
+		}
+		if received[0].Type != "error" || received[1].Type != "done" {
+			t.Fatalf("attempt %d: server received %q then %q, want error then done", attempt, received[0].Type, received[1].Type)
+		}
+
+		cleanup()
+	}
+}
+
 func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)

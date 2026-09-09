@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -140,6 +141,14 @@ func (g *GRPCTransport) OnControl(handler func(event types.ControlEvent)) {
 	g.handlers = append(g.handlers, handler)
 	g.handlerMu.Unlock()
 
+	g.startReadLoop()
+}
+
+// startReadLoop starts the single stream reader, at most once per
+// transport. Close relies on it too: the reader owns the only Recv call,
+// and reaching stream end is how Close learns the peer has consumed
+// everything sent.
+func (g *GRPCTransport) startReadLoop() {
 	g.startOnce.Do(func() {
 		go func() {
 			defer close(g.done)
@@ -166,19 +175,49 @@ func (g *GRPCTransport) OnControl(handler func(event types.ControlEvent)) {
 	})
 }
 
+// streamEndGrace bounds how long Close waits for the RPC to end after the
+// half-close before tearing the connection down anyway.
+const streamEndGrace = 2 * time.Second
+
 // Close sends CloseSend on the stream to signal the harness is done
-// sending, then closes the underlying gRPC connection.
+// sending, waits (up to streamEndGrace) for the control plane to end the
+// RPC, then closes the underlying gRPC connection.
+//
+// The wait is load-bearing, not politeness: closing the gRPC connection
+// discards frames the writer has queued but not yet flushed, so a
+// terminal "done" emitted immediately before Close is otherwise lost
+// whenever the writer goroutine has not been scheduled yet. A control
+// plane that keeps the stream open past the half-close (one serving
+// follow-ups) pays streamEndGrace at process exit instead.
 func (g *GRPCTransport) Close() error {
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	closeSendErr := g.stream.CloseSend()
+	g.mu.Unlock()
 
-	if err := g.stream.CloseSend(); err != nil {
+	if closeSendErr != nil {
 		// Still close the connection even if CloseSend fails.
 		_ = g.conn.Close()
-		return fmt.Errorf("close send: %w", err)
+		return fmt.Errorf("close send: %w", closeSendErr)
 	}
 
+	g.awaitStreamEnd()
+
 	return g.conn.Close()
+}
+
+// awaitStreamEnd blocks until the reader observes the end of the stream
+// or streamEndGrace elapses. It starts the reader when no caller
+// registered a control handler, since nothing else would consume the
+// stream to its end.
+func (g *GRPCTransport) awaitStreamEnd() {
+	g.startReadLoop()
+
+	timer := time.NewTimer(streamEndGrace)
+	defer timer.Stop()
+	select {
+	case <-g.done:
+	case <-timer.C:
+	}
 }
 
 // Done returns a channel that is closed when the read loop exits, either
