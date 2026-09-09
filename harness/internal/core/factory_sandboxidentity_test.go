@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,30 +23,36 @@ import (
 func boolPtr(b bool) *bool { return &b }
 
 // fakeControlPlaneTransport is a minimal transport.Transport fake standing
-// in for the control plane's gRPC stream. It auto-responds to a
+// in for the control plane's gRPC stream. It auto-responds to every
 // sandbox_token_request with a configurable sandbox_token_response,
 // mirroring permission/askupstream_test.go's mockTransport — the wire-level
-// proto round-trip for the new sandbox_token_request/response fields
-// (Audience, Token, ExpiresAt, IsError) is already covered by PR A's
-// harness/internal/transport/grpc_translate_test.go, so this integration
-// test exercises the seam BuildLoopWithTransport actually consumes
-// (transport.Transport) rather than re-dialing a real gRPC connection.
+// proto round-trip for the sandbox_token_request/response fields is covered
+// by harness/internal/transport/grpc_translate_test.go, so these
+// integration tests exercise the seam BuildLoopWithTransport actually
+// consumes (transport.Transport) rather than re-dialing a real gRPC
+// connection.
 type fakeControlPlaneTransport struct {
 	mu       sync.Mutex
 	handlers []func(types.ControlEvent)
 	emitted  []types.HarnessEvent
+	requests int
 
-	respondToken     string
-	respondExpiresAt *int64
+	respondToken string
+	// respondTokenPerRequest, when true, suffixes respondToken with the
+	// request ordinal so each refresh is issued a distinguishable token.
+	respondTokenPerRequest bool
+	// respondTTL, when positive, sets expires_at to now+respondTTL on every
+	// response; zero leaves expires_at unset.
+	respondTTL time.Duration
 
 	// respondIsError/respondReason, when respondIsError is true, deliver a
-	// control-plane decline instead of a success response (B-INT case a).
+	// control-plane decline instead of a success response.
 	respondIsError bool
 	respondReason  string
 	// noRespond, when true, never delivers a response at all — the fake
 	// control plane emits no sandbox_token_response, simulating a hung or
 	// unreachable control plane so the caller's ctx/timeout is what ends
-	// the wait (B-INT case b).
+	// the wait.
 	noRespond bool
 }
 
@@ -51,14 +60,21 @@ func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 	f.mu.Lock()
 	f.emitted = append(f.emitted, event)
 	noRespond := f.noRespond
+	if event.Type == "sandbox_token_request" {
+		f.requests++
+	}
+	ordinal := f.requests
 	f.mu.Unlock()
 
 	if event.Type == "sandbox_token_request" && !noRespond {
 		resp := types.ControlEvent{
 			Type:      "sandbox_token_response",
 			RequestID: event.RequestID,
-			Token:     f.respondToken,
-			ExpiresAt: f.respondExpiresAt,
+			Token:     f.tokenFor(ordinal),
+		}
+		if f.respondTTL > 0 {
+			exp := time.Now().Add(f.respondTTL).Unix()
+			resp.ExpiresAt = &exp
 		}
 		if f.respondIsError {
 			resp.IsError = boolPtr(true)
@@ -67,6 +83,13 @@ func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 		f.deliver(resp)
 	}
 	return nil
+}
+
+func (f *fakeControlPlaneTransport) tokenFor(ordinal int) string {
+	if f.respondTokenPerRequest {
+		return fmt.Sprintf("%s-%d", f.respondToken, ordinal)
+	}
+	return f.respondToken
 }
 
 func (f *fakeControlPlaneTransport) OnControl(handler func(types.ControlEvent)) {
@@ -87,11 +110,25 @@ func (f *fakeControlPlaneTransport) deliver(event types.ControlEvent) {
 	}
 }
 
+func (f *fakeControlPlaneTransport) emittedOfType(eventType string) []types.HarnessEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []types.HarnessEvent
+	for _, e := range f.emitted {
+		if e.Type == eventType {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // fakeDockerEngine stands up a minimal fake Docker Engine API server on a
 // temporary Unix socket, capturing the body of the /containers/create
-// request. Mirrors executor.mockEngineServer, duplicated here because that
-// helper is unexported test-only code in a different package.
-func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCreateCapture, cleanup func()) {
+// request and every exec's argv and hijacked stdin. Mirrors
+// executor.mockEngineServer and its stdin exec handlers, duplicated here
+// because those helpers are unexported test-only code in a different
+// package.
+func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, cleanup func()) {
 	t.Helper()
 
 	dir, err := os.MkdirTemp("/tmp", "sbid-de-")
@@ -106,7 +143,7 @@ func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCre
 		t.Fatalf("listen on unix socket: %v", err)
 	}
 
-	capture := &containerCreateCapture{}
+	capture = &engineCapture{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +164,33 @@ func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCre
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodDelete && strings.HasPrefix(apiPath, "/containers/"):
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasPrefix(apiPath, "/containers/") && strings.HasSuffix(apiPath, "/exec"):
+			var req struct {
+				Cmd []string `json:"Cmd"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			capture.recordExecArgv(req.Cmd)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Id":"exec-id"}`))
+		case r.Method == http.MethodPost && strings.HasPrefix(apiPath, "/exec/") && strings.HasSuffix(apiPath, "/start"):
+			_, _ = io.ReadAll(r.Body)
+			hj, ok := w.(http.Hijacker)
+			if !ok || r.Header.Get("Upgrade") != "tcp" {
+				http.Error(w, `{"message":"expected upgrade"}`, http.StatusBadRequest)
+				return
+			}
+			conn, rw, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_, _ = rw.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+			_ = rw.Flush()
+			in, _ := io.ReadAll(rw)
+			capture.recordStdin(string(in))
+			_ = conn.Close()
+		case r.Method == http.MethodGet && strings.HasPrefix(apiPath, "/exec/") && strings.HasSuffix(apiPath, "/json"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ExitCode":0,"Running":false}`))
 		default:
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 		}
@@ -142,19 +206,24 @@ func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCre
 	}
 }
 
-// containerCreateCapture decodes only the fields this test needs from the
-// Docker Engine API's POST /containers/create request body. createCalls
-// (guarded by mu, since the fake server's handler runs on its own
-// goroutine) counts how many times /containers/create was hit — the
-// fail-closed integration tests (B-INT) assert this stays zero.
-type containerCreateCapture struct {
-	Env []string `json:"Env"`
+// engineCapture decodes only the fields these tests need from the Docker
+// Engine API's POST /containers/create request body and records the exec
+// traffic. createCalls (guarded by mu, since the fake server's handler
+// runs on its own goroutine) counts how many times /containers/create was
+// hit — the fail-closed integration tests assert this stays zero.
+type engineCapture struct {
+	Env        []string `json:"Env"`
+	HostConfig struct {
+		Tmpfs map[string]string `json:"Tmpfs"`
+	} `json:"HostConfig"`
 
 	mu          sync.Mutex
 	createCalls int
+	execArgv    [][]string
+	stdin       []string
 }
 
-func (c *containerCreateCapture) envMap() map[string]string {
+func (c *engineCapture) envMap() map[string]string {
 	out := map[string]string{}
 	for _, kv := range c.Env {
 		parts := strings.SplitN(kv, "=", 2)
@@ -165,42 +234,66 @@ func (c *containerCreateCapture) envMap() map[string]string {
 	return out
 }
 
-func (c *containerCreateCapture) recordCreateCall() {
+func (c *engineCapture) recordCreateCall() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.createCalls++
 }
 
-func (c *containerCreateCapture) createCallCount() int {
+func (c *engineCapture) createCallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.createCalls
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring is the
-// issue #516 acceptance integration test: given executor.sandboxIdentity +
-// executor.gitProxy, transport=grpc, executor=container, the harness
-// requests a sandbox_token_request after the fake control plane's
-// task_assignment-equivalent (BuildLoopWithTransport is invoked directly
-// with the RunConfig, matching how stirrup job calls it post-assignment),
-// and the created container's env carries the token var plus the four
-// GIT_CONFIG_* pairs the issue's canonical example specifies.
-func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T) {
-	sock, capture, cleanupEngine := fakeDockerEngine(t)
-	defer cleanupEngine()
-	t.Setenv("DOCKER_HOST", "unix://"+sock)
+func (c *engineCapture) recordExecArgv(argv []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.execArgv = append(c.execArgv, argv)
+}
 
-	server := newOpenAIServer(t, nil, nil, nil)
-	defer server.Close()
+func (c *engineCapture) recordStdin(in string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stdin = append(c.stdin, in)
+}
 
-	tp := &fakeControlPlaneTransport{respondToken: "the-jwt-token"}
+func (c *engineCapture) stdinSeen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.stdin...)
+}
 
+func (c *engineCapture) argvSeen() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]string(nil), c.execArgv...)
+}
+
+// waitForStdin blocks until the engine has seen n stdin deliveries.
+func (c *engineCapture) waitForStdin(t *testing.T, n int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if got := c.stdinSeen(); len(got) >= n {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d stdin deliveries, saw %d", n, len(c.stdinSeen()))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func sandboxIdentityContainerConfig(t *testing.T, runID, providerURL string) *types.RunConfig {
+	t.Helper()
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	timeout := 30
-	config := &types.RunConfig{
-		RunID:           "sandboxidentity-integration-test",
+	return &types.RunConfig{
+		RunID:           runID,
 		Mode:            "execution",
 		Prompt:          "hello",
-		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: providerURL},
 		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
 		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
 		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window"},
@@ -231,7 +324,26 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T)
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
-	t.Setenv("TEST_OPENAI_KEY", "test-key")
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring is the
+// end-to-end factory test for executor.sandboxIdentity +
+// executor.gitProxy on the container executor: the harness requests a
+// sandbox_token_request, the created container's env carries the token
+// var, its _FILE companion, and the four GIT_CONFIG_* pairs with a
+// credential helper that reads the token file, the private token tmpfs is
+// mounted, and the initial token is delivered over exec stdin — never in
+// argv — before the loop is returned.
+func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T) {
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	tp := &fakeControlPlaneTransport{respondToken: "the-jwt-token"}
+	config := sandboxIdentityContainerConfig(t, "sandboxidentity-integration-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
 	if err != nil {
@@ -242,6 +354,9 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T)
 	env := capture.envMap()
 	if got := env["HAYBALE_TOKEN"]; got != "the-jwt-token" {
 		t.Errorf("HAYBALE_TOKEN = %q, want %q", got, "the-jwt-token")
+	}
+	if got := env["HAYBALE_TOKEN_FILE"]; got != executor.SandboxIdentityTokenPath {
+		t.Errorf("HAYBALE_TOKEN_FILE = %q, want %q", got, executor.SandboxIdentityTokenPath)
 	}
 	if got := env["GIT_CONFIG_COUNT"]; got != "4" {
 		t.Errorf("GIT_CONFIG_COUNT = %q, want %q", got, "4")
@@ -272,24 +387,91 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T)
 			t.Errorf("missing insteadOf value %q", v)
 		}
 	}
-	wantCredValue := `!f() { echo username=x-access-token; echo "password=$HAYBALE_TOKEN"; }; f`
+	wantCredValue := `!f() { echo username=x-access-token; echo "password=$(cat ` + executor.SandboxIdentityTokenPath + `)"; }; f`
 	if credValue != wantCredValue {
 		t.Errorf("credential helper = %q, want %q", credValue, wantCredValue)
 	}
+	if strings.Contains(credValue, "the-jwt-token") || strings.Contains(credValue, "$HAYBALE_TOKEN") {
+		t.Errorf("credential helper %q must read the token file, not the env var", credValue)
+	}
 
-	// The control plane must have seen exactly one sandbox_token_request,
-	// carrying the configured audience.
-	var requests []types.HarnessEvent
-	for _, e := range tp.emitted {
-		if e.Type == "sandbox_token_request" {
-			requests = append(requests, e)
+	if _, mounted := capture.HostConfig.Tmpfs[executor.SandboxIdentityTokenDir]; !mounted {
+		t.Errorf("container created without the token tmpfs at %s (Tmpfs=%v)", executor.SandboxIdentityTokenDir, capture.HostConfig.Tmpfs)
+	}
+
+	// The initial token reached the sandbox over exec stdin, exactly once,
+	// and appeared in no exec argv.
+	if got := capture.stdinSeen(); len(got) != 1 || got[0] != "the-jwt-token" {
+		t.Errorf("exec stdin deliveries = %q, want exactly one carrying the token", got)
+	}
+	for _, argv := range capture.argvSeen() {
+		for _, arg := range argv {
+			if strings.Contains(arg, "the-jwt-token") {
+				t.Errorf("token appeared in exec argv: %q", argv)
+			}
 		}
 	}
+
+	// Without an expiry the control plane sees exactly one request,
+	// carrying the configured audience, and no refresh is scheduled.
+	requests := tp.emittedOfType("sandbox_token_request")
 	if len(requests) != 1 {
 		t.Fatalf("expected exactly one sandbox_token_request, got %d", len(requests))
 	}
 	if requests[0].Audience != "https://haybale.internal" {
 		t.Errorf("Audience = %q, want https://haybale.internal", requests[0].Audience)
+	}
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken drives the
+// factory-wired refresher: with a short expires_at the harness sends a
+// second sandbox_token_request before expiry, delivers the new token over
+// exec stdin, and never lets either token into an emitted event.
+func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	tp := &fakeControlPlaneTransport{
+		respondToken:           "jwt",
+		respondTokenPerRequest: true,
+		respondTTL:             2 * time.Second,
+	}
+	config := sandboxIdentityContainerConfig(t, "sandboxidentity-refresh-test", server.URL)
+
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+
+	deliveries := capture.waitForStdin(t, 2, 5*time.Second)
+	if err := loop.Close(); err != nil {
+		t.Errorf("Close() error: %v", err)
+	}
+
+	if deliveries[0] != "jwt-1" || deliveries[1] != "jwt-2" {
+		t.Errorf("stdin deliveries = %q, want the initial token followed by the refreshed one", deliveries)
+	}
+	if got := len(tp.emittedOfType("sandbox_token_request")); got < 2 {
+		t.Errorf("expected at least 2 sandbox_token_requests, got %d", got)
+	}
+	if warnings := tp.emittedOfType("warning"); len(warnings) != 0 {
+		t.Errorf("unexpected warning(s) on a successful refresh: %+v", warnings)
+	}
+
+	tp.mu.Lock()
+	emitted := append([]types.HarnessEvent(nil), tp.emitted...)
+	tp.mu.Unlock()
+	for _, e := range emitted {
+		raw, _ := json.Marshal(e)
+		for _, tok := range deliveries {
+			if strings.Contains(string(raw), tok) {
+				t.Errorf("emitted event carries a sandbox identity token: %s", raw)
+			}
+		}
 	}
 }
 
@@ -339,7 +521,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testi
 	}
 }
 
-// sandboxIdentityFailClosedConfig builds the shared RunConfig for the B-INT
+// sandboxIdentityFailClosedConfig builds the shared RunConfig for the
 // fail-closed integration tests below: a container executor (so
 // fakeDockerEngine can observe whether /containers/create was ever hit) with
 // executor.sandboxIdentity configured and no gitProxy (irrelevant to these
@@ -349,47 +531,19 @@ func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testi
 // TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed above.
 func sandboxIdentityFailClosedConfig(t *testing.T, runID string) *types.RunConfig {
 	t.Helper()
-	t.Setenv("TEST_OPENAI_KEY", "test-key")
-	timeout := 30
-	return &types.RunConfig{
-		RunID:           runID,
-		Mode:            "execution",
-		Prompt:          "hello",
-		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: "http://127.0.0.1:1"},
-		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
-		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
-		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window"},
-		Executor: types.ExecutorConfig{
-			Type:      "container",
-			Image:     "ubuntu:26.04",
-			Workspace: t.TempDir(),
-			Network:   &types.NetworkConfig{Mode: "none"},
-			SandboxIdentity: &types.SandboxIdentityConfig{
-				Source:   "control-plane",
-				Audience: "https://haybale.internal",
-				EnvVar:   "HAYBALE_TOKEN",
-			},
-		},
-		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
-		Verifier:         types.VerifierConfig{Type: "none"},
-		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
-		GitStrategy:      types.GitStrategyConfig{Type: "none"},
-		Transport:        types.TransportConfig{Type: "grpc"},
-		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
-		RuleOfTwo:        disableRuleOfTwo(),
-		MaxTurns:         2,
-		Timeout:          &timeout,
-	}
+	config := sandboxIdentityContainerConfig(t, runID, "http://127.0.0.1:1")
+	config.Executor.GitProxy = nil
+	return config
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate is
-// B-INT case (a): the control plane responds with IsError: true. A unit
-// test on sandboxidentity.Exchange already proves Exchange itself fails
-// closed on a decline; this test proves the *factory* honours that error
-// before reaching the executor layer — a regression that swapped step
-// order, dropped the error check, or logged-and-continued would pass every
-// other currently committed test but must fail this one, because the fake
-// Docker Engine below would then observe a real /containers/create call.
+// TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate
+// covers a control plane responding with IsError: true. A unit test on
+// sandboxidentity.Exchange already proves Exchange itself fails closed on
+// a decline; this test proves the *factory* honours that error before
+// reaching the executor layer — a regression that swapped step order,
+// dropped the error check, or logged-and-continued would pass every other
+// test but must fail this one, because the fake Docker Engine below would
+// then observe a real /containers/create call.
 func TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
@@ -410,9 +564,9 @@ func TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate(t *test
 	}
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate is
-// B-INT case (b): the control plane never responds. BuildLoopWithTransport
-// is invoked with a short-lived ctx (rather than waiting out
+// TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate
+// covers a control plane that never responds. BuildLoopWithTransport is
+// invoked with a short-lived ctx (rather than waiting out
 // sandboxidentity.DefaultTimeout's 60s) so the ctx branch of Exchange's
 // underlying transport.Correlator.Await ends the wait quickly; the failure
 // mode under test — cancellation/timeout aborting before sandbox creation —
@@ -442,11 +596,10 @@ func TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate(t *test
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate
-// is B-INT case (c): the control plane responds successfully, but with a
-// token exceeding sandboxidentity.MaxTokenBytes. Exchange treats this as a
-// hard failure (never truncated-and-used); this test proves the factory
-// aborts before sandbox creation rather than passing the oversized token
-// through.
+// covers a control plane that responds successfully, but with a token
+// exceeding sandboxidentity.MaxTokenBytes. Exchange treats this as a hard
+// failure (never truncated-and-used); this test proves the factory aborts
+// before sandbox creation rather than passing the oversized token through.
 func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()

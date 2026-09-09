@@ -105,7 +105,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// ahead of buildExecutor: the composed env carries the secret token into
 	// the executor's construction so no sandbox comes up without it, and a
 	// declined or timed-out exchange aborts before any sandbox exists.
-	var sandboxExtraEnv []executor.EnvPair
+	var (
+		sandboxExtraEnv  []executor.EnvPair
+		sandboxExchanger *sandboxidentity.Exchanger
+		sandboxToken     sandboxidentity.Result
+	)
 	if si := config.Executor.SandboxIdentity; si != nil {
 		// The exchange must complete before the executor is built, so it
 		// only works against a caller-supplied transport — a nil tp would
@@ -116,15 +120,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("executor.sandboxIdentity requires a pre-established transport (only supported via the control-plane job entrypoint, e.g. \"stirrup job\")")
 		}
 
-		result, exchErr := sandboxidentity.Exchange(ctx, tp, si.Audience, 0)
+		sandboxExchanger = sandboxidentity.NewExchanger(tp)
+		result, exchErr := sandboxExchanger.Exchange(ctx, si.Audience, 0)
 		if exchErr != nil {
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
 		}
-		if config.Timeout != nil {
-			sandboxidentity.WarnIfExpiresBeforeBudget(result.ExpiresAt, *config.Timeout, time.Now())
-		}
+		sandboxToken = result
 
-		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, config.Executor.GitProxy)
+		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, executor.SandboxIdentityTokenPath, config.Executor.GitProxy)
 		if composeErr != nil {
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", composeErr)
 		}
@@ -143,6 +146,24 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	if closer, ok := exec.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
+	}
+
+	// 3b. Initial sandbox identity token delivery. The composed git
+	// credential helper reads the token file, not the env var, so the
+	// sandbox is unusable for git until this lands; a failure tears the
+	// sandbox down rather than leaving one that cannot authenticate.
+	var sandboxTokenWriter sandboxidentity.TokenWriter
+	if config.Executor.SandboxIdentity != nil {
+		writer, ok := exec.(sandboxidentity.TokenWriter)
+		if !ok {
+			cleanup()
+			return nil, fmt.Errorf("executor.sandboxIdentity: executor type %q cannot deliver a sandbox identity token", config.Executor.Type)
+		}
+		if err := writer.WriteSandboxIdentityToken(ctx, sandboxToken.Token); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("executor.sandboxIdentity: %w", err)
+		}
+		sandboxTokenWriter = writer
 	}
 
 	commandOutputStore, err := buildCommandOutputStore(ctx, config)
@@ -203,6 +224,31 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// Reassigned (not shadowed) so the label propagates into
 		// AgenticLoop.Logger below.
 		logger = logger.With("sessionName", config.SessionName)
+	}
+
+	// 4b. Sandbox identity token refresh, started here rather than at 3b
+	// so its log lines ride the scrub-wrapped logger. Runs from now until
+	// the loop is closed, which spans the run including post-run hooks.
+	if sandboxTokenWriter != nil {
+		var budgetDeadline time.Time
+		if config.Timeout != nil && *config.Timeout > 0 {
+			budgetDeadline = time.Now().Add(time.Duration(*config.Timeout) * time.Second)
+		}
+		refresher, rerr := sandboxidentity.NewRefresher(sandboxidentity.RefresherConfig{
+			Exchanger:      sandboxExchanger,
+			Writer:         sandboxTokenWriter,
+			Transport:      tp,
+			Logger:         logger,
+			Audience:       config.Executor.SandboxIdentity.Audience,
+			ExpiresAt:      sandboxToken.ExpiresAt,
+			BudgetDeadline: budgetDeadline,
+		})
+		if rerr != nil {
+			cleanup()
+			return nil, fmt.Errorf("executor.sandboxIdentity: %w", rerr)
+		}
+		refresher.Start(ctx)
+		ownedClosers = append(ownedClosers, refresher)
 	}
 
 	// 5. MCP tool discovery. Connection failures are non-fatal: the
@@ -863,10 +909,12 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 }
 
 // buildExecutor constructs the run's executor. extraEnv carries the composed
-// sandbox identity / git-proxy environment and is honoured only by the
-// container and k8s cases; ValidateRunConfig confines SandboxIdentity and
-// GitProxy to those types, so it is empty elsewhere by construction.
+// sandbox identity / git-proxy environment and, with the token mount it
+// implies, is honoured only by the container and k8s cases;
+// ValidateRunConfig confines SandboxIdentity and GitProxy to those types,
+// so it is empty elsewhere by construction.
 func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair) (executor.Executor, error) {
+	sandboxIdentityToken := cfg.SandboxIdentity != nil
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -891,14 +939,15 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			}
 		}
 		return executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
-			Image:             cfg.Image,
-			HostDir:           workspace,
-			Network:           cfg.Network,
-			Resources:         cfg.Resources,
-			Runtime:           cfg.Runtime,
-			RegistryAllowlist: cfg.RegistryAllowlist,
-			EgressSecurity:    secLogger,
-			ExtraEnv:          extraEnv,
+			Image:                cfg.Image,
+			HostDir:              workspace,
+			Network:              cfg.Network,
+			Resources:            cfg.Resources,
+			Runtime:              cfg.Runtime,
+			RegistryAllowlist:    cfg.RegistryAllowlist,
+			EgressSecurity:       secLogger,
+			ExtraEnv:             extraEnv,
+			SandboxIdentityToken: sandboxIdentityToken,
 		})
 	case "k8s", "k8s-sandbox":
 		// Both types share the K8s* config surface and differ only in
@@ -913,17 +962,18 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			return nil, fmt.Errorf("%s executor requires k8sNamespace", cfg.Type)
 		}
 		k8sCfg := executor.K8sExecutorConfig{
-			Image:              cfg.Image,
-			Namespace:          cfg.K8sNamespace,
-			Kubeconfig:         cfg.K8sKubeconfig,
-			NodeSelector:       cfg.K8sNodeSelector,
-			RuntimeClassName:   cfg.Runtime,
-			ServiceAccountName: cfg.K8sServiceAccount,
-			Resources:          cfg.Resources,
-			Network:            cfg.Network,
-			EgressProxyURL:     cfg.K8sEgressProxyURL,
-			Security:           secLogger,
-			ExtraEnv:           extraEnv,
+			Image:                cfg.Image,
+			Namespace:            cfg.K8sNamespace,
+			Kubeconfig:           cfg.K8sKubeconfig,
+			NodeSelector:         cfg.K8sNodeSelector,
+			RuntimeClassName:     cfg.Runtime,
+			ServiceAccountName:   cfg.K8sServiceAccount,
+			Resources:            cfg.Resources,
+			Network:              cfg.Network,
+			EgressProxyURL:       cfg.K8sEgressProxyURL,
+			Security:             secLogger,
+			ExtraEnv:             extraEnv,
+			SandboxIdentityToken: sandboxIdentityToken,
 		}
 		if cfg.Type == "k8s-sandbox" {
 			return executor.NewAgentSandboxExecutor(ctx, k8sCfg)

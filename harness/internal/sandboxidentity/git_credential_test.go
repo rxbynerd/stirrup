@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -13,35 +14,33 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestComposeEnv_GitCredentialHelper_StubHaybale is the issue #516
-// "stub-haybale" acceptance test: it drives a REAL git binary against a
-// stub HTTP server standing in for haybale, using ONLY the env
-// ComposeEnv produces, and asserts the Basic-auth password git presents
-// equals the sandbox identity token. This is feasible without a real
-// sandbox because the GIT_CONFIG_* env vars are honoured by the git
-// process itself, independent of whether it runs on the host or inside a
-// container/Pod — the executor plumb-through (container_test.go /
-// factory_sandboxidentity_test.go) already proves the env reaches the
-// sandbox; this test proves git actually uses it the way the issue's
-// acceptance criteria describe.
+// TestComposeEnv_GitCredentialHelper_StubHaybale drives a REAL git binary
+// against a stub HTTP server standing in for haybale, using ONLY the env
+// ComposeEnv produces plus the token file it points at, and asserts the
+// Basic-auth password git presents equals the token in that file — the
+// current file content, not the value the env var was composed with, which
+// is what lets a refreshed token take effect without recreating the
+// sandbox. This is feasible without a real sandbox because the GIT_CONFIG_*
+// env vars are honoured by the git process itself, independent of whether
+// it runs on the host or inside a container/Pod; the executor tests prove
+// the env and the token file reach the sandbox.
 //
 // No live E2E and no external network: the stub server binds 127.0.0.1
 // only, and the "github.com" host is never contacted — the insteadOf
 // rewrite is exactly what prevents that.
 //
-// AC#2 requires both the "https://" form and the "git@host:"/"ssh://"
-// insteadOf rewriting to route through the proxy. The scp/ssh forms were
-// previously pinned only by exact-string-match in env_test.go, never
-// driven through a real git binary — a subtle insteadOf-rewrite
-// regression specific to the ssh form would not have been caught by
-// anything that actually invokes git. The "ssh scp-form" subtest below
-// closes that gap (S-SSH-COV).
+// Both the "https://" form and the "git@host:"/"ssh://" insteadOf
+// rewriting must route through the proxy; the "ssh scp-form" subtest pins
+// the latter through a real git binary rather than by string match alone.
 func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not found in PATH")
 	}
 
-	const wantToken = "test-jwt-sandbox-identity-token"
+	const (
+		composedToken = "stale-token-from-sandbox-creation"
+		wantToken     = "test-jwt-sandbox-identity-token"
+	)
 
 	cases := []struct {
 		name       string
@@ -94,7 +93,14 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 				Hosts:      []string{"github.com"},
 				RewriteSsh: tc.rewriteSsh,
 			}
-			env, err := ComposeEnv("HAYBALE_TOKEN", wantToken, gp)
+			// t.TempDir() is under /var/folders on macOS, whose characters
+			// tokenPathPattern accepts; the file stands in for the
+			// executor-delivered SandboxIdentityTokenPath.
+			tokenPath := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenPath, []byte(wantToken), 0o600); err != nil {
+				t.Fatalf("write token file: %v", err)
+			}
+			env, err := ComposeEnv("HAYBALE_TOKEN", composedToken, tokenPath, gp)
 			if err != nil {
 				t.Fatalf("ComposeEnv() error: %v", err)
 			}
@@ -144,7 +150,10 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 				t.Errorf("Basic-auth username = %q, want %q", capturedUser, "x-access-token")
 			}
 			if capturedPass != wantToken {
-				t.Errorf("Basic-auth password = %q, want the sandbox identity token %q", capturedPass, wantToken)
+				t.Errorf("Basic-auth password = %q, want the token file's content %q", capturedPass, wantToken)
+			}
+			if capturedPass == composedToken {
+				t.Error("git presented the env var's token rather than reading the token file")
 			}
 		})
 	}

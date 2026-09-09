@@ -9,6 +9,7 @@ package sandboxidentity
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -70,28 +71,55 @@ func extractTokenResponse(event types.ControlEvent) (string, any) {
 	}
 }
 
+// Exchanger issues sandbox_token_requests over one transport. One
+// correlator is attached at construction, so the initial exchange and every
+// refresh share a single control handler and draw request IDs from one
+// monotonic sequence (sbid-1, sbid-2, ...). The factory performs the initial
+// exchange and the Refresher the rest, strictly in sequence.
+type Exchanger struct {
+	t          Transport
+	correlator *transport.Correlator
+	requests   atomic.Int64
+}
+
+// NewExchanger attaches a correlator for sandbox_token_response events to t.
+func NewExchanger(t Transport) *Exchanger {
+	c := transport.NewCorrelator("sbid")
+	c.AttachTo(t, extractTokenResponse)
+	return &Exchanger{t: t, correlator: c}
+}
+
+// Requests reports how many sandbox_token_requests reached the transport.
+func (e *Exchanger) Requests() int {
+	return int(e.requests.Load())
+}
+
+// Exchange is the one-shot form of Exchanger.Exchange for callers that need
+// a single token over t.
+func Exchange(ctx context.Context, t Transport, audience string, timeout time.Duration) (Result, error) {
+	return NewExchanger(t).Exchange(ctx, audience, timeout)
+}
+
 // Exchange requests a sandbox identity token and blocks until the matching
 // response arrives, timeout elapses (DefaultTimeout when non-positive), or
 // ctx is cancelled. Every non-success outcome — timeout, decline, empty or
 // oversized token — returns an error and a zero Result, never a partial
 // credential; callers must abort sandbox creation on any error.
-//
-// A fresh Correlator is minted per call, so at most one Exchange may be in
-// flight per t (the sole call site invokes it once per Transport).
-func Exchange(ctx context.Context, t Transport, audience string, timeout time.Duration) (Result, error) {
+func (e *Exchanger) Exchange(ctx context.Context, audience string, timeout time.Duration) (Result, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 
-	correlator := transport.NewCorrelator("sbid")
-	correlator.AttachTo(t, extractTokenResponse)
-
-	payload, err := correlator.Await(ctx, timeout, func(requestID string) error {
-		return t.Emit(types.HarnessEvent{
+	payload, err := e.correlator.Await(ctx, timeout, func(requestID string) error {
+		if err := e.t.Emit(types.HarnessEvent{
 			Type:      "sandbox_token_request",
 			RequestID: requestID,
 			Audience:  audience,
-		})
+		}); err != nil {
+			return err
+		}
+		e.requests.Add(1)
+		return nil
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sandbox identity token exchange: %w", err)
