@@ -1701,39 +1701,34 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
+	policy := postRunPolicy{
+		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
+			emitRunOutput(ctx, cfg, rt, opts.outputMode)
+		},
+		exportRequired: opts.exportWorkspaceRequired,
+	}
+
 	runTrace, runErr := loop.Run(ctx, config)
-	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself
-		// failed) — nothing to emit.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-
-	// A fresh, short-deadline context so a signal-cancelled/timed-out
-	// ctx does not eat the run's answer (mirrors bestEffortCancel in
-	// batchpoll.go).
-	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
-	defer emitCancel()
-	emitRunOutput(emitCtx, config, runTrace, opts.outputMode)
-
-	if runErr != nil {
-		// finishWithOutcome's early-return paths (build-system-prompt
-		// failure, git setup failure, fatal preRun hook failure) return
-		// a valid trace alongside a non-nil error; the RunResult
-		// emission above must still run for these, but a failed run has
-		// nothing further to do.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-
-	// Independent context, same reason as emitRunOutput, with a longer
-	// deadline for a possibly multi-MB GCS PUT.
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
-	defer exportCancel()
-	if err := exportWorkspace(exportCtx, config, opts.exportWorkspaceRequired); err != nil {
+	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
 
+	// A required export that fails on a follow-up must fail the process
+	// the same way it would for the primary run; the first such failure
+	// is returned once the follow-up window closes.
+	var followUpErr error
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace, core.FollowUpOptions{})
+		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace, core.FollowUpOptions{
+			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
+				ferr := policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+				if ferr != nil && err == nil && followUpErr == nil {
+					followUpErr = ferr
+				}
+			},
+		})
+	}
+	if followUpErr != nil {
+		return followUpErr
 	}
 	// A non-success outcome reached here (runErr == nil but e.g.
 	// Outcome == "error" or "hook_failed") must still fail the process.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -241,12 +242,14 @@ var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 }
 
 // exportWorkspace tars + gzips the executor's workspace dir and
-// uploads it to config.Executor.WorkspaceExportTo. No-op when the
-// export field is empty. exportRequired controls error semantics: when
-// true, an export failure is surfaced to the caller; when false, it is
-// logged and the caller's exit code is unchanged.
-func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired bool) error {
-	if cfg.Executor.WorkspaceExportTo == "" {
+// uploads it to dest (the configured config.Executor.WorkspaceExportTo
+// for the primary run, a per-run derivative for follow-ups — see
+// followUpExportURI). No-op when dest is empty. exportRequired
+// controls error semantics: when true, an export failure is surfaced
+// to the caller; when false, it is logged and the caller's exit code
+// is unchanged.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string, exportRequired bool) error {
+	if dest == "" {
 		return nil
 	}
 	// v1 supports only the GCS exporter.
@@ -266,14 +269,80 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired b
 		workspaceDir = wd
 	}
 
-	if err := exp.Export(ctx, workspaceDir, cfg.Executor.WorkspaceExportTo); err != nil {
+	if err := exp.Export(ctx, workspaceDir, dest); err != nil {
 		if exportRequired {
-			return fmt.Errorf("export workspace to %s: %w", cfg.Executor.WorkspaceExportTo, err)
+			return fmt.Errorf("export workspace to %s: %w", dest, err)
 		}
-		slog.Warn("export workspace failed", "dest", cfg.Executor.WorkspaceExportTo, "err", err)
+		slog.Warn("export workspace failed", "dest", dest, "err", err)
 		return nil
 	}
 	return nil
+}
+
+// followUpExportURI derives a follow-up run's workspace export
+// destination from the configured URI by inserting the run ID as the
+// path segment before the object's final component, so successive
+// runs in one process never overwrite each other's tarball:
+//
+//	gs://bucket/runs/r1/workspace.tar.gz → gs://bucket/runs/r1/<runID>/workspace.tar.gz
+//
+// The object's file name is preserved so consumers keyed on it keep
+// working. An empty base stays empty (export disabled).
+func followUpExportURI(base, runID string) string {
+	if base == "" {
+		return ""
+	}
+	scheme, rest, ok := strings.Cut(base, "://")
+	if !ok {
+		return base + "/" + runID
+	}
+	dir, file, ok := strings.Cut(rest, "/")
+	if !ok || file == "" {
+		return base + "/" + runID
+	}
+	if i := strings.LastIndex(file, "/"); i >= 0 {
+		dir, file = dir+"/"+file[:i], file[i+1:]
+	}
+	return scheme + "://" + dir + "/" + runID + "/" + file
+}
+
+// postRunPolicy is the per-run finalisation `stirrup harness` and
+// `stirrup job` apply to the primary run and to every follow-up run
+// alike: emit the run's result, then export the workspace.
+type postRunPolicy struct {
+	// emit publishes the run's RunResult (and any stderr summary).
+	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)
+	// exportRequired selects the workspace export failure semantics;
+	// see exportWorkspace.
+	exportRequired bool
+}
+
+// finalise applies the policy to one completed run. Both steps get
+// fresh, bounded contexts: the run's own context may already be
+// cancelled by a SIGTERM or deadline, and a remote sink or GCS upload
+// would otherwise silently drop the result on every cancelled run.
+// exportTo is the run's export destination (empty disables export).
+//
+// Returns runErr wrapped when non-nil — the result is still emitted so
+// the failure is observable, but a failed run has nothing to export —
+// or a required-export failure; nil otherwise. A nil trace means the
+// loop produced none at all; it has already emitted its terminal
+// "done", so nothing is emitted here to avoid a second one.
+func (p postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error, exportTo string) error {
+	if rt == nil {
+		return fmt.Errorf("running harness: %w", runErr)
+	}
+	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
+	defer emitCancel()
+	p.emit(emitCtx, cfg, rt)
+
+	if runErr != nil {
+		return fmt.Errorf("running harness: %w", runErr)
+	}
+
+	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
+	defer exportCancel()
+	return exportWorkspace(exportCtx, cfg, exportTo, p.exportRequired)
 }
 
 // setupSignalHandler installs SIGINT/SIGTERM handlers that cancel the given context.

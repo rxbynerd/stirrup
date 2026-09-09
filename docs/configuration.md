@@ -585,6 +585,15 @@ via the `gcp-workload-identity` credential source — the GCE/GKE
 metadata server that Cloud Run, GKE Workload Identity, and plain GCE
 VMs expose. There is no credential override for the exporter in v1.
 
+With a follow-up grace window configured, every run exports once it
+completes. The primary run uploads to the configured URI verbatim;
+each follow-up run uploads to the same URI with its own run ID
+inserted as the path segment before the object name
+(`gs://bucket/runs/r1/workspace.tar.gz` →
+`gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so later
+runs never overwrite the primary tarball. The same
+`--export-workspace-required` policy applies to every run.
+
 ### Dry-run
 
 The preflight flags. See [Dry-run preflight](#dry-run-preflight) for the

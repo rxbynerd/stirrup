@@ -167,37 +167,20 @@ func runJob(cmd *cobra.Command, args []string) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	runTrace, runErr := loop.Run(ctx, config)
-	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself
-		// failed). The loop emits "done" before finishing the trace on
-		// every path, so the control plane already has its terminal
-		// signal and must not receive a second one here.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-	printRunSummary(runTrace)
-	// Fresh context: ctx may already be cancelled by a SIGTERM here, and a
-	// remote sink would otherwise silently drop the result on every
-	// cancelled run.
-	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
-	defer emitCancel()
-	emitRunResult(emitCtx, config, runTrace)
-
-	if runErr != nil {
-		// A trace can exist alongside a fatal runErr (e.g. setup or a fatal
-		// preRun hook failed); the emission above must still happen, but
-		// there is nothing further to do for a failed run.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-
 	// The control plane decides the export URI via
 	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
 	// an exit-failing job doesn't lose the trace/resultSink before an
 	// operator can correlate it.
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
-	defer exportCancel()
-	if err := exportWorkspace(exportCtx, config, false); err != nil {
-		// Unreachable in the non-required path; guards the signature.
+	policy := postRunPolicy{
+		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
+			printRunSummary(rt)
+			emitRunResult(ctx, cfg, rt)
+		},
+		exportRequired: false,
+	}
+
+	runTrace, runErr := loop.Run(ctx, config)
+	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
 
@@ -210,7 +193,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if graceSecs > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{})
+		core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
+			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
+				// Export is never required here, so the only error finalise
+				// can return is the run's own, already reported via the
+				// transport and the result sink.
+				_ = policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+			},
+		})
 	}
 
 	// A non-success outcome (runErr == nil) must still fail the process so

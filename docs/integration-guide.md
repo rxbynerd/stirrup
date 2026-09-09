@@ -592,10 +592,19 @@ re-provisioning the sandbox.
   is ignored. Each accepted follow-up ends with its own `done` and
   resets the grace timer.
 - Follow-ups share the primary run's original context deadline; the
-  `timeout` budget does not restart. The job also does not re-run its
-  `resultSink` or workspace-export steps for follow-ups, so consume each
-  follow-up's `done` and configure a trace emitter when those runs need
-  durable detail.
+  `timeout` budget does not restart.
+- Every run — primary and each follow-up — is finalised the same way:
+  its `RunResult` is emitted on the configured `resultSink` exactly once,
+  and, when `executor.workspaceExportTo` is set, its workspace is
+  exported once the run completes. The primary run exports to the
+  configured URI verbatim; each follow-up exports to that URI with its
+  own run ID inserted as the path segment before the object name
+  (`gs://bucket/runs/r1/workspace.tar.gz` →
+  `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so successive
+  tarballs never overwrite each other. The follow-up's run ID is the
+  `runId` on its `RunResult`. Export failures follow the same soft-fail
+  policy as the primary run (`--export-workspace-required` hardens both
+  on the CLI).
 - A `cancel` during the grace window closes the stream promptly without
   an extra `done`.
 
