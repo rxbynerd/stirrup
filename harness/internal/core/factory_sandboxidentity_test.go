@@ -32,10 +32,12 @@ func boolPtr(b bool) *bool { return &b }
 // consumes (transport.Transport) rather than re-dialing a real gRPC
 // connection.
 type fakeControlPlaneTransport struct {
-	mu       sync.Mutex
-	handlers []func(types.ControlEvent)
-	emitted  []types.HarnessEvent
-	requests int
+	mu              sync.Mutex
+	handlers        []func(types.ControlEvent)
+	emitted         []types.HarnessEvent
+	requests        int
+	closed          bool
+	emitsAfterClose int
 
 	respondToken string
 	// respondTokenPerRequest, when true, suffixes respondToken with the
@@ -58,6 +60,11 @@ type fakeControlPlaneTransport struct {
 
 func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 	f.mu.Lock()
+	if f.closed {
+		f.emitsAfterClose++
+		f.mu.Unlock()
+		return fmt.Errorf("transport closed")
+	}
 	f.emitted = append(f.emitted, event)
 	noRespond := f.noRespond
 	if event.Type == "sandbox_token_request" {
@@ -98,7 +105,24 @@ func (f *fakeControlPlaneTransport) OnControl(handler func(types.ControlEvent)) 
 	f.handlers = append(f.handlers, handler)
 }
 
-func (f *fakeControlPlaneTransport) Close() error { return nil }
+func (f *fakeControlPlaneTransport) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *fakeControlPlaneTransport) emittedAfterClose() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.emitsAfterClose
+}
+
+func (f *fakeControlPlaneTransport) handlerCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.handlers)
+}
 
 func (f *fakeControlPlaneTransport) deliver(event types.ControlEvent) {
 	f.mu.Lock()

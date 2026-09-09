@@ -43,13 +43,32 @@ func (w *recordingWriter) all() []string {
 	return append([]string(nil), w.tokens...)
 }
 
+// syncBuffer is a log sink safe to read while the refresher goroutine is
+// still writing to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 // refreshHarness assembles a Refresher over a mockTransport whose control
 // plane answers each request with a token named after its ordinal and an
 // expiry ttl after "now". Log output is captured for leak assertions.
 type refreshHarness struct {
 	mt        *mockTransport
 	writer    *recordingWriter
-	logs      *strings.Builder
+	logs      *syncBuffer
 	exchanger *Exchanger
 }
 
@@ -78,7 +97,7 @@ func newRefreshHarness(t *testing.T, ttl time.Duration, respond func(n int, requ
 	return &refreshHarness{
 		mt:        mt,
 		writer:    newRecordingWriter(),
-		logs:      &strings.Builder{},
+		logs:      &syncBuffer{},
 		exchanger: NewExchanger(mt),
 	}
 }
@@ -530,21 +549,174 @@ func TestNewRefresher_RequiresDependencies(t *testing.T) {
 
 func TestRefreshDelay(t *testing.T) {
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
-	cases := []struct {
-		name      string
-		expiresIn time.Duration
-		want      time.Duration
-	}{
-		{"fifteen-minute token refreshes at twelve", 15 * time.Minute, 12 * time.Minute},
-		{"already expired refreshes immediately", -time.Minute, 0},
-		{"expiring now refreshes immediately", 0, 0},
+
+	// A fifteen-minute token refreshes around the twelve-minute mark, with
+	// jitter of at most 5% either way and always inside the lifetime.
+	for i := 0; i < 50; i++ {
+		got := refreshDelay(now, now.Add(15*time.Minute).Unix())
+		if got < 11*time.Minute+24*time.Second || got > 12*time.Minute+36*time.Second {
+			t.Fatalf("refreshDelay(15m) = %s, want within 5%% of 12m", got)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := refreshDelay(now, now.Add(tc.expiresIn).Unix())
-			if got != tc.want {
-				t.Errorf("refreshDelay() = %s, want %s", got, tc.want)
-			}
-		})
+	for _, expiresIn := range []time.Duration{-time.Minute, 0} {
+		if got := refreshDelay(now, now.Add(expiresIn).Unix()); got != 0 {
+			t.Errorf("refreshDelay(expires in %s) = %s, want an immediate refresh", expiresIn, got)
+		}
+	}
+}
+
+func TestRetryDelay(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	if got, ok := retryDelay(now, now.Add(4*time.Minute).Unix()); !ok || got != 2*time.Minute {
+		t.Errorf("retryDelay(4m) = (%s, %v), want (2m, true)", got, ok)
+	}
+	if _, ok := retryDelay(now, now.Add(-time.Second).Unix()); ok {
+		t.Error("retryDelay on an expired token must report no lifetime left")
+	}
+}
+
+// TestRefresher_RetriesTransientFailure drives the slack the schedule
+// reserves: a refresh whose exchange times out is retried within the
+// token's remaining lifetime and succeeds without any warning.
+func TestRefresher_RetriesTransientFailure(t *testing.T) {
+	const ttl = 2 * time.Second
+	h := newRefreshHarness(t, ttl, func(n int, requestID string) (types.ControlEvent, bool) {
+		if n == 2 {
+			return types.ControlEvent{}, false
+		}
+		return types.ControlEvent{
+			Type:      "sandbox_token_response",
+			RequestID: requestID,
+			Token:     tokenFor(n),
+			ExpiresAt: int64Ptr(time.Now().Add(ttl).Unix()),
+		}, true
+	})
+
+	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
+	if err != nil {
+		t.Fatalf("initial Exchange() error: %v", err)
+	}
+
+	r, err := NewRefresher(RefresherConfig{
+		Exchanger: h.exchanger,
+		Writer:    h.writer,
+		Transport: h.mt,
+		Logger:    slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Timeout:   30 * time.Millisecond,
+		ExpiresAt: initial.ExpiresAt,
+	})
+	if err != nil {
+		t.Fatalf("NewRefresher() error: %v", err)
+	}
+	r.Start(context.Background())
+	defer func() { _ = r.Close() }()
+
+	if got := waitFor(t, h.writer.written, 5*time.Second); got != tokenFor(3) {
+		t.Errorf("delivered %q, want the token issued on the retried request %q", got, tokenFor(3))
+	}
+	if reqs := h.emittedOfType("sandbox_token_request"); len(reqs) != 3 {
+		t.Errorf("expected 3 requests (initial, timed-out refresh, retry), got %d", len(reqs))
+	}
+	if warnings := h.emittedOfType("warning"); len(warnings) != 0 {
+		t.Errorf("a retried transient failure must not warn, got %+v", warnings)
+	}
+	if !strings.Contains(h.logs.String(), "retrying within the token's remaining lifetime") {
+		t.Errorf("expected a retry log line, got: %q", h.logs.String())
+	}
+	h.assertNoTokenLeak(t)
+}
+
+// TestRefresher_TransientFailureWithNoLifetimeLeftWarns asserts a timeout
+// on an already-expired token is not retried into the void: with no
+// lifetime left the schedule stops and warns.
+func TestRefresher_TransientFailureWithNoLifetimeLeftWarns(t *testing.T) {
+	h := newRefreshHarness(t, 0, func(_ int, _ string) (types.ControlEvent, bool) {
+		return types.ControlEvent{}, false
+	})
+	expired := time.Now().Add(-time.Minute).Unix()
+
+	r, err := NewRefresher(RefresherConfig{
+		Exchanger: h.exchanger,
+		Writer:    h.writer,
+		Transport: h.mt,
+		Logger:    slog.New(slog.NewTextHandler(h.logs, nil)),
+		Timeout:   20 * time.Millisecond,
+		ExpiresAt: &expired,
+	})
+	if err != nil {
+		t.Fatalf("NewRefresher() error: %v", err)
+	}
+	r.Start(context.Background())
+	warning := h.waitForWarning(t)
+	_ = r.Close()
+
+	if !strings.Contains(warning.Message, "timed out") {
+		t.Errorf("warning %q should name the timeout", warning.Message)
+	}
+	if reqs := h.emittedOfType("sandbox_token_request"); len(reqs) != 1 {
+		t.Errorf("expected exactly 1 request with no lifetime left to retry in, got %d", len(reqs))
+	}
+}
+
+// blockingWriter ignores ctx and blocks until released, standing in for a
+// wedged engine write.
+type blockingWriter struct {
+	enteredOnce sync.Once
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (w *blockingWriter) WriteSandboxIdentityToken(context.Context, string) error {
+	w.enteredOnce.Do(func() { close(w.entered) })
+	<-w.release
+	return nil
+}
+
+// TestRefresher_CloseIsBounded asserts Close gives up on a delivery that
+// ignores cancellation once closeGrace elapses, so a wedged engine cannot
+// hold the loop's shutdown.
+func TestRefresher_CloseIsBounded(t *testing.T) {
+	prev := closeGrace
+	closeGrace = 50 * time.Millisecond
+	defer func() { closeGrace = prev }()
+
+	h := newRefreshHarness(t, 40*time.Millisecond, nil)
+	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
+	if err != nil {
+		t.Fatalf("initial Exchange() error: %v", err)
+	}
+	writer := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	defer close(writer.release)
+
+	r, err := NewRefresher(RefresherConfig{
+		Exchanger: h.exchanger,
+		Writer:    writer,
+		Transport: h.mt,
+		Logger:    slog.New(slog.NewTextHandler(h.logs, nil)),
+		Timeout:   time.Second,
+		ExpiresAt: initial.ExpiresAt,
+	})
+	if err != nil {
+		t.Fatalf("NewRefresher() error: %v", err)
+	}
+	r.Start(context.Background())
+
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never reached the writer")
+	}
+
+	start := time.Now()
+	err = r.Close()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Error("Close() must report that the refresher did not stop in time")
+	}
+	if elapsed > time.Second {
+		t.Errorf("Close() took %s; it must give up after closeGrace", elapsed)
+	}
+	if !strings.Contains(h.logs.String(), "did not stop within the close grace period") {
+		t.Errorf("expected the abandonment log line, got: %q", h.logs.String())
 	}
 }

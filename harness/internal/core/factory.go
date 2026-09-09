@@ -43,6 +43,12 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// The executor capability the factory dispatches on and the narrower
+// interface the refresher consumes must stay interchangeable; a drift
+// between them would otherwise surface only at run time, as an executor
+// that "cannot deliver a sandbox identity token".
+var _ sandboxidentity.TokenWriter = (executor.SandboxIdentityTokenWriter)(nil)
+
 // BuildLoop constructs an AgenticLoop from a RunConfig: it validates the
 // config, resolves secrets, and instantiates all components. This is the
 // composition root. opts carries CLI-only debug behaviour (see LoopOptions);
@@ -62,8 +68,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	var ownedClosers []io.Closer
+	// sandboxRefresher is held outside ownedClosers until the build
+	// completes so that, whether the build fails or the loop is closed, it
+	// is always the first component stopped: it must not emit on a closed
+	// transport or write through a closed executor.
+	var sandboxRefresher *sandboxidentity.Refresher
 	emitReady := tp == nil
 	cleanup := func() {
+		if sandboxRefresher != nil {
+			_ = sandboxRefresher.Close()
+		}
 		for i := len(ownedClosers) - 1; i >= 0; i-- {
 			_ = ownedClosers[i].Close()
 		}
@@ -152,9 +166,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// credential helper reads the token file, not the env var, so the
 	// sandbox is unusable for git until this lands; a failure tears the
 	// sandbox down rather than leaving one that cannot authenticate.
-	var sandboxTokenWriter sandboxidentity.TokenWriter
+	var sandboxTokenWriter executor.SandboxIdentityTokenWriter
 	if config.Executor.SandboxIdentity != nil {
-		writer, ok := exec.(sandboxidentity.TokenWriter)
+		writer, ok := exec.(executor.SandboxIdentityTokenWriter)
 		if !ok {
 			cleanup()
 			return nil, fmt.Errorf("executor.sandboxIdentity: executor type %q cannot deliver a sandbox identity token", config.Executor.Type)
@@ -230,8 +244,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// so its log lines ride the scrub-wrapped logger. Runs from now until
 	// the loop is closed, which spans the run including post-run hooks.
 	if sandboxTokenWriter != nil {
+		// The run ctx already carries the wall-clock budget as a deadline
+		// when the job entrypoint applied one; the config value is the
+		// fallback for callers that did not.
 		var budgetDeadline time.Time
-		if config.Timeout != nil && *config.Timeout > 0 {
+		if deadline, ok := ctx.Deadline(); ok {
+			budgetDeadline = deadline
+		} else if config.Timeout != nil && *config.Timeout > 0 {
 			budgetDeadline = time.Now().Add(time.Duration(*config.Timeout) * time.Second)
 		}
 		refresher, rerr := sandboxidentity.NewRefresher(sandboxidentity.RefresherConfig{
@@ -248,7 +267,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", rerr)
 		}
 		refresher.Start(ctx)
-		ownedClosers = append(ownedClosers, refresher)
+		sandboxRefresher = refresher
 	}
 
 	// 5. MCP tool discovery. Connection failures are non-fatal: the
@@ -552,6 +571,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// Tool-choice escalation policy: off by default (nil) unless the
 	// operator opts in via RunConfig.ToolChoiceEscalation.
 	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
+
+	// Last in, first closed: the refresher stops before every other owned
+	// resource (see cleanup above for the same ordering on a failed build).
+	if sandboxRefresher != nil {
+		ownedClosers = append(ownedClosers, sandboxRefresher)
+	}
 
 	loop := &AgenticLoop{
 		Provider:     prov,

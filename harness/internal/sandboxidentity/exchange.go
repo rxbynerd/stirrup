@@ -8,7 +8,9 @@ package sandboxidentity
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +29,59 @@ const DefaultTimeout = 60 * time.Second
 // not a usable credential, so silently trimming would hide a misbehaving
 // control plane behind an auth error.
 const MaxTokenBytes = 16 * 1024
+
+// maxReasonRunes bounds the control-plane-supplied decline reason before it
+// is interpolated into an error that reaches a warning event and the log.
+const maxReasonRunes = 200
+
+// Exchange outcomes. The transient pair means the control plane was not
+// reached or did not answer in time; every other sentinel means it
+// answered with something the harness must not use, so retrying would
+// only repeat the answer.
+var (
+	ErrDeclined       = errors.New("sandbox identity token exchange declined by control plane")
+	ErrTimeout        = errors.New("sandbox identity token exchange timed out")
+	ErrTransport      = errors.New("sandbox identity token request could not be sent")
+	ErrEmptyToken     = errors.New("sandbox identity token exchange: control plane returned an empty token")
+	ErrTokenTooLarge  = errors.New("sandbox identity token exchange: token exceeds the byte cap")
+	ErrMalformedToken = errors.New("sandbox identity token exchange: token contains characters outside printable ASCII")
+)
+
+// IsTransient reports whether err is an exchange failure worth retrying
+// while the current token still has lifetime left.
+func IsTransient(err error) bool {
+	return errors.Is(err, ErrTimeout) || errors.Is(err, ErrTransport)
+}
+
+// validToken accepts printable ASCII only. The token is echoed verbatim
+// into git's line-oriented credential-helper protocol, so a newline or
+// carriage return would let a control plane append helper directives of
+// its own; a JWT is base64url and dots, so the intended issuer loses
+// nothing.
+func validToken(token string) bool {
+	for i := 0; i < len(token); i++ {
+		if token[i] < 0x20 || token[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeReason drops control characters and caps the length of a
+// control-plane-supplied reason so it cannot smuggle multi-line or
+// oversized content into a warning event or a log line.
+func sanitizeReason(reason string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, reason)
+	if runes := []rune(cleaned); len(runes) > maxReasonRunes {
+		return string(runes[:maxReasonRunes]) + "…"
+	}
+	return cleaned
+}
 
 // Transport is the minimal surface Exchange needs, declared locally rather
 // than depending on transport.Transport (which also requires Close) to keep
@@ -122,7 +177,14 @@ func (e *Exchanger) Exchange(ctx context.Context, audience string, timeout time.
 		return nil
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("sandbox identity token exchange: %w", err)
+		switch {
+		case ctx.Err() != nil:
+			return Result{}, fmt.Errorf("sandbox identity token exchange: %w", err)
+		case errors.Is(err, transport.ErrAwaitTimeout):
+			return Result{}, fmt.Errorf("%w: %v", ErrTimeout, err)
+		default:
+			return Result{}, fmt.Errorf("%w: %v", ErrTransport, err)
+		}
 	}
 
 	resp, ok := payload.(tokenResponse)
@@ -133,14 +195,17 @@ func (e *Exchanger) Exchange(ctx context.Context, audience string, timeout time.
 	}
 
 	if resp.isError {
-		return Result{}, fmt.Errorf("sandbox identity token exchange declined by control plane: %s", resp.reason)
+		return Result{}, fmt.Errorf("%w: %s", ErrDeclined, sanitizeReason(resp.reason))
 	}
 	if resp.token == "" {
-		return Result{}, fmt.Errorf("sandbox identity token exchange: control plane returned an empty token")
+		return Result{}, ErrEmptyToken
 	}
 	if len(resp.token) > MaxTokenBytes {
 		// Length only, never content.
-		return Result{}, fmt.Errorf("sandbox identity token exchange: token exceeds %d byte cap (got %d bytes)", MaxTokenBytes, len(resp.token))
+		return Result{}, fmt.Errorf("%w: %d bytes over %d", ErrTokenTooLarge, len(resp.token), MaxTokenBytes)
+	}
+	if !validToken(resp.token) {
+		return Result{}, ErrMalformedToken
 	}
 
 	return Result{Token: resp.token, ExpiresAt: resp.expiresAt}, nil

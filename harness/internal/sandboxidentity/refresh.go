@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -14,10 +16,21 @@ import (
 // initial exchange counts, so at most seven refreshes follow.
 const MaxTokenRequests = 8
 
-// refreshFraction schedules a refresh once this fraction of the token's
-// remaining lifetime has elapsed; the rest is slack for a slow control
-// plane and clock skew between it and the harness.
-const refreshFraction = 0.8
+const (
+	// refreshFraction schedules a refresh once this fraction of the token's
+	// remaining lifetime has elapsed; the rest is slack for a slow control
+	// plane, a retried exchange, and clock skew between it and the harness.
+	refreshFraction = 0.8
+	// refreshJitter spreads the refreshes of tokens minted in the same
+	// second across runs by up to this fraction of the delay either way.
+	refreshJitter = 0.05
+)
+
+// closeGrace bounds how long Close waits for the refresh goroutine. A
+// wedged engine write could otherwise hold the loop's Close, and with it
+// the shutdown watchdog's grace, past the point where the sandbox can still
+// be torn down. A var so tests can shrink it.
+var closeGrace = 5 * time.Second
 
 // TokenWriter delivers a token into the running sandbox. The executors
 // satisfy it through executor.SandboxIdentityTokenWriter.
@@ -49,16 +62,19 @@ type RefresherConfig struct {
 
 // Refresher re-requests the sandbox identity token ahead of expiry and
 // delivers each new token through the TokenWriter, decoupling the token's
-// lifetime from the run's wall-clock budget. Every terminal outcome that
-// leaves a token in the sandbox past its expiry — a declined or failed
-// exchange, a failed delivery, an exhausted request budget — is reported
-// as a "warning" HarnessEvent and a log line, never silently.
+// lifetime from the run's wall-clock budget. A transient exchange failure
+// is retried within the token's remaining lifetime; every terminal outcome
+// that leaves a token in the sandbox past its expiry — a declined or
+// unusable answer, a failed delivery, an exhausted request budget — is
+// reported as a "warning" HarnessEvent and a log line, never silently.
 //
 // The agentic loop is unaware of it: the factory starts it once the initial
-// token is delivered and stops it through Close with the loop's other owned
-// resources.
+// token is delivered and stops it through Close ahead of the loop's other
+// owned resources.
 type Refresher struct {
-	cfg    RefresherConfig
+	cfg RefresherConfig
+
+	mu     sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -79,8 +95,14 @@ func NewRefresher(cfg RefresherConfig) (*Refresher, error) {
 }
 
 // Start launches the refresh schedule on a goroutine bounded by ctx. It is
-// a no-op beyond a log line when the initial token reported no expiry.
+// a no-op beyond a log line when the initial token reported no expiry, and
+// a no-op on a Refresher that is already running.
 func (r *Refresher) Start(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cancel != nil {
+		return
+	}
 	if r.cfg.ExpiresAt == nil {
 		r.cfg.Logger.Info("sandbox identity token reports no expiry; refresh not scheduled")
 		return
@@ -90,41 +112,69 @@ func (r *Refresher) Start(ctx context.Context) {
 	go r.run(ctx, *r.cfg.ExpiresAt)
 }
 
-// Close stops the schedule and waits for an in-flight refresh to abandon
-// its exchange. Safe to call without Start.
+// Close stops the schedule and waits, for at most closeGrace, for an
+// in-flight refresh to abandon its exchange or delivery. Safe to call
+// without Start.
 func (r *Refresher) Close() error {
-	if r.cancel == nil {
+	r.mu.Lock()
+	cancel, done := r.cancel, r.done
+	r.mu.Unlock()
+	if cancel == nil {
 		return nil
 	}
-	r.cancel()
-	<-r.done
-	return nil
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(closeGrace):
+		r.cfg.Logger.Warn("sandbox identity token refresher did not stop within the close grace period; abandoning it", "grace", closeGrace)
+		return fmt.Errorf("sandbox identity token refresher did not stop within %s", closeGrace)
+	}
 }
 
 func (r *Refresher) run(ctx context.Context, expiresAt int64) {
 	defer close(r.done)
 
+	delay := refreshDelay(r.cfg.Now(), expiresAt)
 	for {
 		if r.cfg.Exchanger.Requests() >= MaxTokenRequests {
 			r.exhausted(expiresAt)
 			return
 		}
-
-		timer := time.NewTimer(refreshDelay(r.cfg.Now(), expiresAt))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		// The explicit check after the wait matters: with a due timer and a
+		// cancelled ctx both ready, select may pick the timer, and nothing
+		// may be exchanged or delivered once Close has run.
+		if !sleepCtx(ctx, delay) || ctx.Err() != nil {
 			return
-		case <-timer.C:
 		}
 
 		result, err := r.cfg.Exchanger.Exchange(ctx, r.cfg.Audience, r.cfg.Timeout)
+		if err == nil && ctx.Err() != nil {
+			// A response that raced the cancellation is not delivered.
+			return
+		}
 		if err != nil {
-			r.failed(ctx, expiresAt, err)
+			if ctx.Err() != nil {
+				r.cfg.Logger.Debug("sandbox identity token refresh abandoned; run context ended", "error", err)
+				return
+			}
+			if retry, ok := retryDelay(r.cfg.Now(), expiresAt); ok && IsTransient(err) {
+				r.cfg.Logger.Warn("sandbox identity token refresh attempt failed; retrying within the token's remaining lifetime",
+					"error", err,
+					"retryIn", retry,
+					"requests", r.cfg.Exchanger.Requests())
+				delay = retry
+				continue
+			}
+			r.failed(expiresAt, err)
 			return
 		}
 		if err := r.cfg.Writer.WriteSandboxIdentityToken(ctx, result.Token); err != nil {
-			r.failed(ctx, expiresAt, fmt.Errorf("deliver refreshed token: %w", err))
+			if ctx.Err() != nil {
+				r.cfg.Logger.Debug("sandbox identity token delivery abandoned; run context ended", "error", err)
+				return
+			}
+			r.failed(expiresAt, fmt.Errorf("deliver refreshed token: %w", err))
 			return
 		}
 
@@ -135,19 +185,15 @@ func (r *Refresher) run(ctx context.Context, expiresAt int64) {
 			return
 		}
 		expiresAt = *result.ExpiresAt
+		delay = refreshDelay(r.cfg.Now(), expiresAt)
 		r.cfg.Logger.Info("sandbox identity token refreshed",
 			"requests", requests,
 			"tokenExpiresAtUnix", expiresAt)
 	}
 }
 
-// failed reports a refresh that left the previous token in place. A ctx
-// that has already ended means the run is over, which is not a failure.
-func (r *Refresher) failed(ctx context.Context, expiresAt int64, err error) {
-	if ctx.Err() != nil {
-		r.cfg.Logger.Debug("sandbox identity token refresh abandoned; run context ended", "error", err)
-		return
-	}
+// failed reports a refresh that left the previous token in place.
+func (r *Refresher) failed(expiresAt int64, err error) {
 	r.warn(fmt.Sprintf(
 		"sandbox identity token refresh failed: %v; the sandbox keeps its previous token, which expires at %d (Unix seconds), and git operations after that will fail authentication",
 		err, expiresAt),
@@ -163,7 +209,7 @@ func (r *Refresher) exhausted(expiresAt int64) {
 		return
 	}
 	r.warn(fmt.Sprintf(
-		"sandbox identity token request budget exhausted after %d requests; the current token expires at %d (Unix seconds), and git operations after that will fail authentication",
+		"sandbox identity token request budget exhausted after %d requests; no further refresh will be attempted, the current token expires at %d (Unix seconds), and git operations after that will fail authentication",
 		MaxTokenRequests, expiresAt),
 		"requests", MaxTokenRequests, "tokenExpiresAtUnix", expiresAt)
 }
@@ -175,13 +221,39 @@ func (r *Refresher) warn(message string, logArgs ...any) {
 	}
 }
 
+// sleepCtx waits for d or until ctx ends, reporting whether the full wait
+// elapsed.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // refreshDelay is how long to wait before refreshing a token expiring at
-// expiresAt: refreshFraction of the remaining lifetime, or nothing for a
-// token that has already expired.
+// expiresAt: refreshFraction of the remaining lifetime with refreshJitter
+// applied, or nothing for a token that has already expired.
 func refreshDelay(now time.Time, expiresAt int64) time.Duration {
 	remaining := time.Unix(expiresAt, 0).Sub(now)
 	if remaining <= 0 {
 		return 0
 	}
-	return time.Duration(float64(remaining) * refreshFraction)
+	jitter := 1 + (rand.Float64()*2-1)*refreshJitter //nolint:gosec // schedule spreading, not a secret
+	return time.Duration(float64(remaining) * refreshFraction * jitter)
+}
+
+// retryDelay is how long to wait before retrying a transient exchange
+// failure: half of the token's remaining lifetime, so retries converge on
+// the expiry rather than overshooting it. It reports false once no
+// lifetime remains.
+func retryDelay(now time.Time, expiresAt int64) (time.Duration, bool) {
+	remaining := time.Unix(expiresAt, 0).Sub(now)
+	if remaining <= 0 {
+		return 0, false
+	}
+	return remaining / 2, true
 }
