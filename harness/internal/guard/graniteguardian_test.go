@@ -412,6 +412,130 @@ func TestGraniteGuardianPolarityConvention(t *testing.T) {
 	}
 }
 
+// requirementFormMarkers are modal/obligation phrasings. A criterion
+// containing one describes desired behaviour rather than a risk: a
+// benign response satisfies the obligation, the classifier answers
+// "yes", and the adapter's yes-means-deny mapping produces a wrong
+// verdict on good content.
+var requirementFormMarkers = []string{
+	"must ",
+	"should ",
+	"shall ",
+	"needs to",
+	"is required",
+	"are required",
+	"directly addresses",
+	"is supported by",
+	"are supported by",
+	"stays on topic",
+	"stay on topic",
+	"adheres to",
+	"adhere to",
+	"complies with",
+	"comply with",
+}
+
+// riskFormMarkers are the risk vocabulary the current builtInCriteria
+// entries use to describe a problem. Every entry must contain at least
+// one, so a rewrite that drops all risk-form wording — without
+// necessarily adding a requirement-form marker — still fails.
+var riskFormMarkers = []string{
+	"contains", "attempts", "attempt", "fails to", "fail to",
+	"not supported", "unsupported", "drifts", "drift",
+	"violates", "violate", "harm", "unsafe", "injection",
+	"malformed", "hallucinated", "non-existent", "jailbreak",
+	"mismatch", "evade",
+}
+
+// TestBuiltInCriteriaPolarityConvention pins the polarity invariant
+// documented on defaultPhaseCriteria: every builtInCriteria entry must be
+// phrased so that meeting it means the content is risky, since the
+// classifier's "yes" maps to VerdictDeny. It rejects requirement-form
+// auxiliaries and requires at least one risk-form marker, and it iterates
+// the map rather than a fixed ID list so a future entry is checked
+// automatically.
+func TestBuiltInCriteriaPolarityConvention(t *testing.T) {
+	for id, text := range builtInCriteria {
+		t.Run(id, func(t *testing.T) {
+			if text == "" {
+				t.Fatalf("criterion %q has empty text", id)
+			}
+			lower := strings.ToLower(text)
+			for _, marker := range requirementFormMarkers {
+				if strings.Contains(lower, marker) {
+					t.Errorf("criterion %q contains requirement-form marker %q — under the scoring schema this maps a benign response to deny. Criterion: %s", id, marker, text)
+				}
+			}
+			hasRisk := false
+			for _, marker := range riskFormMarkers {
+				if strings.Contains(lower, marker) {
+					hasRisk = true
+					break
+				}
+			}
+			if !hasRisk {
+				t.Errorf("criterion %q contains no risk-form marker; it may not describe a risk at all. Criterion: %s", id, text)
+			}
+		})
+	}
+}
+
+// TestBuiltInCriteriaPolarityConvention_RejectsRequirementFormFixtures
+// pins two known requirement-form wordings as a negative fixture: the
+// heuristic in TestBuiltInCriteriaPolarityConvention must flag both, so
+// it is verified to actually detect the class of bug it exists to catch
+// rather than merely passing on the current builtInCriteria text.
+func TestBuiltInCriteriaPolarityConvention_RejectsRequirementFormFixtures(t *testing.T) {
+	fixtures := map[string]string{
+		"groundedness":     "Every factual claim in the response must be supported by the documents in the prior turns, if any documents were provided.",
+		"answer_relevance": "The response directly addresses the user's most recent request and does not drift to unrelated topics.",
+	}
+	for id, text := range fixtures {
+		t.Run(id, func(t *testing.T) {
+			lower := strings.ToLower(text)
+			for _, marker := range requirementFormMarkers {
+				if strings.Contains(lower, marker) {
+					return // flagged, as expected
+				}
+			}
+			t.Fatalf("heuristic failed to flag requirement-form fixture for %q: %s", id, text)
+		})
+	}
+}
+
+// TestBuiltInCriteriaRoutesRiskPhrasedText confirms groundedness and
+// answer_relevance route through GraniteGuardianConfig.Criteria into the
+// emitted prompt using their corrected, risk-phrased text — guarding
+// against a future edit reintroducing requirement-form phrasing.
+func TestBuiltInCriteriaRoutesRiskPhrasedText(t *testing.T) {
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"groundedness", "are not supported by the documents"},
+		{"answer_relevance", "fails to address the user's most recent request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
+			g, err := NewGraniteGuardian(GraniteGuardianConfig{
+				Endpoint: fs.srv.URL,
+				Criteria: []string{tc.id},
+			})
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			if _, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"}); err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			got := fs.firstUserMessageContent(t)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("prompt for criterion %q missing risk-phrased text %q; got: %s", tc.id, tc.want, got)
+			}
+		})
+	}
+}
+
 // TestGraniteGuardianBenignPostTurnAllowed pins the parser+criterion
 // contract end-to-end: with a risk-form criterion, a benign response
 // gets "no" from the classifier and the verdict is allow.
