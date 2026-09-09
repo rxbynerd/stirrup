@@ -904,3 +904,50 @@ func TestFindFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
 		t.Errorf("expected exec-backed match, got %q", out)
 	}
 }
+
+// TestGrepFilesTool_SandboxRipgrepPopulatesColumn confirms the sandboxed rg
+// path shares the host path's column semantics, and that the `grep` fallback
+// taken when rg is absent still omits the field.
+func TestGrepFilesTool_SandboxRipgrepPopulatesColumn(t *testing.T) {
+	rgJSON := `{"type":"match","data":{"path":{"text":"/workspace/sub/a.go"},"lines":{"text":"héllo needle here\n"},` +
+		`"line_number":3,"submatches":[{"match":{"text":"needle"},"start":7,"end":13}]}}`
+	withRG := &sandboxExecExecutor{
+		resolvedDir: "/workspace/sub",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 0, Stdout: "ripgrep 14.1.0"}, nil
+			case strings.HasPrefix(command, "rg --json"):
+				return &executor.ExecResult{ExitCode: 0, Stdout: rgJSON}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	got := decodeSearchResult(t, GrepFilesTool(withRG), input)
+	want := searchMatch{Path: "/workspace/sub/a.go", Line: 3, Column: 8, Text: "héllo needle here"}
+	if len(got.Matches) != 1 || got.Matches[0] != want {
+		t.Fatalf("sandboxed rg match wrong\n got: %+v\nwant: %+v", got.Matches, want)
+	}
+
+	withGrep := &sandboxExecExecutor{
+		resolvedDir: "/workspace/sub",
+		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+			switch {
+			case strings.HasPrefix(command, "rg --version"):
+				return &executor.ExecResult{ExitCode: 127, Stderr: "rg: not found"}, nil
+			case strings.HasPrefix(command, "grep "):
+				return &executor.ExecResult{ExitCode: 0, Stdout: "/workspace/sub/a.go:3:héllo needle here\n"}, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %q", command)
+			}
+		},
+	}
+	fallback, err := GrepFilesTool(withGrep).StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertNoColumnKey(t, fallback.Structured)
+}

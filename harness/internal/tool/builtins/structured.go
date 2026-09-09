@@ -63,10 +63,11 @@ type commandOutputChunkResult struct {
 	RedactionCount int    `json:"redaction_count,omitempty"`
 }
 
-// searchMatch is a single hit from grep_files. Column is 1-indexed and present
-// only when the search path can report it; the byte-offset is omitted (column
-// 0) for the Go-native walker and the rg path, neither of which currently
-// emits column information. Text is the full matched line, verbatim.
+// searchMatch is a single hit from grep_files. Column is the 1-indexed *byte*
+// offset of the match within Text — ripgrep's convention, not a rune or
+// display column, so a multi-byte prefix counts its bytes. It is present only
+// on the rg --json search path; the Go-native walker and the sandbox `grep`
+// fallback omit it (column 0). Text is the full matched line, verbatim.
 type searchMatch struct {
 	Path   string `json:"path"`
 	Line   int    `json:"line"`

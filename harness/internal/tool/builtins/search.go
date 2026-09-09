@@ -449,14 +449,22 @@ func renderFindText(paths []string) string {
 // matched text can never be misattributed the way splitting rendered
 // "path:line:text" text would. Non-UTF-8 paths/text arrive base64-encoded under
 // "bytes" instead of "text"; we decode that so the structured match still
-// carries the real bytes.
+// carries the real bytes. Each submatch start is a 0-based byte offset into the
+// line, which is what searchMatch.Column is derived from.
 type rgJSONEvent struct {
 	Type string `json:"type"`
 	Data struct {
-		Path  rgJSONText `json:"path"`
-		Lines rgJSONText `json:"lines"`
-		Line  int        `json:"line_number"`
+		Path       rgJSONText       `json:"path"`
+		Lines      rgJSONText       `json:"lines"`
+		Line       int              `json:"line_number"`
+		Submatches []rgJSONSubmatch `json:"submatches"`
 	} `json:"data"`
+}
+
+// rgJSONSubmatch is one match span within a line. Start is a 0-based byte
+// offset, not a rune index.
+type rgJSONSubmatch struct {
+	Start int `json:"start"`
 }
 
 // rgJSONText is ripgrep's tagged string: valid UTF-8 under "text", otherwise
@@ -544,10 +552,19 @@ func parseRipgrepJSON(stdout string, maxResults int) []searchMatch {
 		// native walker and rg's own text mode produce. A CRLF line keeps its
 		// "\r" (the native walker splits on "\n" only), so we do NOT strip it.
 		text := strings.TrimSuffix(ev.Data.Lines.value(), "\n")
+		// rg reports each match span as a 0-based byte offset; shift to
+		// 1-indexed so Column reads the same way as Line. A match event with no
+		// submatches, or a negative offset from malformed output, leaves Column
+		// 0 for `omitempty` to drop rather than emitting a nonsense column.
+		column := 0
+		if len(ev.Data.Submatches) > 0 && ev.Data.Submatches[0].Start >= 0 {
+			column = ev.Data.Submatches[0].Start + 1
+		}
 		matches = append(matches, searchMatch{
-			Path: ev.Data.Path.value(),
-			Line: ev.Data.Line,
-			Text: text,
+			Path:   ev.Data.Path.value(),
+			Line:   ev.Data.Line,
+			Column: column,
+			Text:   text,
 		})
 		if len(matches) >= maxResults {
 			break
