@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -231,13 +233,84 @@ func TestScannedStrategy_WarnOnEvalSink_AppliesAndEmits(t *testing.T) {
 			if ev.level != "warn" {
 				t.Errorf("expected warn level, got %q", ev.level)
 			}
-			if ev.data["rule"] != "sink/python_eval" {
-				t.Errorf("expected rule sink/python_eval, got %v", ev.data["rule"])
+			if ev.data["rule"] != "sink/dynamic_eval" {
+				t.Errorf("expected rule sink/dynamic_eval, got %v", ev.data["rule"])
 			}
 		}
 	}
 	if !found {
 		t.Errorf("expected at least one code_scan_warning event, got: %+v", events)
+	}
+}
+
+// A JavaScript template literal is not shell command substitution, so
+// the edit pipeline must apply it without emitting a scan warning.
+func TestScannedStrategy_JavaScriptTemplateLiteral_NoWarning(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "springboard.js", "const x = 1;\n")
+
+	emitter := &recordingEmitter{}
+	scanner := codescanner.NewPatternScanner()
+	strat := NewScannedStrategy(NewWholeFileStrategy(), scanner, &types.CodeScannerConfig{Type: "patterns"}, emitter)
+
+	newContent := "debug(`springboard.js loaded: ${chrome.runtime.id}`);\n"
+	input, _ := json.Marshal(struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: "springboard.js", Content: newContent})
+
+	result, err := strat.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("expected Applied=true, got error: %s", result.Error)
+	}
+	for _, ev := range emitter.snapshot() {
+		if ev.event == "code_scan_warning" {
+			t.Errorf("unexpected code_scan_warning: %+v", ev)
+		}
+	}
+}
+
+// The scanner sees the path the tool was given, while the executor
+// writes through symlinks, so a shell payload can reach a shell file
+// under a name that says otherwise. Content carrying a shell shebang
+// must still be scanned as shell.
+func TestScannedStrategy_ShebangPayloadScannedUnderForeignExtension(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "deploy.sh", "echo hi\n")
+	if err := os.Symlink(filepath.Join(dir, "deploy.sh"), filepath.Join(dir, "notes.txt")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	scanner := codescanner.NewPatternScanner()
+	strat := NewScannedStrategy(NewWholeFileStrategy(), scanner,
+		&types.CodeScannerConfig{Type: "patterns", BlockOnWarn: true}, &recordingEmitter{})
+
+	input, _ := json.Marshal(struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: "notes.txt", Content: "#!/bin/bash\nUSER=`whoami`\n"})
+
+	result, err := strat.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Fatalf("expected the shell payload to be blocked, got Applied=true")
+	}
+	if !strings.Contains(result.Error, "sink/shell_backtick") {
+		t.Errorf("expected sink/shell_backtick in the error, got: %q", result.Error)
+	}
+	got, err := exec.ReadFile(context.Background(), "deploy.sh")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got != "echo hi\n" {
+		t.Errorf("symlink target must be restored, contains %q", got)
 	}
 }
 

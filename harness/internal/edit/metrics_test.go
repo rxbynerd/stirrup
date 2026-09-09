@@ -240,7 +240,7 @@ func TestScannedStrategy_RecordsWarnFinding(t *testing.T) {
 	}
 	scanned.Metrics = m
 
-	// `eval(` matches the sink/python_eval warn-severity pattern. The
+	// `eval(` matches the sink/dynamic_eval warn-severity pattern. The
 	// edit succeeds (warns do not block by default) and the wrapper
 	// records one warn finding with blocked=false.
 	input := json.RawMessage(`{
