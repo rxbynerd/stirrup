@@ -46,8 +46,13 @@ jobs:
           # gate and `just lint` produce identical diagnostics. Bump
           # this in lockstep with any local toolchain bump
           # (CONTRIBUTING.md names golangci-lint v2 as the source of
-          # truth) so a local pass implies a CI pass.
-          GOLANGCI_LINT_VERSION: 2.12.2
+          # truth) so a local pass implies a CI pass. golangci-lint
+          # refuses to lint a target whose `go` directive is newer
+          # than the Go version it was itself built with, so this must
+          # also stay at or ahead of the workspace `go` directive's
+          # major.minor version: v2.13.2 is built with go1.27.0,
+          # covering the workspace's go1.27.1 directive.
+          GOLANGCI_LINT_VERSION: 2.13.2
         run: |
           set -euo pipefail
           archive="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
