@@ -130,6 +130,16 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.Trace.Start(config.RunID, config)
 	l.resetCommandOutput(config.RunID)
+	// Sub-agents share the parent's loggers and run concurrently with
+	// it, so only a top-level run re-attributes them.
+	if l.ParentRunID == "" {
+		if l.LogScope != nil {
+			l.LogScope.Set(config.RunID)
+		}
+		if l.Security != nil {
+			l.Security.SetRunID(config.RunID)
+		}
+	}
 
 	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
 	// already set one so child spans nest correctly; otherwise establish

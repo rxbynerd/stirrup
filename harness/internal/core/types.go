@@ -110,6 +110,11 @@ type AgenticLoop struct {
 	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
+	// LogScope, when non-nil, is the run identity every logger derived
+	// from Logger stamps on its records; a top-level Run points it (and
+	// Security) at its own run ID so follow-ups are not attributed to
+	// the primary run.
+	LogScope *observability.RunScope
 	// CommandOutput is the loop's view of the run-scoped command output
 	// store, nil when capture is disabled. Sub-agents share the parent's
 	// value with OwnsCommandOutput=false; only the owning loop finalizes.

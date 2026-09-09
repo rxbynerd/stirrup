@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
@@ -129,6 +130,16 @@ func NewLoggerWithSecurity(runID string, level slog.Level, w io.Writer, sec Secu
 //
 //	SpanContextHandler ← ScrubHandler ← fanout{JSONHandler, exportHandler}
 func NewLoggerWithExport(runID string, level slog.Level, w io.Writer, sec SecurityNotifier, exportHandler slog.Handler) *slog.Logger {
+	return NewScopedLoggerWithExport(NewRunScope(runID), level, w, sec, exportHandler)
+}
+
+// NewScopedLoggerWithExport is NewLoggerWithExport with the runId
+// attribute read from scope at log time rather than fixed at
+// construction. Every logger derived from the result — With, WithGroup,
+// the copies handed to components at build — shares the scope, so a
+// process that runs several runs in sequence (follow-ups) re-attributes
+// all of them with one scope.Set.
+func NewScopedLoggerWithExport(scope *RunScope, level slog.Level, w io.Writer, sec SecurityNotifier, exportHandler slog.Handler) *slog.Logger {
 	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: level,
 	})
@@ -142,7 +153,64 @@ func NewLoggerWithExport(runID string, level slog.Level, w io.Writer, sec Securi
 	// SpanContextHandler is outermost so the trace_id / span_id it injects
 	// still flow through ScrubHandler before reaching the leaf sink(s).
 	spanHandler := NewSpanContextHandler(scrubHandler)
-	return slog.New(spanHandler).With("runId", runID)
+	return slog.New(&runScopeHandler{inner: spanHandler, scope: scope})
+}
+
+// RunScope is the mutable run identity a scoped logger stamps on every
+// record. Safe for concurrent use.
+type RunScope struct {
+	runID atomic.Pointer[string]
+}
+
+// NewRunScope returns a scope initially naming runID.
+func NewRunScope(runID string) *RunScope {
+	s := &RunScope{}
+	s.Set(runID)
+	return s
+}
+
+// Set changes the run every subsequent record is attributed to.
+func (s *RunScope) Set(runID string) {
+	s.runID.Store(&runID)
+}
+
+// RunID returns the run currently named by the scope.
+func (s *RunScope) RunID() string {
+	if p := s.runID.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// runScopeHandler adds the scope's current runId to each record as it
+// is handled. It is a record attribute, so it follows any With-bound
+// attributes and would nest inside an opened group; no logger in the
+// harness opens one.
+type runScopeHandler struct {
+	inner slog.Handler
+	scope *RunScope
+}
+
+func (h *runScopeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h *runScopeHandler) Handle(ctx context.Context, r slog.Record) error {
+	scoped := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	scoped.AddAttrs(slog.String("runId", h.scope.RunID()))
+	r.Attrs(func(a slog.Attr) bool {
+		scoped.AddAttrs(a)
+		return true
+	})
+	return h.inner.Handle(ctx, scoped)
+}
+
+func (h *runScopeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &runScopeHandler{inner: h.inner.WithAttrs(attrs), scope: h.scope}
+}
+
+func (h *runScopeHandler) WithGroup(name string) slog.Handler {
+	return &runScopeHandler{inner: h.inner.WithGroup(name), scope: h.scope}
 }
 
 // fanoutHandler dispatches every record to two inner handlers. It exists so

@@ -198,7 +198,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// SecretRedactedInOutput events; built early so MCP connection
 	// warnings below go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
-	logger := observability.NewLoggerWithExport(config.RunID, logLevel, os.Stderr, secLogger, logExportHandler)
+	logScope := observability.NewRunScope(config.RunID)
+	logger := observability.NewScopedLoggerWithExport(logScope, logLevel, os.Stderr, secLogger, logExportHandler)
 	if config.SessionName != "" {
 		// Reassigned (not shadowed) so the label propagates into
 		// AgenticLoop.Logger below.
@@ -529,6 +530,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Metrics:      metrics,
 		Security:     secLogger,
 		Logger:       logger,
+		LogScope:     logScope,
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}

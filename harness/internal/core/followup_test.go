@@ -1,13 +1,17 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -463,6 +467,61 @@ func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
 	want := append([]string{"test-run-1"}, followUps...)
 	if strings.Join(store.resets, ",") != strings.Join(want, ",") {
 		t.Fatalf("store reset to %v, want one reset per run %v", store.resets, want)
+	}
+}
+
+// TestRunFollowUpLoop_ReattributesLoggersPerRun pins that a follow-up's
+// structured log lines and security events carry the follow-up's run
+// ID rather than the primary's, so an event correlates with the run
+// that produced it.
+func TestRunFollowUpLoop_ReattributesLoggersPerRun(t *testing.T) {
+	var logBuf, secBuf bytes.Buffer
+	loop, tr := buildFollowUpTestLoop(t)
+	scope := observability.NewRunScope("test-run-1")
+	loop.Logger = observability.NewScopedLoggerWithExport(scope, slog.LevelInfo, &logBuf, nil, nil)
+	loop.LogScope = scope
+	loop.Security = security.NewSecurityLogger(&secBuf, "test-run-1")
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("primary Run: %v", err)
+	}
+	logBuf.Reset()
+	secBuf.Reset()
+
+	ran := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(*types.RunConfig, *types.RunTrace, error) {
+				loop.Security.PermissionDenied("probe", "attribution check")
+				ran <- struct{}{}
+			},
+		})
+	}()
+	tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: "follow-up"})
+	select {
+	case <-ran:
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up did not complete")
+	}
+	cancel()
+	<-done
+
+	followUp := config.RunID
+	if followUp == "test-run-1" {
+		t.Fatal("follow-up did not mint a fresh RunID")
+	}
+	if !strings.Contains(logBuf.String(), `"runId":"`+followUp+`"`) {
+		t.Errorf("follow-up log lines do not carry %q:\n%s", followUp, logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), `"runId":"test-run-1"`) {
+		t.Errorf("follow-up log lines still attributed to the primary run:\n%s", logBuf.String())
+	}
+	if !strings.Contains(secBuf.String(), `"runId":"`+followUp+`"`) {
+		t.Errorf("follow-up security events do not carry %q:\n%s", followUp, secBuf.String())
 	}
 }
 
