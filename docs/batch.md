@@ -8,11 +8,44 @@ provider's batch endpoint (Anthropic
 streaming endpoint. The provider returns the assistant message
 asynchronously, in exchange for which the harness pays roughly half
 the per-token price. Provider SLAs cap completion at 24 hours per
-batch.
+batch, but the harness never waits that long — see
+[The wait budget](#the-wait-budget).
 
 In practice this turns a streaming turn that completes in seconds
-into an async turn that can take anywhere from a few seconds to a
-full day, in exchange for a ~50% discount on input and output tokens.
+into an async turn that can take anywhere from a few seconds to the
+run's whole wall-clock budget, in exchange for a ~50% discount on
+input and output tokens.
+
+### The wait budget
+
+`ValidateRunConfig` caps every run's `timeout` at 3600 seconds, and
+both entry points bind the run context to it: `stirrup harness`
+directly, and `stirrup job` after the `task_assignment` arrives. The
+run deadline therefore cancels a pending batch wait before any longer
+harness-side cap could fire, so the batch wait budget is the run
+`timeout` and nothing larger is reachable.
+
+Validation enforces that directly:
+
+- `provider.batch.maxWaitSeconds` must lie in `(0, timeout]`. A larger
+  value is rejected with an error naming both the requested wait and
+  the run timeout.
+- Omitting `maxWaitSeconds` on an enabled batch config defaults it to
+  the run `timeout`.
+
+Two consequences worth planning around:
+
+- A provider batch that has not resolved within the run's `timeout`
+  is abandoned. Batch mode suits work that the provider typically
+  turns around in minutes, not work that relies on the 24-hour SLA
+  tail.
+- `fallbackOnTimeout` only engages when the harness-side cap fires
+  *before* the run deadline. At the default (`maxWaitSeconds ==
+  timeout`) the run deadline wins and the run ends without a
+  streaming retry. Operators who want the fallback must set
+  `maxWaitSeconds` low enough to leave a streaming turn's worth of
+  headroom — for example `maxWaitSeconds: 3000` against
+  `timeout: 3600`.
 
 ### When to use it
 
@@ -27,9 +60,9 @@ enforces the safe-by-default posture:
 - **`planning`** and **`review`** are rejected unless the operator
   sets `provider.batch.allowInteractiveModes=true`. These modes are
   interactive by design — they optimise for fast feedback on plans
-  and code reviews rather than the 24-hour wait that batch implies —
-  and the opt-in exists so an operator who has deliberately chosen
-  async planning has to acknowledge the footgun.
+  and code reviews rather than the whole-timeout wait that batch
+  implies — and the opt-in exists so an operator who has deliberately
+  chosen async planning has to acknowledge the footgun.
 - **`research`** and **`toil`** are accepted unconditionally — they
   are the modes the feature was built for.
 
@@ -59,9 +92,9 @@ file's polling setting.
 
 The recommended path is `transport=grpc`. The control plane bundles
 concurrent runs into a single provider-side batch, amortising the
-24h tail across many runs and giving the harness a single round-trip
-to wait on. The phase-2 `controlPlaneBatchClient` is the default for
-gRPC operators.
+provider-side tail across many runs and giving the harness a single
+round-trip to wait on. The phase-2 `controlPlaneBatchClient` is the
+default for gRPC operators.
 
 Stdio operators must set `provider.batch.harnessSidePolling=true` in
 their `--config`. In this mode polling executes within the harness
@@ -81,7 +114,7 @@ below).
 
 ### Cost and budget caveats
 
-Two operator-visible gaps follow from the 24h wait window:
+Two operator-visible gaps follow from the wait window:
 
 **Budget overrun gap.** `MaxTokenBudget` is checked at the top of
 each loop turn and again after tool dispatch, never against the call
@@ -103,26 +136,33 @@ validated at ≤ 3600 s and bound to the run context on both
 `stirrup harness` and `stirrup job` — plus `MaxTokenBudget`,
 `MaxTurns`, and whatever the control plane enforces.
 
-**Long-lived credential exposure.** A 24h batch wait keeps the
-provider's API credentials live in memory for 24h, against ~120s for
-a streaming turn. Operators using `WebIdentityAWSSource` (or any
-other `credential.Source` backed by a short-lived federated token)
-should confirm their `CredentialsCache` TTL covers the full
-`MaxWaitSeconds` window — a refresh that fires mid-wait can leave
-the harness holding stale credentials when the batch completes.
+**Long-lived credential exposure.** A batch wait keeps the provider's
+API credentials live in memory for up to the run's `timeout` (an hour
+at the cap), against ~120s for a streaming turn. Operators using
+`WebIdentityAWSSource` (or any other `credential.Source` backed by a
+short-lived federated token) should confirm their `CredentialsCache`
+TTL covers the full `MaxWaitSeconds` window — a refresh that fires
+mid-wait can leave the harness holding stale credentials when the
+batch completes.
 
 ### `MaxTurns` × `MaxWaitSeconds` warning
 
 The default `MaxTurns` cap is 20, so the nominal worst case is
 `maxTurns × maxWaitSeconds`. The run's `Timeout` bounds that: it is
 validated at ≤ 3600 s and applied to the run context on both entry
-points, so no batch run reaches the wait window's own ceiling.
+points, so no batch run reaches the wait window's own ceiling. At the
+CLI defaults (`--max-turns 20`, `--timeout 600`, and therefore
+`maxWaitSeconds` 600) the first turn alone can consume the entire run
+budget and the remaining 19 never start.
+
 `ValidateRunConfig` emits a `slog` WARN (not an error) when
-`provider.batch.enabled` is set with `maxTurns > 5`, so operators
-see the warning at run start without the validator hard-rejecting
-an intentional choice. The threshold is advisory: production batch
-runs should set `maxTurns <= 5` unless the operator has a specific
-reason to accept the extended worst-case.
+`provider.batch.enabled` is set with `maxTurns > 5`, reporting
+`maxWaitSeconds` and the `worstCaseSeconds` product, so operators see
+the mismatch at run start without the validator hard-rejecting an
+intentional choice. The threshold is advisory. A batch run that
+intends to complete several turns should divide the budget
+deliberately — for example `maxTurns: 5` with `maxWaitSeconds: 700`
+against a 3600 s `timeout`.
 
 ### Cancellation
 

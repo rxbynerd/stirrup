@@ -412,11 +412,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// streaming-only in v1. The streaming inner is retained so
 	// cfg.FallbackOnTimeout can delegate to it without a second build.
 	if config.Provider.Batch != nil && config.Provider.Batch.Enabled {
-		// Defence-in-depth: ValidateRunConfig fills this default when
-		// batch.enabled is true, for callers that bypass the validator.
-		maxWaitSec := 86_400
-		if config.Provider.Batch.MaxWaitSeconds != nil {
+		// Defence-in-depth: ValidateRunConfig defaults this to the run
+		// timeout when batch.enabled is true, for callers that bypass
+		// the validator.
+		maxWaitSec := types.MaxRunTimeoutSeconds
+		switch {
+		case config.Provider.Batch.MaxWaitSeconds != nil:
 			maxWaitSec = *config.Provider.Batch.MaxWaitSeconds
+		case config.Timeout != nil && *config.Timeout > 0:
+			maxWaitSec = *config.Timeout
 		}
 		maxWait := time.Duration(maxWaitSec) * time.Second
 

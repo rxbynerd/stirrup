@@ -90,11 +90,13 @@ active and Rule of Two is enforced.
   // mode / transport invariants enforced by ValidateRunConfig.
   //
   // Field-level notes for batch:
-  //   - `maxWaitSeconds` is optional. When `enabled: true` and the
-  //     field is omitted, ValidateRunConfig fills it with 86400
-  //     (the 24 h provider SLA). The full.json example sets it
-  //     explicitly only because every field is shown for
-  //     completeness; operators may omit it.
+  //   - `maxWaitSeconds` is optional and bounded by the run
+  //     `timeout` (600 here): the run context is bound to `timeout`,
+  //     so a longer wait can never elapse and validation rejects it.
+  //     When `enabled: true` and the field is omitted,
+  //     ValidateRunConfig fills it with `timeout`. The full.json
+  //     example sets it explicitly only because every field is shown
+  //     for completeness; operators may omit it.
   //   - `harnessSidePolling` is required with `transport: "stdio"`
   //     and rejected with `transport: "grpc"`.
   //   - `cancelBundleOnRunCancel` is the mirror constraint: gRPC-only
@@ -110,7 +112,7 @@ active and Rule of Two is enforced.
     "apiKeyRef": "secret://ANTHROPIC_API_KEY",
     "batch": {
       "enabled": false,
-      "maxWaitSeconds": 86400,
+      "maxWaitSeconds": 600,
       "harnessSidePolling": false,
       "fallbackOnTimeout": false,
       "cancelBundleOnRunCancel": false,

@@ -350,6 +350,18 @@ func isBatchTimeout(err error) bool {
 	return errors.Is(err, errBatchExpired)
 }
 
+// expiredOrCancelled resolves the tie when a batch wait's wall-clock cap
+// and the run deadline fire together — the common case once
+// maxWaitSeconds defaults to the run timeout. Reporting ctx.Err() keeps
+// the outcome deterministic and keeps a dead run out of BatchAdapter's
+// FallbackOnTimeout branch, where the streaming retry could only fail.
+func expiredOrCancelled(ctx context.Context, expired error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return expired
+}
+
 // fabricateStream decodes a batch response and emits the StreamEvent
 // sequence the streaming adapter would have produced for the same body.
 // Unsupported provider types emit a single error event rather than a
@@ -604,9 +616,9 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 	timeout := c.maxWait
 	if timeout <= 0 {
 		// Must not fall back to transport.DefaultCorrelatorTimeout: that
-		// default is far shorter than DefaultBatchMaxWaitSeconds and
-		// would silently expire long batches early.
-		timeout = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
+		// default is far shorter than the longest wait a run can
+		// configure and would silently expire long batches early.
+		timeout = time.Duration(types.MaxRunTimeoutSeconds) * time.Second
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -619,7 +631,8 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 	case <-timer.C:
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)
-		return nil, fmt.Errorf("%w: timed out after %s (batchID=%s)", errBatchExpired, timeout, batchID)
+		return nil, expiredOrCancelled(ctx, fmt.Errorf(
+			"%w: timed out after %s (batchID=%s)", errBatchExpired, timeout, batchID))
 	case <-ctx.Done():
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)

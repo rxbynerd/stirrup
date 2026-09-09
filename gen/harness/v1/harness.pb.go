@@ -631,8 +631,9 @@ type RunConfig struct {
 	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	// Required. Wall-clock timeout in seconds for the entire run. The loop
-	// terminates with stop_reason "timeout" when this expires.
-	// Range: 1-3600.
+	// terminates with stop_reason "timeout" when this expires, and every
+	// budget derived from the run deadline — a batch wait among them —
+	// is bounded by it. Range: 1-3600.
 	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
 	// Optional. Seconds to keep the gRPC transport open after the primary run
 	// completes, waiting for follow-up user_response events that trigger
@@ -2414,16 +2415,21 @@ type BatchProviderConfig struct {
 	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// Harness-side wall-clock cap on the batch wait, in seconds. Declared
 	// `optional` so an unset value is wire-distinguishable from explicit
-	// zero: ValidateRunConfig fills the default (86400) only when nil and
+	// zero: ValidateRunConfig fills the default only when nil and
 	// enabled=true, so a phase-2 adapter can still tell "operator did not
-	// configure this" from "default applied". Must be in (0, 86400] when
-	// set.
+	// configure this" from "default applied". The run context is bound to
+	// RunConfig.timeout, so this must be in (0, timeout] when set, and
+	// defaults to timeout when unset. timeout is itself capped at 3600
+	// seconds on both the CLI and stirrup job paths.
 	MaxWaitSeconds *int32 `protobuf:"varint,2,opt,name=max_wait_seconds,json=maxWaitSeconds,proto3,oneof" json:"max_wait_seconds,omitempty"`
 	// Enables direct HTTP polling from the harness process. Required when
 	// transport.type == "stdio"; rejected with transport.type == "grpc".
 	HarnessSidePolling bool `protobuf:"varint,3,opt,name=harness_side_polling,json=harnessSidePolling,proto3" json:"harness_side_polling,omitempty"`
 	// Switches to the streaming adapter for a turn when the harness-side
-	// max_wait_seconds fires. Defaults to false.
+	// max_wait_seconds fires. Defaults to false. Only reachable when
+	// max_wait_seconds leaves room below RunConfig.timeout; at the
+	// default (max_wait_seconds == timeout) the run deadline fires first
+	// and the run ends without a streaming retry.
 	FallbackOnTimeout bool `protobuf:"varint,4,opt,name=fallback_on_timeout,json=fallbackOnTimeout,proto3" json:"fallback_on_timeout,omitempty"`
 	// When a single run is cancelled, cancel the entire bundled provider
 	// batch (gRPC transport only). Defaults to false. Rejected with

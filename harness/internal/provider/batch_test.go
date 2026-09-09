@@ -855,6 +855,57 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_Stream_DeadRunDoesNotFallBack pins the boundary
+// behaviour once maxWaitSeconds defaults to the run timeout: a wall-clock
+// cap that fires against an already-cancelled run must report the
+// cancellation rather than route into the streaming fallback, which could
+// only fail on the same dead context.
+func TestBatchAdapter_Stream_DeadRunDoesNotFallBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			cancel()
+			return nil, expiredOrCancelled(ctx, fmt.Errorf("%w: simulated", errBatchExpired))
+		},
+	}
+	inner := &stubProvider{events: []types.StreamEvent{{Type: "text_delta", Text: "fallback"}}}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: true}, inner)
+
+	ch, _ := a.Stream(ctx, anthropicParams())
+	events := drain(t, ch)
+
+	if inner.called.Load() != 0 {
+		t.Errorf("the streaming fallback must not run for a cancelled run, called %d times", inner.called.Load())
+	}
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("expected a single error event, got %+v", events)
+	}
+	if !errors.Is(events[0].Error, context.Canceled) {
+		t.Errorf("expected context.Canceled in the chain, got %v", events[0].Error)
+	}
+}
+
+// TestExpiredOrCancelled pins the tie-break the batch clients share:
+// a live context keeps the errBatchExpired sentinel (so FallbackOnTimeout
+// still routes), a dead one yields ctx.Err().
+func TestExpiredOrCancelled(t *testing.T) {
+	expired := fmt.Errorf("%w: simulated", errBatchExpired)
+
+	if got := expiredOrCancelled(context.Background(), expired); !errors.Is(got, errBatchExpired) {
+		t.Errorf("live context: got %v, want the errBatchExpired sentinel", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := expiredOrCancelled(cancelled, expired)
+	if !errors.Is(got, context.Canceled) {
+		t.Errorf("cancelled context: got %v, want context.Canceled", got)
+	}
+	if errors.Is(got, errBatchExpired) {
+		t.Error("a cancelled run must not surface the batch-expired sentinel")
+	}
+}
+
 // TestFabricateAnthropicStream_MalformedToolInput pins the
 // tool_use input decode error path in fabricateAnthropicStream
 // directly. The wider fabricateStream wrapper takes the error

@@ -763,11 +763,14 @@ Control-plane responsibilities:
   ignores the ControlEvent's `is_error` field. Responses over 4 MiB are
   rejected harness-side as an `invalid_request_error`.
 - `batch_waiting` heartbeats mark the wait as healthy. The batch
-  client gives up after `maxWaitSeconds` (default 24 h), optionally
-  falling back to streaming (`fallbackOnTimeout`), but the task's
-  `timeout` context wins first. Because `stirrup job` limits `timeout`
-  to 3600 s, a gRPC batch wait cannot currently reach the 24-hour
-  default.
+  client gives up after `maxWaitSeconds`, optionally falling back to
+  streaming (`fallbackOnTimeout`). `maxWaitSeconds` must lie in
+  `(0, timeout]` and defaults to the task's `timeout`; `timeout`
+  itself is capped at 3600 s on both the `stirrup harness` and
+  `stirrup job` paths, so 3600 s is the longest batch wait a control
+  plane can ask for. At the default the run deadline fires first and
+  `fallbackOnTimeout` does not engage — leave headroom for it. See
+  [`batch.md`](batch.md#the-wait-budget).
 
 Mode gating: `execution` never batches; `research`/`toil` batch
 freely; `planning`/`review` need `allowInteractiveModes: true`.
