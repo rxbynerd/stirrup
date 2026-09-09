@@ -32,17 +32,32 @@ type scriptedControlPlane struct {
 	dones chan string
 	mu    sync.Mutex
 	recv  []*pb.HarnessEvent
+
+	// sendMu serialises stream.Send between the recv loop and any
+	// goroutine a hook spawns to reply later without stalling reads.
+	sendMu sync.Mutex
+	stream pb.HarnessService_RunTaskServer
 }
 
 func newScriptedControlPlane(task *pb.RunConfig, afterDone func(n int) *pb.ControlEvent) *scriptedControlPlane {
 	return &scriptedControlPlane{task: task, afterDone: afterDone, dones: make(chan string, 16)}
 }
 
+// send delivers ce to the harness; safe from any goroutine.
+func (s *scriptedControlPlane) send(ce *pb.ControlEvent) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.stream.Send(ce)
+}
+
 func (s *scriptedControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
+	s.mu.Lock()
+	s.stream = stream
+	s.mu.Unlock()
 	if _, err := stream.Recv(); err != nil {
 		return err
 	}
-	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
+	if err := s.send(&pb.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
 		return err
 	}
 	n := 0
@@ -56,7 +71,7 @@ func (s *scriptedControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) e
 		s.mu.Unlock()
 		if s.onEvent != nil {
 			if ce := s.onEvent(ev); ce != nil {
-				if err := stream.Send(ce); err != nil {
+				if err := s.send(ce); err != nil {
 					return err
 				}
 			}
@@ -66,7 +81,7 @@ func (s *scriptedControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) e
 		}
 		s.dones <- ev.StopReason
 		if ce := s.afterDone(n); ce != nil {
-			if err := stream.Send(ce); err != nil {
+			if err := s.send(ce); err != nil {
 				return err
 			}
 		}
@@ -160,13 +175,21 @@ func TestRunJob_FollowUpGetsFreshTimeout(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	provider, requests := startOpenAIStub(t)
 
-	const timeoutSecs = 2
-	srv := newScriptedControlPlane(followUpJobConfig(t, provider.URL, timeoutSecs, 30), func(n int) *pb.ControlEvent {
+	// Generous enough for component construction plus one loopback
+	// provider round trip under -race on a loaded machine; the contract
+	// under test only needs the follow-up to arrive after it has passed.
+	const timeoutSecs = 3
+	var srv *scriptedControlPlane
+	srv = newScriptedControlPlane(followUpJobConfig(t, provider.URL, timeoutSecs, 30), func(n int) *pb.ControlEvent {
 		switch n {
 		case 0:
-			// Outlive the primary run's deadline before asking for more.
-			time.Sleep((timeoutSecs + 1) * time.Second)
-			return &pb.ControlEvent{Type: "user_response", UserResponse: "And again."}
+			// Outlive the primary run's deadline before asking for more,
+			// off the recv loop so harness events keep flowing meanwhile.
+			go func() {
+				time.Sleep((timeoutSecs + 1) * time.Second)
+				_ = srv.send(&pb.ControlEvent{Type: "user_response", UserResponse: "And again."})
+			}()
+			return nil
 		default:
 			return &pb.ControlEvent{Type: "cancel"}
 		}
@@ -287,7 +310,11 @@ func TestRunJob_MidRunUserResponseIsInjected(t *testing.T) {
 		}
 		if n == 1 {
 			// Hold the first turn open until the control plane has sent
-			// its input, so the event is unambiguously mid-run.
+			// its input, so the event is unambiguously mid-run. The
+			// harness emits nothing on acceptance (only on rejection), so
+			// "queued" is not observable from here; the short wait after
+			// the send covers loopback delivery to the harness's queue
+			// before the turn is allowed to end.
 			select {
 			case <-inputSent:
 			case <-time.After(10 * time.Second):

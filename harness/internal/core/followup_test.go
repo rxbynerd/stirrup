@@ -46,7 +46,8 @@ func (t *controllableTransport) FireControl(event types.ControlEvent) {
 
 // buildFollowUpTestLoop creates an AgenticLoop with a controllableTransport
 // (returned for injecting control events) and a provider that always
-// succeeds.
+// succeeds. Control routing is registered up front, as the factory does
+// at build, so a test may fire events before the loop under test runs.
 func buildFollowUpTestLoop(t *testing.T) (*AgenticLoop, *controllableTransport) {
 	t.Helper()
 	tr := &controllableTransport{}
@@ -57,6 +58,7 @@ func buildFollowUpTestLoop(t *testing.T) (*AgenticLoop, *controllableTransport) 
 		},
 	})
 	loop.Transport = tr
+	loop.ensureControlRouting()
 	return loop, tr
 }
 
@@ -79,23 +81,28 @@ func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	ran := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		// Long grace period: the test exits via context cancellation, not
 		// the timer, proving the follow-up path was taken.
-		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{})
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(*types.RunConfig, *types.RunTrace, error) { ran <- struct{}{} },
+		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Fire a follow-up control event with a new prompt.
+	// Fire a follow-up control event with a new prompt. The queue's
+	// notify token survives a fire that precedes the loop's select.
 	tr.FireControl(types.ControlEvent{
 		Type:         "user_response",
 		UserResponse: "Please also add tests.",
 	})
-
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ran:
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up run did not complete")
+	}
 	cancel()
 
 	select {
@@ -151,8 +158,8 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{}) // long grace — should not be reached
 	}()
 
-	// Give the goroutine time to enter the select loop.
-	time.Sleep(50 * time.Millisecond)
+	// A cancellation that precedes the loop's select is still observed
+	// there: ctx.Done is ready when it looks.
 	cancel()
 
 	select {
@@ -178,9 +185,8 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 		RunFollowUpLoop(context.Background(), loop, config, 30, FollowUpOptions{})
 	}()
 
-	// Give OnControl registration a moment to take effect.
-	time.Sleep(50 * time.Millisecond)
-
+	// A cancel is sticky, so it lands whether it precedes or follows the
+	// loop's select.
 	tr.FireControl(types.ControlEvent{Type: "cancel"})
 
 	select {
@@ -222,7 +228,6 @@ func TestRunFollowUpLoop_OnRunCompleteReceivesEachRun(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
 	for _, prompt := range []string{"first follow-up", "second follow-up"} {
 		tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: prompt})
 		select {
@@ -293,7 +298,10 @@ func (p *deadlineProvider) Stream(ctx context.Context, _ types.StreamParams) (<-
 // the primary run left over.
 func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
 	loop, tr := buildFollowUpTestLoop(t)
-	prov := &deadlineProvider{}
+	// The first run takes a while, so a deadline shared with it would be
+	// visibly shorter on the second run than a fresh one.
+	const firstRunDuration = 300 * time.Millisecond
+	prov := &deadlineProvider{delay: firstRunDuration}
 	loop.Provider = prov
 	config := buildTestConfig()
 
@@ -309,12 +317,8 @@ func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
 	var started []time.Time
 	for _, prompt := range []string{"first", "second"} {
-		// Space the runs out so a shared deadline would be visibly
-		// shorter on the second run than on the first.
-		time.Sleep(300 * time.Millisecond)
 		started = append(started, time.Now())
 		tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: prompt})
 		select {
@@ -339,6 +343,11 @@ func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
 		if budget < runTimeout-time.Second || budget > runTimeout+time.Second {
 			t.Errorf("run %d budget = %v, want ≈ %v measured from its own start", i, budget, runTimeout)
 		}
+	}
+	// A shared deadline would make the two equal; a fresh one is later
+	// by at least the first run's duration.
+	if gap := prov.deadlines[1].Sub(prov.deadlines[0]); gap < firstRunDuration {
+		t.Errorf("second run's deadline is only %v after the first's; want a fresh budget (≥ %v later)", gap, firstRunDuration)
 	}
 }
 
@@ -394,7 +403,6 @@ func TestRunFollowUpLoop_GraceCountsIdleTimeAfterRun(t *testing.T) {
 		RunFollowUpLoop(context.Background(), loop, config, graceSecs, FollowUpOptions{})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
 	fired := time.Now()
 	tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: "slow follow-up"})
 
@@ -549,20 +557,20 @@ func TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(50 * time.Millisecond)
 	tr.FireControl(userResponse("start a follow-up", "r1"))
 	select {
 	case <-completed:
 	case <-time.After(3 * time.Second):
 		t.Fatal("follow-up run did not complete")
 	}
-	// Anything still queued would start another run here.
-	time.Sleep(200 * time.Millisecond)
 	cancel()
 	<-done
 
+	// Two provider calls from one run: the second is the continuation
+	// carrying the injected input. A third call, or a second completed
+	// run, would mean the input was held for another run instead.
 	if n := len(completed); n != 0 {
-		t.Fatalf("%d extra follow-up run(s) started; the mid-run input should have joined the active run", n)
+		t.Fatalf("%d extra follow-up run(s) completed before the loop exited", n)
 	}
 	calls := prov.params()
 	if len(calls) != 2 {

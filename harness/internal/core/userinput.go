@@ -326,7 +326,10 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 // two consecutive user messages; otherwise it becomes a new user
 // message after the assistant turn. A single block, rather than one per
 // input, keeps adapters that join a message's text parts without a
-// separator from gluing inputs together.
+// separator from gluing inputs together. A harness-injected trailing
+// message (verifier feedback, an escalation nudge) loses its Synthetic
+// mark on merge: it now carries the operator's words, which consumers
+// that drop synthetic turns (compaction, the LLM judge) must keep.
 func injectUserInput(messages []types.Message, texts []string) []types.Message {
 	joined := strings.Join(texts, "\n\n")
 	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
@@ -338,6 +341,7 @@ func injectUserInput(messages []types.Message, texts []string) []types.Message {
 			content = append(content, types.ContentBlock{Type: "text", Text: joined})
 		}
 		last.Content = content
+		last.Synthetic = false
 		messages[n-1] = last
 		return messages
 	}

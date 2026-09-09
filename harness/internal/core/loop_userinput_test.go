@@ -199,6 +199,60 @@ func TestInjectUserInput_Composition(t *testing.T) {
 	if len(got) != 3 || got[2].Role != "user" || strings.Join(textBlocks(got[2]), "") != "d" {
 		t.Errorf("injected after an assistant message = %+v, want a new user message", got[len(got)-1])
 	}
+
+	// Onto a harness-injected message (verifier feedback, escalation
+	// nudge): merged, and no longer marked synthetic, so compaction and
+	// the LLM judge keep the operator's words.
+	synthetic := []types.Message{
+		msgs[0], msgs[1],
+		{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
+	}
+	got = injectUserInput(synthetic, []string{"e"})
+	if len(got) != 3 || got[2].Synthetic || got[2].Content[0].Text != "Verification failed.\n\ne" {
+		t.Errorf("injected onto a synthetic message = %+v, want a merged, non-synthetic user message", got[2])
+	}
+}
+
+// TestUserInputQueue_NotifyTokenAccounting pins the wake-up contract the
+// follow-up loop relies on: a token left over after a drain is a
+// harmless miss, and two items pushed while idle need only one token
+// to be consumed in order.
+func TestUserInputQueue_NotifyTokenAccounting(t *testing.T) {
+	q := newUserInputQueue()
+
+	// Stale token: pushed, then drained by an active run before the
+	// idle consumer woke. The consumer must see an empty pop, not block.
+	q.push(queuedUserInput{Text: "drained by the run"})
+	q.drain()
+	select {
+	case <-q.notify:
+	default:
+		t.Fatal("no token after a push")
+	}
+	if _, ok := q.pop(); ok {
+		t.Fatal("stale token yielded an item")
+	}
+
+	// Two items while idle: one token wakes the consumer; the second
+	// item is still there for the run's first drain (or the next pop).
+	q.push(queuedUserInput{Text: "first"})
+	q.push(queuedUserInput{Text: "second"})
+	select {
+	case <-q.notify:
+	default:
+		t.Fatal("no token after two pushes")
+	}
+	if first, ok := q.pop(); !ok || first.Text != "first" {
+		t.Fatalf("pop = %+v, %v; want the oldest", first, ok)
+	}
+	if rest := q.drain(); len(rest) != 1 || rest[0].Text != "second" {
+		t.Fatalf("remaining = %+v, want the second item", rest)
+	}
+	select {
+	case <-q.notify:
+		t.Fatal("a second token was queued for the second push")
+	default:
+	}
 }
 
 // TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt covers input
