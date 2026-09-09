@@ -153,13 +153,23 @@ crashed or killed harness. With follow-ups enabled, each run has its
 own `done`; it is terminal for the run, not necessarily for the
 stream.
 
-On exit the harness half-closes the stream and waits briefly for the
-control plane to end the RPC before closing the connection, so events
-emitted immediately before exit are not lost to an abrupt teardown. A
-control plane that ends `RunTask` once it has its terminal `done`
-releases the harness immediately; one that holds the stream open —
-serving follow-ups, say — delays the harness's exit by that grace
-window and no longer.
+On an orderly exit the harness half-closes the stream and waits up to
+2 seconds (not configurable) for the control plane to end the RPC before
+closing the connection. Closing a gRPC connection discards frames the
+writer has queued but not yet flushed, so without that wait a terminal
+`done` emitted immediately before exit can be lost. A control plane that
+returns from `RunTask` once it has the terminal `done` releases the
+harness immediately; one that holds the stream open — serving
+follow-ups, say — delays the harness's exit by that window and no
+longer.
+
+The wait is best-effort and does not upgrade `done` into a delivery
+guarantee. It does not apply when the harness is terminated by
+SIGTERM/SIGINT: the signal cancels the stream, so the RPC is already
+dead and any terminal event still queued is discarded. A control plane
+that stops reading also defeats it, since HTTP/2 flow control stalls the
+writer until the window expires. Treating stream closure without a
+`done` as a crashed or killed harness therefore remains correct.
 
 Validating control-plane-side before dispatch is still worthwhile: it
 turns a pod launch into an immediate API error. Mirror the harness with
