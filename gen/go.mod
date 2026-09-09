@@ -1,6 +1,6 @@
 module github.com/rxbynerd/stirrup/gen
 
-go 1.26.1
+go 1.27.1
 
 require (
 	google.golang.org/grpc v1.83.1
