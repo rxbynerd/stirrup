@@ -25,14 +25,19 @@ import (
 )
 
 const (
-	k8sWorkspace        = "/workspace"
-	k8sWorkspaceVolume  = "workspace"
-	k8sAgentContainer   = "agent"
-	k8sReadyTimeout     = 60 * time.Second
-	k8sReadyPollPeriod  = 1 * time.Second
-	k8sCloseTimeout     = 30 * time.Second
-	k8sAPITimeout       = 30 * time.Second
-	k8sPodNameRandBytes = 6
+	k8sWorkspace       = "/workspace"
+	k8sWorkspaceVolume = "workspace"
+	k8sAgentContainer  = "agent"
+	// k8sSandboxIdentityVolume backs SandboxIdentityTokenDir when
+	// K8sExecutorConfig.SandboxIdentityToken is set; the size limit mirrors
+	// the container executor's tmpfs and counts against the Pod's memory.
+	k8sSandboxIdentityVolume     = "sandbox-identity"
+	k8sSandboxIdentityVolumeSize = "64Ki"
+	k8sReadyTimeout              = 60 * time.Second
+	k8sReadyPollPeriod           = 1 * time.Second
+	k8sCloseTimeout              = 30 * time.Second
+	k8sAPITimeout                = 30 * time.Second
+	k8sPodNameRandBytes          = 6
 	// k8sRunAsUserUID matches the distroless "nonroot" convention (65532),
 	// letting RunAsNonRoot be enforced without the image declaring its own USER.
 	k8sRunAsUserUID int64 = 65532
@@ -55,9 +60,10 @@ var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 // factory under ExecutorConfig.Type == "k8s". See docs/executors/k8s.md for
 // the network/egress posture and the kindnet enforcement caveat.
 type K8sExecutorConfig struct {
-	// Image must ship a POSIX shell at /bin/sh plus `tar` and `ls` on PATH:
-	// command execution runs `/bin/sh -c`, and file I/O streams `tar` over
-	// the pods/exec subresource.
+	// Image must ship a POSIX shell at /bin/sh plus `tar`, `ls`, and
+	// `readlink` on PATH: command execution runs `/bin/sh -c`, file I/O
+	// streams `tar` over the pods/exec subresource, and workspace reads
+	// resolve the real path with `readlink -f` first.
 	Image              string
 	Namespace          string
 	Kubeconfig         string
@@ -78,6 +84,11 @@ type K8sExecutorConfig struct {
 	// (proxyEnv). Populated by the factory from a sandbox identity token
 	// exchange; empty otherwise.
 	ExtraEnv []EnvPair
+	// SandboxIdentityToken adds the memory-backed volume behind
+	// SandboxIdentityTokenDir so WriteSandboxIdentityToken has somewhere
+	// outside the workspace to deliver tokens. Set by the factory alongside
+	// ExtraEnv when executor.sandboxIdentity is configured.
+	SandboxIdentityToken bool
 }
 
 // K8sExecutor implements Executor by running operations inside a sandbox
@@ -179,13 +190,14 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	return &K8sExecutor{
 		podExecCore: podExecCore{
-			clientset:  clientset,
-			restConfig: restCfg,
-			namespace:  cfg.Namespace,
-			podName:    created.Name,
-			network:    cfg.Network,
-			Security:   cfg.Security,
-			logger:     logger,
+			clientset:       clientset,
+			restConfig:      restCfg,
+			namespace:       cfg.Namespace,
+			podName:         created.Name,
+			network:         cfg.Network,
+			Security:        cfg.Security,
+			logger:          logger,
+			sandboxIdentity: cfg.SandboxIdentityToken,
 		},
 		networkPolicyName: policy.Name,
 	}, nil
@@ -210,6 +222,26 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 		}
 	}
 
+	volumes := []corev1.Volume{
+		{
+			Name:         k8sWorkspaceVolume,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+	}
+	mounts := []corev1.VolumeMount{{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace}}
+	if cfg.SandboxIdentityToken {
+		// Memory medium keeps the token off node disk; FSGroup below makes
+		// the directory writable by the non-root UID, as for /workspace.
+		volumes = append(volumes, corev1.Volume{
+			Name: k8sSandboxIdentityVolume,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium:    corev1.StorageMediumMemory,
+				SizeLimit: ptr.To(resource.MustParse(k8sSandboxIdentityVolumeSize)),
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: k8sSandboxIdentityVolume, MountPath: SandboxIdentityTokenDir})
+	}
+
 	return corev1.PodSpec{
 		RestartPolicy:      corev1.RestartPolicyNever,
 		ServiceAccountName: serviceAccount,
@@ -227,12 +259,7 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 		// An ephemeral, writable workspace: a minimal sandbox image has no
 		// pre-created /workspace, and one auto-created at the mount point
 		// would be root-owned without FSGroup above.
-		Volumes: []corev1.Volume{
-			{
-				Name:         k8sWorkspaceVolume,
-				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-			},
-		},
+		Volumes: volumes,
 		Containers: []corev1.Container{
 			{
 				Name:         k8sAgentContainer,
@@ -241,7 +268,7 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 				WorkingDir:   k8sWorkspace,
 				Env:          env,
 				Resources:    resourcesToPodResources(cfg.Resources),
-				VolumeMounts: []corev1.VolumeMount{{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace}},
+				VolumeMounts: mounts,
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr.To(false),
 					Capabilities: &corev1.Capabilities{

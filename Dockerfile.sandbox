@@ -4,8 +4,9 @@
 # and k8s-sandbox executors run commands in. Distinct from ./Dockerfile
 # (the distroless harness image), which ships no shell and cannot satisfy
 # the executors' exec contract: a POSIX shell at /bin/sh plus tar, ls,
-# and mkdir on PATH (harness/internal/executor/container.go,
-# k8s_execcore.go; operator doc docs/executors/k8s.md). Debian slim
+# mkdir, and readlink on PATH (harness/internal/executor/container.go,
+# k8s_execcore.go, workspaceread.go; operator doc docs/executors/k8s.md).
+# Debian slim
 # already carries the shell and coreutils; git and ca-certificates are
 # added so agents can operate on checkouts and fetch over HTTPS.
 FROM debian:trixie-slim

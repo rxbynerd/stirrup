@@ -34,6 +34,7 @@ stirrup/
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
       hook/                  # Lifecycle hooks: Runner, Noop, ExecRunner (pre/post-run exec, #461)
+      sandboxidentity/       # Control-plane sandbox identity token: exchange, env/credential-helper composition, expiry-driven refresh
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)

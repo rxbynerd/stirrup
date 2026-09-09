@@ -108,13 +108,15 @@ const (
 //	  - audience:   the intended JWT `aud` claim for the sandbox identity
 //	                token (e.g. "https://haybale.internal"). Informational —
 //	                the control plane may override it.
-//	  Sent once per run, after task_assignment and before the sandbox is
-//	  created, when the run wants a sandbox identity token. Deliberately
-//	  carries no harness-asserted identity field: the control plane derives
-//	  the run identity from the authenticated stream the task was assigned
-//	  on, never from the request body. The harness blocks on the matching
-//	  sandbox_token_response under a fail-closed 60s timeout; a timeout
-//	  aborts the run before any sandbox is created.
+//	  Sent after task_assignment and before the sandbox is created, when
+//	  the run wants a sandbox identity token, then again ahead of each
+//	  expires_at the control plane reports — at most eight per run.
+//	  Deliberately carries no harness-asserted identity field: the control
+//	  plane derives the run identity from the authenticated stream the task
+//	  was assigned on, never from the request body. The harness blocks on
+//	  the matching sandbox_token_response under a fail-closed 60s timeout;
+//	  on the first request a timeout aborts the run before any sandbox is
+//	  created, on a refresh it stops refreshing and emits a "warning".
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -356,13 +358,16 @@ func (x *HarnessEvent) GetAudience() string {
 //	                 never logged, traced, or persisted to RunConfig —
 //	                 treated as opaque secret material for the run's
 //	                 lifetime.
-//	  - expires_at:  optional Unix-seconds expiry of token, so the harness
-//	                 can warn (scrub-safe) when it is shorter than the
-//	                 run's configured wall-clock budget.
+//	  - expires_at:  optional Unix-seconds expiry of token. When set, the
+//	                 harness sends a fresh sandbox_token_request ahead of
+//	                 it and delivers the new token into the sandbox; when
+//	                 absent, the token as issued must outlive the run.
 //	  - is_error:    when true, the control plane could not issue a token;
-//	                 reason carries a human-readable explanation. The
-//	                 harness treats this the same as a timeout — the run
-//	                 aborts before the sandbox is created.
+//	                 reason carries a human-readable explanation. On the
+//	                 initial request the harness treats this the same as
+//	                 a timeout — the run aborts before the sandbox is
+//	                 created; on a refresh it stops refreshing, keeps the
+//	                 previous token, and emits a "warning".
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -408,9 +413,12 @@ type ControlEvent struct {
 	// material for the run's lifetime.
 	Token string `protobuf:"bytes,9,opt,name=token,proto3" json:"token,omitempty"`
 	// Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
-	// events. Declared `optional` so unset is wire-distinguishable from an
-	// explicit 0 (epoch), letting the harness tell "the control plane did not
-	// report an expiry" from "the token expires at the epoch".
+	// events. When present the harness refreshes the token ahead of it (a
+	// new sandbox_token_request at 80% of the remaining lifetime); when
+	// absent no refresh is scheduled and the token must outlive the run.
+	// Declared `optional` so unset is wire-distinguishable from an explicit 0
+	// (epoch), letting the harness tell "the control plane did not report an
+	// expiry" from "the token expires at the epoch".
 	ExpiresAt     *int64 `protobuf:"varint,10,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3635,12 +3643,15 @@ func (x *ExecutorConfig) GetGitProxy() *GitProxyConfig {
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
-// credential for the sandbox. The harness sends one
-// sandbox_token_request after task assignment and before sandbox
-// creation, blocks fail-closed for up to 60 seconds on the matching
-// sandbox_token_response, then injects the returned JWT into the sandbox
-// environment. The JWT is never written to RunConfig, a trace, or a
-// transcript. Wire contract:
+// credential for the sandbox. The harness sends a sandbox_token_request
+// after task assignment and before sandbox creation, blocks fail-closed
+// for up to 60 seconds on the matching sandbox_token_response, then
+// delivers the returned JWT into the sandbox as a file the composed git
+// credential helper reads (plus a copy in the env_var environment
+// variable as issued at creation). When the response carries expires_at,
+// further requests follow ahead of each expiry — at most eight per run —
+// and each new token replaces the file. The JWT is never written to
+// RunConfig, a trace, or a transcript. Wire contract:
 // docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
 type SandboxIdentityConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3713,7 +3724,8 @@ func (x *SandboxIdentityConfig) GetEnvVar() string {
 // GitProxyConfig rewrites git operations against the named hosts through
 // a git-credential proxy, authenticating with the token
 // SandboxIdentityConfig requested. Every field here is non-secret: the
-// JWT travels only in the environment variable token_env_var names.
+// JWT travels only in the token file the composed credential helper
+// reads and in the environment variable token_env_var names.
 type GitProxyConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required when the sub-message is present. The proxy's base URL — an

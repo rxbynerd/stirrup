@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -318,19 +319,8 @@ func TestContainerExecutor_ResolvePath_SecurityEmitter(t *testing.T) {
 func TestContainerExecutor_ReadFile(t *testing.T) {
 	fileContent := "hello from container"
 
-	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
-		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/x-tar")
-			tw := tar.NewWriter(w)
-			_ = tw.WriteHeader(&tar.Header{
-				Name: "test.txt",
-				Size: int64(len(fileContent)),
-				Mode: 0o644,
-			})
-			_, _ = tw.Write([]byte(fileContent))
-			_ = tw.Close()
-		},
-	})
+	capture := &readExecCapture{}
+	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(capture, singleFileTar(t, "workspace/test.txt", fileContent), "", 0))
 	defer cleanup()
 
 	got, err := exec.ReadFile(context.Background(), "test.txt")
@@ -340,22 +330,20 @@ func TestContainerExecutor_ReadFile(t *testing.T) {
 	if got != fileContent {
 		t.Errorf("got %q, want %q", got, fileContent)
 	}
+	if argv := capture.last(); len(argv) != 6 || argv[5] != "/workspace/test.txt" {
+		t.Errorf("read argv = %q, want the guarded read command for /workspace/test.txt", argv)
+	}
 }
 
 func TestContainerExecutor_ReadFile_TooLarge(t *testing.T) {
-	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
-		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/x-tar")
-			tw := tar.NewWriter(w)
-			_ = tw.WriteHeader(&tar.Header{
-				Name: "big.bin",
-				Size: maxFileSize + 1,
-				Mode: 0o644,
-			})
-			// Don't need to write the actual data; the header size check catches it.
-			_ = tw.Close()
-		},
-	})
+	// A header declaring more than the cap is enough: the size check
+	// precedes any content read.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "workspace/big.bin", Size: maxFileSize + 1, Mode: 0o644})
+	_ = tw.Close()
+
+	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(nil, buf.Bytes(), "", 0))
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "big.bin")
@@ -368,18 +356,12 @@ func TestContainerExecutor_ReadFile_TooLarge(t *testing.T) {
 }
 
 func TestContainerExecutor_ReadFile_Directory(t *testing.T) {
-	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
-		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/x-tar")
-			tw := tar.NewWriter(w)
-			_ = tw.WriteHeader(&tar.Header{
-				Name:     "subdir/",
-				Typeflag: tar.TypeDir,
-				Mode:     0o755,
-			})
-			_ = tw.Close()
-		},
-	})
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "workspace/subdir/", Typeflag: tar.TypeDir, Mode: 0o755})
+	_ = tw.Close()
+
+	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(nil, buf.Bytes(), "", 0))
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "subdir")
@@ -388,6 +370,16 @@ func TestContainerExecutor_ReadFile_Directory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "directory") {
 		t.Errorf("error should mention directory, got: %v", err)
+	}
+}
+
+func TestContainerExecutor_ReadFile_Missing(t *testing.T) {
+	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(nil, nil, "tar: workspace/missing.txt: No such file or directory\n", 2))
+	defer cleanup()
+
+	_, err := exec.ReadFile(context.Background(), "missing.txt")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadFile(missing) = %v, want fs.ErrNotExist", err)
 	}
 }
 
@@ -1608,17 +1600,11 @@ func TestDemuxDockerStream_Empty(t *testing.T) {
 }
 
 func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
-	var putPath, getPath string
+	var putPath string
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"PUT /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
 			putPath = r.URL.Query().Get("path")
-			w.WriteHeader(http.StatusOK)
-		},
-		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
-			getPath = r.URL.Query().Get("path")
-			// Return a minimal valid tar so getArchive succeeds.
-			w.Header().Set("Content-Type", "application/x-tar")
 			w.WriteHeader(http.StatusOK)
 		},
 	})
@@ -1638,15 +1624,49 @@ func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
 	if putPath != specialPath {
 		t.Errorf("putArchive path: got %q, want %q", putPath, specialPath)
 	}
+}
 
-	// getArchive: same check.
-	body, err := client.getArchive(ctx, "ctr1", specialPath)
-	if err != nil {
-		t.Fatalf("getArchive: %v", err)
+// TestContainerAPIClient_InspectExec_WaitsForExit pins that an exit code
+// read while the daemon still reports the instance running is not trusted:
+// inspect is retried until Running clears, and gives up with an error
+// rather than a placeholder code.
+func TestContainerAPIClient_InspectExec_WaitsForExit(t *testing.T) {
+	prevRetries, prevDelay := execInspectRetries, execInspectRetryDelay
+	execInspectRetries, execInspectRetryDelay = 3, time.Millisecond
+	defer func() { execInspectRetries, execInspectRetryDelay = prevRetries, prevDelay }()
+
+	var inspects int
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			inspects++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0, Running: inspects < 3})
+		},
+	})
+	defer cleanup()
+	client := newContainerAPIClient(sock)
+
+	code, err := client.inspectExec(context.Background(), "exec-settling")
+	if err != nil || code != 0 {
+		t.Fatalf("inspectExec while settling = (%d, %v), want (0, nil) after Running clears", code, err)
 	}
-	_ = body.Close()
-	if getPath != specialPath {
-		t.Errorf("getArchive path: got %q, want %q", getPath, specialPath)
+	if inspects != 3 {
+		t.Errorf("inspected %d times, want 3 (two Running, one finished)", inspects)
+	}
+
+	inspects = 0
+	sockStuck, cleanupStuck := mockEngineServer(t, map[string]http.HandlerFunc{
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			inspects++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0, Running: true})
+		},
+	})
+	defer cleanupStuck()
+	stuck := newContainerAPIClient(sockStuck)
+
+	if _, err := stuck.inspectExec(context.Background(), "exec-stuck"); err == nil {
+		t.Fatal("an instance that never stops running must not yield a trusted exit code")
 	}
 }
 

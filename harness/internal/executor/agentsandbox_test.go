@@ -41,7 +41,7 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 		{Name: "NO_PROXY", Value: "localhost,127.0.0.1,::1"},
 	}
 
-	composed, err := sandboxidentity.ComposeEnv("HAYBALE_TOKEN", "the-jwt-token", &types.GitProxyConfig{
+	composed, err := sandboxidentity.ComposeEnv("HAYBALE_TOKEN", "the-jwt-token", SandboxIdentityTokenPath, &types.GitProxyConfig{
 		URL:        "http://haybale.internal:8466",
 		Hosts:      []string{"github.com"},
 		RewriteSsh: true,

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 	"time"
@@ -69,6 +71,11 @@ type ContainerExecutorConfig struct {
 	// regardless of network mode. Populated by the factory from a sandbox
 	// identity token exchange; empty otherwise.
 	ExtraEnv []EnvPair
+	// SandboxIdentityToken mounts the private tmpfs behind
+	// SandboxIdentityTokenDir so WriteSandboxIdentityToken has somewhere
+	// outside the workspace to deliver tokens. Set by the factory alongside
+	// ExtraEnv when executor.sandboxIdentity is configured.
+	SandboxIdentityToken bool
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -88,6 +95,9 @@ type ContainerExecutor struct {
 	// proxy, when non-nil, is the in-process egress proxy started for the
 	// allowlist network mode. Close() stops it.
 	proxy *egressproxy.Proxy
+	// sandboxIdentity records whether the token tmpfs was mounted at
+	// creation; WriteSandboxIdentityToken refuses to run without it.
+	sandboxIdentity bool
 }
 
 // Probe checks the container runtime for a dry-run preflight: it pings
@@ -191,6 +201,12 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
 		},
 	}
+	if cfg.SandboxIdentityToken {
+		// mode=1777 (sticky, like /tmp) rather than a uid= option: the
+		// engines reject uid=/gid= on a tmpfs, and the sandbox runs a
+		// single unprivileged uid that must be able to create the file.
+		hc.Tmpfs[SandboxIdentityTokenDir] = fmt.Sprintf("%s,size=%d,mode=1777", tmpfsMountOpts, sandboxIdentityTokenMountBytes)
+	}
 
 	var (
 		proxy *egressproxy.Proxy
@@ -279,14 +295,15 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	}
 
 	return &ContainerExecutor{
-		api:         api,
-		containerID: containerID,
-		workspace:   containerWorkspace,
-		hostDir:     cfg.HostDir,
-		networkMode: hc.NetworkMode,
-		image:       cfg.Image,
-		Security:    nil,
-		proxy:       proxy,
+		api:             api,
+		containerID:     containerID,
+		workspace:       containerWorkspace,
+		hostDir:         cfg.HostDir,
+		networkMode:     hc.NetworkMode,
+		image:           cfg.Image,
+		Security:        nil,
+		proxy:           proxy,
+		sandboxIdentity: cfg.SandboxIdentityToken,
 	}, nil
 }
 
@@ -353,10 +370,13 @@ func (e *ContainerExecutor) ResolvePath(relativePath string) (string, error) {
 	return resolved, nil
 }
 
-// ReadFile reads a file from inside the container using the archive API.
-// The file must be within /workspace and no larger than 10 MB. The whole
-// operation is bounded by containerFileIOTimeout since the archive
-// endpoints have no timeout of their own (see container_api.go).
+// ReadFile reads a file from inside the container by running
+// workspaceReadCommand over the exec API and decoding the tar stream it
+// returns. The engine's archive endpoint is not used for reads: it
+// dereferences symlinks, so a link committed into the workspace would
+// hand back any file the sandbox uid can read. The file must be within
+// /workspace and no larger than 10 MB; the whole operation is bounded by
+// containerFileIOTimeout.
 func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
 	resolved, err := e.ResolvePath(filePath)
 	if err != nil {
@@ -366,37 +386,37 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
 	defer cancel()
 
-	tarStream, err := e.api.getArchive(ctx, e.containerID, resolved)
+	stdout := &writeCapBuffer{limit: maxFileSize + tarSingleEntryOverhead}
+	stderr := &writeCapBuffer{limit: maxOutputSize}
+	result, err := e.execInContainerStream(ctx, workspaceReadCommand(e.workspace, resolved), e.workspace, containerFileIOTimeout, stdout, stderr)
 	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "get archive", err)
+		return "", classifyFileIOCtxErr(ctx, "read file", err)
 	}
-	defer func() { _ = tarStream.Close() }()
-
-	tr := tar.NewReader(tarStream)
-	header, err := tr.Next()
-	if err == io.EOF {
-		return "", fmt.Errorf("file not found in archive: %s", filePath)
-	}
-	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "read tar header", err)
-	}
-
-	if header.Typeflag == tar.TypeDir {
-		return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
-	}
-
-	if header.Size > maxFileSize {
+	if stdout.exceeded {
 		if e.Security != nil {
-			e.Security.FileSizeLimitExceeded(filePath, header.Size, maxFileSize)
+			e.Security.FileSizeLimitExceeded(filePath, stdout.limit, maxFileSize)
 		}
-		return "", fmt.Errorf("file too large: %d bytes (max %d)", header.Size, maxFileSize)
+		return "", fmt.Errorf("file too large: exceeds %d bytes", maxFileSize)
+	}
+	if result.ExitCode != 0 {
+		return "", classifyWorkspaceReadExit(result.ExitCode, stderr.String(), filePath, e.workspace, e.Security)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
-	if err != nil {
-		return "", classifyFileIOCtxErr(ctx, "read file from tar", err)
+	content, size, err := decodeSingleFileArchive(stdout.Bytes(), maxFileSize)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("read file %s: %w", filePath, err)
+	case errors.Is(err, errArchiveEntryIsDir):
+		return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
+	case errors.Is(err, errArchiveEntryTooLarge):
+		if e.Security != nil {
+			e.Security.FileSizeLimitExceeded(filePath, size, maxFileSize)
+		}
+		return "", fmt.Errorf("file too large: %d bytes (max %d)", size, maxFileSize)
+	case err != nil:
+		return "", err
 	}
-	return string(data), nil
+	return content, nil
 }
 
 // classifyFileIOCtxErr wraps a ReadFile/WriteFile failure through the
@@ -567,6 +587,26 @@ func (e *ContainerExecutor) truncateAndReport(command string, result *ExecResult
 	return result
 }
 
+// WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
+// the exec API with the token on stdin (see sandboxIdentityWriteCommand).
+// Stderr from the write command carries only paths and errno text, never
+// the input, so it is safe to surface.
+func (e *ContainerExecutor) WriteSandboxIdentityToken(ctx context.Context, token string) error {
+	if !e.sandboxIdentity {
+		return fmt.Errorf("write sandbox identity token: container was created without the sandbox identity mount")
+	}
+	result, err := e.execInContainerInput(ctx, sandboxIdentityWriteCommand(len(token)), e.workspace, strings.NewReader(token), containerFileIOTimeout)
+	if err != nil {
+		return fmt.Errorf("write sandbox identity token: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("write sandbox identity token: exit %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+var _ SandboxIdentityTokenWriter = (*ContainerExecutor)(nil)
+
 // Capabilities returns the capabilities of the container executor.
 func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 	return ExecutorCapabilities{
@@ -587,10 +627,26 @@ func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 // failure is classified via classifyExecCtxErr so callers matching
 // errors.Is(err, ErrTimeout) see this identically to a top-level Exec timeout.
 func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, timeout time.Duration) (*ExecResult, error) {
+	return e.execInContainerInput(ctx, cmd, workdir, nil, timeout)
+}
+
+// execInContainerInput is execInContainer with an optional stdin: a non-nil
+// reader is streamed to the process over a hijacked connection, which is
+// how payloads that must never appear in argv (the sandbox identity token)
+// reach the sandbox.
+func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []string, workdir string, stdin io.Reader, timeout time.Duration) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
+	var (
+		execID string
+		err    error
+	)
+	if stdin != nil {
+		execID, err = e.api.createExecStdin(ctx, e.containerID, cmd, workdir)
+	} else {
+		execID, err = e.api.createExec(ctx, e.containerID, cmd, workdir)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)
@@ -598,7 +654,18 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 		return nil, fmt.Errorf("create exec: %w", err)
 	}
 
-	stream, err := e.api.startExec(ctx, execID)
+	var (
+		stream   io.ReadCloser
+		hijacked *hijackedExecStream
+	)
+	if stdin != nil {
+		hijacked, err = e.api.startExecWithStdin(ctx, execID, stdin)
+		if hijacked != nil {
+			stream = hijacked
+		}
+	} else {
+		stream, err = e.api.startExec(ctx, execID)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)
@@ -624,6 +691,15 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 		return result, fmt.Errorf("inspect exec: %w", err)
 	}
 	result.ExitCode = exitCode
+
+	// A process that exited 0 without receiving all of its input reported
+	// success on partial data; the copy's error is the only record of that.
+	// A non-zero exit already carries the command's own diagnosis.
+	if hijacked != nil && exitCode == 0 {
+		if err := hijacked.stdinErr(ctx); err != nil {
+			return result, fmt.Errorf("write exec stdin: %w", err)
+		}
+	}
 
 	return result, nil
 }

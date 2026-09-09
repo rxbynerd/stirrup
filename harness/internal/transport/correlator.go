@@ -14,6 +14,11 @@ import (
 // caller passes a non-positive timeout to Correlator.Await.
 const DefaultCorrelatorTimeout = 60 * time.Second
 
+// ErrAwaitTimeout is wrapped into the error Await returns when its
+// per-await timeout elapses, so callers can tell a slow peer from a
+// cancelled context or a failed emit.
+var ErrAwaitTimeout = errors.New("correlator: timed out waiting for response")
+
 // HasOnControl is the minimal Transport surface the correlator needs. It is
 // declared in this package so the helper can be reused without a circular
 // import via consumers (e.g. permission, tool dispatch) that define the same
@@ -147,7 +152,7 @@ func (c *Correlator) Await(
 		return payload, nil
 	case <-timer.C:
 		c.cancel(requestID)
-		return nil, fmt.Errorf("correlator: timed out after %s waiting for response (requestId=%s)", timeout, requestID)
+		return nil, fmt.Errorf("%w after %s (requestId=%s)", ErrAwaitTimeout, timeout, requestID)
 	case <-ctx.Done():
 		c.cancel(requestID)
 		return nil, fmt.Errorf("correlator: cancelled (requestId=%s): %w", requestID, ctx.Err())
