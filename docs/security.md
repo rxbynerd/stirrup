@@ -135,7 +135,10 @@ The most security-relevant invariants:
   `tools.builtIn`, and must not use `permissionPolicy.type=allow-all`.
 - **Bounded budgets:** `maxTurns` ≤ 100, `timeout` ≤ 3600 s,
   `followUpGrace` ≤ 3600 s, `maxCostBudget` ≤ $100,
-  `maxTokenBudget` ≤ 50 M.
+  `maxTokenBudget` ≤ 50 M. These are config-time bounds; of the two
+  budgets only `maxTokenBudget` is enforced at runtime
+  (`maxCostBudget` is validated and warned about, never enforced — see
+  [`configuration.md`](configuration.md#limits-and-budgets)).
 - **Mutually exclusive credentials:** `apiKeyRef` and
   `credential.type` cannot both be set on the same provider.
 - **Cedar policy file paths** reject `..` traversal segments;

@@ -596,11 +596,12 @@ Allowed without `--allow-config-drift`:
 - `MaxTurns`, only if increasing. Decreasing `MaxTurns` mid-conversation
   can truncate an in-progress reasoning chain in ways that are hard to
   diagnose; users who genuinely want a tighter cap can pass
-  `--allow-config-drift` and acknowledge the change. The token and cost
-  budgets below are symmetric because budget exhaustion produces a clean
+  `--allow-config-drift` and acknowledge the change. The token budget
+  below is symmetric because budget exhaustion produces a clean
   termination outcome regardless of direction.
 - `MaxTokenBudget`
-- `MaxCostBudget`
+- `MaxCostBudget` (trivially, since it is not enforced — see
+  [`configuration.md`](configuration.md#limits-and-budgets))
 - `TraceEmitter.*`
 - `Executor.Workspace`
 - credential binding fields listed by `requiredSecretFields`

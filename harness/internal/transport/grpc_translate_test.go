@@ -1766,3 +1766,26 @@ func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
 		t.Errorf("second entry defaults = %+v", second)
 	}
 }
+
+// TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
+// field's translation: the budget is not enforced, but dropping it here
+// would swallow the value before ValidateRunConfig can warn that the cap
+// does nothing.
+func TestRunConfigFromProto_MaxCostBudgetStillTranslated(t *testing.T) {
+	budget := 42.5
+	//nolint:staticcheck // SA1019: exercising the deprecated field on purpose.
+	pc := &pb.RunConfig{MaxCostBudget: &budget}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.MaxCostBudget == nil {
+		t.Fatal("MaxCostBudget dropped in translation")
+	}
+	if *rc.MaxCostBudget != budget {
+		t.Errorf("MaxCostBudget = %v, want %v", *rc.MaxCostBudget, budget)
+	}
+
+	if got := runConfigFromProto(&pb.RunConfig{}).MaxCostBudget; got != nil {
+		t.Errorf("unset max_cost_budget should map to nil, got %v", *got)
+	}
+}

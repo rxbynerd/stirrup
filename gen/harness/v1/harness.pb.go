@@ -623,8 +623,12 @@ type RunConfig struct {
 	// terminates with stop_reason "budget_exceeded" if this is hit.
 	// Max: 50,000,000.
 	MaxTokenBudget *int32 `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
-	// Optional. Maximum cost in USD for the run. The loop terminates with
-	// stop_reason "budget_exceeded" if this is hit. Max: 100.00.
+	// Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
+	// computes no cost, so no run terminates on this budget. Setting it logs a
+	// warning at config validation. Cap spend in the control plane from
+	// provider billing data.
+	//
+	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	// Required. Wall-clock timeout in seconds for the entire run. The loop
 	// terminates with stop_reason "timeout" when this expires.
@@ -898,6 +902,7 @@ func (x *RunConfig) GetMaxTokenBudget() int32 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 func (x *RunConfig) GetMaxCostBudget() float64 {
 	if x != nil && x.MaxCostBudget != nil {
 		return *x.MaxCostBudget
@@ -2064,7 +2069,8 @@ type RunTrace struct {
 	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	// Total output tokens consumed across all provider calls.
 	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	// Estimated total cost in USD for the run (based on per-model pricing).
+	// Always 0: no cost accounting is implemented. The harness carries no
+	// pricing table and computes no cost.
 	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	// Wall-clock duration of the run in milliseconds.
 	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
@@ -4784,7 +4790,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\x03H\x00R\texpiresAt\x88\x01\x01B\r\n" +
 	"\v_expires_at\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xf6\x12\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\x12\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -4804,8 +4810,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\rtrace_emitter\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceEmitterConfigR\ftraceEmitter\x125\n" +
 	"\x05tools\x18\x0f \x01(\v2\x1f.stirrup.harness.v1.ToolsConfigR\x05tools\x12\x1b\n" +
 	"\tmax_turns\x18\x10 \x01(\x05R\bmaxTurns\x12-\n" +
-	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12+\n" +
-	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
+	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12/\n" +
+	"\x0fmax_cost_budget\x18\x12 \x01(\x01B\x02\x18\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
 	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +

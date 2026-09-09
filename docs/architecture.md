@@ -752,7 +752,7 @@ Full reference: [`eval.md`](eval.md).
 | `Timeout` (wall-clock) | 600 s | 3600 s |
 | `FollowUpGrace` | 0 s | 3600 s |
 | `MaxTokenBudget` | unset | 50 M |
-| `MaxCostBudget` | unset | $100 |
+| `MaxCostBudget` (validated, not enforced) | unset | $100 |
 | File read/write size | 10 MB | — |
 | `Executor.Exec` output (hooks/verifiers/git helpers) | 1 MB | — |
 | `run_command` inline model output | 32 KiB combined | configurable |

@@ -25,7 +25,8 @@ const (
 	// maxFollowUpGrace is the maximum allowed follow-up grace period in seconds.
 	maxFollowUpGrace = 3600
 
-	// maxCostBudget is the maximum allowed cost budget in dollars.
+	// maxCostBudget is the maximum accepted cost budget in dollars. The
+	// budget itself is never enforced; see RunConfig.MaxCostBudget.
 	maxCostBudget = 100.0
 
 	// maxTokenBudget is the maximum allowed token budget.
@@ -113,10 +114,17 @@ type RunConfig struct {
 	Tools            ToolsConfig               `json:"tools"`
 
 	// Limits
-	MaxTurns       int      `json:"maxTurns"`
-	MaxTokenBudget *int     `json:"maxTokenBudget,omitempty"`
-	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"`
-	Timeout        *int     `json:"timeout,omitempty"`
+	MaxTurns       int  `json:"maxTurns"`
+	MaxTokenBudget *int `json:"maxTokenBudget,omitempty"`
+
+	// MaxCostBudget is accepted and bounded at $100 by ValidateRunConfig
+	// but is NOT enforced: the harness computes no per-run cost, so no
+	// run terminates because of this field. ValidateRunConfig emits a
+	// warning whenever it is set. Spend limits belong in the control
+	// plane, driven by provider billing data.
+	MaxCostBudget *float64 `json:"maxCostBudget,omitempty"`
+
+	Timeout *int `json:"timeout,omitempty"`
 
 	// Temperature is the sampling temperature forwarded to the provider on
 	// every turn. Nil means "use the harness default" (0.1). See
@@ -2263,9 +2271,20 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf("followUpGrace must be <= %d seconds", maxFollowUpGrace))
 	}
 
-	// maxCostBudget must be bounded
-	if config.MaxCostBudget != nil && *config.MaxCostBudget > maxCostBudget {
-		errs = append(errs, fmt.Sprintf("maxCostBudget must be <= $%.2f", maxCostBudget))
+	// maxCostBudget must be bounded, and the bound is the only thing the
+	// harness does with it — nothing computes cost, so an operator who
+	// sets it must be told the run is uncapped.
+	if config.MaxCostBudget != nil {
+		if *config.MaxCostBudget > maxCostBudget {
+			errs = append(errs, fmt.Sprintf("maxCostBudget must be <= $%.2f", maxCostBudget))
+		}
+		// Same types-side slog.Warn mechanism as the batch maxTurns
+		// latency warning below; leaves callers without a way to observe
+		// or suppress the warning short of manipulating slog.Default.
+		slog.Warn(
+			"maxCostBudget is accepted and bounded but not enforced: the harness computes no cost, so no run terminates on this budget; cap spend in the control plane from provider billing data",
+			"maxCostBudget", *config.MaxCostBudget,
+		)
 	}
 
 	// maxTokenBudget must be bounded
