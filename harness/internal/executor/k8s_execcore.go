@@ -39,7 +39,34 @@ type podExecCore struct {
 	// unit tests) emits nothing.
 	Security SecurityEventEmitter
 	logger   *slog.Logger
+	// sandboxIdentity records whether the token volume was mounted on the
+	// Pod; WriteSandboxIdentityToken refuses to run without it.
+	sandboxIdentity bool
 }
+
+// WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
+// the pods/exec subresource with the token on stdin (see
+// sandboxIdentityWriteCommand). Stderr from the write command carries only
+// paths and errno text, never the input, so it is safe to surface.
+func (e *podExecCore) WriteSandboxIdentityToken(ctx context.Context, token string) error {
+	if !e.sandboxIdentity {
+		return fmt.Errorf("write sandbox identity token: pod was created without the sandbox identity volume")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	if err := e.streamExec(ctx, sandboxIdentityWriteCommand, strings.NewReader(token), &stdout, &stderr); err != nil {
+		if code, ok := extractExitCode(err); ok && code != 0 {
+			return fmt.Errorf("write sandbox identity token: exit %d: %s", code, strings.TrimSpace(stderr.String()))
+		}
+		return fmt.Errorf("write sandbox identity token: %w", err)
+	}
+	return nil
+}
+
+var _ SandboxIdentityTokenWriter = (*podExecCore)(nil)
 
 // ResolvePath validates that the given path does not escape the Pod
 // workspace. The check is purely textual — there is no local filesystem

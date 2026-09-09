@@ -69,6 +69,11 @@ type ContainerExecutorConfig struct {
 	// regardless of network mode. Populated by the factory from a sandbox
 	// identity token exchange; empty otherwise.
 	ExtraEnv []EnvPair
+	// SandboxIdentityToken mounts the private tmpfs behind
+	// SandboxIdentityTokenDir so WriteSandboxIdentityToken has somewhere
+	// outside the workspace to deliver tokens. Set by the factory alongside
+	// ExtraEnv when executor.sandboxIdentity is configured.
+	SandboxIdentityToken bool
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -88,6 +93,9 @@ type ContainerExecutor struct {
 	// proxy, when non-nil, is the in-process egress proxy started for the
 	// allowlist network mode. Close() stops it.
 	proxy *egressproxy.Proxy
+	// sandboxIdentity records whether the token tmpfs was mounted at
+	// creation; WriteSandboxIdentityToken refuses to run without it.
+	sandboxIdentity bool
 }
 
 // Probe checks the container runtime for a dry-run preflight: it pings
@@ -191,6 +199,12 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
 		},
 	}
+	if cfg.SandboxIdentityToken {
+		// mode=1777 (sticky, like /tmp) rather than a uid= option: the
+		// engines reject uid=/gid= on a tmpfs, and the sandbox runs a
+		// single unprivileged uid that must be able to create the file.
+		hc.Tmpfs[SandboxIdentityTokenDir] = fmt.Sprintf("%s,size=%d,mode=1777", tmpfsMountOpts, sandboxIdentityTokenMountBytes)
+	}
 
 	var (
 		proxy *egressproxy.Proxy
@@ -279,14 +293,15 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	}
 
 	return &ContainerExecutor{
-		api:         api,
-		containerID: containerID,
-		workspace:   containerWorkspace,
-		hostDir:     cfg.HostDir,
-		networkMode: hc.NetworkMode,
-		image:       cfg.Image,
-		Security:    nil,
-		proxy:       proxy,
+		api:             api,
+		containerID:     containerID,
+		workspace:       containerWorkspace,
+		hostDir:         cfg.HostDir,
+		networkMode:     hc.NetworkMode,
+		image:           cfg.Image,
+		Security:        nil,
+		proxy:           proxy,
+		sandboxIdentity: cfg.SandboxIdentityToken,
 	}, nil
 }
 
@@ -567,6 +582,26 @@ func (e *ContainerExecutor) truncateAndReport(command string, result *ExecResult
 	return result
 }
 
+// WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
+// the exec API with the token on stdin (see sandboxIdentityWriteCommand).
+// Stderr from the write command carries only paths and errno text, never
+// the input, so it is safe to surface.
+func (e *ContainerExecutor) WriteSandboxIdentityToken(ctx context.Context, token string) error {
+	if !e.sandboxIdentity {
+		return fmt.Errorf("write sandbox identity token: container was created without the sandbox identity mount")
+	}
+	result, err := e.execInContainerInput(ctx, sandboxIdentityWriteCommand, e.workspace, strings.NewReader(token), containerFileIOTimeout)
+	if err != nil {
+		return fmt.Errorf("write sandbox identity token: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("write sandbox identity token: exit %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+var _ SandboxIdentityTokenWriter = (*ContainerExecutor)(nil)
+
 // Capabilities returns the capabilities of the container executor.
 func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 	return ExecutorCapabilities{
@@ -587,10 +622,26 @@ func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 // failure is classified via classifyExecCtxErr so callers matching
 // errors.Is(err, ErrTimeout) see this identically to a top-level Exec timeout.
 func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, timeout time.Duration) (*ExecResult, error) {
+	return e.execInContainerInput(ctx, cmd, workdir, nil, timeout)
+}
+
+// execInContainerInput is execInContainer with an optional stdin: a non-nil
+// reader is streamed to the process over a hijacked connection, which is
+// how payloads that must never appear in argv (the sandbox identity token)
+// reach the sandbox.
+func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []string, workdir string, stdin io.Reader, timeout time.Duration) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
+	var (
+		execID string
+		err    error
+	)
+	if stdin != nil {
+		execID, err = e.api.createExecStdin(ctx, e.containerID, cmd, workdir)
+	} else {
+		execID, err = e.api.createExec(ctx, e.containerID, cmd, workdir)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)
@@ -598,7 +649,12 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 		return nil, fmt.Errorf("create exec: %w", err)
 	}
 
-	stream, err := e.api.startExec(ctx, execID)
+	var stream io.ReadCloser
+	if stdin != nil {
+		stream, err = e.api.startExecWithStdin(ctx, execID, stdin)
+	} else {
+		stream, err = e.api.startExec(ctx, execID)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)

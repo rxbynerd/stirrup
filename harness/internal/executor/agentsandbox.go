@@ -268,13 +268,14 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 
 	return &AgentSandboxExecutor{
 		podExecCore: podExecCore{
-			clientset:  clientset,
-			restConfig: restCfg,
-			namespace:  cfg.Namespace,
-			podName:    podName,
-			network:    cfg.Network,
-			Security:   cfg.Security,
-			logger:     logger,
+			clientset:       clientset,
+			restConfig:      restCfg,
+			namespace:       cfg.Namespace,
+			podName:         podName,
+			network:         cfg.Network,
+			Security:        cfg.Security,
+			logger:          logger,
+			sandboxIdentity: cfg.SandboxIdentityToken,
 		},
 		dynamicClient:     dyn,
 		sandboxName:       name,

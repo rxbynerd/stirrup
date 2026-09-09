@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -36,8 +37,9 @@ var (
 // compatible with Podman) that communicates over a Unix socket. It uses only
 // the Go standard library — no external SDK dependencies.
 type containerAPIClient struct {
-	client *http.Client
-	host   string // display-only; all requests go to http://localhost
+	client     *http.Client
+	host       string // display-only; all requests go to http://localhost
+	socketPath string // raw dial target for hijacked (stdin-carrying) exec streams
 }
 
 // newContainerAPIClient creates a client connected to the given Unix
@@ -46,14 +48,19 @@ type containerAPIClient struct {
 func newContainerAPIClient(socketPath string) *containerAPIClient {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: containerDialTimeout}).DialContext(ctx, "unix", socketPath)
+			return dialContainerSocket(ctx, socketPath)
 		},
 		ResponseHeaderTimeout: containerResponseHeaderTimeout,
 	}
 	return &containerAPIClient{
-		client: &http.Client{Transport: transport},
-		host:   "unix://" + socketPath,
+		client:     &http.Client{Transport: transport},
+		host:       "unix://" + socketPath,
+		socketPath: socketPath,
 	}
+}
+
+func dialContainerSocket(ctx context.Context, socketPath string) (net.Conn, error) {
+	return (&net.Dialer{Timeout: containerDialTimeout}).DialContext(ctx, "unix", socketPath)
 }
 
 // classifyControlPlaneErr reclassifies a failed short Docker Engine API
@@ -309,6 +316,7 @@ func (c *containerAPIClient) removeContainer(ctx context.Context, id string, for
 }
 
 type execCreateRequest struct {
+	AttachStdin  bool     `json:"AttachStdin,omitempty"`
 	AttachStdout bool     `json:"AttachStdout"`
 	AttachStderr bool     `json:"AttachStderr"`
 	Cmd          []string `json:"Cmd"`
@@ -322,10 +330,22 @@ type execCreateResponse struct {
 // createExec registers the exec instance but does not run it, so it gets
 // containerControlPlaneTimeout rather than the caller's command timeout.
 func (c *containerAPIClient) createExec(ctx context.Context, containerID string, cmd []string, workdir string) (string, error) {
+	return c.createExecAttach(ctx, containerID, cmd, workdir, false)
+}
+
+// createExecStdin is createExec for an instance that will be started with
+// startExecWithStdin; the daemon only wires a stdin pipe when the instance
+// was created with AttachStdin.
+func (c *containerAPIClient) createExecStdin(ctx context.Context, containerID string, cmd []string, workdir string) (string, error) {
+	return c.createExecAttach(ctx, containerID, cmd, workdir, true)
+}
+
+func (c *containerAPIClient) createExecAttach(ctx context.Context, containerID string, cmd []string, workdir string, attachStdin bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
 	defer cancel()
 
 	body, err := json.Marshal(execCreateRequest{
+		AttachStdin:  attachStdin,
 		AttachStdout: true,
 		AttachStderr: true,
 		Cmd:          cmd,
@@ -375,6 +395,79 @@ func (c *containerAPIClient) startExec(ctx context.Context, execID string) (io.R
 		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// hijackedExecStream is the raw connection left behind once the daemon
+// switches protocols on an exec start: reads drain the multiplexed
+// stdout/stderr frames (the buffered reader may already hold the first
+// ones), and Close tears the connection down, which also ends the stdin
+// copy.
+type hijackedExecStream struct {
+	reader *bufio.Reader
+	conn   net.Conn
+	stop   func() bool
+}
+
+func (s *hijackedExecStream) Read(p []byte) (int, error) { return s.reader.Read(p) }
+
+func (s *hijackedExecStream) Close() error {
+	s.stop()
+	return s.conn.Close()
+}
+
+// startExecWithStdin starts an exec instance over a hijacked connection
+// (Connection: Upgrade / Upgrade: tcp), copies stdin to the process, and
+// half-closes the write side at EOF so the process observes end-of-input.
+// The returned stream carries the same multiplexed frames startExec does.
+// A daemon that answers anything but 101 has not taken the connection
+// over, so stdin could not be delivered and the call fails rather than
+// running the command without its input. Bounded by ctx only, like
+// startExec.
+func (c *containerAPIClient) startExecWithStdin(ctx context.Context, execID string, stdin io.Reader) (io.ReadCloser, error) {
+	conn, err := dialContainerSocket(ctx, c.socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("dial container socket: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	fail := func(err error) (io.ReadCloser, error) {
+		stop()
+		_ = conn.Close()
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.url(fmt.Sprintf("/exec/%s/start", execID)),
+		strings.NewReader(`{"Detach":false,"Tty":false}`))
+	if err != nil {
+		return fail(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "tcp")
+	if err := req.Write(conn); err != nil {
+		return fail(fmt.Errorf("docker API request %s %s: %w", req.Method, req.URL.Path, err))
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, req)
+	if err != nil {
+		return fail(fmt.Errorf("docker API request %s %s: %w", req.Method, req.URL.Path, err))
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return fail(fmt.Errorf("docker API %s %s: expected HTTP 101 for a stdin-attached exec, got HTTP %d: %s",
+			req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body))))
+	}
+
+	go func() {
+		_, _ = io.Copy(conn, stdin)
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}()
+
+	return &hijackedExecStream{reader: reader, conn: conn, stop: stop}, nil
 }
 
 type execInspectResponse struct {
