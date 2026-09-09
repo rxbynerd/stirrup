@@ -149,11 +149,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
 		emitTerminalFailure(tp, buildErr)
-		// Phase timings for the terminal-failure path. A control plane
-		// reporting a missing "done" needs to know which phase stalled,
-		// and container log timestamps are too coarse to recover them.
+		// Phase timings for the terminal-failure path, so a control plane
+		// reporting a missing "done" can name the phase that stalled.
+		// emit_returned marks the handoff to the transport, not delivery;
+		// the transport reports the close-time drain separately.
 		fmt.Fprintf(os.Stderr,
-			"job: terminal failure signalled; entry=%s assigned=+%s build_failed=+%s signalled=+%s\n",
+			"job: terminal failure signalled; entry=%s assigned=+%s build_failed=+%s emit_returned=+%s\n",
 			started.UTC().Format(time.RFC3339Nano),
 			assigned.Round(time.Microsecond),
 			buildFailed.Round(time.Microsecond),

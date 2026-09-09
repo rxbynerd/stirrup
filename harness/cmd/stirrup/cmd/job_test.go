@@ -348,6 +348,9 @@ type recordingControlPlane struct {
 	mu       sync.Mutex
 	received []*pb.HarnessEvent
 	doneCh   chan struct{}
+	// With follow-ups enabled each run emits its own "done", so the
+	// close must tolerate more than one.
+	doneOnce sync.Once
 }
 
 func newRecordingControlPlane(task *pb.RunConfig) *recordingControlPlane {
@@ -370,7 +373,7 @@ func (s *recordingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) 
 		s.received = append(s.received, ev)
 		s.mu.Unlock()
 		if ev.Type == "done" {
-			close(s.doneCh)
+			s.doneOnce.Do(func() { close(s.doneCh) })
 			return nil
 		}
 	}
@@ -516,6 +519,12 @@ func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
 	}
 	if done.StopReason != "setup_failed" {
 		t.Errorf("done stop_reason = %q, want setup_failed", done.StopReason)
+	}
+	// The job path emits "done" before trace finalisation, so its trace
+	// field is unset (#453). Integrators code against that, so pin it
+	// rather than let it change silently.
+	if done.Trace != nil {
+		t.Errorf("done.trace = %v, want unset on the job path", done.Trace)
 	}
 
 	// A run that started emits its RunResult even though loop.Run
