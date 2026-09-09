@@ -927,6 +927,46 @@ the path.
 | `semgrep` | shells out to `semgrep --config <path \| auto> --json` | requires `semgrep` on `$PATH` |
 | `composite` | runs all configured child scanners and unions findings | requires `codeScanner.scanners` list |
 
+### Pattern-pack rule scope
+
+Rules in the `patterns` pack fall into two classes:
+
+- **Secret rules** (`secret/*`) are unscoped. A hardcoded credential
+  is a finding in any file, including one with an unknown extension
+  or none at all.
+- **Sink rules** (`sink/*`) are scoped to the language whose syntax
+  the pattern describes, because the same characters mean something
+  else elsewhere — a backtick is command substitution in shell and a
+  template-literal delimiter in JavaScript.
+
+| Rule | Applies to |
+|---|---|
+| `secret/*` | every file |
+| `sink/python_os_system`, `sink/python_subprocess_shell_true`, `sink/python_eval`, `sink/python_exec` | `.py`, `.pyi`; `python` shebang |
+| `sink/js_function_constructor` | `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`; `node` shebang |
+| `sink/shell_backtick` | `.sh`, `.bash`, `.zsh`, `.ksh`, `.mk`, `.yml`, `.yaml`, `.dockerfile`; `Dockerfile`, `Containerfile`, `Makefile`, `GNUmakefile` and their `.variant` forms; `sh`, `bash`, `zsh`, `ksh`, `dash` shebang |
+
+A scoped rule matches a file three ways, all case-insensitive:
+
+1. **Extension.** The final `.suffix` of the file name. A leading dot
+   names the file rather than an extension, so `.bashrc` counts as
+   having no extension.
+2. **Basename.** An exact name (`Makefile`) or that name with a
+   variant suffix (`Dockerfile.dev`).
+3. **Shebang.** For a file with no extension only, the interpreter on
+   a leading `#!` line, resolved through `/usr/bin/env` and tolerant
+   of a version suffix (`python3.12` matches `python`). This is what
+   keeps `bin/deploy`-style scripts in scope.
+
+A file that matches none of the three — an unknown extension, or an
+extensionless file with no shebang — is scanned by the secret rules
+alone. That is the deliberate default: scoped patterns produce noise
+outside the language they were written for, and noise trains
+operators to ignore the rule where it matters. The cost is that
+shell fragments quoted in prose (a `.md` runbook, a `.txt` note) are
+not flagged. Reach for `semgrep` with a rule bundle when broader
+language coverage is required.
+
 ### How to enable
 
 ```json
