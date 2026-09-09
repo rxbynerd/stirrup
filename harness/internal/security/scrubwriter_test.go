@@ -101,6 +101,35 @@ func TestScrubWriterRedactsFatJWTAtDefaultBoundary(t *testing.T) {
 	}
 }
 
+// TestScrubWriterRescansAfterLineAwareCutIsBlocked covers the case where the
+// line-aware cut cannot be used: several patterns match across a newline
+// (their separators are \s), so a span reaching offset 0 can block the cut at
+// the last newline. The byte cut taken instead must be boundary-scanned in
+// its own right, or a secret straddling it is scrubbed in two halves — and
+// two halves that individually match nothing leave the secret intact.
+func TestScrubWriterRescansAfterLineAwareCutIsBlocked(t *testing.T) {
+	blocker := "Basic \nQQQQQQQQ."
+	secret := "AKIA" + "ABCDEFGHIJKLMNOP"
+	sizes := []struct{ chunk, window int }{
+		{scrubChunkBytes, ScrubCarryWindow},
+		{2048, 512},
+	}
+	for _, size := range sizes {
+		input := blocker + strings.Repeat("x", size.chunk-len(blocker)-len(secret)/2) +
+			secret + strings.Repeat("y", size.window+64)
+		var sink bytes.Buffer
+		w := newScrubWriter(&sink, size.chunk, size.window)
+		feed(t, w, input, 4096)
+		got := sink.String()
+		if strings.Contains(got, secret) {
+			t.Errorf("chunk=%d window=%d: secret straddling the byte cut survived", size.chunk, size.window)
+		}
+		if want := Scrub(input); got != want {
+			t.Errorf("chunk=%d window=%d: chunked output diverges from whole-stream Scrub", size.chunk, size.window)
+		}
+	}
+}
+
 // TestSecretPatternsMatchSingleSpanUnderCarryWindow pins the assumption the
 // carry window rests on. A new pattern without a fixture, or a fixture whose
 // match exceeds the window, fails here rather than silently widening the

@@ -122,9 +122,14 @@ func (w *ScrubWriter) flush(force bool) error {
 		if len(w.pending) < w.maxPending {
 			return nil
 		}
-		// A secret longer than the buffer can never be completed; emitting
-		// keeps memory bounded at the cost of the documented residual.
-		cut = limit
+		// A span reaching offset 0 blocks the line-aware cut — several
+		// patterns match across a newline. The byte cut taken instead needs
+		// its own boundary scan; cutting blind here splits any secret
+		// straddling it. Only a span the carry window cannot reassemble
+		// leaves no scanned cut at all, which is the documented residual.
+		if cut = w.boundaryCut(limit); cut == 0 {
+			cut = limit
+		}
 	}
 	return w.emit(cut)
 }

@@ -479,6 +479,45 @@ func TestStoreSpoolIsScrubbedBeforeCompletion(t *testing.T) {
 	}
 }
 
+// TestStoreArchivesNoSecretWhenLineAwareCutIsBlocked drives the writer's
+// blocked-cut case through the capture path, because the spool file is the
+// archive member: a secret split across two chunks here is a secret in the
+// operator-visible archive, and in GCS when an uploader is configured.
+func TestStoreArchivesNoSecretWhenLineAwareCutIsBlocked(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxBytesPerStream = 4 << 20
+	store, err := New(Options{RunID: "cut", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "cut.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "cut", ToolUseID: "tool"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "AKIA" + "ABCDEFGHIJKLMNOP"
+	blocker := "Basic \nQQQQQQQQ."
+	stream := blocker + strings.Repeat("x", 64<<10-len(blocker)-len(secret)/2) +
+		secret + strings.Repeat("y", 32<<10)
+	if _, err := io.WriteString(capture.Stdout(), stream); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Complete(Completion{}); err != nil {
+		t.Fatal(err)
+	}
+	member, err := os.ReadFile(capture.stdout.file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(member), secret) {
+		t.Fatal("complete access key reached the archive member")
+	}
+	if string(member) != security.Scrub(stream) {
+		t.Fatal("archive member diverges from a whole-stream scrub")
+	}
+}
+
 // TestStoreCompletionAllocationIsBoundedByChunk pins the second half of the
 // scrub-on-write change: completion no longer reads the stream back, so its
 // cost is independent of stream size.
