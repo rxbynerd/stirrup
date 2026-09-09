@@ -29,23 +29,46 @@ Validation enforces that directly:
 
 - `provider.batch.maxWaitSeconds` must lie in `(0, timeout]`. A larger
   value is rejected with an error naming both the requested wait and
-  the run timeout.
+  the run timeout, on a disabled `batch` block as well as an enabled
+  one, so the contradiction surfaces at authoring time.
 - Omitting `maxWaitSeconds` on an enabled batch config defaults it to
   the run `timeout`.
 
-Two consequences worth planning around:
+A provider batch that has not resolved within the run's `timeout` is
+therefore abandoned. Batch mode suits work the provider typically turns
+around in minutes, not work that relies on the 24-hour SLA tail.
 
-- A provider batch that has not resolved within the run's `timeout`
-  is abandoned. Batch mode suits work that the provider typically
-  turns around in minutes, not work that relies on the 24-hour SLA
-  tail.
-- `fallbackOnTimeout` only engages when the harness-side cap fires
-  *before* the run deadline. At the default (`maxWaitSeconds ==
-  timeout`) the run deadline wins and the run ends without a
-  streaming retry. Operators who want the fallback must set
-  `maxWaitSeconds` low enough to leave a streaming turn's worth of
-  headroom — for example `maxWaitSeconds: 3000` against
-  `timeout: 3600`.
+#### `fallbackOnTimeout` needs real headroom
+
+`fallbackOnTimeout` retries a turn against the streaming endpoint when
+the harness-side cap fires. It can only do that if the cap fires
+*before* the run deadline — and a cap equal to the run `timeout` never
+does. The run context is armed before the turn starts, while the cap
+only starts once the wait blocks (after marshalling, `Submit`, and at
+least one round trip), so the run deadline is always the earlier of the
+two. `ValidateRunConfig` rejects the combination rather than accepting a
+flag that provably cannot fire:
+
+```
+batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below
+the run timeout, got maxWaitSeconds=3600 and timeout=3600: …
+```
+
+Sizing the headroom is the operator's call, because it depends on the
+run's own retry configuration. A fallback turn needs
+`provider.retry.wallClockBudgetMs` (default 90 000 ms, ceiling 300 000)
+plus the 120 s streaming HTTP timeout.
+
+The headroom must also cover *every preceding batch turn*, because each
+turn's cap is measured from its own `Result` call rather than from run
+start. With `timeout: 3600` and `maxWaitSeconds: 3000`, a first turn
+that consumes 700 s puts the second turn's cap at 3700 s — past the run
+deadline, so the fallback is silently unreachable again from turn 2
+onward. For the fallback to stay reachable on the last turn of an
+N-turn run, size it so that
+`maxWaitSeconds × N + streaming-headroom <= timeout`. The harness cannot
+pick that number generically, which is why it asks rather than reserving
+a slice of the budget itself.
 
 ### When to use it
 
@@ -182,9 +205,9 @@ budget and the remaining 19 never start.
 
 `ValidateRunConfig` emits a `slog` WARN (not an error) when
 `provider.batch.enabled` is set with `maxTurns > 5`, reporting
-`maxWaitSeconds` and the `worstCaseSeconds` product, so operators see
-the mismatch at run start without the validator hard-rejecting an
-intentional choice. The threshold is advisory. A batch run that
+`maxWaitSeconds` and the `worstCaseSeconds` product, so operators
+see the warning at run start without the validator hard-rejecting
+an intentional choice. The threshold is advisory: a batch run that
 intends to complete several turns should divide the budget
 deliberately — for example `maxTurns: 5` and `maxWaitSeconds: 700`
 against a `timeout` of 3600.

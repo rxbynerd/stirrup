@@ -3196,14 +3196,30 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		return
 	}
 
-	// HarnessSidePolling and CancelBundleOnRunCancel constrain the
-	// transport regardless of Enabled, so a future-disabled config does
-	// not silently retain a contradictory flag combination.
+	// The run deadline bounds every wait derived from it: both CLI paths
+	// bind the run context to Timeout, so a batch wait above it can never
+	// elapse. An absent or out-of-range Timeout has already been reported
+	// and leaves no bound to validate against.
+	timeoutBound := 0
+	if config.Timeout != nil && *config.Timeout > 0 && *config.Timeout <= MaxRunTimeoutSeconds {
+		timeoutBound = *config.Timeout
+	}
+
+	// HarnessSidePolling, CancelBundleOnRunCancel and an explicit
+	// MaxWaitSeconds constrain the run regardless of Enabled, so a
+	// future-disabled config does not silently retain a contradictory
+	// combination that only surfaces when someone passes --batch.
 	if batch.HarnessSidePolling && config.Transport.Type == "grpc" {
 		*errs = append(*errs, "batch.harnessSidePolling must not be set with transport=grpc")
 	}
 	if batch.CancelBundleOnRunCancel && config.Transport.Type == "stdio" {
 		*errs = append(*errs, "batch.cancelBundleOnRunCancel requires transport=grpc")
+	}
+	if timeoutBound > 0 && batch.MaxWaitSeconds != nil &&
+		(*batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > timeoutBound) {
+		*errs = append(*errs, fmt.Sprintf(
+			"batch.maxWaitSeconds must be in range (0, %d]: the run timeout of %d seconds bounds the batch wait, got %d",
+			timeoutBound, timeoutBound, *batch.MaxWaitSeconds))
 	}
 
 	if !batch.Enabled {
@@ -3243,23 +3259,25 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		config.Provider.Credential.Type == "anthropic-wif" {
 		*errs = append(*errs, "batch.harnessSidePolling does not support anthropic-wif credentials in v1 (the polling client uses x-api-key auth); follow-up: thread AuthMode through harnessPollingBatchClient")
 	}
-	// The run deadline bounds the batch wait: both CLI paths bind the run
-	// context to Timeout, so a maxWaitSeconds above it can never elapse.
-	// An absent or out-of-range Timeout has already been reported and
-	// leaves no bound to validate against.
-	if config.Timeout != nil && *config.Timeout > 0 && *config.Timeout <= MaxRunTimeoutSeconds {
-		switch {
-		case batch.MaxWaitSeconds == nil:
-			// Only runs on the Enabled=true branch, so a disabled batch
-			// block keeps MaxWaitSeconds nil and the "operator did not
-			// configure" signal survives.
-			def := *config.Timeout
-			batch.MaxWaitSeconds = &def
-		case *batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > *config.Timeout:
-			*errs = append(*errs, fmt.Sprintf(
-				"batch.maxWaitSeconds must be in range (0, %d]: the run timeout of %d seconds bounds the batch wait, got %d",
-				*config.Timeout, *config.Timeout, *batch.MaxWaitSeconds))
-		}
+	if timeoutBound > 0 && batch.MaxWaitSeconds == nil {
+		// Gated on Enabled so a disabled batch block keeps MaxWaitSeconds
+		// nil and the "operator did not configure" signal survives.
+		def := timeoutBound
+		batch.MaxWaitSeconds = &def
+	}
+	// A batch wait equal to the run timeout can never expire first: the run
+	// context is armed before the turn and the wait's own cap only starts
+	// once Result blocks, so the deadline is always the earlier of the two
+	// and FallbackOnTimeout is unreachable. Reject rather than warn, in
+	// line with the two flag/transport contradictions above.
+	if batch.FallbackOnTimeout && timeoutBound > 0 &&
+		batch.MaxWaitSeconds != nil && *batch.MaxWaitSeconds == timeoutBound {
+		*errs = append(*errs, fmt.Sprintf(
+			"batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout, got maxWaitSeconds=%d and timeout=%d: "+
+				"the batch wait can never expire before the run deadline, so the fallback would never fire. "+
+				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the 120 s streaming HTTP timeout — "+
+				"and for every preceding batch turn, whose wait is charged against the same deadline",
+			*batch.MaxWaitSeconds, timeoutBound, defaultProviderRetryWallClockBudgetMs))
 	}
 	if config.MaxTurns > batchTurnsLatencyWarnThreshold && batch.MaxWaitSeconds != nil {
 		// This warn is in types/, the same mechanism rule_of_two_warning

@@ -1091,10 +1091,13 @@ message BatchProviderConfig {
   bool harness_side_polling = 3;
 
   // Switches to the streaming adapter for a turn when the harness-side
-  // max_wait_seconds fires. Defaults to false. Only reachable when
-  // max_wait_seconds leaves room below RunConfig.timeout; at the
-  // default (max_wait_seconds == timeout) the run deadline fires first
-  // and the run ends without a streaming retry.
+  // max_wait_seconds fires. Defaults to false. Requires max_wait_seconds
+  // strictly below RunConfig.timeout, and ValidateRunConfig rejects the
+  // pair otherwise: the run context is armed before the turn while the
+  // batch cap starts only once the wait blocks, so a cap equal to the
+  // timeout can never expire first and the fallback could never fire.
+  // The headroom must also cover every preceding batch turn, whose wait
+  // is charged against the same run deadline.
   bool fallback_on_timeout = 4;
 
   // When a single run is cancelled, cancel the entire bundled provider

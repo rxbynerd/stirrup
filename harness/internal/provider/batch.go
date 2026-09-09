@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -354,10 +355,27 @@ func isBatchTimeout(err error) bool {
 	return errors.Is(err, errBatchExpired)
 }
 
-// expiredOrCancelled resolves the tie when a batch wait's wall-clock cap
-// and the run deadline fire together — the common case once
-// maxWaitSeconds defaults to the run timeout. Reporting ctx.Err() keeps
-// the outcome deterministic and keeps a dead run out of BatchAdapter's
+// batchWaitCap resolves the instant at which a batch wait abandons its
+// entry, reporting false when no cap should be armed at all.
+//
+// A cap at or beyond the run deadline is dropped rather than armed. The
+// run context always ends the wait first in that configuration — it is
+// armed before the turn, while the cap only starts once the wait blocks —
+// so arming it anyway puts the two within timer granularity of each
+// other, and which one the runtime reports decides whether BatchAdapter
+// takes its FallbackOnTimeout branch and retries on an already-dead
+// context. Dropping the cap makes ctx.Err() the only possible outcome.
+func batchWaitCap(ctx context.Context, maxWait time.Duration) (time.Time, bool) {
+	capAt := time.Now().Add(maxWait)
+	if runDeadline, ok := ctx.Deadline(); ok && !runDeadline.After(capAt) {
+		return time.Time{}, false
+	}
+	return capAt, true
+}
+
+// expiredOrCancelled backstops batchWaitCap for a run cancelled without a
+// deadline, where an explicit cancel can still land alongside an armed
+// cap. Reporting ctx.Err() keeps a dead run out of BatchAdapter's
 // FallbackOnTimeout branch, where the streaming retry could only fail.
 func expiredOrCancelled(ctx context.Context, expired error) error {
 	if err := ctx.Err(); err != nil {
@@ -558,12 +576,16 @@ func decodeBatchResult(event types.ControlEvent) *BatchResult {
 	}
 
 	isFailure := result.Err != nil
+	// json.RawMessage stores a JSON null as the four bytes "null", so a
+	// length test alone would read {"response":null} as a success and
+	// fabricate an empty assistant turn from it.
+	hasResponse := len(result.Response) > 0 && !bytes.Equal(result.Response, []byte("null"))
 	switch {
-	case isFailure && len(result.Response) > 0:
+	case isFailure && hasResponse:
 		return batchDecodeError(fmt.Sprintf(
 			"batch_result content sets both response and err (err.type=%q); exactly one is required",
 			result.Err.Type))
-	case !isFailure && len(result.Response) == 0:
+	case !isFailure && !hasResponse:
 		return batchDecodeError("batch_result content sets neither response nor err; exactly one is required")
 	}
 	if event.IsError != nil && *event.IsError != isFailure {
@@ -652,23 +674,26 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 		// configure and would silently expire long batches early.
 		timeout = time.Duration(types.MaxRunTimeoutSeconds) * time.Second
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	var capC <-chan time.Time
+	if capAt, armed := batchWaitCap(ctx, timeout); armed {
+		timer := time.NewTimer(time.Until(capAt))
+		defer timer.Stop()
+		capC = timer.C
+	}
 
 	select {
 	case result := <-ch:
-
 		c.releasePending(batchID)
 		return map[string]*BatchResult{customID: result}, nil
-	case <-timer.C:
+	case <-capC:
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)
-		return nil, expiredOrCancelled(ctx, fmt.Errorf(
-			"%w: timed out after %s (batchID=%s)", errBatchExpired, timeout, batchID))
+		return nil, fmt.Errorf("controlPlaneBatchClient: batch %s: %w", batchID, expiredOrCancelled(ctx, fmt.Errorf(
+			"%w: timed out after %s", errBatchExpired, timeout)))
 	case <-ctx.Done():
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)
-		return nil, fmt.Errorf("controlPlaneBatchClient: cancelled: %w", ctx.Err())
+		return nil, fmt.Errorf("controlPlaneBatchClient: batch %s: cancelled: %w", batchID, ctx.Err())
 	}
 }
 

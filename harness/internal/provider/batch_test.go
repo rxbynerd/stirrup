@@ -906,6 +906,47 @@ func TestExpiredOrCancelled(t *testing.T) {
 	}
 }
 
+// TestBatchWaitCap pins which batch waits get a wall-clock cap at all.
+// A cap at or beyond the run deadline is dropped so the run deadline is
+// the only reachable outcome; only a cap strictly inside the run's
+// remaining budget is armed, and only then can FallbackOnTimeout fire.
+func TestBatchWaitCap(t *testing.T) {
+	t.Run("no run deadline arms the cap", func(t *testing.T) {
+		capAt, armed := batchWaitCap(context.Background(), time.Minute)
+		if !armed {
+			t.Fatal("a context without a deadline must arm the cap")
+		}
+		if time.Until(capAt) <= 0 {
+			t.Errorf("cap must be in the future, got %s", capAt)
+		}
+	})
+
+	t.Run("cap inside the run budget is armed", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		if _, armed := batchWaitCap(ctx, time.Minute); !armed {
+			t.Error("a cap well inside the run deadline must be armed")
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		maxWait  time.Duration
+		runBudge time.Duration
+	}{
+		{"cap equal to the run budget is dropped", time.Minute, time.Minute},
+		{"cap beyond the run budget is dropped", time.Hour, time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), tc.runBudge)
+			defer cancel()
+			if _, armed := batchWaitCap(ctx, tc.maxWait); armed {
+				t.Error("the cap must be dropped when the run deadline binds first")
+			}
+		})
+	}
+}
+
 // TestFabricateAnthropicStream_MalformedToolInput pins the
 // tool_use input decode error path in fabricateAnthropicStream
 // directly. The wider fabricateStream wrapper takes the error
@@ -1169,6 +1210,42 @@ func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 	}
 	if !errors.Is(err, errBatchExpired) {
 		t.Errorf("expected errBatchExpired in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), batchID) {
+		t.Errorf("timeout error should name the batch, got %v", err)
+	}
+}
+
+// TestControlPlaneBatchClient_Result_DeadlineRacesCap arms the run
+// deadline and the wall-clock cap at the same instant, the shape a run
+// takes once maxWaitSeconds defaults to the run timeout. Whichever select
+// arm Go picks, the result must classify as DeadlineExceeded and must not
+// carry the batch-expired sentinel that routes into FallbackOnTimeout.
+func TestControlPlaneBatchClient_Result_DeadlineRacesCap(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, 20*time.Millisecond, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = c.Result(ctx, batchID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if errors.Is(err, errBatchExpired) {
+		t.Errorf("a run past its deadline must not surface the batch-expired sentinel, got %v", err)
+	}
+	if !strings.Contains(err.Error(), batchID) {
+		t.Errorf("error should name the batch, got %v", err)
 	}
 }
 
@@ -1543,9 +1620,41 @@ func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
 				wantSubstrs: []string{"neither response nor err"},
 			},
 			{
+				name:        "neither_with_is_error_true",
+				content:     `{}`,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				name:        "neither_with_is_error_false",
+				content:     `{}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				// json.RawMessage stores a JSON null as four bytes, so a
+				// bare length test would read this as a success and
+				// fabricate an empty assistant turn.
+				name:        "null_response_counts_as_absent",
+				content:     `{"response":null}`,
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
 				name:        "both_response_and_err",
 				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
 				wantSubstrs: []string{"both response and err", `"server_error"`},
+			},
+			{
+				name:        "both_with_is_error_true",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"both response and err"},
+			},
+			{
+				name:        "both_with_is_error_false",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"both response and err"},
 			},
 			{
 				name:        "is_error_true_with_success_payload",

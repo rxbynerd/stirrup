@@ -773,9 +773,12 @@ Control-plane responsibilities:
   `(0, timeout]` and defaults to the task's `timeout`; `timeout`
   itself is capped at 3600 s on both the `stirrup harness` and
   `stirrup job` paths, so 3600 s is the longest batch wait a control
-  plane can ask for. At the default the run deadline fires first and
-  `fallbackOnTimeout` does not engage — leave headroom for it. See
-  [`batch.md`](batch.md#the-wait-budget).
+  plane can ask for. `fallbackOnTimeout` additionally requires a
+  `maxWaitSeconds` strictly below `timeout` — a wait equal to the run
+  deadline can never expire first — and is rejected at validation
+  otherwise. The headroom has to cover every preceding batch turn as
+  well, since each turn's wait is charged against the same deadline.
+  See [`batch.md`](batch.md#the-wait-budget).
 
 Mode gating: `execution` never batches; `research`/`toil` batch
 freely; `planning`/`review` need `allowInteractiveModes: true`.

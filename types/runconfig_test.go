@@ -6792,6 +6792,81 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWithInvalidTimeout(t 
 	}
 }
 
+// TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled pins that
+// an explicit out-of-range maxWaitSeconds is rejected on a disabled batch
+// block too, so the contradiction surfaces at authoring time rather than
+// the first run that passes --batch.
+func TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled(t *testing.T) {
+	c := batchValidConfig()
+	overLimit := 7200
+	c.Provider.Batch = &BatchProviderConfig{Enabled: false, MaxWaitSeconds: &overLimit}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected an out-of-range maxWaitSeconds to be rejected with enabled=false")
+	}
+	if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 60]") {
+		t.Errorf("error should report the timeout-derived range, got: %v", err)
+	}
+	if c.Provider.Batch.MaxWaitSeconds == nil || *c.Provider.Batch.MaxWaitSeconds != overLimit {
+		t.Error("validation must not rewrite an explicit maxWaitSeconds on a disabled block")
+	}
+}
+
+// TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom pins that
+// fallbackOnTimeout is rejected whenever the batch wait resolves to the
+// full run timeout. The run context is armed before the turn and the
+// batch cap only starts once the wait blocks, so an equal wait can never
+// expire first and the fallback could never fire.
+func TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom(t *testing.T) {
+	const wantErr = "batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout"
+	for _, tc := range []struct {
+		name     string
+		setWait  bool
+		seconds  int
+		fallback bool
+		wantErr  bool
+	}{
+		{"unset_defaults_to_timeout_fails", false, 0, true, true},
+		{"explicitly_equal_fails", true, 60, true, true},
+		{"strictly_below_passes", true, 59, true, false},
+		{"equal_without_fallback_passes", true, 60, false, false},
+		{"unset_without_fallback_passes", false, 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := batchValidConfig()
+			c.Provider.Batch = &BatchProviderConfig{
+				Enabled:            true,
+				HarnessSidePolling: true,
+				FallbackOnTimeout:  tc.fallback,
+			}
+			if tc.setWait {
+				seconds := tc.seconds
+				c.Provider.Batch.MaxWaitSeconds = &seconds
+			}
+			err := ValidateRunConfig(c)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("config must validate, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an unreachable-fallback error")
+			}
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Errorf("error should name the unreachable fallback, got: %v", err)
+			}
+			// The diagnostic must name both contradicting values and the
+			// budget an operator has to leave room for.
+			for _, want := range []string{"maxWaitSeconds=60", "timeout=60", "90000 ms", "120 s"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error missing %q, got: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWhenDisabled(t *testing.T) {
 	// The default applies only to Enabled=true configs; a disabled batch block keeps
 	// MaxWaitSeconds nil so callers can still distinguish "operator did not set
