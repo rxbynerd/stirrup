@@ -80,7 +80,11 @@ type BatchEntry struct {
 	Body json.RawMessage `json:"body"`
 }
 
-// BatchResult is the per-entry outcome of a batch submission.
+// BatchResult is the per-entry outcome of a batch submission. Exactly
+// one of Response and Err is set, and Err is the canonical success /
+// failure discriminator on the wire: a batch_result ControlEvent whose
+// is_error flag disagrees with the decoded payload is rejected as an
+// invalid_request_error rather than believed.
 type BatchResult struct {
 	// Response is the provider's Messages-API-compatible response JSON on
 	// success. Nil when Err is non-nil.
@@ -534,29 +538,57 @@ func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 const maxBatchResponseBytes = 4 * 1024 * 1024
 
 // decodeBatchResult turns a batch_result ControlEvent's content into a
-// *BatchResult. An empty content, oversize payload, or malformed JSON
-// surfaces as a BatchResult.Err rather than a nil entry.
+// *BatchResult. The structured payload is the canonical success/failure
+// discriminator: an entry is a failure when content.err is set, and a
+// success when content.response is. An empty content, oversize payload,
+// malformed JSON, a payload setting neither or both fields, or an
+// event.IsError that contradicts the payload all surface as a
+// BatchResult.Err rather than a nil entry.
 func decodeBatchResult(event types.ControlEvent) *BatchResult {
 	if event.Content == "" {
-		return &BatchResult{
-			Err: &BatchResultError{Type: "invalid_request_error", Message: "batch_result missing content"},
-		}
+		return batchDecodeError("batch_result missing content")
 	}
 	if len(event.Content) > maxBatchResponseBytes {
-		return &BatchResult{
-			Err: &BatchResultError{
-				Type:    "invalid_request_error",
-				Message: fmt.Sprintf("batch_result content exceeds %d-byte limit", maxBatchResponseBytes),
-			},
-		}
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result content exceeds %d-byte limit", maxBatchResponseBytes))
 	}
 	var result BatchResult
 	if err := json.Unmarshal([]byte(event.Content), &result); err != nil {
-		return &BatchResult{
-			Err: &BatchResultError{Type: "invalid_request_error", Message: fmt.Sprintf("decode batch_result: %v", err)},
-		}
+		return batchDecodeError(fmt.Sprintf("decode batch_result: %v", err))
+	}
+
+	isFailure := result.Err != nil
+	switch {
+	case isFailure && len(result.Response) > 0:
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result content sets both response and err (err.type=%q); exactly one is required",
+			result.Err.Type))
+	case !isFailure && len(result.Response) == 0:
+		return batchDecodeError("batch_result content sets neither response nor err; exactly one is required")
+	}
+	if event.IsError != nil && *event.IsError != isFailure {
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result is_error=%t contradicts its content, which carries %s; content is canonical",
+			*event.IsError, batchPayloadShape(result)))
 	}
 	return &result
+}
+
+// batchDecodeError builds the synthetic entry a malformed or
+// self-contradictory batch_result resolves to.
+func batchDecodeError(message string) *BatchResult {
+	return &BatchResult{
+		Err: &BatchResultError{Type: "invalid_request_error", Message: message},
+	}
+}
+
+// batchPayloadShape names the decoded payload's discriminator for the
+// is_error contradiction diagnostic.
+func batchPayloadShape(result BatchResult) string {
+	if result.Err != nil {
+		return fmt.Sprintf("err.type=%q", result.Err.Type)
+	}
+	return "a success response"
 }
 
 // Submit emits a single-entry batch_submission HarnessEvent and returns

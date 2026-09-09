@@ -112,7 +112,7 @@ status.
 | `user_response` | `user_response` | During the follow-up grace window, starts a fresh run with this text as its prompt. Events sent during an active run are currently ignored. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
-| `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err`; the current batch client ignores `is_error`. |
+| `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err` — `content` is the canonical discriminator. `is_error` is optional and must agree with it. |
 | `sandbox_token_response` | `request_id`, `token`, `expires_at`, `is_error`, `reason` | The signed sandbox identity JWT, or an explicit refusal. |
 | `cancel` | — | Abort the run within one turn boundary. Git finalisation still runs; the final `done` carries `stop_reason:"cancelled"`. |
 
@@ -759,9 +759,14 @@ Control-plane responsibilities:
 - Reply with `batch_result` echoing `request_id`; `content` is
   `{"response": …}` on success or
   `{"err": {"type": "batch_expired" | "batch_cancelled" | "invalid_request_error" | "server_error", …}}`.
-  The error discriminator must be inside `content`; the current client
-  ignores the ControlEvent's `is_error` field. Responses over 4 MiB are
-  rejected harness-side as an `invalid_request_error`.
+  `content` is the canonical discriminator and must set exactly one of
+  the two fields. The ControlEvent's `is_error` is optional and
+  redundant: when present it must be `true` if and only if `content`
+  carries `err`. The harness turns each of the following into an
+  `invalid_request_error` naming what it saw, rather than guessing:
+  missing `content`, `content` over 4 MiB, malformed JSON, a payload
+  setting neither or both fields, and an `is_error` that contradicts the
+  payload.
 - `batch_waiting` heartbeats mark the wait as healthy. The batch
   client gives up after `maxWaitSeconds`, optionally falling back to
   streaming (`fallbackOnTimeout`). `maxWaitSeconds` must lie in

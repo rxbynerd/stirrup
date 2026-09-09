@@ -338,9 +338,16 @@ func (x *HarnessEvent) GetAudience() string {
 //	"batch_result"
 //	  - request_id: must match a previously received batch_submission
 //	                HarnessEvent.request_id.
-//	  - content:    JSON-encoded BatchResult payload (response or err).
-//	  - is_error:   true for non-success result types (batch_expired,
-//	                batch_cancelled, invalid_request_error, server_error).
+//	  - content:    JSON-encoded BatchResult payload. Canonical: exactly
+//	                one of `response` (success) and `err` (failure, with
+//	                type batch_expired, batch_cancelled,
+//	                invalid_request_error, or server_error) must be set.
+//	                Setting neither or both is an invalid_request_error.
+//	  - is_error:   optional and redundant here. When present it must
+//	                agree with content — true iff content carries `err`.
+//	                A contradiction is reported as an
+//	                invalid_request_error naming both, never resolved in
+//	                favour of the flag.
 //
 //	"sandbox_token_response"
 //	  - request_id:  must match the request_id from the corresponding
@@ -381,15 +388,19 @@ type ControlEvent struct {
 	// "sandbox_token_response" events when is_error is true (why the control
 	// plane could not issue a token).
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
-	// Async tool result payload. Set on "tool_result_response" events. Delivered
-	// to the agentic loop verbatim as the async tool's output content.
+	// Async tool result payload. Set on "tool_result_response" events and
+	// delivered to the agentic loop verbatim as the async tool's output
+	// content; on "batch_result" events it is the JSON-encoded BatchResult
+	// and the canonical outcome discriminator.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
 	// When true on a "tool_result_response", the loop marks the resulting
 	// ToolResult as an error so the model sees it as a tool failure. When true
 	// on a "sandbox_token_response", the control plane could not issue a
 	// token; reason carries the explanation and token / expires_at are unset.
-	// Wrapped to distinguish unset from explicit-false (proto3 scalar
-	// default).
+	// On a "batch_result" it is redundant: content decides the outcome, and
+	// a value disagreeing with content makes the event an
+	// invalid_request_error. Wrapped to distinguish unset from
+	// explicit-false (proto3 scalar default).
 	IsError *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
 	// The signed JWT sandbox identity token. Set on "sandbox_token_response"
 	// events when is_error is false. SENSITIVE: never logged, traced, or

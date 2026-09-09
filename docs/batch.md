@@ -112,6 +112,31 @@ below).
 - `cancelBundleOnRunCancel=true` with `transport=stdio` is rejected
   — there is no bundle to cancel.
 
+### The `batch_result` outcome contract
+
+On the gRPC path the control plane completes each `batch_submission`
+with a `batch_result` ControlEvent. Its `content` is the canonical
+outcome: a JSON `BatchResult` setting exactly one of `response`
+(success) and `err` (failure). The ControlEvent's `is_error` flag is
+optional and redundant for this event type — the harness only
+cross-checks it, and never resolves a disagreement in its favour,
+because a control plane that mislabels a success as an error would
+otherwise silently corrupt a turn.
+
+Each of these becomes an `invalid_request_error` whose message names
+what arrived:
+
+- `content` missing, or larger than 4 MiB;
+- `content` that is not valid JSON;
+- a payload setting neither `response` nor `err`, or both;
+- an `is_error` that disagrees with the payload — `true` alongside a
+  success response, or `false` alongside an `err`.
+
+`is_error` semantics are unchanged for `tool_result_response` and
+`sandbox_token_response`, where the flag is the only discriminator.
+Wire-level detail for control-plane implementers:
+[`integration-guide.md`](integration-guide.md#batch-mode-amortised-token-pricing).
+
 ### Cost and budget caveats
 
 Two operator-visible gaps follow from the wait window:
@@ -161,8 +186,8 @@ budget and the remaining 19 never start.
 the mismatch at run start without the validator hard-rejecting an
 intentional choice. The threshold is advisory. A batch run that
 intends to complete several turns should divide the budget
-deliberately — for example `maxTurns: 5` with `maxWaitSeconds: 700`
-against a 3600 s `timeout`.
+deliberately — for example `maxTurns: 5` and `maxWaitSeconds: 700`
+against a `timeout` of 3600.
 
 ### Cancellation
 

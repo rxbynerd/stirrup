@@ -1457,6 +1457,176 @@ func TestDecodeBatchResult_SizeCap(t *testing.T) {
 	}
 }
 
+// TestDecodeBatchResult_ContentIsCanonical walks the batch_result wire
+// contract: content decides success or failure, is_error is only ever
+// cross-checked, and every malformed or self-contradictory combination
+// resolves to an invalid_request_error with a diagnostic naming what
+// arrived.
+func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
+	const successContent = `{"response":{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}}`
+	boolPtr := func(b bool) *bool { return &b }
+
+	t.Run("success", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			isError *bool
+		}{
+			{"is_error_absent", nil},
+			{"is_error_false", boolPtr(false)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := decodeBatchResult(types.ControlEvent{
+					Type:      "batch_result",
+					RequestID: "batch-1",
+					Content:   successContent,
+					IsError:   tc.isError,
+				})
+				if got.Err != nil {
+					t.Fatalf("expected success, got err %+v", got.Err)
+				}
+				if !strings.Contains(string(got.Response), `"text":"hi"`) {
+					t.Errorf("response: got %s, want the decoded payload", got.Response)
+				}
+			})
+		}
+	})
+
+	// Every error type in the taxonomy must survive the round trip
+	// verbatim rather than being flattened into invalid_request_error.
+	t.Run("error_types", func(t *testing.T) {
+		for _, errType := range []string{
+			"batch_expired", "batch_cancelled", "invalid_request_error", "server_error",
+		} {
+			for _, tc := range []struct {
+				name    string
+				isError *bool
+			}{
+				{"is_error_absent", nil},
+				{"is_error_true", boolPtr(true)},
+			} {
+				t.Run(errType+"/"+tc.name, func(t *testing.T) {
+					got := decodeBatchResult(types.ControlEvent{
+						Type:      "batch_result",
+						RequestID: "batch-1",
+						Content:   fmt.Sprintf(`{"err":{"type":%q,"message":"upstream said so"}}`, errType),
+						IsError:   tc.isError,
+					})
+					if got.Err == nil {
+						t.Fatalf("expected an error entry, got %+v", got)
+					}
+					if got.Err.Type != errType {
+						t.Errorf("type: got %q, want %q", got.Err.Type, errType)
+					}
+					if got.Err.Message != "upstream said so" {
+						t.Errorf("message: got %q, want the payload's message", got.Err.Message)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			content     string
+			isError     *bool
+			wantSubstrs []string
+		}{
+			{
+				name:        "missing_content",
+				content:     "",
+				wantSubstrs: []string{"missing content"},
+			},
+			{
+				name:        "neither_response_nor_err",
+				content:     `{}`,
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				name:        "both_response_and_err",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				wantSubstrs: []string{"both response and err", `"server_error"`},
+			},
+			{
+				name:        "is_error_true_with_success_payload",
+				content:     successContent,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"is_error=true", "a success response"},
+			},
+			{
+				name:        "is_error_false_with_error_payload",
+				content:     `{"err":{"type":"batch_expired","message":"gone"}}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"is_error=false", `err.type="batch_expired"`},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := decodeBatchResult(types.ControlEvent{
+					Type:      "batch_result",
+					RequestID: "batch-1",
+					Content:   tc.content,
+					IsError:   tc.isError,
+				})
+				if got == nil || got.Err == nil {
+					t.Fatalf("expected a synthetic error, got %+v", got)
+				}
+				if got.Err.Type != "invalid_request_error" {
+					t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
+				}
+				if len(got.Response) != 0 {
+					t.Errorf("a rejected entry must not carry a response, got %s", got.Response)
+				}
+				for _, want := range tc.wantSubstrs {
+					if !strings.Contains(got.Err.Message, want) {
+						t.Errorf("message %q missing %q", got.Err.Message, want)
+					}
+				}
+			})
+		}
+	})
+}
+
+// TestControlPlaneBatchClient_ContradictoryIsErrorOverWire drives a
+// contradicting batch_result through the transport rather than calling
+// decodeBatchResult directly, pinning that handleControl routes the
+// rejection to the waiting Result caller.
+func TestControlPlaneBatchClient_ContradictoryIsErrorOverWire(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	isError := true
+	tr.deliver(types.ControlEvent{
+		Type:      "batch_result",
+		RequestID: batchID,
+		Content:   `{"response":{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}}`,
+		IsError:   &isError,
+	})
+
+	results, err := c.Result(context.Background(), batchID)
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	got, ok := results["run-test-turn-1"]
+	if !ok || got == nil {
+		t.Fatalf("expected an entry keyed by custom_id, got %+v", results)
+	}
+	if got.Err == nil || got.Err.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid_request_error, got %+v", got)
+	}
+	if !strings.Contains(got.Err.Message, "is_error=true") {
+		t.Errorf("message %q should name the contradicting flag", got.Err.Message)
+	}
+}
+
 // TestControlPlaneBatchClient_SubmitEmitFailureCleansUp drives an Emit
 // failure on batch_submission and asserts the pending entry was dropped
 // (no leak; subsequent Result reports "no pending submission").

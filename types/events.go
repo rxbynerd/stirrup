@@ -259,6 +259,11 @@ type HarnessEvent struct {
 //
 // On "sandbox_token_response", Token is SENSITIVE: never log, trace,
 // transcribe, or write it to a RunConfig.
+//
+// On "batch_result", Content is the canonical outcome: its `err` field
+// discriminates failure from success. IsError is optional there and only
+// ever cross-checked — a value disagreeing with Content makes the whole
+// event an invalid_request_error.
 type ControlEvent struct {
 	Type         string     `json:"type"`
 	Task         *RunConfig `json:"task,omitempty"`
@@ -266,8 +271,8 @@ type ControlEvent struct {
 	RequestID    string     `json:"requestId,omitempty"` // correlates response with the originating request
 	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision (permission_response only)
 	Reason       string     `json:"reason,omitempty"`    // explanation for denial (permission_response) or issuance failure (sandbox_token_response)
-	Content      string     `json:"content,omitempty"`   // async tool result payload (tool_result_response only)
-	IsError      *bool      `json:"isError,omitempty"`   // mark async tool result as an error (tool_result_response), or a token issuance failure (sandbox_token_response)
+	Content      string     `json:"content,omitempty"`   // async tool result payload (tool_result_response) or BatchResult JSON (batch_result)
+	IsError      *bool      `json:"isError,omitempty"`   // mark async tool result as an error (tool_result_response), a token issuance failure (sandbox_token_response), or redundantly restate Content's outcome (batch_result)
 
 	// Token is the signed JWT sandbox identity token (sandbox_token_response
 	// only, when IsError is not true). SENSITIVE: the harness must never
