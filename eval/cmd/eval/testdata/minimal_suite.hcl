@@ -1,9 +1,8 @@
 # Minimal suite fixture for end-to-end CLI tests.
 #
-# Used by TestCmdRun_JUnitFlag to drive `eval run --dry-run --junit
-# <path>` through the run() dispatcher and assert the --junit flag is
-# wired to writeJUnit. Dry-run mode short-circuits the harness binary
-# requirement, so the test works on bare-bones runners.
+# Used by TestCmdRun_JUnitFlag to drive `eval run --junit <path>`
+# through the run() dispatcher, against a fake harness binary, and
+# assert the --junit flag is wired to writeJUnit.
 #
 # Keep this fixture tiny and deterministic. New tests that need
 # different shapes should add their own fixture rather than expand
@@ -17,7 +16,7 @@ suite "cmdrun-junit-fixture" {
 
     judge {
       type    = "test-command"
-      command = "test -f marker.txt"
+      command = "true"
     }
   }
 }

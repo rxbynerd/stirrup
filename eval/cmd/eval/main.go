@@ -116,9 +116,9 @@ func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	suitePath := fs.String("suite", "", "Path to eval suite HCL file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
-	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
+	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
-	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
+	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
 	model := fs.String("model", "", "Model to run every task with (forwarded to each harness invocation as --model). Overrides the harness default and any model pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
@@ -155,7 +155,15 @@ func cmdRun(args []string) {
 			suite.ID, suite.QuarantineFlags)
 	}
 
-	if *outputDir == "" {
+	if *dryRun {
+		// A dry run validates the suite and prints the summary; it never
+		// touches disk, so any explicit --output is ignored rather than
+		// silently creating an empty directory.
+		if *outputDir != "" {
+			fmt.Fprintf(os.Stderr, "eval run --dry-run: ignoring --output %q; dry runs write no artifacts\n", *outputDir)
+			*outputDir = ""
+		}
+	} else if *outputDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			log.Fatalf("getting working directory: %v", err)
@@ -185,6 +193,11 @@ func cmdRun(args []string) {
 	})
 	if err != nil {
 		log.Fatalf("running suite: %v", err)
+	}
+
+	if *dryRun {
+		printSummary(result)
+		return
 	}
 
 	// result.json is written both at the top level (legacy location CI

@@ -262,16 +262,29 @@ func TestRun_ConvertDispatch(t *testing.T) {
 }
 
 // TestCmdRun_JUnitFlag drives the `run` arm of run()'s switch with
-// --dry-run + --junit and asserts the JUnit XML is created. Dry-run
-// mode short-circuits the harness binary requirement, so this test
-// has no external dependencies beyond a fixture suite. The
-// assertions are deliberately coarse — this is a wiring test for the
-// `*junitPath != ""` guard and the writeJUnit call inside cmdRun;
-// per-suite content shape is covered by reporter tests.
+// --junit against a fake harness and asserts the JUnit XML is
+// created. The assertions are deliberately coarse — this is a
+// wiring test for the `*junitPath != ""` guard and the writeJUnit
+// call inside cmdRun; per-suite content shape is covered by
+// reporter tests.
 func TestCmdRun_JUnitFlag(t *testing.T) {
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "results")
 	xmlPath := filepath.Join(dir, "junit.xml")
+
+	harnessPath := writeFakeHarness(t, `#!/bin/sh
+shift
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
+fi
+`)
 
 	// The fixture is checked in under testdata/ so the test does not
 	// depend on the precise HCL grammar — if the grammar changes,
@@ -285,7 +298,7 @@ func TestCmdRun_JUnitFlag(t *testing.T) {
 	code := run([]string{
 		"run",
 		"--suite", suitePath,
-		"--dry-run",
+		"--harness", harnessPath,
 		"--output", outputDir,
 		"--junit", xmlPath,
 	}, &stdout)
