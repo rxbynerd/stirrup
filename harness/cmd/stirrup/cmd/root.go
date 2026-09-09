@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,6 +61,45 @@ func Execute() {
 // generateRunID creates a simple run identifier from the current timestamp.
 func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
+}
+
+// runTimeoutFor resolves RunConfig.Timeout as a duration; zero when
+// unset or non-positive (the job path validates before this, the CLI
+// path defaults it, so zero only means "no budget" for callers that
+// deliberately omit it).
+func runTimeoutFor(cfg *types.RunConfig) time.Duration {
+	if cfg.Timeout == nil || *cfg.Timeout <= 0 {
+		return 0
+	}
+	return time.Duration(*cfg.Timeout) * time.Second
+}
+
+// cliSessionFollowUps is the number of follow-up runs, each preceded by
+// a full idle grace window, that `stirrup harness` budgets for a
+// session on top of the primary run. `stirrup job` relies on the
+// orchestrator's deadline instead; the CLI has none behind it, so the
+// session must bound itself.
+const cliSessionFollowUps = 10
+
+// cliSessionBudget is the wall-clock bound on a `stirrup harness`
+// session once the primary run has completed: zero (no bound) without
+// a follow-up window, otherwise room for cliSessionFollowUps follow-up
+// runs each waited for through a full grace window.
+func cliSessionBudget(runTimeout time.Duration, graceSecs int) time.Duration {
+	if graceSecs <= 0 {
+		return 0
+	}
+	return cliSessionFollowUps * (runTimeout + time.Duration(graceSecs)*time.Second)
+}
+
+// withRunTimeout derives one run's context from the cancel-only
+// parent: a fresh deadline when timeout is positive, plain
+// cancellation otherwise.
+func withRunTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
 }
 
 // postRunEmitTimeout bounds the fresh context for emitRunOutput after
@@ -241,12 +281,14 @@ var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 }
 
 // exportWorkspace tars + gzips the executor's workspace dir and
-// uploads it to config.Executor.WorkspaceExportTo. No-op when the
-// export field is empty. exportRequired controls error semantics: when
-// true, an export failure is surfaced to the caller; when false, it is
-// logged and the caller's exit code is unchanged.
-func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired bool) error {
-	if cfg.Executor.WorkspaceExportTo == "" {
+// uploads it to dest (the configured config.Executor.WorkspaceExportTo
+// for the primary run, a per-run derivative for follow-ups — see
+// followUpExportURI). No-op when dest is empty. exportRequired
+// controls error semantics: when true, an export failure is surfaced
+// to the caller; when false, it is logged and the caller's exit code
+// is unchanged.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string, exportRequired bool) error {
+	if dest == "" {
 		return nil
 	}
 	// v1 supports only the GCS exporter.
@@ -266,14 +308,106 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired b
 		workspaceDir = wd
 	}
 
-	if err := exp.Export(ctx, workspaceDir, cfg.Executor.WorkspaceExportTo); err != nil {
+	if err := exp.Export(ctx, workspaceDir, dest); err != nil {
 		if exportRequired {
-			return fmt.Errorf("export workspace to %s: %w", cfg.Executor.WorkspaceExportTo, err)
+			return fmt.Errorf("export workspace to %s: %w", dest, err)
 		}
-		slog.Warn("export workspace failed", "dest", cfg.Executor.WorkspaceExportTo, "err", err)
+		slog.Warn("export workspace failed", "dest", dest, "err", err)
 		return nil
 	}
 	return nil
+}
+
+// followUpExportURI derives a follow-up run's workspace export
+// destination from the configured URI by inserting the run ID as the
+// path segment before the object's final component, so successive
+// runs in one process never overwrite each other's tarball:
+//
+//	gs://bucket/runs/r1/workspace.tar.gz → gs://bucket/runs/r1/<runID>/workspace.tar.gz
+//
+// The object's file name is preserved so consumers keyed on it keep
+// working. A base with no object name (a bucket, or a prefix ending in
+// "/") gains the run ID as its final segment instead. An empty base
+// stays empty (export disabled).
+func followUpExportURI(base, runID string) string {
+	if base == "" {
+		return ""
+	}
+	scheme, rest, ok := strings.Cut(base, "://")
+	if !ok {
+		return strings.TrimSuffix(base, "/") + "/" + runID
+	}
+	dir, file, ok := strings.Cut(rest, "/")
+	if ok {
+		if i := strings.LastIndex(file, "/"); i >= 0 {
+			dir, file = dir+"/"+file[:i], file[i+1:]
+		}
+	}
+	if !ok || file == "" {
+		return strings.TrimSuffix(base, "/") + "/" + runID
+	}
+	return scheme + "://" + dir + "/" + runID + "/" + file
+}
+
+// postRunPolicy is the per-run finalisation `stirrup harness` and
+// `stirrup job` apply to the primary run and to every follow-up run
+// alike: emit the run's result, then export the workspace.
+type postRunPolicy struct {
+	// emit publishes the run's RunResult (and any stderr summary).
+	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)
+	// exportRequired selects the workspace export failure semantics;
+	// see exportWorkspace.
+	exportRequired bool
+	// firstFollowUpErr is the first required-export failure among the
+	// follow-up runs, surfaced as the process's exit status once the
+	// follow-up window closes. A follow-up's own run error is not
+	// recorded: it is already on that run's "done" and RunResult, and
+	// the exit status reports the assigned task (the primary run).
+	firstFollowUpErr error
+}
+
+// finaliseFollowUp applies the policy to one completed follow-up run,
+// exporting to a run-scoped object path, and records the first
+// required-export failure for followUpErr.
+func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrace, runErr error) {
+	err := p.finalise(cfg, rt, runErr, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
+	if err != nil && runErr == nil && p.firstFollowUpErr == nil {
+		p.firstFollowUpErr = err
+	}
+}
+
+// followUpErr reports the first required-export failure among the
+// follow-up runs, nil when none failed or export was not required.
+func (p *postRunPolicy) followUpErr() error {
+	return p.firstFollowUpErr
+}
+
+// finalise applies the policy to one completed run. Both steps get
+// fresh, bounded contexts: the run's own context may already be
+// cancelled by a SIGTERM or deadline, and a remote sink or GCS upload
+// would otherwise silently drop the result on every cancelled run.
+// exportTo is the run's export destination (empty disables export).
+//
+// Returns runErr wrapped when non-nil — the result is still emitted so
+// the failure is observable, but a failed run has nothing to export —
+// or a required-export failure; nil otherwise. A nil trace means the
+// loop produced none at all; it has already emitted its terminal
+// "done", so nothing is emitted here to avoid a second one.
+func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error, exportTo string) error {
+	if rt == nil {
+		return fmt.Errorf("running harness: %w", runErr)
+	}
+	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
+	defer emitCancel()
+	p.emit(emitCtx, cfg, rt)
+
+	if runErr != nil {
+		return fmt.Errorf("running harness: %w", runErr)
+	}
+
+	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
+	defer exportCancel()
+	return exportWorkspace(exportCtx, cfg, exportTo, p.exportRequired)
 }
 
 // setupSignalHandler installs SIGINT/SIGTERM handlers that cancel the given context.

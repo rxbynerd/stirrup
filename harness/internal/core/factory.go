@@ -233,7 +233,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// SecretRedactedInOutput events; built early so MCP connection
 	// warnings below go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
-	logger := observability.NewLoggerWithExport(config.RunID, logLevel, os.Stderr, secLogger, logExportHandler)
+	logScope := observability.NewRunScope(config.RunID)
+	logger := observability.NewScopedLoggerWithExport(logScope, logLevel, os.Stderr, secLogger, logExportHandler)
 	if config.SessionName != "" {
 		// Reassigned (not shadowed) so the label propagates into
 		// AgenticLoop.Logger below.
@@ -600,9 +601,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Metrics:      metrics,
 		Security:     secLogger,
 		Logger:       logger,
+		LogScope:     logScope,
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}
+	// Registered at build rather than at Run so a user_response that
+	// arrives while the loop is still being assembled is queued for the
+	// first turn instead of being dropped.
+	loop.ensureControlRouting()
+
 	// Assigned only for a live store: a nil *commandoutput.Store stored in
 	// the CommandOutputFinalizer interface would defeat the loop's nil check.
 	if commandOutputStore != nil {

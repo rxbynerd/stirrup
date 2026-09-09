@@ -98,7 +98,7 @@ status.
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
-| `warning` | `message` | Log; non-fatal. |
+| `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
 | `done` | `stop_reason` | Terminal status for that run. The proto has a `trace` field, but `stirrup job` does not currently populate it. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
@@ -111,12 +111,12 @@ status.
 | `type` | Fields | Semantics |
 |---|---|---|
 | `task_assignment` | `task` (RunConfig) | First event on the stream. Duplicate assignments are ignored. |
-| `user_response` | `user_response` | During the follow-up grace window, starts a fresh run with this text as its prompt. Events sent during an active run are currently ignored. |
+| `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a fresh run with its text as the prompt, and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
 | `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err` — `content` is the canonical discriminator. `is_error` is optional and must agree with it. |
 | `sandbox_token_response` | `request_id`, `token`, `expires_at`, `is_error`, `reason` | The signed sandbox identity JWT, or an explicit refusal. |
-| `cancel` | — | Abort the run within one turn boundary. Git finalisation still runs; the final `done` carries `stop_reason:"cancelled"`. |
+| `cancel` | — | End the session. An active run aborts within one turn boundary (git finalisation still runs; its `done` carries `stop_reason:"cancelled"`), queued `user_response` input is discarded with a `warning` each, and no follow-up window opens. With no run active the stream closes without another `done`. One `cancel` is always enough. |
 
 Correlation rule: every `*_request` event carries a `request_id`
 that the response **must echo verbatim**. Requests may interleave;
@@ -250,7 +250,9 @@ Launch the harness as a Kubernetes Job running `stirrup job` with
 `CONTROL_PLANE_ADDR` pointing at this server. Set
 `Job.spec.activeDeadlineSeconds` above `RunConfig.timeout`, allowing
 additional time for the pre-assignment wait (up to five minutes),
-component construction, post-run hooks, and result/export flushing.
+component construction, post-run hooks, result/export flushing, and —
+with a follow-up grace window — each follow-up run's own `timeout`
+plus the idle windows between runs.
 The process writes `/tmp/healthy`, but the published distroless image
 contains no `test` or shell binary; inspect that file from a sidecar
 sharing the volume, or use a custom image/probe helper. The 30-second
@@ -272,7 +274,7 @@ explicit about fields the CLI would have filled:
 | `prompt` | Required. |
 | `provider.type` | Required: `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
 | `max_turns` | Required, 1–100. The CLI default of 20 is **not** applied on the wire. |
-| `timeout` | Required, 1–3600 seconds. The CLI default of 600 is **not** applied on the wire. |
+| `timeout` | Required, 1–3600 seconds, per run: the primary run (component construction included) and, afresh, each follow-up. The CLI default of 600 is **not** applied on the wire. |
 | `permission_policy.type` | Required for `execution`; validation rejects an empty type rather than inferring the CLI's `allow-all`. Read-only modes default to `deny-side-effects`. |
 | `tools.built_in` | Required (non-empty) for read-only modes, and must exclude the mutating tools. Optional for `execution` (empty enables all built-ins). |
 
@@ -559,7 +561,9 @@ hard — or different providers per mode.
   `sliding-window` (default), `summarise`, or `offload-to-file`.
 - Pair `timeout` with an infrastructure-level deadline
   (`activeDeadlineSeconds`) that also allows for assignment, setup,
-  and teardown.
+  and teardown — and, with follow-ups enabled, for every additional
+  run's own `timeout` plus the grace windows between runs, since
+  `timeout` is per run rather than per session.
 
 ### Verification: use the terminal outcome
 
@@ -590,24 +594,63 @@ re-provisioning the sandbox.
   `user_response` starts a fresh run with a new run ID and the response
   text as its prompt. Current follow-ups **do not preserve the previous
   run's conversation history**.
-- Send `user_response` only after `done`; one sent during an active run
-  is ignored. Each accepted follow-up ends with its own `done` and
-  resets the grace timer.
-- Follow-ups share the primary run's original context deadline; the
-  `timeout` budget does not restart. The job also does not re-run its
-  `resultSink` or workspace-export steps for follow-ups, so consume each
-  follow-up's `done` and configure a trace emitter when those runs need
-  durable detail.
-- A `cancel` during the grace window closes the stream promptly without
-  an extra `done`.
+- A `user_response` sent during an active run — primary or follow-up —
+  is not a follow-up: it is queued (up to 16) and injected as a user
+  message at that run's next turn boundary, after any pending tool
+  results and before the next model call, in arrival order. A run does
+  not end while input is queued: an `end_turn` with input waiting
+  becomes another turn instead of `done`, so a control plane that keeps
+  talking keeps the run alive, bounded by `maxTurns` and `timeout`. Mid-run
+  input gets the `dynamicContext` treatment on arrival — XML/HTML tags
+  stripped, capped at 50,000 bytes, each alteration reported by a
+  `warning` — and is then screened like the initial prompt: Rule-of-Two
+  observation, and the pre-turn guard, which classifies it regardless of
+  its length (the `MinChunkChars` skip does not apply). Empty text, or
+  input beyond the queue bound, is rejected with a `warning` echoing the
+  event's `request_id`. Each accepted follow-up ends with its own `done`.
+  A control plane relaying end-user chat into `user_response` is placing
+  untrusted text on the operator channel; the guard screens it, but the
+  model treats it as the operator's instruction.
+- Each follow-up is a run in its own right: it receives a fresh `timeout`
+  budget when its `user_response` is taken up, and the grace timer
+  restarts after it completes, so the window measures idle time and a
+  follow-up that outlives the grace period does not close it. `stirrup
+  job` has no session-wide cap of its own; bound the Pod with
+  `activeDeadlineSeconds`. (`stirrup harness` bounds its own session at
+  10 × (`timeout` + `followUpGrace`) after the primary run.) The
+  precedence of every limit is tabulated in
+  [`deployment.md`](deployment.md#run-budgets-and-precedence).
+- Every run — primary and each follow-up — is finalised the same way:
+  its `RunResult` is emitted on the configured `resultSink` exactly once,
+  and, when `executor.workspaceExportTo` is set, its workspace is
+  exported once the run completes. The primary run exports to the
+  configured URI verbatim; each follow-up exports to that URI with its
+  own run ID inserted as the path segment before the object name
+  (`gs://bucket/runs/r1/workspace.tar.gz` →
+  `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so successive
+  tarballs never overwrite each other. The follow-up's run ID is the
+  `runId` on its `RunResult`. Export failures follow the same soft-fail
+  policy as the primary run (`--export-workspace-required` hardens both
+  on the CLI).
+- A `cancel` ends the session wherever it lands: during a run it
+  cancels that run and no grace window opens afterwards; during the
+  grace window it closes the stream promptly without an extra `done`.
+- A follow-up whose run fails outright (the loop returns an error, as
+  opposed to a non-success outcome such as `timeout`) ends the session;
+  the failure is on that run's `done` and `RunResult`.
 
 ### Cancelling a run
 
-During an active run, send `ControlEvent{type:"cancel"}`. The harness
-cancels in-flight provider streams and tool calls via context, runs git
-finalisation, and emits `done` with `stop_reason:"cancelled"`. Before
-assignment, `cancel` exits cleanly without `done`; during follow-up
-wait it closes without another `done`. Cancellation during synchronous
+Send `ControlEvent{type:"cancel"}` at any point after assignment; it
+ends the session. During an active run the harness cancels in-flight
+provider streams and tool calls via context, runs git finalisation, and
+emits `done` with `stop_reason:"cancelled"`; any `user_response` input
+queued for that run is discarded, each reported by a `warning`. No
+follow-up window opens after a cancelled run. With no run active —
+between a run's `done` and the next run, or inside the grace window —
+the stream closes without another `done`. One `cancel` is always
+enough; a control plane never needs to send it twice. Before
+assignment, `cancel` exits cleanly without `done`. Cancellation during synchronous
 component construction is not a reliable boundary, so retain an
 infrastructure deadline/SIGTERM fallback. On process shutdown, the job
 uses bounded contexts to flush traces and the result sink.

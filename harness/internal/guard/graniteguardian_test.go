@@ -197,6 +197,34 @@ func TestGraniteGuardianUnknownCriterionAtConstruction(t *testing.T) {
 	}
 }
 
+// TestGraniteGuardianIgnoreMinChunkClassifiesShortInput pins the opt-out
+// mid-run operator input uses: content under MinChunkChars is still
+// sent to the classifier when the caller asks for it.
+func TestGraniteGuardianIgnoreMinChunkClassifiesShortInput(t *testing.T) {
+	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
+	g, err := NewGraniteGuardian(GraniteGuardianConfig{
+		Endpoint:      fs.srv.URL,
+		MinChunkChars: 256,
+	})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	d, err := g.Check(context.Background(), Input{
+		Phase:          PhasePreTurn,
+		Content:        "tiny",
+		IgnoreMinChunk: true,
+	})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if d.Reason == ReasonSkippedMinChunk {
+		t.Fatal("short input was skipped despite IgnoreMinChunk")
+	}
+	if got := atomic.LoadInt32(&fs.requests); got != 1 {
+		t.Fatalf("requests = %d, want 1 (the classifier must see the input)", got)
+	}
+}
+
 func TestGraniteGuardianMinChunkCharsSkip(t *testing.T) {
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{

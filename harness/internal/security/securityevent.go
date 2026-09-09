@@ -44,6 +44,15 @@ func NewSecurityLogger(w io.Writer, runID string) *SecurityLogger {
 	return &SecurityLogger{writer: w, runID: runID}
 }
 
+// SetRunID re-attributes every subsequent event to runID. A process that
+// runs several runs in sequence (follow-ups) calls it at each run
+// boundary so an event correlates with the run that produced it.
+func (sl *SecurityLogger) SetRunID(runID string) {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	sl.runID = runID
+}
+
 // SetEventCounter wires an OTel counter (typically Metrics.SecurityEvents)
 // that is incremented once per Emit call, tagged with the event name. Pass
 // nil to disable. Safe to call concurrently with Emit: writes to sl.counter
@@ -63,6 +72,8 @@ func (sl *SecurityLogger) SetEventCounter(c EventCounter) {
 // implementations we use (OTel) treat ctx primarily for cancellation, which
 // is not meaningful for a single Add call.
 func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
 	se := SecurityEvent{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Level:     level,
@@ -75,9 +86,6 @@ func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
 		return
 	}
 	b = append(b, '\n')
-
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
 	_, _ = fmt.Fprint(sl.writer, string(b))
 
 	if sl.counter != nil {
@@ -172,6 +180,19 @@ func (sl *SecurityLogger) DynamicContextSanitized(event DynamicContextSanitizati
 	})
 }
 
+// UserResponseSanitized emits when a mid-run user_response was altered
+// before injection — the same markup stripping and byte cap applied to
+// dynamic context. requestID is the control plane's correlation token
+// for the event; the content itself is never recorded.
+func (sl *SecurityLogger) UserResponseSanitized(requestID string, event DynamicContextSanitizationEvent) {
+	sl.Emit("warn", "user_response_sanitized", map[string]any{
+		"requestId":       requestID,
+		"originalLength":  event.OriginalLength,
+		"sanitizedLength": event.SanitizedLength,
+		"reasons":         event.Reasons,
+	})
+}
+
 // PermissionDenied emits when a permission policy refuses a tool call.
 // This is distinct from a tool error: the tool was never invoked. The
 // reason field is the human-readable string returned by the policy.
@@ -255,8 +276,9 @@ func (sl *SecurityLogger) GuardError(phase, guardID, errorMessage string) {
 // reports sensitive content. patterns carries pattern NAMES only —
 // never matched content (the same no-content contract as GuardDenied).
 // source is the provenance ("prompt", "dynamic_context", "tool_result",
-// or "guard:<id>" for the LLM-guard ratchet); transition is true on the
-// event that flipped the run's sensitive-data latch.
+// "user_response" for mid-run operator input, or "guard:<id>" for the
+// LLM-guard ratchet); transition is true on the event that flipped the
+// run's sensitive-data latch.
 func (sl *SecurityLogger) SensitiveDataDetected(patterns []string, tier, source string, turn int, action string, transition bool) {
 	sl.Emit("warn", "sensitive_data_detected", map[string]any{
 		"patterns":   patterns,

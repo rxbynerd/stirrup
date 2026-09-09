@@ -386,7 +386,7 @@ func TestExportWorkspace_NoopWhenEmpty(t *testing.T) {
 	defer func() { newWorkspaceExporter = orig }()
 
 	cfg := &types.RunConfig{}
-	if err := exportWorkspace(context.Background(), cfg, true); err != nil {
+	if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true); err != nil {
 		t.Fatalf("exportWorkspace returned %v, want nil", err)
 	}
 	if called {
@@ -409,7 +409,7 @@ func TestExportWorkspace_RequiredPropagatesError(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 	cfg.Executor.Workspace = t.TempDir()
 
-	err := exportWorkspace(context.Background(), cfg, true)
+	err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true)
 	if err == nil {
 		t.Fatal("exportWorkspace returned nil, want non-nil (export required)")
 	}
@@ -432,7 +432,7 @@ func TestExportWorkspace_OptionalLogsError(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 	cfg.Executor.Workspace = t.TempDir()
 
-	if err := exportWorkspace(context.Background(), cfg, false); err != nil {
+	if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, false); err != nil {
 		t.Errorf("exportWorkspace returned %v, want nil (export optional)", err)
 	}
 }
@@ -452,13 +452,13 @@ func TestExportWorkspace_BuilderErrorRequiredVsOptional(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
 	t.Run("required", func(t *testing.T) {
-		err := exportWorkspace(context.Background(), cfg, true)
+		err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true)
 		if !errors.Is(err, build) {
 			t.Errorf("required: want sentinel in chain, got %v", err)
 		}
 	})
 	t.Run("optional", func(t *testing.T) {
-		if err := exportWorkspace(context.Background(), cfg, false); err != nil {
+		if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, false); err != nil {
 			t.Errorf("optional: want nil, got %v", err)
 		}
 	})

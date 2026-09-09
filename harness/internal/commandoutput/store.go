@@ -196,6 +196,46 @@ func New(opts Options) (*Store, error) {
 	}, nil
 }
 
+// Reset prepares the store for the next run in the same process: a
+// fresh spool root, a run-scoped archive identity, an archive path
+// beside the previous run's, and cleared capture state, so a follow-up
+// never spools into a finalized root or reports the primary run's
+// archive as its own. A store that still holds unfinalized captures is
+// refused; one that has not been used yet is simply re-keyed.
+func (s *Store) Reset(runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.finalized && len(s.entries) > 0 {
+		return fmt.Errorf("reset command output store for %s: %d captures are still open", runID, len(s.entries))
+	}
+	archiveID := safeID(runID)
+	if archiveID == "" {
+		archiveID = fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	if !s.finalized && archiveID == s.archiveID {
+		return nil
+	}
+	root, err := os.MkdirTemp("", "stirrup-command-output-")
+	if err != nil {
+		return fmt.Errorf("create command output store: %w", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		_ = os.RemoveAll(root)
+		return fmt.Errorf("secure command output store: %w", err)
+	}
+	_ = os.RemoveAll(s.root)
+	s.root = root
+	s.archiveID = archiveID
+	s.archivePath = filepath.Join(filepath.Dir(s.archivePath), archiveID+".command-output.tar.gz")
+	s.archiveURI = ""
+	s.entries = map[string]*entry{}
+	s.refs = map[string]streamRef{}
+	s.totalRaw = 0
+	s.fatalErr = nil
+	s.finalized = false
+	return nil
+}
+
 func (s *Store) SetRecorder(recorder Recorder) {
 	s.mu.Lock()
 	s.recorder = recorder

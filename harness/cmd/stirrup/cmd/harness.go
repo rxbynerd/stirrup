@@ -1681,14 +1681,20 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setupSignalHandler(func() {
 		shutdownCancel()
 		cancel()
 	})
 
-	loop, err := core.BuildLoop(ctx, config,
+	// The wall-clock budget covers component construction plus the
+	// primary run; follow-ups mint their own from the cancel-only ctx.
+	runTimeout := runTimeoutFor(config)
+	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
+	defer runCancel()
+
+	loop, err := core.BuildLoop(runCtx, config,
 		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
 		core.WithWireTrace(opts.wireTrace),
 	)
@@ -1701,39 +1707,37 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	runTrace, runErr := loop.Run(ctx, config)
-	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself
-		// failed) — nothing to emit.
-		return fmt.Errorf("running harness: %w", runErr)
+	policy := &postRunPolicy{
+		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
+			emitRunOutput(ctx, cfg, rt, opts.outputMode)
+		},
+		exportRequired: opts.exportWorkspaceRequired,
 	}
 
-	// A fresh, short-deadline context so a signal-cancelled/timed-out
-	// ctx does not eat the run's answer (mirrors bestEffortCancel in
-	// batchpoll.go).
-	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
-	defer emitCancel()
-	emitRunOutput(emitCtx, config, runTrace, opts.outputMode)
-
-	if runErr != nil {
-		// finishWithOutcome's early-return paths (build-system-prompt
-		// failure, git setup failure, fatal preRun hook failure) return
-		// a valid trace alongside a non-nil error; the RunResult
-		// emission above must still run for these, but a failed run has
-		// nothing further to do.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-
-	// Independent context, same reason as emitRunOutput, with a longer
-	// deadline for a possibly multi-MB GCS PUT.
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
-	defer exportCancel()
-	if err := exportWorkspace(exportCtx, config, opts.exportWorkspaceRequired); err != nil {
+	runTrace, runErr := loop.Run(runCtx, config)
+	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
 
+	graceSecs := 0
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)
+		graceSecs = *config.FollowUpGrace
+	}
+	// The CLI has no orchestrator deadline behind it, so the session as a
+	// whole is bounded here; see cliSessionBudget.
+	sessionCtx, sessionCancel := withRunTimeout(ctx, cliSessionBudget(runTimeout, graceSecs))
+	defer sessionCancel()
+	// Called even with no grace window so user_response events that
+	// arrived after the run's last turn boundary are rejected with a
+	// warning rather than lost at exit.
+	core.RunFollowUpLoop(sessionCtx, loop, config, graceSecs, core.FollowUpOptions{
+		RunTimeout:    runTimeout,
+		OnRunComplete: policy.finaliseFollowUp,
+	})
+	// A required export that fails on a follow-up fails the process the
+	// same way it would for the primary run.
+	if err := policy.followUpErr(); err != nil {
+		return err
 	}
 	// A non-success outcome reached here (runErr == nil but e.g.
 	// Outcome == "error" or "hook_failed") must still fail the process.

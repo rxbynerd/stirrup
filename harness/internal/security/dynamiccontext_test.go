@@ -7,7 +7,7 @@ import (
 )
 
 func TestSanitizeDynamicContext_StripsTagsAndTruncates(t *testing.T) {
-	longValue := "<evil>keep</evil><!-- remove -->" + strings.Repeat("a", maxDynamicContextValueLength+1)
+	longValue := "<evil>keep</evil><!-- remove -->" + strings.Repeat("a", MaxOperatorTextBytes+1)
 
 	sanitized, events := SanitizeDynamicContext(map[string]string{
 		"issue": longValue,
@@ -17,8 +17,8 @@ func TestSanitizeDynamicContext_StripsTagsAndTruncates(t *testing.T) {
 	if strings.Contains(got, "<evil>") || strings.Contains(got, "<!--") {
 		t.Fatalf("expected tags/comments to be stripped, got %q", got[:40])
 	}
-	if len(got) != maxDynamicContextValueLength {
-		t.Fatalf("expected length %d, got %d", maxDynamicContextValueLength, len(got))
+	if len(got) != MaxOperatorTextBytes {
+		t.Fatalf("expected length %d, got %d", MaxOperatorTextBytes, len(got))
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))

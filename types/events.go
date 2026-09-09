@@ -244,7 +244,7 @@ type HarnessEvent struct {
 	StopReason     string          `json:"stopReason,omitempty"`
 	Message        string          `json:"message,omitempty"`
 	Trace          *RunTrace       `json:"trace,omitempty"`
-	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result/sandbox-token requests with their responses
+	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result/sandbox-token requests with their responses; on a "warning", echoes the dropped user_response's requestId
 	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
@@ -257,6 +257,22 @@ type HarnessEvent struct {
 // "sandbox_token_response". Each response type echoes RequestID from the
 // HarnessEvent it completes. See docs/deployment.md and docs/batch.md.
 //
+// A "user_response" received during an active run is queued (bounded
+// FIFO of 16) and injected as a user message at the run's next turn
+// boundary, in arrival order; the run continues past end_turn while
+// input is queued. Received in the follow-up grace window, the oldest
+// queued event starts a fresh run with UserResponse as the prompt and
+// anything queued behind it joins that run. UserResponse is sanitised
+// like dynamic context on arrival (XML/HTML tags stripped, capped at
+// 50,000 bytes), each alteration reported by a "warning" HarnessEvent
+// whose Message starts "user_response sanitized:". An empty
+// UserResponse, one arriving when the queue is full, one arriving after
+// a "cancel", or one still queued when the session ends is dropped and
+// reported by a "warning" whose Message starts "user_response
+// dropped:". Every such "warning" echoes RequestID, which is otherwise
+// optional on this type. A "cancel" ends the session: it discards
+// queued input, cancels any active run, and opens no follow-up window.
+//
 // On "sandbox_token_response", Token is SENSITIVE: never log, trace,
 // transcribe, or write it to a RunConfig.
 //
@@ -268,7 +284,7 @@ type ControlEvent struct {
 	Type         string     `json:"type"`
 	Task         *RunConfig `json:"task,omitempty"`
 	UserResponse string     `json:"userResponse,omitempty"`
-	RequestID    string     `json:"requestId,omitempty"` // correlates response with the originating request
+	RequestID    string     `json:"requestId,omitempty"` // correlates response with the originating request; optional client token on user_response
 	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision (permission_response only)
 	Reason       string     `json:"reason,omitempty"`    // explanation for denial (permission_response) or issuance failure (sandbox_token_response)
 	Content      string     `json:"content,omitempty"`   // async tool result payload (tool_result_response) or BatchResult JSON (batch_result)

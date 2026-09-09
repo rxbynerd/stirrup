@@ -318,8 +318,8 @@ The action is `ruleOfTwo.runtime.onDetect`; the default is
 |---|---|---|
 | `block-external` (default) | The permission gate denies `run_command`, `web_fetch`, and every `mcp_*` tool for the rest of the run | Restores two-of-three by revoking egress; local work (file reads, edits) still finishes; transport-agnostic |
 | `ask-upstream` | The gate routes each external-comm call through the upstream approval channel instead of denying outright | Requires `transport: grpc` — `stdio` has no upstream control plane to answer; validation rejects the combination |
-| `redact` | The loop rewrites the matched sensitive spans in just-arrived tool-result blocks (text and structured payload) with a placeholder; dynamic-context values are redacted before the prompt is built | The latch still trips for audit; the prompt itself latches but is never rewritten, since changing the task statement changes run semantics |
-| `abort` | The run terminates with the `rule_of_two_violation` outcome | A turn-0 sighting (prompt or dynamic context) aborts before the first model call |
+| `redact` | The loop rewrites the matched sensitive spans in just-arrived tool-result blocks (text and structured payload) with a placeholder; dynamic-context values are redacted before the prompt is built | The latch still trips for audit; the prompt and mid-run `user_response` input latch but are never redacted, since changing the operator's words changes run semantics (the markup stripping and byte cap `user_response` shares with dynamic context happen on arrival and are reported, not a redaction) |
+| `abort` | The run terminates with the `rule_of_two_violation` outcome | A turn-0 sighting (prompt or dynamic context) aborts before the first model call; mid-run `user_response` input is screened the same way at the turn it is injected |
 | `warn` | Events and metrics only | The forced action whenever the classifier is observe-only |
 
 The `block-external` denial carries a stable reason string the model

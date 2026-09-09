@@ -75,7 +75,10 @@ const (
 //	             event carrying stop_reason "error".
 //
 //	"warning"
-//	  - message: human-readable warning (non-fatal).
+//	  - message:    human-readable warning (non-fatal).
+//	  - request_id: set when the warning reports a dropped user_response
+//	                (empty text, or the queue of 16 was full); echoes that
+//	                ControlEvent's request_id so the sender can retry.
 //
 //	"heartbeat"
 //	  - (no additional fields) Sent every 30 seconds during execution to
@@ -154,6 +157,8 @@ type HarnessEvent struct {
 	// Unique request ID for correlation. Set on "permission_request" and
 	// "tool_result_request" events. The control plane must echo this back in
 	// the corresponding permission_response / tool_result_response ControlEvent.
+	// Also set on a "warning" that reports a dropped user_response, echoing
+	// that ControlEvent's request_id.
 	RequestId string `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The tool name. Set on "permission_request" (tool requesting permission)
 	// and "tool_result_request" (async tool whose result is being requested).
@@ -307,9 +312,34 @@ func (x *HarnessEvent) GetAudience() string {
 //	          the first ControlEvent sent after the stream opens.
 //
 //	"user_response"
-//	  - user_response: free-text response to a model prompt that asked for
-//	                   user input. Injected into the conversation as a user
-//	                   message on the next turn.
+//	  - user_response: free-text operator input for the model. During an
+//	                   active run it is queued (bounded FIFO of 16) and
+//	                   injected as a user message at the run's next turn
+//	                   boundary — after the pending tool results are
+//	                   appended and before the next model call — in
+//	                   arrival order. If the model ends its turn while
+//	                   input is queued, the run continues with that input
+//	                   instead of finishing. With no run active inside the
+//	                   follow-up grace window, the oldest queued event
+//	                   starts a fresh run with its text as the prompt and
+//	                   anything queued behind it joins that run at its
+//	                   first turn boundary. The text gets the same
+//	                   treatment as dynamicContext — XML/HTML tags
+//	                   stripped, capped at 50,000 bytes — with each
+//	                   alteration reported by a "warning" echoing
+//	                   request_id whose message starts
+//	                   "user_response sanitized:". An empty text (before
+//	                   or after that treatment), one arriving when the
+//	                   queue is full, or one arriving after a "cancel" is
+//	                   dropped and reported by a "warning" whose message
+//	                   starts "user_response dropped:"; nothing is dropped
+//	                   silently, including input still queued when the
+//	                   session ends. Injected text is screened like the
+//	                   initial prompt (Rule-of-Two observation and the
+//	                   pre-turn guard, which classifies it regardless of
+//	                   its length).
+//	  - request_id:    optional client-chosen correlation token, echoed on
+//	                   every "warning" about this user_response.
 //
 //	"permission_response"
 //	  - request_id: must match the request_id from the corresponding
@@ -329,13 +359,17 @@ func (x *HarnessEvent) GetAudience() string {
 //	                see as a tool error rather than a successful result.
 //
 //	"cancel"
-//	  - (no additional fields) Signals that the run should be aborted. The
-//	    harness terminates the run within one turn boundary: any in-flight
-//	    provider stream or tool call is cancelled via context propagation,
-//	    no further turns are started, git finalisation still runs, and the
-//	    final "done" HarnessEvent carries stop_reason="cancelled". If the
-//	    harness is in the follow-up grace window (no active run), the
-//	    stream closes promptly without an additional "done" event.
+//	  - (no additional fields) Ends the session. An active run terminates
+//	    within one turn boundary: any in-flight provider stream or tool
+//	    call is cancelled via context propagation, no further turns are
+//	    started, git finalisation still runs, and the final "done"
+//	    HarnessEvent carries stop_reason="cancelled". Queued user_response
+//	    input is discarded (each is reported by a "warning"); cancel always
+//	    wins over it. No follow-up grace window opens after a cancelled run,
+//	    and a cancel received with no run active — including in the window
+//	    between a run's "done" and the next run, or inside the grace window
+//	    — closes the stream promptly without an additional "done". One
+//	    cancel is always enough to stop the harness.
 //
 //	"batch_result"
 //	  - request_id: must match a previously received batch_submission
@@ -379,11 +413,16 @@ type ControlEvent struct {
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
 	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
-	// Free-text user response. Set on "user_response" events.
+	// Free-text operator input. Set on "user_response" events. Queued and
+	// injected at the active run's next turn boundary, or the prompt of the
+	// next run in the follow-up grace window; see the "user_response" entry
+	// above for the queue bound and rejection reporting.
 	UserResponse string `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
 	// Correlates the response with the originating request HarnessEvent.
 	// Set on "permission_response" and "tool_result_response" events. Must
-	// match a previously received HarnessEvent.request_id.
+	// match a previously received HarnessEvent.request_id. Optional on
+	// "user_response" as a client-chosen token echoed on the "warning" that
+	// reports the event dropped.
 	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The permission decision. Set on "permission_response" events.
 	// True = allow the tool call to proceed. False = deny.
@@ -649,15 +688,21 @@ type RunConfig struct {
 	//
 	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
-	// Required. Wall-clock timeout in seconds for the entire run. The loop
-	// terminates with stop_reason "timeout" when this expires, and every
-	// budget derived from the run deadline — a batch wait among them —
-	// is bounded by it. Range: 1-3600.
+	// Required. Wall-clock timeout in seconds for one run. The primary run's
+	// budget starts when this RunConfig is accepted (component construction
+	// counts against it); every follow-up run receives a fresh budget of
+	// the same length when its user_response is taken up. The loop
+	// terminates the run with stop_reason "timeout" when the budget
+	// expires, and every budget derived from the run deadline — a batch
+	// wait among them — is bounded by it. There is no session-wide cap: a
+	// session is bounded by this per-run budget, the follow_up_grace idle
+	// window, "cancel", and the process shutdown signal. Range: 1-3600.
 	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
-	// Optional. Seconds to keep the gRPC transport open after the primary run
-	// completes, waiting for follow-up user_response events that trigger
-	// additional runs. 0 or unset means disabled (stream closes after done).
-	// Max: 3600.
+	// Optional. Idle seconds to keep the gRPC transport open after each run
+	// completes (including its result-sink and workspace-export steps),
+	// waiting for a user_response that starts the next run. The window
+	// restarts after every run; a run in progress never consumes it. 0 or
+	// unset means disabled (stream closes after done). Max: 3600.
 	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".

@@ -115,25 +115,45 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	runCtx, cancelRun := context.WithCancelCause(ctx)
 	defer cancelRun(nil)
 
-	// OnControl fan-out is supported by all production transports;
-	// sub-agents use NullTransport whose OnControl is a no-op.
-	l.Transport.OnControl(func(event types.ControlEvent) {
-		if event.Type == "cancel" {
-			cancelRun(ErrCancelledByControlPlane)
-		}
-	})
+	// One routing handler per loop: "cancel" reaches this run through
+	// cancelActive while it is in flight, and "user_response" is queued
+	// for the next turn boundary. Sub-agents use NullTransport whose
+	// OnControl is a no-op.
+	l.ensureControlRouting()
+	l.setActiveRun(cancelRun)
+	defer l.setActiveRun(nil)
+	// A cancel that arrived while no run was active ended the session;
+	// this run must not proceed to component work on its behalf.
+	if l.sessionCancelled.Load() {
+		cancelRun(ErrCancelledByControlPlane)
+	}
 
 	l.Trace.Start(config.RunID, config)
+	l.resetCommandOutput(config.RunID)
+	// Sub-agents share the parent's loggers and run concurrently with
+	// it, so only a top-level run re-attributes them.
+	if l.ParentRunID == "" {
+		if l.LogScope != nil {
+			l.LogScope.Set(config.RunID)
+		}
+		if l.Security != nil {
+			l.Security.SetRunID(config.RunID)
+		}
+	}
 
 	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
 	// already set one so child spans nest correctly; otherwise establish
-	// the OTel root or a plain ctx as the span parent.
+	// the OTel root or a plain ctx as the span parent for this run only.
+	// The span parent is also what provider and tool calls descend from,
+	// so a follow-up run on the same loop must not inherit the previous
+	// run's (by then cancelled) context.
 	if l.TraceContext == nil {
 		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
 			l.TraceContext = otelEmitter.RootContext()
 		} else {
 			l.TraceContext = runCtx
 		}
+		defer func() { l.TraceContext = nil }()
 	}
 
 	// Lets the control plane know the run is alive during long turns.
@@ -416,6 +436,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		),
 	)
 
+	// "done" is the control plane's cue to send its next control event;
+	// from here the run is no longer cancellable, so a cancel must route
+	// as idle rather than to this run's context.
+	l.setActiveRun(nil)
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,
@@ -540,6 +564,12 @@ func (l *AgenticLoop) runInnerLoop(
 		case <-ctx.Done():
 			return messages, outcomeCtxDone, finalAssistantText
 		default:
+		}
+
+		// Turn boundary: operator input that arrived since the last
+		// model call joins the history before this turn's request.
+		if _, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages); blocked != "" {
+			return messages, blocked, finalAssistantText
 		}
 
 		// See collectUntrustedChunks / docs/guardrails.md for what
@@ -967,6 +997,16 @@ func (l *AgenticLoop) runInnerLoop(
 					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
+			// The run does not end while unconsumed operator input
+			// exists: queued user_response text becomes the next user
+			// turn instead of a "done".
+			injected, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages)
+			if blocked != "" {
+				return messages, blocked, finalAssistantText
+			}
+			if injected > 0 {
+				continue
+			}
 			return messages, "success", finalAssistantText
 		}
 		if sr.StopReason != "tool_use" {
@@ -1095,33 +1135,50 @@ func (l *AgenticLoop) applyEscalation(
 	return messages
 }
 
+// FollowUpOptions configures RunFollowUpLoop.
+type FollowUpOptions struct {
+	// RunTimeout is the wall-clock budget minted fresh for each
+	// follow-up run (RunConfig.Timeout). Zero leaves a follow-up bounded
+	// only by the parent context's cancellation.
+	RunTimeout time.Duration
+
+	// OnRunComplete, when non-nil, is called after every follow-up run
+	// with the config the run used (RunID and Prompt already refreshed
+	// for that run), its trace, and its error — the same pair Run
+	// returns. It runs on the RunFollowUpLoop goroutine before the next
+	// follow-up is accepted, so the caller's per-run finalisation
+	// (result sink, workspace export) sees a stable config.
+	OnRunComplete func(config *types.RunConfig, trace *types.RunTrace, err error)
+}
+
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
-// each new prompt. Exits on grace-period timeout, ctx cancellation, or
-// a "cancel" control event. graceSecs must be > 0; the transport must
-// support fan-out OnControl (GRPCTransport and StdioTransport do).
-func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int) {
-	followUpCh := make(chan string, 1)
-	cancelCh := make(chan struct{}, 1)
-
-	loop.Transport.OnControl(func(event types.ControlEvent) {
-		switch event.Type {
-		case "user_response":
-			select {
-			case followUpCh <- event.UserResponse:
-			default:
-				// Already queued; control plane should wait for "done"
-				// before sending another request.
-			}
-		case "cancel":
-			// In-flight Run has its own cancel handler and terminates on
-			// the next turn boundary.
-			select {
-			case cancelCh <- struct{}{}:
-			default:
-			}
-		}
-	})
+// each one as the prompt of a fresh run. Exits on grace-period
+// timeout, ctx cancellation, a "cancel" control event (whenever it
+// arrived: a cancelled session opens no follow-up window), or a
+// follow-up run that fails. Whatever is still queued on exit is
+// rejected with a warning per event, so nothing is dropped silently;
+// with graceSecs <= 0 that flush is all the call does.
+//
+// Input arriving while a follow-up run is active is queued for that
+// run's next turn boundary rather than held for another run — the same
+// contract Run applies to the primary run — so the loop's shared queue
+// is the only consumer here. ctx must carry cancellation and shutdown
+// only, not the primary run's deadline: each follow-up is a run in its
+// own right and gets a fresh opts.RunTimeout budget derived from ctx.
+// The grace timer measures idle time — it restarts after each
+// follow-up completes, so a long follow-up does not consume the window
+// meant for the next one.
+func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int, opts FollowUpOptions) {
+	loop.ensureControlRouting()
+	if graceSecs <= 0 {
+		loop.flushQueuedUserInput("no follow-up window is configured")
+		return
+	}
+	defer loop.flushQueuedUserInput("session ended before the input was taken up")
+	if loop.sessionCancelled.Load() {
+		return
+	}
 
 	grace := time.Duration(graceSecs) * time.Second
 	timer := time.NewTimer(grace)
@@ -1129,26 +1186,43 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 
 	for {
 		select {
-		case newPrompt := <-followUpCh:
-
+		case <-loop.userInput.notify:
+			if loop.sessionCancelled.Load() {
+				return
+			}
+			next, ok := loop.userInput.pop()
+			if !ok {
+				// Already drained into the run that was active when it
+				// arrived.
+				continue
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
 				default:
 				}
 			}
-			timer.Reset(grace)
 
 			// Issue a fresh run ID so traces don't collide.
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
-			config.Prompt = newPrompt
+			config.Prompt = next.Text
 
-			if _, err := loop.Run(ctx, config); err != nil {
+			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
+			runTrace, err := loop.Run(runCtx, config)
+			cancelRun()
+			if opts.OnRunComplete != nil {
+				opts.OnRunComplete(config, runTrace, err)
+			}
+			if err != nil {
 				// Transport already carries the error event from finishWithError.
 				return
 			}
+			if loop.sessionCancelled.Load() {
+				return
+			}
+			timer.Reset(grace)
 
-		case <-cancelCh:
+		case <-loop.idleCancel:
 			return
 
 		case <-timer.C:
@@ -1158,6 +1232,17 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			return
 		}
 	}
+}
+
+// followUpRunContext derives one follow-up run's context from the
+// cancellation-only parent: a fresh timeout when one is configured,
+// otherwise plain cancellation so Run's WithCancelCause still owns the
+// cause.
+func followUpRunContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
 }
 
 // startHeartbeat launches a background goroutine that emits heartbeat events
@@ -1767,6 +1852,30 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 // GCS uploader's HTTP client allows 5 minutes per attempt
 // (commandoutput/gcs.go), plus headroom for writing the tar.gz locally.
 const commandOutputFinalizeBudget = 6 * time.Minute
+
+// commandOutputResetter is the optional per-run seam on a command-output
+// store: a loop reused for follow-ups re-keys the store to each run so
+// captures spool into a live root and RunTrace.CommandOutputArchive
+// names that run's archive, not the primary's.
+type commandOutputResetter interface {
+	Reset(runID string) error
+}
+
+// resetCommandOutput re-keys the owned store to runID at the start of a
+// run. Sub-agents share the parent's store and never own it, so only a
+// top-level run resets.
+func (l *AgenticLoop) resetCommandOutput(runID string) {
+	if l.CommandOutput == nil || !l.OwnsCommandOutput {
+		return
+	}
+	r, ok := l.CommandOutput.(commandOutputResetter)
+	if !ok {
+		return
+	}
+	if err := r.Reset(runID); err != nil {
+		l.Logger.Error("command output store reset failed", "error", err)
+	}
+}
 
 func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string) string {
 	if l.CommandOutput == nil || !l.OwnsCommandOutput {

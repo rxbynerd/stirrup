@@ -28,7 +28,7 @@ every turn:
 
 | Phase | Where in the loop | What it inspects | What a deny does |
 |---|---|---|---|
-| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
+| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
 | `pre_tool`  | Inside the tool dispatch loop, before each tool call is sent to the executor | The model-proposed tool name and JSON input | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
 | `post_turn` | After `end_turn` stop reason, before the assistant text leaves the loop | The final assistant message | Aborts the run with outcome `guardrail_blocked` |
 
@@ -235,7 +235,10 @@ The two load-bearing latency mitigations are:
 
 1. **`MinChunkChars` skip** at `pre_turn`. Chunks shorter than the
    threshold (default 256 chars) are not sent to the classifier;
-   a `guard_skipped` event is emitted instead.
+   a `guard_skipped` event is emitted instead. Mid-run `user_response`
+   input is exempt: it is classified at any length, since it is one
+   call per turn boundary at most and a short relayed turn is exactly
+   the case that needs screening.
 2. **Batched composite criterion** at `pre_turn` and `post_turn`.
    The default config issues one outbound request per phase per
    turn, regardless of chunk count.

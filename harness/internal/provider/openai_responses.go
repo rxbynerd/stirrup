@@ -589,11 +589,10 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 
 		case "user":
 			// function_call_output items are emitted in document order; text
-			// blocks are batched into a single trailing input_text item
-			// rather than kept in strict document order, since the harness's
-			// own message construction never mixes text and tool results in
-			// one user message and the Responses API prefers
-			// function_call_output items ahead of the next turn's text.
+			// blocks (the prompt, or mid-run user input injected after the
+			// tool results) are batched into a single trailing input_text
+			// item, since the Responses API prefers function_call_output
+			// items ahead of the next turn's text.
 			var textParts []string
 			for _, block := range msg.Content {
 				switch block.Type {

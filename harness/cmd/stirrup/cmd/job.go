@@ -135,13 +135,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("interrupted before receiving task assignment")
 	}
 
-	if config.Timeout != nil && *config.Timeout > 0 {
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(*config.Timeout)*time.Second)
-		defer timeoutCancel()
-	}
+	// The wall-clock budget covers component construction plus the
+	// primary run. Follow-up runs derive their own budget from the
+	// cancel-only ctx, so a long primary run cannot starve them.
+	runTimeout := runTimeoutFor(config)
+	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
+	defer runCancel()
 
-	loop, err := core.BuildLoopWithTransport(ctx, config, tp)
+	loop, err := core.BuildLoopWithTransport(runCtx, config, tp)
 	if err != nil {
 		// No loop exists to run its own error/done emission, so without
 		// this the control plane cannot tell a rejected config from a
@@ -167,37 +168,20 @@ func runJob(cmd *cobra.Command, args []string) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	runTrace, runErr := loop.Run(ctx, config)
-	if runTrace == nil {
-		// No trace was produced at all (e.g. the trace emitter itself
-		// failed). The loop emits "done" before finishing the trace on
-		// every path, so the control plane already has its terminal
-		// signal and must not receive a second one here.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-	printRunSummary(runTrace)
-	// Fresh context: ctx may already be cancelled by a SIGTERM here, and a
-	// remote sink would otherwise silently drop the result on every
-	// cancelled run.
-	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
-	defer emitCancel()
-	emitRunResult(emitCtx, config, runTrace)
-
-	if runErr != nil {
-		// A trace can exist alongside a fatal runErr (e.g. setup or a fatal
-		// preRun hook failed); the emission above must still happen, but
-		// there is nothing further to do for a failed run.
-		return fmt.Errorf("running harness: %w", runErr)
-	}
-
 	// The control plane decides the export URI via
 	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
 	// an exit-failing job doesn't lose the trace/resultSink before an
 	// operator can correlate it.
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
-	defer exportCancel()
-	if err := exportWorkspace(exportCtx, config, false); err != nil {
-		// Unreachable in the non-required path; guards the signature.
+	policy := &postRunPolicy{
+		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
+			printRunSummary(rt)
+			emitRunResult(ctx, cfg, rt)
+		},
+		exportRequired: false,
+	}
+
+	runTrace, runErr := loop.Run(runCtx, config)
+	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
 
@@ -209,8 +193,17 @@ func runJob(cmd *cobra.Command, args []string) error {
 			graceSecs = n
 		}
 	}
-	if graceSecs > 0 {
-		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
+	// Called even with no grace window so user_response events that
+	// arrived after the run's last turn boundary are rejected with a
+	// warning rather than lost at exit.
+	core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
+		RunTimeout:    runTimeout,
+		OnRunComplete: policy.finaliseFollowUp,
+	})
+	// Export is never required for a job, so this is nil today; the
+	// guard keeps the two entrypoints' exit-status policy identical.
+	if err := policy.followUpErr(); err != nil {
+		return err
 	}
 
 	// A non-success outcome (runErr == nil) must still fail the process so
