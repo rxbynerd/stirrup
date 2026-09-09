@@ -164,7 +164,7 @@ suite "dual-write-suite" {
 	}
 }
 
-// TestCmdRun_DryRunWritesNoArtifacts pins #501: `eval run --dry-run`
+// TestCmdRun_DryRunWritesNoArtifacts pins that `eval run --dry-run`
 // without --output must not create result.json (top-level or per-suite)
 // anywhere, in particular not in the process's working directory. The
 // test runs from a temp cwd and asserts it stays empty.

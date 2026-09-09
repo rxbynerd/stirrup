@@ -195,9 +195,8 @@ func cmdRun(args []string) {
 		log.Fatalf("running suite: %v", err)
 	}
 
-	printSummary(result)
-
 	if *dryRun {
+		printSummary(result)
 		return
 	}
 
@@ -225,6 +224,7 @@ func cmdRun(args []string) {
 		}
 	}
 
+	printSummary(result)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
 }
 
