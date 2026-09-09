@@ -22,8 +22,8 @@ const (
 // TestSpoolSurvivesSIGKILLWithoutSecrets drives the crash window itself: a
 // child process with a live capture is killed outright, leaving whatever the
 // spool held at that instant. Nothing else in the suite can prove the
-// guarantee, because every in-process path eventually runs the cleanup that
-// used to be the only thing removing raw bytes.
+// guarantee, because every in-process path runs the completion cleanup, which
+// makes a scrubbed spool indistinguishable from a deleted one.
 func TestSpoolSurvivesSIGKILLWithoutSecrets(t *testing.T) {
 	if os.Getenv(spoolKillChildEnv) == "1" {
 		spoolKillChild()

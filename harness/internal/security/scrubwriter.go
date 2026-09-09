@@ -23,14 +23,17 @@ const (
 var errScrubWriterClosed = errors.New("scrub writer is closed")
 
 // ScrubWriter applies the Scrub pattern set to a byte stream on its way to
-// dst, so no unscrubbed byte ever reaches the sink. Chunks are cut on a line
-// boundary when one falls inside the flushable region and at a byte cap
-// otherwise, and a carry window of trailing bytes is retained so a secret
-// spanning two chunks is redacted as one span.
+// dst. Chunks are cut on a line boundary when one falls inside the flushable
+// region and at a byte cap otherwise, and a carry window of trailing bytes is
+// retained so a secret spanning two chunks is redacted as one span.
 //
-// The residual: a single secret longer than the writer's whole buffer cannot
-// be held for reassembly, so its leading portion is redacted and the
-// remainder reaches the sink.
+// The residual: a span longer than the carry window cannot be held for
+// reassembly, so it is cut mid-match and only its leading portion is
+// redacted. Every pattern in secretPatterns matches far below the window, so
+// reaching this requires a match the patterns do not produce — an
+// unterminated Bearer token running for tens of kilobytes, say. Anything
+// swallowed by such a span shares its fate, including a shorter secret
+// nested inside it.
 //
 // A ScrubWriter is not safe for concurrent use.
 type ScrubWriter struct {
@@ -39,7 +42,7 @@ type ScrubWriter struct {
 	window     int
 	maxPending int
 	pending    []byte
-	stats      ScrubStats
+	count      int
 	seen       map[string]struct{}
 	closed     bool
 	err        error
@@ -100,9 +103,17 @@ func (w *ScrubWriter) Close() error {
 	return w.err
 }
 
-// Stats reports the redactions performed across every chunk so far.
+// Stats reports the redactions performed across every chunk so far. Pattern
+// names come back in secretPatterns order, matching ScrubWithStats, so a
+// trace record does not depend on which chunk a secret happened to land in.
 func (w *ScrubWriter) Stats() ScrubStats {
-	return ScrubStats{Count: w.stats.Count, Patterns: append([]string(nil), w.stats.Patterns...)}
+	stats := ScrubStats{Count: w.count}
+	for _, p := range secretPatterns {
+		if _, ok := w.seen[p.name]; ok {
+			stats.Patterns = append(stats.Patterns, p.name)
+		}
+	}
+	return stats
 }
 
 func (w *ScrubWriter) flush(force bool) error {
@@ -168,13 +179,9 @@ func (w *ScrubWriter) emit(cut int) error {
 		return nil
 	}
 	scrubbed, stats := ScrubWithStats(string(w.pending[:cut]))
-	w.stats.Count += stats.Count
+	w.count += stats.Count
 	for _, name := range stats.Patterns {
-		if _, ok := w.seen[name]; ok {
-			continue
-		}
 		w.seen[name] = struct{}{}
-		w.stats.Patterns = append(w.stats.Patterns, name)
 	}
 	if _, err := io.WriteString(w.dst, scrubbed); err != nil {
 		return err

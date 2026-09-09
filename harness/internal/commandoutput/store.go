@@ -2,11 +2,15 @@
 //
 // Command output is redacted on the way to disk by security.ScrubWriter, so
 // the 0600 spool files under the 0700 temp directory hold scrubbed bytes at
-// every instant and an unclean shutdown cannot leave a secret behind. Raw
-// byte counts and SHA-256 digests come from an in-flight hash of the stream
-// as the command produces it, never from re-reading the spool. See
-// docs/configuration.md#command-output-capture for the residual a chunked
-// scrubber carries and for the orphan sweep that reclaims spools left by a
+// every instant, bar the residual that writer documents. Raw byte counts and
+// SHA-256 digests come from an in-flight hash of the stream as the command
+// produces it, never from re-reading the spool.
+//
+// Bytes reach the file a chunk at a time, so a storage failure surfaces at
+// the first flush after it starts rather than at the first byte written: a
+// capture fails closed, but up to one buffer later than it once did. See
+// docs/configuration.md#command-output-capture for that consequence, the
+// scrubbing residual, and the orphan sweep that reclaims spools left by a
 // crashed run.
 package commandoutput
 
@@ -22,6 +26,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,10 +44,14 @@ const (
 	ReadMaxBytes     int64 = 128 << 10
 
 	spoolPrefix = "stirrup-command-output-"
-	// orphanSpoolMaxAge keeps the startup sweep clear of live runs: a run's
-	// wall-clock budget is bounded well below a day, so a spool root older
-	// than this belongs to a process that never finalized.
+	// orphanSpoolMaxAge is how long a spool root must have gone unwritten
+	// before the sweep reclaims it. Nothing caps a run's wall clock, so the
+	// gate is a heuristic, not a proof that the owning run has exited.
 	orphanSpoolMaxAge = 24 * time.Hour
+	// The sweep runs on the temp directory of a possibly long-lived host, so
+	// its cost is bounded rather than proportional to that directory.
+	orphanSweepBatch      = 256
+	orphanSweepMaxEntries = 4096
 )
 
 var (
@@ -462,26 +471,66 @@ func streamMember(memberID, stream string) string {
 }
 
 // sweepOrphanedSpools removes spool roots left behind by a run that never
-// finalized. The age gate is what keeps it from racing a live run's root.
-func sweepOrphanedSpools(dir string, maxAge time.Duration, now time.Time) int {
-	entries, err := os.ReadDir(dir)
+// finalized. A root qualifies only when nothing beneath it has been written
+// for maxAge: a directory's own mtime advances when a direct child is added,
+// not when a capture appends to a file two levels down, so the root
+// timestamp alone means "since the store was created" and would delete a
+// live long run's spool out from under it.
+func sweepOrphanedSpools(dir string, maxAge time.Duration, now time.Time) {
+	d, err := os.Open(dir)
 	if err != nil {
-		return 0
+		slog.Debug("commandoutput: orphan spool sweep skipped", "dir", dir, "error", err.Error())
+		return
 	}
-	removed := 0
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), spoolPrefix) {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil || now.Sub(info.ModTime()) < maxAge {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err == nil {
+	defer func() { _ = d.Close() }()
+	cutoff := now.Add(-maxAge)
+	scanned, removed := 0, 0
+	for scanned < orphanSweepMaxEntries {
+		entries, err := d.ReadDir(orphanSweepBatch)
+		for _, e := range entries {
+			scanned++
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), spoolPrefix) {
+				continue
+			}
+			root := filepath.Join(dir, e.Name())
+			if modifiedSince(root, cutoff) {
+				continue
+			}
+			if err := os.RemoveAll(root); err != nil {
+				slog.Debug("commandoutput: orphan spool removal failed", "root", root, "error", err.Error())
+				continue
+			}
 			removed++
 		}
+		if err != nil || len(entries) < orphanSweepBatch {
+			break
+		}
 	}
-	return removed
+	if removed > 0 || scanned >= orphanSweepMaxEntries {
+		slog.Debug("commandoutput: orphan spool sweep", "scanned", scanned, "removed", removed, "maxAgeHours", maxAge.Hours())
+	}
+}
+
+// modifiedSince reports whether root or anything beneath it was written
+// after cutoff. Entries that cannot be read are treated as unmodified: a
+// spool this process cannot stat is one it cannot remove either.
+func modifiedSince(root string, cutoff time.Time) bool {
+	modified := false
+	_ = filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(cutoff) {
+			modified = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return modified
 }
 
 // RecordInitial persists the exact scrubbed result exposed to the model and

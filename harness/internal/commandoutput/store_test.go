@@ -567,12 +567,13 @@ func TestSweepOrphanedSpoolsRemovesOnlyAgedRoots(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o700); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, "commands", "stdout.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	old := time.Now().Add(-48 * time.Hour)
 	for _, dir := range []string{aged, foreign} {
-		if err := os.Chtimes(dir, old, old); err != nil {
-			t.Fatal(err)
-		}
+		backdate(t, dir, old)
 	}
 	// New sweeps the OS temp directory, so pointing TMPDIR at the fixture
 	// exercises the real entry point rather than the helper alone.
@@ -593,6 +594,64 @@ func TestSweepOrphanedSpoolsRemovesOnlyAgedRoots(t *testing.T) {
 	}
 	if _, err := os.Stat(store.root); err != nil {
 		t.Fatalf("the new store root must outlive its own sweep: %v", err)
+	}
+}
+
+// TestSweepSparesRootWithLiveCaptureBeneathIt pins the reason the gate reads
+// the whole tree: a directory's mtime does not advance when a capture
+// appends to a file two levels down, so a root created over a day ago but
+// still being written would otherwise be removed out from under its run.
+func TestSweepSparesRootWithLiveCaptureBeneathIt(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	victim, err := New(Options{RunID: "victim", Config: testConfig(), ArchivePath: filepath.Join(t.TempDir(), "victim.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = victim.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := victim.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "victim", ToolUseID: "tool"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, victim.root, time.Now().Add(-48*time.Hour))
+	if _, err := capture.Stdout().Write([]byte(strings.Repeat("live output\n", 16<<10))); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(Options{RunID: "second", Config: testConfig(), ArchivePath: filepath.Join(t.TempDir(), "second.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	if _, err := os.Stat(victim.root); err != nil {
+		t.Fatalf("a concurrent store swept a live run's spool root: %v", err)
+	}
+	if _, err := capture.Complete(Completion{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(capture.stdout.file.Name()); err != nil {
+		t.Fatalf("archive member lost: %v", err)
+	}
+}
+
+func backdate(t *testing.T, root string, when time.Time) {
+	t.Helper()
+	var paths []string
+	if err := filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		paths = append(paths, path)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Depth-first: touching a child refreshes its parent's mtime.
+	for i := len(paths) - 1; i >= 0; i-- {
+		if err := os.Chtimes(paths[i], when, when); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

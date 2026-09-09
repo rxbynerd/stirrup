@@ -1019,30 +1019,48 @@ Output is redacted on the way to disk. Each stream passes through a chunked
 scrubber before it reaches its run-scoped spool file (0600, under a 0700
 temporary directory), and that file is the archive member — there is no
 second, unredacted copy at any point, so an unclean shutdown (crash,
-SIGKILL) cannot leave a secret in the OS temp directory. Archives contain
-scrubbed streams only, while raw byte counts and SHA-256 hashes, taken from
-an in-flight hash of the stream as the command produces it, remain as
-integrity metadata.
+SIGKILL) leaves behind the same scrubbed bytes the archive would have
+carried, subject to the residual below. Archives contain scrubbed streams
+only, while raw byte counts and SHA-256 hashes, taken from an in-flight hash
+of the stream as the command produces it, remain as integrity metadata.
 
 The scrubber buffers up to 64 KiB plus a 16 KiB carry window, cutting each
 chunk on a line boundary where one is available. The carry window is what
 lets a secret split across two chunks still be redacted as one span; every
 pattern the scrubber knows matches a span far shorter than the window, a
-fat JWT included. Two consequences follow:
+fat JWT included. Three consequences follow:
 
-- **Residual.** A single secret longer than the buffer as a whole cannot be
-  held for reassembly. Its leading portion is redacted and the remainder
-  reaches the spool. No pattern in the current set matches a span of that
-  size, so this is a bound on future patterns rather than a live gap.
+- **Residual.** A span longer than the carry window cannot be held for
+  reassembly, so it is cut mid-match: its leading portion is redacted and
+  the remainder reaches the spool. Anything that span swallowed shares its
+  fate, including a shorter secret nested inside it. No pattern in the
+  current set produces a match of that length from realistic output —
+  reaching it takes something like an unterminated `Bearer` token running
+  for tens of kilobytes — so this bounds future patterns more than it
+  describes current ones.
 - **Trailing output on a crash.** Up to one buffer of the most recent output
   is still in memory when a process is killed and is lost rather than
   spooled. A crashed run writes no archive, so the spool is forensic
   material only.
+- **Storage-failure latency.** A capture still fails closed on a disk error,
+  but the error surfaces at the first chunk flushed after it starts rather
+  than at the first byte written, so a command can run for up to one buffer
+  longer before its capture is cancelled.
+
+`maxBytesPerStream` and `maxBytesPerRun` count raw bytes as the command
+produces them. The file holds scrubbed bytes, and `[REDACTED]` can be longer
+than the span it replaces, so a stream at its limit can occupy up to roughly
+1.9× that many bytes on disk.
 
 Creating a store also sweeps the OS temp directory for spool roots
-(`stirrup-command-output-*`) whose modification time is over 24 hours old,
-reclaiming what a crashed run left behind. The age gate keeps the sweep
-clear of runs still in flight.
+(`stirrup-command-output-*`) where nothing has been written for 24 hours,
+reclaiming what a crashed run left behind. The gate reads the whole tree,
+not the root's own timestamp, because a directory's timestamp does not
+advance while a capture appends to a file beneath it. Nothing caps a run's
+wall clock, so the gate is a heuristic: a run that captures no command
+output for a full day can have its spool reclaimed by a second stirrup
+process starting on the same host. The sweep skips symlinks and stops after
+4096 entries.
 
 The `eval/suites/command-output-ab-{on,off}.hcl` pair measures the
 pipeline's context-saving claim: identical tasks with capture forced to
