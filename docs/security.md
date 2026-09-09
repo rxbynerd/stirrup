@@ -70,6 +70,23 @@ leakage through a misformatted log line is structurally impossible —
 the scrubber runs before any handler (JSON, text, OTel log
 exporter) sees the attribute.
 
+### Command-output scrub-on-write
+
+`run_command` capture redacts each stream on the way to its spool file
+rather than at command completion. `security.ScrubWriter` applies the
+same pattern set the log scrubber uses, and the spool file is also the
+archive member, so a crash or SIGKILL leaves behind the same scrubbed
+bytes the archive would have carried.
+
+Redacting a stream in chunks requires holding a carry window back from
+the sink so a secret split across two writes is still matched as one
+span, and every cut is scanned so that no match is emitted in halves.
+The window is sized above every pattern's largest realistic match. What
+it cannot cover — a span longer than the window, and anything nested
+inside one — along with the age-gated sweep that reclaims spool roots a
+crashed run leaves behind, is described in
+[`configuration.md#command-output-capture`](configuration.md#command-output-capture).
+
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a
@@ -629,6 +646,8 @@ Controls layered from outside in:
   ── Persistence ──────────────────────────────────────────
    RunConfig.Redact(): strips secret refs from anything
    written to disk or a trace store.
+   ScrubWriter: command output is redacted on the way to its
+   spool file rather than at command completion.
 ```
 
 ## See also

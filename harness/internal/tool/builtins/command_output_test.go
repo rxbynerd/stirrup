@@ -1,8 +1,12 @@
 package builtins
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,5 +168,66 @@ func TestRunCommandCaptureTimeoutKeepsSoftOutcomeMarker(t *testing.T) {
 	}
 	if !result.TimedOut || result.TimeoutSeconds != 1 {
 		t.Errorf("structured = %+v, want TimedOut with TimeoutSeconds=1", result)
+	}
+}
+
+// TestRunCommandSpoolsScrubbedBytesForRealCommand drives the production
+// path — a real shell command through the local executor into the store —
+// and checks the archive on disk, not only the model-visible text.
+func TestRunCommandSpoolsScrubbedBytesForRealCommand(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := types.CommandOutputConfig{InlineMaxBytes: 32 << 10, PreviewBytesPerStream: 1024, MaxBytesPerStream: 1 << 20, MaxBytesPerRun: 2 << 20}
+	archive := filepath.Join(t.TempDir(), "archive.tar.gz")
+	store, err := commandoutput.New(commandoutput.Options{RunID: "scrub", Config: cfg, ArchivePath: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	secret := "gh" + "p_runCommandFixture0123456789"
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "scrub", ToolUseID: "cmd"})
+	input, _ := json.Marshal(map[string]any{"command": "printf 'token=" + secret + "\\n'"})
+	result, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Text, secret) || !strings.Contains(result.Text, "[REDACTED]") {
+		t.Fatalf("model-visible result=%q", result.Text)
+	}
+	if _, err := store.Finalize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(store.Archive())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := tar.NewReader(gz)
+	redacted := false
+	for {
+		header, err := members.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(members)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("secret reached archive member %s", header.Name)
+		}
+		redacted = redacted || strings.Contains(string(body), "[REDACTED]")
+	}
+	if !redacted {
+		t.Fatal("no archive member carries the redaction, so the assertion proved nothing")
 	}
 }

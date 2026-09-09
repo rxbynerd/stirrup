@@ -1,11 +1,17 @@
 // Package commandoutput owns complete, scrubbed run_command output capture.
 //
-// Raw bytes spool to 0600 files under a 0700 temp directory while a command
-// streams and are deleted once whole-stream redaction has produced the
-// scrubbed canonical copy; archives hold scrubbed bytes only. That cleanup
-// depends on clean completion, so a crash mid-command can leave raw spools
-// behind until the OS temp directory is cleared. See
-// docs/configuration.md#command-output-capture.
+// Command output is redacted on the way to disk by security.ScrubWriter, so
+// the 0600 spool files under the 0700 temp directory hold scrubbed bytes at
+// every instant, bar the residual that writer documents. Raw byte counts and
+// SHA-256 digests come from an in-flight hash of the stream as the command
+// produces it, never from re-reading the spool.
+//
+// Bytes reach the file a chunk at a time, so a storage failure surfaces at
+// the first flush after it starts rather than at the first byte written: a
+// capture fails closed, but up to one buffer later than it once did. See
+// docs/configuration.md#command-output-capture for that consequence, the
+// scrubbing residual, and the orphan sweep that reclaims spools left by a
+// crashed run.
 package commandoutput
 
 import (
@@ -20,6 +26,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +42,16 @@ import (
 const (
 	ReadDefaultBytes int64 = 32 << 10
 	ReadMaxBytes     int64 = 128 << 10
+
+	spoolPrefix = "stirrup-command-output-"
+	// orphanSpoolMaxAge is how long a spool root must have gone unwritten
+	// before the sweep reclaims it. Nothing caps a run's wall clock, so the
+	// gate is a heuristic, not a proof that the owning run has exited.
+	orphanSpoolMaxAge = 24 * time.Hour
+	// The sweep runs on the temp directory of a possibly long-lived host, so
+	// its cost is bounded rather than proportional to that directory.
+	orphanSweepBatch      = 256
+	orphanSweepMaxEntries = 4096
 )
 
 var (
@@ -99,16 +116,23 @@ type Capture struct {
 	stderr *spoolWriter
 }
 
+// spoolWriter persists a stream through security.ScrubWriter. count and
+// rawHash cover the stream as the command produced it; written and
+// scrubbedHash cover what reached disk.
 type spoolWriter struct {
-	store  *Store
-	file   *os.File
-	hash   hash.Hash
-	count  int64
-	limit  int64
-	cancel context.CancelCauseFunc
-	failed error
-	closed bool
-	mu     sync.Mutex
+	store        *Store
+	file         *os.File
+	member       string
+	scrub        *security.ScrubWriter
+	rawHash      hash.Hash
+	scrubbedHash hash.Hash
+	count        int64
+	written      int64
+	limit        int64
+	cancel       context.CancelCauseFunc
+	failed       error
+	closed       bool
+	mu           sync.Mutex
 }
 
 type Completion struct {
@@ -143,7 +167,8 @@ type manifest struct {
 
 func New(opts Options) (*Store, error) {
 	opts.Config = (types.ToolsConfig{CommandOutput: opts.Config}).EffectiveCommandOutput()
-	root, err := os.MkdirTemp("", "stirrup-command-output-")
+	sweepOrphanedSpools(os.TempDir(), orphanSpoolMaxAge, time.Now())
+	root, err := os.MkdirTemp("", spoolPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create command output store: %w", err)
 	}
@@ -212,17 +237,16 @@ func (s *Store) Begin(ctx context.Context, cancel context.CancelCauseFunc) (*Cap
 		meta.ToolUseID = fmt.Sprintf("command-%d", time.Now().UnixNano())
 	}
 	key := meta.RunID + "\x00" + meta.ToolUseID
-	dirName := encodedID(meta.RunID + "-" + meta.ToolUseID)
-	dir := filepath.Join(s.root, "commands", dirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	memberID := encodedID(meta.RunID + "-" + meta.ToolUseID)
+	if err := os.MkdirAll(filepath.Join(s.root, "commands", memberID), 0o700); err != nil {
 		s.fail(fmt.Errorf("%w: create command spool directory: %v", ErrCaptureIO, err))
 		return nil, s.FatalError()
 	}
-	stdout, err := newSpoolWriter(s, filepath.Join(dir, "stdout.raw"), s.config.MaxBytesPerStream, cancel)
+	stdout, err := newSpoolWriter(s, streamMember(memberID, "stdout"), s.config.MaxBytesPerStream, cancel)
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := newSpoolWriter(s, filepath.Join(dir, "stderr.raw"), s.config.MaxBytesPerStream, cancel)
+	stderr, err := newSpoolWriter(s, streamMember(memberID, "stderr"), s.config.MaxBytesPerStream, cancel)
 	if err != nil {
 		_ = stdout.close()
 		return nil, err
@@ -243,7 +267,11 @@ func (s *Store) Begin(ctx context.Context, cancel context.CancelCauseFunc) (*Cap
 	return &Capture{store: s, entry: e, stdout: stdout, stderr: stderr}, nil
 }
 
-func newSpoolWriter(store *Store, path string, limit int64, cancel context.CancelCauseFunc) (*spoolWriter, error) {
+// newSpoolWriter opens the canonical archive member for a stream. The spool
+// and the archived copy are the same file: with scrubbing applied on write
+// there is no second, redacted copy to produce at completion.
+func newSpoolWriter(store *Store, member string, limit int64, cancel context.CancelCauseFunc) (*spoolWriter, error) {
+	path := filepath.Join(store.root, filepath.FromSlash(member))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		wrapped := fmt.Errorf("%w: create spool: %v", ErrCaptureIO, err)
@@ -251,7 +279,29 @@ func newSpoolWriter(store *Store, path string, limit int64, cancel context.Cance
 		cancel(wrapped)
 		return nil, wrapped
 	}
-	return &spoolWriter{store: store, file: f, hash: sha256.New(), limit: limit, cancel: cancel}, nil
+	w := &spoolWriter{
+		store: store, file: f, member: member, rawHash: sha256.New(),
+		scrubbedHash: sha256.New(), limit: limit, cancel: cancel,
+	}
+	w.scrub = security.NewScrubWriter(spoolSink{w})
+	return w, nil
+}
+
+// spoolSink is the ScrubWriter's destination: the only bytes it ever sees
+// are scrubbed, so hashing and counting here describes exactly what is on
+// disk.
+type spoolSink struct{ w *spoolWriter }
+
+func (s spoolSink) Write(p []byte) (int, error) {
+	n, err := s.w.file.Write(p)
+	if n > 0 {
+		_, _ = s.w.scrubbedHash.Write(p[:n])
+		s.w.written += int64(n)
+	}
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
 }
 
 func (w *spoolWriter) Write(p []byte) (int, error) {
@@ -283,22 +333,19 @@ func (w *spoolWriter) Write(p []byte) (int, error) {
 	}
 	w.store.totalRaw += int64(len(p))
 	w.store.mu.Unlock()
-	n, err := w.file.Write(p)
-	if n > 0 {
-		_, _ = w.hash.Write(p[:n])
-		w.count += int64(n)
-	}
-	if err != nil || n != len(p) {
-		if err == nil {
-			err = io.ErrShortWrite
-		}
+	// The raw hash covers the stream as produced, so it stays independent of
+	// how much of it the scrubber has flushed to disk.
+	_, _ = w.rawHash.Write(p)
+	w.count += int64(len(p))
+	n, err := w.scrub.Write(p)
+	if err != nil {
 		wrapped := fmt.Errorf("%w: write spool: %v", ErrCaptureIO, err)
 		w.failed = wrapped
 		w.store.fail(wrapped)
 		w.cancel(wrapped)
 		return n, wrapped
 	}
-	return n, nil
+	return len(p), nil
 }
 
 func (w *spoolWriter) close() error {
@@ -308,6 +355,10 @@ func (w *spoolWriter) close() error {
 		return w.failed
 	}
 	w.closed = true
+	if err := w.scrub.Close(); err != nil && w.failed == nil {
+		w.failed = fmt.Errorf("%w: flush spool: %v", ErrCaptureIO, err)
+		w.store.fail(w.failed)
+	}
 	if err := w.file.Close(); err != nil && w.failed == nil {
 		w.failed = fmt.Errorf("%w: close spool: %v", ErrCaptureIO, err)
 		w.store.fail(w.failed)
@@ -315,7 +366,9 @@ func (w *spoolWriter) close() error {
 	return w.failed
 }
 
-func (w *spoolWriter) sum() string { return hex.EncodeToString(w.hash.Sum(nil)) }
+func (w *spoolWriter) rawSum() string { return hex.EncodeToString(w.rawHash.Sum(nil)) }
+
+func (w *spoolWriter) scrubbedSum() string { return hex.EncodeToString(w.scrubbedHash.Sum(nil)) }
 
 func (s *Store) fail(err error) {
 	// Pure limit breaches are per-command failures under bestEffort;
@@ -357,25 +410,13 @@ func (c *Capture) Complete(status Completion) (Captured, error) {
 	return Captured{Record: *record, Stdout: stdout, Stderr: stderr}, err
 }
 
+// canonicalize records the completed stream. The spool file is already the
+// canonical scrubbed member, so this only publishes its metadata and reads
+// back the bounded tail the model sees — the complete stream is never held
+// in memory.
 func (c *Capture) canonicalize(stream string, w *spoolWriter) (string, string, types.CommandOutputStreamRecord, error) {
-	rawPath := w.file.Name()
-	meta := types.CommandOutputStreamRecord{RawBytes: w.count, RawSHA256: w.sum()}
-	defer func() { _ = os.Remove(rawPath) }()
-	raw, err := os.ReadFile(rawPath)
-	if err != nil {
-		return "", "", meta, fmt.Errorf("%w: read complete %s spool: %v", ErrCaptureIO, stream, err)
-	}
-	scrubbed, stats := security.ScrubWithStats(string(raw))
-	memberID := encodedID(c.entry.record.RunID + "-" + c.entry.record.ToolUseID)
-	member := filepath.ToSlash(filepath.Join("commands", memberID, stream+".txt"))
-	path := filepath.Join(c.store.root, filepath.FromSlash(member))
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", "", meta, fmt.Errorf("%w: create canonical directory: %v", ErrCaptureIO, err)
-	}
-	if err := os.WriteFile(path, []byte(scrubbed), 0o600); err != nil {
-		return "", "", meta, fmt.Errorf("%w: write canonical %s: %v", ErrCaptureIO, stream, err)
-	}
-	sum := sha256.Sum256([]byte(scrubbed))
+	path := w.file.Name()
+	stats := w.scrub.Stats()
 	// The reference must stay short: security.GuardToolCall's
 	// encoded_payload rule rejects base64-like runs over 100 characters,
 	// and an earlier reference embedding archiveID plus the base64url
@@ -383,26 +424,113 @@ func (c *Capture) canonicalize(stream string, w *spoolWriter) (string, string, t
 	// digest stays under the threshold; refs carries the file mapping.
 	refID := sha256.Sum256([]byte(c.entry.record.RunID + "\x00" + c.entry.record.ToolUseID))
 	ref := fmt.Sprintf("stirrup://command-output/%s/%s", hex.EncodeToString(refID[:8]), stream)
-	meta.ScrubbedBytes = int64(len(scrubbed))
-	meta.ScrubbedSHA256 = hex.EncodeToString(sum[:])
-	meta.ArchiveMember = member
-	meta.Reference = ref
-	meta.RedactionCount = stats.Count
-	meta.RedactionPatterns = append([]string(nil), stats.Patterns...)
+	meta := types.CommandOutputStreamRecord{
+		RawBytes: w.count, RawSHA256: w.rawSum(),
+		ScrubbedBytes: w.written, ScrubbedSHA256: w.scrubbedSum(),
+		ArchiveMember: w.member, Reference: ref,
+		RedactionCount: stats.Count, RedactionPatterns: stats.Patterns,
+	}
 	c.store.mu.Lock()
 	c.store.refs[ref] = streamRef{entry: c.entry, stream: stream, path: path}
 	c.store.mu.Unlock()
-	modelContent := scrubbed
 	retain := c.store.config.InlineMaxBytes
 	if c.store.config.PreviewBytesPerStream > retain {
 		retain = c.store.config.PreviewBytesPerStream
 	}
-	if int64(len(modelContent)) > retain {
-		// Copy the tail so the small preview does not retain the complete
-		// scrubbed stream's backing allocation after canonicalization.
-		modelContent = string(append([]byte(nil), modelContent[len(modelContent)-int(retain):]...))
+	modelContent, err := readTail(path, w.written, retain)
+	if err != nil {
+		return "", path, meta, fmt.Errorf("%w: read %s tail: %v", ErrCaptureIO, stream, err)
 	}
 	return modelContent, path, meta, nil
+}
+
+// readTail returns the last retain bytes of a completed stream.
+func readTail(path string, size, retain int64) (string, error) {
+	if size <= 0 || retain <= 0 {
+		return "", nil
+	}
+	offset := int64(0)
+	if size > retain {
+		offset = size - retain
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, size-offset)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return string(buf[:n]), nil
+}
+
+func streamMember(memberID, stream string) string {
+	return filepath.ToSlash(filepath.Join("commands", memberID, stream+".txt"))
+}
+
+// sweepOrphanedSpools removes spool roots left behind by a run that never
+// finalized. A root qualifies only when nothing beneath it has been written
+// for maxAge: a directory's own mtime advances when a direct child is added,
+// not when a capture appends to a file two levels down, so the root
+// timestamp alone means "since the store was created" and would delete a
+// live long run's spool out from under it.
+func sweepOrphanedSpools(dir string, maxAge time.Duration, now time.Time) {
+	d, err := os.Open(dir)
+	if err != nil {
+		slog.Debug("commandoutput: orphan spool sweep skipped", "dir", dir, "error", err.Error())
+		return
+	}
+	defer func() { _ = d.Close() }()
+	cutoff := now.Add(-maxAge)
+	scanned, removed := 0, 0
+	for scanned < orphanSweepMaxEntries {
+		entries, err := d.ReadDir(orphanSweepBatch)
+		for _, e := range entries {
+			scanned++
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), spoolPrefix) {
+				continue
+			}
+			root := filepath.Join(dir, e.Name())
+			if modifiedSince(root, cutoff) {
+				continue
+			}
+			if err := os.RemoveAll(root); err != nil {
+				slog.Debug("commandoutput: orphan spool removal failed", "root", root, "error", err.Error())
+				continue
+			}
+			removed++
+		}
+		if err != nil || len(entries) < orphanSweepBatch {
+			break
+		}
+	}
+	if removed > 0 || scanned >= orphanSweepMaxEntries {
+		slog.Debug("commandoutput: orphan spool sweep", "scanned", scanned, "removed", removed, "maxAgeHours", maxAge.Hours())
+	}
+}
+
+// modifiedSince reports whether root or anything beneath it was written
+// after cutoff. Entries that cannot be read are treated as unmodified: a
+// spool this process cannot stat is one it cannot remove either.
+func modifiedSince(root string, cutoff time.Time) bool {
+	modified := false
+	_ = filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(cutoff) {
+			modified = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return modified
 }
 
 // RecordInitial persists the exact scrubbed result exposed to the model and
