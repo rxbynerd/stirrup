@@ -184,6 +184,15 @@ IMDS, GitHub Actions OIDC). See
    can deliver `user_response` events that resume the loop.
 10. **Exit.** The liveness probe file is removed; the process exits 0
     on success or non-zero on transport / build / runtime failure.
+    Before the connection closes the harness half-closes the stream
+    and waits up to 2 seconds (not configurable) for the control plane
+    to end `RunTask`, so a terminal `done` is not lost to an abrupt
+    teardown. A control plane that returns from `RunTask` on `done`
+    adds nothing to the exit; one that holds the stream open adds up
+    to that window, which matters when sizing
+    `terminationGracePeriodSeconds`. The wait does not apply on the
+    SIGTERM path — see
+    [`integration-guide.md`](integration-guide.md#terminal-semantics).
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —

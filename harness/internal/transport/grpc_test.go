@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -366,6 +367,163 @@ func TestGRPCTransport_Close(t *testing.T) {
 
 	if err := tr.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestGRPCTransport_CloseDeliversPendingEvents pins that events emitted
+// immediately before Close reach the peer. Send only queues a frame for
+// the writer goroutine, so the connection must not be torn down until
+// the peer has acknowledged the terminal "error"/"done" pair a control
+// plane needs to tell a rejected config from a crashed harness.
+// Repeated because delivery depends on writer scheduling.
+func TestGRPCTransport_CloseDeliversPendingEvents(t *testing.T) {
+	const attempts = 50
+	useShortStreamEndGrace(t)
+
+	for attempt := range attempts {
+		func() {
+			srv := newTestServer()
+			tr, _, cleanup := setupTestTransport(t, srv)
+			defer cleanup()
+
+			if err := tr.Emit(types.HarnessEvent{Type: "error", Message: "config validation: bad"}); err != nil {
+				t.Fatalf("attempt %d: Emit error event: %v", attempt, err)
+			}
+			if err := tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
+				t.Fatalf("attempt %d: Emit done event: %v", attempt, err)
+			}
+
+			start := time.Now()
+			if err := tr.Close(); err != nil {
+				t.Fatalf("attempt %d: Close: %v", attempt, err)
+			}
+			// A Close that burned the whole grace never saw stream end,
+			// which is the shape of a drain regression rather than a
+			// delivery failure; without this the package just times out.
+			if elapsed := time.Since(start); elapsed >= streamEndGrace {
+				t.Fatalf("attempt %d: Close took %v, want it to return on stream end well inside the %v grace", attempt, elapsed, streamEndGrace)
+			}
+
+			received := srv.getReceived()
+			if len(received) != 2 {
+				t.Fatalf("attempt %d: server received %d events (%v), want the error/done pair", attempt, len(received), received)
+			}
+			if received[0].Type != "error" || received[1].Type != "done" {
+				t.Fatalf("attempt %d: server received %q then %q, want error then done", attempt, received[0].Type, received[1].Type)
+			}
+		}()
+	}
+}
+
+// useShortStreamEndGrace shrinks the close grace for the duration of the
+// test so a drain regression fails an assertion instead of running the
+// package past its timeout.
+func useShortStreamEndGrace(t *testing.T) {
+	t.Helper()
+	prev := streamEndGrace
+	streamEndGrace = 2 * time.Second
+	t.Cleanup(func() { streamEndGrace = prev })
+}
+
+// slowFinishServer keeps the RPC open for a beat after the client
+// half-closes, widening the window in which Close is waiting for stream
+// end so a concurrent Emit can be landed inside it deterministically.
+type slowFinishServer struct {
+	pb.UnimplementedHarnessServiceServer
+
+	mu         sync.Mutex
+	received   []*pb.HarnessEvent
+	halfClosed chan struct{}
+	linger     time.Duration
+}
+
+func (s *slowFinishServer) RunTask(stream pb.HarnessService_RunTaskServer) error {
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			close(s.halfClosed)
+			time.Sleep(s.linger)
+			return nil
+		}
+		s.mu.Lock()
+		s.received = append(s.received, ev)
+		s.mu.Unlock()
+	}
+}
+
+func (s *slowFinishServer) getReceived() []*pb.HarnessEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.HarnessEvent(nil), s.received...)
+}
+
+// TestGRPCTransport_EmitDuringCloseDoesNotAbortDrain pins that an emitter
+// still running at shutdown — the loop's heartbeat goroutine is stopped
+// by an asynchronous context cancellation, so it can reach Emit at any
+// point during Close — cannot cost the run its terminal events. grpc-go
+// aborts the whole RPC when SendMsg follows CloseSend, which would end
+// Close's wait early and discard anything still queued.
+func TestGRPCTransport_EmitDuringCloseDoesNotAbortDrain(t *testing.T) {
+	useShortStreamEndGrace(t)
+
+	const linger = 300 * time.Millisecond
+	srv := &slowFinishServer{halfClosed: make(chan struct{}), linger: linger}
+
+	lis := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	pb.RegisterHarnessServiceServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(lis) }()
+	defer grpcServer.Stop()
+
+	tr, err := NewGRPCTransport(context.Background(), "passthrough:///bufconn",
+		WithDialOptions(
+			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+				return lis.DialContext(ctx)
+			}),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewGRPCTransport: %v", err)
+	}
+
+	if err := tr.Emit(types.HarnessEvent{Type: "error", Message: "boom"}); err != nil {
+		t.Fatalf("Emit error event: %v", err)
+	}
+	if err := tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
+		t.Fatalf("Emit done event: %v", err)
+	}
+
+	// Fires once the server has seen the half-close, i.e. while Close is
+	// inside its wait for stream end.
+	emitErrCh := make(chan error, 1)
+	go func() {
+		<-srv.halfClosed
+		emitErrCh <- tr.Emit(types.HarnessEvent{Type: "heartbeat"})
+	}()
+
+	start := time.Now()
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if err := <-emitErrCh; !errors.Is(err, ErrTransportClosed) {
+		t.Errorf("Emit during Close returned %v, want ErrTransportClosed so it never reaches SendMsg", err)
+	}
+
+	// Short-circuiting the drain is the failure this guards: the abort
+	// would return Close in microseconds instead of waiting out linger.
+	if elapsed < linger {
+		t.Errorf("Close returned after %v, want it to wait for stream end (>= %v)", elapsed, linger)
+	}
+
+	received := srv.getReceived()
+	if len(received) != 2 {
+		t.Fatalf("server received %d events (%v), want the error/done pair", len(received), received)
+	}
+	if received[1].Type != "done" {
+		t.Errorf("last event = %q, want done", received[1].Type)
 	}
 }
 

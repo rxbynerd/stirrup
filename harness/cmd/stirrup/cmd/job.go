@@ -44,6 +44,8 @@ var (
 )
 
 func runJob(cmd *cobra.Command, args []string) error {
+	started := time.Now()
+
 	addr := os.Getenv("CONTROL_PLANE_ADDR")
 	if addr == "" {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
@@ -116,8 +118,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer assignTimer.Stop()
 
 	var config *types.RunConfig
+	var assigned time.Duration
 	select {
 	case config = <-configCh:
+		assigned = time.Since(started)
 		// Assignment received; the pod is no longer idle-and-assignable.
 		_ = health.RemoveProbe(readinessMarkerPath)
 	case <-preTaskCancelCh:
@@ -143,7 +147,18 @@ func runJob(cmd *cobra.Command, args []string) error {
 		// this the control plane cannot tell a rejected config from a
 		// crashed pod or a dropped connection.
 		buildErr := fmt.Errorf("building harness: %w", err)
+		buildFailed := time.Since(started)
 		emitTerminalFailure(tp, buildErr)
+		// Phase timings for the terminal-failure path, so a control plane
+		// reporting a missing "done" can name the phase that stalled.
+		// emit_returned marks the handoff to the transport, not delivery;
+		// the transport reports the close-time drain separately.
+		fmt.Fprintf(os.Stderr,
+			"job: terminal failure signalled; entry=%s assigned=+%s build_failed=+%s emit_returned=+%s\n",
+			started.UTC().Format(time.RFC3339Nano),
+			assigned.Round(time.Microsecond),
+			buildFailed.Round(time.Microsecond),
+			time.Since(started).Round(time.Microsecond))
 		return buildErr
 	}
 	defer func() { _ = loop.Close() }()
