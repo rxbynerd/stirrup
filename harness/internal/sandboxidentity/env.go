@@ -32,11 +32,15 @@ var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // reservedEnvVarNames are the egress-proxy variables the container and k8s
 // executors set unconditionally in "allowlist" mode. A colliding envVar
 // would silently append after — and likely override — the proxy URL rather
-// than failing validation up front.
+// than failing validation up front. Both spellings are injected, so both
+// are reserved.
 var reservedEnvVarNames = map[string]bool{
 	"HTTP_PROXY":  true,
+	"http_proxy":  true,
 	"HTTPS_PROXY": true,
+	"https_proxy": true,
 	"NO_PROXY":    true,
+	"no_proxy":    true,
 }
 
 // ComposeEnv builds the ordered sandbox environment carrying a sandbox

@@ -202,10 +202,15 @@ func TestComposeEnv_NonPosixEnvVarRejected(t *testing.T) {
 
 // TestComposeEnv_ReservedEnvVarRejected asserts S-COMPOSEENV-DEFENSE: an
 // envVar colliding with one of the egress-proxy variables the container/k8s
-// executors set (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) is rejected rather than
-// silently appended after — and likely overriding — the proxy URL.
+// executors set — either spelling of HTTP_PROXY, HTTPS_PROXY, NO_PROXY — is
+// rejected rather than silently appended after, and likely overriding, the
+// proxy URL.
 func TestComposeEnv_ReservedEnvVarRejected(t *testing.T) {
-	for _, envVar := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+	for _, envVar := range []string{
+		"HTTP_PROXY", "http_proxy",
+		"HTTPS_PROXY", "https_proxy",
+		"NO_PROXY", "no_proxy",
+	} {
 		t.Run(envVar, func(t *testing.T) {
 			got, err := ComposeEnv(envVar, "tok", nil)
 			if err == nil {
@@ -218,17 +223,15 @@ func TestComposeEnv_ReservedEnvVarRejected(t *testing.T) {
 	}
 }
 
-// TestComposeEnv_ReservedEnvVarLowercaseAllowed pins the scope of the
-// reserved-name guard: only the exact upper-case forms the container/k8s
-// executors set (see proxyEnvFor / container.go, which never set a
-// lower-case http_proxy/https_proxy/no_proxy) are rejected. A lower-case
-// name is a valid, non-colliding POSIX identifier.
-func TestComposeEnv_ReservedEnvVarLowercaseAllowed(t *testing.T) {
-	got, err := ComposeEnv("http_proxy", "tok", nil)
+// TestComposeEnv_MixedCaseProxyNameAllowed pins the scope of the
+// reserved-name guard: it matches the exact names proxyEnvFor and the
+// container executor inject, not any case-folded variant.
+func TestComposeEnv_MixedCaseProxyNameAllowed(t *testing.T) {
+	got, err := ComposeEnv("Http_Proxy", "tok", nil)
 	if err != nil {
-		t.Fatalf("ComposeEnv(\"http_proxy\") unexpected error: %v", err)
+		t.Fatalf("ComposeEnv(\"Http_Proxy\") unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "http_proxy" || got[0].Value != "tok" {
-		t.Errorf("ComposeEnv(\"http_proxy\") = %#v, want [{http_proxy tok}]", got)
+	if len(got) != 1 || got[0].Name != "Http_Proxy" || got[0].Value != "tok" {
+		t.Errorf("ComposeEnv(\"Http_Proxy\") = %#v, want [{Http_Proxy tok}]", got)
 	}
 }

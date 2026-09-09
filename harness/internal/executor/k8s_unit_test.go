@@ -247,11 +247,17 @@ func TestProxyEnvFor(t *testing.T) {
 		for _, e := range env {
 			got[e.Name] = e.Value
 		}
-		if got["HTTP_PROXY"] != url || got["HTTPS_PROXY"] != url {
-			t.Errorf("proxy env = %v, want HTTP(S)_PROXY=%s", got, url)
+		// Both spellings are injected: git honours only the lower-case
+		// http_proxy for plain-http destinations.
+		for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+			if got[name] != url {
+				t.Errorf("proxy env %s = %q, want %q (env = %v)", name, got[name], url, got)
+			}
 		}
-		if got["NO_PROXY"] == "" {
-			t.Errorf("NO_PROXY must be set, env = %v", got)
+		for _, name := range []string{"NO_PROXY", "no_proxy"} {
+			if got[name] == "" {
+				t.Errorf("%s must be set, env = %v", name, got)
+			}
 		}
 	})
 

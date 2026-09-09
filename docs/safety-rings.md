@@ -831,7 +831,9 @@ default port is 443 unless explicitly suffixed.
 The proxy intercepts well-behaved HTTP/HTTPS clients that honour
 `HTTP_PROXY` / `HTTPS_PROXY`: curl, git over HTTPS, the language
 stdlib HTTP client. The container is wired with
-`NO_PROXY=localhost,127.0.0.1,::1` so loopback is unaffected.
+`NO_PROXY=localhost,127.0.0.1,::1` so loopback is unaffected. Each
+variable is set in both upper and lower case, because libcurl reads only
+the lower-case `http_proxy` for plain-http destinations.
 
 > **The current implementation enforces fail-closed via the proxy
 > env vars only.** A misbehaving in-container client (raw TCP, custom
@@ -1222,7 +1224,8 @@ so there is no window in which a Running Pod has cluster-default egress.
 - `network.mode: none` installs a deny-all egress policy.
 - `network.mode: allowlist` installs a policy permitting egress only to
   DNS and the proxy (`app=stirrup-egress-proxy` on TCP 8080), and
-  injects `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` pointing at
+  injects `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, and their
+  lower-case spellings, pointing at
   `executor.k8sEgressProxyUrl`. The proxy enforces the FQDN allowlist,
   exactly as in the `container` case — the NetworkPolicy guarantees the
   proxy is the Pod's only route off-cluster, while the proxy decides

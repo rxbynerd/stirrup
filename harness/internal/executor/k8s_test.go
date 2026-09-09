@@ -563,7 +563,8 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 
 	// Mode=="none" injects no proxy env.
 	for _, e := range pod.Spec.Containers[0].Env {
-		if e.Name == "HTTP_PROXY" || e.Name == "HTTPS_PROXY" {
+		switch e.Name {
+		case "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy":
 			t.Errorf("Mode==none should inject no proxy env, found %s=%s", e.Name, e.Value)
 		}
 	}
@@ -639,11 +640,15 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 	for _, e := range pod.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
-	if env["HTTP_PROXY"] != proxyURL || env["HTTPS_PROXY"] != proxyURL {
-		t.Errorf("proxy env = %v, want HTTP(S)_PROXY=%s", env, proxyURL)
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+		if env[name] != proxyURL {
+			t.Errorf("proxy env %s = %q, want %q (env = %v)", name, env[name], proxyURL, env)
+		}
 	}
-	if env["NO_PROXY"] == "" {
-		t.Errorf("NO_PROXY should be set in allowlist mode, env = %v", env)
+	for _, name := range []string{"NO_PROXY", "no_proxy"} {
+		if env[name] == "" {
+			t.Errorf("%s should be set in allowlist mode, env = %v", name, env)
+		}
 	}
 
 	np, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})

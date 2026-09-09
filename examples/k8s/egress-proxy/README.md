@@ -58,8 +58,9 @@ restart is the supported way to change the allowlist.
 
 Configure the k8s executor with the proxy's in-cluster URL and an allowlist
 network mode. The executor injects `HTTP_PROXY` / `HTTPS_PROXY` into the
-sandbox container and installs a per-Pod NetworkPolicy confining egress to the
-proxy (plus DNS).
+sandbox container — in both upper and lower case, since libcurl and therefore
+`git` honour only the lower-case `http_proxy` for a plain-http proxy URL — and
+installs a per-Pod NetworkPolicy confining egress to the proxy (plus DNS).
 
 The proxy Deployment must run in the **same namespace** as the sandbox Pod.
 The egress NetworkPolicy selects the proxy by a `PodSelector` with no

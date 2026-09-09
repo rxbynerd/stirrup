@@ -98,13 +98,21 @@ spec:
           mountPath: /workspace
       # env is populated by proxyEnvFor ONLY in network mode "allowlist".
       # HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url value; NO_PROXY is
-      # the fixed loopback set. Under mode "none" this whole block is absent.
+      # the fixed loopback set. Each is injected in both cases because git
+      # honours only the lower-case http_proxy for a plain-http proxy URL.
+      # Under mode "none" this whole block is absent.
       env:
         - name: HTTP_PROXY
           value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
+        - name: http_proxy
+          value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
         - name: HTTPS_PROXY
           value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
+        - name: https_proxy
+          value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
         - name: NO_PROXY
+          value: localhost,127.0.0.1,::1
+        - name: no_proxy
           value: localhost,127.0.0.1,::1
       # securityContext — every field below is fixed by NewK8sExecutor and does
       # not vary with config. This is the hardened posture the namespace's
