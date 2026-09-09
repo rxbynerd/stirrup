@@ -323,6 +323,58 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_TraceEmitterNoArchiveIsNil asserts a trace_emitter block
+// with no archive sub-block leaves TraceEmitter.Archive nil rather than a
+// zero-value *TraceArchiveConfig. The distinction is load-bearing:
+// validateTraceArchiveConfig treats a non-nil pointer with an empty Type as
+// an invalid archive ("traceEmitter.archive.type is required"), so a
+// zero-value struct here would fail ValidateRunConfig for every suite that
+// omits archive.
+func TestLoadSuiteHCL_TraceEmitterNoArchiveIsNil(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "anthropic"
+      model    = "claude-haiku-4-5"
+    }
+
+    trace_emitter {
+      type = "jsonl"
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-trace-no-archive.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil")
+	}
+	if got.RunConfig.TraceEmitter.Archive != nil {
+		t.Fatalf("TraceEmitter.Archive = %#v, want nil", got.RunConfig.TraceEmitter.Archive)
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigMutuallyExclusive asserts that setting both
 // `run_config_file` and `run_config` on the same suite is a parse error
 // naming the suite ID and both offending fields.
