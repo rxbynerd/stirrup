@@ -83,10 +83,10 @@ func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error
 	return stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task})
 }
 
-// startFakeControlPlane serves srv over a real TCP listener (runJob only
+// startControlPlane serves srv over a real TCP listener (runJob only
 // takes CONTROL_PLANE_ADDR as a string, so bufconn's dial-option injection
 // isn't reachable here) and points CONTROL_PLANE_ADDR at it.
-func startFakeControlPlane(t *testing.T, srv *fakeControlPlane) {
+func startControlPlane(t *testing.T, srv pb.HarnessServiceServer) {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -167,7 +167,7 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 		// provider/executor I/O.
 		task: &pb.RunConfig{Mode: "bogus-mode"},
 	}
-	startFakeControlPlane(t, srv)
+	startControlPlane(t, srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- runJob(jobCmd, nil) }()
@@ -248,7 +248,7 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 			Timeout:          &timeout,
 		},
 	}
-	startFakeControlPlane(t, srv)
+	startControlPlane(t, srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- runJob(jobCmd, nil) }()
@@ -335,24 +335,30 @@ func TestEmitTerminalFailure_NilTransport(t *testing.T) {
 	emitTerminalFailure(nil, errors.New("boom"))
 }
 
-// rejectingControlPlane assigns a RunConfig that cannot pass validation
-// and records every HarnessEvent the harness sends back, returning once
-// it has seen the terminal "done".
-type rejectingControlPlane struct {
+// recordingControlPlane is the minimal correct control plane from
+// docs/integration-guide.md: wait for "ready", assign a task, then
+// consume events until the terminal "done". It records every
+// HarnessEvent the harness sends back so a test can assert on the
+// terminal contract.
+type recordingControlPlane struct {
 	pb.UnimplementedHarnessServiceServer
+
+	task *pb.RunConfig
 
 	mu       sync.Mutex
 	received []*pb.HarnessEvent
 	doneCh   chan struct{}
 }
 
-func (s *rejectingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
-	if err := stream.Send(&pb.ControlEvent{
-		Type: "task_assignment",
-		// Missing provider, maxTurns and timeout: rejected by
-		// types.ValidateRunConfig before any component is built.
-		Task: &pb.RunConfig{Mode: "execution"},
-	}); err != nil {
+func newRecordingControlPlane(task *pb.RunConfig) *recordingControlPlane {
+	return &recordingControlPlane{task: task, doneCh: make(chan struct{})}
+}
+
+func (s *recordingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
 		return err
 	}
 	for {
@@ -370,10 +376,20 @@ func (s *rejectingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) 
 	}
 }
 
-func (s *rejectingControlPlane) events() []*pb.HarnessEvent {
+func (s *recordingControlPlane) events() []*pb.HarnessEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]*pb.HarnessEvent(nil), s.received...)
+}
+
+// findEvent returns the first recorded event of the given type.
+func (s *recordingControlPlane) findEvent(eventType string) *pb.HarnessEvent {
+	for _, ev := range s.events() {
+		if ev.Type == eventType {
+			return ev
+		}
+	}
+	return nil
 }
 
 // TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup
@@ -384,18 +400,10 @@ func (s *rejectingControlPlane) events() []*pb.HarnessEvent {
 func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	useTempMarkerPaths(t)
 
-	srv := &rejectingControlPlane{doneCh: make(chan struct{})}
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	grpcServer := grpc.NewServer()
-	pb.RegisterHarnessServiceServer(grpcServer, srv)
-	go func() { _ = grpcServer.Serve(lis) }()
-	t.Cleanup(grpcServer.Stop)
-
-	t.Setenv("CONTROL_PLANE_ADDR", lis.Addr().String())
+	// Missing provider, maxTurns and timeout: rejected by
+	// types.ValidateRunConfig before any component is built.
+	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
+	startControlPlane(t, srv)
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
 
 	errCh := make(chan error, 1)
@@ -430,5 +438,103 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	}
 	if !sawError {
 		t.Errorf("no error event received; got %v", srv.events())
+	}
+}
+
+// fatalPreRunHookJobConfig mirrors fatalPreRunHookConfig in proto form:
+// a valid RunConfig whose single preRun hook exits non-zero without
+// continueOnError. preRun hooks run before Git.Setup and before any
+// turn, so the loop fails setup without ever calling the provider.
+func fatalPreRunHookJobConfig(t *testing.T) *pb.RunConfig {
+	t.Helper()
+	t.Setenv("TEST_JOB_HOOKS_KEY", "unused-never-called")
+	timeout := int32(30)
+	return &pb.RunConfig{
+		RunId:            "job-hooks-fatal-test",
+		Mode:             "planning",
+		Prompt:           "irrelevant, never reached",
+		Provider:         &pb.ProviderConfig{Type: "anthropic", ApiKeyRef: "secret://TEST_JOB_HOOKS_KEY"},
+		ModelRouter:      &pb.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:    &pb.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  &pb.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         &pb.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     &pb.EditStrategyConfig{Type: "multi"},
+		Verifier:         &pb.VerifierConfig{Type: "none"},
+		PermissionPolicy: &pb.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      &pb.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     &pb.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            &pb.ToolsConfig{BuiltIn: []string{"read_file"}},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+		Hooks: &pb.HooksConfig{
+			PreRun: []*pb.HookConfig{{Name: "boom", Command: "exit 1"}},
+		},
+	}
+}
+
+// TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink drives a fatal
+// setup failure through `stirrup job` against a real gRPC control plane
+// and pins the terminal contract for a run that started: the control
+// plane receives done{stop_reason:"setup_failed"}, and the RunResult
+// still reaches the resultSink even though loop.Run returned an error.
+// TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult covers
+// the same contract on the harness.go entrypoint; this is the job.go
+// path, whose events travel over the gRPC transport instead.
+func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
+	useTempMarkerPaths(t)
+
+	sink := &stubResultSink{}
+	installStubResultSink(t, sink)
+
+	srv := newRecordingControlPlane(fatalPreRunHookJobConfig(t))
+	startControlPlane(t, srv)
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+
+	select {
+	case <-srv.doneCh:
+	case <-time.After(terminalWaitBudget):
+		t.Fatalf("control plane never received a done event; got %v", srv.events())
+	}
+
+	select {
+	case runErr := <-errCh:
+		if runErr == nil {
+			t.Error("runJob returned nil, want the setup failure to fail the process")
+		} else if !strings.Contains(runErr.Error(), "running harness") {
+			t.Errorf("runJob error = %v, want it to report the run failure", runErr)
+		}
+	case <-time.After(terminalWaitBudget):
+		t.Fatal("runJob did not return after signalling the control plane")
+	}
+
+	done := srv.findEvent("done")
+	if done == nil {
+		t.Fatalf("no done event received; got %v", srv.events())
+	}
+	if done.StopReason != "setup_failed" {
+		t.Errorf("done stop_reason = %q, want setup_failed", done.StopReason)
+	}
+
+	// A run that started emits its RunResult even though loop.Run
+	// returned a fatal error; a control plane reading only the sink
+	// must still learn the outcome.
+	if len(sink.calls) != 1 {
+		t.Fatalf("resultSink received %d results, want exactly 1", len(sink.calls))
+	}
+	result := sink.calls[0]
+	if result.Outcome != "setup_failed" {
+		t.Errorf("RunResult.Outcome = %q, want setup_failed", result.Outcome)
+	}
+	if result.RunID != "job-hooks-fatal-test" {
+		t.Errorf("RunResult.RunID = %q, want it to mirror RunConfig.runId", result.RunID)
+	}
+	if result.HookFailures == 0 {
+		t.Error("RunResult.HookFailures = 0, want the failed preRun hook counted")
+	}
+	if result.Turns != 0 {
+		t.Errorf("RunResult.Turns = %d, want 0: setup failed before the first turn", result.Turns)
 	}
 }
