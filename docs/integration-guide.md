@@ -68,9 +68,11 @@ status.
    must be the first `ControlEvent`. The harness waits at most
    **5 minutes** for it, then exits. A `cancel` sent before
    assignment makes the harness exit cleanly without running.
-4. If the `RunConfig` opts in, loop construction sends one
+4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
-   `sandbox_token_response` before creating the sandbox.
+   `sandbox_token_response` before creating the sandbox. When the
+   response carries `expires_at`, further requests follow ahead of
+   each expiry — at most eight per run.
 5. During execution the harness streams `text_delta`, `tool_call`,
    `tool_result`, occasional `warning` events, and a `heartbeat` every
    **30 seconds**. Depending on configuration it may also emit
@@ -724,17 +726,20 @@ without the harness ever holding a signing key.
 
 The control plane must:
 
-1. Answer the single `sandbox_token_request` (sent after
-   `task_assignment`, before sandbox creation) with a signed JWT in
-   `sandbox_token_response.token` within 60 s — or refuse explicitly
-   with `is_error: true`. Silence aborts the run fail-closed.
+1. Answer every `sandbox_token_request` (the first after
+   `task_assignment`, before sandbox creation; up to seven more as
+   refreshes) with a signed JWT in `sandbox_token_response.token`
+   within 60 s — or refuse explicitly with `is_error: true`. Silence
+   on the first request aborts the run fail-closed; on a refresh it
+   stops refreshing and surfaces a `warning` event.
 2. Derive the run's identity from the stream, never from the
    request body; validate `audience` against its own allowlist
    before minting.
 3. Scope `sub` to `run-<runId>` and provision the per-run proxy
    policy (repos, verbs) alongside issuance.
-4. Set `expires_at` so the harness can warn when the token expires
-   before the run's wall-clock budget.
+4. Set `expires_at` so the harness refreshes ahead of expiry —
+   short-lived (≤15 min) tokens then work for runs of any permitted
+   length. Without it the token as issued must outlive the run.
 
 The token is the one intentionally raw credential on the stream —
 plaintext in v0.1 — so this flow requires the trusted-network posture.

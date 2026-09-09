@@ -242,8 +242,9 @@ scope — that Role covers only the orchestrator.
 The [sandbox identity token exposure note](k8s.md#sandbox-identity-token-exposure)
 applies identically here — `buildSandboxPodSpec` is shared between the
 `k8s` and `k8s-sandbox` executors, so a `sandboxIdentity`-configured run's
-token lands in the Pod env the same way regardless of which executor
-created the Pod.
+initial token lands in the Pod env, and its token-file volume in the Pod
+spec, the same way regardless of which executor created the Pod; refresh
+rides the shared `pods/exec` path too.
 
 ## Configuration
 

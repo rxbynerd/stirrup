@@ -107,7 +107,11 @@ The pieces and their lifecycle:
   workspace is writable by the non-root UID for *any* image that ships a
   shell — the image need not pre-create a writable `/workspace`, and the
   volume is wiped per Pod. (This mirrors the container executor's writable
-  host bind mount; both hide any content an image bakes at that path.) The
+  host bind mount; both hide any content an image bakes at that path.) A
+  `sandboxIdentity`-configured run adds a second, 64 KiB `medium: Memory`
+  `emptyDir` at `/run/stirrup/sandbox-identity` for the token file the
+  harness delivers and refreshes over `pods/exec` stdin — see
+  [Sandbox identity token exposure](#sandbox-identity-token-exposure). The
   exact spec is annotated field-by-field in
   [`examples/k8s/sample-sandbox-pod.yaml`](../../examples/k8s/sample-sandbox-pod.yaml).
 
@@ -666,12 +670,19 @@ sandbox identity token (issue #516, see [`configuration.md`'s
 "Sandbox identity and git-proxy
 wiring"](../configuration.md#sandbox-identity-and-git-proxy-wiring))
 is injected as a plaintext `corev1.EnvVar` on the Pod spec
-(`buildSandboxPodSpec`'s `extraEnv` parameter) — matching haybale's
-"pure env, nothing on disk" contract — rather than through a native
-Kubernetes `Secret` and `secretKeyRef`.
+(`buildSandboxPodSpec`'s `extraEnv` parameter) rather than through a
+native Kubernetes `Secret` and `secretKeyRef`. The same token, and
+every refreshed one, is also written to
+`/run/stirrup/sandbox-identity/token` on a `medium: Memory`
+`emptyDir` — never node disk — by running the write command over
+`pods/exec` with the token on stdin; the exec's `command=` query
+parameters, which the API server records in its audit log at the
+default `Metadata` level, carry only paths. Refreshed tokens exist
+only in that file: the Pod env keeps the initial token, which expires
+on its own schedule.
 
-This broadens the token's exposure relative to a `Secret`-backed
-credential:
+The initial token's presence in the Pod spec broadens its exposure
+relative to a `Secret`-backed credential:
 
 - **A weaker RBAC bar reads it.** Any principal holding `pods`/`get`
   or `pods`/`list` in the namespace — a materially weaker bar than
@@ -685,12 +696,15 @@ credential:
 - **It lands in etcd in plaintext** absent cluster-wide encryption at
   rest for Pod specs, and in API audit logs if request/response body
   logging is enabled for the `pods` resource.
-- **Its lifetime spans the run's whole wall-clock budget** (see
-  [`deployment.md`'s "Sandbox identity token
+- **Its lifetime is whatever the control plane issues.** With
+  `expires_at` set the harness refreshes the token file ahead of each
+  expiry (see [`deployment.md`'s "Sandbox identity token
   issuance"](../deployment.md#sandbox-identity-token-issuance-control-plane-implementers),
-  "Token lifetime"), materially longer than haybale's recommended
-  ≤15-minute `exp` — a longer-lived credential widens the exposure
-  window for whatever can reach it by either path above.
+  "Token lifetime"), so a control plane can honour haybale's
+  recommended ≤15-minute `exp` and the env-var copy readable by the
+  paths above goes stale after that. Without `expires_at` the one
+  issued token must span the run's whole wall-clock budget, and the
+  exposure window widens with it.
 
 Operators running `sandboxIdentity`-configured jobs should scope
 `pods`/`get` and `pods`/`list` in the affected namespace as tightly as

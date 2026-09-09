@@ -1247,11 +1247,11 @@ request these fields configure.
 |---|---|---|
 | `sandboxIdentity.source` | Token issuer. Closed set. | Required; only `"control-plane"` is supported |
 | `sandboxIdentity.audience` | Intended JWT `aud` claim. Informational — the control plane may override it. | `""` |
-| `sandboxIdentity.envVar` | Sandbox environment variable the token is injected as. | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `sandboxIdentity.envVar` | Sandbox environment variable carrying the token as issued at sandbox creation. Not updated by refresh — `<envVar>_FILE` names the token file that is; see [Token file and refresh](#token-file-and-refresh). | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `gitProxy.url` | The proxy's base URL, e.g. `http://haybale.internal:8466`. | Required when `gitProxy` is set; must be an absolute `http`/`https` URL with a host |
 | `gitProxy.hosts` | Git hosts to rewrite through the proxy, e.g. `["github.com"]`. | Required (at least one host) when `gitProxy` is set |
 | `gitProxy.rewriteSsh` | Also rewrite the `git@<host>:` and `ssh://git@<host>/` URL forms, not just `https://<host>/`. | `false` |
-| `gitProxy.tokenEnvVar` | Environment variable the composed git-credential helper reads the token from. Must resolve to the same value as `sandboxIdentity.envVar` (both apply the same `HAYBALE_TOKEN` default when empty). | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `gitProxy.tokenEnvVar` | Token variable the git-proxy wiring is bound to. Must resolve to the same value as `sandboxIdentity.envVar` (both apply the same `HAYBALE_TOKEN` default when empty). The composed credential helper reads the token file rather than this variable, so refreshed tokens take effect on the next git operation. | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
 
 Both blocks are optional and pointer-typed: a `RunConfig` with neither
 set validates exactly as it did before this feature existed,
@@ -1313,15 +1313,64 @@ supported via the control-plane job entrypoint, e.g. "stirrup job")`,
 rather than silently building its own transport too late to serve the
 request.
 
+### Token file and refresh
+
+The token is delivered to the sandbox twice over: once as the
+`envVar` environment variable, baked in at sandbox creation, and as
+a file at `/run/stirrup/sandbox-identity/token` (mode `0600`, owned
+by the sandbox's unprivileged uid) that the harness writes
+immediately after the sandbox starts and rewrites on every refresh.
+`<envVar>_FILE` (`HAYBALE_TOKEN_FILE` by default) names that path so
+consumers other than git can find it. The composed git credential
+helper reads the file on every invocation, never the variable, so a
+refreshed token is presented on the next git operation without
+recreating the sandbox.
+
+The file lives outside `/workspace` on a private memory-backed mount
+(a dedicated tmpfs on the container executor, a `medium: Memory`
+`emptyDir` on `k8s`/`k8s-sandbox`), so `read_file` cannot reach it,
+a workspace export never includes it, and a `git add -A` never sweeps
+it up; it is replaced by an atomic rename so a credential-helper read
+racing a refresh sees the old token or the new one, never a torn
+file. Each delivery runs `sh -c 'umask 077 && cat > … && mv -f …'`
+inside the sandbox with the token on the command's stdin, so the
+token never appears in an exec argv — which the Docker daemon records
+on the exec instance and the Kubernetes API server records in its
+audit log. Inside the sandbox the file is exactly as reachable as the
+environment variable already was (`run_command` can `cat` either),
+so this adds no exposure to the model.
+
+Refresh is driven by `sandbox_token_response.expires_at`. When the
+control plane sets it, the harness schedules a new
+`sandbox_token_request` once 80% of the token's remaining lifetime
+has elapsed (a 15-minute token is refreshed after 12), delivers the
+new token to the file, and repeats from the new expiry. A run sends
+at most **eight** `sandbox_token_request`s in total — the initial
+exchange plus up to seven refreshes, matching the control plane's
+per-stream cap — which covers the longest permitted `timeout` (3600
+s) with 12-minute refreshes. When `expires_at` is absent no refresh is
+scheduled and the token as issued stands for the whole run.
+
+Every terminal outcome that leaves a token in the sandbox past its
+expiry is reported, never silent: a declined or timed-out refresh, a
+delivery failure, or an exhausted request budget while the run's
+wall-clock budget still exceeds the token's expiry each emits a
+transport `warning` event and a `warn`-level log line naming the
+expiry, and the schedule stops rather than retrying. The previous
+token stays in place — it remains valid until its own expiry. A
+refreshed token that arrives without `expires_at` is delivered and
+ends the schedule.
+
 **Sandbox image prerequisites (documented, not enforced).** The
-composed git configuration relies on two things the sandbox image
-must provide: `git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`
-support, and a POSIX shell, for the inline `!f() { ... }; f`
-credential-helper form the composed config uses. Neither is checked by
-`ValidateRunConfig` or the executor — an older `git`, or a shell-less
-image (e.g. a fully static distroless image with no `/bin/sh`), fails
-at git-invocation time inside the sandbox, not at config-load time.
-The default sandbox image
+composed git configuration relies on the sandbox image providing
+`git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` support, and
+a POSIX shell with `cat` and `mv`, for the inline `!f() { ... }; f`
+credential-helper form and the token-file delivery command. None of
+this is checked by `ValidateRunConfig` — an older `git` fails at
+git-invocation time inside the sandbox, and a shell-less image (e.g.
+a fully static distroless image with no `/bin/sh`) fails the initial
+token delivery at loop-build time, which tears the sandbox down. The
+default sandbox image
 ([`ghcr.io/rxbynerd/stirrup-sandbox`](container-publishing.md))
 qualifies.
 

@@ -108,13 +108,15 @@ const (
 //	  - audience:   the intended JWT `aud` claim for the sandbox identity
 //	                token (e.g. "https://haybale.internal"). Informational —
 //	                the control plane may override it.
-//	  Sent once per run, after task_assignment and before the sandbox is
-//	  created, when the run wants a sandbox identity token. Deliberately
-//	  carries no harness-asserted identity field: the control plane derives
-//	  the run identity from the authenticated stream the task was assigned
-//	  on, never from the request body. The harness blocks on the matching
-//	  sandbox_token_response under a fail-closed 60s timeout; a timeout
-//	  aborts the run before any sandbox is created.
+//	  Sent after task_assignment and before the sandbox is created, when
+//	  the run wants a sandbox identity token, then again ahead of each
+//	  expires_at the control plane reports — at most eight per run.
+//	  Deliberately carries no harness-asserted identity field: the control
+//	  plane derives the run identity from the authenticated stream the task
+//	  was assigned on, never from the request body. The harness blocks on
+//	  the matching sandbox_token_response under a fail-closed 60s timeout;
+//	  on the first request a timeout aborts the run before any sandbox is
+//	  created, on a refresh it stops refreshing and emits a "warning".
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -408,9 +410,12 @@ type ControlEvent struct {
 	// material for the run's lifetime.
 	Token string `protobuf:"bytes,9,opt,name=token,proto3" json:"token,omitempty"`
 	// Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
-	// events. Declared `optional` so unset is wire-distinguishable from an
-	// explicit 0 (epoch), letting the harness tell "the control plane did not
-	// report an expiry" from "the token expires at the epoch".
+	// events. When present the harness refreshes the token ahead of it (a
+	// new sandbox_token_request at 80% of the remaining lifetime); when
+	// absent no refresh is scheduled and the token must outlive the run.
+	// Declared `optional` so unset is wire-distinguishable from an explicit 0
+	// (epoch), letting the harness tell "the control plane did not report an
+	// expiry" from "the token expires at the epoch".
 	ExpiresAt     *int64 `protobuf:"varint,10,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

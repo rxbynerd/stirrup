@@ -243,16 +243,20 @@ Some sandbox executors need a short-lived credential to authenticate
 outbound git operations through a proxy such as
 [Haybale](https://github.com/rxbynerd/haybale). The harness never
 holds a signing key or a long-lived credential itself; it requests a
-token from the control plane once per run, over the same `RunTask`
-stream used for everything else.
+token from the control plane over the same `RunTask` stream used for
+everything else — once before the sandbox is created, and again
+ahead of each expiry the control plane reports (see Token lifetime,
+below).
 
-- **`sandbox_token_request`** (`HarnessEvent`) — sent once per run,
-  after `task_assignment` and before the sandbox is created. Carries
-  `request_id` (correlation) and `audience`, the intended JWT `aud`
-  claim (e.g. `https://haybale.internal`). The event deliberately
-  carries no harness-asserted identity field: the control plane
-  derives the run identity from the authenticated stream the task was
-  assigned on, not from anything in the request body.
+- **`sandbox_token_request`** (`HarnessEvent`) — sent after
+  `task_assignment` and before the sandbox is created, then again on
+  each refresh; at most eight per run. Carries `request_id`
+  (correlation; `sbid-1`, `sbid-2`, … in issue order) and `audience`,
+  the intended JWT `aud` claim (e.g. `https://haybale.internal`). The
+  event deliberately carries no harness-asserted identity field: the
+  control plane derives the run identity from the authenticated
+  stream the task was assigned on, not from anything in the request
+  body.
 - **`sandbox_token_response`** (`ControlEvent`) — echoes `request_id`
   and carries `token`, the signed JWT. `token` is sensitive: the
   harness never logs, traces, or persists it, and it never enters
@@ -267,9 +271,8 @@ same plaintext-by-default `RunTask` stream as every other event (see
 [Transport security posture](#transport-security-posture-v01)).
 Requesting a sandbox identity token therefore requires, at minimum,
 the same-host / private-network / mesh-mTLS posture described there:
-the token is long-lived (see Token lifetime, below) and unencrypted
-by default, so it is a materially higher-value credential than the
-rest of the stream. Do not opt a run into the sandbox identity token
+the token is a bearer credential and unencrypted by default, so it is
+a materially higher-value payload than the rest of the stream. Do not opt a run into the sandbox identity token
 flow across an untrusted network until transport TLS — the internal
 transport already accepts `transport.WithTLSCredentials`, but there
 is no `RunConfig` / CLI surface to reach it yet — is wired to a
@@ -302,26 +305,29 @@ A control plane implementing this contract must:
 
 **Fail-closed wait.** The harness blocks on the matching
 `sandbox_token_response` for up to 60 seconds — the same default as
-the `ask-upstream` permission-response timeout. A response that
-arrives late, or not at all, aborts the run before the sandbox is
-created; the run ends with `done{stop_reason:"error"}` rather than
-leaving a partially-provisioned, tokenless sandbox behind.
+the `ask-upstream` permission-response timeout. For the initial
+exchange a response that arrives late, or not at all, aborts the run
+before the sandbox is created; the run ends with
+`done{stop_reason:"error"}` rather than leaving a
+partially-provisioned, tokenless sandbox behind. For a refresh the
+same outcomes — and an explicit `is_error` — stop refreshing and
+emit a `warning` event naming the expiry of the token still in the
+sandbox; the run itself continues.
 
 **Token lifetime.** Haybale recommends an `exp` of 15 minutes or
-less, but the token is baked into the sandbox environment once, at
-creation time, and in-sandbox refresh is out of scope for now (it
-requires a bootstrap-auth channel that does not exist yet). The v1
-posture is that the control plane issues `exp` covering the run's
-configured wall-clock budget (plus slack), and narrows blast radius
-through per-token scope claims and proxy-side policy instead of a
-short lifetime. The optional `sandbox_token_response.expires_at`
-field (Unix seconds) lets the harness compare the token's actual
-expiry against the run's budget and emit a scrub-safe warning when
-the token is shorter-lived than the run — a signal that the run may
-fail partway through with authentication errors rather than a
-stirrup-side bug. The harness performs that comparison
-(`sandboxidentity.WarnIfExpiresBeforeBudget`) immediately after a
-successful token exchange, before the sandbox is created.
+less, and the harness decouples that lifetime from the run's
+wall-clock budget by refreshing: set
+`sandbox_token_response.expires_at` (Unix seconds) and the harness
+sends a new `sandbox_token_request` once 80% of the remaining
+lifetime has elapsed, replacing the token file the sandbox's git
+credential helper reads (see [`configuration.md`'s "Token file and
+refresh"](configuration.md#token-file-and-refresh)). A control plane
+must therefore be prepared to answer up to eight requests per stream,
+each minted for the same run identity; the initial token's
+environment-variable copy is never updated, only the file. Leaving
+`expires_at` unset disables refresh, in which case `exp` must cover
+the run's configured wall-clock budget plus slack, since nothing
+inside the sandbox can recover from an expired token.
 
 **Follow-up for `docs/CONTROL_PLANE.md`** (tracked, not part of this
 change): the broader control-plane design doc lives on the unmerged

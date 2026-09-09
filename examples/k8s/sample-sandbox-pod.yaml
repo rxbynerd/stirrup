@@ -76,6 +76,14 @@ spec:
   volumes:
     - name: workspace
       emptyDir: {}
+    # Present ONLY when executor.sandboxIdentity is configured: a memory-backed
+    # emptyDir for the sandbox identity token file the harness delivers and
+    # refreshes over pods/exec stdin (docs/executors/k8s.md, "Sandbox identity
+    # token exposure"). Never node disk; 64Ki counts against the Pod's memory.
+    - name: sandbox-identity
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Ki
   containers:
     - # The container name is the constant "agent" (k8sAgentContainer). Exec and
       # file I/O target this container by name over the pods/exec subresource, so
@@ -96,6 +104,10 @@ spec:
       volumeMounts:
         - name: workspace
           mountPath: /workspace
+        # Present ONLY with executor.sandboxIdentity (see spec.volumes). Outside
+        # /workspace so ResolvePath — and therefore read_file — cannot reach it.
+        - name: sandbox-identity
+          mountPath: /run/stirrup/sandbox-identity
       # env is populated by proxyEnvFor ONLY in network mode "allowlist".
       # HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url value; NO_PROXY is
       # the fixed loopback set. Each is injected in both cases because git

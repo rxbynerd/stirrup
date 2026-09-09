@@ -561,9 +561,19 @@ cap on the returned token (`sandboxidentity.MaxTokenBytes`): the
 harness aborts the run before any sandbox is created if the control
 plane is slow, silent, or declines to issue a token, rather than
 leaving a partially-provisioned, tokenless sandbox behind. The
-harness then injects the token, plus
-non-secret `GIT_CONFIG_*` environment variables that rewrite `git`
-remote URLs, into the sandbox environment at creation time.
+harness then injects the token, plus non-secret `GIT_CONFIG_*`
+environment variables that rewrite `git` remote URLs, into the
+sandbox environment at creation time, and delivers it again as a
+`0600` file on a private memory-backed mount outside the workspace
+that the composed credential helper reads. That file is what refresh
+rewrites ahead of each `expires_at` the control plane reports, so a
+≤15-minute token lifetime no longer has to stretch to the run's
+wall-clock budget; each delivery carries the token on exec stdin,
+never in argv, so neither the Docker daemon's exec records nor the
+Kubernetes API server's audit log see it. See [`configuration.md`'s
+"Token file and refresh"](configuration.md#token-file-and-refresh)
+for the mount, the schedule, the eight-request cap, and the
+fail-loud reporting of any refresh that does not land.
 
 Git operations inside the sandbox are routed through a
 git-credential proxy such as
@@ -580,8 +590,8 @@ persists it, independent of the `oidc_jwt` `LogScrubber` pattern above
 that would otherwise backstop an accidental leak.
 
 This invariant concerns stirrup's own trace, transcript, and log
-surfaces. On the `k8s`/`k8s-sandbox` executors the token is delivered
-as a plaintext Pod env var rather than a `Secret`; see
+surfaces. On the `k8s`/`k8s-sandbox` executors the initial token is
+delivered as a plaintext Pod env var rather than a `Secret`; see
 [`k8s.md`'s exposure note](executors/k8s.md#sandbox-identity-token-exposure)
 for the RBAC/etcd delta this implies and the scoping operators should
 apply.
