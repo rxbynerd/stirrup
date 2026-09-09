@@ -3,6 +3,7 @@ package security
 import (
 	"bytes"
 	"io"
+	"math/rand"
 	"runtime"
 	"strings"
 	"testing"
@@ -47,11 +48,26 @@ func secretFixtures() []secretFixture {
 	}
 }
 
+// multilineSecretFixtures cover the patterns whose separators are \s, so the
+// match itself spans a newline. Straddling one of these puts the last
+// newline of the flushable region inside a secret, which is the only way the
+// line-aware cut and the boundary scan interact.
+func multilineSecretFixtures() []secretFixture {
+	return []secretFixture{
+		{"basic_auth", "Basic \nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "c3RpcnJ1cDpzdXBlcnNlY3JldA=="},
+		{"bearer_token", "Bearer\n" + "abc.def.ghi-token-value-0123456789", "abc.def.ghi-token-value-0123456789"},
+		{"aws_secret_access_key", "aws_secret_access_key =\n" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{"azure_storage_key", "account_key:\n" + "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g=", "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g"},
+		{"generic_hex_secret", "api_key =\n" + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
+		{"pem_private_key", "-----BEGIN\nRSA PRIVATE KEY-----", "-----BEGIN\nRSA PRIVATE KEY-----"},
+	}
+}
+
 // TestScrubWriterRedactsSecretStraddlingChunkBoundary is the writer's
 // central guarantee: a secret split across two chunks is still redacted, so
 // chunked output is byte-identical to a whole-stream Scrub.
 func TestScrubWriterRedactsSecretStraddlingChunkBoundary(t *testing.T) {
-	for _, fixture := range secretFixtures() {
+	for _, fixture := range append(secretFixtures(), multilineSecretFixtures()...) {
 		t.Run(fixture.pattern, func(t *testing.T) {
 			window := 4 * len(fixture.text)
 			if window < 256 {
@@ -177,6 +193,83 @@ func TestScrubWriterResidualExceedsBuffer(t *testing.T) {
 	if !strings.Contains(got, strings.Repeat("a", chunk)) {
 		t.Fatal("residual is expected: the tail of a secret longer than the buffer survives")
 	}
+}
+
+// TestScrubWriterDifferentialAgainstWholeStreamScrub searches the space the
+// hand-written boundary fixtures cannot: random chunk and window sizes,
+// random write sizes, filler with and without newlines, secrets at random
+// offsets, and spans the buffer cannot reassemble mixed in. A secret shorter
+// than the carry window must never survive, whatever the layout around it.
+//
+// The generator is seeded, so a failure is reproducible from the reported
+// seed. It reliably catches a writer that emits a chunk boundary without
+// re-scanning it: reverting the rescan in flush makes this fail on six
+// patterns.
+func TestScrubWriterDifferentialAgainstWholeStreamScrub(t *testing.T) {
+	rng := rand.New(rand.NewSource(7)) //nolint:gosec // deterministic test input, not a security decision
+	fixtures := append(secretFixtures(), multilineSecretFixtures()...)
+	// Spans that begin a chunk and reach across its last newline block the
+	// line-aware cut, which is the layout that exposed a leak.
+	blockers := []string{"Basic \nQQQQQQQQ.", "api_key =\naaaaaaaa", "Bearer\nzzzz", "account_key:\nbbbbbbbbbbbb"}
+	for seed := 0; seed < 1500; seed++ {
+		window := 256 + rng.Intn(512)
+		chunk := window + 1 + rng.Intn(3*window)
+		solid := rng.Intn(2) == 0
+		oversized := false
+		var stream strings.Builder
+		var placed []secretFixture
+		if rng.Intn(2) == 0 {
+			stream.WriteString(blockers[rng.Intn(len(blockers))])
+		}
+		for i := 1 + rng.Intn(4); i > 0; i-- {
+			stream.WriteString(randomFiller(rng, rng.Intn(2*chunk), solid) + " ")
+			if rng.Intn(6) == 0 {
+				stream.WriteString("Bearer " + strings.Repeat("Z", chunk+window+rng.Intn(1000)))
+				oversized = true
+				continue
+			}
+			f := fixtures[rng.Intn(len(fixtures))]
+			stream.WriteString(f.text + " ")
+			if len(f.text)*2 < window {
+				placed = append(placed, f)
+				continue
+			}
+			// The fat JWT is larger than the smaller random windows, which
+			// makes it an oversized span like the blob above.
+			oversized = oversized || len(f.text) >= window
+		}
+		stream.WriteString(randomFiller(rng, rng.Intn(2*chunk), solid))
+		input := stream.String()
+		var sink bytes.Buffer
+		w := newScrubWriter(&sink, chunk, window)
+		feed(t, w, input, 1+rng.Intn(4096))
+		got := sink.String()
+		want := Scrub(input)
+		for _, f := range placed {
+			if strings.Contains(got, f.sensitive) && !strings.Contains(want, f.sensitive) {
+				t.Fatalf("seed=%d chunk=%d window=%d solid=%v: %s leaked", seed, chunk, window, solid, f.pattern)
+			}
+		}
+		// A span the buffer cannot hold is cut mid-match by design, so only
+		// streams without one are required to match byte for byte.
+		if !oversized && got != want {
+			t.Fatalf("seed=%d chunk=%d window=%d solid=%v: output diverges from whole-stream Scrub", seed, chunk, window, solid)
+		}
+	}
+}
+
+func randomFiller(rng *rand.Rand, n int, solid bool) string {
+	// Lowercase, space, and newline only: no secret pattern can match filler,
+	// so any redaction the comparison sees comes from a placed fixture.
+	alphabet := "abcdefghijklmnopqrstuvwxyz     \n\n"
+	if solid {
+		alphabet = "abcdefghijklmnopqrstuvwxyz     "
+	}
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[rng.Intn(len(alphabet))]
+	}
+	return string(b)
 }
 
 // TestScrubWriterStatsMatchWholeStreamScrub keeps the redaction statistics
