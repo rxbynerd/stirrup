@@ -20,6 +20,8 @@ type runConfigSpec struct {
 	MaxTokenBudget *int   `hcl:"max_token_budget,optional"`
 	// MaxCostBudget is accepted and bounded but not enforced; a suite that
 	// sets it logs one warning per task and caps nothing.
+	//
+	// Deprecated: cost budgeting is a no-op.
 	MaxCostBudget        *float64              `hcl:"max_cost_budget,optional"`
 	Timeout              *int                  `hcl:"timeout,optional"`
 	FollowUpGrace        *int                  `hcl:"follow_up_grace,optional"`
