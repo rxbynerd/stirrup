@@ -537,6 +537,23 @@ The cap and the marker apply only to the `RunResult` copy of the
 text — the full, untruncated text is still recorded on the trace
 (JSONL / GCS / OTel) independently of `resultSink`.
 
+`resultSink.maxFinalAssistantTextBytes` bounds the raw string, not
+its JSON-encoded size. JSON escaping can inflate a byte: the `<`,
+`>`, and `&` case is closed by the `stdout-json` sink disabling
+`json.Encoder`'s HTML escaping, but Go's encoder unconditionally
+escapes U+2028 and U+2029 to a 6-byte `\uXXXX` sequence regardless of
+that setting, so a payload dense in those runes can still encode past
+the intended ceiling. The `stdout-json` sink closes the remaining gap
+itself: it bounds the fully-encoded `STIRRUP_RESULT` line (sentinel,
+JSON, and newline together) to 256 KiB, truncating
+`FinalAssistantText` further and re-encoding — setting
+`FinalAssistantTextTruncated` to `true` — until the line fits. This
+second cap is internal to the sink and not operator-configurable; it
+is a backstop against escaping inflation, not a replacement for
+`maxFinalAssistantTextBytes`, and it only protects the emitted line —
+an embedder reading `RunResult` directly still relies on
+`maxFinalAssistantTextBytes` alone.
+
 ### Workspace export
 
 At end-of-run the executor's workspace can be tarred, gzipped, and

@@ -101,9 +101,9 @@ func TestStdoutJSONSink_FinalAssistantText(t *testing.T) {
 }
 
 // TestStdoutJSONSink_FinalAssistantTextTruncated pins the wire
-// behaviour of the issue #463 truncation flag through the sink: the
-// sink itself applies no cap (that happens upstream in buildRunResult)
-// — it simply serialises whatever RunResult it is given, so a
+// behaviour of the issue #463 truncation flag through the sink: for a
+// payload well under maxEncodedResultBytes the sink is a pure
+// passthrough (the upstream buildRunResult cap already ran), so a
 // FinalAssistantTextTruncated=true round-trips through the emitted
 // JSON and a false value is omitted by the omitempty tag.
 func TestStdoutJSONSink_FinalAssistantTextTruncated(t *testing.T) {
@@ -142,6 +142,126 @@ func TestStdoutJSONSink_FinalAssistantTextTruncated(t *testing.T) {
 				t.Errorf("decoded FinalAssistantTextTruncated = %v, want %v", decoded.FinalAssistantTextTruncated, tc.truncated)
 			}
 		})
+	}
+}
+
+// TestStdoutJSONSink_Emit_EncodedCapExactBoundary pins the
+// less-than-or-equal semantics at the exact byte: a line encoding to
+// exactly maxEncodedResultBytes passes through untouched, while one
+// byte more triggers truncation and never exceeds the cap.
+func TestStdoutJSONSink_Emit_EncodedCapExactBoundary(t *testing.T) {
+	base := types.RunResult{SchemaVersion: 1, RunID: "run-exact", Outcome: "success"}
+
+	probe := base
+	probe.FinalAssistantText = "x"
+	probeLine, err := marshalResultLine(probe)
+	if err != nil {
+		t.Fatalf("marshalResultLine: %v", err)
+	}
+	// Every further "x" byte is unescaped ASCII, so the line grows by
+	// exactly one byte per character added to FinalAssistantText.
+	fixedOverhead := len(probeLine) - 1
+
+	fitsExactly := base
+	fitsExactly.FinalAssistantText = strings.Repeat("x", maxEncodedResultBytes-fixedOverhead)
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), fitsExactly); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := buf.Len(); got != maxEncodedResultBytes {
+		t.Fatalf("exact-fit line length = %d, want %d", got, maxEncodedResultBytes)
+	}
+	var decoded types.RunResult
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.FinalAssistantTextTruncated {
+		t.Error("exact-fit payload should not be marked truncated")
+	}
+	if decoded.FinalAssistantText != fitsExactly.FinalAssistantText {
+		t.Error("exact-fit payload's FinalAssistantText was altered")
+	}
+
+	oneOver := base
+	oneOver.FinalAssistantText = strings.Repeat("x", maxEncodedResultBytes-fixedOverhead+1)
+
+	buf.Reset()
+	if err := sink.Emit(context.Background(), oneOver); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := buf.Len(); got > maxEncodedResultBytes {
+		t.Fatalf("one-byte-over line length = %d, want <= %d", got, maxEncodedResultBytes)
+	}
+	decoded = types.RunResult{}
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.FinalAssistantTextTruncated {
+		t.Error("one-byte-over payload should be marked truncated")
+	}
+}
+
+// TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation
+// covers the residual expansion documented on Emit: Go's encoder
+// always escapes U+2028/U+2029 to a 6-byte \uXXXX sequence regardless
+// of SetEscapeHTML, so a payload whose raw byte size is comfortably
+// under maxEncodedResultBytes can still encode past it.
+func TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation(t *testing.T) {
+	text := strings.Repeat("\u2028", 50000) // 150,000 raw bytes, 300,000 encoded bytes
+	if len(text) >= maxEncodedResultBytes {
+		t.Fatalf("test fixture raw size %d should be under the cap %d", len(text), maxEncodedResultBytes)
+	}
+	result := types.RunResult{SchemaVersion: 1, RunID: "run-u2028", Outcome: "success", FinalAssistantText: text}
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), result); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if got := buf.Len(); got > maxEncodedResultBytes {
+		t.Fatalf("emitted line length = %d, want <= %d", got, maxEncodedResultBytes)
+	}
+
+	var decoded types.RunResult
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(buf.Bytes()), []byte(StdoutResultSentinel)), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.FinalAssistantTextTruncated {
+		t.Error("U+2028-heavy payload under the raw cap but over the encoded cap should be truncated")
+	}
+}
+
+// TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped pins the fix for
+// issue #504: disabling SetEscapeHTML means "<", ">", and "&" encode
+// 1:1 instead of expanding 6x, so a payload full of them that fits
+// under maxEncodedResultBytes is emitted whole rather than needlessly
+// truncated by escaping inflation.
+func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
+	text := strings.Repeat("<a>&", maxEncodedResultBytes/8) // well under the cap even unescaped
+	result := types.RunResult{SchemaVersion: 1, RunID: "run-html", Outcome: "success", FinalAssistantText: text}
+
+	var buf bytes.Buffer
+	sink := NewStdoutJSONSinkTo(&buf)
+	if err := sink.Emit(context.Background(), result); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	payload := strings.TrimSpace(strings.TrimPrefix(buf.String(), StdoutResultSentinel))
+	if !strings.Contains(payload, `<a>&`) {
+		t.Errorf("HTML characters were escaped despite SetEscapeHTML(false): %q", payload[:200])
+	}
+
+	var decoded types.RunResult
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.FinalAssistantTextTruncated {
+		t.Error("HTML-heavy payload under the cap should not be truncated")
+	}
+	if decoded.FinalAssistantText != text {
+		t.Error("FinalAssistantText was altered despite fitting under the cap")
 	}
 }
 
