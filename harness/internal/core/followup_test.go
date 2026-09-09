@@ -406,6 +406,66 @@ func TestRunFollowUpLoop_GraceCountsIdleTimeAfterRun(t *testing.T) {
 	}
 }
 
+// resettingFinalizer records the run IDs a loop re-keys its owned
+// command-output store to.
+type resettingFinalizer struct {
+	mu     sync.Mutex
+	resets []string
+}
+
+func (f *resettingFinalizer) FatalError() error                        { return nil }
+func (f *resettingFinalizer) Finalize(context.Context) (string, error) { return "", nil }
+func (f *resettingFinalizer) Reset(runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resets = append(f.resets, runID)
+	return nil
+}
+
+// TestRunFollowUpLoop_ResetsCommandOutputPerRun pins that an owned
+// command-output store is re-keyed to every run's ID — primary and each
+// follow-up — before that run captures anything.
+func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
+	loop, tr := buildFollowUpTestLoop(t)
+	store := &resettingFinalizer{}
+	loop.CommandOutput = store
+	loop.OwnsCommandOutput = true
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("primary Run: %v", err)
+	}
+
+	ran := make(chan string, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(cfg *types.RunConfig, _ *types.RunTrace, _ error) { ran <- cfg.RunID },
+		})
+	}()
+	var followUps []string
+	for _, prompt := range []string{"first", "second"} {
+		tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: prompt})
+		select {
+		case id := <-ran:
+			followUps = append(followUps, id)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("follow-up %q did not complete", prompt)
+		}
+	}
+	cancel()
+	<-done
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	want := append([]string{"test-run-1"}, followUps...)
+	if strings.Join(store.resets, ",") != strings.Join(want, ",") {
+		t.Fatalf("store reset to %v, want one reset per run %v", store.resets, want)
+	}
+}
+
 // TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun pins that the
 // mid-run contract applies to follow-up runs too: input arriving while a
 // follow-up is active is injected into that run at its next turn

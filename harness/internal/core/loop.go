@@ -129,6 +129,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	l.Trace.Start(config.RunID, config)
+	l.resetCommandOutput(config.RunID)
 
 	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
 	// already set one so child spans nest correctly; otherwise establish
@@ -1841,6 +1842,30 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 // GCS uploader's HTTP client allows 5 minutes per attempt
 // (commandoutput/gcs.go), plus headroom for writing the tar.gz locally.
 const commandOutputFinalizeBudget = 6 * time.Minute
+
+// commandOutputResetter is the optional per-run seam on a command-output
+// store: a loop reused for follow-ups re-keys the store to each run so
+// captures spool into a live root and RunTrace.CommandOutputArchive
+// names that run's archive, not the primary's.
+type commandOutputResetter interface {
+	Reset(runID string) error
+}
+
+// resetCommandOutput re-keys the owned store to runID at the start of a
+// run. Sub-agents share the parent's store and never own it, so only a
+// top-level run resets.
+func (l *AgenticLoop) resetCommandOutput(runID string) {
+	if l.CommandOutput == nil || !l.OwnsCommandOutput {
+		return
+	}
+	r, ok := l.CommandOutput.(commandOutputResetter)
+	if !ok {
+		return
+	}
+	if err := r.Reset(runID); err != nil {
+		l.Logger.Error("command output store reset failed", "error", err)
+	}
+}
 
 func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string) string {
 	if l.CommandOutput == nil || !l.OwnsCommandOutput {
