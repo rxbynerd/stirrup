@@ -125,6 +125,9 @@ type RunConfig struct {
 	// plane, driven by provider billing data.
 	MaxCostBudget *float64 `json:"maxCostBudget,omitempty"`
 
+	// Timeout is the wall-clock budget in seconds for one run: the
+	// primary run (component construction included) and, afresh, each
+	// follow-up run. It is not a session-wide cap.
 	Timeout *int `json:"timeout,omitempty"`
 
 	// Temperature is the sampling temperature forwarded to the provider on
@@ -146,9 +149,10 @@ type RunConfig struct {
 	// registry before any wire bytes are sent.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
-	// FollowUpGrace is the number of seconds to keep the transport open after
-	// the primary run completes, waiting for follow-up user_response events.
-	// A value of zero or nil disables the grace period (default behaviour).
+	// FollowUpGrace is the number of idle seconds to keep the transport
+	// open after each run completes, waiting for a follow-up user_response
+	// that starts the next run. The window restarts after every run. A
+	// value of zero or nil disables the grace period (default behaviour).
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
 
 	// LogLevel controls the structured logger verbosity.

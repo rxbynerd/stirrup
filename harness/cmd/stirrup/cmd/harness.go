@@ -1681,14 +1681,20 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setupSignalHandler(func() {
 		shutdownCancel()
 		cancel()
 	})
 
-	loop, err := core.BuildLoop(ctx, config,
+	// The wall-clock budget covers component construction plus the
+	// primary run; follow-ups mint their own from the cancel-only ctx.
+	runTimeout := runTimeoutFor(config)
+	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
+	defer runCancel()
+
+	loop, err := core.BuildLoop(runCtx, config,
 		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
 		core.WithWireTrace(opts.wireTrace),
 	)
@@ -1708,7 +1714,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		exportRequired: opts.exportWorkspaceRequired,
 	}
 
-	runTrace, runErr := loop.Run(ctx, config)
+	runTrace, runErr := loop.Run(runCtx, config)
 	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
@@ -1719,6 +1725,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	var followUpErr error
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace, core.FollowUpOptions{
+			RunTimeout: runTimeout,
 			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
 				ferr := policy.finalise(cfg, rt, err, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
 				if ferr != nil && err == nil && followUpErr == nil {

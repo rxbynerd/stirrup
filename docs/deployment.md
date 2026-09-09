@@ -103,7 +103,7 @@ first `ControlEvent` on the stream.
 | Variable | Purpose |
 |---|---|
 | `CONTROL_PLANE_SESSION_ID` | Session correlation ID echoed back in the initial `ready` event so the control plane can match this gRPC stream to the session that launched it. |
-| `STIRRUP_FOLLOWUP_GRACE` | Seconds to keep the gRPC stream open after the agentic loop completes, so the control plane can deliver follow-up `user_response` events. Capped at 3600 s. |
+| `STIRRUP_FOLLOWUP_GRACE` | Idle seconds to keep the gRPC stream open after each run completes, so the control plane can deliver a follow-up `user_response` that starts the next run. The window restarts after every run. Capped at 3600 s; a positive `RunConfig.followUpGrace` takes precedence. |
 
 Per-provider secrets (Anthropic API key, AWS / GCP / Azure
 credentials) are *not* passed via stirrup-specific env vars — they
@@ -143,8 +143,8 @@ IMDS, GitHub Actions OIDC). See
    wiring"](configuration.md#sandbox-identity-and-git-proxy-wiring)
    for the `executor.sandboxIdentity` / `executor.gitProxy`
    `RunConfig` fields that request it.
-6. **Build and run.** Once the `RunConfig` arrives, the wall-clock
-   timeout is applied to the context, the agentic loop is built via
+6. **Build and run.** Once the `RunConfig` arrives, the primary run's
+   wall-clock budget (`timeout`) starts, the agentic loop is built via
    `core.BuildLoopWithTransport` reusing the existing gRPC transport,
    and execution begins. A `RunConfig` that fails validation, or any
    other failure to build the loop, terminates the run here: the
@@ -179,20 +179,39 @@ IMDS, GitHub Actions OIDC). See
    `verification_failed`, `verification_error`, and `max_tokens` on
    top of the loop's stop reasons. `trace.stop_reason` mirrors it for
    backward compatibility.
-9. **Follow-up grace** *(optional)*. If `STIRRUP_FOLLOWUP_GRACE > 0`,
-   the stream stays open for that many seconds so the control plane
-   can deliver `user_response` events that resume the loop.
-10. **Exit.** The liveness probe file is removed; the process exits 0
-    on success or non-zero on transport / build / runtime failure.
-    Before the connection closes the harness half-closes the stream
-    and waits up to 2 seconds (not configurable) for the control plane
-    to end `RunTask`, so a terminal `done` is not lost to an abrupt
-    teardown. A control plane that returns from `RunTask` on `done`
-    adds nothing to the exit; one that holds the stream open adds up
-    to that window, which matters when sizing
-    `terminationGracePeriodSeconds`. The wait does not apply on the
-    SIGTERM path — see
+9. **Finalise.** The run's `RunResult` is emitted on the configured
+   `resultSink` and, when `executor.workspaceExportTo` is set, the
+   workspace is exported. Every run — primary and follow-up — is
+   finalised this way.
+10. **Follow-up grace** *(optional)*. If `followUpGrace` (or
+    `STIRRUP_FOLLOWUP_GRACE`) is positive, the stream stays open for
+    that many idle seconds after each run is finalised, so the control
+    plane can deliver a `user_response` that starts a fresh run with a
+    new run ID and its own `timeout` budget. Steps 7–9 repeat for that
+    run. See [Run budgets and precedence](#run-budgets-and-precedence).
+11. **Exit.** The liveness probe file is removed; the process exits 0
+    when the primary run succeeded or non-zero on transport / build /
+    runtime failure. Before the connection closes the harness
+    half-closes the stream and waits up to 2 seconds (not
+    configurable) for the control plane to end `RunTask`, so a
+    terminal `done` is not lost to an abrupt teardown. A control plane
+    that returns from `RunTask` on `done` adds nothing to the exit; one
+    that holds the stream open adds up to that window, which matters
+    when sizing `terminationGracePeriodSeconds`. The wait does not
+    apply on the SIGTERM path — see
     [`integration-guide.md`](integration-guide.md#terminal-semantics).
+
+### Run budgets and precedence
+
+Five limits bound a `stirrup job` session; whichever fires first wins.
+
+| Limit | Scope | Effect |
+|---|---|---|
+| `RunConfig.timeout` | One run. The primary run's budget starts at task assignment and includes component construction; each follow-up run receives a fresh budget of the same length when its `user_response` is taken up. | The run ends with `done{stop_reason:"timeout"}`. The follow-up window still opens afterwards. |
+| `followUpGrace` / `STIRRUP_FOLLOWUP_GRACE` | Idle time between runs, restarted after every run is finalised. A run in progress never consumes it. | The stream closes and the process exits with the primary run's exit code. |
+| `cancel` ControlEvent | The active run; with no run active, the session. | An active run ends with `done{stop_reason:"cancelled"}` and the follow-up window opens as usual. In the grace window the stream closes without another `done`. |
+| SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog closes the loop within 5 s. |
+| `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. |
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —

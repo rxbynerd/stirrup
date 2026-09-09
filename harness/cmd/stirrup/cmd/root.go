@@ -63,6 +63,27 @@ func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
 
+// runTimeoutFor resolves RunConfig.Timeout as a duration; zero when
+// unset or non-positive (the job path validates before this, the CLI
+// path defaults it, so zero only means "no budget" for callers that
+// deliberately omit it).
+func runTimeoutFor(cfg *types.RunConfig) time.Duration {
+	if cfg.Timeout == nil || *cfg.Timeout <= 0 {
+		return 0
+	}
+	return time.Duration(*cfg.Timeout) * time.Second
+}
+
+// withRunTimeout derives one run's context from the cancel-only
+// parent: a fresh deadline when timeout is positive, plain
+// cancellation otherwise.
+func withRunTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
+}
+
 // postRunEmitTimeout bounds the fresh context for emitRunOutput after
 // the loop returns, since the loop's own context may already be
 // cancelled by a stop signal. 10s mirrors bestEffortCancel in

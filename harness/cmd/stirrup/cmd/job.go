@@ -135,13 +135,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("interrupted before receiving task assignment")
 	}
 
-	if config.Timeout != nil && *config.Timeout > 0 {
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(*config.Timeout)*time.Second)
-		defer timeoutCancel()
-	}
+	// The wall-clock budget covers component construction plus the
+	// primary run. Follow-up runs derive their own budget from the
+	// cancel-only ctx, so a long primary run cannot starve them.
+	runTimeout := runTimeoutFor(config)
+	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
+	defer runCancel()
 
-	loop, err := core.BuildLoopWithTransport(ctx, config, tp)
+	loop, err := core.BuildLoopWithTransport(runCtx, config, tp)
 	if err != nil {
 		// No loop exists to run its own error/done emission, so without
 		// this the control plane cannot tell a rejected config from a
@@ -179,7 +180,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		exportRequired: false,
 	}
 
-	runTrace, runErr := loop.Run(ctx, config)
+	runTrace, runErr := loop.Run(runCtx, config)
 	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
 		return err
 	}
@@ -194,6 +195,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	}
 	if graceSecs > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, graceSecs, core.FollowUpOptions{
+			RunTimeout: runTimeout,
 			OnRunComplete: func(cfg *types.RunConfig, rt *types.RunTrace, err error) {
 				// Export is never required here, so the only error finalise
 				// can return is the run's own, already reported via the

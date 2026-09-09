@@ -641,15 +641,21 @@ type RunConfig struct {
 	//
 	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
-	// Required. Wall-clock timeout in seconds for the entire run. The loop
-	// terminates with stop_reason "timeout" when this expires, and every
-	// budget derived from the run deadline — a batch wait among them —
-	// is bounded by it. Range: 1-3600.
+	// Required. Wall-clock timeout in seconds for one run. The primary run's
+	// budget starts when this RunConfig is accepted (component construction
+	// counts against it); every follow-up run receives a fresh budget of
+	// the same length when its user_response is taken up. The loop
+	// terminates the run with stop_reason "timeout" when the budget
+	// expires, and every budget derived from the run deadline — a batch
+	// wait among them — is bounded by it. There is no session-wide cap: a
+	// session is bounded by this per-run budget, the follow_up_grace idle
+	// window, "cancel", and the process shutdown signal. Range: 1-3600.
 	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
-	// Optional. Seconds to keep the gRPC transport open after the primary run
-	// completes, waiting for follow-up user_response events that trigger
-	// additional runs. 0 or unset means disabled (stream closes after done).
-	// Max: 3600.
+	// Optional. Idle seconds to keep the gRPC transport open after each run
+	// completes (including its result-sink and workspace-export steps),
+	// waiting for a user_response that starts the next run. The window
+	// restarts after every run; a run in progress never consumes it. 0 or
+	// unset means disabled (stream closes after done). Max: 3600.
 	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".

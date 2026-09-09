@@ -273,7 +273,7 @@ reference.
 | `--name` | (none) | Human-readable session label, attached to logs/traces. Metadata only — not injected into the prompt. |
 | `--workspace`, `-w` | cwd | Workspace directory. |
 | `--max-turns` | `20` | Hard-capped at 100. |
-| `--timeout` | `600` | Wall-clock seconds; capped at 3600. |
+| `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, or `high`. Empty says nothing on the wire and leaves the model on its provider default. Adapters with a probed native control project it — the Gemini adapter maps it to `generationConfig.thinkingConfig.thinkingLevel` — and the rest ignore it, so a single config stays portable across providers. Per-model acceptance may be narrower than the enum (Gemini 3.7 Flash rejects `minimal`); the [provider quirks registry](provider-quirks.md) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
@@ -470,7 +470,7 @@ the none executor has no capability to back the rest.
 |---|---|---|
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
-| `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
+| `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
 
 ### Tracing
 

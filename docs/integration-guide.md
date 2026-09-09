@@ -248,7 +248,9 @@ Launch the harness as a Kubernetes Job running `stirrup job` with
 `CONTROL_PLANE_ADDR` pointing at this server. Set
 `Job.spec.activeDeadlineSeconds` above `RunConfig.timeout`, allowing
 additional time for the pre-assignment wait (up to five minutes),
-component construction, post-run hooks, and result/export flushing.
+component construction, post-run hooks, result/export flushing, and —
+with a follow-up grace window — each follow-up run's own `timeout`
+plus the idle windows between runs.
 The process writes `/tmp/healthy`, but the published distroless image
 contains no `test` or shell binary; inspect that file from a sidecar
 sharing the volume, or use a custom image/probe helper. The 30-second
@@ -270,7 +272,7 @@ explicit about fields the CLI would have filled:
 | `prompt` | Required. |
 | `provider.type` | Required: `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
 | `max_turns` | Required, 1–100. The CLI default of 20 is **not** applied on the wire. |
-| `timeout` | Required, 1–3600 seconds. The CLI default of 600 is **not** applied on the wire. |
+| `timeout` | Required, 1–3600 seconds, per run: the primary run (component construction included) and, afresh, each follow-up. The CLI default of 600 is **not** applied on the wire. |
 | `permission_policy.type` | Required for `execution`; validation rejects an empty type rather than inferring the CLI's `allow-all`. Read-only modes default to `deny-side-effects`. |
 | `tools.built_in` | Required (non-empty) for read-only modes, and must exclude the mutating tools. Optional for `execution` (empty enables all built-ins). |
 
@@ -557,7 +559,9 @@ hard — or different providers per mode.
   `sliding-window` (default), `summarise`, or `offload-to-file`.
 - Pair `timeout` with an infrastructure-level deadline
   (`activeDeadlineSeconds`) that also allows for assignment, setup,
-  and teardown.
+  and teardown — and, with follow-ups enabled, for every additional
+  run's own `timeout` plus the grace windows between runs, since
+  `timeout` is per run rather than per session.
 
 ### Verification: use the terminal outcome
 
@@ -591,8 +595,13 @@ re-provisioning the sandbox.
 - Send `user_response` only after `done`; one sent during an active run
   is ignored. Each accepted follow-up ends with its own `done` and
   resets the grace timer.
-- Follow-ups share the primary run's original context deadline; the
-  `timeout` budget does not restart.
+- Each follow-up is a run in its own right: it receives a fresh `timeout`
+  budget when its `user_response` is taken up, and the grace timer
+  restarts after it completes, so the window measures idle time and a
+  follow-up that outlives the grace period does not close it. There is
+  no session-wide cap; bound the Pod with `activeDeadlineSeconds`. The
+  precedence of every limit is tabulated in
+  [`deployment.md`](deployment.md#run-budgets-and-precedence).
 - Every run — primary and each follow-up — is finalised the same way:
   its `RunResult` is emitted on the configured `resultSink` exactly once,
   and, when `executor.workspaceExportTo` is set, its workspace is
@@ -612,9 +621,11 @@ re-provisioning the sandbox.
 
 During an active run, send `ControlEvent{type:"cancel"}`. The harness
 cancels in-flight provider streams and tool calls via context, runs git
-finalisation, and emits `done` with `stop_reason:"cancelled"`. Before
-assignment, `cancel` exits cleanly without `done`; during follow-up
-wait it closes without another `done`. Cancellation during synchronous
+finalisation, and emits `done` with `stop_reason:"cancelled"`. `cancel`
+is scoped to the active run: with a follow-up grace window configured,
+the window still opens after a cancelled run. Before assignment,
+`cancel` exits cleanly without `done`; during follow-up wait it closes
+the session without another `done`. Cancellation during synchronous
 component construction is not a reliable boundary, so retain an
 infrastructure deadline/SIGTERM fallback. On process shutdown, the job
 uses bounded contexts to flush traces and the result sink.

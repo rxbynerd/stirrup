@@ -127,13 +127,17 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
 	// already set one so child spans nest correctly; otherwise establish
-	// the OTel root or a plain ctx as the span parent.
+	// the OTel root or a plain ctx as the span parent for this run only.
+	// The span parent is also what provider and tool calls descend from,
+	// so a follow-up run on the same loop must not inherit the previous
+	// run's (by then cancelled) context.
 	if l.TraceContext == nil {
 		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
 			l.TraceContext = otelEmitter.RootContext()
 		} else {
 			l.TraceContext = runCtx
 		}
+		defer func() { l.TraceContext = nil }()
 	}
 
 	// Lets the control plane know the run is alive during long turns.
@@ -1097,6 +1101,11 @@ func (l *AgenticLoop) applyEscalation(
 
 // FollowUpOptions configures RunFollowUpLoop.
 type FollowUpOptions struct {
+	// RunTimeout is the wall-clock budget minted fresh for each
+	// follow-up run (RunConfig.Timeout). Zero leaves a follow-up bounded
+	// only by the parent context's cancellation.
+	RunTimeout time.Duration
+
 	// OnRunComplete, when non-nil, is called after every follow-up run
 	// with the config the run used (RunID and Prompt already refreshed
 	// for that run), its trace, and its error — the same pair Run
@@ -1111,6 +1120,12 @@ type FollowUpOptions struct {
 // each new prompt. Exits on grace-period timeout, ctx cancellation, or
 // a "cancel" control event. graceSecs must be > 0; the transport must
 // support fan-out OnControl (GRPCTransport and StdioTransport do).
+//
+// ctx must carry cancellation and shutdown only, not the primary run's
+// deadline: each follow-up is a run in its own right and gets a fresh
+// opts.RunTimeout budget derived from ctx. The grace timer measures
+// idle time — it restarts after each follow-up completes, so a long
+// follow-up does not consume the window meant for the next one.
 func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int, opts FollowUpOptions) {
 	followUpCh := make(chan string, 1)
 	cancelCh := make(chan struct{}, 1)
@@ -1141,20 +1156,20 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 	for {
 		select {
 		case newPrompt := <-followUpCh:
-
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
 				default:
 				}
 			}
-			timer.Reset(grace)
 
 			// Issue a fresh run ID so traces don't collide.
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 			config.Prompt = newPrompt
 
-			runTrace, err := loop.Run(ctx, config)
+			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
+			runTrace, err := loop.Run(runCtx, config)
+			cancelRun()
 			if opts.OnRunComplete != nil {
 				opts.OnRunComplete(config, runTrace, err)
 			}
@@ -1162,6 +1177,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 				// Transport already carries the error event from finishWithError.
 				return
 			}
+			timer.Reset(grace)
 
 		case <-cancelCh:
 			return
@@ -1173,6 +1189,17 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			return
 		}
 	}
+}
+
+// followUpRunContext derives one follow-up run's context from the
+// cancellation-only parent: a fresh timeout when one is configured,
+// otherwise plain cancellation so Run's WithCancelCause still owns the
+// cause.
+func followUpRunContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
 }
 
 // startHeartbeat launches a background goroutine that emits heartbeat events
