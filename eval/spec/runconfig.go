@@ -12,12 +12,14 @@ import (
 // time. Not every RunConfig field is exposed — see docs/eval.md's
 // "Currently unsupported" section.
 type runConfigSpec struct {
-	RunID                string                `hcl:"run_id,optional"`
-	Mode                 string                `hcl:"mode,optional"`
-	SessionName          string                `hcl:"session_name,optional"`
-	Prompt               string                `hcl:"prompt,optional"`
-	MaxTurns             *int                  `hcl:"max_turns,optional"`
-	MaxTokenBudget       *int                  `hcl:"max_token_budget,optional"`
+	RunID          string `hcl:"run_id,optional"`
+	Mode           string `hcl:"mode,optional"`
+	SessionName    string `hcl:"session_name,optional"`
+	Prompt         string `hcl:"prompt,optional"`
+	MaxTurns       *int   `hcl:"max_turns,optional"`
+	MaxTokenBudget *int   `hcl:"max_token_budget,optional"`
+	// MaxCostBudget is accepted and bounded but not enforced; a suite that
+	// sets it logs one warning per task and caps nothing.
 	MaxCostBudget        *float64              `hcl:"max_cost_budget,optional"`
 	Timeout              *int                  `hcl:"timeout,optional"`
 	FollowUpGrace        *int                  `hcl:"follow_up_grace,optional"`

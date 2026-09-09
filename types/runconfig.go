@@ -25,7 +25,8 @@ const (
 	// maxFollowUpGrace is the maximum allowed follow-up grace period in seconds.
 	maxFollowUpGrace = 3600
 
-	// maxCostBudget is the maximum allowed cost budget in dollars.
+	// maxCostBudget is the maximum accepted cost budget in dollars. The
+	// budget itself is never enforced; see RunConfig.MaxCostBudget.
 	maxCostBudget = 100.0
 
 	// maxTokenBudget is the maximum allowed token budget.
