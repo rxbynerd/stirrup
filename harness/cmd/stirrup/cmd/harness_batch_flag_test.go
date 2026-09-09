@@ -171,7 +171,8 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 	wantSubstrings := []string{
 		"async batch submission",
 		"50% cost reduction",
-		"24h latency",
+		"waits up to --timeout",
+		"3600s",
 		"transport=grpc",
 		"harnessSidePolling=true",
 		"docs/batch.md",

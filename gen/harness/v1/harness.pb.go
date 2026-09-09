@@ -338,9 +338,16 @@ func (x *HarnessEvent) GetAudience() string {
 //	"batch_result"
 //	  - request_id: must match a previously received batch_submission
 //	                HarnessEvent.request_id.
-//	  - content:    JSON-encoded BatchResult payload (response or err).
-//	  - is_error:   true for non-success result types (batch_expired,
-//	                batch_cancelled, invalid_request_error, server_error).
+//	  - content:    JSON-encoded BatchResult payload. Canonical: exactly
+//	                one of `response` (success) and `err` (failure, with
+//	                type batch_expired, batch_cancelled,
+//	                invalid_request_error, or server_error) must be set.
+//	                Setting neither or both is an invalid_request_error.
+//	  - is_error:   optional and redundant here. When present it must
+//	                agree with content — true iff content carries `err`.
+//	                A contradiction is reported as an
+//	                invalid_request_error naming both, never resolved in
+//	                favour of the flag.
 //
 //	"sandbox_token_response"
 //	  - request_id:  must match the request_id from the corresponding
@@ -381,15 +388,19 @@ type ControlEvent struct {
 	// "sandbox_token_response" events when is_error is true (why the control
 	// plane could not issue a token).
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
-	// Async tool result payload. Set on "tool_result_response" events. Delivered
-	// to the agentic loop verbatim as the async tool's output content.
+	// Async tool result payload. Set on "tool_result_response" events and
+	// delivered to the agentic loop verbatim as the async tool's output
+	// content; on "batch_result" events it is the JSON-encoded BatchResult
+	// and the canonical outcome discriminator.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
 	// When true on a "tool_result_response", the loop marks the resulting
 	// ToolResult as an error so the model sees it as a tool failure. When true
 	// on a "sandbox_token_response", the control plane could not issue a
 	// token; reason carries the explanation and token / expires_at are unset.
-	// Wrapped to distinguish unset from explicit-false (proto3 scalar
-	// default).
+	// On a "batch_result" it is redundant: content decides the outcome, and
+	// a value disagreeing with content makes the event an
+	// invalid_request_error. Wrapped to distinguish unset from
+	// explicit-false (proto3 scalar default).
 	IsError *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
 	// The signed JWT sandbox identity token. Set on "sandbox_token_response"
 	// events when is_error is false. SENSITIVE: never logged, traced, or
@@ -631,8 +642,9 @@ type RunConfig struct {
 	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	// Required. Wall-clock timeout in seconds for the entire run. The loop
-	// terminates with stop_reason "timeout" when this expires.
-	// Range: 1-3600.
+	// terminates with stop_reason "timeout" when this expires, and every
+	// budget derived from the run deadline — a batch wait among them —
+	// is bounded by it. Range: 1-3600.
 	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
 	// Optional. Seconds to keep the gRPC transport open after the primary run
 	// completes, waiting for follow-up user_response events that trigger
@@ -2414,16 +2426,24 @@ type BatchProviderConfig struct {
 	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// Harness-side wall-clock cap on the batch wait, in seconds. Declared
 	// `optional` so an unset value is wire-distinguishable from explicit
-	// zero: ValidateRunConfig fills the default (86400) only when nil and
+	// zero: ValidateRunConfig fills the default only when nil and
 	// enabled=true, so a phase-2 adapter can still tell "operator did not
-	// configure this" from "default applied". Must be in (0, 86400] when
-	// set.
+	// configure this" from "default applied". The run context is bound to
+	// RunConfig.timeout, so this must be in (0, timeout] when set, and
+	// defaults to timeout when unset. timeout is itself capped at 3600
+	// seconds on both the CLI and stirrup job paths.
 	MaxWaitSeconds *int32 `protobuf:"varint,2,opt,name=max_wait_seconds,json=maxWaitSeconds,proto3,oneof" json:"max_wait_seconds,omitempty"`
 	// Enables direct HTTP polling from the harness process. Required when
 	// transport.type == "stdio"; rejected with transport.type == "grpc".
 	HarnessSidePolling bool `protobuf:"varint,3,opt,name=harness_side_polling,json=harnessSidePolling,proto3" json:"harness_side_polling,omitempty"`
 	// Switches to the streaming adapter for a turn when the harness-side
-	// max_wait_seconds fires. Defaults to false.
+	// max_wait_seconds fires. Defaults to false. Requires max_wait_seconds
+	// strictly below RunConfig.timeout, and ValidateRunConfig rejects the
+	// pair otherwise: the run context is armed before the turn while the
+	// batch cap starts only once the wait blocks, so a cap equal to the
+	// timeout can never expire first and the fallback could never fire.
+	// The headroom must also cover every preceding batch turn, whose wait
+	// is charged against the same run deadline.
 	FallbackOnTimeout bool `protobuf:"varint,4,opt,name=fallback_on_timeout,json=fallbackOnTimeout,proto3" json:"fallback_on_timeout,omitempty"`
 	// When a single run is cancelled, cancel the entire bundled provider
 	// batch (gRPC transport only). Defaults to false. Rejected with

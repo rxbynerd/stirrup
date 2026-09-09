@@ -830,7 +830,7 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 		// zero. ValidateRunConfig depends on the nil to apply the
 		// default; an always-allocated *int would erase that and pin
 		// MaxWaitSeconds at 0, which the validator then rejects as
-		// "must be in range (0, 86400]".
+		// "must be in range (0, timeout]".
 		original := &pb.RunConfig{
 			Provider: &pb.ProviderConfig{
 				Type:  "anthropic",

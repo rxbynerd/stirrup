@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,7 +81,11 @@ type BatchEntry struct {
 	Body json.RawMessage `json:"body"`
 }
 
-// BatchResult is the per-entry outcome of a batch submission.
+// BatchResult is the per-entry outcome of a batch submission. Exactly
+// one of Response and Err is set, and Err is the canonical success /
+// failure discriminator on the wire: a batch_result ControlEvent whose
+// is_error flag disagrees with the decoded payload is rejected as an
+// invalid_request_error rather than believed.
 type BatchResult struct {
 	// Response is the provider's Messages-API-compatible response JSON on
 	// success. Nil when Err is non-nil.
@@ -350,6 +355,35 @@ func isBatchTimeout(err error) bool {
 	return errors.Is(err, errBatchExpired)
 }
 
+// batchWaitCap resolves the instant at which a batch wait abandons its
+// entry, reporting false when no cap should be armed at all.
+//
+// A cap at or beyond the run deadline is dropped rather than armed. The
+// run context always ends the wait first in that configuration — it is
+// armed before the turn, while the cap only starts once the wait blocks —
+// so arming it anyway puts the two within timer granularity of each
+// other, and which one the runtime reports decides whether BatchAdapter
+// takes its FallbackOnTimeout branch and retries on an already-dead
+// context. Dropping the cap makes ctx.Err() the only possible outcome.
+func batchWaitCap(ctx context.Context, maxWait time.Duration) (time.Time, bool) {
+	capAt := time.Now().Add(maxWait)
+	if runDeadline, ok := ctx.Deadline(); ok && !runDeadline.After(capAt) {
+		return time.Time{}, false
+	}
+	return capAt, true
+}
+
+// expiredOrCancelled backstops batchWaitCap for a run cancelled without a
+// deadline, where an explicit cancel can still land alongside an armed
+// cap. Reporting ctx.Err() keeps a dead run out of BatchAdapter's
+// FallbackOnTimeout branch, where the streaming retry could only fail.
+func expiredOrCancelled(ctx context.Context, expired error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return expired
+}
+
 // fabricateStream decodes a batch response and emits the StreamEvent
 // sequence the streaming adapter would have produced for the same body.
 // Unsupported provider types emit a single error event rather than a
@@ -522,29 +556,61 @@ func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 const maxBatchResponseBytes = 4 * 1024 * 1024
 
 // decodeBatchResult turns a batch_result ControlEvent's content into a
-// *BatchResult. An empty content, oversize payload, or malformed JSON
-// surfaces as a BatchResult.Err rather than a nil entry.
+// *BatchResult. The structured payload is the canonical success/failure
+// discriminator: an entry is a failure when content.err is set, and a
+// success when content.response is. An empty content, oversize payload,
+// malformed JSON, a payload setting neither or both fields, or an
+// event.IsError that contradicts the payload all surface as a
+// BatchResult.Err rather than a nil entry.
 func decodeBatchResult(event types.ControlEvent) *BatchResult {
 	if event.Content == "" {
-		return &BatchResult{
-			Err: &BatchResultError{Type: "invalid_request_error", Message: "batch_result missing content"},
-		}
+		return batchDecodeError("batch_result missing content")
 	}
 	if len(event.Content) > maxBatchResponseBytes {
-		return &BatchResult{
-			Err: &BatchResultError{
-				Type:    "invalid_request_error",
-				Message: fmt.Sprintf("batch_result content exceeds %d-byte limit", maxBatchResponseBytes),
-			},
-		}
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result content exceeds %d-byte limit", maxBatchResponseBytes))
 	}
 	var result BatchResult
 	if err := json.Unmarshal([]byte(event.Content), &result); err != nil {
-		return &BatchResult{
-			Err: &BatchResultError{Type: "invalid_request_error", Message: fmt.Sprintf("decode batch_result: %v", err)},
-		}
+		return batchDecodeError(fmt.Sprintf("decode batch_result: %v", err))
+	}
+
+	isFailure := result.Err != nil
+	// json.RawMessage stores a JSON null as the four bytes "null", so a
+	// length test alone would read {"response":null} as a success and
+	// fabricate an empty assistant turn from it.
+	hasResponse := len(result.Response) > 0 && !bytes.Equal(result.Response, []byte("null"))
+	switch {
+	case isFailure && hasResponse:
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result content sets both response and err (err.type=%q); exactly one is required",
+			result.Err.Type))
+	case !isFailure && !hasResponse:
+		return batchDecodeError("batch_result content sets neither response nor err; exactly one is required")
+	}
+	if event.IsError != nil && *event.IsError != isFailure {
+		return batchDecodeError(fmt.Sprintf(
+			"batch_result is_error=%t contradicts its content, which carries %s; content is canonical",
+			*event.IsError, batchPayloadShape(result)))
 	}
 	return &result
+}
+
+// batchDecodeError builds the synthetic entry a malformed or
+// self-contradictory batch_result resolves to.
+func batchDecodeError(message string) *BatchResult {
+	return &BatchResult{
+		Err: &BatchResultError{Type: "invalid_request_error", Message: message},
+	}
+}
+
+// batchPayloadShape names the decoded payload's discriminator for the
+// is_error contradiction diagnostic.
+func batchPayloadShape(result BatchResult) string {
+	if result.Err != nil {
+		return fmt.Sprintf("err.type=%q", result.Err.Type)
+	}
+	return "a success response"
 }
 
 // Submit emits a single-entry batch_submission HarnessEvent and returns
@@ -604,26 +670,30 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 	timeout := c.maxWait
 	if timeout <= 0 {
 		// Must not fall back to transport.DefaultCorrelatorTimeout: that
-		// default is far shorter than DefaultBatchMaxWaitSeconds and
-		// would silently expire long batches early.
-		timeout = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
+		// default is far shorter than the longest wait a run can
+		// configure and would silently expire long batches early.
+		timeout = time.Duration(types.MaxRunTimeoutSeconds) * time.Second
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	var capC <-chan time.Time
+	if capAt, armed := batchWaitCap(ctx, timeout); armed {
+		timer := time.NewTimer(time.Until(capAt))
+		defer timer.Stop()
+		capC = timer.C
+	}
 
 	select {
 	case result := <-ch:
-
 		c.releasePending(batchID)
 		return map[string]*BatchResult{customID: result}, nil
-	case <-timer.C:
+	case <-capC:
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)
-		return nil, fmt.Errorf("%w: timed out after %s (batchID=%s)", errBatchExpired, timeout, batchID)
+		return nil, fmt.Errorf("controlPlaneBatchClient: batch %s: %w", batchID, expiredOrCancelled(ctx, fmt.Errorf(
+			"%w: timed out after %s", errBatchExpired, timeout)))
 	case <-ctx.Done():
 		c.releasePending(batchID)
 		c.maybeEmitCancelRequest(batchID)
-		return nil, fmt.Errorf("controlPlaneBatchClient: cancelled: %w", ctx.Err())
+		return nil, fmt.Errorf("controlPlaneBatchClient: batch %s: cancelled: %w", batchID, ctx.Err())
 	}
 }
 

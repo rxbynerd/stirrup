@@ -1347,7 +1347,8 @@ be unbounded:
 | Field | Cap |
 |---|---|
 | `maxTurns` | 100 |
-| `timeout` | 3600 s |
+| `timeout` | 3600 s (same bound on `stirrup harness` and `stirrup job`) |
+| `provider.batch.maxWaitSeconds` | the run's `timeout`; defaults to it when unset. See [`batch.md`](batch.md#the-wait-budget) |
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
 | `maxCostBudget` | $100 (not enforced — see below) |

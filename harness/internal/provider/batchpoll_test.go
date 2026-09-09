@@ -344,6 +344,43 @@ func TestHarnessPollingBatch_ResultTimeout(t *testing.T) {
 	}
 }
 
+// TestHarnessPollingBatch_ResultDeadlineRacesCap gives the polling client
+// a run deadline and a wall-clock cap of the same length, the shape a run
+// takes once maxWaitSeconds defaults to the run timeout. Whichever fires
+// first, the run must read as past its deadline and must not surface the
+// batch-expired sentinel, which would route into FallbackOnTimeout and
+// retry on the same dead context.
+func TestHarnessPollingBatch_ResultDeadlineRacesCap(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
+	ps := newPollServer(t, polls, "")
+	defer ps.Close()
+
+	c, teardown := newTestPollingClient(t, ps.Server, src, 50*time.Millisecond)
+	defer teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Result(ctx, "batch_xyz")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+		}
+		if errors.Is(err, errBatchExpired) {
+			t.Errorf("a run past its deadline must not surface the batch-expired sentinel, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Result did not return once both deadlines had passed")
+	}
+}
+
 func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
@@ -1853,8 +1890,8 @@ func TestNewHarnessPollingBatchClient_PanicsOnNilCredSource(t *testing.T) {
 }
 
 // TestNewHarnessPollingBatchClient_DefaultsMaxWait pins that a zero
-// MaxWait is replaced with types.DefaultBatchMaxWaitSeconds at
-// constructor time, not later deferred to an already-passed deadline.
+// MaxWait is replaced with types.MaxRunTimeoutSeconds at constructor
+// time, not later deferred to an already-passed deadline.
 func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
@@ -1863,7 +1900,7 @@ func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
 		CredSource:   src,
 		MaxWait:      0,
 	})
-	want := time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
+	want := time.Duration(types.MaxRunTimeoutSeconds) * time.Second
 	if c.maxWait != want {
 		t.Errorf("maxWait: got %s, want %s", c.maxWait, want)
 	}

@@ -140,7 +140,7 @@ type HarnessBatchClientOptions struct {
 	// MaxWait is the wall-clock cap on a single Result call. An
 	// expiration returns an error wrapping errBatchExpired so
 	// BatchAdapter's FallbackOnTimeout branch routes correctly.
-	// Zero or negative falls back to types.DefaultBatchMaxWaitSeconds.
+	// Zero or negative falls back to types.MaxRunTimeoutSeconds.
 	MaxWait time.Duration
 
 	// Logger is the run-scoped slog logger used for cancel-path,
@@ -173,7 +173,7 @@ func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollin
 	baseURL = strings.TrimRight(baseURL, "/")
 	maxWait := opts.MaxWait
 	if maxWait <= 0 {
-		maxWait = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
+		maxWait = time.Duration(types.MaxRunTimeoutSeconds) * time.Second
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -355,7 +355,7 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 // resultAnthropic polls /v1/messages/batches/{batchID} until the
 // Anthropic batch resolves and fetches the JSONL results document.
 func (c *harnessPollingBatchClient) resultAnthropic(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
-	deadline := time.Now().Add(c.maxWait)
+	deadline, capArmed := batchWaitCap(ctx, c.maxWait)
 	interval := getBatchPollInitialInterval()
 
 	for {
@@ -401,11 +401,14 @@ func (c *harnessPollingBatchClient) resultAnthropic(ctx context.Context, batchID
 		// Cap sleep against the remaining deadline so timeout fires on
 		// the documented cap instead of one full interval past it.
 		sleep := jitter(interval)
-		if remaining := time.Until(deadline); remaining <= 0 {
-			go c.bestEffortCancel(batchID)
-			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
-		} else if sleep > remaining {
-			sleep = remaining
+		if capArmed {
+			if remaining := time.Until(deadline); remaining <= 0 {
+				go c.bestEffortCancel(batchID)
+				return nil, expiredOrCancelled(ctx, fmt.Errorf(
+					"%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID))
+			} else if sleep > remaining {
+				sleep = remaining
+			}
 		}
 
 		select {
@@ -422,9 +425,10 @@ func (c *harnessPollingBatchClient) resultAnthropic(ctx context.Context, batchID
 
 		// The sleep may have consumed the entire remaining budget
 		// without yet triggering the loop-top poll.
-		if time.Now().After(deadline) {
+		if capArmed && time.Now().After(deadline) {
 			go c.bestEffortCancel(batchID)
-			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
+			return nil, expiredOrCancelled(ctx, fmt.Errorf(
+				"%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID))
 		}
 	}
 }
@@ -861,7 +865,7 @@ func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, j
 // typed BatchResultError rather than an opaque "missing entry".
 func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
 	customID, _ := c.lastSubmittedCustomID.Load().(string)
-	deadline := time.Now().Add(c.maxWait)
+	deadline, capArmed := batchWaitCap(ctx, c.maxWait)
 	interval := getBatchPollInitialInterval()
 
 	for {
@@ -900,11 +904,14 @@ func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID st
 		}
 
 		sleep := jitter(interval)
-		if remaining := time.Until(deadline); remaining <= 0 {
-			go c.bestEffortCancel(batchID)
-			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
-		} else if sleep > remaining {
-			sleep = remaining
+		if capArmed {
+			if remaining := time.Until(deadline); remaining <= 0 {
+				go c.bestEffortCancel(batchID)
+				return nil, expiredOrCancelled(ctx, fmt.Errorf(
+					"%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID))
+			} else if sleep > remaining {
+				sleep = remaining
+			}
 		}
 
 		select {
@@ -918,9 +925,10 @@ func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID st
 		if maxInterval := getBatchPollMaxInterval(); interval > maxInterval {
 			interval = maxInterval
 		}
-		if time.Now().After(deadline) {
+		if capArmed && time.Now().After(deadline) {
 			go c.bestEffortCancel(batchID)
-			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
+			return nil, expiredOrCancelled(ctx, fmt.Errorf(
+				"%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID))
 		}
 	}
 }

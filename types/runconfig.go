@@ -73,14 +73,15 @@ const (
 	// ToolDispatchConfig.MaxParallel enforced by ValidateRunConfig.
 	MaxToolDispatchMaxParallel = 16
 
-	// DefaultBatchMaxWaitSeconds is the harness-side default wall-clock
-	// cap on a batch wait (24h), matching the Anthropic/OpenAI batch SLA.
-	// Applied when Batch.Enabled and Batch.MaxWaitSeconds == nil.
-	DefaultBatchMaxWaitSeconds = 86400
+	// MaxRunTimeoutSeconds is the hard ceiling ValidateRunConfig enforces
+	// on RunConfig.Timeout. Every wall-clock budget derived from the run
+	// deadline — a batch wait among them — inherits it, because both
+	// `stirrup harness` and `stirrup job` bind the run context to Timeout.
+	MaxRunTimeoutSeconds = 3600
 
 	// batchTurnsLatencyWarnThreshold is the maxTurns ceiling above which
-	// ValidateRunConfig emits a slog WARN, since each turn can wait up to
-	// 24h on the provider.
+	// ValidateRunConfig emits a slog WARN, since a single turn can consume
+	// the whole batch wait before the next one starts.
 	batchTurnsLatencyWarnThreshold = 5
 )
 
@@ -674,8 +675,9 @@ type BatchProviderConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// MaxWaitSeconds is the harness-side wall-clock cap on the batch wait,
-	// in seconds. Defaults to 86400 (24 h, matching the provider SLA) when
-	// nil and Enabled=true. Must be in the range (0, 86400].
+	// in seconds. Defaults to the run's Timeout when nil and Enabled=true,
+	// and must lie in (0, Timeout]: the run context is bound to Timeout,
+	// so a longer wait is never observable.
 	MaxWaitSeconds *int `json:"maxWaitSeconds,omitempty"`
 
 	// HarnessSidePolling enables direct HTTP polling from the harness
@@ -2262,8 +2264,9 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 
 	// timeout must be set
-	if config.Timeout == nil || *config.Timeout <= 0 || *config.Timeout > 3600 {
-		errs = append(errs, "timeout is required and must be > 0 and <= 3600 seconds")
+	if config.Timeout == nil || *config.Timeout <= 0 || *config.Timeout > MaxRunTimeoutSeconds {
+		errs = append(errs, fmt.Sprintf(
+			"timeout is required and must be > 0 and <= %d seconds", MaxRunTimeoutSeconds))
 	}
 
 	// followUpGrace must be bounded
@@ -3193,14 +3196,30 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		return
 	}
 
-	// HarnessSidePolling and CancelBundleOnRunCancel constrain the
-	// transport regardless of Enabled, so a future-disabled config does
-	// not silently retain a contradictory flag combination.
+	// The run deadline bounds every wait derived from it: both CLI paths
+	// bind the run context to Timeout, so a batch wait above it can never
+	// elapse. An absent or out-of-range Timeout has already been reported
+	// and leaves no bound to validate against.
+	timeoutBound := 0
+	if config.Timeout != nil && *config.Timeout > 0 && *config.Timeout <= MaxRunTimeoutSeconds {
+		timeoutBound = *config.Timeout
+	}
+
+	// HarnessSidePolling, CancelBundleOnRunCancel and an explicit
+	// MaxWaitSeconds constrain the run regardless of Enabled, so a
+	// future-disabled config does not silently retain a contradictory
+	// combination that only surfaces when someone passes --batch.
 	if batch.HarnessSidePolling && config.Transport.Type == "grpc" {
 		*errs = append(*errs, "batch.harnessSidePolling must not be set with transport=grpc")
 	}
 	if batch.CancelBundleOnRunCancel && config.Transport.Type == "stdio" {
 		*errs = append(*errs, "batch.cancelBundleOnRunCancel requires transport=grpc")
+	}
+	if timeoutBound > 0 && batch.MaxWaitSeconds != nil &&
+		(*batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > timeoutBound) {
+		*errs = append(*errs, fmt.Sprintf(
+			"batch.maxWaitSeconds must be in range (0, %d]: the run timeout of %d seconds bounds the batch wait, got %d",
+			timeoutBound, timeoutBound, *batch.MaxWaitSeconds))
 	}
 
 	if !batch.Enabled {
@@ -3240,26 +3259,37 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		config.Provider.Credential.Type == "anthropic-wif" {
 		*errs = append(*errs, "batch.harnessSidePolling does not support anthropic-wif credentials in v1 (the polling client uses x-api-key auth); follow-up: thread AuthMode through harnessPollingBatchClient")
 	}
-	if batch.MaxWaitSeconds != nil {
-		if *batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > DefaultBatchMaxWaitSeconds {
-			*errs = append(*errs, "batch.maxWaitSeconds must be in range (0, 86400]")
-		}
-	} else {
-		// Only runs on the Enabled=true branch, so a disabled batch
-		// block keeps MaxWaitSeconds nil and the "operator did not
-		// configure" signal survives.
-		def := DefaultBatchMaxWaitSeconds
+	if timeoutBound > 0 && batch.MaxWaitSeconds == nil {
+		// Gated on Enabled so a disabled batch block keeps MaxWaitSeconds
+		// nil and the "operator did not configure" signal survives.
+		def := timeoutBound
 		batch.MaxWaitSeconds = &def
 	}
-	if config.MaxTurns > batchTurnsLatencyWarnThreshold {
+	// A batch wait equal to the run timeout can never expire first: the run
+	// context is armed before the turn and the wait's own cap only starts
+	// once Result blocks, so the deadline is always the earlier of the two
+	// and FallbackOnTimeout is unreachable. Reject rather than warn, in
+	// line with the two flag/transport contradictions above.
+	if batch.FallbackOnTimeout && timeoutBound > 0 &&
+		batch.MaxWaitSeconds != nil && *batch.MaxWaitSeconds == timeoutBound {
+		*errs = append(*errs, fmt.Sprintf(
+			"batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout, got maxWaitSeconds=%d and timeout=%d: "+
+				"the batch wait can never expire before the run deadline, so the fallback would never fire. "+
+				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the 120 s streaming HTTP timeout — "+
+				"and for every preceding batch turn, whose wait is charged against the same deadline",
+			*batch.MaxWaitSeconds, timeoutBound, defaultProviderRetryWallClockBudgetMs))
+	}
+	if config.MaxTurns > batchTurnsLatencyWarnThreshold && batch.MaxWaitSeconds != nil {
 		// This warn is in types/, the same mechanism rule_of_two_warning
 		// uses, which leaves callers without a way to observe or suppress
 		// it short of manipulating slog.Default.
+		worstCaseSeconds := config.MaxTurns * *batch.MaxWaitSeconds
 		slog.Warn(
-			"batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency",
+			"batch with maxTurns above the latency-warning threshold may exhaust the run timeout before the final turn completes",
 			"maxTurns", config.MaxTurns,
 			"thresholdTurns", batchTurnsLatencyWarnThreshold,
-			"estimatedMaxHours", config.MaxTurns*24,
+			"maxWaitSeconds", *batch.MaxWaitSeconds,
+			"worstCaseSeconds", worstCaseSeconds,
 		)
 	}
 }

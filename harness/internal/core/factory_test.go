@@ -3081,7 +3081,7 @@ func TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled(t *testing.T) {
 	}
 	config.Provider.Batch = &types.BatchProviderConfig{
 		Enabled:               true,
-		MaxWaitSeconds:        intPtr(86400),
+		MaxWaitSeconds:        intPtr(30),
 		AllowInteractiveModes: true,
 	}
 
@@ -3139,7 +3139,7 @@ func TestBuildLoopWithTransport_BatchAdapterWiredOnStdio(t *testing.T) {
 	}
 	config.Provider.Batch = &types.BatchProviderConfig{
 		Enabled:               true,
-		MaxWaitSeconds:        intPtr(86400),
+		MaxWaitSeconds:        intPtr(30),
 		HarnessSidePolling:    true,
 		AllowInteractiveModes: true,
 	}
@@ -3195,7 +3195,7 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 			}
 			config.Provider.Batch = &types.BatchProviderConfig{
 				Enabled:               true,
-				MaxWaitSeconds:        intPtr(86400),
+				MaxWaitSeconds:        intPtr(30),
 				HarnessSidePolling:    true,
 				AllowInteractiveModes: true,
 			}

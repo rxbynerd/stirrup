@@ -855,6 +855,98 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_Stream_DeadRunDoesNotFallBack pins the boundary
+// behaviour once maxWaitSeconds defaults to the run timeout: a wall-clock
+// cap that fires against an already-cancelled run must report the
+// cancellation rather than route into the streaming fallback, which could
+// only fail on the same dead context.
+func TestBatchAdapter_Stream_DeadRunDoesNotFallBack(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			cancel()
+			return nil, expiredOrCancelled(ctx, fmt.Errorf("%w: simulated", errBatchExpired))
+		},
+	}
+	inner := &stubProvider{events: []types.StreamEvent{{Type: "text_delta", Text: "fallback"}}}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: true}, inner)
+
+	ch, _ := a.Stream(ctx, anthropicParams())
+	events := drain(t, ch)
+
+	if inner.called.Load() != 0 {
+		t.Errorf("the streaming fallback must not run for a cancelled run, called %d times", inner.called.Load())
+	}
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("expected a single error event, got %+v", events)
+	}
+	if !errors.Is(events[0].Error, context.Canceled) {
+		t.Errorf("expected context.Canceled in the chain, got %v", events[0].Error)
+	}
+}
+
+// TestExpiredOrCancelled pins the tie-break the batch clients share:
+// a live context keeps the errBatchExpired sentinel (so FallbackOnTimeout
+// still routes), a dead one yields ctx.Err().
+func TestExpiredOrCancelled(t *testing.T) {
+	expired := fmt.Errorf("%w: simulated", errBatchExpired)
+
+	if got := expiredOrCancelled(context.Background(), expired); !errors.Is(got, errBatchExpired) {
+		t.Errorf("live context: got %v, want the errBatchExpired sentinel", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := expiredOrCancelled(cancelled, expired)
+	if !errors.Is(got, context.Canceled) {
+		t.Errorf("cancelled context: got %v, want context.Canceled", got)
+	}
+	if errors.Is(got, errBatchExpired) {
+		t.Error("a cancelled run must not surface the batch-expired sentinel")
+	}
+}
+
+// TestBatchWaitCap pins which batch waits get a wall-clock cap at all.
+// A cap at or beyond the run deadline is dropped so the run deadline is
+// the only reachable outcome; only a cap strictly inside the run's
+// remaining budget is armed, and only then can FallbackOnTimeout fire.
+func TestBatchWaitCap(t *testing.T) {
+	t.Run("no run deadline arms the cap", func(t *testing.T) {
+		capAt, armed := batchWaitCap(context.Background(), time.Minute)
+		if !armed {
+			t.Fatal("a context without a deadline must arm the cap")
+		}
+		if time.Until(capAt) <= 0 {
+			t.Errorf("cap must be in the future, got %s", capAt)
+		}
+	})
+
+	t.Run("cap inside the run budget is armed", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		if _, armed := batchWaitCap(ctx, time.Minute); !armed {
+			t.Error("a cap well inside the run deadline must be armed")
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		maxWait  time.Duration
+		runBudge time.Duration
+	}{
+		{"cap equal to the run budget is dropped", time.Minute, time.Minute},
+		{"cap beyond the run budget is dropped", time.Hour, time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), tc.runBudge)
+			defer cancel()
+			if _, armed := batchWaitCap(ctx, tc.maxWait); armed {
+				t.Error("the cap must be dropped when the run deadline binds first")
+			}
+		})
+	}
+}
+
 // TestFabricateAnthropicStream_MalformedToolInput pins the
 // tool_use input decode error path in fabricateAnthropicStream
 // directly. The wider fabricateStream wrapper takes the error
@@ -1118,6 +1210,42 @@ func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 	}
 	if !errors.Is(err, errBatchExpired) {
 		t.Errorf("expected errBatchExpired in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), batchID) {
+		t.Errorf("timeout error should name the batch, got %v", err)
+	}
+}
+
+// TestControlPlaneBatchClient_Result_DeadlineRacesCap arms the run
+// deadline and the wall-clock cap at the same instant, the shape a run
+// takes once maxWaitSeconds defaults to the run timeout. Whichever select
+// arm Go picks, the result must classify as DeadlineExceeded and must not
+// carry the batch-expired sentinel that routes into FallbackOnTimeout.
+func TestControlPlaneBatchClient_Result_DeadlineRacesCap(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, 20*time.Millisecond, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = c.Result(ctx, batchID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if errors.Is(err, errBatchExpired) {
+		t.Errorf("a run past its deadline must not surface the batch-expired sentinel, got %v", err)
+	}
+	if !strings.Contains(err.Error(), batchID) {
+		t.Errorf("error should name the batch, got %v", err)
 	}
 }
 
@@ -1403,6 +1531,208 @@ func TestDecodeBatchResult_SizeCap(t *testing.T) {
 	}
 	if !strings.Contains(got.Err.Message, "exceeds") {
 		t.Errorf("message: got %q, want substring 'exceeds'", got.Err.Message)
+	}
+}
+
+// TestDecodeBatchResult_ContentIsCanonical walks the batch_result wire
+// contract: content decides success or failure, is_error is only ever
+// cross-checked, and every malformed or self-contradictory combination
+// resolves to an invalid_request_error with a diagnostic naming what
+// arrived.
+func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
+	const successContent = `{"response":{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}}`
+	boolPtr := func(b bool) *bool { return &b }
+
+	t.Run("success", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			isError *bool
+		}{
+			{"is_error_absent", nil},
+			{"is_error_false", boolPtr(false)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := decodeBatchResult(types.ControlEvent{
+					Type:      "batch_result",
+					RequestID: "batch-1",
+					Content:   successContent,
+					IsError:   tc.isError,
+				})
+				if got.Err != nil {
+					t.Fatalf("expected success, got err %+v", got.Err)
+				}
+				if !strings.Contains(string(got.Response), `"text":"hi"`) {
+					t.Errorf("response: got %s, want the decoded payload", got.Response)
+				}
+			})
+		}
+	})
+
+	// Every error type in the taxonomy must survive the round trip
+	// verbatim rather than being flattened into invalid_request_error.
+	t.Run("error_types", func(t *testing.T) {
+		for _, errType := range []string{
+			"batch_expired", "batch_cancelled", "invalid_request_error", "server_error",
+		} {
+			for _, tc := range []struct {
+				name    string
+				isError *bool
+			}{
+				{"is_error_absent", nil},
+				{"is_error_true", boolPtr(true)},
+			} {
+				t.Run(errType+"/"+tc.name, func(t *testing.T) {
+					got := decodeBatchResult(types.ControlEvent{
+						Type:      "batch_result",
+						RequestID: "batch-1",
+						Content:   fmt.Sprintf(`{"err":{"type":%q,"message":"upstream said so"}}`, errType),
+						IsError:   tc.isError,
+					})
+					if got.Err == nil {
+						t.Fatalf("expected an error entry, got %+v", got)
+					}
+					if got.Err.Type != errType {
+						t.Errorf("type: got %q, want %q", got.Err.Type, errType)
+					}
+					if got.Err.Message != "upstream said so" {
+						t.Errorf("message: got %q, want the payload's message", got.Err.Message)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			content     string
+			isError     *bool
+			wantSubstrs []string
+		}{
+			{
+				name:        "missing_content",
+				content:     "",
+				wantSubstrs: []string{"missing content"},
+			},
+			{
+				name:        "neither_response_nor_err",
+				content:     `{}`,
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				name:        "neither_with_is_error_true",
+				content:     `{}`,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				name:        "neither_with_is_error_false",
+				content:     `{}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				// json.RawMessage stores a JSON null as four bytes, so a
+				// bare length test would read this as a success and
+				// fabricate an empty assistant turn.
+				name:        "null_response_counts_as_absent",
+				content:     `{"response":null}`,
+				wantSubstrs: []string{"neither response nor err"},
+			},
+			{
+				name:        "both_response_and_err",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				wantSubstrs: []string{"both response and err", `"server_error"`},
+			},
+			{
+				name:        "both_with_is_error_true",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"both response and err"},
+			},
+			{
+				name:        "both_with_is_error_false",
+				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"both response and err"},
+			},
+			{
+				name:        "is_error_true_with_success_payload",
+				content:     successContent,
+				isError:     boolPtr(true),
+				wantSubstrs: []string{"is_error=true", "a success response"},
+			},
+			{
+				name:        "is_error_false_with_error_payload",
+				content:     `{"err":{"type":"batch_expired","message":"gone"}}`,
+				isError:     boolPtr(false),
+				wantSubstrs: []string{"is_error=false", `err.type="batch_expired"`},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := decodeBatchResult(types.ControlEvent{
+					Type:      "batch_result",
+					RequestID: "batch-1",
+					Content:   tc.content,
+					IsError:   tc.isError,
+				})
+				if got == nil || got.Err == nil {
+					t.Fatalf("expected a synthetic error, got %+v", got)
+				}
+				if got.Err.Type != "invalid_request_error" {
+					t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
+				}
+				if len(got.Response) != 0 {
+					t.Errorf("a rejected entry must not carry a response, got %s", got.Response)
+				}
+				for _, want := range tc.wantSubstrs {
+					if !strings.Contains(got.Err.Message, want) {
+						t.Errorf("message %q missing %q", got.Err.Message, want)
+					}
+				}
+			})
+		}
+	})
+}
+
+// TestControlPlaneBatchClient_ContradictoryIsErrorOverWire drives a
+// contradicting batch_result through the transport rather than calling
+// decodeBatchResult directly, pinning that handleControl routes the
+// rejection to the waiting Result caller.
+func TestControlPlaneBatchClient_ContradictoryIsErrorOverWire(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	isError := true
+	tr.deliver(types.ControlEvent{
+		Type:      "batch_result",
+		RequestID: batchID,
+		Content:   `{"response":{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}}`,
+		IsError:   &isError,
+	})
+
+	results, err := c.Result(context.Background(), batchID)
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	got, ok := results["run-test-turn-1"]
+	if !ok || got == nil {
+		t.Fatalf("expected an entry keyed by custom_id, got %+v", results)
+	}
+	if got.Err == nil || got.Err.Type != "invalid_request_error" {
+		t.Fatalf("expected invalid_request_error, got %+v", got)
+	}
+	if !strings.Contains(got.Err.Message, "is_error=true") {
+		t.Errorf("message %q should name the contradicting flag", got.Err.Message)
 	}
 }
 

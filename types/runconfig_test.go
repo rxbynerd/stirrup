@@ -6687,6 +6687,9 @@ func TestValidateRunConfig_Batch_CancelBundleRejectedWithStdio(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_Batch_MaxWaitSecondsRange pins the batch wait to
+// the run timeout: the run context is bound to Timeout, so a longer wait
+// is unreachable and must be rejected rather than silently truncated.
 func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -6694,9 +6697,10 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
 		wantErr bool
 	}{
 		{"one_passes", 1, false},
-		{"max_passes", 86400, false},
+		{"equal_to_timeout_passes", 60, false},
 		{"zero_fails", 0, true},
-		{"over_max_fails", 86401, true},
+		{"one_over_timeout_fails", 61, true},
+		{"far_over_timeout_fails", 86400, true},
 		{"negative_fails", -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6712,8 +6716,13 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error for maxWaitSeconds=%d", tc.seconds)
 				}
-				if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 86400]") {
-					t.Errorf("error should mention maxWaitSeconds range, got: %v", err)
+				if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 60]") {
+					t.Errorf("error should mention the timeout-derived range, got: %v", err)
+				}
+				// The diagnostic must name both contradicting values.
+				if !strings.Contains(err.Error(), "the run timeout of 60 seconds") ||
+					!strings.Contains(err.Error(), fmt.Sprintf("got %d", tc.seconds)) {
+					t.Errorf("error should name both the timeout and the requested wait, got: %v", err)
 				}
 			} else {
 				if err != nil {
@@ -6737,8 +6746,124 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNilApplyDefault(t *testing.T) {
 	if c.Provider.Batch.MaxWaitSeconds == nil {
 		t.Fatal("ValidateRunConfig should populate Batch.MaxWaitSeconds when nil and Enabled")
 	}
-	if got := *c.Provider.Batch.MaxWaitSeconds; got != DefaultBatchMaxWaitSeconds {
-		t.Errorf("default MaxWaitSeconds = %d, want %d", got, DefaultBatchMaxWaitSeconds)
+	if got := *c.Provider.Batch.MaxWaitSeconds; got != *c.Timeout {
+		t.Errorf("default MaxWaitSeconds = %d, want the run timeout %d", got, *c.Timeout)
+	}
+}
+
+// TestValidateRunConfig_Batch_MaxWaitSecondsTracksTimeout pins that the
+// default follows the configured timeout rather than a fixed constant.
+func TestValidateRunConfig_Batch_MaxWaitSecondsTracksTimeout(t *testing.T) {
+	for _, timeout := range []int{1, 600, MaxRunTimeoutSeconds} {
+		t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+			c := batchValidConfig()
+			seconds := timeout
+			c.Timeout = &seconds
+			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("batch default-apply path must validate, got: %v", err)
+			}
+			if got := *c.Provider.Batch.MaxWaitSeconds; got != timeout {
+				t.Errorf("default MaxWaitSeconds = %d, want %d", got, timeout)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWithInvalidTimeout
+// pins that an unusable timeout leaves MaxWaitSeconds alone: the timeout
+// error is the root cause and a derived default would be meaningless.
+func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWithInvalidTimeout(t *testing.T) {
+	c := batchValidConfig()
+	c.Timeout = nil
+	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected a validation error for a nil timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout is required") {
+		t.Errorf("expected the timeout error to be reported, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "batch.maxWaitSeconds") {
+		t.Errorf("a missing timeout must not produce a secondary batch error, got: %v", err)
+	}
+	if c.Provider.Batch.MaxWaitSeconds != nil {
+		t.Errorf("MaxWaitSeconds must stay nil without a usable timeout, got %d", *c.Provider.Batch.MaxWaitSeconds)
+	}
+}
+
+// TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled pins that
+// an explicit out-of-range maxWaitSeconds is rejected on a disabled batch
+// block too, so the contradiction surfaces at authoring time rather than
+// the first run that passes --batch.
+func TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled(t *testing.T) {
+	c := batchValidConfig()
+	overLimit := 7200
+	c.Provider.Batch = &BatchProviderConfig{Enabled: false, MaxWaitSeconds: &overLimit}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected an out-of-range maxWaitSeconds to be rejected with enabled=false")
+	}
+	if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 60]") {
+		t.Errorf("error should report the timeout-derived range, got: %v", err)
+	}
+	if c.Provider.Batch.MaxWaitSeconds == nil || *c.Provider.Batch.MaxWaitSeconds != overLimit {
+		t.Error("validation must not rewrite an explicit maxWaitSeconds on a disabled block")
+	}
+}
+
+// TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom pins that
+// fallbackOnTimeout is rejected whenever the batch wait resolves to the
+// full run timeout. The run context is armed before the turn and the
+// batch cap only starts once the wait blocks, so an equal wait can never
+// expire first and the fallback could never fire.
+func TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom(t *testing.T) {
+	const wantErr = "batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout"
+	for _, tc := range []struct {
+		name     string
+		setWait  bool
+		seconds  int
+		fallback bool
+		wantErr  bool
+	}{
+		{"unset_defaults_to_timeout_fails", false, 0, true, true},
+		{"explicitly_equal_fails", true, 60, true, true},
+		{"strictly_below_passes", true, 59, true, false},
+		{"equal_without_fallback_passes", true, 60, false, false},
+		{"unset_without_fallback_passes", false, 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := batchValidConfig()
+			c.Provider.Batch = &BatchProviderConfig{
+				Enabled:            true,
+				HarnessSidePolling: true,
+				FallbackOnTimeout:  tc.fallback,
+			}
+			if tc.setWait {
+				seconds := tc.seconds
+				c.Provider.Batch.MaxWaitSeconds = &seconds
+			}
+			err := ValidateRunConfig(c)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("config must validate, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an unreachable-fallback error")
+			}
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Errorf("error should name the unreachable fallback, got: %v", err)
+			}
+			// The diagnostic must name both contradicting values and the
+			// budget an operator has to leave room for.
+			for _, want := range []string{"maxWaitSeconds=60", "timeout=60", "90000 ms", "120 s"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error missing %q, got: %v", want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -6761,9 +6886,9 @@ func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
 	// validateBatchConfig appears above the threshold and is absent at or below it.
 	//
 	// The assertion pins the static message + structured attrs rather than
-	// substring-matching a formatted hours figure, so consumers can parse the
-	// threshold and max-hours values from structured fields.
-	const wantMsg = "batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency"
+	// substring-matching a formatted figure, so consumers can parse the
+	// threshold and worst-case values from structured fields.
+	const wantMsg = "batch with maxTurns above the latency-warning threshold may exhaust the run timeout before the final turn completes"
 	for _, tc := range []struct {
 		name     string
 		maxTurns int
@@ -6802,9 +6927,13 @@ func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
 				if !strings.Contains(logs, wantThreshold) {
 					t.Errorf("expected %q attr in warning, got: %s", wantThreshold, logs)
 				}
-				wantHours := fmt.Sprintf("estimatedMaxHours=%d", tc.maxTurns*24)
-				if !strings.Contains(logs, wantHours) {
-					t.Errorf("expected %q attr in warning, got: %s", wantHours, logs)
+				wantWait := fmt.Sprintf("maxWaitSeconds=%d", *c.Timeout)
+				if !strings.Contains(logs, wantWait) {
+					t.Errorf("expected %q attr in warning, got: %s", wantWait, logs)
+				}
+				wantWorstCase := fmt.Sprintf("worstCaseSeconds=%d", tc.maxTurns**c.Timeout)
+				if !strings.Contains(logs, wantWorstCase) {
+					t.Errorf("expected %q attr in warning, got: %s", wantWorstCase, logs)
 				}
 			} else if strings.Contains(logs, wantMsg) {
 				t.Errorf("did not expect warning at maxTurns=%d, got: %s", tc.maxTurns, logs)
@@ -6820,7 +6949,10 @@ func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
 	// CancelBundleOnRunCancel can be true at the same time.
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
-	maxWait := 3600
+	timeout := MaxRunTimeoutSeconds
+	c.Timeout = &timeout
+	// Strictly below the timeout so FallbackOnTimeout has room to fire.
+	maxWait := 3000
 	c.Provider.Batch = &BatchProviderConfig{
 		Enabled:                 true,
 		MaxWaitSeconds:          &maxWait,
@@ -6832,7 +6964,7 @@ func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("fully-populated batch config must validate, got: %v", err)
 	}
-	if got := *c.Provider.Batch.MaxWaitSeconds; got != 3600 {
+	if got := *c.Provider.Batch.MaxWaitSeconds; got != 3000 {
 		t.Errorf("MaxWaitSeconds must not be overwritten when caller supplied a value, got %d", got)
 	}
 }
