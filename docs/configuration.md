@@ -1306,8 +1306,12 @@ computes no cost, so no run terminates on this budget; cap spend in the
 control plane from provider billing data maxCostBudget=25.5
 ```
 
-The field stays on the schema so existing control-plane callers are not
-broken by an unknown-field rejection. Spend limits belong upstream,
+The field stays on the schema for two reasons: retiring a proto field
+number is a wire-compatibility break, and the JSON surfaces reject
+unknown fields (`--config` files and stdin both decode with
+`DisallowUnknownFields`), so removing the key would hard-fail every
+existing config that sets it. The gRPC surface is not at risk either
+way — proto3 ignores unknown fields. Spend limits belong upstream,
 enforced from provider billing data; `maxTokenBudget` is the harness-side
 proxy for the same intent. Enforcing a cost budget in the harness would
 mean owning a versioned price table plus defined behaviour for unknown

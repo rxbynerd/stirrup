@@ -84,17 +84,24 @@ below).
 Two operator-visible gaps follow from the 24h wait window:
 
 **Budget overrun gap.** `MaxTokenBudget` is checked at the top of
-each loop turn, i.e. *after* a batch turn completes. A single batch
-turn can return tokens that push the run over budget by one turn's
-worth before the loop catches it. The shortfall is bounded by one
-turn's tokens, but it is not zero — operators sizing
-`MaxTokenBudget` for a batch run should leave headroom for the most
-expensive single response the model can produce, not the run-average
-turn cost. `MaxCostBudget` provides no cover here at all: it is
-accepted and bounded but never enforced (see
+each loop turn and again after tool dispatch, never against the call
+about to be issued. Accounting happens only once the provider
+returns: `TokenTracker.RecordTurn` charges the turn's entire prepared
+context — message history, system prompt, and tool definitions,
+re-counted for that turn — plus its output tokens. The maximum
+overrun is therefore one full turn's input context *plus* its output,
+which for a run with a 150 k `contextStrategy.maxTokens` ceiling
+dwarfs any single response. Operators sizing `MaxTokenBudget` for a
+batch run should leave headroom for one whole turn at that ceiling,
+not for the largest response or the run-average turn cost.
+
+`MaxCostBudget` provides no cover here at all: it is accepted and
+bounded but never enforced (see
 [Limits and budgets](configuration.md#limits-and-budgets)), so a
-batch run's spend is capped only by `MaxTokenBudget`, `MaxTurns`, and
-whatever the control plane enforces.
+batch run's spend is capped only by `Timeout` — the tightest cap,
+validated at ≤ 3600 s and bound to the run context on both
+`stirrup harness` and `stirrup job` — plus `MaxTokenBudget`,
+`MaxTurns`, and whatever the control plane enforces.
 
 **Long-lived credential exposure.** A 24h batch wait keeps the
 provider's API credentials live in memory for 24h, against ~120s for
@@ -104,10 +111,12 @@ should confirm their `CredentialsCache` TTL covers the full
 `MaxWaitSeconds` window — a refresh that fires mid-wait can leave
 the harness holding stale credentials when the batch completes.
 
-### `MaxTurns` × 24h warning
+### `MaxTurns` × `MaxWaitSeconds` warning
 
-The default `MaxTurns` cap is 20. With the 20-turn default, a batch
-run can take up to 20 × 24 = 480 hours (20 days) in the worst case.
+The default `MaxTurns` cap is 20, so the nominal worst case is
+`maxTurns × maxWaitSeconds`. The run's `Timeout` bounds that: it is
+validated at ≤ 3600 s and applied to the run context on both entry
+points, so no batch run reaches the wait window's own ceiling.
 `ValidateRunConfig` emits a `slog` WARN (not an error) when
 `provider.batch.enabled` is set with `maxTurns > 5`, so operators
 see the warning at run start without the validator hard-rejecting
