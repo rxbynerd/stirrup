@@ -173,19 +173,17 @@ stirrup harness \
   --guardrail-endpoint http://127.0.0.1:1234
 ```
 
-#### Criterion polarity convention
-
-The classifier's scoring schema returns `yes` when the response
-*meets* the stated criterion, and the adapter maps `yes` to
-`VerdictDeny`. Every criterion — built-in or supplied via
-`customCriteria` — must therefore be phrased as a **risk**: meeting
-the criterion has to mean the content is problematic, not that it
-satisfies a requirement. For example, phrase groundedness as "the
-response contains unsupported claims" rather than "claims must be
-supported" — the latter is met by a good answer, so the classifier
-says `yes` and the adapter denies it. `builtInCriteria` in
-`harness/internal/guard/graniteguardian.go` is the reference for
-this phrasing.
+**Criterion polarity convention.** The classifier's scoring schema
+returns `yes` when the response *meets* the stated criterion, and the
+adapter maps `yes` to `VerdictDeny`. Every criterion — built-in or
+supplied via `customCriteria` — must therefore be phrased as a
+**risk**: meeting the criterion has to mean the content is
+problematic, not that it satisfies a requirement. For example, phrase
+groundedness as "the response contains unsupported claims" rather
+than "claims must be supported" — the latter is met by a good answer,
+so the classifier says `yes` and the adapter denies it.
+`builtInCriteria` in `harness/internal/guard/graniteguardian.go` is
+the reference for this phrasing.
 
 ### `cloud-judge`
 
