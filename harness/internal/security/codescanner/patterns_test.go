@@ -156,3 +156,152 @@ func TestPatternScanner_CleanContent(t *testing.T) {
 		t.Errorf("clean content must yield no findings, got: %+v", res.Findings)
 	}
 }
+
+// countRule returns how many findings the scan produced for rule.
+func countRule(t *testing.T, path string, content string, rule string) int {
+	t.Helper()
+	res, err := NewPatternScanner().Scan(context.Background(), path, []byte(content))
+	if err != nil {
+		t.Fatalf("Scan(%q): %v", path, err)
+	}
+	var n int
+	for _, f := range res.Findings {
+		if f.Rule == rule {
+			n++
+		}
+	}
+	return n
+}
+
+func TestPatternScanner_ShellBacktickScope(t *testing.T) {
+	const templateLiteral = "debug(`springboard.js loaded: ${chrome.runtime.id}`);\n"
+	const backtickSubstitution = "USER=`whoami`\n"
+
+	cases := []struct {
+		name    string
+		path    string
+		content string
+		want    int
+	}{
+		{"js template literal", "springboard.js", templateLiteral, 0},
+		{"ts template literal", "src/app.ts", templateLiteral, 0},
+		{"markdown code span", "README.md", "Run `make test` first.\n", 0},
+		{"shell script", "scripts/deploy.sh", backtickSubstitution, 1},
+		{"workflow yaml", ".github/workflows/ci.yml", "    run: " + backtickSubstitution, 1},
+		{"dockerfile", "Dockerfile", "RUN " + backtickSubstitution, 1},
+		{"dockerfile variant", "Dockerfile.dev", "RUN " + backtickSubstitution, 1},
+		{"makefile", "Makefile", "\t" + backtickSubstitution, 1},
+		{"extensionless bash shebang", "bin/deploy", "#!/usr/bin/env bash\n" + backtickSubstitution, 1},
+		{"extensionless sh shebang", "bin/deploy", "#!/bin/sh\n" + backtickSubstitution, 1},
+		{"extensionless node shebang", "bin/tool", "#!/usr/bin/env node\n" + templateLiteral, 0},
+		{"extensionless without shebang", "NOTES", backtickSubstitution, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countRule(t, tc.path, tc.content, "sink/shell_backtick"); got != tc.want {
+				t.Errorf("sink/shell_backtick findings = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPatternScanner_PythonSinkScope(t *testing.T) {
+	const osSystem = "os.system(cmd)\n"
+
+	cases := []struct {
+		name    string
+		path    string
+		content string
+		want    int
+	}{
+		{"python module", "tasks.py", osSystem, 1},
+		{"python stub", "tasks.pyi", osSystem, 1},
+		{"extensionless python shebang", "bin/task", "#!/usr/bin/env python3.12\n" + osSystem, 1},
+		{"markdown prose", "docs/runbook.md", "Legacy code called " + osSystem, 0},
+		{"plain text", "notes.txt", osSystem, 0},
+		{"json fixture", "fixture.json", "{\"snippet\": \"os.system(cmd)\"}\n", 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countRule(t, tc.path, tc.content, "sink/python_os_system"); got != tc.want {
+				t.Errorf("sink/python_os_system findings = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPatternScanner_FunctionConstructorScope(t *testing.T) {
+	const fnCtor = "const fn = new Function('return 1');\n"
+
+	if got := countRule(t, "app.mjs", fnCtor, "sink/js_function_constructor"); got != 1 {
+		t.Errorf(".mjs findings = %d, want 1", got)
+	}
+	if got := countRule(t, "notes.md", fnCtor, "sink/js_function_constructor"); got != 0 {
+		t.Errorf(".md findings = %d, want 0", got)
+	}
+}
+
+// Secret rules carry no scope: a hardcoded credential is a finding in
+// any file, including one whose extension the scanner does not know.
+func TestPatternScanner_SecretRulesIgnoreFileType(t *testing.T) {
+	const key = "key = 'sk-ant-1234567890abcdef'\n"
+
+	for _, path := range []string{"vault.unknownext", "LICENSE", "config.js", ".env", "a.b.c.qqq"} {
+		t.Run(path, func(t *testing.T) {
+			res, err := NewPatternScanner().Scan(context.Background(), path, []byte(key))
+			if err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			if !res.HasBlocking() {
+				t.Errorf("expected a blocking secret finding for %q, got: %+v", path, res.Findings)
+			}
+		})
+	}
+}
+
+func TestShebangInterpreter(t *testing.T) {
+	cases := []struct {
+		content string
+		want    string
+	}{
+		{"#!/bin/bash\n", "bash"},
+		{"#!/usr/bin/env bash\n", "bash"},
+		{"#!/usr/bin/env -S python3 -u\n", "python3"},
+		{"#!/usr/bin/env FOO=1 node\n", "node"},
+		{"#!/bin/sh -e\n", "sh"},
+		{"#!/usr/bin/env\n", ""},
+		{"#!", ""},
+		{"echo hi\n", ""},
+		{"", ""},
+	}
+
+	for _, tc := range cases {
+		if got := shebangInterpreter([]byte(tc.content)); got != tc.want {
+			t.Errorf("shebangInterpreter(%q) = %q, want %q", tc.content, got, tc.want)
+		}
+	}
+}
+
+func TestMatchesInterpreter(t *testing.T) {
+	names := []string{"sh", "bash", "python"}
+	cases := []struct {
+		interp string
+		want   bool
+	}{
+		{"sh", true},
+		{"bash", true},
+		{"python3", true},
+		{"python3.12", true},
+		{"shellcheck", false},
+		{"pythonista", false},
+		{"node", false},
+	}
+
+	for _, tc := range cases {
+		if got := matchesInterpreter(tc.interp, names); got != tc.want {
+			t.Errorf("matchesInterpreter(%q) = %v, want %v", tc.interp, got, tc.want)
+		}
+	}
+}

@@ -241,6 +241,37 @@ func TestScannedStrategy_WarnOnEvalSink_AppliesAndEmits(t *testing.T) {
 	}
 }
 
+// A JavaScript template literal is not shell command substitution, so
+// the edit pipeline must apply it without emitting a scan warning.
+func TestScannedStrategy_JavaScriptTemplateLiteral_NoWarning(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "springboard.js", "const x = 1;\n")
+
+	emitter := &recordingEmitter{}
+	scanner := codescanner.NewPatternScanner()
+	strat := NewScannedStrategy(NewWholeFileStrategy(), scanner, &types.CodeScannerConfig{Type: "patterns"}, emitter)
+
+	newContent := "debug(`springboard.js loaded: ${chrome.runtime.id}`);\n"
+	input, _ := json.Marshal(struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: "springboard.js", Content: newContent})
+
+	result, err := strat.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("expected Applied=true, got error: %s", result.Error)
+	}
+	for _, ev := range emitter.snapshot() {
+		if ev.event == "code_scan_warning" {
+			t.Errorf("unexpected code_scan_warning: %+v", ev)
+		}
+	}
+}
+
 func TestScannedStrategy_BlockOnWarn_PromotesAndRollsBack(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
