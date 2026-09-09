@@ -83,14 +83,18 @@ below).
 
 Two operator-visible gaps follow from the 24h wait window:
 
-**Budget overrun gap.** `MaxCostBudget` is enforced in the agentic
-loop *after* a batch turn completes. A single batch turn can return
-tokens that push the run's running cost over budget by one turn's
+**Budget overrun gap.** `MaxTokenBudget` is checked at the top of
+each loop turn, i.e. *after* a batch turn completes. A single batch
+turn can return tokens that push the run over budget by one turn's
 worth before the loop catches it. The shortfall is bounded by one
 turn's tokens, but it is not zero — operators sizing
-`MaxCostBudget` for a batch run should leave headroom for the most
+`MaxTokenBudget` for a batch run should leave headroom for the most
 expensive single response the model can produce, not the run-average
-turn cost.
+turn cost. `MaxCostBudget` provides no cover here at all: it is
+accepted and bounded but never enforced (see
+[Limits and budgets](configuration.md#limits-and-budgets)), so a
+batch run's spend is capped only by `MaxTokenBudget`, `MaxTurns`, and
+whatever the control plane enforces.
 
 **Long-lived credential exposure.** A 24h batch wait keeps the
 provider's API credentials live in memory for 24h, against ~120s for

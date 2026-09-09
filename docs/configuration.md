@@ -1281,7 +1281,7 @@ be unbounded:
 | `timeout` | 3600 s |
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
-| `maxCostBudget` | $100 |
+| `maxCostBudget` | $100 (not enforced — see below) |
 | `temperature` | `0.0` ≤ `t` ≤ `2.0` |
 | `hooks.preRun` / `hooks.postRun` | 32 hooks per phase |
 | `hooks[].command` | 16 KB |
@@ -1289,6 +1289,30 @@ be unbounded:
 | sum of `hooks.postRun[].timeoutSeconds` | 1800 s (30 min) |
 
 Read-only modes additionally require the tool list to be set.
+
+`maxTokenBudget` is the only budget the harness enforces. It is
+checked between provider calls and terminates the run with
+`outcome: "budget_exceeded"`.
+
+`maxCostBudget` is **accepted and bounded but not enforced**. The
+harness carries no per-model price table, computes no cost, and never
+terminates a run because of this field; `RunTrace.cost_usd` on the gRPC
+wire is unpopulated for the same reason. Setting the field logs a
+warning at config validation:
+
+```
+WARN maxCostBudget is accepted and bounded but not enforced: the harness
+computes no cost, so no run terminates on this budget; cap spend in the
+control plane from provider billing data maxCostBudget=25.5
+```
+
+The field stays on the schema so existing control-plane callers are not
+broken by an unknown-field rejection. Spend limits belong upstream,
+enforced from provider billing data; `maxTokenBudget` is the harness-side
+proxy for the same intent. Enforcing a cost budget in the harness would
+mean owning a versioned price table plus defined behaviour for unknown
+models, dynamic routing, cached tokens, and reasoning tokens — a wrong
+cost cap is worse than an absent one.
 
 `temperature` accepts the union of provider-side ranges (Anthropic
 `[0, 1]`, OpenAI / Gemini `[0, 2]`). A value inside the union may

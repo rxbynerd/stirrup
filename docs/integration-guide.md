@@ -531,8 +531,10 @@ hard — or different providers per mode.
   the run with `outcome: "budget_exceeded"`; wall-clock expiry yields
   `timeout`. Ceilings are 50 M tokens and 3600 s.
 - `maxCostBudget` is accepted and capped at $100, but the harness does
-  not currently calculate cost or enforce that budget. Enforce money
-  limits in the control plane using provider billing/pricing data.
+  not currently calculate cost or enforce that budget; setting it logs a
+  WARN at config validation. `RunTrace.cost_usd` is unpopulated for the
+  same reason. Enforce money limits in the control plane using provider
+  billing/pricing data.
 - `contextStrategy` bounds the conversation itself:
   `sliding-window` (default), `summarise`, or `offload-to-file`.
 - Pair `timeout` with an infrastructure-level deadline
