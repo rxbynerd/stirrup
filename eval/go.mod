@@ -3,7 +3,7 @@ module github.com/rxbynerd/stirrup/eval
 go 1.27.1
 
 require (
-	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/rxbynerd/stirrup/types v0.0.0
 	github.com/zclconf/go-cty v1.19.0
 )
