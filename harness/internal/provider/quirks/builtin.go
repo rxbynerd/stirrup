@@ -419,5 +419,19 @@ func BuiltinRules() []Rule {
 				)
 			},
 		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.8*",
+			Description:  "Gemini 3.8: tool results on role:\"user\" (role:\"function\" is a 400 on the AI Studio surface); omit deprecated sampling params; thinkingLevel low/medium/high (minimal is a 400 on Vertex and AI Studio alike)",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"low", "medium", "high",
+				)
+			},
+		},
 	}
 }
