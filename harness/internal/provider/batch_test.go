@@ -1968,3 +1968,29 @@ func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
 		}
 	}
 }
+
+// TestBatchAdapter_marshalRequestBody_AnthropicEffort pins that the batch
+// path applies the same effort allow-list as Stream: a supported level is
+// projected onto output_config and an unsupported one fails at marshal
+// time rather than as a per-item batch error hours later.
+func TestBatchAdapter_marshalRequestBody_AnthropicEffort(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	params := types.StreamParams{
+		Model:           "claude-sonnet-5-5",
+		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens:       256,
+		ReasoningEffort: "high",
+	}
+	body, err := a.marshalRequestBody(params)
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	if !strings.Contains(string(body), `"output_config":{"effort":"high"}`) {
+		t.Errorf("batch body missing output_config.effort: %s", body)
+	}
+
+	params.ReasoningEffort = "minimal"
+	if _, err := a.marshalRequestBody(params); err == nil {
+		t.Error("marshalRequestBody accepted reasoningEffort \"minimal\" for claude-sonnet-5-5, want error")
+	}
+}

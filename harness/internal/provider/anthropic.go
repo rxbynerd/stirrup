@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,7 +113,14 @@ type anthropicRequest struct {
 	// the field (the zero-value ToolChoiceAuto path). Populated only when
 	// the resolved quirks advertise native support for the requested mode.
 	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
-	Stream     bool                 `json:"stream"`
+	// OutputConfig carries output_config.effort. Nil omits the key, which
+	// is required for models with no effort control (they 400 on it).
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	Stream       bool                   `json:"stream"`
+}
+
+type anthropicOutputConfig struct {
+	Effort string `json:"effort"`
 }
 
 // anthropicToolChoice is the Anthropic Messages API tool_choice object.
@@ -393,17 +401,37 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 
 		temperature = nil
 	}
+	var outputConfig *anthropicOutputConfig
+	if level := strings.ToLower(params.ReasoningEffort); level != "" && slices.Contains(q.BehaviourFlags.Anthropic.EffortLevels, level) {
+		outputConfig = &anthropicOutputConfig{Effort: level}
+	}
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   params.System,
 		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
 
-		Tools:       translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
-		MaxTokens:   params.MaxTokens,
-		Temperature: temperature,
-		ToolChoice:  applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
-		Stream:      stream,
+		Tools:        translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
+		MaxTokens:    params.MaxTokens,
+		Temperature:  temperature,
+		ToolChoice:   applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
+		OutputConfig: outputConfig,
+		Stream:       stream,
 	}
+}
+
+// validateAnthropicEffort rejects a configured reasoningEffort the resolved
+// model does not accept, before any wire bytes are sent. An empty
+// allow-list means the model has no probed effort control; the level is
+// then dropped by buildAnthropicRequest rather than rejected, so one
+// RunConfig stays portable across Claude generations.
+func validateAnthropicEffort(level, model string, q quirks.ProviderQuirks) error {
+	allowed := q.BehaviourFlags.Anthropic.EffortLevels
+	if level == "" || len(allowed) == 0 || slices.Contains(allowed, strings.ToLower(level)) {
+		return nil
+	}
+	return fmt.Errorf(
+		"anthropic: reasoningEffort %q is not supported by model %q (supported: %s)",
+		level, model, strings.Join(allowed, ", "))
 }
 
 // Stream sends a streaming request to the Anthropic Messages API and returns
@@ -452,6 +480,11 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 			slog.String("provider.model", params.Model),
 			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
 		)
+	}
+
+	if err := validateAnthropicEffort(params.ReasoningEffort, params.Model, q); err != nil {
+		a.recordLatency(ctx, start, metricAttrs)
+		return nil, err
 	}
 
 	reqBody := buildAnthropicRequest(params, true, q)

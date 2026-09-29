@@ -31,3 +31,11 @@ func removeFromOmit(q *ProviderQuirks, name string) {
 	}
 	q.OmitFields = out
 }
+
+// applyAnthropicAdaptiveClass covers the Claude generations that both
+// reject a non-default temperature and accept every output_config.effort
+// level from low to max.
+func applyAnthropicAdaptiveClass(q *ProviderQuirks) {
+	applyAnthropicNoSamplingParamsClass(q)
+	q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+}

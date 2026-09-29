@@ -55,6 +55,9 @@ func TestResolveEmptyRegistry(t *testing.T) {
 			SchemaUnsupportedFeatures: []string{},
 			ThinkingLevels:            []string{},
 		},
+		Anthropic: AnthropicBehaviourFlags{
+			EffortLevels: []string{},
+		},
 	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {
 		t.Errorf("BehaviourFlags = %+v, want %+v", q.BehaviourFlags, want)
@@ -564,7 +567,11 @@ func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 		"claude-opus-4-7",
 		"claude-opus-4-8",
 		"claude-sonnet-5",
+		"claude-sonnet-5-5",
+		"claude-opus-5",
+		"claude-opus-5-5",
 		"claude-fable-5",
+		"claude-fable-5-1",
 		"claude-mythos-5",
 	}
 	for _, model := range omits {
@@ -596,6 +603,42 @@ func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 	}
 }
 
+// TestAnthropicEffortLevels pins the per-model output_config.effort
+// allow-lists. An empty list is load-bearing: Haiku 4.5 and Sonnet 4.5
+// return HTTP 400 on the effort key itself, so those models must resolve
+// to "send nothing" rather than to a guessed list.
+func TestAnthropicEffortLevels(t *testing.T) {
+	full := []string{"low", "medium", "high", "xhigh", "max"}
+	cases := []struct {
+		model string
+		want  []string
+	}{
+		{"claude-haiku-4-5-20251001", []string{}},
+		{"claude-sonnet-4-5-20250929", []string{}},
+		{"claude-opus-4-5-20251101", []string{"low", "medium", "high"}},
+		{"claude-opus-4-6", []string{"low", "medium", "high", "max"}},
+		{"claude-sonnet-4-6", []string{"low", "medium", "high", "max"}},
+		{"claude-opus-4-7", full},
+		{"claude-opus-4-8", full},
+		{"claude-sonnet-5", full},
+		{"claude-sonnet-5-5", full},
+		{"claude-opus-5", full},
+		{"claude-opus-5-5", full},
+		{"claude-fable-5", full},
+		{"claude-fable-5-1", full},
+		// Unprobed: keeps the send-nothing default.
+		{"claude-mythos-5", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			got := DefaultRegistry().Resolve("anthropic", tc.model).BehaviourFlags.Anthropic.EffortLevels
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("EffortLevels = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities pins that
 // the claude-*-glob OmitSamplingParams rules, which resolve after the
 // pre-existing "anthropic / *" capability rules, do not clobber
@@ -607,7 +650,9 @@ func TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities(t *testing.
 		"claude-opus-4-7",
 		"claude-opus-4-8",
 		"claude-sonnet-5",
-		"claude-fable-5",
+		"claude-sonnet-5-5",
+		"claude-opus-5-5",
+		"claude-fable-5-1",
 		"claude-mythos-5",
 	} {
 		t.Run(model, func(t *testing.T) {

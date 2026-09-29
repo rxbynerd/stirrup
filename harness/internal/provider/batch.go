@@ -241,6 +241,9 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("anthropic", params.Model)
+		if err := validateAnthropicEffort(params.ReasoningEffort, params.Model, q); err != nil {
+			return nil, err
+		}
 		return json.Marshal(buildAnthropicRequest(params, false, q))
 	case "openai-compatible":
 		registry := a.Registry

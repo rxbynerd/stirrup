@@ -88,6 +88,9 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 				SchemaUnsupportedFeatures: []string{},
 				ThinkingLevels:            []string{},
 			},
+			Anthropic: AnthropicBehaviourFlags{
+				EffortLevels: []string{},
+			},
 		},
 	}
 	if r == nil {

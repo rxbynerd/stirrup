@@ -100,6 +100,14 @@ type AnthropicBehaviourFlags struct {
 	// outright with an HTTP 400: see docs/provider-quirks.md for the
 	// affected model list.
 	OmitSamplingParams bool `json:"omitSamplingParams"`
+
+	// EffortLevels is the allow-list of output_config.effort values the
+	// resolved model accepts. Empty (the default) means the model has no
+	// probed effort control and the adapter sends no output_config at all,
+	// because models without one reject the key outright. Non-empty means
+	// a configured reasoningEffort outside the list fails before any wire
+	// bytes are sent.
+	EffortLevels []string `json:"effortLevels"`
 }
 
 // OpenAIBehaviourFlags covers behaviour divergences in openai-compatible

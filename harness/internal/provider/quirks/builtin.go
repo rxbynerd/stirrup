@@ -312,33 +312,70 @@ func BuiltinRules() []Rule {
 			},
 		},
 
+		// Effort allow-lists are per-model: output_config.effort is a 400 on
+		// Haiku 4.5 and Sonnet 4.5, Opus 4.5 stops at high, and the 4.6
+		// generation accepts max but not xhigh.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-5*",
+			Description:  "Anthropic Claude Opus 4.5: output_config.effort low/medium/high",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high"}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-6*",
+			Description:  "Anthropic Claude Opus 4.6: output_config.effort low/medium/high/max",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high", "max"}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-4-6*",
+			Description:  "Anthropic Claude Sonnet 4.6: output_config.effort low/medium/high/max",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high", "max"}
+			},
+		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-7*",
-			Description:  "Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-8*",
-			Description:  "Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-sonnet-5*",
-			Description:  "Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Sonnet 5 / 5.5: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-5*",
+			Description:  "Anthropic Claude Opus 5 / 5.5: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-fable-5*",
-			Description:  "Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Fable 5 / 5.1: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",

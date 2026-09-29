@@ -307,3 +307,75 @@ func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
 		t.Errorf("builder output contains the signature value %q.\nbody = %s", sig, body)
 	}
 }
+
+// TestBuildAnthropicRequest_Effort pins the output_config.effort
+// projection: emitted only when the resolved model advertises the level,
+// and never for a model with an empty allow-list (Haiku 4.5 rejects the
+// key outright).
+func TestBuildAnthropicRequest_Effort(t *testing.T) {
+	cases := []struct {
+		model      string
+		effort     string
+		wantSubstr string // empty means "no output_config field"
+	}{
+		{"claude-opus-5-5", "high", `"output_config":{"effort":"high"}`},
+		{"claude-sonnet-5-5", "low", `"output_config":{"effort":"low"}`},
+		{"claude-fable-5-1", "MEDIUM", `"output_config":{"effort":"medium"}`},
+		{"claude-opus-4-6", "high", `"output_config":{"effort":"high"}`},
+		{"claude-opus-5-5", "", ""},
+		{"claude-haiku-4-5-20251001", "high", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			params := types.StreamParams{
+				Model:           tc.model,
+				MaxTokens:       256,
+				ReasoningEffort: tc.effort,
+				Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+			}
+			q := quirks.DefaultRegistry().Resolve("anthropic", tc.model)
+			body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.wantSubstr == "" {
+				if strings.Contains(string(body), "output_config") {
+					t.Errorf("expected no output_config field, got body: %s", body)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.wantSubstr) {
+				t.Errorf("expected %s in body, got: %s", tc.wantSubstr, body)
+			}
+		})
+	}
+}
+
+// TestAnthropicStream_RejectsUnsupportedEffortBeforeSend pins the
+// fail-closed path: a level outside the model's allow-list is a config
+// error returned from Stream, and no request reaches the API. "minimal"
+// is the provider-neutral level no Claude model accepts.
+func TestAnthropicStream_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:           "claude-opus-5-5",
+		MaxTokens:       256,
+		ReasoningEffort: "minimal",
+		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `reasoningEffort "minimal" is not supported`) {
+		t.Fatalf("Stream() error = %v, want unsupported-effort error", err)
+	}
+	if hits != 0 {
+		t.Errorf("server received %d requests, want 0", hits)
+	}
+}
