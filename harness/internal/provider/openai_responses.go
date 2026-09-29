@@ -109,6 +109,9 @@ type responsesRequest struct {
 	// shared with the Chat Completions API. A nil pointer omits the key;
 	// buildResponsesRequest sets it only when requested and supported.
 	ParallelToolCalls *bool `json:"-"`
+	// ReasoningEffort is the wire value for reasoning.effort. Empty omits
+	// the reasoning object.
+	ReasoningEffort string `json:"-"`
 
 	// TokenField / StoreMode / InputItemShape carry the resolved Responses
 	// quirks for this request and steer MarshalJSON; none is serialised under
@@ -123,8 +126,8 @@ type responsesRequest struct {
 // MarshalJSON projects the canonical responsesRequest into the Responses
 // wire body the resolved quirks selected. Keys are emitted in the exact
 // order the prior struct-tag marshalling produced — model, instructions,
-// input, tools, <token key>, temperature, stream, store, parallel_tool_calls
-// — so the body is byte-identical to the pre-quirks shape; the projection
+// input, tools, <token key>, temperature, stream, store, parallel_tool_calls,
+// reasoning — so the body is byte-identical to the pre-quirks shape; the projection
 // merely moves the key-selection decisions (token-budget key, store field)
 // out of static struct tags and behind the resolved behaviour flags.
 //
@@ -140,6 +143,7 @@ type responsesRequest struct {
 //   - "stream" — omitted when false.
 //   - "store" — always emitted; StoreMode selects the value (false today).
 //   - "parallel_tool_calls" — omitted when nil.
+//   - "reasoning" — {"effort": ...}; omitted when ReasoningEffort is empty.
 func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	if r.InputItemShape != quirks.TypedInputItems {
 		return nil, fmt.Errorf("responsesRequest: unsupported input-item shape %v", r.InputItemShape)
@@ -224,6 +228,13 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 	}
+
+	if r.ReasoningEffort != "" {
+		first = writeKey(first, "reasoning")
+		if err := writeRaw(map[string]string{"effort": r.ReasoningEffort}); err != nil {
+			return nil, err
+		}
+	}
 	_ = first
 
 	buf.WriteByte('}')
@@ -297,6 +308,15 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("responsesRequest.parallel_tool_calls: %w", err)
 		}
 		r.ParallelToolCalls = &b
+	}
+	if v, ok := raw["reasoning"]; ok {
+		var reasoning struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.Unmarshal(v, &reasoning); err != nil {
+			return fmt.Errorf("responsesRequest.reasoning: %w", err)
+		}
+		r.ReasoningEffort = reasoning.Effort
 	}
 	return nil
 }
@@ -688,14 +708,19 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if err != nil {
 		return responsesRequest{}, err
 	}
+	temperature := params.Temperature
+	if q.BehaviourFlags.OpenAIResponses.OmitSamplingParams {
+		temperature = nil
+	}
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
 		Input:             translateMessagesResponses(params.Messages),
 		Tools:             tools,
 		MaxTokens:         params.MaxTokens,
-		Temperature:       params.Temperature,
+		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
+		ReasoningEffort:   projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels),
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
@@ -755,6 +780,19 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 			slog.String("provider.model", params.Model),
 			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
 		)
+	}
+
+	if q.BehaviourFlags.OpenAIResponses.OmitSamplingParams && params.Temperature != nil {
+		logger.WarnContext(ctx, "openai-responses quirks suppressed caller temperature",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
+	if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
 	}
 
 	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas)

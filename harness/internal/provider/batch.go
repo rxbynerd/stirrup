@@ -241,7 +241,7 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("anthropic", params.Model)
-		if err := validateAnthropicEffort(params.ReasoningEffort, params.Model, q); err != nil {
+		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
 			return nil, err
 		}
 		return json.Marshal(buildAnthropicRequest(params, false, q))
@@ -251,6 +251,9 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-compatible", params.Model)
+		if err := checkOpenAIRequestSupported(params, q); err != nil {
+			return nil, err
+		}
 		// Pass nil cache: a batch submission is rare enough that the
 		// per-tool normaliser walk cost is negligible.
 		req, err := buildOpenAIRequest(params, false, q, nil)
@@ -264,6 +267,9 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-responses", params.Model)
+		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
+			return nil, err
+		}
 		req, err := buildResponsesRequest(params, q, nil)
 		if err != nil {
 			return nil, err

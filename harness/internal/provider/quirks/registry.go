@@ -82,7 +82,11 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 		ReplayFields:   []string{},
 		BehaviourFlags: ProviderBehaviourFlags{
 			OpenAI: OpenAIBehaviourFlags{
-				ExtraBodyFields: map[string]any{},
+				ExtraBodyFields:       map[string]any{},
+				ReasoningEffortLevels: []string{},
+			},
+			OpenAIResponses: OpenAIResponsesBehaviourFlags{
+				ReasoningEffortLevels: []string{},
 			},
 			Gemini: GeminiBehaviourFlags{
 				SchemaUnsupportedFeatures: []string{},

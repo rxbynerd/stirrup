@@ -143,6 +143,18 @@ type OpenAIBehaviourFlags struct {
 	// containing a construct that cannot be expressed in strict form fails
 	// the request before any wire bytes are sent.
 	StrictMode bool `json:"strictMode"`
+
+	// ReasoningEffortLevels is the allow-list of top-level reasoning_effort
+	// values the resolved model accepts. Empty (the default) sends no
+	// reasoning_effort, since non-reasoning models reject the key; a
+	// configured level outside a non-empty list fails before any wire bytes
+	// are sent.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
+
+	// ToolsRequireResponses marks models whose Chat Completions surface
+	// cannot call tools. A request carrying tools fails before any wire
+	// bytes are sent, naming the openai-responses provider as the fix.
+	ToolsRequireResponses bool `json:"toolsRequireResponses"`
 }
 
 // OpenAITokenField controls which JSON key carries the token budget in an
@@ -209,6 +221,16 @@ type OpenAIResponsesBehaviourFlags struct {
 	// discriminated-union shape with per-variant wire structs. No
 	// alternative shape ships in v1.
 	InputItemShape OpenAIResponsesInputShape `json:"inputItemShape"`
+
+	// OmitSamplingParams, when true, forces "temperature" out of the
+	// request body even when StreamParams.Temperature is non-nil. Reasoning
+	// models reject sampling params whenever reasoning is active.
+	OmitSamplingParams bool `json:"omitSamplingParams"`
+
+	// ReasoningEffortLevels is the allow-list of reasoning.effort values the
+	// resolved model accepts, with the same empty-means-omit and
+	// fail-before-send semantics as OpenAIBehaviourFlags.ReasoningEffortLevels.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
 }
 
 // OpenAIResponsesTokenField controls which JSON key carries the token

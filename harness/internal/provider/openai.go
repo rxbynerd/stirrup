@@ -148,6 +148,9 @@ type openaiRequest struct {
 	// "parallel_tool_calls" bool. A nil pointer omits the field; steers
 	// MarshalJSON only.
 	ParallelToolCalls *bool
+	// ReasoningEffort is the wire value for the top-level
+	// "reasoning_effort" field. Empty omits it.
+	ReasoningEffort string
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body the
@@ -179,6 +182,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	if !r.OmitSamplingParams && r.Temperature != nil {
 		out["temperature"] = *r.Temperature
+	}
+	if r.ReasoningEffort != "" {
+		out["reasoning_effort"] = r.ReasoningEffort
 	}
 	for k, v := range r.ExtraBodyFields {
 		if _, exists := out[k]; exists {
@@ -258,6 +264,12 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		}
 		r.ParallelToolCalls = &b
 		delete(raw, "parallel_tool_calls")
+	}
+	if v, ok := raw["reasoning_effort"]; ok {
+		if err := json.Unmarshal(v, &r.ReasoningEffort); err != nil {
+			return fmt.Errorf("openaiRequest.reasoning_effort: %w", err)
+		}
+		delete(raw, "reasoning_effort")
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
@@ -457,6 +469,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"stream":                {},
 	"stream_options":        {},
 	"parallel_tool_calls":   {},
+	"reasoning_effort":      {},
 }
 
 // isCanonicalOpenAIField gates ExtraBodyFields merges to prevent a rule
@@ -952,7 +965,17 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
 		ToolChoice:         openAIToolChoiceFromParams(params, q.ToolChoice),
 		ParallelToolCalls:  openAIParallelFromParams(params, q.ParallelToolCalls),
+		ReasoningEffort:    projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAI.ReasoningEffortLevels),
 	}, nil
+}
+
+// checkOpenAIRequestSupported rejects a request the resolved model cannot
+// serve on Chat Completions, before any wire bytes are sent.
+func checkOpenAIRequestSupported(params types.StreamParams, q quirks.ProviderQuirks) error {
+	if q.BehaviourFlags.OpenAI.ToolsRequireResponses && len(params.Tools) > 0 {
+		return fmt.Errorf("openai-compatible: model %q cannot call tools on Chat Completions; use provider type \"openai-responses\"", params.Model)
+	}
+	return validateReasoningEffort("openai-compatible", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 }
 
 // Stream sends a streaming request to the OpenAI Chat Completions API and
@@ -1010,6 +1033,11 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 			slog.String("provider.model", params.Model),
 			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
 		)
+	}
+
+	if err := checkOpenAIRequestSupported(params, q); err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
 	}
 
 	reqBody, err := buildOpenAIRequest(params, true, q, o.strictSchemas)

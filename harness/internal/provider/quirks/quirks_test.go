@@ -49,7 +49,11 @@ func TestResolveEmptyRegistry(t *testing.T) {
 	}
 	want := ProviderBehaviourFlags{
 		OpenAI: OpenAIBehaviourFlags{
-			ExtraBodyFields: map[string]any{},
+			ExtraBodyFields:       map[string]any{},
+			ReasoningEffortLevels: []string{},
+		},
+		OpenAIResponses: OpenAIResponsesBehaviourFlags{
+			ReasoningEffortLevels: []string{},
 		},
 		Gemini: GeminiBehaviourFlags{
 			SchemaUnsupportedFeatures: []string{},
@@ -816,8 +820,9 @@ func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
 	// adapter falls through to today's byte-identical behaviour even when
 	// the registry is empty for the (provider, model) pair.
 	empty := NewRegistry(nil).Resolve("openai-responses", "gpt-4o")
-	if empty.BehaviourFlags.OpenAIResponses != (OpenAIResponsesBehaviourFlags{}) {
-		t.Errorf("empty registry: OpenAIResponses = %+v, want zero value", empty.BehaviourFlags.OpenAIResponses)
+	wantEmpty := OpenAIResponsesBehaviourFlags{ReasoningEffortLevels: []string{}}
+	if !reflect.DeepEqual(empty.BehaviourFlags.OpenAIResponses, wantEmpty) {
+		t.Errorf("empty registry: OpenAIResponses = %+v, want %+v", empty.BehaviourFlags.OpenAIResponses, wantEmpty)
 	}
 }
 

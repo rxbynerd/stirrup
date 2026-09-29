@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -402,8 +401,8 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		temperature = nil
 	}
 	var outputConfig *anthropicOutputConfig
-	if level := strings.ToLower(params.ReasoningEffort); level != "" && slices.Contains(q.BehaviourFlags.Anthropic.EffortLevels, level) {
-		outputConfig = &anthropicOutputConfig{Effort: level}
+	if effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.Anthropic.EffortLevels); effort != "" {
+		outputConfig = &anthropicOutputConfig{Effort: effort}
 	}
 	return anthropicRequest{
 		Model:    params.Model,
@@ -417,21 +416,6 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		OutputConfig: outputConfig,
 		Stream:       stream,
 	}
-}
-
-// validateAnthropicEffort rejects a configured reasoningEffort the resolved
-// model does not accept, before any wire bytes are sent. An empty
-// allow-list means the model has no probed effort control; the level is
-// then dropped by buildAnthropicRequest rather than rejected, so one
-// RunConfig stays portable across Claude generations.
-func validateAnthropicEffort(level, model string, q quirks.ProviderQuirks) error {
-	allowed := q.BehaviourFlags.Anthropic.EffortLevels
-	if level == "" || len(allowed) == 0 || slices.Contains(allowed, strings.ToLower(level)) {
-		return nil
-	}
-	return fmt.Errorf(
-		"anthropic: reasoningEffort %q is not supported by model %q (supported: %s)",
-		level, model, strings.Join(allowed, ", "))
 }
 
 // Stream sends a streaming request to the Anthropic Messages API and returns
@@ -482,7 +466,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		)
 	}
 
-	if err := validateAnthropicEffort(params.ReasoningEffort, params.Model, q); err != nil {
+	if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
 		a.recordLatency(ctx, start, metricAttrs)
 		return nil, err
 	}

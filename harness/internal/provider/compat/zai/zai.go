@@ -49,6 +49,19 @@ func CompatRules() []quirks.Rule {
 			Apply:        applyThinkingFamily,
 		},
 
+		// GLM-5.3 defaults reasoning_effort to max and silently maps any
+		// unlisted value to max, so the allow-list is what keeps "medium"
+		// from becoming the most expensive setting.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "glm-5.3*",
+			Description:  "Z.ai GLM-5.3: reasoning_effort low/high/max",
+			LastVerified: quirks.Date("2026-09-29"),
+			Apply: func(q *quirks.ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"low", "high", "max"}
+			},
+		},
+
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "z-ai/glm-*",

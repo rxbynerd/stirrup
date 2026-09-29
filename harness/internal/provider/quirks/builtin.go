@@ -29,6 +29,22 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
 			},
 		},
+		// GPT-6 tool calling is Responses-only for Astra and 6.1 Sol, and
+		// Chat-Completions-only-at-effort-none for Sol and Luna, which the
+		// harness never sends; tools on this surface are therefore rejected
+		// up front for every first-party gpt-6 id.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI gpt-6 family: omit sampling params, strict tools, reasoning_effort low..max; tools require openai-responses",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				applyOpenAIReasoningClass(q)
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAI.ToolsRequireResponses = true
+				q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
 		// The */... globs repeat the three rules above for one level of
 		// vendor prefix, the form gateways such as OpenRouter serve.
 		// path.Match's `*` does not cross `/`, so the bare globs cannot
@@ -46,6 +62,13 @@ func BuiltinRules() []Rule {
 			ModelMatch:   "*/gpt-5*",
 			Description:  "OpenAI gpt-5 family via gateway prefix: omit sampling params (reasoning-class)",
 			LastVerified: Date("2026-07-30"),
+			Apply:        applyOpenAIReasoningClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-6*",
+			Description:  "OpenAI gpt-6 family via gateway prefix: omit sampling params (reasoning-class)",
+			LastVerified: Date("2026-09-29"),
 			Apply:        applyOpenAIReasoningClass,
 		},
 		{
@@ -88,16 +111,26 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
-			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-06-07"),
+			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens, reasoning_effort (threaded)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyDeepSeekThinkingClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek-flash*",
+			Description:  "DeepSeek V4.1 Flash: replay reasoning_content, omit sampling params, legacy max_tokens, reasoning_effort (threaded)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyDeepSeekThinkingClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek/deepseek-flash*",
+			Description:  "DeepSeek V4.1 Flash via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			LastVerified: Date("2026-09-29"),
 			Apply: func(q *ProviderQuirks) {
-
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-
 				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-
 			},
 		},
 		{
@@ -309,6 +342,16 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAIResponses.TokenField = TokenFieldMaxOutputTokens
 				q.BehaviourFlags.OpenAIResponses.StoreMode = StoreFalse
 				q.BehaviourFlags.OpenAIResponses.InputItemShape = TypedInputItems
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},
 		},
 
