@@ -833,7 +833,7 @@ gateway-prefixed IDs are matched by `*/`-prefixed variants).
 
 | Tier | Members (initial) | Guidance shape |
 |---|---|---|
-| `frontier` | `claude-fable-5*`, `claude-mythos-5*`, `claude-sonnet-5*`, `claude-opus-4-8*`, `gpt-5.5*`, `gpt-5.6*` | Lean behavioural additions: act when ready, scope discipline, evidence-grounded progress claims, outcome-first summaries. |
+| `frontier` | `claude-fable-5*`, `claude-mythos-5*`, `claude-sonnet-5*`, `claude-opus-4-8*`, `claude-opus-5*`, `gpt-5.5*`, `gpt-5.6*`, `gpt-6*` | Lean behavioural additions: act when ready, treat the run as unattended, scope discipline, stop once checks pass, evidence-grounded progress claims, outcome-first summaries. |
 | `open-weight` | `gemma*`, `glm-*`, `deepseek*`, `qwen*` | Explicit process scaffolding: read/edit/test loop, invoke-don't-describe, restated output formats and stopping conditions. |
 | `default` | everything else | Base prompt only — byte-identical to the pre-templating prompts. |
 

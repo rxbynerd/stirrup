@@ -4,6 +4,7 @@ Check for the specified trigger condition. If triggered, prepare a concise brief
 You can read files, search the codebase, and fetch URLs. Use the git inspection tools — git_status, git_changed_files, git_diff, and git_show — to examine recent changes when the trigger condition concerns the working tree; they return bounded, structured output without modifying the workspace. Do not modify any files.
 {{- if eq .Tier "frontier"}}
 
+Treat the run as unattended: where the request is ambiguous, state your assumption and proceed rather than asking.
 Deliver a decisive verdict: the condition either triggered or it did not. Do not hedge between the two.
 Ground the verdict in evidence you observed in this session, and include that evidence in the briefing.
 {{- end}}

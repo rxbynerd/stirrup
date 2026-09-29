@@ -24,8 +24,10 @@ var (
 		"claude-mythos-5*",
 		"claude-sonnet-5*",
 		"claude-opus-4-8*",
+		"claude-opus-5*",
 		"gpt-5.5*",
 		"gpt-5.6*",
+		"gpt-6*",
 	)
 
 	openWeightModelGlobs = withPrefixedVariants(
