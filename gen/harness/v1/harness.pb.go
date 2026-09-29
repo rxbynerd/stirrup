@@ -786,15 +786,15 @@ type RunConfig struct {
 	// pre_run / post_run semantics.
 	Hooks *HooksConfig `protobuf:"bytes,32,opt,name=hooks,proto3" json:"hooks,omitempty"`
 	// Optional. Provider-neutral reasoning depth requested from the model:
-	// "minimal", "low", "medium", or "high". Empty says nothing on the
-	// wire and leaves the model on its provider default. Like temperature,
-	// each adapter projects it onto its native control (the Gemini adapter
-	// maps it to generationConfig.thinkingConfig.thinkingLevel) and
-	// adapters with no probed native control ignore it, so one RunConfig
-	// stays portable across providers. Per-model acceptance may be
-	// narrower than the enum (e.g. Gemini 3.7 Flash rejects "minimal");
-	// the provider quirks registry enforces that before any wire bytes
-	// are sent.
+	// "minimal", "low", "medium", "high", "xhigh", or "max". Empty says
+	// nothing on the wire and leaves the model on its provider default.
+	// Like temperature, each adapter projects it onto its native control
+	// (Gemini thinkingLevel, Anthropic output_config.effort, OpenAI
+	// reasoning effort) and models with no probed native control ignore
+	// it, so one RunConfig stays portable across providers. Per-model
+	// acceptance may be narrower than the enum (e.g. Gemini 3.7 Flash
+	// rejects "minimal"); the provider quirks registry enforces that
+	// before any wire bytes are sent.
 	ReasoningEffort string `protobuf:"bytes,33,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
 	// Optional. Destination for the run's *answer* — a small RunResult
 	// JSON payload — as distinct from the trace emitter's *evidence*.

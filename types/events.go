@@ -183,12 +183,11 @@ type StreamParams struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 
 	// ReasoningEffort requests a reasoning depth: "minimal", "low",
-	// "medium", or "high" (validated upstream by ValidateRunConfig).
-	// Empty means "say nothing on the wire". Adapters project it onto
-	// their native control where one has been probed — the Gemini
-	// adapter maps it to generationConfig.thinkingConfig.thinkingLevel,
-	// gated by the per-model quirks allow-list — and ignore it
-	// otherwise, so a config stays portable across providers.
+	// "medium", "high", "xhigh", or "max" (validated upstream by
+	// ValidateRunConfig). Empty means "say nothing on the wire". Adapters
+	// project it onto their native control, gated by the per-model quirks
+	// allow-list, and ignore it for models with no probed control, so a
+	// config stays portable across providers.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
 	// ToolChoice steers tool use for this turn. The zero value

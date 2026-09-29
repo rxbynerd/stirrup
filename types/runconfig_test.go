@@ -1038,12 +1038,12 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 }
 
 // TestValidateRunConfig_ReasoningEffort pins the closed enum on the
-// provider-neutral reasoning knob. The four accepted values are the
-// union the targeted providers express natively; a wire-format spelling
+// provider-neutral reasoning knob. The accepted values are the union
+// the targeted providers express natively; a wire-format spelling
 // like Gemini's THINKING_LEVEL_HIGH must be rejected here so an adapter
 // never has to guess which dialect a config was written in.
 func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
-	for _, v := range []string{"", "minimal", "low", "medium", "high"} {
+	for _, v := range []string{"", "minimal", "low", "medium", "high", "xhigh", "max"} {
 		t.Run("accepts/"+v, func(t *testing.T) {
 			c := validConfig()
 			c.ReasoningEffort = v

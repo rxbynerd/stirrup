@@ -178,7 +178,8 @@ func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
 // fail-before-send guard: "minimal" is a documented 400 on 3.7 Flash,
 // so the adapter must refuse to build the body rather than spend a
 // round trip discovering it. 3.6 Flash accepts the same level, and a
-// model with no probed allow-list passes anything through.
+// model with no probed allow-list passes any thinkingLevel enum member
+// through; "xhigh" and "max" have no Gemini spelling on any model.
 func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 	cases := []struct {
 		model     string
@@ -191,6 +192,10 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 		{"gemini-3.6-flash", "minimal", false},
 		{"gemini-3.1-pro-preview", "minimal", false},
 		{"gemini-unknown-future", "minimal", false},
+		{"gemini-3.8-flash", "minimal", true},
+		{"gemini-3.8-flash", "medium", false},
+		{"gemini-unknown-future", "xhigh", true},
+		{"gemini-3.1-pro-preview", "max", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
