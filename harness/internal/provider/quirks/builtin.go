@@ -112,7 +112,7 @@ func BuiltinRules() []Rule {
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
 			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens, reasoning_effort (threaded)",
-			LastVerified: Date("2026-09-29"),
+			LastVerified: Date("2026-06-07"),
 			Apply:        applyDeepSeekThinkingClass,
 		},
 		{
