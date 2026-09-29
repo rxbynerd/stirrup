@@ -794,6 +794,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, err
 	}
+	warnDroppedReasoningEffort(ctx, logger, "openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
 
 	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas)
 	if err != nil {

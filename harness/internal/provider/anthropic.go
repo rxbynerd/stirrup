@@ -470,6 +470,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		a.recordLatency(ctx, start, metricAttrs)
 		return nil, err
 	}
+	warnDroppedReasoningEffort(ctx, logger, "anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels)
 
 	reqBody := buildAnthropicRequest(params, true, q)
 

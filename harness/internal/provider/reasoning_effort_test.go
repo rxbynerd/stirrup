@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -219,5 +221,28 @@ func TestResponsesAdapter_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Errorf("server received %d requests, want 0", hits.Load())
+	}
+}
+
+func TestWarnDroppedReasoningEffort(t *testing.T) {
+	cases := []struct {
+		name    string
+		level   string
+		allowed []string
+		want    bool
+	}{
+		{"unset level", "", nil, false},
+		{"no effort control", "high", nil, true},
+		{"advertised level", "high", []string{"low", "high"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, nil))
+			warnDroppedReasoningEffort(context.Background(), logger, "anthropic", tc.level, "claude-haiku-4-5", tc.allowed)
+			if got := strings.Contains(buf.String(), "reasoningEffort ignored"); got != tc.want {
+				t.Errorf("warned = %v, want %v; log: %s", got, tc.want, buf.String())
+			}
+		})
 	}
 }

@@ -1039,6 +1039,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, err
 	}
+	warnDroppedReasoningEffort(ctx, logger, "openai-compatible", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 
 	reqBody, err := buildOpenAIRequest(params, true, q, o.strictSchemas)
 	if err != nil {

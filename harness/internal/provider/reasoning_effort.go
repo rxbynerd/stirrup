@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 )
@@ -29,4 +31,17 @@ func projectReasoningEffort(level string, allowed []string) string {
 		return ""
 	}
 	return level
+}
+
+// warnDroppedReasoningEffort logs when a configured level is omitted from
+// the wire because the model advertises no effort control.
+func warnDroppedReasoningEffort(ctx context.Context, logger *slog.Logger, providerType, level, model string, allowed []string) {
+	if level == "" || len(allowed) > 0 {
+		return
+	}
+	logger.WarnContext(ctx, "reasoningEffort ignored: model has no known effort control",
+		slog.String("provider.type", providerType),
+		slog.String("provider.model", model),
+		slog.String("reasoning_effort", level),
+	)
 }

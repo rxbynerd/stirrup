@@ -546,9 +546,9 @@ native control, gated by a per-model allow-list the rules populate:
 
 | Adapter | Wire field | Allow-list flag | Empty list |
 |---|---|---|---|
-| `anthropic` | `output_config.effort` | `Anthropic.EffortLevels` | send nothing |
-| `openai-compatible` | top-level `reasoning_effort` | `OpenAI.ReasoningEffortLevels` | send nothing |
-| `openai-responses` | `reasoning.effort` | `OpenAIResponses.ReasoningEffortLevels` | send nothing |
+| `anthropic` | `output_config.effort` | `Anthropic.EffortLevels` | send nothing, log a warning |
+| `openai-compatible` | top-level `reasoning_effort` | `OpenAI.ReasoningEffortLevels` | send nothing, log a warning |
+| `openai-responses` | `reasoning.effort` | `OpenAIResponses.ReasoningEffortLevels` | send nothing, log a warning |
 | `gemini` | `generationConfig.thinkingConfig.thinkingLevel` | `Gemini.ThinkingLevels` | pass through (`minimal`..`high` only) |
 
 A configured level outside a non-empty list fails before any wire bytes
@@ -556,7 +556,9 @@ are sent, with an error naming the accepted levels. The empty-list
 behaviour differs by provider on purpose. Claude Haiku 4.5 and Sonnet
 4.5 return a 400 on the `output_config.effort` key itself, and
 non-reasoning OpenAI-compatible models reject `reasoning_effort`, so an
-unprobed model on those adapters must not receive the key. Every Gemini 3
+unprobed model on those adapters must not receive the key; the adapter
+logs `reasoningEffort ignored: model has no known effort control` each
+turn so the omission is visible. Every Gemini 3
 model has a `thinkingLevel` control, so an unprobed Gemini model gets the
 level; `xhigh` and `max` have no Gemini spelling and are always rejected.
 
