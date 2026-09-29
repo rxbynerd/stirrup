@@ -29,14 +29,23 @@ Anthropic safety settings; the API defaults apply.
 No model-ID allowlist: `RunConfig.Model` is forwarded to the wire
 verbatim, so a newly released Claude model works with no code change
 as long as its request/response shape matches the Messages API
-contract this adapter already speaks. Claude Opus 4.7 and later, Claude
-Sonnet 5, and Claude Fable 5 / Mythos 5 reject a non-default
-`temperature` outright (HTTP 400) rather than ignoring it; since the
-harness always resolves a non-nil default temperature
-(`core.defaultTemperature = 0.1`) when `RunConfig.Temperature` is
-unset, a per-model quirk rule omits the field for those models before
-it reaches the wire — see [Per-model wire-shape
+contract this adapter already speaks. Claude Opus 4.7 and later
+(including Opus 5 and 5.5), Claude Sonnet 5 and 5.5, and Claude Fable 5
+/ 5.1 and Mythos 5 reject a non-default `temperature` outright (HTTP
+400) rather than ignoring it; since the harness always resolves a
+non-nil default temperature (`core.defaultTemperature = 0.1`) when
+`RunConfig.Temperature` is unset, a per-model quirk rule omits the field
+for those models before it reaches the wire — see [Per-model wire-shape
 quirks](#per-model-wire-shape-quirks) below.
+
+`RunConfig.reasoningEffort` maps to `output_config.effort` for the
+Claude models whose accepted levels have been probed (Opus 4.5 onward,
+Sonnet 4.6 onward, Fable 5 onward); other Claude models receive no
+effort field. Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced tool
+choice, so the harness never sends `tool_choice` `any` or `tool` to
+them. These models think by default and stream `thinking` blocks; the
+adapter drops them, and the API accepts a replayed tool-use turn
+without them.
 
 ## AWS Bedrock
 
@@ -48,6 +57,14 @@ wire format. Auth is IAM (not API key); `config.LoadDefaultConfig()`
 resolves credentials from the SDK default chain. Accepts an optional
 `aws.CredentialsProvider` for cross-cloud credential federation (e.g.
 `WebIdentityAWSSource` exchanging a GKE OIDC token for STS credentials).
+
+The Bedrock adapter does not consult the [provider quirks
+registry](provider-quirks.md): it forwards the harness default
+temperature to every model and ignores `reasoningEffort`. Anthropic
+documents that Claude Opus 4.7 onward, Sonnet 5 onward and Fable 5
+onward reject a non-default temperature on every request, so those
+models are expected to fail through Bedrock until the adapter applies
+the same rules; this has not been verified against Bedrock itself.
 
 ## OpenAI Chat Completions
 
@@ -142,9 +159,19 @@ Selected explicitly via `provider.type: "openai-responses"`. There is
 would mask configuration errors.
 
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
-`file_search`, `computer_use`, `code_interpreter`), server-side state
-via `previous_response_id`, and reasoning controls. The harness manages
-its own conversation history and does not delegate to server-side state.
+`file_search`, `computer_use`, `code_interpreter`) and server-side state
+via `previous_response_id`. The harness manages its own conversation
+history and does not delegate to server-side state; reasoning items are
+not replayed between turns. `RunConfig.reasoningEffort` maps to
+`reasoning.effort` for models whose accepted levels are known (the
+GPT-6 family).
+
+**GPT-6.** GPT-6 Astra and GPT-6.1 Sol call tools only through this
+API, and GPT-6 Sol and Luna only at `reasoning_effort: "none"` on Chat
+Completions, which the harness never sends. Agentic runs on a
+first-party `gpt-6*` id therefore need `provider.type:
+"openai-responses"`; the Chat Completions adapter rejects such a run
+before sending, with an error naming this provider type.
 
 Azure Foundry's `/openai/v1/responses` endpoint is wire-compatible:
 point `provider.baseUrl` at the Azure resource, set
@@ -264,21 +291,22 @@ See `examples/runconfig/vertex-gemini.json` and
 
 Provider/model pairs sometimes diverge from the adapter's canonical
 wire shape: OpenAI's reasoning-class models reject sampling
-parameters, the newest Claude tier (Opus 4.7+, Sonnet 5, Fable 5 /
+parameters, the newest Claude tier (Opus 4.7+, Sonnet 5+, Fable 5+ /
 Mythos 5) rejects a non-default temperature the same way, Z.ai GLM
 requires the legacy `max_tokens` key, Gemini 3.x emits a
 `thoughtSignature` blob that must survive turn boundaries, and
 DeepSeek v4's default-on thinking mode requires the
-`reasoning_content` it streams replayed back on every request after
-a tool-call turn (the API returns 400 otherwise). Rather than
+`reasoning_content` it streams replayed back for every prior assistant
+turn once tools are present (the API returns 400 otherwise). Rather than
 encoding these as adapter-internal model substring checks, the
 harness routes them through a registry-driven quirks layer at
 `harness/internal/provider/quirks/`. DeepSeek v4 runs through the
 stock Chat Completions adapter (`provider.type:
 "openai-compatible"` with `provider.baseUrl:
-"https://api.deepseek.com"`); the built-in `deepseek-v4*` and
-`deepseek/deepseek-v4*` rules supply the replay threading, sampling
-suppression, and legacy token key with no operator configuration.
+"https://api.deepseek.com"`); the built-in `deepseek-v4*`,
+`deepseek-flash*` (V4.1 Flash) and gateway-prefixed rules supply the
+replay threading, sampling suppression, and legacy token key with no
+operator configuration.
 
 Operators do not author quirk rules. Two surfaces are available:
 

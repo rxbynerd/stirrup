@@ -48,9 +48,9 @@ Concrete v1 divergences:
   fix is a registry-driven `ReplayFields` capture.
 - DeepSeek's reasoner and v4 families surface chain-of-thought
   through a `reasoning_content` sibling field on the assistant
-  delta. DeepSeek v4 thinking mode (default-on) additionally
-  *requires* the field replayed on every request after a tool-call
-  turn — the API returns 400 otherwise — so the `ReplayFields`
+  delta. DeepSeek v4 and V4.1 thinking mode (default-on) additionally
+  *requires* the field replayed for every prior assistant turn once a
+  request carries tools — the API returns 400 otherwise — so the `ReplayFields`
   capture is threaded back outbound on the openai-compatible
   adapter (see [§3.1](#31-replayfields-rules)).
 
@@ -199,9 +199,12 @@ Behaviour-flag sub-structs:
 
 ```go
 type OpenAIBehaviourFlags struct {
-    TokenField         OpenAITokenField  // max_completion_tokens (default) or max_tokens
-    OmitSamplingParams bool              // suppress temperature, top_p, penalties, log* fields
-    ExtraBodyFields    map[string]any    // gateway-specific top-level keys (Z.ai's tool_stream)
+    TokenField            OpenAITokenField // max_completion_tokens (default) or max_tokens
+    OmitSamplingParams    bool             // suppress temperature, top_p, penalties, log* fields
+    ExtraBodyFields       map[string]any   // gateway-specific top-level keys (Z.ai's tool_stream)
+    StrictMode            bool             // strict: true tools with a normalised schema
+    ReasoningEffortLevels []string         // reasoning_effort allow-list; empty sends nothing (§3.2)
+    ToolsRequireResponses bool             // a request with tools fails before send (GPT-6 on Chat Completions)
 }
 
 type GeminiBehaviourFlags struct {
@@ -215,16 +218,19 @@ type OpenAIResponsesBehaviourFlags struct {
     TokenField     OpenAIResponsesTokenField // max_output_tokens (default; distinct from Chat's keys)
     StoreMode      OpenAIResponsesStoreMode  // store_false (default): always emit explicit store:false
     InputItemShape OpenAIResponsesInputShape // typed_input_items (default): #172 + #199 discriminated union
+    OmitSamplingParams    bool               // suppress temperature (GPT-6 rejects it whenever reasoning is on)
+    ReasoningEffortLevels []string           // reasoning.effort allow-list; empty sends nothing (§3.2)
 }
 
 type AnthropicBehaviourFlags struct {
-    OmitSamplingParams bool // suppress temperature (400 on non-default value for the newest Claude tier)
+    OmitSamplingParams bool     // suppress temperature (400 on non-default value from Opus 4.7 on)
+    EffortLevels       []string // output_config.effort allow-list; empty sends nothing (§3.2)
 }
 ```
 
 `AnthropicBehaviourFlags` mirrors `OpenAIBehaviourFlags.OmitSamplingParams`
-for the one Anthropic wire divergence the harness has needed so far: Claude
-Opus 4.7+, Claude Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400
+for the Anthropic sampling divergence: Claude Opus 4.7, 4.8, 5 and 5.5,
+Claude Sonnet 5 and 5.5, and Claude Fable 5 / 5.1 and Mythos 5 return an HTTP 400
 on a non-default `temperature` rather than ignoring it, and the harness
 loop unconditionally resolves a non-nil default temperature
 (`core.defaultTemperature = 0.1`) for every provider call when
@@ -366,23 +372,35 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/o[1-9]*`        | OpenAI reasoning-class via gateway prefix (OpenRouter-style ids): same as `o[1-9]*` |
 | `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix (OpenRouter-style ids): same as `gpt-5*` |
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
+| `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
+| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
 | `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
-| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
+| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
+| `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
+| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via gateway prefix: replay, omit sampling, `max_tokens`; no `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400 on AI Studio, still accepted by Vertex); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
 | `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"` (same surface split as 3.6); omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400 on Vertex and AI Studio alike) |
+| `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
-| `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: omit sampling params; `reasoning.effort` `low`..`max` |
+| `anthropic`         | `claude-opus-4-5*` | Anthropic Claude Opus 4.5: effort `low`/`medium`/`high` |
+| `anthropic`         | `claude-opus-4-6*` | Anthropic Claude Opus 4.6: effort `low`/`medium`/`high`/`max` |
+| `anthropic`         | `claude-sonnet-4-6*` | Anthropic Claude Sonnet 4.6: effort `low`/`medium`/`high`/`max` |
+| `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p); effort `low`..`max` |
+| `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
+| `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
 
-`claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` are
-deliberately unmatched — those models still accept a non-default
-temperature. `claude-mythos-preview` (the Mythos 5 predecessor) is also
+`claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` get no
+sampling rule — those models still accept a non-default temperature — and
+`claude-haiku-4-5*` and `claude-sonnet-4-5*` get no effort rule because
+they reject the `output_config.effort` key itself. `claude-mythos-preview` (the Mythos 5 predecessor) is also
 unmatched: its sampling-param behaviour is not confirmed against a live
 capture, so a rule is added once verified rather than assumed from the
 Fable 5 family resemblance.
@@ -394,6 +412,26 @@ current snapshot, and a wider glob risks a 400 on a deployment whose
 `gpt-4o` snapshot diverges from the guide. `TestBuiltinRulesStrictMode`
 pins the negative case (bare `gpt-4o` gets no rule) so widening the
 glob is a deliberate, tested edit rather than an accidental regression.
+
+Claude Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos 5.1 reject forced tool
+choice (`tool_choice` `any` or `tool`) with an HTTP 400, while `auto`,
+`none`, and `auto` with `disable_parallel_tool_use` still work. Their rule
+narrows `ToolChoice` to `{Supported, Auto}`, which makes the missed-tool
+escalation policy pick its prompt fallback instead of forcing a tool, and
+makes the adapter emit no `tool_choice` for a forced request. Mythos 5.1 is
+covered from documentation only; the other three were probed on
+2026-09-29. Claude Opus 5, Sonnet 5, and Fable 5 still accept forced tool
+choice.
+
+GPT-6 tool calling is Responses-only for Astra and 6.1 Sol, and available
+on Chat Completions for Sol and Luna only at `reasoning_effort: "none"`,
+which the harness never sends. The first-party `gpt-6*` rule therefore
+sets `ToolsRequireResponses`, and a request with tools fails before send
+with an error naming `openai-responses`. The gateway `*/gpt-6*` rule does
+not, because a gateway may translate to the Responses API itself. The
+o-series and gpt-5 models on `openai-responses` still forward
+`temperature`: GPT-5.1 onward accept it at their default effort `none`,
+and the older models' behaviour on that surface has not been probed.
 
 The `gemini-3.6*` and `gemini-3.7*` rules sit alongside the broader
 `gemini-3*` rule rather than replacing it: glob resolution sorts by
@@ -501,6 +539,42 @@ so trace-only consumers see the rule fired without correlating
 back to slog. `TestReplayFields_DeepSeekReasoner_LogIsLengthOnly`
 pins the side-channel guard on the slog side.
 
+### 3.2 Reasoning effort
+
+`RunConfig.reasoningEffort` is projected per adapter onto the model's
+native control, gated by a per-model allow-list the rules populate:
+
+| Adapter | Wire field | Allow-list flag | Empty list |
+|---|---|---|---|
+| `anthropic` | `output_config.effort` | `Anthropic.EffortLevels` | send nothing |
+| `openai-compatible` | top-level `reasoning_effort` | `OpenAI.ReasoningEffortLevels` | send nothing |
+| `openai-responses` | `reasoning.effort` | `OpenAIResponses.ReasoningEffortLevels` | send nothing |
+| `gemini` | `generationConfig.thinkingConfig.thinkingLevel` | `Gemini.ThinkingLevels` | pass through (`minimal`..`high` only) |
+
+A configured level outside a non-empty list fails before any wire bytes
+are sent, with an error naming the accepted levels. The empty-list
+behaviour differs by provider on purpose. Claude Haiku 4.5 and Sonnet
+4.5 return a 400 on the `output_config.effort` key itself, and
+non-reasoning OpenAI-compatible models reject `reasoning_effort`, so an
+unprobed model on those adapters must not receive the key. Every Gemini 3
+model has a `thinkingLevel` control, so an unprobed Gemini model gets the
+level; `xhigh` and `max` have no Gemini spelling and are always rejected.
+
+Probed or documented acceptance as of 2026-09-29:
+
+| Models | Levels |
+|---|---|
+| Claude Opus 4.7 / 4.8 / 5 / 5.5, Sonnet 5 / 5.5, Fable 5 / 5.1 | `low` `medium` `high` `xhigh` `max` (probed) |
+| Claude Opus 4.6, Sonnet 4.6 | `low` `medium` `high` `max` (probed) |
+| Claude Opus 4.5 | `low` `medium` `high` (probed) |
+| GPT-6 Astra / Sol / 6.1 Sol / Luna | `low` `medium` `high` `xhigh` `max` (documented) |
+| DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
+| GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
+| Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
+| Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
+
+No Claude or GPT-6 model accepts `minimal`.
+
 ## 4. Composition with the NormalizingAdapter
 
 The `NormalizingAdapter` (PR #303, merged) wraps the concrete
@@ -595,7 +669,8 @@ its fields:
 |------------------|--------------------------------------------------------------|-------|
 | `glm-*`          | legacy `max_tokens`; `tool_stream: true`                     | all GLM, incl. the legacy hyphenated line (`glm-4-plus`) |
 | `glm-4.[5-9]*`   | + replay `reasoning_content`; + `thinking: {"type":"enabled"}` | GLM-4.5/4.6/4.7 thinking family; the dot excludes the hyphenated legacy line |
-| `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1 thinking family |
+| `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1/5.3 thinking family |
+| `glm-5.3*`       | + `reasoning_effort` allow-list `low`/`high`/`max`           | GLM-5.3 defaults to `max` and maps any unlisted value to `max`, so `medium` is rejected before send |
 | `z-ai/glm-*`     | legacy `max_tokens`; + replay `reasoning_content`            | OpenRouter gateway-prefixed ids (`*` does not cross `/`); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
 
 `reasoning_content` threading (the `(threaded)` ReplayFields suffix in
