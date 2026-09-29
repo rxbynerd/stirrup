@@ -385,6 +385,39 @@ func BuiltinRules() []Rule {
 			Apply:        applyAnthropicNoSamplingParamsClass,
 		},
 
+		// Forced tool choice ("any" / "tool") is a 400 from this generation
+		// on; auto and disable_parallel_tool_use still work, and the loop's
+		// missed-tool escalation falls back to a prompt nudge when Required
+		// is unadvertised.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-5-5*",
+			Description:  "Anthropic Claude Sonnet 5.5: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-5-5*",
+			Description:  "Anthropic Claude Opus 5.5: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-fable-5-1*",
+			Description:  "Anthropic Claude Fable 5.1: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-mythos-5-1*",
+			Description:  "Anthropic Claude Mythos 5.1: tool_choice auto only (same API surface as Fable 5.1; any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+
 		// The tool-result role is the one flag here not driven by a
 		// Vertex rejection: Vertex still accepts role:"function" for
 		// 3.6 and 3.7, while the AI Studio surface that shares this

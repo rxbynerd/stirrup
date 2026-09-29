@@ -379,3 +379,49 @@ func TestAnthropicStream_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
 		t.Errorf("server received %d requests, want 0", hits)
 	}
 }
+
+// TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto pins the wire
+// shape for models that reject tool_choice "any"/"tool": a forced request
+// emits no tool_choice, and a parallel-disable still rides on an auto
+// object, the one forced-choice-free shape those models accept.
+func TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto(t *testing.T) {
+	disable := false
+	cases := []struct {
+		name     string
+		choice   types.ToolChoiceMode
+		toolName string
+		parallel *bool
+		want     string // empty means "no tool_choice field"
+	}{
+		{"required", types.ToolChoiceRequired, "", nil, ""},
+		{"named tool", types.ToolChoiceTool, "read_file", nil, ""},
+		{"required with parallel disabled", types.ToolChoiceRequired, "", &disable, `"tool_choice":{"type":"auto","disable_parallel_tool_use":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := types.StreamParams{
+				Model:             "claude-sonnet-5-5",
+				MaxTokens:         256,
+				ToolChoice:        tc.choice,
+				ToolChoiceName:    tc.toolName,
+				ParallelToolCalls: tc.parallel,
+				Tools:             []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+				Messages:          []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+			}
+			q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+			body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.want == "" {
+				if strings.Contains(string(body), "tool_choice") {
+					t.Errorf("expected no tool_choice field, got body: %s", body)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.want) {
+				t.Errorf("expected %s in body, got: %s", tc.want, body)
+			}
+		})
+	}
+}

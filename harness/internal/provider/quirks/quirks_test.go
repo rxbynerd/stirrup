@@ -639,6 +639,33 @@ func TestAnthropicEffortLevels(t *testing.T) {
 	}
 }
 
+// TestAnthropicForcedToolChoiceRemoved pins the models that return HTTP
+// 400 on tool_choice "any" and "tool". They must advertise auto only so the
+// escalation policy picks its prompt fallback instead of a forced choice,
+// while the earlier 5.x models keep the full base capability.
+func TestAnthropicForcedToolChoiceRemoved(t *testing.T) {
+	autoOnly := ToolChoiceCapability{Supported: true, Auto: true}
+	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1"} {
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.ToolChoice != autoOnly {
+				t.Errorf("ToolChoice = %+v, want %+v", q.ToolChoice, autoOnly)
+			}
+			if !q.ParallelToolCalls.Disable {
+				t.Error("ParallelToolCalls.Disable = false; disable_parallel_tool_use still works with auto")
+			}
+		})
+	}
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8"} {
+		t.Run(model+" keeps forced choice", func(t *testing.T) {
+			tc := DefaultRegistry().Resolve("anthropic", model).ToolChoice
+			if !tc.Required || !tc.NamedTool {
+				t.Errorf("ToolChoice = %+v, want Required and NamedTool", tc)
+			}
+		})
+	}
+}
+
 // TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities pins that
 // the claude-*-glob OmitSamplingParams rules, which resolve after the
 // pre-existing "anthropic / *" capability rules, do not clobber
@@ -650,9 +677,8 @@ func TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities(t *testing.
 		"claude-opus-4-7",
 		"claude-opus-4-8",
 		"claude-sonnet-5",
-		"claude-sonnet-5-5",
-		"claude-opus-5-5",
-		"claude-fable-5-1",
+		"claude-opus-5",
+		"claude-fable-5",
 		"claude-mythos-5",
 	} {
 		t.Run(model, func(t *testing.T) {
