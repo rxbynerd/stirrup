@@ -626,6 +626,71 @@ func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_DebugLogsPromptCacheUsage pins the per-stream cache
+// health line: one record carrying the three usage counts when
+// message_delta reports usage, and none when it does not.
+func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
+	cases := []struct {
+		name  string
+		delta string
+		want  map[string]float64 // nil means "no record"
+	}{
+		{
+			name:  "usage reported",
+			delta: `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`,
+			want:  map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 4},
+		},
+		{
+			name:  "no usage",
+			delta: `{"delta":{"stop_reason":"end_turn"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = serveSSE(t, makeSSE("message_delta", tc.delta)+makeSSE("message_stop", `{}`)).URL
+			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 256})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			for range ch {
+			}
+
+			var records []map[string]any
+			dec := json.NewDecoder(&buf)
+			for dec.More() {
+				var rec map[string]any
+				if err := dec.Decode(&rec); err != nil {
+					t.Fatalf("decode log: %v", err)
+				}
+				if rec["msg"] == "anthropic prompt cache" {
+					records = append(records, rec)
+				}
+			}
+			if tc.want == nil {
+				if len(records) != 0 {
+					t.Errorf("got %d prompt cache records, want 0: %v", len(records), records)
+				}
+				return
+			}
+			if len(records) != 1 {
+				t.Fatalf("got %d prompt cache records, want 1: %v", len(records), records)
+			}
+			for key, want := range tc.want {
+				if got := records[0][key]; got != want {
+					t.Errorf("%s = %v, want %v", key, got, want)
+				}
+			}
+			if got := records[0]["provider.model"]; got != "claude-sonnet-5-5" {
+				t.Errorf("provider.model = %v, want claude-sonnet-5-5", got)
+			}
+		})
+	}
+}
+
 func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	// Send a content_block_delta for an index that has no content_block_start.
 	// The adapter should skip it silently — no panic, no error event.

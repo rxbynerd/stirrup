@@ -623,7 +623,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		a.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		a.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model)
 		a.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -644,7 +644,7 @@ func (a *AnthropicAdapter) recordLatency(ctx context.Context, start time.Time, a
 // streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
 // first non-empty stream event observed marks "time to first byte" for this
 // request. TTFB is recorded at most once per stream.
-func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
+func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model string) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -771,6 +771,13 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			if md.Usage != nil {
 				md.Usage.applyTo(&ev)
+				logger.DebugContext(ctx, "anthropic prompt cache",
+					slog.String("provider.type", "anthropic"),
+					slog.String("provider.model", model),
+					slog.Int("cache.read", md.Usage.CacheReadInputTokens),
+					slog.Int("cache.write", md.Usage.CacheCreationInputTokens),
+					slog.Int("input.uncached", md.Usage.InputTokens),
+				)
 			}
 			emitEvent(ev)
 
