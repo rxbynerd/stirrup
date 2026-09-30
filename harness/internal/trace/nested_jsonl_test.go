@@ -150,13 +150,13 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	child.Start("sub-run-1", cfg)
 	child.RecordTurn(types.TurnTrace{
 		Turn:       0,
-		Tokens:     types.TokenUsage{Input: 10, Output: 20},
+		Tokens:     types.TokenUsage{Input: 10, Output: 20, CacheRead: 4},
 		StopReason: "end_turn",
 		DurationMs: 5,
 	})
 	child.RecordTurn(types.TurnTrace{
 		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 30, Output: 40},
+		Tokens:     types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
 		StopReason: "end_turn",
 		DurationMs: 5,
 	})
@@ -181,8 +181,9 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	if rt.Turns != 2 {
 		t.Errorf("RunTrace.Turns: got %d, want 2", rt.Turns)
 	}
-	if rt.TokenUsage.Input != 40 || rt.TokenUsage.Output != 60 {
-		t.Errorf("RunTrace.TokenUsage: got %+v, want {40,60}", rt.TokenUsage)
+	wantTokens := types.TokenUsage{Input: 40, Output: 60, CacheRead: 10, CacheWrite: 2, Reasoning: 3}
+	if rt.TokenUsage != wantTokens {
+		t.Errorf("RunTrace.TokenUsage: got %+v, want %+v", rt.TokenUsage, wantTokens)
 	}
 	if len(rt.ToolCalls) != 1 {
 		t.Errorf("RunTrace.ToolCalls: got %d, want 1", len(rt.ToolCalls))

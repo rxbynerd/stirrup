@@ -241,24 +241,24 @@ func (l *AgenticLoop) asyncCorrelatorForTest() *transport.Correlator {
 // TokenTracker tracks cumulative token usage per run and enforces token budgets.
 // Cost estimation is a control plane concern — the harness only tracks tokens.
 type TokenTracker struct {
-	totalInputTokens  int
-	totalOutputTokens int
+	total types.TokenUsage
 }
 
 // RecordTurn records token usage for a single turn.
-func (tt *TokenTracker) RecordTurn(inputTokens, outputTokens int) {
-	tt.totalInputTokens += inputTokens
-	tt.totalOutputTokens += outputTokens
+func (tt *TokenTracker) RecordTurn(usage types.TokenUsage) {
+	tt.total.Add(usage)
 }
 
 // Tokens returns the cumulative token usage.
 func (tt *TokenTracker) Tokens() types.TokenUsage {
-	return types.TokenUsage{Input: tt.totalInputTokens, Output: tt.totalOutputTokens}
+	return tt.total
 }
 
 // CheckBudget verifies the run is within the configured token budget.
+// Cached input counts in full: the budget bounds tokens processed, not
+// cost.
 func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
-	totalTokens := tt.totalInputTokens + tt.totalOutputTokens
+	totalTokens := tt.total.Input + tt.total.Output
 	if maxTokenBudget != nil && totalTokens > *maxTokenBudget {
 		return types.BudgetCheck{
 			WithinBudget:  false,
@@ -576,14 +576,37 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 }
 
 // streamResult holds the results of consuming a model response stream.
-// ReplayFields is provider-opaque round-trip state from the message_complete
-// event, plumbed through to the persisted assistant Message without being
-// inspected or logged.
+// Usage holds only what the provider reported; a zero Usage.Input means
+// the provider reported no input figure. ReplayFields is provider-opaque
+// round-trip state from the message_complete event, plumbed through to
+// the persisted assistant Message without being inspected or logged.
 type streamResult struct {
 	Blocks       []types.ContentBlock
 	StopReason   string
-	OutputTokens int
+	Usage        types.TokenUsage
 	ReplayFields map[string]json.RawMessage
+}
+
+// mergeUsage takes each non-zero token count from a message_complete
+// event. Adapters may split usage across more than one message_complete
+// (e.g. a trailing usage-only event), so a zero never clears a count an
+// earlier event reported.
+func (r *streamResult) mergeUsage(event types.StreamEvent) {
+	if event.InputTokens > 0 {
+		r.Usage.Input = event.InputTokens
+	}
+	if event.OutputTokens > 0 {
+		r.Usage.Output = event.OutputTokens
+	}
+	if event.CacheReadTokens > 0 {
+		r.Usage.CacheRead = event.CacheReadTokens
+	}
+	if event.CacheWriteTokens > 0 {
+		r.Usage.CacheWrite = event.CacheWriteTokens
+	}
+	if event.ReasoningTokens > 0 {
+		r.Usage.Reasoning = event.ReasoningTokens
+	}
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
@@ -661,9 +684,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			if event.StopReason != "" {
 				result.StopReason = event.StopReason
 			}
-			if event.OutputTokens > 0 {
-				result.OutputTokens = event.OutputTokens
-			}
+			result.mergeUsage(event)
 			if len(event.ReplayFields) > 0 {
 				result.ReplayFields = event.ReplayFields
 			}

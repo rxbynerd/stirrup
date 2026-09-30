@@ -107,11 +107,14 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
 		Timeout:  &timeout,
 	})
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 50, Output: 25}})
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}})
 
 	tr, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
 		t.Fatalf("Finish: %v", err)
+	}
+	if want := (types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}); tr.TokenUsage != want {
+		t.Errorf("returned trace TokenUsage: got %+v, want %+v", tr.TokenUsage, want)
 	}
 	if tr.ID != "run-abc" {
 		t.Errorf("returned trace ID: got %q, want run-abc", tr.ID)

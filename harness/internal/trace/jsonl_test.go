@@ -71,14 +71,14 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 
 	emitter.RecordTurn(types.TurnTrace{
 		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 100, Output: 50},
+		Tokens:     types.TokenUsage{Input: 100, Output: 50, CacheRead: 60, CacheWrite: 30, Reasoning: 10},
 		ToolCalls:  2,
 		StopReason: "tool_use",
 		DurationMs: 1500,
 	})
 	emitter.RecordTurn(types.TurnTrace{
 		Turn:       2,
-		Tokens:     types.TokenUsage{Input: 200, Output: 75},
+		Tokens:     types.TokenUsage{Input: 200, Output: 75, CacheRead: 150, Reasoning: 5},
 		ToolCalls:  0,
 		StopReason: "end_turn",
 		DurationMs: 800,
@@ -108,8 +108,9 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	if trace.Turns != 2 {
 		t.Errorf("Turns: got %d, want 2", trace.Turns)
 	}
-	if trace.TokenUsage.Input != 300 || trace.TokenUsage.Output != 125 {
-		t.Errorf("TokenUsage: got %+v, want {300, 125}", trace.TokenUsage)
+	wantTokens := types.TokenUsage{Input: 300, Output: 125, CacheRead: 210, CacheWrite: 30, Reasoning: 15}
+	if trace.TokenUsage != wantTokens {
+		t.Errorf("TokenUsage: got %+v, want %+v", trace.TokenUsage, wantTokens)
 	}
 	if len(trace.ToolCalls) != 2 {
 		t.Errorf("ToolCalls: got %d, want 2", len(trace.ToolCalls))

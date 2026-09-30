@@ -235,8 +235,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 
 	var totalTokens types.TokenUsage
 	for _, turn := range turns {
-		totalTokens.Input += turn.Tokens.Input
-		totalTokens.Output += turn.Tokens.Output
+		totalTokens.Add(turn.Tokens)
 	}
 
 	summaries := make([]types.ToolCallSummary, len(toolCalls))

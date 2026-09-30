@@ -26,6 +26,8 @@ type Metrics struct {
 	Turns                 metric.Int64Counter
 	TokensInput           metric.Int64Counter
 	TokensOutput          metric.Int64Counter
+	TokensCacheRead       metric.Int64Counter
+	TokensCacheWrite      metric.Int64Counter
 	ToolCalls             metric.Int64Counter
 	ToolErrors            metric.Int64Counter
 	ToolFailures          metric.Int64Counter
@@ -260,6 +262,22 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.TokensOutput, err = meter.Int64Counter("stirrup.harness.tokens.output",
 		metric.WithUnit("{token}"),
 		metric.WithDescription("Total output tokens consumed"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.TokensCacheRead, err = meter.Int64Counter("stirrup.harness.tokens.cache_read",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Total input tokens served from the provider's prompt cache"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.TokensCacheWrite, err = meter.Int64Counter("stirrup.harness.tokens.cache_write",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Total input tokens written to the provider's prompt cache"),
 	)
 	if err != nil {
 		return nil, err

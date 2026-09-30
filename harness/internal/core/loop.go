@@ -877,33 +877,42 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			return messages, "error", finalAssistantText
 		}
+		// Input is the provider's figure when it reports one; otherwise
+		// it is estimated from the messages sent plus system prompt and
+		// tools.
+		turnTokens := sr.Usage
+		inputReported := turnTokens.Input > 0
+		if !inputReported {
+			turnTokens.Input = estimateCurrentTokens(preparedMessages) +
+				estimateSystemPromptTokens(systemPrompt) +
+				estimateToolDefinitionTokens(toolDefs)
+		}
+
 		providerSpan.SetAttributes(
-			attribute.Int("tokens.output", sr.OutputTokens),
+			attribute.Int("tokens.input", turnTokens.Input),
+			attribute.Bool("tokens.input.reported", inputReported),
+			attribute.Int("tokens.output", turnTokens.Output),
+			attribute.Int("tokens.cache_read", turnTokens.CacheRead),
+			attribute.Int("tokens.cache_write", turnTokens.CacheWrite),
+			attribute.Int("tokens.reasoning", turnTokens.Reasoning),
 			attribute.String("stop_reason", sr.StopReason),
 		)
 		providerSpan.End()
 
 		lastStopReason = sr.StopReason
 
-		// Output tokens come from the stream; input is estimated from
-		// the messages sent plus system prompt and tools.
-		inputTokenEstimate := estimateCurrentTokens(preparedMessages) +
-			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
-		tokenTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens)
+		tokenTracker.RecordTurn(turnTokens)
 
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		l.Trace.RecordTurn(types.TurnTrace{
-			Turn: turn,
-			Tokens: types.TokenUsage{
-				Input:  inputTokenEstimate,
-				Output: sr.OutputTokens,
-			},
-			StopReason: sr.StopReason,
-			DurationMs: turnDuration.Milliseconds(),
-			Mode:       turnMode,
-			BatchID:    turnBatchID,
-			Model:      selection.Model,
+			Turn:          turn,
+			Tokens:        turnTokens,
+			InputReported: inputReported,
+			StopReason:    sr.StopReason,
+			DurationMs:    turnDuration.Milliseconds(),
+			Mode:          turnMode,
+			BatchID:       turnBatchID,
+			Model:         selection.Model,
 		})
 
 		// Persisted as a TurnRecord (full transcript) by recording
@@ -921,13 +930,19 @@ func (l *AgenticLoop) runInnerLoop(
 
 		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 		l.Metrics.Turns.Add(ctx, 1, modeAttr)
-		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate), l.metricAttrs())
-		l.Metrics.TokensOutput.Add(ctx, int64(sr.OutputTokens), l.metricAttrs())
+		l.Metrics.TokensInput.Add(ctx, int64(turnTokens.Input), l.metricAttrs())
+		l.Metrics.TokensOutput.Add(ctx, int64(turnTokens.Output), l.metricAttrs())
+		l.Metrics.TokensCacheRead.Add(ctx, int64(turnTokens.CacheRead), l.metricAttrs())
+		l.Metrics.TokensCacheWrite.Add(ctx, int64(turnTokens.CacheWrite), l.metricAttrs())
 		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
 
 		l.Logger.Info("turn completed", "turn", turn,
-			"tokens.input", inputTokenEstimate,
-			"tokens.output", sr.OutputTokens,
+			"tokens.input", turnTokens.Input,
+			"tokens.input.reported", inputReported,
+			"tokens.output", turnTokens.Output,
+			"tokens.cache_read", turnTokens.CacheRead,
+			"tokens.cache_write", turnTokens.CacheWrite,
+			"tokens.reasoning", turnTokens.Reasoning,
 			"stopReason", sr.StopReason)
 
 		// Carries provider replay state so the next request can

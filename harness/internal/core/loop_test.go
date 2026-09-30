@@ -689,7 +689,7 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 func TestTokenTracker(t *testing.T) {
 	tt := &TokenTracker{}
 
-	tt.RecordTurn(1000, 500)
+	tt.RecordTurn(types.TokenUsage{Input: 1000, Output: 500})
 
 	tokens := tt.Tokens()
 	if tokens.Input != 1000 || tokens.Output != 500 {
@@ -1093,7 +1093,7 @@ func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.
 
 func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
 	tt := &TokenTracker{}
-	tt.RecordTurn(1_000_000, 100_000)
+	tt.RecordTurn(types.TokenUsage{Input: 1_000_000, Output: 100_000})
 
 	maxTokens := 500_000
 	check := tt.CheckBudget(&maxTokens)
@@ -1726,8 +1726,8 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	if result.StopReason != "end_turn" {
 		t.Fatalf("expected stop reason to be preserved, got %q", result.StopReason)
 	}
-	if result.OutputTokens != 42 {
-		t.Fatalf("expected output tokens to be preserved, got %d", result.OutputTokens)
+	if result.Usage.Output != 42 {
+		t.Fatalf("expected output tokens to be preserved, got %d", result.Usage.Output)
 	}
 }
 

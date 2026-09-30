@@ -248,8 +248,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 
 	var totalTokens types.TokenUsage
 	for _, turn := range e.turns {
-		totalTokens.Input += turn.Tokens.Input
-		totalTokens.Output += turn.Tokens.Output
+		totalTokens.Add(turn.Tokens)
 	}
 
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
