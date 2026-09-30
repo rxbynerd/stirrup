@@ -55,8 +55,9 @@ type RunResult struct {
 	// the loop terminated.
 	Turns int `json:"turns"`
 
-	// TokenUsage is the cumulative input/output token count for the
-	// run, as reported by the model provider.
+	// TokenUsage is the cumulative token count for the run. Input is
+	// provider-reported where the provider reports it and estimated
+	// otherwise; see TokenUsage.
 	TokenUsage TokenUsage `json:"tokenUsage"`
 
 	// DurationMs is the wall-clock duration of the run in milliseconds,

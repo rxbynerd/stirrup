@@ -5,10 +5,29 @@ import (
 	"time"
 )
 
-// TokenUsage tracks input and output token counts.
+// TokenUsage tracks token counts for a turn or a run.
+//
+// Invariants: Input includes cached tokens (CacheRead + CacheWrite <=
+// Input), and Reasoning is a subset of Output (Reasoning <= Output).
+// Input is the provider-reported prompt size when the provider reports
+// one, otherwise the harness's estimate; TurnTrace.InputReported tells
+// them apart per turn. The three breakdown fields are zero when the
+// provider does not report them.
 type TokenUsage struct {
-	Input  int `json:"input"`
-	Output int `json:"output"`
+	Input      int `json:"input"`
+	Output     int `json:"output"`
+	CacheRead  int `json:"cacheRead,omitempty"`
+	CacheWrite int `json:"cacheWrite,omitempty"`
+	Reasoning  int `json:"reasoning,omitempty"`
+}
+
+// Add accumulates o into u.
+func (u *TokenUsage) Add(o TokenUsage) {
+	u.Input += o.Input
+	u.Output += o.Output
+	u.CacheRead += o.CacheRead
+	u.CacheWrite += o.CacheWrite
+	u.Reasoning += o.Reasoning
 }
 
 // RunTrace captures the full telemetry of a single harness run.
@@ -188,11 +207,14 @@ const (
 
 // TurnTrace captures telemetry for a single agentic loop turn.
 type TurnTrace struct {
-	Turn       int        `json:"turn"`
-	Tokens     TokenUsage `json:"tokens"`
-	ToolCalls  int        `json:"toolCalls"`
-	StopReason string     `json:"stopReason"`
-	DurationMs int64      `json:"durationMs"`
+	Turn   int        `json:"turn"`
+	Tokens TokenUsage `json:"tokens"`
+	// InputReported is true when Tokens.Input is the provider's figure
+	// rather than the harness's estimate.
+	InputReported bool   `json:"inputReported,omitempty"`
+	ToolCalls     int    `json:"toolCalls"`
+	StopReason    string `json:"stopReason"`
+	DurationMs    int64  `json:"durationMs"`
 	// Model is the router's resolved model for this turn. Empty on traces
 	// that predate the field; consumers fall back to the run-level
 	// configured model when absent.

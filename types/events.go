@@ -14,6 +14,18 @@ import (
 // Adapters MUST emit "tool_use" whenever the stream contains a tool call,
 // regardless of the provider's native finish-reason vocabulary (see
 // docs/providers.md for the Vertex AI STOP-remapping example).
+//
+// The token counts are populated only on "message_complete"; zero means
+// the provider did not report the figure. InputTokens is the whole prompt
+// the provider billed for the request, cached tokens included: Anthropic
+// input_tokens + cache_creation_input_tokens + cache_read_input_tokens,
+// OpenAI input_tokens / prompt_tokens (already inclusive of cached_tokens),
+// Gemini promptTokenCount (already inclusive of cachedContentTokenCount).
+// CacheReadTokens and CacheWriteTokens are the parts of InputTokens served
+// from and written to the provider's prompt cache. ReasoningTokens is the
+// part of OutputTokens spent on reasoning/thinking; adapters whose
+// provider reports it separately (Gemini thoughtsTokenCount) add it into
+// OutputTokens so the subset relation holds everywhere.
 type StreamEvent struct {
 	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
@@ -24,6 +36,11 @@ type StreamEvent struct {
 	OutputTokens int            `json:"outputTokens,omitempty"`
 	Content      []ContentBlock `json:"content,omitempty"`
 	Error        error          `json:"-"`
+
+	InputTokens      int `json:"inputTokens,omitempty"`
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 
 	// ThoughtSignature is the opaque provider-private blob captured for
 	// round-trip on the next turn (currently Gemini only). The agentic loop

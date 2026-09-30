@@ -301,3 +301,57 @@ func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
 		t.Errorf("non-zero permissionDenials should be emitted, got %s", nonZeroBytes)
 	}
 }
+
+func TestTokenUsage_AddAccumulatesEveryField(t *testing.T) {
+	total := TokenUsage{Input: 10, Output: 5, CacheRead: 2, CacheWrite: 3, Reasoning: 1}
+	total.Add(TokenUsage{Input: 100, Output: 50, CacheRead: 20, CacheWrite: 30, Reasoning: 10})
+	want := TokenUsage{Input: 110, Output: 55, CacheRead: 22, CacheWrite: 33, Reasoning: 11}
+	if total != want {
+		t.Errorf("Add = %+v, want %+v", total, want)
+	}
+}
+
+// TestTokenUsage_BreakdownOmittedWhenZero pins the wire shape for
+// providers that report no cache or reasoning figures: only input and
+// output appear.
+func TestTokenUsage_BreakdownOmittedWhenZero(t *testing.T) {
+	data, err := json.Marshal(TurnTrace{Tokens: TokenUsage{Input: 10, Output: 5}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"tokens":{"input":10,"output":5}`) {
+		t.Errorf("tokens must carry only input/output when breakdown is zero: %s", s)
+	}
+	if strings.Contains(s, `"inputReported"`) {
+		t.Errorf("an estimated turn must omit inputReported: %s", s)
+	}
+}
+
+func TestTurnTrace_ReportedUsageRoundTrip(t *testing.T) {
+	tt := TurnTrace{
+		Turn:          1,
+		Tokens:        TokenUsage{Input: 4000, Output: 300, CacheRead: 3000, CacheWrite: 900, Reasoning: 120},
+		InputReported: true,
+	}
+	data, err := json.Marshal(tt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		`"tokens":{"input":4000,"output":300,"cacheRead":3000,"cacheWrite":900,"reasoning":120}`,
+		`"inputReported":true`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("encoded JSON %s missing %s", s, want)
+		}
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.Tokens != tt.Tokens || !round.InputReported {
+		t.Errorf("round-trip = %+v, want %+v", round, tt)
+	}
+}
