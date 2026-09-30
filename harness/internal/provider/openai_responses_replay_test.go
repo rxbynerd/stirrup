@@ -901,6 +901,9 @@ func TestOpenAIResponsesAdapter_ReplaySecondTurnRequestBody(t *testing.T) {
 	if n := bytes.Count(body, []byte(`"role":"assistant"`)); n != 1 {
 		t.Errorf("assistant message items = %d, want 1 (no reconstructed duplicate)", n)
 	}
+	if bytes.Contains(body, []byte("created_by")) {
+		t.Errorf("replayed body carries the output-only created_by: %s", body)
+	}
 	assertCallsPaired(t, input)
 }
 
