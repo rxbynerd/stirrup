@@ -57,6 +57,10 @@ type GeminiAdapter struct {
 	// production, where the URL is derived from projectID + location.
 	baseURLOverride string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// streamCounter namespaces synthesised tool-call IDs
 	// ("gemini-{streamN}-{partIdx}") across concurrent Stream calls on
 	// the same adapter, since Vertex never echoes IDs through
@@ -89,7 +93,8 @@ func NewGeminiAdapter(
 		location:  location,
 		safety:    safety,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// No Client.Timeout: it would cap the whole streamed body. Streamed
+			// reads are bounded by idleTimeoutBody instead.
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -230,6 +235,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, g.streamIdleTimeout)
 
 	// The 429 add-event mirrors the Anthropic adapter so rate-limit
 	// retries surface uniformly across providers.

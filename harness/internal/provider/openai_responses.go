@@ -39,6 +39,10 @@ type OpenAIResponsesAdapter struct {
 	apiKeyHeader string
 	queryParams  map[string]string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
 	// Logger; see its doc comment for the field-by-field contract.
 	AdapterDeps
@@ -68,7 +72,8 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 	return &OpenAIResponsesAdapter{
 		bearer: bearer,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// No Client.Timeout: it would cap the whole streamed body. Streamed
+			// reads are bounded by idleTimeoutBody instead.
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -1391,6 +1396,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		// unwrap the *url.Error so its embedded URL never leaks (CWE-532).
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
 	if o.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)

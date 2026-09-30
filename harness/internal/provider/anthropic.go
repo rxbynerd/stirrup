@@ -54,6 +54,10 @@ type AnthropicAdapter struct {
 	httpClient *http.Client
 	baseURL    string // overridable for testing
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
 	// Logger; see its doc comment for the field-by-field contract.
 	AdapterDeps
@@ -74,7 +78,8 @@ func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *
 		bearer:   bearer,
 		authMode: authMode,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// No Client.Timeout: it would cap the whole streamed body. Streamed
+			// reads are bounded by idleTimeoutBody instead.
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -801,6 +806,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		// Go does not query-redact) never reaches a log or caller (CWE-532).
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, a.streamIdleTimeout)
 
 	if a.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)

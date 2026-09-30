@@ -68,6 +68,10 @@ type OpenAICompatibleAdapter struct {
 	apiKeyHeader string
 	queryParams  map[string]string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
 	// Logger; see its doc comment for the field-by-field contract.
 	AdapterDeps
@@ -102,7 +106,8 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 	return &OpenAICompatibleAdapter{
 		bearer: bearer,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			// No Client.Timeout: it would cap the whole streamed body. Streamed
+			// reads are bounded by idleTimeoutBody instead.
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -1108,6 +1113,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		// does not query-redact; unwrap before wrapping (CWE-532).
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
 	// rate_limited fires on a terminal 429 (retries exhausted or disabled);
 	// DoWithRetry records provider_retry_attempt for intermediate retries.

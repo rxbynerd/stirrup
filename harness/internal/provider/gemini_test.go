@@ -940,8 +940,8 @@ func TestGeminiAdapter_EmptyStream(t *testing.T) {
 // future refactor cannot accidentally drop the safety bounds.
 func TestGeminiAdapter_HasTimeout(t *testing.T) {
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "p", "global", nil)
-	if a.httpClient.Timeout == 0 {
-		t.Error("HTTP client should have a non-zero timeout")
+	if a.httpClient.Timeout != 0 {
+		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", a.httpClient.Timeout)
 	}
 	tr, ok := a.httpClient.Transport.(*http.Transport)
 	if !ok {
