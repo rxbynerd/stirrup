@@ -142,9 +142,12 @@ The proto also defines `done.trace`, but the job path currently emits
 turn counts, token usage, duration, verifier details, and final
 assistant text from a configured `resultSink`, process stdout, or a
 trace emitter instead. `cost_usd` is not calculated by the harness.
-A refusal's category and explanation (`RunTrace.stop_details`) are
-recorded only in the trace emitter's `RunTrace` today; `RunResult`
-does not carry them.
+A refusal's category and explanation reach operators through the trace
+emitters (the JSONL and GCS `RunTrace`, and the `stop.category`
+attribute on the OTel `provider.stream` span) and the `provider refused
+to respond` Warn log line. `RunTrace.stop_details` mirrors them on the
+proto for when `done.trace` is populated; `RunResult` does not carry
+them.
 
 A `done` is emitted for every failure that happens after the task
 assignment arrives, including a `RunConfig` rejected on arrival: the

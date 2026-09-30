@@ -321,8 +321,8 @@ The harness retries transient provider failures (HTTP 408, 409, 429,
 backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
 are honoured when present and bounded by the configured max delay.
 A 429 whose error body reports an exhausted billing, spend, or quota
-limit is not retried, since retrying cannot restore access; see
-[`providers.md`](providers.md#openai-responses-api) for the codes.
+limit is not retried, since retrying cannot restore access (see the
+classification table below).
 
 | Flag | Config field | Default | Hard ceiling |
 |---|---|---|---|
@@ -358,6 +358,25 @@ seam — `ConverseStream` goes through the AWS SDK's own transport —
 so `maxAttempts` and `maxDelayMs` are mapped onto the SDK's Standard
 retryer instead; `initialDelayMs` and `wallClockBudgetMs` have no
 SDK-native equivalent and are not applied to `bedrock`.
+
+The pre-stream response is classified the same way for every adapter
+that uses `DoWithRetry` (`anthropic`, `gemini`, `openai-compatible`,
+and `openai-responses`), whichever provider the error codes come from:
+
+| Response | Retried |
+|---|---|
+| 429 with `error.code` `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, or `organization_usage_limit_exceeded`, or with `error.type` `insufficient_quota` | No: retrying cannot restore access until the limit is raised |
+| 429 with any other code (for example `slow_down` or `rate_limit_exceeded`) or none | Yes, honouring `Retry-After` |
+| 503 `server_is_overloaded` | Yes, honouring `Retry-After` |
+| 403, including `misalignment_policy_violation` | No |
+
+A quota 429 logs `provider_quota_exhausted` at Warn with the matched
+code and records `quota_exhausted` as the `provider.retry.outcome`
+attribute of `stirrup.harness.provider_retry_outcomes`. The quota check
+reads at most 4 KB of the 429 body, so a larger error body is
+classified by status alone. The codes are OpenAI's documented billing
+codes (see [`providers.md`](providers.md#openai-responses-api)); they
+have not been probed against the live API.
 
 Defaults are tuned for the cost of one extra coding-loop turn rather
 than the OpenAI Python SDK's 8 s cap: a coding agent typically has

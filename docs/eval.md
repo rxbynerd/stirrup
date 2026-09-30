@@ -417,9 +417,10 @@ rename wins atomically.
 `timeout`, `max_tokens`, or a provider stop reason passed through
 verbatim, such as `refusal` or `model_context_window_exceeded` (both
 fall into the "anything else" row below). By itself it conflates two
-very different states in execution mode: "the harness made the correct change"
-vs. "the loop exited cleanly with zero useful changes." Metrics
-derived from `Outcome == "success"` therefore lie about quality.
+very different states in execution mode: "the harness made the
+correct change" vs. "the loop exited cleanly with zero useful
+changes." Metrics derived from `Outcome == "success"` therefore lie
+about quality.
 
 `types.EvalOutcome` (`types/evaloutcome.go`) collapses
 `(Outcome, VerificationResults)` onto three buckets:

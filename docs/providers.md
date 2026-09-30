@@ -127,18 +127,33 @@ and the legacy Bedrock surface does not offer automatic caching.
 **Refusals and other stop reasons.** A response the model declines
 ends with `stop_reason: "refusal"`, which becomes the run outcome
 verbatim. The adapter reads the `stop_details` object on the streamed
-`message_delta`: `type` (`"refusal"`), `category` (`cyber`, `bio`,
-`frontier_llm`, `reasoning_extraction`, `general_harms`, or null), and
-`explanation`. The loop records it on the turn's
-`TurnTrace.stopDetails` and on `RunTrace.stopDetails` (gRPC
-`RunTrace.stop_details`), logs `provider refused to respond` at Warn
-with `category` and `explanation`, and sets `stop.category` on the
-`provider.stream` span. The explanation is scrubbed of secret-shaped
-content before it reaches a trace. `model_context_window_exceeded`
-(the response filled the model's context window and is truncated) is
-also returned verbatim as the outcome. The harness neither retries nor
-continues after either stop reason. Refusals cannot be triggered
-benignly, so the `stop_details` shape is documented, not probed.
+`message_delta`: `type` (`"refusal"`), `category`, and `explanation`.
+`category` keeps the documented values (`cyber`, `bio`,
+`frontier_llm`, `reasoning_extraction`, `general_harms`), reports any
+other non-empty value as `other`, and is empty when the API sends
+null. `type` is capped at 64 bytes and `explanation` at 1 KiB, and a
+malformed field is dropped without discarding the others.
+
+The loop records the details on the turn's `TurnTrace.stopDetails`
+and, when the refusal ends the run, on `RunTrace.stopDetails`. It logs
+`provider refused to respond` at Warn with `category` and
+`explanation`, and sets `stop.category` on the `provider.stream` span.
+The explanation is scrubbed of secret-shaped content before it reaches
+a trace or log. `RunTrace.stopDetails` is omitted when the run's
+final outcome is not the stop that produced them, for example when a
+cancellation observed after the refusal becomes the outcome. Operators
+read the details from the trace emitters (the JSONL and GCS
+`RunTrace`, and the OTel span attribute) and from the Warn log line.
+The gRPC `RunTrace.stop_details` field mirrors them, but `stirrup job`
+leaves `done.trace` unset
+([issue #453](https://github.com/rxbynerd/stirrup/issues/453)).
+
+`model_context_window_exceeded` (the response filled the model's
+context window and is truncated) is also returned verbatim as the
+outcome. The harness neither retries nor continues after either stop
+reason, and tool-choice escalation does not re-prompt after them.
+Refusals cannot be triggered benignly, so the `stop_details` shape is
+documented, not probed.
 
 **Stream errors.** A failure after streaming has begun arrives as an
 SSE `error` event, for example `overloaded_error`. The adapter reports
@@ -320,28 +335,19 @@ See `examples/runconfig/azure-openai.json`.
 **Error codes.** The adapter appends OpenAI's `error.code` to every
 error it reports (the HTTP error path, `response.failed`, and the SSE
 `error` event) as `<message> (code: <code>)`, and keeps the
-message-only form when no code is present. The code, not the message
+message-only form when no code is present. A numeric code, as some
+gateways send, is rendered as its number. The code, not the message
 text, identifies the failure. `misalignment_policy_violation` means
 misalignment monitoring stopped the conversation: it arrives as HTTP
 403 before streaming, or as a stream error after output has begun, and
 must not be retried.
 
-Retry classification of the pre-stream response, shared by every
-adapter that uses the harness retry helper (see
-[`configuration.md`](configuration.md#retry-policy)):
-
-| Response | Retried |
-|---|---|
-| 429 with any other code (for example `slow_down` or `rate_limit_exceeded`) or none | Yes, honouring `Retry-After` |
-| 429 with `error.code` `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, or `organization_usage_limit_exceeded`, or with `error.type` `insufficient_quota` | No: retrying cannot restore access until the limit is raised |
-| 503 `server_is_overloaded` | Yes, honouring `Retry-After` |
-| 403, including `misalignment_policy_violation` | No |
-
-A failure after the stream opens is never retried. The quota check
-reads at most 4 KB of the 429 body, so an error body larger than that
-is classified by status alone. These codes are documented in OpenAI's
-error-codes and misalignment-monitoring guides; they have not been
-probed against the live API.
+A 429 reporting an exhausted billing, spend, or quota limit is not
+retried; the full classification is in
+[`configuration.md`](configuration.md#retry-policy). A failure after
+the stream opens is never retried. These codes are documented in
+OpenAI's error-codes and misalignment-monitoring guides; they have not
+been probed against the live API.
 
 ## Google Gemini via Vertex AI
 
