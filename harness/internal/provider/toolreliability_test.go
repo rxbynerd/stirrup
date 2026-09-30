@@ -143,7 +143,7 @@ func TestResponses_222_ParallelAndExamples(t *testing.T) {
 		ParallelToolCalls: &enable,
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
-	req, err := buildResponsesRequest(params, q, nil)
+	req, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("buildResponsesRequest: %v", err)
 	}

@@ -90,7 +90,7 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 		Temperature: types.Float64Ptr(0.5),
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
-	req, err := buildResponsesRequest(params, q, nil)
+	req, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 		ReasoningEffort: "high",
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
-	req, err := buildResponsesRequest(params, q, nil)
+	req, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

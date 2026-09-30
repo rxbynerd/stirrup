@@ -310,7 +310,7 @@ func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
 		Model:    "gpt-4o",
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
-	}, q, nil)
+	}, q, nil, "")
 	if err != nil {
 		t.Fatalf("build with-structured: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
 		Model:    "gpt-4o",
 		Tools:    anthropicTools(),
 		Messages: textOnlyToolResultMessages(),
-	}, q, nil)
+	}, q, nil, "")
 	if err != nil {
 		t.Fatalf("build text-only: %v", err)
 	}

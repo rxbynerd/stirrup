@@ -1,4 +1,4 @@
-# synthetic: built from the documented Responses streaming shape (reasoning item with encrypted_content on output_item.done, assistant message with phase, two function calls, full output array on response.completed) because no OpenAI credential was available for a live capture. Documented, not probed. The encrypted_content value is a placeholder.
+# synthetic: built from the documented Responses streaming shape (reasoning item with encrypted_content on output_item.done, assistant message with phase, two function calls, full output array on response.completed; the message item carries an output-only created_by placeholder, which capture strips) because no OpenAI credential was available for a live capture. Documented, not probed. The encrypted_content value is a placeholder.
 event: response.created
 data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_fx1","object":"response","status":"in_progress","model":"gpt-5.6-sol","output":[]}}
 
@@ -24,7 +24,7 @@ event: response.output_text.done
 data: {"type":"response.output_text.done","sequence_number":7,"item_id":"msg_fx1","output_index":1,"content_index":0,"text":"Reading both files."}
 
 event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":8,"output_index":1,"item":{"type":"message","id":"msg_fx1","status":"completed","role":"assistant","phase":"commentary","content":[{"type":"output_text","annotations":[],"text":"Reading both files."}]}}
+data: {"type":"response.output_item.done","sequence_number":8,"output_index":1,"item":{"type":"message","id":"msg_fx1","status":"completed","role":"assistant","phase":"commentary","created_by":"placeholder-creator","content":[{"type":"output_text","annotations":[],"text":"Reading both files."}]}}
 
 event: response.output_item.added
 data: {"type":"response.output_item.added","sequence_number":9,"output_index":2,"item":{"type":"function_call","id":"fc_fx1","call_id":"call_fx1","name":"read_file","arguments":"","status":"in_progress"}}
@@ -51,5 +51,5 @@ event: response.output_item.done
 data: {"type":"response.output_item.done","sequence_number":16,"output_index":3,"item":{"type":"function_call","id":"fc_fx2","call_id":"call_fx2","name":"read_file","arguments":"{\"path\":\"b.go\"}","status":"completed"}}
 
 event: response.completed
-data: {"type":"response.completed","sequence_number":17,"response":{"id":"resp_fx1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"reasoning","id":"rs_fx1","summary":[],"encrypted_content":"gAAAAABoFX1-placeholder-encrypted-reasoning-state"},{"type":"message","id":"msg_fx1","status":"completed","role":"assistant","phase":"commentary","content":[{"type":"output_text","annotations":[],"text":"Reading both files."}]},{"type":"function_call","id":"fc_fx1","call_id":"call_fx1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"},{"type":"function_call","id":"fc_fx2","call_id":"call_fx2","name":"read_file","arguments":"{\"path\":\"b.go\"}","status":"completed"}],"usage":{"input_tokens":120,"output_tokens":48,"output_tokens_details":{"reasoning_tokens":32},"total_tokens":168}}}
+data: {"type":"response.completed","sequence_number":17,"response":{"id":"resp_fx1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"reasoning","id":"rs_fx1","summary":[],"encrypted_content":"gAAAAABoFX1-placeholder-encrypted-reasoning-state"},{"type":"message","id":"msg_fx1","status":"completed","role":"assistant","phase":"commentary","created_by":"placeholder-creator","content":[{"type":"output_text","annotations":[],"text":"Reading both files."}]},{"type":"function_call","id":"fc_fx1","call_id":"call_fx1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"},{"type":"function_call","id":"fc_fx2","call_id":"call_fx2","name":"read_file","arguments":"{\"path\":\"b.go\"}","status":"completed"}],"usage":{"input_tokens":120,"output_tokens":48,"output_tokens_details":{"reasoning_tokens":32},"total_tokens":168}}}
 

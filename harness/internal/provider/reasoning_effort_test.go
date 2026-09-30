@@ -191,7 +191,7 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
 			params := effortParams(tc.model, tc.effort, false)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
-			req, err := buildResponsesRequest(params, q, nil)
+			req, err := buildResponsesRequest(params, q, nil, "")
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}

@@ -151,7 +151,7 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			captured := <-capturedCh
 
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
-			built, err := buildResponsesRequest(tc.params, q, nil)
+			built, err := buildResponsesRequest(tc.params, q, nil, "")
 			if err != nil {
 				t.Fatalf("build request: %v", err)
 			}
@@ -213,7 +213,7 @@ func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
 			},
 		},
 	}
-	got, err := buildResponsesRequest(params, q, nil)
+	got, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("buildResponsesRequest: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			params := effortParams(tc.model, "", true)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
-			req, err := buildResponsesRequest(params, q, nil)
+			req, err := buildResponsesRequest(params, q, nil, "")
 			if err != nil {
 				t.Fatalf("buildResponsesRequest: %v", err)
 			}
@@ -316,7 +316,7 @@ func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
-			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil)
+			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil, "")
 			if err != nil {
 				t.Fatalf("buildResponsesRequest: %v", err)
 			}
@@ -380,7 +380,7 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
-	got, err := buildResponsesRequest(params, q, nil)
+	got, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("buildResponsesRequest: %v", err)
 	}

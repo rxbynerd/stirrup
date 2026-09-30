@@ -273,7 +273,13 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
 			return nil, err
 		}
-		req, err := buildResponsesRequest(params, q, nil)
+		// Only turns the inner adapter streamed carry stored items: batch
+		// results are never captured.
+		replayOrigin := ""
+		if inner, ok := a.inner.(*OpenAIResponsesAdapter); ok {
+			replayOrigin = responsesReplayOriginFor(q, params.Model, inner.baseURL)
+		}
+		req, err := buildResponsesRequest(params, q, nil, replayOrigin)
 		if err != nil {
 			return nil, err
 		}
