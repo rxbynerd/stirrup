@@ -81,18 +81,22 @@ func TestThinkingBlocksSkippedByTextAndToolCallReaders(t *testing.T) {
 	}
 }
 
-// TestEstimateCurrentTokens_CountsThinkingSignature pins that a replayed
-// thinking block's signature counts toward the budget, while a signature
-// on any other block type (Gemini's) is left out as before.
-func TestEstimateCurrentTokens_CountsThinkingSignature(t *testing.T) {
-	sig := strings.Repeat("s", 400) // 100 tokens
+// TestEstimateCurrentTokens_CountsThinkingTextNotSignature pins that a
+// thinking block contributes its reasoning text to the budget and its
+// signature does not, and that a signature on any other block type
+// (Gemini's) is likewise left out.
+func TestEstimateCurrentTokens_CountsThinkingTextNotSignature(t *testing.T) {
+	sig := strings.Repeat("s", 400)
 	thinking := []types.Message{{
-		Role:    "assistant",
-		Content: []types.ContentBlock{{Type: "thinking", ThoughtSignature: sig}},
+		Role: "assistant",
+		Content: []types.ContentBlock{
+			{Type: "thinking", Text: strings.Repeat("t", 40), ThoughtSignature: sig},
+			{Type: "redacted_thinking", ThoughtSignature: sig},
+		},
 	}}
-	// 4 (msg) + 3 (block) + 100 (signature) = 107
-	if got := estimateCurrentTokens(thinking); got != 107 {
-		t.Errorf("thinking block: got %d, want 107", got)
+	// 4 (msg) + 3 + 10 (thinking block and its text) + 3 (redacted block)
+	if got := estimateCurrentTokens(thinking); got != 20 {
+		t.Errorf("thinking blocks: got %d, want 20", got)
 	}
 
 	gemini := []types.Message{{

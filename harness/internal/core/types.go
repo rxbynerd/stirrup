@@ -752,11 +752,6 @@ func estimateCurrentTokens(messages []types.Message) int {
 			// large (e.g. a Gemini object-response result); counting it
 			// avoids under-shooting the budget and overflowing mid-run.
 			total += len(block.Structured) / tokenEstimationDivisor
-			// A replayed thinking block is billed as input, and with the
-			// text omitted its signature is the only size signal.
-			if types.IsThinkingBlock(block) {
-				total += len(block.ThoughtSignature) / tokenEstimationDivisor
-			}
 		}
 	}
 	if total == 0 {
