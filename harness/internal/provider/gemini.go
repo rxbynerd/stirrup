@@ -421,6 +421,11 @@ func (g *GeminiAdapter) consumeSSE(
 			return
 		default:
 		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
+		}
 
 		line := scanner.Text()
 		if line == "" {

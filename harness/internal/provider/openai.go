@@ -1227,6 +1227,11 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 			return
 		default:
 		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
+		}
 
 		line := scanner.Text()
 

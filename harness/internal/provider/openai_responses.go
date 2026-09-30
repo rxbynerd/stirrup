@@ -1503,6 +1503,11 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 			return
 		default:
 		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
+		}
 
 		line := scanner.Text()
 
@@ -1552,17 +1557,16 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		return
+	}
+
 	// Flush any trailing record without a terminating blank line. A
 	// well-behaved server will not do this, but tolerating it avoids
 	// dropped final events on premature EOF.
 	if currentEvent != "" || len(dataParts) > 0 {
-		if !flushRecord() {
-			return
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		flushRecord()
 	}
 }
 

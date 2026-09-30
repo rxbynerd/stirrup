@@ -384,13 +384,17 @@ type idleStreamCase struct {
 	name string
 	// complete is a full, well-formed stream body in the adapter's dialect.
 	complete string
-	build    func(url string, idle time.Duration) idleTestAdapter
+	// partial is an event cut off mid-line, as a stall inside a record
+	// leaves it.
+	partial string
+	build   func(url string, idle time.Duration) idleTestAdapter
 }
 
 func idleStreamCases() []idleStreamCase {
 	return []idleStreamCase{
 		{
-			name: "anthropic",
+			name:    "anthropic",
+			partial: "event: content_block_delta\n" + `data: {"index":0,"del`,
 			complete: joinLines(
 				makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
 				makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"Hello"}}`),
@@ -409,7 +413,8 @@ func idleStreamCases() []idleStreamCase {
 			},
 		},
 		{
-			name: "openai-compatible",
+			name:    "openai-compatible",
+			partial: `data: {"id":"c","choices":[{"ind`,
 			complete: makeOpenAIChunk(`{"id":"c","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`) +
 				makeOpenAIChunk(`{"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
 				"data: [DONE]\n\n",
@@ -422,7 +427,8 @@ func idleStreamCases() []idleStreamCase {
 			},
 		},
 		{
-			name: "openai-responses",
+			name:    "openai-responses",
+			partial: "event: response.output_text.delta\n" + `data: {"item_id":"msg_1","del`,
 			complete: makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`) +
 				makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"Hello"}`) +
 				makeResponsesEvent("response.completed", `{"response":{"id":"r","status":"completed","output":[{"type":"message","id":"msg_1"}]}}`),
@@ -436,7 +442,8 @@ func idleStreamCases() []idleStreamCase {
 			},
 		},
 		{
-			name: "gemini",
+			name:    "gemini",
+			partial: `data: {"candidates":[{"cont`,
 			complete: makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}]}`) +
 				makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`),
 			build: func(url string, idle time.Duration) idleTestAdapter {
@@ -537,32 +544,61 @@ func TestStreamingAdapters_SlowSteadyStreamOutlivesIdleTimeout(t *testing.T) {
 func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 	const idle = 150 * time.Millisecond
 	for _, tc := range idleStreamCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			var hits atomic.Int32
-			disconnected := make(chan struct{})
-			srv := httptest.NewServer(stallHandler(": keepalive\n\n", &hits, disconnected))
-			defer srv.Close()
+		for _, stall := range []struct{ name, preamble string }{
+			{"between-events", ": keepalive\n\n"},
+			{"mid-line", tc.partial},
+		} {
+			t.Run(tc.name+"/"+stall.name, func(t *testing.T) {
+				var hits atomic.Int32
+				disconnected := make(chan struct{})
+				srv := httptest.NewServer(stallHandler(stall.preamble, &hits, disconnected))
+				defer srv.Close()
 
-			ad := tc.build(srv.URL, idle)
-			defer ad.client.CloseIdleConnections()
-			start := time.Now()
-			ch, err := ad.stream(context.Background())
-			if err != nil {
-				t.Fatalf("Stream() error: %v", err)
-			}
-			events := collectEvents(t, ch)
-			assertIdleFailure(t, events, time.Since(start), idle)
+				ad := tc.build(srv.URL, idle)
+				defer ad.client.CloseIdleConnections()
+				start := time.Now()
+				ch, err := ad.stream(context.Background())
+				if err != nil {
+					t.Fatalf("Stream() error: %v", err)
+				}
+				events := collectEvents(t, ch)
+				assertIdleFailure(t, events, time.Since(start), idle)
 
-			select {
-			case <-disconnected:
-			case <-time.After(2 * time.Second):
-				t.Error("server never observed the client closing the stalled stream")
-			}
-			if n := hits.Load(); n != 1 {
-				t.Errorf("server saw %d requests, want 1: a mid-stream idle failure must not be retried", n)
-			}
-		})
+				select {
+				case <-disconnected:
+				case <-time.After(2 * time.Second):
+					t.Error("server never observed the client closing the stalled stream")
+				}
+				if n := hits.Load(); n != 1 {
+					t.Errorf("server saw %d requests, want 1: a mid-stream idle failure must not be retried", n)
+				}
+			})
+		}
 	}
+}
+
+// A Responses record may span several data lines. A stall after a complete
+// line but before the record's terminating blank line leaves buffered data
+// that is not a whole record; it must not be dispatched ahead of the idle
+// error.
+func TestOpenAIResponsesAdapter_StallMidRecordFailsWithIdleError(t *testing.T) {
+	const idle = 150 * time.Millisecond
+	var hits atomic.Int32
+	srv := httptest.NewServer(stallHandler(
+		"event: response.output_text.delta\n"+`data: {"item_id":"msg_1",`+"\n",
+		&hits, nil,
+	))
+	defer srv.Close()
+
+	a := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
+	a.streamIdleTimeout = idle
+	defer a.httpClient.CloseIdleConnections()
+	start := time.Now()
+	ch, err := a.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	assertIdleFailure(t, collectEvents(t, ch), time.Since(start), idle)
 }
 
 func TestStreamingAdapters_CancelInsideIdleWindowIsNotIdle(t *testing.T) {
