@@ -374,17 +374,22 @@ via `previous_response_id`. The harness manages its own conversation
 history and does not delegate to server-side state.
 
 **Output replay.** With `store: false`, OpenAI documents that stateless
-reasoning models need every prior response output item resent. The
-adapter captures each turn's `reasoning`, `message`, and
-`function_call` output items and, for the reasoning families
-(`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and `gpt-6*`), replays them
-verbatim on later requests, so reasoning items (with
-`encrypted_content`), item ids, `status`, and the assistant `phase`
-reach the model. Replay is all-or-nothing per turn: a turn whose stored
-items no longer match its persisted content (a rewritten tool call or
-text), or whose capture was disabled (an unknown item type, a reasoning
-item without `encrypted_content`, or more than 1 MiB of items), is
-reconstructed without item ids instead. The mechanism is described in
+reasoning models need every prior response output item resent. For the
+reasoning families (`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and
+`gpt-6*`), the adapter captures each turn's `reasoning`, `message`, and
+`function_call` output items and replays them, as semantically identical
+JSON, on later requests to the same model and endpoint, so reasoning
+items (with `encrypted_content`), item ids, `status`, and the assistant
+`phase` reach the model. Replay is all-or-nothing per turn: a turn whose
+stored items no longer match its persisted content (a rewritten tool
+call or text), that came from another model or endpoint, or whose
+capture was disabled (an incomplete turn, an unknown item type, a
+reasoning item without `encrypted_content`, or more than 1 MiB of
+items) is reconstructed without item ids instead. The size of
+`encrypted_content` is unmeasured, so the 1 MiB cap is a guard, not a
+measurement. Batch requests never capture output items, so a turn
+answered through the batch path is always reconstructed. The mechanism
+is described in
 [`provider-quirks.md` §3.1](provider-quirks.md#31-replayfields-rules).
 `reasoning.context` is not sent, so the model default applies
 (`all_turns` on GPT-5.6); `current_turn` is the relief valve if
@@ -395,8 +400,8 @@ Requests for the same reasoning families carry
 is returned for replay. First-party OpenAI documents the include as
 optional; it stays protective on Azure and gateways. Non-reasoning
 models (`gpt-4o*`, `gpt-4.1*`, `gpt-5-chat*`) receive neither the
-include nor replayed items: their stored items are still captured, but
-every turn is reconstructed without item ids. Whether those models
+include nor replayed items, and the adapter captures nothing for them,
+so every turn is reconstructed without item ids. Whether those models
 reject the include, or replayed `message` item ids and `status`, with
 HTTP 400 is unverified; a probe against a non-reasoning model should
 check both before either gate is widened.
@@ -404,8 +409,9 @@ check both before either gate is widened.
 **Reasoning effort and sampling.** `RunConfig.reasoningEffort` maps to
 `reasoning.effort` for models whose accepted levels are known: GPT-6
 and GPT-5.6 (`low`..`max`), GPT-5.4 and GPT-5.5 (`low`..`xhigh`). A
-request that sends `reasoning.effort` omits `temperature`, and GPT-6,
-GPT-5.5, and GPT-5.6 never receive `temperature`. GPT-5.4 keeps a
+request that sends `reasoning.effort` omits `temperature`. GPT-6 never
+receives `temperature`; GPT-5.5 and GPT-5.6 never receive it either,
+which is inferred from their `medium` default effort. GPT-5.4 keeps a
 configured temperature when no effort is set, because its default
 effort is `none`.
 
@@ -414,6 +420,9 @@ effort is `none`.
 non-strict silently. A tool schema the strict rewriter cannot express
 (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, tuple
 `items`; common in MCP-imported tools) fails the request before send.
+An MCP server that declares an optional parameter as an `anyOf` with
+`null`, as FastMCP and Pydantic do, therefore stops the run on these
+models; there is no per-tool fallback to `strict: false`.
 
 The replay, include, GPT-5.x effort, and strict behaviour is
 documented, not probed: no live request against an OpenAI endpoint has

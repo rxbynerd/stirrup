@@ -416,8 +416,9 @@ type responsesInput struct {
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
 
-	// Raw is a stored output item replayed verbatim; when set, MarshalJSON
-	// emits it unchanged and ignores the typed fields.
+	// Raw is a stored output item to replay; when set, MarshalJSON returns
+	// it and ignores the typed fields. The enclosing json.Marshal compacts
+	// and HTML-escapes it, so the wire JSON is semantically identical.
 	Raw json.RawMessage `json:"-"`
 }
 
