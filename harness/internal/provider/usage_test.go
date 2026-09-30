@@ -376,6 +376,15 @@ func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
 	}
 }
 
+// A prompt Vertex blocks is still billed; its usage rides on the
+// promptFeedback chunk.
+func TestGeminiAdapter_ReportsUsageOnBlockedPrompt(t *testing.T) {
+	got := streamGeminiUsage(t, `{"promptFeedback":{"blockReason":"SAFETY"},"usageMetadata":{"promptTokenCount":812,"totalTokenCount":812}}`)
+	if want := (types.TokenUsage{Input: 812}); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
 // Bedrock delivers usage on the metadata event after messageStop.
 func TestBedrock_ReportsUsageFromMetadata(t *testing.T) {
 	cases := []struct {

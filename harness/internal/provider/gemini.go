@@ -592,10 +592,14 @@ func (g *GeminiAdapter) consumeSSE(
 		// the resulting "no model output" as a generic stall rather
 		// than the safety_blocked verdict the operator needs to see.
 		if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
-			emitEvent(types.StreamEvent{
+			ev := types.StreamEvent{
 				Type:       "message_complete",
 				StopReason: "safety_blocked",
-			})
+			}
+			if chunk.UsageMetadata != nil {
+				chunk.UsageMetadata.applyTo(&ev)
+			}
+			emitEvent(ev)
 			return
 		}
 	}
