@@ -110,10 +110,10 @@ type AnthropicBehaviourFlags struct {
 	EffortLevels []string `json:"effortLevels"`
 
 	// PromptCaching, when true, sends the system prompt as a text block
-	// carrying an ephemeral cache_control breakpoint and adds a top-level
-	// cache_control, so tools, system and the growing message history are
-	// read from cache on later turns. The zero value sends neither, and
-	// the API caches nothing.
+	// carrying an ephemeral cache_control breakpoint and, on requests with
+	// a StreamParams.CacheKey, adds a top-level cache_control, so tools,
+	// system and the growing message history are read from cache on later
+	// turns. The zero value sends neither, and the API caches nothing.
 	PromptCaching bool `json:"promptCaching"`
 }
 

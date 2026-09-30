@@ -118,7 +118,8 @@ type anthropicRequest struct {
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 	// CacheControl is the top-level automatic-caching breakpoint: the API
 	// places it on the last cacheable block of each request, so the cached
-	// prefix grows with the conversation. Nil omits the key.
+	// prefix grows with the conversation. Set only for requests carrying a
+	// StreamParams.CacheKey; nil omits the key.
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 	Stream       bool                   `json:"stream"`
 }
@@ -454,7 +455,9 @@ func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
 // q carries the resolved per-(provider, model) quirks. A zero-value q (both
 // Supported=false) emits no tool_choice field, string-only tool results, a
 // string system prompt and no cache_control, so callers that do not route
-// through the registry get the baseline shape.
+// through the registry get the baseline shape. With PromptCaching set, the
+// system breakpoint is sent on every request and the top-level breakpoint
+// only when params.CacheKey marks a multi-turn conversation.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
@@ -475,7 +478,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		system = &anthropicSystemPrompt{Text: params.System, Cache: caching}
 	}
 	var cacheControl *anthropicCacheControl
-	if caching {
+	if caching && params.CacheKey != "" {
 		cacheControl = ephemeralCacheControl()
 	}
 	return anthropicRequest{

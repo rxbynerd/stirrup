@@ -30,7 +30,8 @@ func contractFixtureMessages() []types.Message {
 }
 
 // TestAnthropicContract_ToolEnabledRequestBody pins the outbound Anthropic
-// Messages request for a tool-enabled, required-tool-choice turn.
+// Messages request for a tool-enabled, required-tool-choice main-loop turn
+// (one carrying a cache key).
 func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 	params := types.StreamParams{
 		Model:       "claude-sonnet-4-6",
@@ -40,6 +41,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 		ToolChoice:  types.ToolChoiceRequired,
+		CacheKey:    "contract-cache-key",
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
@@ -65,6 +67,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 		ToolChoice:  types.ToolChoiceRequired,
+		CacheKey:    "contract-cache-key",
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))

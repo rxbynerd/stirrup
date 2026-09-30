@@ -332,6 +332,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 		System:      "You are helpful.",
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
+		CacheKey:    "k",
 	})
 	if err != nil {
 		t.Fatalf("Stream() error: %v", err)
