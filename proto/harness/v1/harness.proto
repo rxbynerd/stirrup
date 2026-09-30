@@ -989,7 +989,9 @@ message RunTrace {
   // Number of agentic loop turns completed.
   int32 turns = 2;
 
-  // Total input tokens consumed across all provider calls.
+  // Total input tokens consumed across all provider calls, cached tokens
+  // included. Provider-reported where the provider reports it, estimated
+  // by the harness otherwise.
   int32 input_tokens = 3;
 
   // Total output tokens consumed across all provider calls.
@@ -1018,6 +1020,18 @@ message RunTrace {
   //         "verification_error", "budget_exceeded", "stalled",
   //         "tool_failures", "cancelled", "timeout", "max_tokens".
   string outcome = 8;
+
+  // Portion of input_tokens the provider served from its prompt cache.
+  // 0 when the provider does not report it.
+  int32 cache_read_tokens = 9;
+
+  // Portion of input_tokens the provider wrote to its prompt cache.
+  // 0 when the provider does not report it.
+  int32 cache_write_tokens = 10;
+
+  // Portion of output_tokens the provider reported as reasoning or
+  // thinking. 0 when the provider does not report it.
+  int32 reasoning_tokens = 11;
 }
 
 // ---------------------------------------------------------------------------

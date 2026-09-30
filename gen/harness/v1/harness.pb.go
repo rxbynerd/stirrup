@@ -2130,7 +2130,9 @@ type RunTrace struct {
 	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Number of agentic loop turns completed.
 	Turns int32 `protobuf:"varint,2,opt,name=turns,proto3" json:"turns,omitempty"`
-	// Total input tokens consumed across all provider calls.
+	// Total input tokens consumed across all provider calls, cached tokens
+	// included. Provider-reported where the provider reports it, estimated
+	// by the harness otherwise.
 	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	// Total output tokens consumed across all provider calls.
 	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
@@ -2154,9 +2156,18 @@ type RunTrace struct {
 	//
 	//	"verification_error", "budget_exceeded", "stalled",
 	//	"tool_failures", "cancelled", "timeout", "max_tokens".
-	Outcome       string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Outcome string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// Portion of input_tokens the provider served from its prompt cache.
+	// 0 when the provider does not report it.
+	CacheReadTokens int32 `protobuf:"varint,9,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	// Portion of input_tokens the provider wrote to its prompt cache.
+	// 0 when the provider does not report it.
+	CacheWriteTokens int32 `protobuf:"varint,10,opt,name=cache_write_tokens,json=cacheWriteTokens,proto3" json:"cache_write_tokens,omitempty"`
+	// Portion of output_tokens the provider reported as reasoning or
+	// thinking. 0 when the provider does not report it.
+	ReasoningTokens int32 `protobuf:"varint,11,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RunTrace) Reset() {
@@ -2243,6 +2254,27 @@ func (x *RunTrace) GetOutcome() string {
 		return x.Outcome
 	}
 	return ""
+}
+
+func (x *RunTrace) GetCacheReadTokens() int32 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
+}
+
+func (x *RunTrace) GetCacheWriteTokens() int32 {
+	if x != nil {
+		return x.CacheWriteTokens
+	}
+	return 0
+}
+
+func (x *RunTrace) GetReasoningTokens() int32 {
+	if x != nil {
+		return x.ReasoningTokens
+	}
+	return 0
 }
 
 // ProviderConfig selects the LLM provider implementation and its connection
@@ -4993,7 +5025,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\venvironment\x18\x01 \x01(\tR\venvironment\x12+\n" +
 	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\x12E\n" +
 	"\vlogs_export\x18\x03 \x01(\v2$.stirrup.harness.v1.LogsExportConfigR\n" +
-	"logsExport\"\xf6\x01\n" +
+	"logsExport\"\xfb\x02\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +
@@ -5004,7 +5036,11 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
 	"stopReason\x12\x18\n" +
-	"\aoutcome\x18\b \x01(\tR\aoutcome\"\x9e\x06\n" +
+	"\aoutcome\x18\b \x01(\tR\aoutcome\x12*\n" +
+	"\x11cache_read_tokens\x18\t \x01(\x05R\x0fcacheReadTokens\x12,\n" +
+	"\x12cache_write_tokens\x18\n" +
+	" \x01(\x05R\x10cacheWriteTokens\x12)\n" +
+	"\x10reasoning_tokens\x18\v \x01(\x05R\x0freasoningTokens\"\x9e\x06\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +

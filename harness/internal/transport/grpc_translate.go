@@ -76,13 +76,16 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	// StopReason mirrors Outcome for consumers predating the outcome field.
 	return &pb.RunTrace{
-		RunId:        t.ID,
-		Turns:        int32(t.Turns),
-		InputTokens:  int32(t.TokenUsage.Input),
-		OutputTokens: int32(t.TokenUsage.Output),
-		DurationMs:   t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
-		Outcome:      t.Outcome,
-		StopReason:   t.Outcome,
+		RunId:            t.ID,
+		Turns:            int32(t.Turns),
+		InputTokens:      int32(t.TokenUsage.Input),
+		OutputTokens:     int32(t.TokenUsage.Output),
+		CacheReadTokens:  int32(t.TokenUsage.CacheRead),
+		CacheWriteTokens: int32(t.TokenUsage.CacheWrite),
+		ReasoningTokens:  int32(t.TokenUsage.Reasoning),
+		DurationMs:       t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
+		Outcome:          t.Outcome,
+		StopReason:       t.Outcome,
 	}
 }
 

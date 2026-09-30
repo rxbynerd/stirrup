@@ -998,7 +998,7 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			tr := &types.RunTrace{
 				ID:          "run-141",
 				Turns:       3,
-				TokenUsage:  types.TokenUsage{Input: 120, Output: 45},
+				TokenUsage:  types.TokenUsage{Input: 120, Output: 45, CacheRead: 80, CacheWrite: 30, Reasoning: 12},
 				StartedAt:   start,
 				CompletedAt: start.Add(2500 * time.Millisecond),
 				Outcome:     tc.outcome,
@@ -1019,6 +1019,10 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			if pt.InputTokens != 120 || pt.OutputTokens != 45 {
 				t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", pt.InputTokens, pt.OutputTokens)
 			}
+			if pt.CacheReadTokens != 80 || pt.CacheWriteTokens != 30 || pt.ReasoningTokens != 12 {
+				t.Errorf("token breakdown: got cache_read=%d cache_write=%d reasoning=%d, want 80/30/12",
+					pt.CacheReadTokens, pt.CacheWriteTokens, pt.ReasoningTokens)
+			}
 			if pt.DurationMs != 2500 {
 				t.Errorf("DurationMs: got %d, want 2500", pt.DurationMs)
 			}
@@ -1036,6 +1040,10 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			}
 			if decoded.StopReason != tc.outcome {
 				t.Errorf("stop_reason did not survive wire round-trip: got %q, want %q", decoded.StopReason, tc.outcome)
+			}
+			if decoded.CacheReadTokens != 80 || decoded.CacheWriteTokens != 30 || decoded.ReasoningTokens != 12 {
+				t.Errorf("token breakdown did not survive wire round-trip: got %d/%d/%d, want 80/30/12",
+					decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
 			}
 		})
 	}
