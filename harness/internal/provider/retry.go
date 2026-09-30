@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -66,6 +68,52 @@ func retryableStatus(s int) bool {
 	default:
 		return false
 	}
+}
+
+// maxQuotaBodyPeek bounds how much of a 429 body is buffered to read its
+// error code; it matches the adapters' own error-body read limit.
+const maxQuotaBodyPeek = 4096
+
+// quotaErrorCodes are the documented OpenAI 429 error codes for billing,
+// spend, and quota limits. Retrying cannot restore access until an
+// operator raises the limit, so they are terminal despite the 429.
+var quotaErrorCodes = map[string]bool{
+	"insufficient_quota":                true,
+	"credit_balance_exhausted":          true,
+	"organization_spend_limit_exceeded": true,
+	"project_spend_limit_exceeded":      true,
+	"organization_usage_limit_exceeded": true,
+}
+
+// quotaExhausted reports whether resp is a 429 whose JSON error body names
+// a billing, spend, or quota limit, by error.code or by the broader
+// error.type "insufficient_quota". It reads at most maxQuotaBodyPeek bytes
+// and replaces resp.Body so the caller still reads the whole body.
+func quotaExhausted(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
+		return false
+	}
+	peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBodyPeek))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(peek), resp.Body), resp.Body}
+
+	// any, not string: gateways and other providers send numeric codes
+	// (Gemini's error.code is the HTTP status), which must not fail the
+	// decode of a sibling field.
+	var body struct {
+		Error struct {
+			Type any `json:"type"`
+			Code any `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(peek, &body) != nil {
+		return false
+	}
+	code, _ := body.Error.Code.(string)
+	errType, _ := body.Error.Type.(string)
+	return quotaErrorCodes[code] || errType == "insufficient_quota"
 }
 
 // transientErr reports whether a transport-level error is retryable.
@@ -397,12 +445,16 @@ func DoWithRetry(
 // classifyRetryable decides whether resp should be retried. The
 // optional shouldRetry callback gets first pass: when consumed=true
 // its retryable value is final; when consumed=false the call falls
-// through to the default retryableStatus heuristic.
+// through to the default heuristic, under which a quota-exhausted 429
+// is terminal and every other status follows retryableStatus.
 func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) bool {
 	if shouldRetry != nil {
 		if retryable, consumed := shouldRetry(resp); consumed {
 			return retryable
 		}
+	}
+	if quotaExhausted(resp) {
+		return false
 	}
 	return retryableStatus(resp.StatusCode)
 }
