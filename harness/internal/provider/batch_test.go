@@ -482,6 +482,91 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity pins
+// that a batch request carries the same quirk-driven fields as a streamed
+// one: the encrypted-reasoning include, strict tools, and verbatim replay
+// of a stored turn from the inner adapter's origin, all only on a
+// reasoning model.
+func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testing.T) {
+	const baseURL = "https://api.example.test/v1"
+	cases := []struct {
+		model  string
+		gated  bool
+		strict bool
+	}{
+		{model: "gpt-5.6-sol", gated: true, strict: true},
+		{model: "gpt-4o", gated: false, strict: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			inner := NewOpenAIResponsesAdapter(staticBearer("test-key"), baseURL, OpenAIAuthConfig{})
+			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+			assistant := storedTurn(t, responsesReplayOrigin(tc.model, baseURL),
+				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
+				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,
+				`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"}`)
+			body, err := a.marshalRequestBody(types.StreamParams{
+				Model: tc.model,
+				Messages: []types.Message{
+					replayUserPrompt,
+					assistant,
+					{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "package a"}}},
+				},
+				Tools: []types.ToolDefinition{{
+					Name:        "read_file",
+					Description: "Read a file",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+				}},
+				MaxTokens: 256,
+			})
+			if err != nil {
+				t.Fatalf("marshalRequestBody: %v", err)
+			}
+			s := string(body)
+			for field, want := range map[string]bool{
+				`"include":["reasoning.encrypted_content"]`: tc.gated,
+				`"strict":true`:                   tc.strict,
+				`"encrypted_content":"enc-batch"`: tc.gated,
+				`"id":"fc_1"`:                     tc.gated,
+			} {
+				if got := strings.Contains(s, field); got != want {
+					t.Errorf("body contains %s = %v, want %v: %s", field, got, want, s)
+				}
+			}
+			assertCallsPaired(t, requestInput(t, body))
+		})
+	}
+}
+
+// TestFabricateStream_OpenAIResponsesNeverCaptures pins that batch results
+// carry no stored output items, so a batched turn is reconstructed on the
+// next request even on a reasoning model.
+func TestFabricateStream_OpenAIResponsesNeverCaptures(t *testing.T) {
+	response := []byte(`{
+		"status": "completed",
+		"output": [
+			{"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc"},
+			{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+			 "content": [{"type": "output_text", "text": "hi"}]}
+		]
+	}`)
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "openai-responses")
+	close(ch)
+	sawComplete := false
+	for ev := range ch {
+		if ev.Type == "message_complete" {
+			sawComplete = true
+		}
+		if ev.ReplayFields != nil {
+			t.Errorf("%s event carries ReplayFields: %v", ev.Type, ev.ReplayFields)
+		}
+	}
+	if !sawComplete {
+		t.Error("no message_complete event")
+	}
+}
+
 func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
 	mkIncomplete := func(reason string) *struct {
 		Reason string `json:"reason"`

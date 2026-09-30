@@ -78,7 +78,7 @@ func TestGPT5ResponsesEffortRules(t *testing.T) {
 		omitSample bool
 	}{
 		{"gpt-5.4", upToXHigh, false},
-		{"gpt-5.4-nano", upToXHigh, false},
+		{"gpt-5.4-nano", upToXHigh, false}, // inferred: only gpt-5.4 is documented
 		{"gpt-5.5", upToXHigh, true},
 		{"gpt-5.5-2026-04-23", upToXHigh, true},
 		{"gpt-5.6-sol", upToMax, true},
@@ -165,7 +165,7 @@ func TestResponsesIncludeEncryptedReasoningRules(t *testing.T) {
 func TestResponsesReplayOutputItemsRules(t *testing.T) {
 	cases := map[string]bool{
 		"gpt-5":             true,
-		"gpt-5.4-mini":      true,
+		"gpt-5.4-mini":      true, // inferred: only gpt-5.4 is documented
 		"gpt-5.6-sol":       true,
 		"gpt-6.1-sol":       true,
 		"o1":                true,

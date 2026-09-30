@@ -263,6 +263,8 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 		wantStrict bool
 	}{
 		{"gpt-5", true},
+		// Inferred: gpt-5.4-mini inherits the gpt-5* rule; only gpt-5.4 is
+		// documented.
 		{"gpt-5.4-mini", true},
 		{"gpt-5.6-sol", true},
 		{"gpt-6-astra", true},
@@ -338,31 +340,133 @@ func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
 	}
 }
 
-func TestResponsesRequestUnmarshal_RejectsMalformedInclude(t *testing.T) {
-	var r responsesRequest
-	if err := json.Unmarshal([]byte(`{"model":"gpt-5","include":"reasoning.encrypted_content"}`), &r); err == nil {
-		t.Error("expected an error for a non-array include")
+// TestResponsesRequestUnmarshal_Include pins the test-side decode of the
+// include key: only an array naming reasoning.encrypted_content sets the
+// flag, and a non-array or non-string value is an error.
+func TestResponsesRequestUnmarshal_Include(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		want    bool
+		wantErr bool
+	}{
+		{name: "absent", body: `{"model":"gpt-5"}`},
+		{name: "null", body: `{"model":"gpt-5","include":null}`},
+		{name: "empty", body: `{"model":"gpt-5","include":[]}`},
+		{name: "other value only", body: `{"model":"gpt-5","include":["message.output_text.logprobs"]}`},
+		{name: "among others", body: `{"model":"gpt-5","include":["message.output_text.logprobs","reasoning.encrypted_content"]}`, want: true},
+		{name: "not an array", body: `{"model":"gpt-5","include":"reasoning.encrypted_content"}`, wantErr: true},
+		{name: "non-string element", body: `{"model":"gpt-5","include":[1]}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r responsesRequest
+			err := json.Unmarshal([]byte(tc.body), &r)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Unmarshal error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err == nil && r.IncludeEncryptedReasoning != tc.want {
+				t.Errorf("IncludeEncryptedReasoning = %v, want %v", r.IncludeEncryptedReasoning, tc.want)
+			}
+		})
 	}
 }
 
-// TestResponsesStrictMode_FailsClosedBeforeSend pins that a tool schema the
-// strict rewriter cannot express (anyOf here, as an MCP server might
-// supply) stops a strict-mode Responses request before any bytes are sent.
-func TestResponsesStrictMode_FailsClosedBeforeSend(t *testing.T) {
+// TestResponsesStrictMode_StreamSendsNormalisedSchema pins the strict wire
+// shape through Stream on gpt-5.6: strict:true on the tool and the schema
+// rewritten for strict mode.
+func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 	params := effortParams("gpt-5.6-sol", "", false)
 	params.Tools = []types.ToolDefinition{{
-		Name:        "mcp_lookup",
-		Description: "Look up a record",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["id"]}`),
+		Name:        "search",
+		Description: "Search files",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"limit":{"type":"integer"}},"required":["pattern"]}`),
 	}}
-	srv, hits := countingServer(t)
-	adapter := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
-	_, err := adapter.Stream(context.Background(), params)
-	if err == nil || !strings.Contains(err.Error(), "strict-mode schema lint failed") {
-		t.Fatalf("Stream() error = %v, want strict-mode lint failure", err)
+	script := newResponsesScript(t)
+	ch, err := script.adapter(nil).Stream(context.Background(), params)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
 	}
-	if hits.Load() != 0 {
-		t.Errorf("server received %d requests, want 0", hits.Load())
+	collectEvents(t, ch)
+	var req struct {
+		Tools []struct {
+			Strict     bool           `json:"strict"`
+			Parameters map[string]any `json:"parameters"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(script.lastBody(t), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(req.Tools) != 1 || !req.Tools[0].Strict {
+		t.Fatalf("tools = %+v, want one strict tool", req.Tools)
+	}
+	schema := req.Tools[0].Parameters
+	if schema["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+	if required, _ := schema["required"].([]any); len(required) != 2 {
+		t.Errorf("required = %v, want both properties", schema["required"])
+	}
+	limit, _ := schema["properties"].(map[string]any)["limit"].(map[string]any)
+	if limitTypes, ok := limit["type"].([]any); !ok || len(limitTypes) != 2 {
+		t.Errorf("limit.type = %v, want the optional property made nullable", limit["type"])
+	}
+}
+
+// TestStrictMode_FailsClosedAlikeOnBothSurfaces pins that a tool schema
+// the strict rewriter cannot express (anyOf here, as an MCP server might
+// supply) stops a strict-mode request before any bytes are sent, with the
+// same lint error on Chat Completions gpt-5 and Responses gpt-5.x.
+func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
+	params := func(model string) types.StreamParams {
+		p := effortParams(model, "", false)
+		p.Tools = []types.ToolDefinition{{
+			Name:        "mcp_lookup",
+			Description: "Look up a record",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["id"]}`),
+		}}
+		return p
+	}
+	cases := []struct {
+		name  string
+		model string
+		new   func(url string) ProviderAdapter
+	}{
+		{"chat gpt-5", "gpt-5", func(url string) ProviderAdapter {
+			return NewOpenAICompatibleAdapter(staticBearer("k"), url, OpenAIAuthConfig{}, RetryPolicy{})
+		}},
+		{"responses gpt-5", "gpt-5", func(url string) ProviderAdapter {
+			return NewOpenAIResponsesAdapter(staticBearer("k"), url, OpenAIAuthConfig{})
+		}},
+		{"responses gpt-5.6", "gpt-5.6-sol", func(url string) ProviderAdapter {
+			return NewOpenAIResponsesAdapter(staticBearer("k"), url, OpenAIAuthConfig{})
+		}},
+	}
+	var lintErrs []string
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, hits := countingServer(t)
+			_, err := tc.new(srv.URL).Stream(context.Background(), params(tc.model))
+			if err == nil {
+				t.Fatal("Stream() succeeded, want strict-mode lint failure")
+			}
+			i := strings.Index(err.Error(), "strict-mode schema lint failed")
+			if i < 0 {
+				t.Fatalf("Stream() error = %v, want strict-mode lint failure", err)
+			}
+			lintErrs = append(lintErrs, err.Error()[i:])
+			if hits.Load() != 0 {
+				t.Errorf("server received %d requests, want 0", hits.Load())
+			}
+		})
+	}
+	if len(lintErrs) != len(cases) {
+		t.Fatalf("collected %d lint errors, want %d", len(lintErrs), len(cases))
+	}
+	for _, e := range lintErrs[1:] {
+		if e != lintErrs[0] {
+			t.Errorf("lint errors differ across surfaces: %q vs %q", e, lintErrs[0])
+		}
 	}
 }
 

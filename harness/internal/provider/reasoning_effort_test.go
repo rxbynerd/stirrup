@@ -180,6 +180,8 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 		{"gpt-6-astra", "", nil, []string{`"temperature"`, `"reasoning"`}},
 		{"gpt-5.4", "", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
 		{"gpt-5.4", "high", []string{`"reasoning":{"effort":"high"}`}, []string{`"temperature"`}},
+		// gpt-5.4-mini inherits the gpt-5.4 rule; only gpt-5.4 is documented,
+		// so this row is inferred.
 		{"gpt-5.4-mini", "xhigh", []string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
 		{"gpt-5.5", "", nil, []string{`"temperature"`, `"reasoning"`}},
 		{"gpt-5.5", "low", []string{`"reasoning":{"effort":"low"}`}, []string{`"temperature"`}},
@@ -236,13 +238,18 @@ func TestResponsesAdapter_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
 
 // TestResponsesAdapter_GPT5EffortAllowListsBeforeSend pins the GPT-5.x
 // Responses allow-lists at the pre-send guard: minimal is documented for
-// none of them, and max only for gpt-5.6.
+// none of them, and max only for gpt-5.6. The documented none level is
+// outside the provider-neutral enum, so it is refused on every model.
 func TestResponsesAdapter_GPT5EffortAllowListsBeforeSend(t *testing.T) {
 	cases := []struct{ model, effort string }{
 		{"gpt-5.6-terra", "minimal"},
+		{"gpt-5.5", "minimal"},
 		{"gpt-5.5", "max"},
 		{"gpt-5.4", "max"},
 		{"gpt-5.4", "minimal"},
+		{"gpt-5.4", "none"},
+		{"gpt-5.5", "none"},
+		{"gpt-5.6-sol", "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
@@ -260,29 +267,67 @@ func TestResponsesAdapter_GPT5EffortAllowListsBeforeSend(t *testing.T) {
 	}
 }
 
-// TestResponsesAdapter_EffortSuppressesTemperatureWarns pins that dropping
-// temperature because an effort is sent is logged like the quirk-driven
-// suppression, on a model (gpt-5.4) with no sampling-param rule.
-func TestResponsesAdapter_EffortSuppressesTemperatureWarns(t *testing.T) {
-	cases := []struct {
-		effort   string
-		wantWarn bool
-	}{
-		{"high", true},
-		{"", false},
+// TestResponsesAdapter_GPT5EffortLevelsOnTheWire drives each accepted
+// GPT-5.x level through Stream and pins the sent body: the level as
+// reasoning.effort and no temperature. With no effort, gpt-5.5 and gpt-5.6
+// still omit temperature (inferred from their medium default). Documented,
+// not probed.
+func TestResponsesAdapter_GPT5EffortLevelsOnTheWire(t *testing.T) {
+	cases := []struct{ model, effort string }{
+		{"gpt-5.6-sol", "low"},
+		{"gpt-5.6-sol", "medium"},
+		{"gpt-5.6-sol", "high"},
+		{"gpt-5.6-sol", "xhigh"},
+		{"gpt-5.6-sol", "max"},
+		{"gpt-5.5", ""},
+		{"gpt-5.6-luna", ""},
 	}
 	for _, tc := range cases {
-		t.Run("effort="+tc.effort, func(t *testing.T) {
-			var buf bytes.Buffer
-			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), responsesWarnStubServer(t).URL, OpenAIAuthConfig{})
-			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
-			ch, err := adapter.Stream(context.Background(), effortParams("gpt-5.4", tc.effort, false))
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			script := newResponsesScript(t)
+			ch, err := script.adapter(nil).Stream(context.Background(), effortParams(tc.model, tc.effort, false))
 			if err != nil {
 				t.Fatalf("Stream() error: %v", err)
 			}
 			collectEvents(t, ch)
-			if got := strings.Contains(buf.String(), "suppressed caller temperature"); got != tc.wantWarn {
-				t.Errorf("warned = %v, want %v; log: %s", got, tc.wantWarn, buf.String())
+			body := string(script.lastBody(t))
+			if strings.Contains(body, `"temperature"`) {
+				t.Errorf("body carries temperature: %s", body)
+			}
+			wantReasoning := tc.effort != ""
+			if got := strings.Contains(body, `"reasoning":{"effort":"`+tc.effort+`"}`); got != wantReasoning {
+				t.Errorf("reasoning.effort %q present = %v, want %v: %s", tc.effort, got, wantReasoning, body)
+			}
+		})
+	}
+}
+
+// TestResponsesAdapter_EffortSuppressesTemperatureWarns pins that a dropped
+// caller temperature is logged exactly once per request, whether an effort
+// (gpt-5.4, with no sampling-param rule) or the model's rule (gpt-5.6) or
+// both cause it.
+func TestResponsesAdapter_EffortSuppressesTemperatureWarns(t *testing.T) {
+	cases := []struct {
+		model, effort string
+		wantWarns     int
+	}{
+		{"gpt-5.4", "high", 1},
+		{"gpt-5.4", "", 0},
+		{"gpt-5.6-sol", "high", 1},
+		{"gpt-5.6-sol", "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/effort="+tc.effort, func(t *testing.T) {
+			var buf bytes.Buffer
+			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), responsesWarnStubServer(t).URL, OpenAIAuthConfig{})
+			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+			ch, err := adapter.Stream(context.Background(), effortParams(tc.model, tc.effort, false))
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			collectEvents(t, ch)
+			if got := strings.Count(buf.String(), "suppressed caller temperature"); got != tc.wantWarns {
+				t.Errorf("warnings = %d, want %d; log: %s", got, tc.wantWarns, buf.String())
 			}
 		})
 	}
