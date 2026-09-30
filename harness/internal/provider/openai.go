@@ -701,11 +701,13 @@ type openaiUsage struct {
 
 // applyTo copies the usage onto a message_complete event.
 func (u openaiUsage) applyTo(ev *types.StreamEvent) {
-	ev.InputTokens = u.PromptTokens
-	ev.OutputTokens = u.CompletionTokens
-	ev.CacheReadTokens = u.PromptTokensDetails.CachedTokens
-	ev.CacheWriteTokens = u.PromptTokensDetails.CacheWriteTokens
-	ev.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	setEventUsage(ev, tokenReport{
+		Input:      u.PromptTokens,
+		Output:     u.CompletionTokens,
+		CacheRead:  u.PromptTokensDetails.CachedTokens,
+		CacheWrite: u.PromptTokensDetails.CacheWriteTokens,
+		Reasoning:  u.CompletionTokensDetails.ReasoningTokens,
+	})
 }
 
 // openaiErrorResponse is the error format returned by the OpenAI API.

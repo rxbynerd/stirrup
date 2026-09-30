@@ -295,12 +295,14 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 // Messages API that Bedrock fronts for Claude, so they are added back to
 // report the whole prompt.
 func applyBedrockUsage(u *brtypes.TokenUsage, ev *types.StreamEvent) {
-	cacheRead := int(aws.ToInt32(u.CacheReadInputTokens))
-	cacheWrite := int(aws.ToInt32(u.CacheWriteInputTokens))
-	ev.InputTokens = int(aws.ToInt32(u.InputTokens)) + cacheRead + cacheWrite
-	ev.OutputTokens = int(aws.ToInt32(u.OutputTokens))
-	ev.CacheReadTokens = cacheRead
-	ev.CacheWriteTokens = cacheWrite
+	cacheRead := clampTokens(int(aws.ToInt32(u.CacheReadInputTokens)))
+	cacheWrite := clampTokens(int(aws.ToInt32(u.CacheWriteInputTokens)))
+	setEventUsage(ev, tokenReport{
+		Input:      clampTokens(int(aws.ToInt32(u.InputTokens))) + cacheRead + cacheWrite,
+		Output:     int(aws.ToInt32(u.OutputTokens)),
+		CacheRead:  cacheRead,
+		CacheWrite: cacheWrite,
+	})
 }
 
 // buildConverseStreamInput translates stirrup StreamParams into a Bedrock

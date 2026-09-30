@@ -193,13 +193,16 @@ type geminiUsageMetadata struct {
 // Some Vertex deployments populate only the total; output is then
 // derived as total minus prompt, which already counts thoughts.
 func (u geminiUsageMetadata) applyTo(ev *types.StreamEvent) {
-	ev.InputTokens = u.PromptTokenCount
-	ev.CacheReadTokens = u.CachedContentTokenCount
-	ev.ReasoningTokens = u.ThoughtsTokenCount
-	ev.OutputTokens = u.CandidatesTokenCount + u.ThoughtsTokenCount
-	if ev.OutputTokens == 0 && u.TotalTokenCount > 0 {
-		if derived := u.TotalTokenCount - u.PromptTokenCount; derived > 0 {
-			ev.OutputTokens = derived
-		}
+	prompt := clampTokens(u.PromptTokenCount)
+	thoughts := clampTokens(u.ThoughtsTokenCount)
+	output := clampTokens(u.CandidatesTokenCount) + thoughts
+	if output == 0 {
+		output = max(clampTokens(u.TotalTokenCount)-prompt, 0)
 	}
+	setEventUsage(ev, tokenReport{
+		Input:     prompt,
+		Output:    output,
+		CacheRead: u.CachedContentTokenCount,
+		Reasoning: thoughts,
+	})
 }

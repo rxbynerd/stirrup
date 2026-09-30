@@ -538,11 +538,13 @@ type responsesUsage struct {
 
 // applyTo copies the usage onto a message_complete event.
 func (u responsesUsage) applyTo(ev *types.StreamEvent) {
-	ev.InputTokens = u.InputTokens
-	ev.OutputTokens = u.OutputTokens
-	ev.CacheReadTokens = u.InputTokensDetails.CachedTokens
-	ev.CacheWriteTokens = u.InputTokensDetails.CacheWriteTokens
-	ev.ReasoningTokens = u.OutputTokensDetails.ReasoningTokens
+	setEventUsage(ev, tokenReport{
+		Input:      u.InputTokens,
+		Output:     u.OutputTokens,
+		CacheRead:  u.InputTokensDetails.CachedTokens,
+		CacheWrite: u.InputTokensDetails.CacheWriteTokens,
+		Reasoning:  u.OutputTokensDetails.ReasoningTokens,
+	})
 }
 
 // responsesResponse is the response object delivered on response.completed

@@ -397,11 +397,15 @@ type anthropicUsage struct {
 // applyTo copies the usage onto a message_complete event, folding the
 // cache figures into InputTokens.
 func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
-	ev.InputTokens = u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-	ev.OutputTokens = u.OutputTokens
-	ev.CacheReadTokens = u.CacheReadInputTokens
-	ev.CacheWriteTokens = u.CacheCreationInputTokens
-	ev.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
+	cacheRead := clampTokens(u.CacheReadInputTokens)
+	cacheWrite := clampTokens(u.CacheCreationInputTokens)
+	setEventUsage(ev, tokenReport{
+		Input:      clampTokens(u.InputTokens) + cacheWrite + cacheRead,
+		Output:     u.OutputTokens,
+		CacheRead:  cacheRead,
+		CacheWrite: cacheWrite,
+		Reasoning:  u.OutputTokensDetails.ThinkingTokens,
+	})
 }
 
 // buildAnthropicRequest projects a StreamParams into the Anthropic Messages
