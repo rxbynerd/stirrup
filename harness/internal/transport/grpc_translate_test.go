@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -1046,6 +1047,40 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 					decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
 			}
 		})
+	}
+}
+
+func TestRunTraceToProto_ZeroBreakdownRoundTrip(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{ID: "run-zero", TokenUsage: types.TokenUsage{Input: 120, Output: 45}})
+	raw, err := proto.Marshal(pt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.InputTokens != 120 || decoded.OutputTokens != 45 {
+		t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", decoded.InputTokens, decoded.OutputTokens)
+	}
+	if decoded.CacheReadTokens != 0 || decoded.CacheWriteTokens != 0 || decoded.ReasoningTokens != 0 {
+		t.Errorf("token breakdown: got %d/%d/%d, want all zero",
+			decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
+	}
+}
+
+func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{TokenUsage: types.TokenUsage{
+		Input:     math.MaxInt,
+		Output:    math.MaxInt32 + 1,
+		CacheRead: math.MaxInt32,
+		Reasoning: math.MinInt,
+	}})
+	if pt.InputTokens != math.MaxInt32 || pt.OutputTokens != math.MaxInt32 {
+		t.Errorf("tokens: got in=%d out=%d, want both MaxInt32", pt.InputTokens, pt.OutputTokens)
+	}
+	if pt.CacheReadTokens != math.MaxInt32 || pt.ReasoningTokens != math.MinInt32 {
+		t.Errorf("breakdown: got cache_read=%d reasoning=%d, want MaxInt32/MinInt32", pt.CacheReadTokens, pt.ReasoningTokens)
 	}
 }
 
