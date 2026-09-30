@@ -45,6 +45,44 @@ is read as if it were a streaming file containing only the
 operate on the same `run_finished`-equivalent shape so operator
 workflows are unchanged across the format transition.
 
+### Token usage
+
+The `run_finished` trace's `tokenUsage` object (also the `tokenUsage`
+of a `RunResult` and the `input_tokens` / `output_tokens` /
+`cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` fields
+of the gRPC `RunTrace`) sums every turn:
+
+| Field | Meaning |
+|---|---|
+| `input` | Whole prompt, cached tokens included. The provider's figure where the provider reports one, otherwise the harness's estimate. |
+| `output` | Output tokens, reasoning included. |
+| `cacheRead` | Part of `input` served from the provider's prompt cache. |
+| `cacheWrite` | Part of `input` written to the provider's prompt cache. |
+| `reasoning` | Part of `output` spent on reasoning or thinking. |
+
+The three breakdown fields are omitted when zero, which is the case
+for a provider that does not report them. A single run can mix
+provider-reported and estimated turns, so the aggregate carries no
+source flag. Per turn, the source is visible on the `turn completed`
+log line (`tokens.input.reported`), on the `provider.stream` span
+(`tokens.input.reported`), and on the OTel `turn[N]` span
+(`stirrup.tokens.input_reported`, see
+[`observability-cloud.md`](observability-cloud.md#token-usage-on-turn-spans)).
+The input is estimated when the adapter reports no input figure: the
+eval replay provider, an `openai-compatible` server that ignores
+`stream_options.include_usage`, or an Anthropic-compatible endpoint
+that reports only `output_tokens`.
+
+Per-provider sources:
+
+| Provider | `input` | `cacheRead` / `cacheWrite` | `reasoning` |
+|---|---|---|---|
+| `anthropic` | `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens` | `cache_read_input_tokens` / `cache_creation_input_tokens` | `output_tokens_details.thinking_tokens` |
+| `openai-responses` | `input_tokens` | `input_tokens_details.cached_tokens` / `.cache_write_tokens` | `output_tokens_details.reasoning_tokens` |
+| `openai-compatible` | `prompt_tokens` | `prompt_tokens_details.cached_tokens` / `.cache_write_tokens` | `completion_tokens_details.reasoning_tokens` |
+| `gemini` | `promptTokenCount` | `cachedContentTokenCount` / none | `thoughtsTokenCount` (also added into `output`) |
+| `bedrock` | `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` | `cacheReadInputTokens` / `cacheWriteInputTokens` | none |
+
 ## Quick choice
 
 | Want to… | Use |

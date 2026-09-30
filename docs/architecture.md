@@ -637,8 +637,9 @@ the same totals are attached to the span as
 both surfaces; never the captured values themselves.
 
 The `harness/internal/observability/` package emits OTel metrics
-alongside tracing: 13 counters (`stirrup.harness.runs`, `.turns`,
-`.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`,
+alongside tracing: 15 counters (`stirrup.harness.runs`, `.turns`,
+`.tokens.input`, `.tokens.output`, `.tokens.cache_read`,
+`.tokens.cache_write`, `.tool_calls`, `.tool_errors`,
 `.tool_failures`, `.provider.requests`, `.provider.errors`,
 `.context.compactions`, `.security.events`, `.verification.attempts`,
 `.stalls`), 5 histograms (run, turn, tool-call duration; provider
