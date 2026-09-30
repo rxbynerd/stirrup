@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -548,14 +549,17 @@ type responsesTool struct {
 
 // responsesOutputItem is a single item in the response.output array.
 // Streaming events deliver these incrementally via response.output_item.added
-// and response.output_item.done.
+// and response.output_item.done. Replay forwards the raw item JSON, so
+// fields such as a reasoning item's encrypted_content are not modelled here.
 type responsesOutputItem struct {
-	Type      string `json:"type"` // "message" | "function_call" | "reasoning"
-	ID        string `json:"id,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Type      string                  `json:"type"` // "message" | "function_call" | "reasoning"
+	ID        string                  `json:"id,omitempty"`
+	CallID    string                  `json:"call_id,omitempty"`
+	Name      string                  `json:"name,omitempty"`
+	Arguments string                  `json:"arguments,omitempty"`
+	Status    string                  `json:"status,omitempty"`
+	Phase     string                  `json:"phase,omitempty"`   // "message": "commentary" | "final_answer"
+	Content   []responsesContentBlock `json:"content,omitempty"` // "message": output_text / refusal parts
 }
 
 // responsesUsage is the usage object on response.completed and
@@ -652,6 +656,159 @@ type responsesCallState struct {
 	name      string
 	argsBuf   strings.Builder
 	emitted   bool // emitted at most once even if both done events fire
+}
+
+// --- Output replay ---
+
+const (
+	// responsesReplayKey is the adapter-owned Message.ReplayFields key that
+	// carries one turn's ordered output items as a single JSON array. The
+	// dotted form is not a threadable Chat Completions replay path, so the
+	// openai-compatible adapter never echoes it.
+	responsesReplayKey = "openai_responses.output"
+
+	// maxResponsesReplayBytes caps the raw output items retained per turn.
+	// A turn over the cap is reconstructed rather than replayed.
+	maxResponsesReplayBytes = 1 << 20
+)
+
+// replayableResponsesItem reports whether an output item type can be
+// replayed verbatim as an input item. Other types (hosted-tool calls,
+// program items, compaction) disable replay for their turn.
+func replayableResponsesItem(itemType string) bool {
+	switch itemType {
+	case "reasoning", "message", "function_call":
+		return true
+	}
+	return false
+}
+
+// responsesReplayCapture collects one turn's output items so the next
+// request can replay them verbatim, as OpenAI documents for stateless
+// reasoning models. Replay is all-or-nothing per turn: an unreplayable item
+// type, a reasoning item without encrypted_content, or a total over
+// maxResponsesReplayBytes disables it, and the turn is then reconstructed
+// from its content blocks. Logs carry sizes and item types only, never item
+// content.
+type responsesReplayCapture struct {
+	logger *slog.Logger
+	model  string
+
+	streamed []responsesStreamedItem
+	size     int
+	disabled bool
+}
+
+// responsesStreamedItem is one raw item from response.output_item.done.
+type responsesStreamedItem struct {
+	outputIdx int
+	raw       json.RawMessage
+}
+
+// add records a completed output item from response.output_item.done.
+func (c *responsesReplayCapture) add(ctx context.Context, outputIdx int, itemType string, raw json.RawMessage) {
+	if c.disabled {
+		return
+	}
+	if !replayableResponsesItem(itemType) {
+		c.disable(ctx, "unreplayable output item type", slog.String("item_type", itemType))
+		return
+	}
+	if c.size+len(raw) > maxResponsesReplayBytes {
+		c.disable(ctx, "output items exceed replay size cap",
+			slog.Int("bytes", c.size+len(raw)),
+			slog.Int("limit_bytes", maxResponsesReplayBytes))
+		return
+	}
+	c.size += len(raw)
+	c.streamed = append(c.streamed, responsesStreamedItem{outputIdx: outputIdx, raw: raw})
+}
+
+// finalize returns the ReplayFields for the turn's message_complete event,
+// or nil when there is nothing to replay. output is the terminal event's
+// response.output array; when present it is authoritative (it carries the
+// final encrypted_content), otherwise the streamed done items are used.
+func (c *responsesReplayCapture) finalize(ctx context.Context, output []json.RawMessage) map[string]json.RawMessage {
+	if c.disabled {
+		return nil
+	}
+	items := output
+	if len(items) == 0 {
+		sort.SliceStable(c.streamed, func(i, j int) bool {
+			return c.streamed[i].outputIdx < c.streamed[j].outputIdx
+		})
+		items = make([]json.RawMessage, len(c.streamed))
+		for i, s := range c.streamed {
+			items[i] = s.raw
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	size := 0
+	for _, raw := range items {
+		var head struct {
+			Type             string `json:"type"`
+			EncryptedContent string `json:"encrypted_content"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			c.disable(ctx, "output item failed to decode")
+			return nil
+		}
+		if !replayableResponsesItem(head.Type) {
+			c.disable(ctx, "unreplayable output item type", slog.String("item_type", head.Type))
+			return nil
+		}
+		if head.Type == "reasoning" && head.EncryptedContent == "" {
+			c.disable(ctx, "reasoning item has no encrypted_content")
+			return nil
+		}
+		size += len(raw)
+	}
+	if size > maxResponsesReplayBytes {
+		c.disable(ctx, "output items exceed replay size cap",
+			slog.Int("bytes", size),
+			slog.Int("limit_bytes", maxResponsesReplayBytes))
+		return nil
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(size + len(items) + 1)
+	buf.WriteByte('[')
+	for i, raw := range items {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(raw)
+	}
+	buf.WriteByte(']')
+
+	c.logger.DebugContext(ctx, "openai-responses output replay captured",
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", c.model),
+		slog.Int("items", len(items)),
+		slog.Int("total_len", size),
+	)
+	return map[string]json.RawMessage{responsesReplayKey: buf.Bytes()}
+}
+
+// disable turns replay off for the rest of the turn, logging once.
+func (c *responsesReplayCapture) disable(ctx context.Context, reason string, attrs ...slog.Attr) {
+	if c.disabled {
+		return
+	}
+	c.disabled = true
+	c.streamed = nil
+	args := []any{
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", c.model),
+		slog.String("reason", reason),
+	}
+	for _, a := range attrs {
+		args = append(args, a)
+	}
+	c.logger.WarnContext(ctx, "openai-responses output replay disabled for turn; it will be reconstructed", args...)
 }
 
 // --- Message translation ---
@@ -983,7 +1140,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model)
 		// Record latency on a background context: the caller's `ctx` may
 		// already have been cancelled by the time the stream completes
 		// (the agentic loop has moved on), and some OTel exporters drop
@@ -1008,7 +1165,7 @@ func (o *OpenAIResponsesAdapter) recordLatency(ctx context.Context, start time.T
 // `event: <name>` and `data: <payload>` fields. Unlike the Chat Completions
 // adapter (which only reads `data:` lines), Responses streaming relies on
 // the event name to disambiguate payloads — there is no `[DONE]` sentinel.
-func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
+func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model string) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1037,6 +1194,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	// present, falling back to a stringified output_index). The value's
 	// outputIdx field is preserved so we can flush in deterministic order.
 	calls := make(map[string]*responsesCallState)
+	replay := &responsesReplayCapture{logger: logger, model: model}
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase the buffer ceiling so a single SSE record carrying a large
@@ -1062,7 +1220,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		if eventName == "" || data == "" {
 			return true
 		}
-		return o.dispatchEvent(ctx, eventName, data, calls, emitEvent)
+		return o.dispatchEvent(ctx, eventName, data, calls, replay, emitEvent)
 	}
 
 	for scanner.Scan() {
@@ -1142,7 +1300,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 // `emit` returns false when the consumer has gone away (context cancelled);
 // every emit call site propagates that to abandon the stream rather than
 // pretending to keep going.
-func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, emit func(types.StreamEvent) bool) bool {
+func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, emit func(types.StreamEvent) bool) bool {
 	switch name {
 	case "response.created":
 		// Optional metadata; nothing to emit.
@@ -1260,39 +1418,47 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 
 	case "response.output_item.done":
 		var payload struct {
-			OutputIndex int                 `json:"output_index"`
-			Item        responsesOutputItem `json:"item"`
+			OutputIndex int             `json:"output_index"`
+			Item        json.RawMessage `json:"item"`
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
 			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse output_item.done: %w", err)})
 			return false
 		}
-		if payload.Item.Type != "function_call" {
+		var item responsesOutputItem
+		if len(payload.Item) > 0 {
+			if err := json.Unmarshal(payload.Item, &item); err != nil {
+				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse output_item.done: %w", err)})
+				return false
+			}
+		}
+		replay.add(ctx, payload.OutputIndex, item.Type, payload.Item)
+		if item.Type != "function_call" {
 			return true
 		}
-		key := callKey(payload.Item.ID, payload.OutputIndex)
+		key := callKey(item.ID, payload.OutputIndex)
 		st, exists := calls[key]
 		if !exists {
 			st = &responsesCallState{
-				itemID:    payload.Item.ID,
+				itemID:    item.ID,
 				outputIdx: payload.OutputIndex,
 			}
 			calls[key] = st
 		}
-		if payload.Item.CallID != "" {
-			st.callID = payload.Item.CallID
+		if item.CallID != "" {
+			st.callID = item.CallID
 		}
-		if payload.Item.Name != "" {
-			st.name = payload.Item.Name
+		if item.Name != "" {
+			st.name = item.Name
 		}
 		// If the .done event carries the full arguments string and the
 		// streamed deltas were never seen, prefer the echoed copy.
-		if st.argsBuf.Len() == 0 && payload.Item.Arguments != "" {
-			if len(payload.Item.Arguments) > openaiMaxToolInputSize {
+		if st.argsBuf.Len() == 0 && item.Arguments != "" {
+			if len(item.Arguments) > openaiMaxToolInputSize {
 				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("tool arguments exceed %d byte limit", openaiMaxToolInputSize)})
 				return false
 			}
-			st.argsBuf.WriteString(payload.Item.Arguments)
+			st.argsBuf.WriteString(item.Arguments)
 		}
 		if !flushOneCall(st, emit) {
 			return false
@@ -1312,8 +1478,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			return false
 		}
 		ev := types.StreamEvent{
-			Type:       "message_complete",
-			StopReason: deriveStopReason(payload.Response),
+			Type:         "message_complete",
+			StopReason:   deriveStopReason(payload.Response),
+			ReplayFields: replay.finalize(ctx, responsesRawOutput(data)),
 		}
 		if payload.Response.Usage != nil {
 			payload.Response.Usage.applyTo(&ev)
@@ -1347,8 +1514,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			}
 		}
 		ev := types.StreamEvent{
-			Type:       "message_complete",
-			StopReason: stop,
+			Type:         "message_complete",
+			StopReason:   stop,
+			ReplayFields: replay.finalize(ctx, responsesRawOutput(data)),
 		}
 		if payload.Response.Usage != nil {
 			payload.Response.Usage.applyTo(&ev)
@@ -1463,6 +1631,20 @@ func flushPendingCalls(calls map[string]*responsesCallState, emit func(types.Str
 		}
 	}
 	return true
+}
+
+// responsesRawOutput returns a terminal event's response.output items as raw
+// JSON, or nil when the payload carries none.
+func responsesRawOutput(data string) []json.RawMessage {
+	var payload struct {
+		Response struct {
+			Output []json.RawMessage `json:"output"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return nil
+	}
+	return payload.Response.Output
 }
 
 // deriveStopReason adapts the streaming Responses response shape to
