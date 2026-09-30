@@ -1055,8 +1055,8 @@ message StopDetails {
   string type = 1;
 
   // Policy area of a refusal: "cyber", "bio", "frontier_llm",
-  // "reasoning_extraction", "general_harms", or empty when the refusal
-  // maps to no named category.
+  // "reasoning_extraction", "general_harms", "other" for an undocumented
+  // value, or empty when the refusal maps to no named category.
   string category = 2;
 
   // Provider's human-readable reason, scrubbed of secret-shaped content.

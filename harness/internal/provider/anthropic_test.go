@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -1440,10 +1441,10 @@ func TestSSE_MessageDeltaRefusalNullCategory(t *testing.T) {
 
 func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
 	cases := map[string]string{
-		"null":        `{"delta":{"stop_reason":"end_turn","stop_details":null}}`,
-		"absent":      `{"delta":{"stop_reason":"end_turn"}}`,
-		"empty":       `{"delta":{"stop_reason":"end_turn","stop_details":{}}}`,
-		"wrong shape": `{"delta":{"stop_reason":"end_turn","stop_details":{"type":"refusal","category":{"nested":true}}}}`,
+		"null":       `{"delta":{"stop_reason":"end_turn","stop_details":null}}`,
+		"absent":     `{"delta":{"stop_reason":"end_turn"}}`,
+		"empty":      `{"delta":{"stop_reason":"end_turn","stop_details":{}}}`,
+		"not object": `{"delta":{"stop_reason":"end_turn","stop_details":"refusal"}}`,
 	}
 	for name, delta := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1459,6 +1460,72 @@ func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
 			}
 			if events[0].StopDetails != nil {
 				t.Errorf("StopDetails = %+v, want nil", events[0].StopDetails)
+			}
+		})
+	}
+}
+
+// TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields pins that a
+// malformed field degrades on its own: the refusal type survives a
+// category of the wrong JSON type.
+func TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":{"nested":true},"explanation":42}}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	last := events[len(events)-1]
+	want := types.StopDetails{Type: "refusal", Category: "other"}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+}
+
+func TestParseAnthropicStopDetails_BoundsAndCategories(t *testing.T) {
+	longExplanation := strings.Repeat("a", maxStopDetailsExplanationBytes-1) + "é" + "tail"
+	cases := []struct {
+		name string
+		raw  string
+		want types.StopDetails
+	}{
+		{
+			name: "documented category kept",
+			raw:  `{"type":"refusal","category":"reasoning_extraction"}`,
+			want: types.StopDetails{Type: "refusal", Category: "reasoning_extraction"},
+		},
+		{
+			name: "undocumented category is other",
+			raw:  `{"type":"refusal","category":"new_policy_area"}`,
+			want: types.StopDetails{Type: "refusal", Category: "other"},
+		},
+		{
+			name: "numeric category is other",
+			raw:  `{"type":"refusal","category":7}`,
+			want: types.StopDetails{Type: "refusal", Category: "other"},
+		},
+		{
+			name: "empty category stays empty",
+			raw:  `{"type":"refusal","category":""}`,
+			want: types.StopDetails{Type: "refusal"},
+		},
+		{
+			name: "type capped",
+			raw:  `{"type":"` + strings.Repeat("t", 100) + `"}`,
+			want: types.StopDetails{Type: strings.Repeat("t", maxStopDetailsTypeBytes)},
+		},
+		{
+			name: "explanation capped on a rune boundary",
+			raw:  `{"type":"refusal","explanation":"` + longExplanation + `"}`,
+			want: types.StopDetails{Type: "refusal", Explanation: strings.Repeat("a", maxStopDetailsExplanationBytes-1)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAnthropicStopDetails(json.RawMessage(tc.raw))
+			if got == nil || *got != tc.want {
+				t.Errorf("parseAnthropicStopDetails(%s) = %+v, want %+v", tc.raw, got, tc.want)
+			}
+			if got != nil && !utf8.ValidString(got.Explanation) {
+				t.Errorf("Explanation %q is not valid UTF-8", got.Explanation)
 			}
 		})
 	}
@@ -1484,6 +1551,34 @@ func TestSSE_ErrorEventSurfacesErrorType(t *testing.T) {
 		t.Fatalf("event[1] = %+v, want an error event", last)
 	}
 	if got, want := last.Error.Error(), "anthropic API stream error (overloaded_error): Overloaded"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSSE_ErrorEventBeforeContent(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("error", `{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	if len(events) != 1 || events[0].Type != "error" || events[0].Error == nil {
+		t.Fatalf("events = %+v, want a single error event", events)
+	}
+	if got, want := events[0].Error.Error(), "anthropic API stream error (api_error): Internal server error"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSSE_TruncatedErrorEventData(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+		makeSSE("error", `{"type":"error","error":{"type":"overloaded_er`),
+	))
+	last := events[len(events)-1]
+	if last.Type != "error" || last.Error == nil {
+		t.Fatalf("last event = %+v, want an error event", last)
+	}
+	if got, want := last.Error.Error(), "anthropic API stream error"; got != want {
 		t.Errorf("error = %q, want %q", got, want)
 	}
 }

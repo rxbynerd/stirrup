@@ -219,7 +219,7 @@ func TestLoop_ContextWindowExceededPassesThrough(t *testing.T) {
 
 // TestLoop_StreamErrorAfterPartialText feeds the loop the event sequence
 // the Anthropic adapter emits for an SSE error event that follows streamed
-// text (pinned adapter-side by TestSSE_ErrorEventAfterPartialText).
+// text (pinned adapter-side by TestSSE_ErrorEventSurfacesErrorType).
 func TestLoop_StreamErrorAfterPartialText(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Looking at the"},

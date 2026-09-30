@@ -58,9 +58,11 @@ type StreamEvent struct {
 // StopDetails is a provider's structured explanation of why a model
 // response stopped. Anthropic reports it for "refusal" stops: Type is
 // "refusal", Category names the policy area ("cyber", "bio",
-// "frontier_llm", "reasoning_extraction", "general_harms", or empty when
-// the refusal maps to no named category), and Explanation is the
-// provider's human-readable reason, empty when none was given.
+// "frontier_llm", "reasoning_extraction", "general_harms", "other" for an
+// undocumented value, or empty when the refusal maps to no named
+// category), and Explanation is the provider's human-readable reason,
+// empty when none was given. The Anthropic adapter caps Type at 64 bytes
+// and Explanation at 1 KiB.
 type StopDetails struct {
 	Type        string `json:"type"`
 	Category    string `json:"category,omitempty"`

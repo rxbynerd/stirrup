@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -453,28 +454,83 @@ func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
 	})
 }
 
-// sseStopDetails holds the documented refusal fields of stop_details.
-// Fallback-related fields are not read.
-type sseStopDetails struct {
-	Type        string `json:"type"`
-	Category    string `json:"category"`
-	Explanation string `json:"explanation"`
+// Byte caps for stop_details strings, which reach traces, logs, and span
+// attributes.
+const (
+	maxStopDetailsTypeBytes        = 64
+	maxStopDetailsExplanationBytes = 1024
+)
+
+// stopDetailsOtherCategory replaces any non-empty refusal category outside
+// anthropicRefusalCategories, keeping category a closed set.
+const stopDetailsOtherCategory = "other"
+
+// anthropicRefusalCategories is the documented stop_details.category set.
+var anthropicRefusalCategories = map[string]bool{
+	"cyber":                true,
+	"bio":                  true,
+	"frontier_llm":         true,
+	"reasoning_extraction": true,
+	"general_harms":        true,
 }
 
-// parseAnthropicStopDetails returns nil for an absent, null, empty, or
-// unparseable stop_details value.
+// parseAnthropicStopDetails reads the documented refusal fields of
+// stop_details (type, category, explanation) and ignores the rest. Each
+// field is decoded on its own so a malformed one does not drop the
+// others. It returns nil for an absent, null, or non-object value, or one
+// with none of those fields set.
 func parseAnthropicStopDetails(raw json.RawMessage) *types.StopDetails {
-	if len(raw) == 0 {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
 		return nil
 	}
-	var d sseStopDetails
-	if err := json.Unmarshal(raw, &d); err != nil {
+	d := types.StopDetails{
+		Type:        capUTF8(jsonStringField(fields["type"]), maxStopDetailsTypeBytes),
+		Category:    anthropicRefusalCategory(fields["category"]),
+		Explanation: capUTF8(jsonStringField(fields["explanation"]), maxStopDetailsExplanationBytes),
+	}
+	if d == (types.StopDetails{}) {
 		return nil
 	}
-	if d == (sseStopDetails{}) {
-		return nil
+	return &d
+}
+
+// anthropicRefusalCategory maps a stop_details.category value onto the
+// documented set: absent, null, or "" gives "", a documented value is kept,
+// and anything else is stopDetailsOtherCategory.
+func anthropicRefusalCategory(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
 	}
-	return &types.StopDetails{Type: d.Type, Category: d.Category, Explanation: d.Explanation}
+	var category string
+	if json.Unmarshal(raw, &category) != nil {
+		return stopDetailsOtherCategory
+	}
+	if category == "" || anthropicRefusalCategories[category] {
+		return category
+	}
+	return stopDetailsOtherCategory
+}
+
+// jsonStringField decodes raw as a JSON string, returning "" for a missing
+// value or any other JSON type.
+func jsonStringField(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// capUTF8 truncates s to at most n bytes without splitting a rune.
+func capUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // sseError is the payload of an SSE "error" event, which the API sends in

@@ -2307,8 +2307,8 @@ type StopDetails struct {
 	// Detail kind, e.g. "refusal".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Policy area of a refusal: "cyber", "bio", "frontier_llm",
-	// "reasoning_extraction", "general_harms", or empty when the refusal
-	// maps to no named category.
+	// "reasoning_extraction", "general_harms", "other" for an undocumented
+	// value, or empty when the refusal maps to no named category.
 	Category string `protobuf:"bytes,2,opt,name=category,proto3" json:"category,omitempty"`
 	// Provider's human-readable reason, scrubbed of secret-shaped content.
 	// Empty when none was given.
