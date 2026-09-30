@@ -109,7 +109,7 @@ type anthropicRequest struct {
 	// System is nil when the system prompt is empty, which omits the key.
 	System      *anthropicSystemPrompt `json:"system,omitempty"`
 	Messages    []anthropicMessage     `json:"messages"`
-	Tools       []types.ToolDefinition `json:"tools,omitempty"`
+	Tools       []anthropicTool        `json:"tools,omitempty"`
 	MaxTokens   int                    `json:"max_tokens"`
 	Temperature *float64               `json:"temperature,omitempty"`
 	// ToolChoice is the Anthropic tool_choice object. A nil pointer omits
@@ -203,22 +203,41 @@ func applyAnthropicParallel(tc *anthropicToolChoice, params types.StreamParams, 
 	return tc
 }
 
-// translateToolsAnthropic returns a fresh copy of the tool definitions with
-// each tool's worked examples folded into its input_schema when the resolved
-// capability supports it. The fresh slice preserves the no-aliasing guarantee
-// buildAnthropicRequest relies on. Examples are advisory: a merge that cannot
-// marshal leaves the schema as-is rather than failing the request.
-func translateToolsAnthropic(tools []types.ToolDefinition, examples bool) []types.ToolDefinition {
+// anthropicTool is the Messages API custom-tool object. Like
+// anthropicContentBlock it is an explicit allowlist: types.ToolDefinition's
+// Presentation never reaches the wire except through InputExamples.
+type anthropicTool struct {
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	InputSchema   json.RawMessage   `json:"input_schema"`
+	InputExamples []json.RawMessage `json:"input_examples,omitempty"`
+}
+
+// translateToolsAnthropic projects the tool definitions onto the wire,
+// carrying each tool's worked examples as the resolved capability directs:
+// on the native input_examples field, folded into input_schema's
+// `examples` keyword, or not at all. The schema is never mutated in place.
+// Examples are advisory: a merge that cannot marshal leaves the schema
+// as-is rather than failing the request.
+func translateToolsAnthropic(tools []types.ToolDefinition, examples quirks.ToolExamplesCapability) []anthropicTool {
 	if len(tools) == 0 {
 		return nil
 	}
-	out := make([]types.ToolDefinition, len(tools))
-	copy(out, tools)
-	if !examples {
-		return out
-	}
-	for i := range out {
-		if merged, err := mergeSchemaExamples(out[i].InputSchema, toolInputExamples(out[i])); err == nil {
+	out := make([]anthropicTool, len(tools))
+	for i, t := range tools {
+		out[i] = anthropicTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		}
+		if !examples.Supported {
+			continue
+		}
+		if examples.Native {
+			out[i].InputExamples = toolInputExamples(t)
+			continue
+		}
+		if merged, err := mergeSchemaExamples(t.InputSchema, toolInputExamples(t)); err == nil {
 			out[i].InputSchema = merged
 		}
 	}
@@ -649,7 +668,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		System:   system,
 		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
 
-		Tools:        translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
+		Tools:        translateToolsAnthropic(params.Tools, q.ToolExamples),
 		MaxTokens:    params.MaxTokens,
 		Temperature:  temperature,
 		ToolChoice:   applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),

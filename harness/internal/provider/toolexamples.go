@@ -9,9 +9,9 @@ import (
 // mergeSchemaExamples returns schema with the tool's worked examples injected
 // under the JSON-Schema `examples` keyword. It is the shared fold step the
 // OpenAI Chat, OpenAI Responses, and Anthropic adapters use when
-// the resolved ToolExamples capability advertises support: `examples` is a
-// standard JSON-Schema 2020-12 keyword those providers pass through to the
-// model context.
+// the resolved ToolExamples capability advertises support without a native
+// wire field: `examples` is a standard JSON-Schema 2020-12 keyword those
+// providers pass through to the model context.
 //
 // The rewrite is purely additive and defensive:
 //   - no examples → the schema is returned untouched;

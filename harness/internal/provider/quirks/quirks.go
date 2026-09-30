@@ -62,9 +62,10 @@ type ProviderQuirks struct {
 	ParallelToolCalls ParallelToolCallsCapability `json:"parallelToolCalls"`
 
 	// ToolExamples declares whether the resolved (provider, model) accepts
-	// the JSON-Schema `examples` keyword inside a tool's parameters object.
-	// The zero value advertises no support. Gemini deliberately stays at the
-	// zero value — its Schema dialect rejects `examples`.
+	// worked tool-input examples: folded into the JSON-Schema `examples`
+	// keyword, or on a native wire field when Native is set. The zero value
+	// advertises no support. Gemini deliberately stays at the zero value —
+	// its Schema dialect rejects `examples`.
 	ToolExamples ToolExamplesCapability `json:"toolExamples"`
 
 	// --- Behaviour flags ---

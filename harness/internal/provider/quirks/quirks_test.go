@@ -792,22 +792,26 @@ func TestParallelToolCallsCapabilityRules(t *testing.T) {
 	}
 }
 
-// TestToolExamplesCapabilityRules pins which providers accept the JSON-Schema
-// `examples` keyword in a tool's parameters (#222). Gemini is the load-bearing
-// negative: its Schema dialect rejects `examples`, so the example must reach
-// the model via the description text instead — never folded into the schema.
+// TestToolExamplesCapabilityRules pins which providers accept worked tool
+// examples and where (#222): Anthropic on its native input_examples field,
+// the OpenAI adapters in the JSON-Schema `examples` keyword. Gemini is the
+// load-bearing negative: its Schema dialect rejects `examples`, so the
+// example must reach the model via the description text instead — never
+// folded into the schema.
 func TestToolExamplesCapabilityRules(t *testing.T) {
-	supported := map[string]string{
-		"anthropic":         "claude-sonnet-4-5",
-		"openai-compatible": "gpt-4o",
-		"openai-responses":  "gpt-4o",
+	supported := map[string]struct {
+		model string
+		want  ToolExamplesCapability
+	}{
+		"anthropic":         {"claude-sonnet-4-5", ToolExamplesCapability{Supported: true, Native: true}},
+		"openai-compatible": {"gpt-4o", ToolExamplesCapability{Supported: true}},
+		"openai-responses":  {"gpt-4o", ToolExamplesCapability{Supported: true}},
 	}
-	for provider, model := range supported {
-		t.Run(provider+" accepts schema examples", func(t *testing.T) {
-			q := DefaultRegistry().Resolve(provider, model)
-			want := ToolExamplesCapability{Supported: true}
-			if q.ToolExamples != want {
-				t.Errorf("%s: ToolExamples = %+v, want %+v", provider, q.ToolExamples, want)
+	for provider, tc := range supported {
+		t.Run(provider+" accepts examples", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, tc.model)
+			if q.ToolExamples != tc.want {
+				t.Errorf("%s: ToolExamples = %+v, want %+v", provider, q.ToolExamples, tc.want)
 			}
 		})
 	}

@@ -299,12 +299,20 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "*",
-			Description:  "Anthropic: disable_parallel_tool_use on tool_choice; accepts schema examples",
+			Description:  "Anthropic: disable_parallel_tool_use on tool_choice",
 			LastVerified: Date("2026-05-24"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
-				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: tool examples on the native input_examples field",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.ToolExamples = ToolExamplesCapability{Supported: true, Native: true}
 			},
 		},
 		{

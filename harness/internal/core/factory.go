@@ -1206,8 +1206,8 @@ func editToolEnabled(enabled []string, actualName string) bool {
 
 func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	definition := es.ToolDefinition()
-	// Carry the strategy's worked example (#222) onto the registered tool so
-	// Definition() folds it into the schema where the provider supports it.
+	// Carry the strategy's worked example onto the registered tool; the
+	// adapter decides how examples are sent.
 	// The strategy owns the example next to its description; nil Presentation
 	// (strategies without an example) leaves InputExamples unset.
 	var inputExamples []json.RawMessage

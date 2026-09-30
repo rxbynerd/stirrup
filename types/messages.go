@@ -87,9 +87,11 @@ type ToolDefinition struct {
 type ToolPresentation struct {
 	// InputExamples are worked example inputs for the tool, each a JSON
 	// object valid against InputSchema. Adapters that advertise the
-	// examples capability fold these into the JSON-Schema `examples`
-	// keyword; adapters without it ignore them (the description text still
-	// carries an inline example for every provider, unconditionally).
+	// examples capability send these on the provider's native examples
+	// field where one exists and otherwise fold them into the JSON-Schema
+	// `examples` keyword; adapters without it ignore them (the description
+	// text still carries an inline example for every provider,
+	// unconditionally).
 	InputExamples []json.RawMessage `json:"inputExamples,omitempty"`
 
 	// Annotations are MCP-style behavioural hints (spec 2025-06-18). No

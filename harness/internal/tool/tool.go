@@ -77,8 +77,9 @@ type Tool struct {
 	AsyncHandler func(ctx context.Context, input json.RawMessage) (AsyncDispatch, error)
 
 	// InputExamples are optional worked example inputs, each a JSON object
-	// valid against InputSchema. Adapters fold it into the JSON-Schema
-	// `examples` keyword where the resolved provider capability allows.
+	// valid against InputSchema. Adapters send them on a native examples
+	// field or fold them into the JSON-Schema `examples` keyword, as the
+	// resolved provider capability allows.
 	// MCP-imported tools leave it nil.
 	InputExamples []json.RawMessage
 

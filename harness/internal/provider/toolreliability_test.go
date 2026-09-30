@@ -190,13 +190,65 @@ func TestAnthropic_222_ExamplesAndDisableParallel(t *testing.T) {
 		t.Errorf("tool_choice.disable_parallel_tool_use = %s, want true", tc["disable_parallel_tool_use"])
 	}
 
-	// examples fold into input_schema (Anthropic has no strict subset).
+	// examples ride on the native input_examples field; the schema is
+	// sent untouched.
 	var tools []json.RawMessage
 	if err := json.Unmarshal(top["tools"], &tools); err != nil {
 		t.Fatalf("tools: %v", err)
 	}
-	if !schemaHasExamples(t, decodeObject(t, tools[0])["input_schema"]) {
-		t.Errorf("anthropic tool input_schema is missing folded examples: %s", tools[0])
+	tool := decodeObject(t, tools[0])
+	if string(tool["input_examples"]) != `[{"x":"hi"}]` {
+		t.Errorf("anthropic tool input_examples = %s, want [{\"x\":\"hi\"}]\ntool: %s", tool["input_examples"], tools[0])
+	}
+	if schemaHasExamples(t, tool["input_schema"]) {
+		t.Errorf("anthropic tool input_schema carries folded examples alongside the native field: %s", tools[0])
+	}
+}
+
+// TestTranslateToolsAnthropic_ExamplesPlacement pins the three capability
+// outcomes: native field, schema fold, or neither. A tool without examples
+// never gains an input_examples key.
+func TestTranslateToolsAnthropic_ExamplesPlacement(t *testing.T) {
+	plain := types.ToolDefinition{
+		Name:        "plain",
+		Description: "No examples.",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	cases := []struct {
+		name       string
+		capability quirks.ToolExamplesCapability
+		want       string
+	}{
+		{
+			name:       "native",
+			capability: quirks.ToolExamplesCapability{Supported: true, Native: true},
+			want:       `[{"name":"demo","description":"Demo tool. Example: {\"x\": \"hi\"}","input_schema":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]},"input_examples":[{"x":"hi"}]},{"name":"plain","description":"No examples.","input_schema":{"type":"object"}}]`,
+		},
+		{
+			name:       "schema_fold",
+			capability: quirks.ToolExamplesCapability{Supported: true},
+			want:       `[{"name":"demo","description":"Demo tool. Example: {\"x\": \"hi\"}","input_schema":{"examples":[{"x":"hi"}],"properties":{"x":{"type":"string"}},"required":["x"],"type":"object"}},{"name":"plain","description":"No examples.","input_schema":{"type":"object"}}]`,
+		},
+		{
+			name:       "unsupported",
+			capability: quirks.ToolExamplesCapability{},
+			want:       `[{"name":"demo","description":"Demo tool. Example: {\"x\": \"hi\"}","input_schema":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}},{"name":"plain","description":"No examples.","input_schema":{"type":"object"}}]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tools := []types.ToolDefinition{toolWith222Example(), plain}
+			got, err := json.Marshal(translateToolsAnthropic(tools, tc.capability))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("tools wire mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			if string(tools[0].InputSchema) != `{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}` {
+				t.Errorf("input tool schema was mutated: %s", tools[0].InputSchema)
+			}
+		})
 	}
 }
 
