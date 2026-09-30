@@ -349,7 +349,7 @@ func TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim(t *testing.T) {
 	assistant, stored := fixtureReplayTurn(t)
 	user := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go and b.go"}}}
 
-	got := translateMessagesResponses([]types.Message{user, assistant, fixtureToolResults()})
+	got := translateMessagesResponses([]types.Message{user, assistant, fixtureToolResults()}, true)
 	if len(got) != 1+len(stored)+2 {
 		t.Fatalf("got %d input items, want %d", len(got), 1+len(stored)+2)
 	}
@@ -423,11 +423,11 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			reconstructed := msg
 			reconstructed.ReplayFields = nil
 
-			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}))
+			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, true))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
-			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}))
+			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, true))
 			if err != nil {
 				t.Fatalf("marshal reconstruction: %v", err)
 			}
@@ -450,7 +450,7 @@ func TestTranslateMessagesResponses_OtherReplayKeysIgnored(t *testing.T) {
 		Content:      []types.ContentBlock{{Type: "text", Text: "done"}},
 		ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"thinking"`)},
 	}
-	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}))
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, true))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -501,6 +501,55 @@ func TestResponsesReplay_SecondTurnRequestBody(t *testing.T) {
 	}
 	if n := bytes.Count(body, []byte(`"role":"assistant"`)); n != 1 {
 		t.Errorf("assistant message items = %d, want 1 (no reconstructed duplicate)", n)
+	}
+}
+
+// TestResponsesReplay_NonReasoningModelsReconstruct pins the replay gate: on
+// a model whose rules do not set ReplayOutputItems, an assistant turn that
+// carries stored output items is still sent in the reconstructed, id-less
+// shape, and no encrypted reasoning is requested.
+func TestResponsesReplay_NonReasoningModelsReconstruct(t *testing.T) {
+	assistant, _ := fixtureReplayTurn(t)
+	if len(assistant.ReplayFields[responsesReplayKey]) == 0 {
+		t.Fatal("fixture turn carries no stored output items")
+	}
+	user := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go and b.go"}}}
+	stripped := assistant
+	stripped.ReplayFields = nil
+	want, err := json.Marshal(translateMessagesResponses([]types.Message{user, stripped, fixtureToolResults()}, false))
+	if err != nil {
+		t.Fatalf("marshal reconstruction: %v", err)
+	}
+
+	for _, model := range []string{"gpt-4o", "gpt-4.1", "gpt-5-chat-latest"} {
+		t.Run(model, func(t *testing.T) {
+			bodies := make(chan []byte, 1)
+			srv := responsesCaptureServer(t, bodies)
+			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:     model,
+				MaxTokens: 1024,
+				Messages:  []types.Message{user, assistant, fixtureToolResults()},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			drainStream(t, ch)
+			body := <-bodies
+
+			var req struct {
+				Input json.RawMessage `json:"input"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			assertJSONEqual(t, req.Input, string(want))
+			for _, leak := range []string{`"id":`, "encrypted_content", `"phase":`, `"include":`} {
+				if bytes.Contains(body, []byte(leak)) {
+					t.Errorf("body carries %s: %s", leak, body)
+				}
+			}
+		})
 	}
 }
 

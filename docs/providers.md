@@ -376,31 +376,30 @@ history and does not delegate to server-side state.
 **Output replay.** With `store: false`, OpenAI documents that stateless
 reasoning models need every prior response output item resent. The
 adapter captures each turn's `reasoning`, `message`, and
-`function_call` output items and replays them verbatim on later
-requests, so reasoning items (with `encrypted_content`), item ids,
-`status`, and the assistant `phase` reach the model. Replay is
-all-or-nothing per turn: a turn whose stored items no longer match its
-persisted content (a rewritten tool call or text), or whose capture was
-disabled (an unknown item type, a reasoning item without
-`encrypted_content`, or more than 1 MiB of items), is reconstructed
-without item ids instead. The mechanism is described in
+`function_call` output items and, for the reasoning families
+(`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and `gpt-6*`), replays them
+verbatim on later requests, so reasoning items (with
+`encrypted_content`), item ids, `status`, and the assistant `phase`
+reach the model. Replay is all-or-nothing per turn: a turn whose stored
+items no longer match its persisted content (a rewritten tool call or
+text), or whose capture was disabled (an unknown item type, a reasoning
+item without `encrypted_content`, or more than 1 MiB of items), is
+reconstructed without item ids instead. The mechanism is described in
 [`provider-quirks.md` §3.1](provider-quirks.md#31-replayfields-rules).
 `reasoning.context` is not sent, so the model default applies
 (`all_turns` on GPT-5.6); `current_turn` is the relief valve if
 replayed reasoning grows the context too far.
 
-Requests for the reasoning families (`o[1-9]*`, `gpt-5*` except
-`gpt-5-chat*`, and `gpt-6*`) carry
+Requests for the same reasoning families carry
 `include: ["reasoning.encrypted_content"]` so the encrypted reasoning
 is returned for replay. First-party OpenAI documents the include as
 optional; it stays protective on Azure and gateways. Non-reasoning
-models (`gpt-4o*`, `gpt-4.1*`, `gpt-5-chat*`) do not receive it,
-because whether they reject it with HTTP 400 is unverified. A probe
-against a non-reasoning model should check that case before the gate
-is widened, and should also confirm that replayed `message` item ids
-and `status` are accepted there: capture is not gated by model, so
-those models already receive replayed `message` and `function_call`
-items.
+models (`gpt-4o*`, `gpt-4.1*`, `gpt-5-chat*`) receive neither the
+include nor replayed items: their stored items are still captured, but
+every turn is reconstructed without item ids. Whether those models
+reject the include, or replayed `message` item ids and `status`, with
+HTTP 400 is unverified; a probe against a non-reasoning model should
+check both before either gate is widened.
 
 **Reasoning effort and sampling.** `RunConfig.reasoningEffort` maps to
 `reasoning.effort` for models whose accepted levels are known: GPT-6

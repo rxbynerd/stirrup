@@ -248,6 +248,12 @@ type OpenAIResponsesBehaviourFlags struct {
 	// carry the encrypted_content their replay needs. Reasoning families
 	// only: a non-reasoning model may reject the include value.
 	IncludeEncryptedReasoning bool `json:"includeEncryptedReasoning"`
+
+	// ReplayOutputItems, when true, replays a prior turn's captured output
+	// items verbatim (ids, status, phase, encrypted reasoning) instead of
+	// reconstructing them. Reasoning families only: replay is documented for
+	// stateless reasoning models and unverified elsewhere.
+	ReplayOutputItems bool `json:"replayOutputItems"`
 }
 
 // OpenAIResponsesTokenField controls which JSON key carries the token

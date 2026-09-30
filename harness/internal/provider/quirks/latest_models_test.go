@@ -158,6 +158,39 @@ func TestResponsesIncludeEncryptedReasoningRules(t *testing.T) {
 	}
 }
 
+// TestResponsesReplayOutputItemsRules pins verbatim output replay to the
+// same reasoning families as the encrypted-reasoning include, so a model
+// never replays reasoning items it was not asked to encrypt, and
+// non-reasoning models keep the reconstructed input shape.
+func TestResponsesReplayOutputItemsRules(t *testing.T) {
+	cases := map[string]bool{
+		"gpt-5":             true,
+		"gpt-5.4-mini":      true,
+		"gpt-5.6-sol":       true,
+		"gpt-6.1-sol":       true,
+		"o1":                true,
+		"o3":                true,
+		"gpt-5-chat-latest": false,
+		"gpt-4.1":           false,
+		"gpt-4.1-mini":      false,
+		"gpt-4o":            false,
+		"gpt-4o-mini":       false,
+		"custom-deployment": false,
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			flags := DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses
+			if flags.ReplayOutputItems != want {
+				t.Errorf("ReplayOutputItems = %v, want %v", flags.ReplayOutputItems, want)
+			}
+			if flags.ReplayOutputItems != flags.IncludeEncryptedReasoning {
+				t.Errorf("ReplayOutputItems = %v but IncludeEncryptedReasoning = %v; the two must be set together",
+					flags.ReplayOutputItems, flags.IncludeEncryptedReasoning)
+			}
+		})
+	}
+}
+
 // TestDeepSeekFlashRules pins the V4.1 Flash id, which the deepseek-v4*
 // glob does not match: without its own rule, reasoning_content is not
 // replayed and every tool loop fails on its second turn.

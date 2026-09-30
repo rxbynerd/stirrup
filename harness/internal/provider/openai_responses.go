@@ -836,18 +836,21 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // function_call_output items (rather than being attached to the assistant
 // message), matching the Responses API's model.
 //
-// An assistant turn whose stored output items still match its content is
-// replayed verbatim instead (see replayedResponsesItems); every other turn
-// is reconstructed without item ids, so one turn never mixes the two.
-func translateMessagesResponses(messages []types.Message) []responsesInput {
+// When replayOutput is set, an assistant turn whose stored output items
+// still match its content is replayed verbatim instead (see
+// replayedResponsesItems); every other turn is reconstructed without item
+// ids, so one turn never mixes the two.
+func translateMessagesResponses(messages []types.Message, replayOutput bool) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
-			if replayed := replayedResponsesItems(msg); replayed != nil {
-				out = append(out, replayed...)
-				continue
+			if replayOutput {
+				if replayed := replayedResponsesItems(msg); replayed != nil {
+					out = append(out, replayed...)
+					continue
+				}
 			}
 
 			var textParts []string
@@ -1046,7 +1049,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
-		Input:             translateMessagesResponses(params.Messages),
+		Input:             translateMessagesResponses(params.Messages, q.BehaviourFlags.OpenAIResponses.ReplayOutputItems),
 		Tools:             tools,
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,

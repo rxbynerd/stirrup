@@ -364,34 +364,38 @@ func BuiltinRules() []Rule {
 		// An omitted `strict` on Responses means strict-when-possible with a
 		// silent non-strict fallback, so the reasoning families pin
 		// strict:true and the harness's schema lint fails closed before send.
-		// The same families request encrypted reasoning for verbatim replay.
+		// The same families request encrypted reasoning and replay output
+		// items verbatim.
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "o[1-9]*",
-			Description:  "OpenAI Responses o-series: strict tools, request encrypted reasoning (documented, not probed)",
+			Description:  "OpenAI Responses o-series: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
 			},
 		},
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5*",
-			Description:  "OpenAI Responses gpt-5 family: strict tools, request encrypted reasoning (documented, not probed)",
+			Description:  "OpenAI Responses gpt-5 family: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
 			},
 		},
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5-chat*",
-			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include (inferred, not probed)",
+			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include or output replay (inferred, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = false
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = false
 			},
 		},
 		{
@@ -406,11 +410,12 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
-			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max; strict tools, request encrypted reasoning (documented)",
+			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max; strict tools, request encrypted reasoning, replay output items (documented)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
 				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
 				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},

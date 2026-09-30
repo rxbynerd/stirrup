@@ -230,6 +230,7 @@ type OpenAIResponsesBehaviourFlags struct {
     ReasoningEffortLevels []string           // reasoning.effort allow-list; empty sends nothing (§3.2)
     PromptCacheKey        bool               // forward StreamParams.CacheKey as prompt_cache_key
     IncludeEncryptedReasoning bool           // include:["reasoning.encrypted_content"] (reasoning families only)
+    ReplayOutputItems     bool               // replay captured output items verbatim (reasoning families only)
 }
 
 type AnthropicBehaviourFlags struct {
@@ -349,6 +350,13 @@ a Responses request resolved with no rule is byte-identical:
   HTTP 400 when a non-reasoning model receives this include value. That
   report is unverified, so gpt-4o and gpt-4.1 keep a body without
   `include`.
+- `ReplayOutputItems` makes `translateMessagesResponses` emit a prior
+  turn's captured output items verbatim ([§3.1](#31-replayfields-rules)).
+  The same rules set it as `IncludeEncryptedReasoning`: replay is
+  documented for stateless reasoning models, and replaying item ids and
+  `status` to a non-reasoning model is unverified, so gpt-4o, gpt-4.1,
+  and gpt-5-chat keep the reconstructed shape even when a turn carries
+  stored items.
 
 Like the Chat Completions `openaiRequest`, the Responses adapter's
 `responsesRequest` carries the resolved flags as steering fields and a
@@ -434,10 +442,10 @@ test catch malformed paths at registry-build time.
 | `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
-| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content` (documented, not probed) |
-| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content` (documented, not probed) |
-| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include (inferred, not probed) |
-| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: omit sampling params; `reasoning.effort` `low`..`max`; strict tools; request `reasoning.encrypted_content` |
+| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: omit sampling params; `reasoning.effort` `low`..`max`; strict tools; request `reasoning.encrypted_content`; replay output items |
 | `openai-responses`  | `gpt-5.4*`         | OpenAI Responses gpt-5.4: `reasoning.effort` `low`..`xhigh` (documented, not probed) |
 | `openai-responses`  | `gpt-5.5*`         | OpenAI Responses gpt-5.5: `reasoning.effort` `low`..`xhigh`; omit sampling params (inferred); not probed |
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max`; omit sampling params (inferred); not probed |
@@ -496,10 +504,10 @@ cannot express (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`,
 tuple `items`) before send, matching the Chat Completions `gpt-5*` rule.
 An MCP tool whose schema uses one of those constructs therefore fails
 the request on these models rather than degrading silently. The same
-three rules set `IncludeEncryptedReasoning` ([§3.1](#31-replayfields-rules));
-the `gpt-5-chat*` carve-out clears it because the chat snapshots do not
-reason. Both flags are documented, not probed, and the carve-out is
-inferred.
+three rules set `IncludeEncryptedReasoning` and `ReplayOutputItems`
+([§3.1](#31-replayfields-rules)); the `gpt-5-chat*` carve-out clears
+both because the chat snapshots do not reason. All three flags are
+documented, not probed, and the carve-out is inferred.
 
 Temperature on `openai-responses` follows the projected effort. The
 `gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
@@ -592,8 +600,10 @@ that key. The terminal event's `output` array is preferred because it
 carries the final `encrypted_content`; the done items, ordered by
 `output_index`, are the fallback. Capture is ungated by model: on a
 non-reasoning model the array holds only `message` and `function_call`
-items. On the next request `translateMessagesResponses` emits the
-stored items verbatim (ids, `status`, assistant `phase`, and
+items. Replay is gated: when the resolved rules set `ReplayOutputItems`
+(the reasoning families; see [§3](#3-wave-2-rules-builtinrules)), the
+next request's `translateMessagesResponses` emits the stored items
+verbatim (ids, `status`, assistant `phase`, and
 `encrypted_content` included) in place of the reconstructed
 phase-less message, provided they still describe the persisted message:
 the stored `function_call` `call_id` set must equal the `tool_use`
@@ -603,7 +613,8 @@ without their partner items, or reasoning without `encrypted_content`)
 is reported to return HTTP 400. A turn with an item of any other type,
 a `reasoning` item without `encrypted_content`, or more than 1 MiB of
 items is not captured (one WARN, sizes and types only), and a turn whose
-stored items no longer match falls back to reconstruction. The dotted
+stored items no longer match falls back to reconstruction. On any
+other model the key is ignored and every turn is reconstructed. The dotted
 key is never threaded by the Chat Completions adapter (it is not a
 single-segment path and no rule names it), and the JSONL trace drops it
 with the rest of `ReplayFields`. The batch path and the eval
