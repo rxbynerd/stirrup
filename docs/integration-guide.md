@@ -130,6 +130,9 @@ For the current `stirrup job` implementation, read
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
 `hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
+Provider stop reasons also pass through verbatim: `refusal` (the model
+declined to respond) and `model_context_window_exceeded` (the response
+filled the model's context window and is truncated).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 
@@ -139,6 +142,9 @@ The proto also defines `done.trace`, but the job path currently emits
 turn counts, token usage, duration, verifier details, and final
 assistant text from a configured `resultSink`, process stdout, or a
 trace emitter instead. `cost_usd` is not calculated by the harness.
+A refusal's category and explanation (`RunTrace.stop_details`) are
+recorded only in the trace emitter's `RunTrace` today; `RunResult`
+does not carry them.
 
 A `done` is emitted for every failure that happens after the task
 assignment arrives, including a `RunConfig` rejected on arrival: the

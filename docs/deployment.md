@@ -183,7 +183,10 @@ IMDS, GitHub Actions OIDC). See
    full `RunTrace.Outcome` set, which adds `success`,
    `verification_failed`, `verification_error`, and `max_tokens` on
    top of the loop's stop reasons. `trace.stop_reason` mirrors it for
-   backward compatibility.
+   backward compatibility. Provider stop reasons such as `refusal` and
+   `model_context_window_exceeded` pass through verbatim as the
+   outcome; for a refusal, `trace.stop_details` carries its category
+   and explanation.
 9. **Finalise.** The run's `RunResult` is emitted on the configured
    `resultSink` and, when `executor.workspaceExportTo` is set, the
    workspace is exported. Every run — primary and follow-up — is

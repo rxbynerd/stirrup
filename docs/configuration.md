@@ -320,6 +320,9 @@ The harness retries transient provider failures (HTTP 408, 409, 429,
 500, 502, 503, 504 and transport-level timeouts) with exponential
 backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
 are honoured when present and bounded by the configured max delay.
+A 429 whose error body reports an exhausted billing, spend, or quota
+limit is not retried, since retrying cannot restore access; see
+[`providers.md`](providers.md#openai-responses-api) for the codes.
 
 | Flag | Config field | Default | Hard ceiling |
 |---|---|---|---|
