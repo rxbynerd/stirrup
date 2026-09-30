@@ -92,12 +92,20 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "command_output_capture_failed" | "command_output_archive_failed".
+	// "command_output_capture_failed" | "command_output_archive_failed", or a
+	// provider stop reason passed through verbatim, such as "refusal" (the
+	// model declined to respond; see StopDetails) or
+	// "model_context_window_exceeded" (the response filled the model's
+	// context window and is truncated).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
 	// hook_failed and both command_output_* outcomes claim only an
 	// otherwise-successful run — the primary failure cause stays
 	// authoritative — and a capture failure outranks an archive failure.
 	Outcome string `json:"outcome"`
+	// StopDetails is the final model turn's provider-reported stop detail
+	// when the run ended on a non-tool stop reason, such as the category
+	// and explanation of a "refusal". Nil otherwise.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 	// FinalAssistantText is the loop's last non-empty assistant text,
 	// concatenated across the text blocks of the final response and carried
 	// through to RunResult.FinalAssistantText. Omitted when the run produced
@@ -276,6 +284,9 @@ type TurnTrace struct {
 	// Empty for streaming turns. Allows cross-referencing a TurnTrace
 	// with the provider's batch console / API.
 	BatchID string `json:"batchId,omitempty"`
+	// StopDetails is the provider-reported detail qualifying StopReason;
+	// nil when the provider reported none.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.

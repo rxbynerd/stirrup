@@ -10,10 +10,11 @@ import (
 //
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
-// provider-specific value passed through verbatim as the run's outcome.
-// Adapters MUST emit "tool_use" whenever the stream contains a tool call,
-// regardless of the provider's native finish-reason vocabulary (see
-// docs/providers.md for the Vertex AI STOP-remapping example).
+// provider-specific value (e.g. Anthropic's "refusal" or
+// "model_context_window_exceeded") passed through verbatim as the run's
+// outcome. Adapters MUST emit "tool_use" whenever the stream contains a
+// tool call, regardless of the provider's native finish-reason vocabulary
+// (see docs/providers.md for the Vertex AI STOP-remapping example).
 //
 // Token counts are populated only on "message_complete" (zero means not
 // reported; see TokenUsage.MergeEvent). InputTokens is the whole prompt,
@@ -35,6 +36,11 @@ type StreamEvent struct {
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 
+	// StopDetails qualifies StopReason with provider-reported detail.
+	// Populated only on "message_complete" events; nil when the provider
+	// reported none.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
+
 	// ThoughtSignature is the opaque provider-private blob captured for
 	// round-trip on the next turn (currently Gemini only). The agentic loop
 	// copies it onto the persisted assistant ContentBlock verbatim; other
@@ -47,6 +53,18 @@ type StreamEvent struct {
 	// harness must not introspect or mutate the values. See
 	// docs/provider-quirks.md for the flattening rule and threading design.
 	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
+}
+
+// StopDetails is a provider's structured explanation of why a model
+// response stopped. Anthropic reports it for "refusal" stops: Type is
+// "refusal", Category names the policy area ("cyber", "bio",
+// "frontier_llm", "reasoning_extraction", "general_harms", or empty when
+// the refusal maps to no named category), and Explanation is the
+// provider's human-readable reason, empty when none was given.
+type StopDetails struct {
+	Type        string `json:"type"`
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
 }
 
 // ToolChoiceMode is a closed enum selecting how the model is steered
