@@ -629,28 +629,42 @@ func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
 
 // TestAnthropicAdapter_DebugLogsPromptCacheUsage pins the per-stream cache
 // health line: one record carrying the three usage counts when
-// message_delta reports usage, and none when it does not.
+// message_delta reports usage, and none when no input is reported.
 func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
+	stop := makeSSE("message_stop", `{}`)
 	cases := []struct {
-		name  string
-		delta string
-		want  map[string]float64 // nil means "no record"
+		name   string
+		stream string
+		want   map[string]float64 // nil means "no record"
 	}{
 		{
-			name:  "usage reported",
-			delta: `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`,
-			want:  map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 4},
+			name:   "usage reported",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`) + stop,
+			want:   map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 4},
 		},
 		{
-			name:  "no usage",
-			delta: `{"delta":{"stop_reason":"end_turn"}}`,
+			name:   "negative uncached input logs zero",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":-5,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`) + stop,
+			want:   map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 0},
+		},
+		{
+			name:   "no usage",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`) + stop,
+		},
+		{
+			name:   "zero usage",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":9}}`) + stop,
+		},
+		{
+			name:   "message_start usage without message_delta",
+			stream: makeSSE("message_start", `{"message":{"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":1}}}`) + stop,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
-			adapter.baseURL = serveSSE(t, makeSSE("message_delta", tc.delta)+makeSSE("message_stop", `{}`)).URL
+			adapter.baseURL = serveSSE(t, tc.stream).URL
 			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 256})

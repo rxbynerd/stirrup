@@ -641,6 +641,23 @@ func (a *AnthropicAdapter) recordLatency(ctx context.Context, start time.Time, a
 	a.Metrics.ProviderLatency.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
 }
 
+// logPromptCacheUsage records the cache split of one turn's input from the
+// event's (clamped) counts, so the log agrees with the trace. A turn with
+// no reported input emits nothing.
+func logPromptCacheUsage(ctx context.Context, logger *slog.Logger, model string, ev types.StreamEvent) {
+	uncached := max(ev.InputTokens-ev.CacheReadTokens-ev.CacheWriteTokens, 0)
+	if ev.CacheReadTokens == 0 && ev.CacheWriteTokens == 0 && uncached == 0 {
+		return
+	}
+	logger.DebugContext(ctx, "anthropic prompt cache",
+		slog.String("provider.type", "anthropic"),
+		slog.String("provider.model", model),
+		slog.Int("cache.read", ev.CacheReadTokens),
+		slog.Int("cache.write", ev.CacheWriteTokens),
+		slog.Int("input.uncached", uncached),
+	)
+}
+
 // consumeSSE reads SSE events from the response body and sends StreamEvents
 // to the channel. It closes the channel and the response body when done.
 //
@@ -774,13 +791,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			if md.Usage != nil {
 				md.Usage.applyTo(&ev)
-				logger.DebugContext(ctx, "anthropic prompt cache",
-					slog.String("provider.type", "anthropic"),
-					slog.String("provider.model", model),
-					slog.Int("cache.read", md.Usage.CacheReadInputTokens),
-					slog.Int("cache.write", md.Usage.CacheCreationInputTokens),
-					slog.Int("input.uncached", md.Usage.InputTokens),
-				)
+				logPromptCacheUsage(ctx, logger, model, ev)
 			}
 			emitEvent(ev)
 
