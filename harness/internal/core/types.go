@@ -271,6 +271,25 @@ func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
 	}
 }
 
+// usageBreakdownAttributes returns the provider.stream span attributes
+// for the cache and reasoning counts, omitting each one that is zero.
+func usageBreakdownAttributes(u types.TokenUsage) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	for _, f := range []struct {
+		key string
+		v   int
+	}{
+		{"tokens.cache_read", u.CacheRead},
+		{"tokens.cache_write", u.CacheWrite},
+		{"tokens.reasoning", u.Reasoning},
+	} {
+		if f.v > 0 {
+			attrs = append(attrs, attribute.Int(f.key, f.v))
+		}
+	}
+	return attrs
+}
+
 // traceCtx returns the context carrying the root OTel span, falling back to
 // the provided context if no trace context has been set.
 func (l *AgenticLoop) traceCtx(fallback context.Context) context.Context {

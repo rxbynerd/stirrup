@@ -890,13 +890,11 @@ func (l *AgenticLoop) runInnerLoop(
 
 		providerSpan.SetAttributes(
 			attribute.Int("tokens.input", turnTokens.Input),
-			attribute.Bool("tokens.input.reported", inputReported),
+			attribute.Bool("tokens.input_reported", inputReported),
 			attribute.Int("tokens.output", turnTokens.Output),
-			attribute.Int("tokens.cache_read", turnTokens.CacheRead),
-			attribute.Int("tokens.cache_write", turnTokens.CacheWrite),
-			attribute.Int("tokens.reasoning", turnTokens.Reasoning),
 			attribute.String("stop_reason", sr.StopReason),
 		)
+		providerSpan.SetAttributes(usageBreakdownAttributes(turnTokens)...)
 		providerSpan.End()
 
 		lastStopReason = sr.StopReason
@@ -932,13 +930,17 @@ func (l *AgenticLoop) runInnerLoop(
 		l.Metrics.Turns.Add(ctx, 1, modeAttr)
 		l.Metrics.TokensInput.Add(ctx, int64(turnTokens.Input), l.metricAttrs())
 		l.Metrics.TokensOutput.Add(ctx, int64(turnTokens.Output), l.metricAttrs())
-		l.Metrics.TokensCacheRead.Add(ctx, int64(turnTokens.CacheRead), l.metricAttrs())
-		l.Metrics.TokensCacheWrite.Add(ctx, int64(turnTokens.CacheWrite), l.metricAttrs())
+		if turnTokens.CacheRead > 0 {
+			l.Metrics.TokensCacheRead.Add(ctx, int64(turnTokens.CacheRead), l.metricAttrs())
+		}
+		if turnTokens.CacheWrite > 0 {
+			l.Metrics.TokensCacheWrite.Add(ctx, int64(turnTokens.CacheWrite), l.metricAttrs())
+		}
 		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
 
 		l.Logger.Info("turn completed", "turn", turn,
 			"tokens.input", turnTokens.Input,
-			"tokens.input.reported", inputReported,
+			"tokens.input_reported", inputReported,
 			"tokens.output", turnTokens.Output,
 			"tokens.cache_read", turnTokens.CacheRead,
 			"tokens.cache_write", turnTokens.CacheWrite,

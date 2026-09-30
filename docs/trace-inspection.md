@@ -64,8 +64,8 @@ The three breakdown fields are omitted when zero, which is the case
 for a provider that does not report them. A single run can mix
 provider-reported and estimated turns, so the aggregate carries no
 source flag. Per turn, the source is visible on the `turn completed`
-log line (`tokens.input.reported`), on the `provider.stream` span
-(`tokens.input.reported`), and on the OTel `turn[N]` span
+log line (`tokens.input_reported`), on the `provider.stream` span
+(`tokens.input_reported`), and on the OTel `turn[N]` span
 (`stirrup.tokens.input_reported`, see
 [`observability-cloud.md`](observability-cloud.md#token-usage-on-turn-spans)).
 The input is estimated when the adapter reports no input figure: the
