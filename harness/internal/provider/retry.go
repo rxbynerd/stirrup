@@ -248,6 +248,24 @@ type RetryOptions struct {
 	ProviderType string
 	Model        string
 	ShouldRetry  func(*http.Response) (retryable bool, consumed bool)
+
+	// drainTimeout overrides retryDrainTimeout; zero selects the default.
+	drainTimeout time.Duration
+}
+
+// retryDrainTimeout bounds the total time spent draining a retried
+// response body. The streaming clients set no Client.Timeout, so without
+// it a body that trickles bytes would hold the retry until the run context
+// ends.
+const retryDrainTimeout = 10 * time.Second
+
+// drainAndClose discards up to 4 KB of body so the connection can be
+// reused, then closes it. The body is closed early once timeout elapses.
+func drainAndClose(body io.ReadCloser, timeout time.Duration) {
+	t := time.AfterFunc(timeout, func() { _ = body.Close() })
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 4096))
+	t.Stop()
+	_ = body.Close()
 }
 
 // DoWithRetry issues req using client, retrying on retryable statuses
@@ -284,6 +302,10 @@ func DoWithRetry(
 	providerType := opts.ProviderType
 	model := opts.Model
 	shouldRetry := opts.ShouldRetry
+	drainTimeout := opts.drainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = retryDrainTimeout
+	}
 
 	seed := uint64(time.Now().UnixNano())
 	prng := rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15))
@@ -312,8 +334,7 @@ func DoWithRetry(
 					// Drain and close the previous response so the
 					// connection can be reused.
 					if lastResp != nil {
-						_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
-						_ = lastResp.Body.Close()
+						drainAndClose(lastResp.Body, drainTimeout)
 					}
 					logger.Warn("provider_retry_rewind_failed",
 						"event", "provider_retry_rewind_failed",
@@ -444,11 +465,10 @@ func DoWithRetry(
 			span.AddEvent("provider_retry_attempt", oteltrace.WithAttributes(spanAttrs...))
 		}
 
-		// Bound the drain at 4 KB so a hostile upstream cannot stall
-		// progress by streaming an unbounded body.
+		// Bound the drain in size and time so a hostile upstream cannot
+		// stall progress with an unbounded or trickling body.
 		if lastResp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
-			_ = lastResp.Body.Close()
+			drainAndClose(lastResp.Body, drainTimeout)
 			lastResp = nil
 		}
 
