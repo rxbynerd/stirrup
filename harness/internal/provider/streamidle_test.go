@@ -368,12 +368,23 @@ func TestIdleTimeoutBody_NoGoroutineOrTimerLeak(t *testing.T) {
 	waitForGoroutines(t, baseline)
 }
 
+// idleTestAdapter is one streaming adapter pointed at a test server, with
+// its idle timeout shortened and pre-stream retries enabled.
+type idleTestAdapter struct {
+	client *http.Client
+	stream func(ctx context.Context) (<-chan types.StreamEvent, error)
+}
+
+// idleTestRetryPolicy allows pre-stream retries, so a test can prove a
+// mid-stream failure is never replayed.
+var idleTestRetryPolicy = RetryPolicy{MaxAttempts: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}
+
 // idleStreamCase drives one streaming adapter against an httptest server.
 type idleStreamCase struct {
 	name string
 	// complete is a full, well-formed stream body in the adapter's dialect.
 	complete string
-	stream   func(url string, idle time.Duration) (<-chan types.StreamEvent, func(), error)
+	build    func(url string, idle time.Duration) idleTestAdapter
 }
 
 func idleStreamCases() []idleStreamCase {
@@ -387,12 +398,14 @@ func idleStreamCases() []idleStreamCase {
 				makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
 				makeSSE("message_stop", `{}`),
 			),
-			stream: func(url string, idle time.Duration) (<-chan types.StreamEvent, func(), error) {
+			build: func(url string, idle time.Duration) idleTestAdapter {
 				a := NewAnthropicAdapter(staticBearer("k"), AuthModeAPIKey)
 				a.baseURL = url
 				a.streamIdleTimeout = idle
-				ch, err := a.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-				return ch, a.httpClient.CloseIdleConnections, err
+				a.RetryPolicy = idleTestRetryPolicy
+				return idleTestAdapter{client: a.httpClient, stream: func(ctx context.Context) (<-chan types.StreamEvent, error) {
+					return a.Stream(ctx, types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
+				}}
 			},
 		},
 		{
@@ -400,11 +413,12 @@ func idleStreamCases() []idleStreamCase {
 			complete: makeOpenAIChunk(`{"id":"c","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`) +
 				makeOpenAIChunk(`{"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
 				"data: [DONE]\n\n",
-			stream: func(url string, idle time.Duration) (<-chan types.StreamEvent, func(), error) {
-				a := NewOpenAICompatibleAdapter(staticBearer("k"), url, OpenAIAuthConfig{}, RetryPolicy{})
+			build: func(url string, idle time.Duration) idleTestAdapter {
+				a := NewOpenAICompatibleAdapter(staticBearer("k"), url, OpenAIAuthConfig{}, idleTestRetryPolicy)
 				a.streamIdleTimeout = idle
-				ch, err := a.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-				return ch, a.httpClient.CloseIdleConnections, err
+				return idleTestAdapter{client: a.httpClient, stream: func(ctx context.Context) (<-chan types.StreamEvent, error) {
+					return a.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+				}}
 			},
 		},
 		{
@@ -412,22 +426,26 @@ func idleStreamCases() []idleStreamCase {
 			complete: makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`) +
 				makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"Hello"}`) +
 				makeResponsesEvent("response.completed", `{"response":{"id":"r","status":"completed","output":[{"type":"message","id":"msg_1"}]}}`),
-			stream: func(url string, idle time.Duration) (<-chan types.StreamEvent, func(), error) {
+			build: func(url string, idle time.Duration) idleTestAdapter {
 				a := NewOpenAIResponsesAdapter(staticBearer("k"), url, OpenAIAuthConfig{})
 				a.streamIdleTimeout = idle
-				ch, err := a.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-				return ch, a.httpClient.CloseIdleConnections, err
+				a.RetryPolicy = idleTestRetryPolicy
+				return idleTestAdapter{client: a.httpClient, stream: func(ctx context.Context) (<-chan types.StreamEvent, error) {
+					return a.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+				}}
 			},
 		},
 		{
 			name: "gemini",
 			complete: makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}]}`) +
 				makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`),
-			stream: func(url string, idle time.Duration) (<-chan types.StreamEvent, func(), error) {
+			build: func(url string, idle time.Duration) idleTestAdapter {
 				a := newGeminiTestAdapter(url, &stubTokenSource{token: "t"})
 				a.streamIdleTimeout = idle
-				ch, err := a.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 1024})
-				return ch, a.httpClient.CloseIdleConnections, err
+				a.RetryPolicy = idleTestRetryPolicy
+				return idleTestAdapter{client: a.httpClient, stream: func(ctx context.Context) (<-chan types.StreamEvent, error) {
+					return a.Stream(ctx, types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 1024})
+				}}
 			},
 		},
 	}
@@ -437,6 +455,43 @@ func idleStreamCases() []idleStreamCase {
 func writeFlush(w http.ResponseWriter, s string) {
 	_, _ = fmt.Fprint(w, s)
 	w.(http.Flusher).Flush()
+}
+
+// stallHandler sends preamble, then holds the stream open without writing
+// until the client goes away (closing disconnected) or five seconds pass.
+// hits counts requests so tests can assert nothing was retried.
+func stallHandler(preamble string, hits *atomic.Int32, disconnected chan<- struct{}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		writeFlush(w, preamble)
+		select {
+		case <-r.Context().Done():
+			if disconnected != nil {
+				close(disconnected)
+			}
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// assertIdleFailure checks that a stalled stream produced exactly one
+// error event, naming the idle timeout, after at least idle has elapsed.
+func assertIdleFailure(t *testing.T, events []types.StreamEvent, elapsed, idle time.Duration) {
+	t.Helper()
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("events = %+v, want exactly one error event", events)
+	}
+	if !errors.Is(events[0].Error, errStreamIdle) {
+		t.Errorf("error = %v, want errStreamIdle", events[0].Error)
+	}
+	if want := fmt.Sprintf("stream idle for %vs", idle.Seconds()); !strings.Contains(events[0].Error.Error(), want) {
+		t.Errorf("error = %q, want it to contain %q", events[0].Error, want)
+	}
+	if elapsed < idle || elapsed > 3*time.Second {
+		t.Errorf("idle error after %v, want between %v and 3s", elapsed, idle)
+	}
 }
 
 func TestStreamingAdapters_SlowSteadyStreamOutlivesIdleTimeout(t *testing.T) {
@@ -454,12 +509,13 @@ func TestStreamingAdapters_SlowSteadyStreamOutlivesIdleTimeout(t *testing.T) {
 			}))
 			defer srv.Close()
 
+			ad := tc.build(srv.URL, idle)
+			defer ad.client.CloseIdleConnections()
 			start := time.Now()
-			ch, closeIdle, err := tc.stream(srv.URL, idle)
+			ch, err := ad.stream(context.Background())
 			if err != nil {
 				t.Fatalf("Stream() error: %v", err)
 			}
-			defer closeIdle()
 			events := collectEvents(t, ch)
 			elapsed := time.Since(start)
 
@@ -482,44 +538,93 @@ func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 	const idle = 150 * time.Millisecond
 	for _, tc := range idleStreamCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
 			disconnected := make(chan struct{})
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(http.StatusOK)
-				writeFlush(w, ": keepalive\n\n")
-				select {
-				case <-r.Context().Done():
-					close(disconnected)
-				case <-time.After(5 * time.Second):
-				}
-			}))
+			srv := httptest.NewServer(stallHandler(": keepalive\n\n", &hits, disconnected))
 			defer srv.Close()
 
+			ad := tc.build(srv.URL, idle)
+			defer ad.client.CloseIdleConnections()
 			start := time.Now()
-			ch, closeIdle, err := tc.stream(srv.URL, idle)
+			ch, err := ad.stream(context.Background())
 			if err != nil {
 				t.Fatalf("Stream() error: %v", err)
 			}
-			defer closeIdle()
 			events := collectEvents(t, ch)
-			elapsed := time.Since(start)
+			assertIdleFailure(t, events, time.Since(start), idle)
 
-			if len(events) != 1 || events[0].Type != "error" {
-				t.Fatalf("events = %+v, want exactly one error event", events)
-			}
-			if !errors.Is(events[0].Error, errStreamIdle) {
-				t.Errorf("error = %v, want errStreamIdle", events[0].Error)
-			}
-			if !strings.Contains(events[0].Error.Error(), "stream idle for 0.15s") {
-				t.Errorf("error = %q, want it to name the idle timeout", events[0].Error)
-			}
-			if elapsed < idle || elapsed > 3*time.Second {
-				t.Errorf("idle error after %v, want between %v and 3s", elapsed, idle)
-			}
 			select {
 			case <-disconnected:
 			case <-time.After(2 * time.Second):
 				t.Error("server never observed the client closing the stalled stream")
+			}
+			if n := hits.Load(); n != 1 {
+				t.Errorf("server saw %d requests, want 1: a mid-stream idle failure must not be retried", n)
+			}
+		})
+	}
+}
+
+func TestStreamingAdapters_CancelInsideIdleWindowIsNotIdle(t *testing.T) {
+	const idle = 2 * time.Second
+	for _, tc := range idleStreamCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			srv := httptest.NewServer(stallHandler(": keepalive\n\n", &hits, nil))
+			defer srv.Close()
+
+			ad := tc.build(srv.URL, idle)
+			defer ad.client.CloseIdleConnections()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			start := time.Now()
+			ch, err := ad.stream(ctx)
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			time.AfterFunc(50*time.Millisecond, cancel)
+			events := collectEvents(t, ch)
+
+			if elapsed := time.Since(start); elapsed >= idle {
+				t.Fatalf("stream ended after %v, not inside the %v idle window", elapsed, idle)
+			}
+			for _, ev := range events {
+				if errors.Is(ev.Error, errStreamIdle) {
+					t.Errorf("cancelled stream reported an idle timeout: %v", ev.Error)
+				}
+			}
+		})
+	}
+}
+
+func TestStreamingAdapters_IdleTimeoutOverHTTP2(t *testing.T) {
+	const idle = 150 * time.Millisecond
+	for _, tc := range idleStreamCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			disconnected := make(chan struct{})
+			stall := stallHandler(": keepalive\n\n", &hits, disconnected)
+			srv := newHTTP2TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 {
+					t.Errorf("request arrived over %s, want HTTP/2", r.Proto)
+				}
+				stall(w, r)
+			}))
+
+			ad := tc.build(srv.URL, idle)
+			trustServer(t, ad.client, srv)
+			defer ad.client.CloseIdleConnections()
+			start := time.Now()
+			ch, err := ad.stream(context.Background())
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			assertIdleFailure(t, collectEvents(t, ch), time.Since(start), idle)
+
+			select {
+			case <-disconnected:
+			case <-time.After(2 * time.Second):
+				t.Error("server never observed the client resetting the stalled HTTP/2 stream")
 			}
 		})
 	}
@@ -529,37 +634,39 @@ func TestStreamingAdapters_IdleTimeoutLeavesNoGoroutines(t *testing.T) {
 	const idle = 100 * time.Millisecond
 	baseline := runtime.NumGoroutine()
 
-	func() {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if !strings.HasSuffix(r.URL.Path, "/stall") {
-				writeFlush(w, makeSSE("message_stop", `{}`))
-				return
-			}
-			writeFlush(w, ": keepalive\n\n")
-			select {
-			case <-r.Context().Done():
-			case <-time.After(5 * time.Second):
-			}
-		}))
-		defer srv.Close()
+	for _, tc := range idleStreamCases() {
+		func() {
+			var stall atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				if !stall.Load() {
+					writeFlush(w, tc.complete)
+					return
+				}
+				writeFlush(w, ": keepalive\n\n")
+				select {
+				case <-r.Context().Done():
+				case <-time.After(5 * time.Second):
+				}
+			}))
+			defer srv.Close()
 
-		for _, path := range []string{"/stall", "/ok", "/stall", "/ok"} {
-			a := NewAnthropicAdapter(staticBearer("k"), AuthModeAPIKey)
-			a.baseURL = srv.URL + path
-			a.streamIdleTimeout = idle
-			ch, err := a.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-			if err != nil {
-				t.Fatalf("Stream(%s) error: %v", path, err)
+			for _, stalled := range []bool{true, false, true, false} {
+				stall.Store(stalled)
+				ad := tc.build(srv.URL, idle)
+				ch, err := ad.stream(context.Background())
+				if err != nil {
+					t.Fatalf("%s: Stream() error: %v", tc.name, err)
+				}
+				events := collectEvents(t, ch)
+				ad.client.CloseIdleConnections()
+				if stalled && (len(events) != 1 || !errors.Is(events[0].Error, errStreamIdle)) {
+					t.Fatalf("%s: stalled stream events = %+v, want one idle error", tc.name, events)
+				}
 			}
-			events := collectEvents(t, ch)
-			a.httpClient.CloseIdleConnections()
-			if path == "/stall" && (len(events) != 1 || !errors.Is(events[0].Error, errStreamIdle)) {
-				t.Fatalf("stalled stream events = %+v, want one idle error", events)
-			}
-		}
-	}()
+		}()
+	}
 
 	waitForGoroutines(t, baseline)
 }
