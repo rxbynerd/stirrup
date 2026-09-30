@@ -191,6 +191,9 @@ func TestIdleTimeoutBody_NoGoroutineOrTimerLeak(t *testing.T) {
 		}
 		_ = eb.Close()
 		_ = ew.Close()
+		if eb.timer.Stop() {
+			t.Fatal("expired body left its timer armed after Close")
+		}
 
 		completing, cw := newTrackedPipe()
 		go func() {
@@ -202,10 +205,12 @@ func TestIdleTimeoutBody_NoGoroutineOrTimerLeak(t *testing.T) {
 			t.Fatalf("completing body: %v", err)
 		}
 		_ = cb.Close()
+		if cb.timer.Stop() {
+			t.Fatal("completed body left its timer armed after Close")
+		}
 	}
 
-	// Any timer left armed after Close would fire here and bump a close
-	// count; waiting past the timeout also lets expiry goroutines finish.
+	// Wait past the timeout so any expiry goroutine has finished.
 	time.Sleep(50 * time.Millisecond)
 	waitForGoroutines(t, baseline)
 }
