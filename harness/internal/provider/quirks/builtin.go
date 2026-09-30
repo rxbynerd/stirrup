@@ -310,7 +310,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "*",
-			Description:  "Anthropic: prompt caching: system breakpoint + top-level automatic cache_control (probed 2026-09-30)",
+			Description:  "Anthropic: prompt caching via system cache_control breakpoint plus top-level automatic cache_control",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.Anthropic.PromptCaching = true
@@ -356,7 +356,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "*",
-			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented)",
+			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.PromptCacheKey = true

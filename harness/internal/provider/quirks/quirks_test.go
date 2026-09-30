@@ -649,9 +649,14 @@ func TestAnthropicEffortLevels(t *testing.T) {
 func TestAnthropicPromptCaching(t *testing.T) {
 	for _, model := range []string{
 		"claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5",
 		"claude-sonnet-4-5-20250929",
 		"claude-sonnet-4-6",
+		"claude-opus-4-5",
+		"claude-opus-4-6",
+		"claude-opus-4-7",
 		"claude-opus-4-8",
+		"claude-sonnet-5",
 		"claude-sonnet-5-5",
 		"claude-opus-5-5",
 		"claude-fable-5-1",
@@ -841,9 +846,14 @@ func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
 	if rf.InputItemShape != TypedInputItems {
 		t.Errorf("InputItemShape = %v, want TypedInputItems", rf.InputItemShape)
 	}
-	for _, model := range []string{"gpt-4o", "gpt-5.4", "gpt-6-astra"} {
+	for _, model := range []string{"gpt-4o", "gpt-5.4", "gpt-6-astra", "some-new-model"} {
 		if !DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses.PromptCacheKey {
 			t.Errorf("openai-responses/%s: PromptCacheKey = false, want true", model)
+		}
+	}
+	for _, providerType := range []string{"openai-compatible", "anthropic"} {
+		if DefaultRegistry().Resolve(providerType, "gpt-4o").BehaviourFlags.OpenAIResponses.PromptCacheKey {
+			t.Errorf("%s/gpt-4o: PromptCacheKey = true, want false (rule scoped to openai-responses)", providerType)
 		}
 	}
 
