@@ -71,13 +71,14 @@ content blocks at once. Batch results are parsed into the same shape.
 Replayed thinking is billed as input. In one probe against
 `claude-sonnet-5-5` on 2026-09-30, a continuation cost 668 input tokens
 with the prior turn's thinking block replayed and 558 without it, a
-difference equal to that turn's 110 thinking tokens. The loop's
-context-size estimate, the input side of the token budget, and the
-sliding-window strategy's per-message estimate count reasoning text
-only, not signature bytes. Hidden thinking (a block with empty text,
-the `claude-sonnet-5-5` default) is therefore under-counted by the
-estimate and the budget until both are fed from provider-reported
-usage.
+difference equal to that turn's 110 thinking tokens. The token budget
+counts the provider-reported input figure, which includes replayed
+thinking. The loop's context-size estimate and the sliding-window
+strategy's per-message estimate count reasoning text only, not
+signature bytes, so hidden thinking (a block with empty text, the
+`claude-sonnet-5-5` default) is under-counted by both estimates; a
+compaction can therefore trigger later than the provider's own input
+count would suggest.
 
 Anthropic's [preserved-thinking
 documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
