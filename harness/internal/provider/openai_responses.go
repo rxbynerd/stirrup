@@ -777,8 +777,9 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if err != nil {
 		return responsesRequest{}, err
 	}
+	effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
 	temperature := params.Temperature
-	if q.BehaviourFlags.OpenAIResponses.OmitSamplingParams {
+	if responsesOmitsTemperature(q, effort) {
 		temperature = nil
 	}
 	var cacheKey string
@@ -793,12 +794,19 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
-		ReasoningEffort:   projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels),
+		ReasoningEffort:   effort,
 		PromptCacheKey:    cacheKey,
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
 	}, nil
+}
+
+// responsesOmitsTemperature reports whether temperature stays off the wire:
+// the model rejects sampling params outright, or a reasoning effort is sent
+// (OpenAI documents removing temperature whenever effort is not none).
+func responsesOmitsTemperature(q quirks.ProviderQuirks, projectedEffort string) bool {
+	return q.BehaviourFlags.OpenAIResponses.OmitSamplingParams || projectedEffort != ""
 }
 
 // Stream sends a streaming request to the OpenAI Responses API and returns
@@ -856,7 +864,8 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		)
 	}
 
-	if q.BehaviourFlags.OpenAIResponses.OmitSamplingParams && params.Temperature != nil {
+	projectedEffort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
+	if params.Temperature != nil && responsesOmitsTemperature(q, projectedEffort) {
 		logger.WarnContext(ctx, "openai-responses quirks suppressed caller temperature",
 			slog.String("provider.type", "openai-responses"),
 			slog.String("provider.model", params.Model),

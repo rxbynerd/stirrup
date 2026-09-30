@@ -166,8 +166,11 @@ func TestOpenAIAdapter_GatewayGPT6AllowsTools(t *testing.T) {
 }
 
 // TestResponsesRequest_GPT6ReasoningAndSampling pins the Responses wire
-// shape for gpt-6: reasoning.effort projected, temperature omitted; and
-// that gpt-5.4 keeps its temperature and gets no reasoning object.
+// shape for the GPT-5.4+ and GPT-6 families: reasoning.effort is projected
+// where the model documents it, and temperature is omitted whenever an
+// effort is sent or the model rejects sampling params. gpt-5.4 with no
+// effort keeps its temperature (its default effort is none). The GPT-5.x
+// rows are documented, not probed.
 func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 	cases := []struct {
 		model, effort string
@@ -175,7 +178,14 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 	}{
 		{"gpt-6.1-sol", "xhigh", []string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
 		{"gpt-6-astra", "", nil, []string{`"temperature"`, `"reasoning"`}},
-		{"gpt-5.4", "high", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
+		{"gpt-5.4", "", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
+		{"gpt-5.4", "high", []string{`"reasoning":{"effort":"high"}`}, []string{`"temperature"`}},
+		{"gpt-5.4-mini", "xhigh", []string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
+		{"gpt-5.5", "", nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5.5", "low", []string{`"reasoning":{"effort":"low"}`}, []string{`"temperature"`}},
+		{"gpt-5.6-sol", "max", []string{`"reasoning":{"effort":"max"}`}, []string{`"temperature"`}},
+		{"gpt-5.6-luna", "", nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-4.1", "high", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
@@ -221,6 +231,60 @@ func TestResponsesAdapter_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Errorf("server received %d requests, want 0", hits.Load())
+	}
+}
+
+// TestResponsesAdapter_GPT5EffortAllowListsBeforeSend pins the GPT-5.x
+// Responses allow-lists at the pre-send guard: minimal is documented for
+// none of them, and max only for gpt-5.6.
+func TestResponsesAdapter_GPT5EffortAllowListsBeforeSend(t *testing.T) {
+	cases := []struct{ model, effort string }{
+		{"gpt-5.6-terra", "minimal"},
+		{"gpt-5.5", "max"},
+		{"gpt-5.4", "max"},
+		{"gpt-5.4", "minimal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			srv, hits := countingServer(t)
+			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
+			_, err := adapter.Stream(context.Background(), effortParams(tc.model, tc.effort, false))
+			want := `reasoningEffort "` + tc.effort + `" is not supported`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Stream() error = %v, want %q", err, want)
+			}
+			if hits.Load() != 0 {
+				t.Errorf("server received %d requests, want 0", hits.Load())
+			}
+		})
+	}
+}
+
+// TestResponsesAdapter_EffortSuppressesTemperatureWarns pins that dropping
+// temperature because an effort is sent is logged like the quirk-driven
+// suppression, on a model (gpt-5.4) with no sampling-param rule.
+func TestResponsesAdapter_EffortSuppressesTemperatureWarns(t *testing.T) {
+	cases := []struct {
+		effort   string
+		wantWarn bool
+	}{
+		{"high", true},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run("effort="+tc.effort, func(t *testing.T) {
+			var buf bytes.Buffer
+			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), responsesWarnStubServer(t).URL, OpenAIAuthConfig{})
+			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+			ch, err := adapter.Stream(context.Background(), effortParams("gpt-5.4", tc.effort, false))
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			collectEvents(t, ch)
+			if got := strings.Contains(buf.String(), "suppressed caller temperature"); got != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; log: %s", got, tc.wantWarn, buf.String())
+			}
+		})
 	}
 }
 

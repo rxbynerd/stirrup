@@ -57,9 +57,44 @@ func TestGPT6ResponsesRules(t *testing.T) {
 			}
 		})
 	}
-	r := DefaultRegistry().Resolve("openai-responses", "gpt-5.4-nano").BehaviourFlags.OpenAIResponses
-	if r.OmitSamplingParams || len(r.ReasoningEffortLevels) != 0 {
-		t.Errorf("gpt-5.4-nano picked up gpt-6 Responses flags: %+v", r)
+	for _, model := range []string{"gpt-5", "gpt-5-mini", "o3"} {
+		r := DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses
+		if r.OmitSamplingParams || len(r.ReasoningEffortLevels) != 0 {
+			t.Errorf("%s picked up GPT-5.4+ Responses flags: %+v", model, r)
+		}
+	}
+}
+
+// TestGPT5ResponsesEffortRules pins the documented (not probed) GPT-5.4,
+// 5.5 and 5.6 Responses allow-lists and sampling suppression: none lists
+// minimal, only 5.6 lists max, and gpt-5.4 keeps temperature because its
+// default effort is none.
+func TestGPT5ResponsesEffortRules(t *testing.T) {
+	upToXHigh := []string{"low", "medium", "high", "xhigh"}
+	upToMax := []string{"low", "medium", "high", "xhigh", "max"}
+	cases := []struct {
+		model      string
+		levels     []string
+		omitSample bool
+	}{
+		{"gpt-5.4", upToXHigh, false},
+		{"gpt-5.4-nano", upToXHigh, false},
+		{"gpt-5.5", upToXHigh, true},
+		{"gpt-5.5-2026-04-23", upToXHigh, true},
+		{"gpt-5.6-sol", upToMax, true},
+		{"gpt-5.6-terra", upToMax, true},
+		{"gpt-5.6-luna", upToMax, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			r := DefaultRegistry().Resolve("openai-responses", tc.model).BehaviourFlags.OpenAIResponses
+			if !reflect.DeepEqual(r.ReasoningEffortLevels, tc.levels) {
+				t.Errorf("ReasoningEffortLevels = %v, want %v", r.ReasoningEffortLevels, tc.levels)
+			}
+			if r.OmitSamplingParams != tc.omitSample {
+				t.Errorf("OmitSamplingParams = %v, want %v", r.OmitSamplingParams, tc.omitSample)
+			}
+		})
 	}
 }
 

@@ -380,6 +380,39 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},
 		},
+		// GPT-5.4 onward document effort none..xhigh (5.6: ..max) and no
+		// model documents minimal. Sampling suppression follows the default
+		// effort: gpt-5.4 defaults to none and keeps temperature, 5.5 and
+		// 5.6 default to medium.
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.4*",
+			Description:  "OpenAI Responses gpt-5.4: reasoning.effort low..xhigh (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.5*",
+			Description:  "OpenAI Responses gpt-5.5: reasoning.effort low..xhigh (documented); omit sampling params (inferred); not probed",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.6*",
+			Description:  "OpenAI Responses gpt-5.6 family: reasoning.effort low..max (documented); omit sampling params (inferred); not probed",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
 
 		// Effort allow-lists are per-model: output_config.effort is a 400 on
 		// Haiku 4.5 and Sonnet 4.5, Opus 4.5 stops at high, and the 4.6
