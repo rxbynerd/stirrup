@@ -684,9 +684,28 @@ type openaiToolFunctionDelta struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-// openaiUsage tracks token usage in the final chunk.
+// openaiUsage is the Chat Completions usage object. prompt_tokens
+// already includes both prompt_tokens_details cache figures;
+// reasoning_tokens is a subset of completion_tokens.
 type openaiUsage struct {
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokens        int `json:"completion_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// applyTo copies the usage onto a message_complete event.
+func (u openaiUsage) applyTo(ev *types.StreamEvent) {
+	ev.InputTokens = u.PromptTokens
+	ev.OutputTokens = u.CompletionTokens
+	ev.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+	ev.CacheWriteTokens = u.PromptTokensDetails.CacheWriteTokens
+	ev.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 }
 
 // openaiErrorResponse is the error format returned by the OpenAI API.
@@ -1171,19 +1190,18 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	// it in a trailing empty-choices chunk after finish_reason, or attach it
 	// to the finish chunk itself.
 	var streamUsage *openaiUsage
-	// Guards against double-counting once a message_complete already
-	// carried the output-token count.
-	outputTokensEmitted := false
+	// Guards against a second usage-only message_complete once one
+	// already carried the usage.
+	usageEmitted := false
 
 	flushTrailingUsage := func() {
-		if streamUsage == nil || outputTokensEmitted {
+		if streamUsage == nil || usageEmitted {
 			return
 		}
-		emitEvent(types.StreamEvent{
-			Type:         "message_complete",
-			OutputTokens: streamUsage.CompletionTokens,
-		})
-		outputTokensEmitted = true
+		ev := types.StreamEvent{Type: "message_complete"}
+		streamUsage.applyTo(&ev)
+		emitEvent(ev)
+		usageEmitted = true
 	}
 	// Emit the per-stream ReplayFields summary on any exit path. Length-only:
 	// captured content must never reach a log or trace sink.
@@ -1330,8 +1348,8 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				// that put it on the finish chunk). LM Studio and OpenAI
 				// send it in a later chunk, handled by flushTrailingUsage.
 				if streamUsage != nil {
-					ev.OutputTokens = streamUsage.CompletionTokens
-					outputTokensEmitted = true
+					streamUsage.applyTo(&ev)
+					usageEmitted = true
 				}
 				emitEvent(ev)
 				messageCompleted = true

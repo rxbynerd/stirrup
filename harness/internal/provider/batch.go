@@ -766,10 +766,7 @@ func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID strin
 // field. Only the fields the fabrication path consumes are decoded.
 type openaiChatBatchResponse struct {
 	Choices []openaiChatBatchChoice `json:"choices"`
-	Usage   *struct {
-		PromptTokens     int `json:"prompt_tokens,omitempty"`
-		CompletionTokens int `json:"completion_tokens,omitempty"`
-	} `json:"usage,omitempty"`
+	Usage   *openaiUsage            `json:"usage,omitempty"`
 }
 
 type openaiChatBatchChoice struct {
@@ -797,7 +794,7 @@ type openaiChatBatchToolCall struct {
 // produces in openai.go: one text_delta for any non-empty assistant
 // content, one tool_call per tool_calls entry (in upstream order), then
 // a single message_complete carrying the mapped finish_reason and the
-// usage.completion_tokens count. Content is left nil on message_complete
+// reported usage. Content is left nil on message_complete
 // to match consumeSSE, which does not populate it either.
 func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiChatBatchResponse
@@ -832,7 +829,7 @@ func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMes
 		StopReason: mapFinishReason(choice.FinishReason),
 	}
 	if resp.Usage != nil {
-		ev.OutputTokens = resp.Usage.CompletionTokens
+		resp.Usage.applyTo(&ev)
 	}
 	ch <- ev
 	return nil

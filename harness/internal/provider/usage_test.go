@@ -185,3 +185,57 @@ func TestFabricateStream_OpenAIResponsesReportsUsage(t *testing.T) {
 		t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
 	}
 }
+
+func streamChatUsage(t *testing.T, sse string) reportedUsage {
+	t.Helper()
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), serveSSE(t, sse).URL, OpenAIAuthConfig{}, RetryPolicy{})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-6",
+		MaxTokens: 1024,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	return mergedUsage(t, collectEvents(t, ch))
+}
+
+// The captured LM Studio Qwen 3.6 stream puts usage (with
+// completion_tokens_details.reasoning_tokens) on a trailing
+// empty-choices chunk after finish_reason.
+func TestOpenAICompatibleAdapter_ReportsTrailingUsageFromCapture(t *testing.T) {
+	sse := string(streamFixtureSSE(t, "testdata/quirks/openai-compatible/qwen3.6-27b/response.sse"))
+	if got, want := streamChatUsage(t, sse), (reportedUsage{Input: 16, Output: 42, Reasoning: 31}); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
+// Usage attached to the finish chunk itself, with the documented OpenAI
+// prompt_tokens_details cache figures (documented, not probed).
+func TestOpenAICompatibleAdapter_ReportsUsageOnFinishChunk(t *testing.T) {
+	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000,"cache_write_tokens":500},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64},"total_tokens":9120}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	want := reportedUsage{Input: 9000, Output: 120, CacheRead: 8000, CacheWrite: 500, Reasoning: 64}
+	if got := streamChatUsage(t, sse); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
+// A server that ignores stream_options.include_usage sends no usage
+// block; every count stays zero so the loop keeps its estimate.
+func TestOpenAICompatibleAdapter_NoUsageLeavesCountsUnreported(t *testing.T) {
+	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	if got := streamChatUsage(t, sse); got != (reportedUsage{}) {
+		t.Errorf("usage = %+v, want all zero", got)
+	}
+}
+
+func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
+	response := `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000,"cache_write_tokens":500},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64}}}`
+	want := reportedUsage{Input: 9000, Output: 120, CacheRead: 8000, CacheWrite: 500, Reasoning: 64}
+	if got := fabricatedUsage(t, response, "openai-compatible"); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
