@@ -209,6 +209,61 @@ func TestBuildAnthropicRequest_UnsignedThinkingDropped(t *testing.T) {
 	}
 }
 
+// thinkingOnlyTurnHistory has a middle assistant turn holding nothing but
+// a thinking block, as a turn that stops at max_tokens while thinking
+// leaves it.
+func thinkingOnlyTurnHistory(signature string) []types.Message {
+	return []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Solve it."}}},
+		{Role: "assistant", Content: []types.ContentBlock{{Type: "thinking", ThoughtSignature: signature}}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Continue."}}},
+	}
+}
+
+func wireMessages(t *testing.T, history []types.Message) string {
+	t.Helper()
+	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	body, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var req struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return string(req.Messages)
+}
+
+// TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted pins that an assistant
+// turn emptied by the loop's strip or by the unsigned-block drop never
+// reaches the wire as an empty content array: it is omitted and the user
+// turns on either side are joined into one.
+func TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted(t *testing.T) {
+	want := `[{"role":"user","content":[{"type":"text","text":"Solve it."},{"type":"text","text":"Continue."}]}]`
+	cases := map[string][]types.Message{
+		"stripped": types.StripThinkingBlocks(thinkingOnlyTurnHistory("sig-A")),
+		"unsigned": thinkingOnlyTurnHistory(""),
+	}
+	for name, history := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := wireMessages(t, history); got != want {
+				t.Errorf("messages\n got: %s\nwant: %s", got, want)
+			}
+		})
+	}
+
+	t.Run("signed", func(t *testing.T) {
+		want := `[{"role":"user","content":[{"type":"text","text":"Solve it."}]},` +
+			`{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-A"}]},` +
+			`{"role":"user","content":[{"type":"text","text":"Continue."}]}]`
+		if got := wireMessages(t, thinkingOnlyTurnHistory("sig-A")); got != want {
+			t.Errorf("messages\n got: %s\nwant: %s", got, want)
+		}
+	})
+}
+
 // TestBuildAnthropicRequest_MatchesStream pins the invariant that
 // buildAnthropicRequest produces the same wire body the Stream method
 // would emit. The batch path reuses the builder and must be

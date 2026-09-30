@@ -74,16 +74,20 @@ func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
 	}
 }
 
-func TestStripThinkingBlocks_ThinkingOnlyMessageKeepsPosition(t *testing.T) {
+// TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter pins that the
+// helper removes blocks without reshaping the history: an emptied message
+// stays in place for the adapter to handle (the Anthropic adapter's wire
+// shape is pinned by TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted).
+func TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter(t *testing.T) {
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{Role: "assistant", Content: []ContentBlock{{Type: "thinking", ThoughtSignature: "sig"}}},
 	}
 	got := StripThinkingBlocks(in)
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2", len(got))
+	if len(got) != 2 || got[1].Role != "assistant" {
+		t.Fatalf("got %+v, want both messages in their original positions", got)
 	}
-	if got[1].Role != "assistant" || len(got[1].Content) != 0 {
-		t.Errorf("thinking-only message = %+v, want assistant with empty content", got[1])
+	if containsThinking(got[1].Content) {
+		t.Errorf("thinking block survived: %+v", got[1].Content)
 	}
 }

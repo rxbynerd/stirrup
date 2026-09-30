@@ -368,9 +368,11 @@ type anthropicToolResultPart struct {
 // A thinking block without one is dropped: the API cannot verify an
 // unsigned block, so it is not replayable.
 func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability) []anthropicMessage {
-	out := make([]anthropicMessage, len(messages))
-	for i, msg := range messages {
+	out := make([]anthropicMessage, 0, len(messages))
+	skipped := false
+	for _, msg := range messages {
 		blocks := make([]anthropicContentBlock, 0, len(msg.Content))
+		onlyThinking := true
 		for _, b := range msg.Content {
 			if types.IsThinkingBlock(b) {
 				if b.ThoughtSignature == "" {
@@ -383,6 +385,7 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 				})
 				continue
 			}
+			onlyThinking = false
 			blocks = append(blocks, anthropicContentBlock{
 				Type:      b.Type,
 				Text:      b.Text,
@@ -394,10 +397,19 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 				IsError:   b.IsError,
 			})
 		}
-		out[i] = anthropicMessage{
-			Role:    msg.Role,
-			Content: blocks,
+		// The API rejects an empty content array, so a message left empty by
+		// stripped or unsigned thinking blocks is omitted, and the turns on
+		// either side are joined when that leaves two of the same role.
+		if len(blocks) == 0 && onlyThinking {
+			skipped = true
+			continue
 		}
+		if skipped && len(out) > 0 && out[len(out)-1].Role == msg.Role {
+			out[len(out)-1].Content = append(out[len(out)-1].Content, blocks...)
+		} else {
+			out = append(out, anthropicMessage{Role: msg.Role, Content: blocks})
+		}
+		skipped = false
 	}
 	return out
 }

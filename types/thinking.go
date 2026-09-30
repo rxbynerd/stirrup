@@ -14,7 +14,7 @@ func IsThinkingBlock(b ContentBlock) bool {
 //
 // The input is never mutated. Messages without thinking blocks are shared
 // with the input; the rest get a fresh Content slice. A message left with
-// no content keeps its position so role alternation is unchanged.
+// no content keeps its position; each adapter decides how to send it.
 func StripThinkingBlocks(messages []Message) []Message {
 	var out []Message
 	for i, msg := range messages {
