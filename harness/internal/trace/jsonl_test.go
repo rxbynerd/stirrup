@@ -515,6 +515,43 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay pins the
+// same drop for the OpenAI Responses adapter's stored output items, whose
+// reasoning items carry encrypted_content: the whole array stays out of the
+// persisted trace.
+func TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	const encrypted = "gAAAAAB-encrypted-reasoning-do-not-persist"
+	emitter.Start("run-responses-replay", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2,
+		ModelInput: types.ModelInput{
+			Model: "gpt-5.6-sol",
+			Messages: []types.Message{
+				{
+					Role:    "assistant",
+					Content: []types.ContentBlock{{Type: "text", Text: "prior turn"}},
+					ReplayFields: map[string]json.RawMessage{
+						"openai_responses.output": json.RawMessage(`[{"type":"reasoning","id":"rs_trace","summary":[],"encrypted_content":"` + encrypted + `"},{"type":"message","id":"msg_trace","role":"assistant","content":[{"type":"output_text","text":"prior turn"}]}]`),
+					},
+				},
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	for _, leak := range []string{encrypted, "rs_trace", "msg_trace", "replay_fields"} {
+		if strings.Contains(onDisk, leak) {
+			t.Errorf("persisted trace contains %q:\n%s", leak, onDisk)
+		}
+	}
+}
+
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent pins
 // the scrub of ContentBlock.Content — the tool_result text rendering
 // that rides the message history into the next turn's ModelInput. The

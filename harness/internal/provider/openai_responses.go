@@ -400,21 +400,28 @@ func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
 // endpoint) reject an empty "output" on message / function_call items.
 // See docs/provider-quirks.md for the function_call_output invariant.
 type responsesInput struct {
-	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output"
+	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "reasoning" (Raw only)
 	Role      string                  `json:"-"` // for "message"
 	Content   []responsesContentBlock `json:"-"` // for "message"
 	Name      string                  `json:"-"` // for "function_call"
 	CallID    string                  `json:"-"` // for "function_call" / "function_call_output"
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
+
+	// Raw is a stored output item replayed verbatim; when set, MarshalJSON
+	// emits it unchanged and ignores the typed fields.
+	Raw json.RawMessage `json:"-"`
 }
 
 // MarshalJSON emits only the wire fields valid for the input item's Type
 // discriminant. Each Type maps to a dedicated wire struct so a future
 // edit cannot accidentally leak a field across variants. function_call_output
 // requires the "output" key even when empty, so its wire struct's Output
-// field has no omitempty.
+// field has no omitempty. A replayed item (Raw set) is emitted as stored.
 func (r responsesInput) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		return r.Raw, nil
+	}
 	switch r.Type {
 	case "message":
 		return json.Marshal(responsesMessageInputWire{
@@ -449,15 +456,22 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 // roundtrips and any future caller-side parsing continues to work. The
 // adapter itself never decodes request bodies — this exists for symmetry
 // and to keep tests that send-then-receive a request able to inspect the
-// shape through the same struct that built it.
+// shape through the same struct that built it. An item carrying an id is a
+// replayed output item (reconstructed items never carry one) and is kept
+// in Raw.
 func (r *responsesInput) UnmarshalJSON(data []byte) error {
 	var head struct {
 		Type string `json:"type"`
+		ID   string `json:"id"`
 	}
 	if err := json.Unmarshal(data, &head); err != nil {
 		return err
 	}
 	r.Type = head.Type
+	if head.ID != "" && replayableResponsesItem(head.Type) {
+		r.Raw = append(json.RawMessage(nil), data...)
+		return nil
+	}
 	switch head.Type {
 	case "message":
 		var w responsesMessageInputWire
@@ -821,12 +835,21 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // Tool calls and tool results become standalone function_call /
 // function_call_output items (rather than being attached to the assistant
 // message), matching the Responses API's model.
+//
+// An assistant turn whose stored output items still match its content is
+// replayed verbatim instead (see replayedResponsesItems); every other turn
+// is reconstructed without item ids, so one turn never mixes the two.
 func translateMessagesResponses(messages []types.Message) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
+			if replayed := replayedResponsesItems(msg); replayed != nil {
+				out = append(out, replayed...)
+				continue
+			}
+
 			var textParts []string
 			var calls []responsesInput
 
@@ -891,6 +914,60 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 		}
 	}
 
+	return out
+}
+
+// replayedResponsesItems returns msg's stored output items as verbatim input
+// items, or nil when the turn must be reconstructed. The stored items are
+// used only while they still describe msg: their call_ids must equal the
+// tool_use block IDs and their output_text must equal the text blocks, so
+// a message the harness has since rewritten never replays stale items.
+func replayedResponsesItems(msg types.Message) []responsesInput {
+	stored := msg.ReplayFields[responsesReplayKey]
+	if len(stored) == 0 {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(stored, &items); err != nil || len(items) == 0 {
+		return nil
+	}
+
+	out := make([]responsesInput, 0, len(items))
+	var storedCallIDs []string
+	var storedText strings.Builder
+	for _, raw := range items {
+		var item responsesOutputItem
+		if err := json.Unmarshal(raw, &item); err != nil || !replayableResponsesItem(item.Type) {
+			return nil
+		}
+		switch item.Type {
+		case "function_call":
+			storedCallIDs = append(storedCallIDs, item.CallID)
+		case "message":
+			for _, part := range item.Content {
+				if part.Type == "output_text" {
+					storedText.WriteString(part.Text)
+				}
+			}
+		}
+		out = append(out, responsesInput{Type: item.Type, Raw: raw})
+	}
+
+	var toolUseIDs []string
+	var blockText strings.Builder
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			blockText.WriteString(block.Text)
+		case "tool_use":
+			toolUseIDs = append(toolUseIDs, block.ID)
+		}
+	}
+	slices.Sort(storedCallIDs)
+	slices.Sort(toolUseIDs)
+	if !slices.Equal(storedCallIDs, toolUseIDs) || storedText.String() != blockText.String() {
+		return nil
+	}
 	return out
 }
 

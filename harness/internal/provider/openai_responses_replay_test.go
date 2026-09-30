@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -287,6 +291,282 @@ func TestResponsesReplay_CaptureLogIsLengthOnly(t *testing.T) {
 	for _, leak := range []string{"placeholder-encrypted-reasoning-state", "Reading both files."} {
 		if strings.Contains(logs.String(), leak) {
 			t.Errorf("log leaked %q", leak)
+		}
+	}
+}
+
+// assistantFromEvents builds the assistant Message the agentic loop
+// persists for a stream: text deltas are joined into a text block that
+// closes at each tool call, and message_complete's ReplayFields ride along.
+func assistantFromEvents(events []types.StreamEvent) types.Message {
+	msg := types.Message{Role: "assistant"}
+	var text strings.Builder
+	inText := false
+	flush := func() {
+		if inText {
+			msg.Content = append(msg.Content, types.ContentBlock{Type: "text", Text: text.String()})
+			text.Reset()
+			inText = false
+		}
+	}
+	for _, ev := range events {
+		switch ev.Type {
+		case "text_delta":
+			inText = true
+			text.WriteString(ev.Text)
+		case "tool_call":
+			flush()
+			input, _ := json.Marshal(ev.Input)
+			msg.Content = append(msg.Content, types.ContentBlock{Type: "tool_use", ID: ev.ID, Name: ev.Name, Input: input})
+		case "message_complete":
+			flush()
+			msg.ReplayFields = ev.ReplayFields
+		}
+	}
+	return msg
+}
+
+// fixtureReplayTurn returns the gpt-5.6-sol fixture's persisted assistant
+// message and its stored output items.
+func fixtureReplayTurn(t *testing.T) (types.Message, []json.RawMessage) {
+	t.Helper()
+	events := streamResponsesSSE(t, streamFixtureSSE(t, responsesReplayFixtureDir+"/response.sse"), nil)
+	return assistantFromEvents(events), storedReplayItems(t, messageComplete(t, events))
+}
+
+func fixtureToolResults() types.Message {
+	return types.Message{Role: "user", Content: []types.ContentBlock{
+		{Type: "tool_result", ToolUseID: "call_fx1", Content: "package a"},
+		{Type: "tool_result", ToolUseID: "call_fx2", Content: "package b"},
+	}}
+}
+
+// TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim pins the replay
+// half: a consistent assistant turn is emitted as its stored items,
+// unmodified (ids, status, phase and encrypted_content included), in place
+// of the reconstructed message and function_call items.
+func TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim(t *testing.T) {
+	assistant, stored := fixtureReplayTurn(t)
+	user := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go and b.go"}}}
+
+	got := translateMessagesResponses([]types.Message{user, assistant, fixtureToolResults()})
+	if len(got) != 1+len(stored)+2 {
+		t.Fatalf("got %d input items, want %d", len(got), 1+len(stored)+2)
+	}
+	for i, item := range stored {
+		if !bytes.Equal(got[1+i].Raw, item) {
+			t.Errorf("input item %d = %s, want stored item %s", 1+i, got[1+i].Raw, item)
+		}
+	}
+	for i, callID := range []string{"call_fx1", "call_fx2"} {
+		out := got[1+len(stored)+i]
+		if out.Type != "function_call_output" || out.CallID != callID {
+			t.Errorf("item %d = %+v, want function_call_output for %s", 1+len(stored)+i, out, callID)
+		}
+	}
+
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	last := -1
+	for i, item := range stored {
+		idx := bytes.Index(body, item)
+		if idx < 0 {
+			t.Fatalf("stored item %d not byte-identical in the wire body: %s", i, body)
+		}
+		if idx <= last {
+			t.Errorf("stored item %d out of order in the wire body", i)
+		}
+		last = idx
+	}
+}
+
+// TestTranslateMessagesResponses_ReplayConsistencyFallback pins the
+// all-or-nothing rule: a turn whose stored items no longer match its
+// content is reconstructed exactly as a turn without stored items would
+// be, with no item ids and no partial replay.
+func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
+	base, _ := fixtureReplayTurn(t)
+	clone := func() types.Message {
+		m := base
+		m.Content = append([]types.ContentBlock(nil), base.Content...)
+		m.ReplayFields = map[string]json.RawMessage{responsesReplayKey: base.ReplayFields[responsesReplayKey]}
+		return m
+	}
+	cases := []struct {
+		name   string
+		mutate func(*types.Message)
+	}{
+		{"tool_use ID differs", func(m *types.Message) { m.Content[1].ID = "call_other" }},
+		{"tool_use dropped", func(m *types.Message) { m.Content = m.Content[:2] }},
+		{"extra tool_use", func(m *types.Message) {
+			m.Content = append(m.Content, types.ContentBlock{Type: "tool_use", ID: "call_fx3", Name: "read_file", Input: json.RawMessage(`{}`)})
+		}},
+		{"text rewritten", func(m *types.Message) { m.Content[0].Text = "Reading one file." }},
+		{"text dropped", func(m *types.Message) { m.Content = m.Content[1:] }},
+		{"stored value not an array", func(m *types.Message) {
+			m.ReplayFields[responsesReplayKey] = json.RawMessage(`{"type":"message"}`)
+		}},
+		{"stored value malformed", func(m *types.Message) {
+			m.ReplayFields[responsesReplayKey] = json.RawMessage(`[{"type":`)
+		}},
+		{"stored array empty", func(m *types.Message) { m.ReplayFields[responsesReplayKey] = json.RawMessage(`[]`) }},
+		{"stored item of unreplayable type", func(m *types.Message) {
+			m.ReplayFields[responsesReplayKey] = json.RawMessage(`[{"type":"web_search_call","id":"ws_1"}]`)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := clone()
+			tc.mutate(&msg)
+			reconstructed := msg
+			reconstructed.ReplayFields = nil
+
+			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}))
+			if err != nil {
+				t.Fatalf("marshal reconstruction: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("got\n%s\nwant reconstruction\n%s", got, want)
+			}
+			if bytes.Contains(got, []byte(`"id":`)) || bytes.Contains(got, []byte("encrypted_content")) {
+				t.Errorf("fallback leaked stored item fields: %s", got)
+			}
+		})
+	}
+}
+
+// TestTranslateMessagesResponses_OtherReplayKeysIgnored pins that a message
+// without the adapter-owned key keeps today's reconstructed shape, even when
+// it carries another adapter's replay state.
+func TestTranslateMessagesResponses_OtherReplayKeysIgnored(t *testing.T) {
+	msg := types.Message{
+		Role:         "assistant",
+		Content:      []types.ContentBlock{{Type: "text", Text: "done"}},
+		ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"thinking"`)},
+	}
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]`
+	if string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// TestResponsesReplay_SecondTurnRequestBody drives two turns through the
+// production Stream path: the first turn's fixture output is captured, and
+// the second request replays those items verbatim between the user prompt
+// and the tool outputs, with encrypted reasoning requested.
+func TestResponsesReplay_SecondTurnRequestBody(t *testing.T) {
+	assistant, stored := fixtureReplayTurn(t)
+	user := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go and b.go"}}}
+
+	bodies := make(chan []byte, 1)
+	srv := responsesCaptureServer(t, bodies)
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-5.6-sol",
+		MaxTokens: 1024,
+		Messages:  []types.Message{user, assistant, fixtureToolResults()},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	drainStream(t, ch)
+	body := <-bodies
+
+	if !bytes.Contains(body, []byte(`"include":["reasoning.encrypted_content"]`)) {
+		t.Errorf("second-turn body lacks the encrypted-reasoning include: %s", body)
+	}
+	var req struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(req.Input) != 1+len(stored)+2 {
+		t.Fatalf("input has %d items, want %d: %s", len(req.Input), 1+len(stored)+2, body)
+	}
+	for i, item := range stored {
+		if !bytes.Equal(req.Input[1+i], item) {
+			t.Errorf("input[%d] = %s, want stored item %s", 1+i, req.Input[1+i], item)
+		}
+	}
+	if n := bytes.Count(body, []byte(`"role":"assistant"`)); n != 1 {
+		t.Errorf("assistant message items = %d, want 1 (no reconstructed duplicate)", n)
+	}
+}
+
+// responsesCaptureServer records each request body and answers with a
+// minimal completed stream.
+func responsesCaptureServer(t *testing.T, bodies chan<- []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		bodies <- b
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestResponsesInput_ReplayedItemRoundTrip pins the test-side decode of a
+// body carrying replayed items: an id-bearing replayable item is kept raw
+// and re-marshals unchanged, while an id-less reasoning item is still an
+// unknown variant.
+func TestResponsesInput_ReplayedItemRoundTrip(t *testing.T) {
+	raw := []byte(`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`)
+	var item responsesInput
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if item.Type != "reasoning" || !bytes.Equal(item.Raw, raw) {
+		t.Errorf("decoded %+v, want reasoning kept raw", item)
+	}
+	back, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(back, raw) {
+		t.Errorf("re-marshal = %s, want %s", back, raw)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"reasoning"}`), &responsesInput{}); err == nil {
+		t.Error("id-less reasoning item must stay an unknown variant")
+	}
+}
+
+// TestChatCompletions_IgnoresResponsesReplayKey pins that the
+// openai-compatible adapter can never echo the Responses replay state: the
+// key is not a threadable path, so even a resolved rule naming it would be
+// skipped, and no built-in rule names it.
+func TestChatCompletions_IgnoresResponsesReplayKey(t *testing.T) {
+	if threadableOpenAIReplayPath(responsesReplayKey) {
+		t.Fatalf("%s must not be a threadable Chat Completions replay path", responsesReplayKey)
+	}
+	assistant, _ := fixtureReplayTurn(t)
+	for _, paths := range [][]string{
+		{responsesReplayKey},
+		quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-5.6-sol").ReplayFields,
+	} {
+		out := translateMessages("", []types.Message{assistant}, paths)
+		body, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if bytes.Contains(body, []byte("encrypted_content")) || bytes.Contains(body, []byte("openai_responses")) {
+			t.Errorf("chat body leaked Responses replay state (paths %v): %s", paths, body)
 		}
 	}
 }
