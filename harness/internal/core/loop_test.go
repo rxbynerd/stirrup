@@ -185,6 +185,67 @@ func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
 	}
 }
 
+// cacheKeyRecorder answers the first Stream call with a tool call and
+// every later call with a final answer, recording each call's CacheKey.
+type cacheKeyRecorder struct {
+	keys []string
+}
+
+func (p *cacheKeyRecorder) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	p.keys = append(p.keys, params.CacheKey)
+	events := []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}
+	if len(p.keys) == 1 {
+		events = []types.StreamEvent{
+			{Type: "tool_call", ID: "tc1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		}
+	}
+	ch := make(chan types.StreamEvent, len(events))
+	for _, e := range events {
+		ch <- e
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestLoop_CacheKeyIsStableHashOfRunID pins StreamParams.CacheKey: the
+// first 32 hex characters of sha256(runID), identical on every turn of a
+// run so the provider sees one conversation, and empty for a run with no
+// ID so unrelated runs never share a key.
+func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
+	cases := []struct {
+		runID string
+		want  string
+	}{
+		{runID: "test-run-1", want: "404b0dfface497f076048e07aa412671"},
+		{runID: "", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run("runID="+tc.runID, func(t *testing.T) {
+			prov := &cacheKeyRecorder{}
+			loop := buildTestLoop(&mockProvider{})
+			loop.Provider = prov
+			config := buildTestConfig()
+			config.RunID = tc.runID
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if len(prov.keys) != 2 {
+				t.Fatalf("Stream calls = %d, want 2", len(prov.keys))
+			}
+			for turn, got := range prov.keys {
+				if got != tc.want {
+					t.Errorf("turn %d CacheKey = %q, want %q", turn, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{

@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +99,18 @@ func effectiveReserveForResponse(maxTokens int) int {
 		reserve = 1
 	}
 	return reserve
+}
+
+// providerCacheKey derives StreamParams.CacheKey from the run ID, so a
+// provider sees a stable per-run cache-affinity hint without learning the
+// run ID itself. An empty run ID yields no key rather than one shared by
+// every such run.
+func providerCacheKey(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(runID))
+	return hex.EncodeToString(sum[:16])
 }
 
 // Run executes the agentic loop:
@@ -551,6 +565,8 @@ func (l *AgenticLoop) runInnerLoop(
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto
 
+	cacheKey := providerCacheKey(config.RunID)
+
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		l.Logger.Info("turn started", "turn", turn)
 
@@ -775,6 +791,7 @@ func (l *AgenticLoop) runInnerLoop(
 			Temperature:     temperature,
 			ReasoningEffort: config.ReasoningEffort,
 			ToolChoice:      turnToolChoice,
+			CacheKey:        cacheKey,
 		})
 		if err != nil {
 			// ScrubHandler doesn't cover OTel spans; scrub explicitly

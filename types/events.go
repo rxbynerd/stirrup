@@ -220,6 +220,14 @@ type StreamParams struct {
 	// with no prompt-based fallback since it is an efficiency hint, not a
 	// correctness lever.
 	ParallelToolCalls *bool `json:"parallelToolCalls,omitempty"`
+
+	// CacheKey is a provider-neutral prompt-cache affinity hint: stable
+	// across every request of one conversation and distinct between
+	// conversations. It is not a secret and reveals nothing about the run;
+	// the loop derives it by hashing the run ID. Empty means "say nothing
+	// on the wire". Adapters forward it only where the resolved quirks
+	// advertise a native control (OpenAI Responses `prompt_cache_key`).
+	CacheKey string `json:"cacheKey,omitempty"`
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a
