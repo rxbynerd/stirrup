@@ -1471,6 +1471,24 @@ func TestEstimateCurrentTokens(t *testing.T) {
 	}
 }
 
+// TestEstimateCurrentTokens_CountsReplayFields pins that replay state
+// resent with a message counts toward the estimate: a 40 KB stored
+// Responses output array adds 10240 tokens.
+func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
+	msg := types.Message{
+		Role:    "assistant",
+		Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
+		ReplayFields: map[string]json.RawMessage{
+			"openai_responses.output": json.RawMessage(`["` + strings.Repeat("A", 40*1024-4) + `"]`),
+			"openai_responses.origin": json.RawMessage(`"m@abc"`),
+		},
+	}
+	// 4 (msg) + 3 (block) + (40960 + 7) / 4 = 10248
+	if got := estimateCurrentTokens([]types.Message{msg}); got != 10248 {
+		t.Errorf("message with 40 KB replay state: want 10248, got %d", got)
+	}
+}
+
 func TestEstimateSystemPromptTokens(t *testing.T) {
 	prompt := strings.Repeat("a", 400) // 400 chars → 100 content tokens
 	got := estimateSystemPromptTokens(prompt)

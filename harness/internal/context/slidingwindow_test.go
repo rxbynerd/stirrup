@@ -202,3 +202,41 @@ func TestSlidingWindow_EstimateCountsThinkingTextNotSignature(t *testing.T) {
 func TestSlidingWindow_ImplementsInterface(t *testing.T) {
 	var _ ContextStrategy = (*SlidingWindowStrategy)(nil)
 }
+
+// TestSlidingWindow_CountsReplayFields pins that replay state resent with a
+// message (a 40 KB stored Responses output array here) counts toward its
+// estimate, so the window drops it rather than overflowing the context.
+func TestSlidingWindow_CountsReplayFields(t *testing.T) {
+	stored := `["` + strings.Repeat("A", 40*1024-4) + `"]`
+	withReplay := makeMessage("assistant", strings.Repeat("b", 400))
+	withReplay.ReplayFields = map[string]json.RawMessage{"openai_responses.output": json.RawMessage(stored)}
+	if got, want := estimateTokens(withReplay), 100+40*1024/4; got != want {
+		t.Fatalf("estimateTokens = %d, want %d", got, want)
+	}
+
+	msgs := []types.Message{
+		makeMessage("user", strings.Repeat("a", 400)),
+		withReplay,
+		makeMessage("user", strings.Repeat("c", 400)),
+		makeMessage("assistant", strings.Repeat("d", 400)),
+		makeMessage("user", strings.Repeat("e", 400)),
+		makeMessage("assistant", strings.Repeat("f", 400)),
+	}
+	s := NewSlidingWindowStrategy()
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:          1000,
+		CurrentTokens:      5*100 + 100 + 40*1024/4,
+		ReserveForResponse: 100,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	// Dropping the first two messages removes the replay state and fits
+	// the remaining 400 tokens in the 900 available.
+	if len(result) != 4 || result[0].Content[0].Text != strings.Repeat("c", 400) {
+		t.Fatalf("kept %d messages, want the last 4", len(result))
+	}
+	if got := s.LastCompaction().TokensAfter; got != 400 {
+		t.Errorf("TokensAfter = %d, want 400", got)
+	}
+}

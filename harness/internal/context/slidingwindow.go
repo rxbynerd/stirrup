@@ -80,13 +80,17 @@ func (s *SlidingWindowStrategy) LastCompaction() *CompactionEvent {
 }
 
 // estimateTokens returns a rough token estimate for a message: total
-// characters across all content blocks divided by 4.
+// characters across all content blocks and replay state divided by 4.
 func estimateTokens(msg types.Message) int {
 	chars := 0
 	for _, block := range msg.Content {
 		chars += len(block.Text)
 		chars += len(block.Content)
 		chars += len(block.Input)
+	}
+	// Replay state is resent with the message, so it counts too.
+	for _, v := range msg.ReplayFields {
+		chars += len(v)
 	}
 	est := chars / 4
 	if est == 0 {

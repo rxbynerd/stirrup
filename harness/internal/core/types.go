@@ -759,11 +759,23 @@ func estimateCurrentTokens(messages []types.Message) int {
 			// avoids under-shooting the budget and overflowing mid-run.
 			total += len(block.Structured) / tokenEstimationDivisor
 		}
+		// Replay state (encrypted reasoning, reasoning_content) is resent
+		// with the message, so it counts toward the context.
+		total += replayFieldsLen(msg) / tokenEstimationDivisor
 	}
 	if total == 0 {
 		total = 1
 	}
 	return total
+}
+
+// replayFieldsLen returns the total byte length of msg's replay state.
+func replayFieldsLen(msg types.Message) int {
+	n := 0
+	for _, v := range msg.ReplayFields {
+		n += len(v)
+	}
+	return n
 }
 
 // estimateSystemPromptTokens estimates the token count for the system prompt.
