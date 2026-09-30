@@ -141,3 +141,47 @@ func TestFabricateStream_AnthropicReportsUsage(t *testing.T) {
 		t.Errorf("usage = %+v, want %+v", got, want)
 	}
 }
+
+// The Responses usage fixtures follow the documented shape (documented,
+// not probed): input_tokens already includes cached_tokens and
+// cache_write_tokens.
+const responsesUsageFixture = `"usage":{"input_tokens":15000,"input_tokens_details":{"cached_tokens":12000,"cache_write_tokens":3000},"output_tokens":400,"output_tokens_details":{"reasoning_tokens":256},"total_tokens":15400}`
+
+var responsesUsageWant = reportedUsage{Input: 15000, Output: 400, CacheRead: 12000, CacheWrite: 3000, Reasoning: 256}
+
+func TestOpenAIResponsesAdapter_ReportsUsage(t *testing.T) {
+	cases := []struct {
+		name     string
+		terminal string
+	}{
+		{
+			name:     "completed",
+			terminal: makeResponsesEvent("response.completed", `{"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}],`+responsesUsageFixture+`}}`),
+		},
+		{
+			name:     "incomplete",
+			terminal: makeResponsesEvent("response.incomplete", `{"response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","id":"msg_1"}],`+responsesUsageFixture+`}}`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"ok"}`) + tc.terminal
+			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), serveSSE(t, body).URL, OpenAIAuthConfig{})
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			if got := mergedUsage(t, collectEvents(t, ch)); got != responsesUsageWant {
+				t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
+			}
+		})
+	}
+}
+
+func TestFabricateStream_OpenAIResponsesReportsUsage(t *testing.T) {
+	response := `{"status":"completed","output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"ok"}]}],` + responsesUsageFixture + `}`
+	if got := fabricatedUsage(t, response, "openai-responses"); got != responsesUsageWant {
+		t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
+	}
+}

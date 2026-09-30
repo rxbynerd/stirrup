@@ -520,11 +520,29 @@ type responsesOutputItem struct {
 	Status    string `json:"status,omitempty"`
 }
 
-// responsesUsage tracks token usage on response.completed.
+// responsesUsage is the usage object on response.completed and
+// response.incomplete. input_tokens already includes cached_tokens and
+// cache_write_tokens; reasoning_tokens is a subset of output_tokens.
 type responsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens,omitempty"`
+	InputTokens        int `json:"input_tokens"`
+	InputTokensDetails struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
+	OutputTokens        int `json:"output_tokens"`
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+	TotalTokens int `json:"total_tokens,omitempty"`
+}
+
+// applyTo copies the usage onto a message_complete event.
+func (u responsesUsage) applyTo(ev *types.StreamEvent) {
+	ev.InputTokens = u.InputTokens
+	ev.OutputTokens = u.OutputTokens
+	ev.CacheReadTokens = u.InputTokensDetails.CachedTokens
+	ev.CacheWriteTokens = u.InputTokensDetails.CacheWriteTokens
+	ev.ReasoningTokens = u.OutputTokensDetails.ReasoningTokens
 }
 
 // responsesResponse is the response object delivered on response.completed
@@ -1208,7 +1226,7 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			StopReason: deriveStopReason(payload.Response),
 		}
 		if payload.Response.Usage != nil {
-			ev.OutputTokens = payload.Response.Usage.OutputTokens
+			payload.Response.Usage.applyTo(&ev)
 		}
 		emit(ev)
 		// Terminal event: signal caller to stop reading regardless of
@@ -1243,7 +1261,7 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			StopReason: stop,
 		}
 		if payload.Response.Usage != nil {
-			ev.OutputTokens = payload.Response.Usage.OutputTokens
+			payload.Response.Usage.applyTo(&ev)
 		}
 		emit(ev)
 		return false

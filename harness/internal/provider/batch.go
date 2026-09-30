@@ -848,10 +848,7 @@ type openaiResponsesBatchResponse struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details,omitempty"`
 	Output []openaiResponsesBatchOutputItem `json:"output,omitempty"`
-	Usage  *struct {
-		InputTokens  int `json:"input_tokens,omitempty"`
-		OutputTokens int `json:"output_tokens,omitempty"`
-	} `json:"usage,omitempty"`
+	Usage  *responsesUsage                  `json:"usage,omitempty"`
 }
 
 // openaiResponsesBatchOutputItem is one item in response.output. Type
@@ -876,7 +873,7 @@ type openaiResponsesBatchContentBlock struct {
 // text_delta per assistant output_text content block, one tool_call per
 // function_call output item (in upstream order — the JSON array
 // preserves document order), then a single message_complete carrying
-// the derived stop reason and usage.output_tokens.
+// the derived stop reason and the reported usage.
 func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiResponsesBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -915,7 +912,7 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 		StopReason: stop,
 	}
 	if resp.Usage != nil {
-		ev.OutputTokens = resp.Usage.OutputTokens
+		resp.Usage.applyTo(&ev)
 	}
 	ch <- ev
 	return nil
