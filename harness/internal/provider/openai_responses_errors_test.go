@@ -18,7 +18,7 @@ import (
 
 // streamResponsesSSE serves body as a 200 SSE response and returns the
 // adapter's terminal event.
-func streamResponsesSSE(t *testing.T, body string) types.StreamEvent {
+func streamResponsesLastEvent(t *testing.T, body string) types.StreamEvent {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -68,7 +68,7 @@ func TestOpenAIResponsesAdapter_FailedEventIncludesErrorCode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			last := streamResponsesSSE(t, makeResponsesEvent("response.failed", tc.data))
+			last := streamResponsesLastEvent(t, makeResponsesEvent("response.failed", tc.data))
 			if last.Type != "error" || last.Error == nil {
 				t.Fatalf("last event = %+v, want an error event", last)
 			}
@@ -113,7 +113,7 @@ func TestOpenAIResponsesAdapter_ErrorEventIncludesCode(t *testing.T) {
 				makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"partial"}`),
 				makeResponsesEvent("error", tc.data),
 			}, "")
-			last := streamResponsesSSE(t, body)
+			last := streamResponsesLastEvent(t, body)
 			if last.Type != "error" || last.Error == nil {
 				t.Fatalf("last event = %+v, want an error event", last)
 			}

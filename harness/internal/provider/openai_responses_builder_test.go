@@ -521,7 +521,7 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 
 	marshal := func(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) []byte {
 		t.Helper()
-		req, err := buildResponsesRequest(params, q, nil)
+		req, err := buildResponsesRequest(params, q, nil, "")
 		if err != nil {
 			t.Fatalf("build: %v", err)
 		}

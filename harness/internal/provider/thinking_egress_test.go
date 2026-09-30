@@ -72,7 +72,7 @@ func TestOpenAIThinkingBlocks_Dropped(t *testing.T) {
 func TestOpenAIResponsesThinkingBlocks_Dropped(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("openai-responses", "gpt-4o")
 	marshal := func(messages []types.Message) []byte {
-		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil)
+		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil, "")
 		if err != nil {
 			t.Fatalf("build: %v", err)
 		}
