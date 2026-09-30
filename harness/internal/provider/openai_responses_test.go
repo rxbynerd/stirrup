@@ -955,7 +955,7 @@ func TestOpenAIResponsesAdapter_TrailingSlashBaseURL(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponsesAdapter_HasTimeout(t *testing.T) {
+func TestOpenAIResponsesAdapter_StreamingClientTimeouts(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
 	if adapter.httpClient.Timeout != 0 {
 		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)

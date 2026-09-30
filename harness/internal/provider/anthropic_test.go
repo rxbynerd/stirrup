@@ -971,7 +971,7 @@ func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 	}
 }
 
-func TestAnthropicAdapter_HasTimeout(t *testing.T) {
+func TestAnthropicAdapter_StreamingClientTimeouts(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	if adapter.httpClient.Timeout != 0 {
 		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)

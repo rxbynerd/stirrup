@@ -936,9 +936,9 @@ func TestGeminiAdapter_EmptyStream(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_HasTimeout pins the HTTP client timeout shape so a
-// future refactor cannot accidentally drop the safety bounds.
-func TestGeminiAdapter_HasTimeout(t *testing.T) {
+// TestGeminiAdapter_StreamingClientTimeouts pins the streaming client shape:
+// no total deadline, with bounded TLS handshake and response-header phases.
+func TestGeminiAdapter_StreamingClientTimeouts(t *testing.T) {
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "p", "global", nil)
 	if a.httpClient.Timeout != 0 {
 		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", a.httpClient.Timeout)
