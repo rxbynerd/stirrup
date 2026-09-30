@@ -47,6 +47,62 @@ them. These models think by default and stream `thinking` blocks; the
 adapter drops them, and the API accepts a replayed tool-use turn
 without them.
 
+**Prompt caching.** The loop re-sends the tool list, the system prompt
+and the full history on every turn, and the history only grows between
+compactions, so each request shares a long prefix with the one before
+it. The API caches nothing unless the request marks a breakpoint, so
+the adapter sends two on every Claude model (the `PromptCaching`
+[quirk](provider-quirks.md#21-providerquirks)):
+
+- `system` goes out as a single text block carrying
+  `"cache_control": {"type": "ephemeral"}`. The cached prefix is tools,
+  then system, then messages, so this breakpoint keeps tools and system
+  cached for the whole run, including after a context strategy rewrites
+  earlier messages.
+- A top-level `"cache_control": {"type": "ephemeral"}` turns on automatic
+  caching: the API places a second breakpoint on the last cacheable block
+  of each request, so the history written on one turn is read back on
+  the next.
+
+An empty system prompt sends only the top-level field. The first request
+of a run writes the prefix (`cacheWrite`); each later request reads it
+back (`cacheRead`) and writes only the new tail. Reads bill at 0.1x the
+base input rate (0.05x on Opus 5.5, 0.025x on Fable 5.1) and writes at
+1.25x, with the default five-minute cache lifetime. A live run on Sonnet
+5.5 (2026-09-30) wrote 6,504 tokens on turn 0 and read 6,504 to 6,715 on
+each later turn, leaving 2 to 4 input tokens uncached per turn.
+
+A prompt shorter than the model's cacheable minimum is sent uncached,
+with no error: 512 tokens on Opus 5 / 5.5, Sonnet 5.5, Fable 5 / 5.1 and
+Mythos 5 / 5.1; 1,024 on Opus 4.8, Sonnet 5, Sonnet 4.6 and Sonnet 4.5;
+4,096 on Haiku 4.5. The execution-mode toolset clears all of these
+(Haiku 4.5 wrote 4,887 tokens on turn 0 of a live run), but a run with
+fewer tools, such as a reduced `tools.builtIn` list, can fall below
+Haiku's line; a live Haiku run at 1,570 input tokens completed normally
+with nothing cached.
+
+A change invalidates the cache from its position in the prefix onward:
+
+| Change within a run | Cache invalidated |
+|---|---|
+| Tool list: a tool added, removed or reordered, or a schema changed | everything |
+| System prompt | system and messages |
+| Effort, thinking, or `tool_choice` (the missed-tool escalation forces one for a single turn) | messages |
+| Context-strategy rewrite (summarise, offload, sliding-window drop) | messages from the rewritten point |
+
+Automatic caching looks back 20 content-block positions for a previous
+write, counting a run of consecutive `tool_use` blocks, or of
+`tool_result` blocks, as one position, so a turn of parallel tool calls
+does not push the previous write out of reach.
+
+The `anthropic prompt cache` Debug log line reports `cache.read`,
+`cache.write` and `input.uncached` for every stream, and the same
+figures reach the trace as `cacheRead` and `cacheWrite` (see
+[Token usage](trace-inspection.md#token-usage)). A turn after the first
+whose `cache.read` is zero points at one of the invalidations above.
+The Bedrock adapter sends no cache breakpoints, and the legacy Bedrock
+surface does not offer automatic caching.
+
 ## AWS Bedrock
 
 **File:** `harness/internal/provider/bedrock.go`
@@ -172,6 +228,31 @@ history and does not delegate to server-side state; reasoning items are
 not replayed between turns. `RunConfig.reasoningEffort` maps to
 `reasoning.effort` for models whose accepted levels are known (the
 GPT-6 family).
+
+**Prompt caching.** The Responses API caches automatically, with no
+breakpoint in the request: the cached prefix covers the tools,
+`instructions` and the input history, and GPT-5.6 and later need a
+prefix of at least 1,024 tokens. The adapter adds a per-run
+`prompt_cache_key` (the `PromptCacheKey`
+[quirk](provider-quirks.md#21-providerquirks)): the first 32 hex
+characters of the SHA-256 of the run ID, so it is stable across the
+run's turns, distinct between runs and sub-agents, and never exposes the
+run ID itself. On models before GPT-5.6 a stable key routes related
+requests to the same cache, and OpenAI suggests keeping each key to
+about 15 requests per minute; on GPT-5.6 and later routing is automatic
+and the key only keeps cache accounting separate per run. Summariser,
+LLM-judge and guard calls send no key. The Chat Completions adapter
+never sends one, since compatible servers may reject the field. This
+behaviour is documented, not probed.
+
+OpenAI documents these request changes as breaking the cached prefix:
+`model`, the tool list (names, descriptions, schemas or order),
+`parallel_tool_calls`, `text.format`, `reasoning.effort`,
+`text.verbosity`, `context_management`, and any rewrite of earlier
+input, which includes a context-strategy summarise, offload or
+sliding-window drop. The `cacheRead` and `cacheWrite` trace fields
+carry `input_tokens_details.cached_tokens` and `.cache_write_tokens`
+(see [Token usage](trace-inspection.md#token-usage)).
 
 **GPT-6.** GPT-6 Astra and GPT-6.1 Sol call tools only through this
 API, and GPT-6 Sol and Luna only at `reasoning_effort: "none"` on Chat
