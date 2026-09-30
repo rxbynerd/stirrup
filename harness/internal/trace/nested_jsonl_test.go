@@ -2,6 +2,8 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -155,10 +157,11 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 		DurationMs: 5,
 	})
 	child.RecordTurn(types.TurnTrace{
-		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
-		StopReason: "end_turn",
-		DurationMs: 5,
+		Turn:          1,
+		Tokens:        types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
+		InputReported: true,
+		StopReason:    "end_turn",
+		DurationMs:    5,
 	})
 	child.RecordToolCall(types.ToolCallTrace{
 		Name:       "test_tool",
@@ -184,6 +187,22 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	wantTokens := types.TokenUsage{Input: 40, Output: 60, CacheRead: 10, CacheWrite: 2, Reasoning: 3}
 	if rt.TokenUsage != wantTokens {
 		t.Errorf("RunTrace.TokenUsage: got %+v, want %+v", rt.TokenUsage, wantTokens)
+	}
+	encoded, err := json.Marshal(rt)
+	if err != nil {
+		t.Fatalf("marshal RunTrace: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"tokenUsage":{"input":40,"output":60,"cacheRead":10,"cacheWrite":2,"reasoning":3}`) {
+		t.Errorf("encoded RunTrace missing the token usage breakdown: %s", encoded)
+	}
+	parent.mu.Lock()
+	forwarded := append([]types.TurnTrace(nil), parent.turns...)
+	parent.mu.Unlock()
+	if len(forwarded) != 2 {
+		t.Fatalf("parent received %d turns, want 2", len(forwarded))
+	}
+	if forwarded[1].Tokens != (types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3}) || !forwarded[1].InputReported {
+		t.Errorf("forwarded turn lost its usage breakdown: %+v", forwarded[1])
 	}
 	if len(rt.ToolCalls) != 1 {
 		t.Errorf("RunTrace.ToolCalls: got %d, want 1", len(rt.ToolCalls))

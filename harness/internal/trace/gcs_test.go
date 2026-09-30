@@ -156,6 +156,9 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 	if decoded.ID != "run-abc" {
 		t.Errorf("decoded trace ID: got %q, want run-abc", decoded.ID)
 	}
+	if !strings.Contains(body, `"tokenUsage":{"input":50,"output":25,"cacheRead":40,"cacheWrite":5,"reasoning":3}`) {
+		t.Errorf("uploaded body missing the token usage breakdown: %s", body)
+	}
 	if decoded.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", decoded.Config.Provider.APIKeyRef)
 	}

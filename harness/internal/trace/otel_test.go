@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
@@ -568,6 +570,18 @@ func TestOTelTraceEmitter_TurnUsageBreakdownAttributes(t *testing.T) {
 		Tokens:     types.TokenUsage{Input: 900, Output: 12},
 		StopReason: "end_turn",
 	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          3,
+		Tokens:        types.TokenUsage{Input: 5000, Output: 30, CacheRead: 4096},
+		InputReported: true,
+		StopReason:    "tool_use",
+	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          4,
+		Tokens:        types.TokenUsage{Input: 700, Output: 5},
+		InputReported: true,
+		StopReason:    "end_turn",
+	})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -593,6 +607,55 @@ func TestOTelTraceEmitter_TurnUsageBreakdownAttributes(t *testing.T) {
 		switch string(attr.Key) {
 		case tokensInputReportedKey, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens:
 			t.Errorf("turn[2]: unexpected attribute %s=%v on a turn with no breakdown", attr.Key, attr.Value.String())
+		}
+	}
+
+	cacheReadOnly := findSpanByName(t, spans, "turn[3]")
+	assertIntAttribute(t, cacheReadOnly, genAIUsageCacheReadInputTokens, 4096)
+	assertBoolAttribute(t, cacheReadOnly, tokensInputReportedKey, true)
+	assertAttributesAbsent(t, cacheReadOnly, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
+
+	reportedNoCache := findSpanByName(t, spans, "turn[4]")
+	assertBoolAttribute(t, reportedNoCache, tokensInputReportedKey, true)
+	assertAttributesAbsent(t, reportedNoCache, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
+}
+
+func assertBoolAttribute(t *testing.T, span tracetest.SpanStub, key string, want bool) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			if got := attr.Value.AsBool(); got != want {
+				t.Errorf("%s: %s = %v, want %v", span.Name, key, got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("%s: attribute %s absent, want %v", span.Name, key, want)
+}
+
+func assertAttributesAbsent(t *testing.T, span tracetest.SpanStub, keys ...string) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		for _, key := range keys {
+			if string(attr.Key) == key {
+				t.Errorf("%s: unexpected attribute %s=%s", span.Name, key, attr.Value.String())
+			}
+		}
+	}
+}
+
+// The GenAI usage keys are string constants; this pins them to the
+// semconv release that defines all five.
+func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
+	for got, want := range map[string]attribute.Key{
+		genAIUsageInputTokens:              semconv.GenAIUsageInputTokensKey,
+		genAIUsageOutputTokens:             semconv.GenAIUsageOutputTokensKey,
+		genAIUsageCacheReadInputTokens:     semconv.GenAIUsageCacheReadInputTokensKey,
+		genAIUsageCacheCreationInputTokens: semconv.GenAIUsageCacheCreationInputTokensKey,
+		genAIUsageReasoningOutputTokens:    semconv.GenAIUsageReasoningOutputTokensKey,
+	} {
+		if got != string(want) {
+			t.Errorf("attribute key %q, want semconv %q", got, want)
 		}
 	}
 }
