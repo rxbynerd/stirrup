@@ -21,6 +21,10 @@ var errStreamIdle = errors.New("stream idle")
 // closing the wrapped body to unblock it. The timer runs only while a
 // Read is in flight, so time the consumer spends between reads (e.g.
 // blocked on a full event channel) never counts as provider silence.
+//
+// Bytes that arrive as the timer fires are still delivered: that Read
+// returns them with a nil error and the idle error follows on the next
+// Read. A body that reaches io.EOF as the timer fires ends with io.EOF.
 type idleTimeoutBody struct {
 	body    io.ReadCloser
 	timeout time.Duration
@@ -29,9 +33,10 @@ type idleTimeoutBody struct {
 	closeOnce sync.Once
 	closeErr  error
 
-	mu      sync.Mutex
-	expired bool
-	closed  bool
+	mu sync.Mutex
+	// terminal, once set, is returned by every later Read.
+	terminal error
+	closed   bool
 }
 
 // newIdleTimeoutBody wraps body with an idle-read deadline. A timeout of
@@ -48,9 +53,10 @@ func newIdleTimeoutBody(body io.ReadCloser, timeout time.Duration) *idleTimeoutB
 
 func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 	b.mu.Lock()
-	if b.expired {
+	if b.terminal != nil {
+		err := b.terminal
 		b.mu.Unlock()
-		return 0, b.idleErr()
+		return 0, err
 	}
 	if b.closed {
 		b.mu.Unlock()
@@ -63,11 +69,19 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.timer.Stop() && !b.closed {
-		b.expired = true
-		return n, b.idleErr()
+	if b.timer.Stop() || b.closed {
+		return n, err
 	}
-	return n, err
+	// The timer fired while this Read was in flight.
+	if errors.Is(err, io.EOF) {
+		b.terminal = io.EOF
+		return n, io.EOF
+	}
+	b.terminal = b.idleErr()
+	if n > 0 {
+		return n, nil
+	}
+	return 0, b.terminal
 }
 
 // Close stops the idle timer and closes the wrapped body. It is safe to
@@ -82,7 +96,9 @@ func (b *idleTimeoutBody) Close() error {
 
 func (b *idleTimeoutBody) expire() {
 	b.mu.Lock()
-	b.expired = true
+	if b.terminal == nil {
+		b.terminal = b.idleErr()
+	}
 	b.mu.Unlock()
 	_ = b.closeBody()
 }

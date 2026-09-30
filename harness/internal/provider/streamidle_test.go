@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -177,6 +178,158 @@ func TestIdleTimeoutBody_ZeroTimeoutSelectsDefault(t *testing.T) {
 	}
 	if got, want := b.idleErr().Error(), "stream idle for 120s"; got != want {
 		t.Errorf("idle message = %q, want %q", got, want)
+	}
+}
+
+// lateDataBody blocks every Read until Close, then returns data with
+// tailErr, modelling bytes that land at the instant the idle timer fires
+// and closes the body.
+type lateDataBody struct {
+	data    string
+	tailErr error
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newLateDataBody(data string, tailErr error) *lateDataBody {
+	return &lateDataBody{data: data, tailErr: tailErr, closed: make(chan struct{})}
+}
+
+func (b *lateDataBody) Read(p []byte) (int, error) {
+	<-b.closed
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, b.tailErr
+}
+
+func (b *lateDataBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func TestIdleTimeoutBody_DataRacingExpiryIsDelivered(t *testing.T) {
+	b := newIdleTimeoutBody(newLateDataBody("late", nil), 20*time.Millisecond)
+	buf := make([]byte, 16)
+
+	n, err := b.Read(buf)
+	if err != nil || string(buf[:n]) != "late" {
+		t.Fatalf("Read = (%q, %v), want the late bytes with a nil error", buf[:n], err)
+	}
+	if n, err := b.Read(buf); n != 0 || !errors.Is(err, errStreamIdle) {
+		t.Fatalf("next Read = (%d, %v), want (0, errStreamIdle)", n, err)
+	}
+}
+
+func TestIdleTimeoutBody_EOFRacingExpiryIsEOF(t *testing.T) {
+	b := newIdleTimeoutBody(newLateDataBody("end", io.EOF), 20*time.Millisecond)
+	buf := make([]byte, 16)
+
+	n, err := b.Read(buf)
+	if !errors.Is(err, io.EOF) || string(buf[:n]) != "end" {
+		t.Fatalf("Read = (%q, %v), want (\"end\", io.EOF)", buf[:n], err)
+	}
+	if _, err := b.Read(buf); !errors.Is(err, io.EOF) {
+		t.Fatalf("next Read = %v, want io.EOF", err)
+	}
+}
+
+func TestIdleTimeoutBody_ReadAfterClose(t *testing.T) {
+	const idle = 10 * time.Millisecond
+	body, w := newTrackedPipe()
+	defer func() { _ = w.Close() }()
+	b := newIdleTimeoutBody(body, idle)
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := b.Read(make([]byte, 8))
+	if err == nil || errors.Is(err, errStreamIdle) {
+		t.Errorf("Read after Close = %v, want the body's own close error", err)
+	}
+	if b.timer.Stop() {
+		t.Error("Read after Close armed the idle timer")
+	}
+	time.Sleep(3 * idle)
+	if n := body.closes.Load(); n != 1 {
+		t.Errorf("underlying body closed %d times, want 1", n)
+	}
+}
+
+func TestIdleTimeoutBody_ContextCancelIsNotIdle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeFlush(w, "x")
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	b := newIdleTimeoutBody(resp.Body, time.Hour)
+	buf := make([]byte, 8)
+	if _, err := b.Read(buf); err != nil {
+		t.Fatalf("first Read: %v", err)
+	}
+
+	time.AfterFunc(20*time.Millisecond, cancel)
+	_, err = b.Read(buf)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, errStreamIdle) {
+		t.Errorf("Read after cancel = %v, want context.Canceled and not errStreamIdle", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if b.timer.Stop() {
+		t.Error("idle timer still armed after Close")
+	}
+}
+
+func TestIdleTimeoutBody_ConcurrentCloseAndExpiryRace(t *testing.T) {
+	const idle = 2 * time.Millisecond
+	for i := range 200 {
+		body, w := newTrackedPipe()
+		go func() {
+			for {
+				time.Sleep(idle)
+				if _, err := w.Write([]byte("x")); err != nil {
+					return
+				}
+			}
+		}()
+
+		b := newIdleTimeoutBody(body, idle)
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			buf := make([]byte, 4)
+			for {
+				if _, err := b.Read(buf); err != nil {
+					return
+				}
+			}
+		}()
+
+		time.Sleep(time.Duration(i%7) * time.Millisecond)
+		_ = b.Close()
+		select {
+		case <-readerDone:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: reader did not stop after Close", i)
+		}
+		if n := body.closes.Load(); n != 1 {
+			t.Fatalf("iteration %d: underlying body closed %d times, want 1", i, n)
+		}
+		_ = w.Close()
 	}
 }
 
