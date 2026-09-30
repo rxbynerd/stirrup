@@ -2004,6 +2004,54 @@ func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
 	}
 }
 
+// TestFabricateStream_AnthropicThinkingParity pins that a batch result's
+// thinking and redacted_thinking blocks produce the same events, in the
+// same order, as consumeSSE does for a streamed response.
+func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
+	response := []byte(`{
+		"content": [
+			{"type": "thinking", "thinking": "", "signature": "sig-batch"},
+			{"type": "text", "text": "hi"},
+			{"type": "redacted_thinking", "data": "data-batch"},
+			{"type": "tool_use", "id": "tu_a", "name": "read_file", "input": {"path": "a"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"output_tokens": 5}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	if err := fabricateAnthropicStream(ch, response); err != nil {
+		t.Fatalf("fabricateAnthropicStream: %v", err)
+	}
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+
+	want := []types.StreamEvent{
+		{Type: "thinking", ThoughtSignature: "sig-batch"},
+		{Type: "text_delta", Text: "hi"},
+		{Type: "redacted_thinking", ThoughtSignature: "data-batch"},
+		{Type: "tool_call", ID: "tu_a"},
+		{Type: "message_complete"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event count: got %d, want %d (%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type || got[i].Text != want[i].Text ||
+			got[i].ThoughtSignature != want[i].ThoughtSignature || got[i].ID != want[i].ID {
+			t.Errorf("event %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	blocks := got[4].Content
+	if len(blocks) != 4 || blocks[0].Type != "thinking" || blocks[0].ThoughtSignature != "sig-batch" ||
+		blocks[2].Type != "redacted_thinking" || blocks[2].ThoughtSignature != "data-batch" {
+		t.Errorf("message_complete content = %+v, want the thinking blocks in order", blocks)
+	}
+}
+
 // TestBatchAdapter_marshalRequestBody_AnthropicEffort pins that the batch
 // path applies the same effort allow-list as Stream: a supported level is
 // projected onto output_config and an unsupported one fails at marshal

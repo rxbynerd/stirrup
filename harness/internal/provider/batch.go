@@ -433,16 +433,20 @@ type anthropicBatchResponse struct {
 }
 
 type anthropicBatchContentBlock struct {
-	Type  string          `json:"type"` // "text" | "tool_use"
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 // fabricateAnthropicStream mirrors the SSE event sequence consumeSSE
 // produces in anthropic.go: one text_delta per text content block (not
-// per token), one tool_call per tool_use block, then a single
+// per token), one tool_call per tool_use block, one thinking or
+// redacted_thinking event per reasoning block, then a single
 // message_complete carrying the assembled content blocks plus
 // stop_reason and reported usage — observationally indistinguishable from
 // the live SSE path for the agentic loop.
@@ -479,6 +483,19 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 				ID:    block.ID,
 				Name:  block.Name,
 				Input: block.Input,
+			})
+		case "thinking":
+			ch <- types.StreamEvent{Type: "thinking", Text: block.Thinking, ThoughtSignature: block.Signature}
+			blocks = append(blocks, types.ContentBlock{
+				Type:             "thinking",
+				Text:             block.Thinking,
+				ThoughtSignature: block.Signature,
+			})
+		case "redacted_thinking":
+			ch <- types.StreamEvent{Type: "redacted_thinking", ThoughtSignature: block.Data}
+			blocks = append(blocks, types.ContentBlock{
+				Type:             "redacted_thinking",
+				ThoughtSignature: block.Data,
 			})
 		}
 	}
