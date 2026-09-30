@@ -355,7 +355,8 @@ Targets the Responses API (`POST /v1/responses`) — a distinct wire
 format from Chat Completions:
 
 - Top-level `instructions` field (not a system message in the array).
-- Typed `input[]` items: `message`, `function_call`, `function_call_output`.
+- Typed `input[]` items: `message`, `function_call`, `function_call_output`,
+  and replayed `reasoning` items.
 - Flat tool schema.
 - `max_output_tokens` (not `max_tokens`).
 - Explicit `store: false`.
@@ -370,10 +371,54 @@ would mask configuration errors.
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
 `file_search`, `computer_use`, `code_interpreter`) and server-side state
 via `previous_response_id`. The harness manages its own conversation
-history and does not delegate to server-side state; reasoning items are
-not replayed between turns. `RunConfig.reasoningEffort` maps to
-`reasoning.effort` for models whose accepted levels are known (the
-GPT-6 family).
+history and does not delegate to server-side state.
+
+**Output replay.** With `store: false`, OpenAI documents that stateless
+reasoning models need every prior response output item resent. The
+adapter captures each turn's `reasoning`, `message`, and
+`function_call` output items and replays them verbatim on later
+requests, so reasoning items (with `encrypted_content`), item ids,
+`status`, and the assistant `phase` reach the model. Replay is
+all-or-nothing per turn: a turn whose stored items no longer match its
+persisted content (a rewritten tool call or text), or whose capture was
+disabled (an unknown item type, a reasoning item without
+`encrypted_content`, or more than 1 MiB of items), is reconstructed
+without item ids instead. The mechanism is described in
+[`provider-quirks.md` §3.1](provider-quirks.md#31-replayfields-rules).
+`reasoning.context` is not sent, so the model default applies
+(`all_turns` on GPT-5.6); `current_turn` is the relief valve if
+replayed reasoning grows the context too far.
+
+Requests for the reasoning families (`o[1-9]*`, `gpt-5*` except
+`gpt-5-chat*`, and `gpt-6*`) carry
+`include: ["reasoning.encrypted_content"]` so the encrypted reasoning
+is returned for replay. First-party OpenAI documents the include as
+optional; it stays protective on Azure and gateways. Non-reasoning
+models (`gpt-4o*`, `gpt-4.1*`, `gpt-5-chat*`) do not receive it,
+because whether they reject it with HTTP 400 is unverified. A probe
+against a non-reasoning model should check that case before the gate
+is widened, and should also confirm that replayed `message` item ids
+and `status` are accepted there: capture is not gated by model, so
+those models already receive replayed `message` and `function_call`
+items.
+
+**Reasoning effort and sampling.** `RunConfig.reasoningEffort` maps to
+`reasoning.effort` for models whose accepted levels are known: GPT-6
+and GPT-5.6 (`low`..`max`), GPT-5.4 and GPT-5.5 (`low`..`xhigh`). A
+request that sends `reasoning.effort` omits `temperature`, and GPT-6,
+GPT-5.5, and GPT-5.6 never receive `temperature`. GPT-5.4 keeps a
+configured temperature when no effort is set, because its default
+effort is `none`.
+
+**Strict tools.** The reasoning families send every tool with
+`strict: true`, because an omitted `strict` lets the API fall back to
+non-strict silently. A tool schema the strict rewriter cannot express
+(`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, tuple
+`items`; common in MCP-imported tools) fails the request before send.
+
+The replay, include, GPT-5.x effort, and strict behaviour is
+documented, not probed: no live request against an OpenAI endpoint has
+exercised it.
 
 **Prompt caching.** The Responses API caches automatically, with no
 breakpoint in the request: the cached prefix covers the tools,

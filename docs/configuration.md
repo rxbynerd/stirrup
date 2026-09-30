@@ -275,7 +275,7 @@ reference.
 | `--max-turns` | `20` | Hard-capped at 100. |
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
-| `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
+| `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude, GPT-6, or GPT-5.4-onward model accepts it, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Loop behaviour
@@ -1519,11 +1519,12 @@ field on the run config still represents intent.
 follows the same contract: a closed enum (`minimal`, `low`, `medium`,
 `high`, `xhigh`, `max`) validated at startup, projected onto the
 provider's native control by the adapter (Gemini `thinkingLevel`,
-Anthropic `output_config.effort`, OpenAI and OpenAI-compatible
-`reasoning_effort`), ignored for models without a probed control, with
-per-model acceptance enforced by the
+Anthropic `output_config.effort`, OpenAI-compatible `reasoning_effort`,
+OpenAI Responses `reasoning.effort`), ignored for models without a
+probed control, with per-model acceptance enforced by the
 [provider quirks registry](provider-quirks.md#32-reasoning-effort)
-before the request is sent.
+before the request is sent. The Responses adapter omits `temperature`
+from any request that carries `reasoning.effort`.
 
 ## RunConfig examples
 
