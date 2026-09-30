@@ -76,7 +76,7 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 // wire format suitable for streaming back to the control plane.
 func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	// StopReason mirrors Outcome for consumers predating the outcome field.
-	return &pb.RunTrace{
+	pt := &pb.RunTrace{
 		RunId:            t.ID,
 		Turns:            saturateInt32(t.Turns),
 		InputTokens:      saturateInt32(t.TokenUsage.Input),
@@ -88,6 +88,14 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 		Outcome:          t.Outcome,
 		StopReason:       t.Outcome,
 	}
+	if d := t.StopDetails; d != nil {
+		pt.StopDetails = &pb.StopDetails{
+			Type:        d.Type,
+			Category:    d.Category,
+			Explanation: d.Explanation,
+		}
+	}
+	return pt
 }
 
 // saturateInt32 narrows n to int32, pinning out-of-range values to the

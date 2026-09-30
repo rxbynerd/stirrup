@@ -1084,6 +1084,36 @@ func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
 	}
 }
 
+// TestRunTraceToProto_StopDetails pins the stop_details mirror through a
+// wire round-trip, and that a nil StopDetails stays absent on the wire.
+func TestRunTraceToProto_StopDetails(t *testing.T) {
+	tr := &types.RunTrace{
+		ID:      "run-refused",
+		Outcome: "refusal",
+		StopDetails: &types.StopDetails{
+			Type:        "refusal",
+			Category:    "reasoning_extraction",
+			Explanation: "declined",
+		},
+	}
+	raw, err := proto.Marshal(runTraceToProto(tr))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetStopDetails()
+	if got.GetType() != "refusal" || got.GetCategory() != "reasoning_extraction" || got.GetExplanation() != "declined" {
+		t.Errorf("stop_details = %v, want refusal/reasoning_extraction/declined", got)
+	}
+
+	if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.StopDetails != nil {
+		t.Errorf("stop_details = %v, want absent for a nil StopDetails", pt.StopDetails)
+	}
+}
+
 // TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
 // a TaskAssignment with no hooks sub-message must not synthesise a
 // non-nil types.HooksConfig.

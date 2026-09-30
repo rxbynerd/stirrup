@@ -76,7 +76,9 @@ service HarnessService {
 //   "done"
 //     - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
 //                    "stalled", "tool_failures", "cancelled", "budget_exceeded",
-//                    "error", "setup_failed", "hook_failed").
+//                    "error", "setup_failed", "hook_failed", or a provider
+//                    stop reason such as "refusal" or
+//                    "model_context_window_exceeded" passed through verbatim).
 //     - trace:       RunTrace with execution metrics. Absent when the run
 //                    failed before the loop was built (a rejected RunConfig),
 //                    since no trace was ever started.
@@ -163,7 +165,8 @@ message HarnessEvent {
   // Why the run ended. Set on "done" events.
   // Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
   //         "cancelled", "budget_exceeded", "error", "setup_failed",
-  //         "hook_failed".
+  //         "hook_failed". Provider stop reasons such as "refusal" and
+  //         "model_context_window_exceeded" pass through verbatim.
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
@@ -1019,6 +1022,12 @@ message RunTrace {
   // Values: "success", "error", "max_turns", "verification_failed",
   //         "verification_error", "budget_exceeded", "stalled",
   //         "tool_failures", "cancelled", "timeout", "max_tokens".
+  // Provider stop reasons pass through verbatim, including:
+  //   "refusal"                       — the model declined to respond;
+  //                                     see stop_details.
+  //   "model_context_window_exceeded" — the response filled the model's
+  //                                     context window and is truncated.
+  // Consumers should preserve unknown values.
   string outcome = 8;
 
   // Portion of input_tokens the provider served from its prompt cache.
@@ -1032,6 +1041,27 @@ message RunTrace {
   // Portion of output_tokens the provider reported as reasoning or
   // thinking. 0 when the provider does not report it.
   int32 reasoning_tokens = 11;
+
+  // The final model turn's provider-reported stop detail when the run
+  // ended on a non-tool stop reason. Absent otherwise.
+  StopDetails stop_details = 12;
+}
+
+// StopDetails mirrors types.StopDetails: a provider's structured
+// explanation of why a model response stopped. Anthropic reports it for
+// "refusal" stops.
+message StopDetails {
+  // Detail kind, e.g. "refusal".
+  string type = 1;
+
+  // Policy area of a refusal: "cyber", "bio", "frontier_llm",
+  // "reasoning_extraction", "general_harms", or empty when the refusal
+  // maps to no named category.
+  string category = 2;
+
+  // Provider's human-readable reason, scrubbed of secret-shaped content.
+  // Empty when none was given.
+  string explanation = 3;
 }
 
 // ---------------------------------------------------------------------------
