@@ -283,7 +283,7 @@ reference.
 | Flag | Default | Notes |
 |---|---|---|
 | `--max-tool-parallel` | `0` | Maximum async tool calls dispatched concurrently in a single turn. Range `1`–`16` (hard ceiling enforced by `ValidateRunConfig`); `0` resolves to the library default of `4`. JSON path: `toolDispatch.maxParallel`. |
-| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
+| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). A turn that stops on `refusal` or `model_context_window_exceeded` is not retried. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
 | `--escalate-tool-choice-max-retries` | `0` | Maximum forced retries per inner-loop run. Range `1`–`3`; `0` resolves to the default of `1`. No effect unless `--escalate-tool-choice` is set. JSON path: `toolChoiceEscalation.maxRetries`. |
 
 ### Provider
