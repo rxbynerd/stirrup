@@ -68,10 +68,17 @@ log line (`tokens.input_reported`), on the `provider.stream` span
 (`tokens.input_reported`), and on the OTel `turn[N]` span
 (`stirrup.tokens.input_reported`, see
 [`observability-cloud.md`](observability-cloud.md#token-usage-on-turn-spans)).
-The input is estimated when the adapter reports no input figure: the
-eval replay provider, an `openai-compatible` server that ignores
+The `provider.stream` span carries `tokens.cache_read`,
+`tokens.cache_write`, and `tokens.reasoning` only when non-zero; the
+log line always carries all three.
+
+The input falls back to the estimate whenever the adapter reports no
+input figure, for example an `openai-compatible` server that ignores
 `stream_options.include_usage`, or an Anthropic-compatible endpoint
-that reports only `output_tokens`.
+that reports only `output_tokens`. Provider counts are clamped to
+`0`…`2147483647`, cache figures are capped at the input, and reasoning
+is capped at the output, so a malformed report cannot break the
+invariants above.
 
 Per-provider sources:
 
@@ -82,6 +89,15 @@ Per-provider sources:
 | `openai-compatible` | `prompt_tokens` | `prompt_tokens_details.cached_tokens` / none | `completion_tokens_details.reasoning_tokens` |
 | `gemini` | `promptTokenCount` | `cachedContentTokenCount` / none | `thoughtsTokenCount` (also added into `output`) |
 | `bedrock` | `totalTokens` − `outputTokens`; without `totalTokens`, `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` | `cacheReadInputTokens` / `cacheWriteInputTokens` | none |
+
+The `anthropic` mapping is checked against live responses, and the
+`openai-compatible` trailing-usage chunk against a captured LM Studio
+stream. The OpenAI cache and reasoning details, and the
+`openai-responses`, `gemini`, and `bedrock` mappings, follow each
+provider's documented usage object and have not been probed live. In
+particular, whether Bedrock's `inputTokens` includes the cache figures
+is unconfirmed, which is why the input is derived from `totalTokens`
+when present.
 
 ## Quick choice
 
@@ -180,7 +196,7 @@ trace stats
   harness version:  v1.7.0
   records:          1
   total turns:      12
-  tokens in / out:  18432 / 4116
+  tokens in / out:  18432 (cache read 12288) / 4116 (reasoning 950)
   tool calls:       45 (errors: 3)
   permission denials: 2
   verifications:    1 run (passed: 1, failed: 0)
@@ -198,6 +214,12 @@ trace stats
      2. grep                            1204ms  ok
      ...
 ```
+
+The parenthesised cache and reasoning shares appear only when
+non-zero, and the matching `tokensCacheRead`, `tokensCacheWrite`, and
+`tokensReasoning` JSON keys are omitted when zero. `stirrup trace
+show` and the stderr summary of `stirrup harness` render the same
+shares.
 
 The `harnessVersion` line carries the version of the binary that
 computed the stats, NOT the binary that wrote the trace. Use this to
@@ -224,6 +246,8 @@ and is intended as a dashboard / report ingestion shape:
   "totalTurns": 12,
   "tokensInput": 18432,
   "tokensOutput": 4116,
+  "tokensCacheRead": 12288,
+  "tokensReasoning": 950,
   "toolCalls": 45,
   "toolErrors": 3,
   "permissionDenials": 2,

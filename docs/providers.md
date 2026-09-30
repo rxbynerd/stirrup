@@ -58,6 +58,13 @@ resolves credentials from the SDK default chain. Accepts an optional
 `aws.CredentialsProvider` for cross-cloud credential federation (e.g.
 `WebIdentityAWSSource` exchanging a GKE OIDC token for STS credentials).
 
+Token usage arrives on the Converse `metadata` event. The adapter
+reports input as `totalTokens` − `outputTokens` when `totalTokens` is
+present, which counts the whole prompt whether or not `inputTokens`
+includes the cache figures, and otherwise as `inputTokens` plus
+`cacheReadInputTokens` and `cacheWriteInputTokens`. Neither shape has
+been probed against Bedrock.
+
 The Bedrock adapter does not consult the [provider quirks
 registry](provider-quirks.md): it forwards the harness default
 temperature to every model and ignores `reasoningEffort`. Anthropic

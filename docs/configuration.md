@@ -1451,7 +1451,12 @@ Read-only modes additionally require the tool list to be set.
 
 `maxTokenBudget` is the only budget the harness enforces. It is
 checked between provider calls and terminates the run with
-`outcome: "budget_exceeded"`.
+`outcome: "budget_exceeded"`. Consumption is input plus output summed
+over turns. Input is the provider-reported figure, cached tokens
+included in full, wherever the provider reports one, and the harness
+estimate otherwise; Gemini output includes thought tokens. See
+[`trace-inspection.md`](trace-inspection.md#token-usage) for the
+per-provider sources.
 
 `maxCostBudget` is **accepted and bounded but not enforced**. The
 harness carries no per-model price table, computes no cost, and never

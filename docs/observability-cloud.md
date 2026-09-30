@@ -219,7 +219,10 @@ harness's estimate. When set, a turn span also carries:
 Each is omitted when zero or false. The per-provider sources are
 listed in [`trace-inspection.md`](trace-inspection.md#token-usage).
 The `stirrup.harness.tokens.cache_read` and `.cache_write` counters
-carry the same cache figures as metrics.
+carry the same cache figures as metrics, and
+`stirrup.subagent.tokens.cache_read` and `.cache_write` carry a
+sub-agent's totals under the parent's `parent.mode`. Each cache
+counter records only non-zero figures.
 
 ## Span content capture (opt-in)
 

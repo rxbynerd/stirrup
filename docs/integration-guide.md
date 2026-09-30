@@ -531,7 +531,9 @@ hard — or different providers per mode.
   and `dynamic`. The dynamic router chooses the cheap model when the
   previous stop reason is in `cheapStopReasons`, the expensive model
   after a configured turn/output-token threshold, and the default
-  model otherwise.
+  model otherwise. `expensiveTokenThreshold` compares the run's
+  cumulative output tokens, which include reasoning tokens (Gemini
+  thought tokens included), so thinking-heavy runs reach it sooner.
 - Behaviour knobs are provider-neutral: `temperature` and
   `reasoningEffort` sit at the top level of `RunConfig`. Adapters with
   a supported native control project them; other adapters may ignore

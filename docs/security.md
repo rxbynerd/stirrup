@@ -139,6 +139,9 @@ The most security-relevant invariants:
   budgets only `maxTokenBudget` is enforced at runtime
   (`maxCostBudget` is validated and warned about, never enforced — see
   [`configuration.md`](configuration.md#limits-and-budgets)).
+  `maxTokenBudget` consumes the provider-reported input where the
+  provider reports one, so an endpoint that under-reports its input
+  lowers consumption; the harness estimate is not a floor.
 - **Mutually exclusive credentials:** `apiKeyRef` and
   `credential.type` cannot both be set on the same provider.
 - **Cedar policy file paths** reject `..` traversal segments;

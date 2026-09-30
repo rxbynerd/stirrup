@@ -637,12 +637,14 @@ the same totals are attached to the span as
 both surfaces; never the captured values themselves.
 
 The `harness/internal/observability/` package emits OTel metrics
-alongside tracing: 15 counters (`stirrup.harness.runs`, `.turns`,
-`.tokens.input`, `.tokens.output`, `.tokens.cache_read`,
-`.tokens.cache_write`, `.tool_calls`, `.tool_errors`,
-`.tool_failures`, `.provider.requests`, `.provider.errors`,
-`.context.compactions`, `.security.events`, `.verification.attempts`,
-`.stalls`), 5 histograms (run, turn, tool-call duration; provider
+alongside tracing: the counters in
+[`metrics.go`](../harness/internal/observability/metrics.go) (among
+them `stirrup.harness.runs`, `.turns`, `.tokens.input`,
+`.tokens.output`, `.tokens.cache_read`, `.tokens.cache_write`,
+`.tool_calls`, `.tool_errors`, `.tool_failures`, `.provider.requests`,
+`.provider.errors`, `.context.compactions`, `.security.events`,
+`.verification.attempts`, `.stalls`, and the `stirrup.subagent.*`
+component counters), 5 histograms (run, turn, tool-call duration; provider
 latency; TTFB), and 1 UpDownCounter (context token estimate). All
 instruments use standard attributes (`run.mode`, `provider.type`,
 `tool.name`). `NewNoopMetrics()` provides a zero-cost no-op when
