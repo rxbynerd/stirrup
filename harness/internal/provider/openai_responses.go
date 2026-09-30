@@ -583,6 +583,20 @@ type responsesErrorResponse struct {
 	} `json:"error"`
 }
 
+// responsesErrorText renders an OpenAI error message with its error.code,
+// which is what tells a policy stop (misalignment_policy_violation) or an
+// exhausted quota apart from a transient failure.
+func responsesErrorText(message, code string) string {
+	switch {
+	case code == "":
+		return message
+	case message == "":
+		return "(code: " + code + ")"
+	default:
+		return message + " (code: " + code + ")"
+	}
+}
+
 // responsesCallState tracks an in-flight function call assembled across
 // multiple SSE events. function_call_arguments.delta carries text fragments
 // keyed by item_id (or output_index when item_id is absent on partner
@@ -907,8 +921,8 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		defer func() { _ = resp.Body.Close() }()
 		o.recordLatency(ctx, start, metricAttrs)
 		var errResp responsesErrorResponse
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && (errResp.Error.Message != "" || errResp.Error.Code != "") {
+			return nil, fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, responsesErrorText(errResp.Error.Message, errResp.Error.Code))
 		}
 		return nil, fmt.Errorf("openai responses API returned status %d", resp.StatusCode)
 	}
@@ -1294,14 +1308,19 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 				Error *struct {
 					Message string `json:"message"`
 					Type    string `json:"type"`
+					Code    string `json:"code"`
 				} `json:"error"`
 				Status string `json:"status"`
 			} `json:"response"`
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API: response failed"
-		if payload.Response.Error != nil && payload.Response.Error.Message != "" {
-			msg = "openai responses API: " + payload.Response.Error.Message
+		if e := payload.Response.Error; e != nil && (e.Message != "" || e.Code != "") {
+			message := e.Message
+			if message == "" {
+				message = "response failed"
+			}
+			msg = "openai responses API: " + responsesErrorText(message, e.Code)
 		}
 		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false
@@ -1314,8 +1333,8 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API stream error"
-		if payload.Message != "" {
-			msg = "openai responses API stream error: " + payload.Message
+		if payload.Message != "" || payload.Code != "" {
+			msg += ": " + responsesErrorText(payload.Message, payload.Code)
 		}
 		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false
