@@ -577,23 +577,43 @@ type responsesResponse struct {
 // OpenAI uses the same envelope across Chat Completions and Responses.
 type responsesErrorResponse struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    string `json:"code,omitempty"`
+		Message string             `json:"message"`
+		Type    string             `json:"type"`
+		Code    responsesErrorCode `json:"code,omitempty"`
 	} `json:"error"`
+}
+
+// responsesErrorCode decodes an error.code sent as a string or a number,
+// as gateways send either. Any other JSON type decodes to "" rather than
+// failing the surrounding error payload.
+type responsesErrorCode string
+
+func (c *responsesErrorCode) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*c = responsesErrorCode(s)
+		return nil
+	}
+	var n json.Number
+	if json.Unmarshal(b, &n) == nil {
+		*c = responsesErrorCode(n.String())
+		return nil
+	}
+	*c = ""
+	return nil
 }
 
 // responsesErrorText renders an OpenAI error message with its error.code,
 // which is what tells a policy stop (misalignment_policy_violation) or an
 // exhausted quota apart from a transient failure.
-func responsesErrorText(message, code string) string {
+func responsesErrorText(message string, code responsesErrorCode) string {
 	switch {
 	case code == "":
 		return message
 	case message == "":
-		return "(code: " + code + ")"
+		return "(code: " + string(code) + ")"
 	default:
-		return message + " (code: " + code + ")"
+		return message + " (code: " + string(code) + ")"
 	}
 }
 
@@ -1306,9 +1326,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		var payload struct {
 			Response struct {
 				Error *struct {
-					Message string `json:"message"`
-					Type    string `json:"type"`
-					Code    string `json:"code"`
+					Message string             `json:"message"`
+					Type    string             `json:"type"`
+					Code    responsesErrorCode `json:"code"`
 				} `json:"error"`
 				Status string `json:"status"`
 			} `json:"response"`
@@ -1327,9 +1347,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 
 	case "error":
 		var payload struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
+			Message string             `json:"message"`
+			Type    string             `json:"type"`
+			Code    responsesErrorCode `json:"code"`
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API stream error"

@@ -95,6 +95,16 @@ func TestOpenAIResponsesAdapter_ErrorEventIncludesCode(t *testing.T) {
 			data: `{"type":"error","code":null,"message":"upstream timeout","param":null,"sequence_number":1}`,
 			want: "openai responses API stream error: upstream timeout",
 		},
+		{
+			name: "code only",
+			data: `{"type":"error","code":"server_error","message":""}`,
+			want: "openai responses API stream error: (code: server_error)",
+		},
+		{
+			name: "numeric code",
+			data: `{"type":"error","code":500,"message":"gateway failure"}`,
+			want: "openai responses API stream error: gateway failure (code: 500)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,6 +165,53 @@ func TestOpenAIResponsesAdapter_HTTPErrorWithoutCodeKeepsMessageOnly(t *testing.
 	}
 	if got, want := err.Error(), "openai responses API returned status 400: Invalid input"; got != want {
 		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAIResponsesAdapter_HTTPErrorBodies(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{
+			name:   "non-JSON gateway page",
+			status: http.StatusBadGateway,
+			body:   `<html><body>502 Bad Gateway</body></html>`,
+			want:   "openai responses API returned status 502",
+		},
+		{
+			name:   "code only",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"code":"invalid_prompt"}}`,
+			want:   "openai responses API returned status 400: (code: invalid_prompt)",
+		},
+		{
+			name:   "numeric code",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"Bad request from gateway","code":400}}`,
+			want:   "openai responses API returned status 400: Bad request from gateway (code: 400)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+			adapter.RetryPolicy = RetryPolicy{MaxAttempts: 1}
+			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("error = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
