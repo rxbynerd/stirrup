@@ -802,9 +802,9 @@ func (l *AgenticLoop) runInnerLoop(
 		})
 		if err != nil {
 			// ScrubHandler doesn't cover OTel spans; scrub explicitly
-			// before it reaches the span status. See docs/security.md.
+			// before it reaches the span event and status. See docs/security.md.
 			scrubbedErr := security.Scrub(err.Error())
-			providerSpan.RecordError(err)
+			providerSpan.RecordError(errors.New(scrubbedErr))
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
 			// Surfaces the failure outside OTel too (log + transport
@@ -858,7 +858,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if streamErr != nil {
 			// Same rationale as the Stream() scrub above; see docs/security.md.
 			scrubbedErr := security.Scrub(streamErr.Error())
-			providerSpan.RecordError(streamErr)
+			providerSpan.RecordError(errors.New(scrubbedErr))
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
 			// Same as the Stream() log+emit above.
