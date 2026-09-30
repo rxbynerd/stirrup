@@ -85,19 +85,24 @@ var quotaErrorCodes = map[string]bool{
 	"organization_usage_limit_exceeded": true,
 }
 
-// quotaExhausted reports whether resp is a 429 whose JSON error body names
-// a billing, spend, or quota limit, by error.code or by the broader
-// error.type "insufficient_quota". It reads at most maxQuotaBodyPeek bytes
-// and replaces resp.Body so the caller still reads the whole body.
-func quotaExhausted(resp *http.Response) bool {
+// peekQuotaExhausted reports whether resp is a 429 whose JSON error body
+// names a billing, spend, or quota limit, by error.code or by the broader
+// error.type "insufficient_quota", and returns the matched value. It reads
+// at most maxQuotaBodyPeek bytes and replaces resp.Body so the caller still
+// reads the whole body, including any error the peek hit.
+func peekQuotaExhausted(resp *http.Response) (code string, exhausted bool) {
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
-		return false
+		return "", false
 	}
-	peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBodyPeek))
+	peek, readErr := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBodyPeek))
+	var rest io.Reader = resp.Body
+	if readErr != nil {
+		rest = errReader{readErr}
+	}
 	resp.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(peek), resp.Body), resp.Body}
+	}{io.MultiReader(bytes.NewReader(peek), rest), resp.Body}
 
 	// any, not string: gateways and other providers send numeric codes
 	// (Gemini's error.code is the HTTP status), which must not fail the
@@ -109,12 +114,23 @@ func quotaExhausted(resp *http.Response) bool {
 		} `json:"error"`
 	}
 	if json.Unmarshal(peek, &body) != nil {
-		return false
+		return "", false
 	}
-	code, _ := body.Error.Code.(string)
+	code, _ = body.Error.Code.(string)
 	errType, _ := body.Error.Type.(string)
-	return quotaErrorCodes[code] || errType == "insufficient_quota"
+	switch {
+	case quotaErrorCodes[code]:
+		return code, true
+	case errType == "insufficient_quota":
+		return errType, true
+	}
+	return "", false
 }
+
+// errReader returns err from every Read.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // transientErr reports whether a transport-level error is retryable.
 // Timeouts always qualify; io.EOF qualifies only on the first attempt,
@@ -204,6 +220,7 @@ const (
 	retryOutcomeSucceeded       = "succeeded"
 	retryOutcomeExhausted       = "exhausted"
 	retryOutcomeNonRetryable    = "non_retryable"
+	retryOutcomeQuotaExhausted  = "quota_exhausted"
 	retryOutcomeBudgetExhausted = "budget_exhausted"
 	retryOutcomeContextDone     = "context_done"
 	retryOutcomeRewindFailed    = "rewind_failed"
@@ -315,6 +332,10 @@ func DoWithRetry(
 		resp, err := client.Do(req)
 
 		retryable := false
+		var quotaCode string
+		if err == nil {
+			retryable, quotaCode = classifyRetryable(resp, shouldRetry)
+		}
 		var delay time.Duration
 		var delaySource string
 
@@ -327,10 +348,9 @@ func DoWithRetry(
 				delay = backoffDelay(attempt, policy, prng)
 				delaySource = delaySourceBackoff
 			}
-		case classifyRetryable(resp, shouldRetry):
+		case retryable:
 			lastResp = resp
 			lastErr = nil
-			retryable = true
 			now := time.Now()
 			hint, source := parseRetryAfter(resp.Header, now)
 			if hint > 0 {
@@ -345,9 +365,19 @@ func DoWithRetry(
 			}
 		default:
 			// Non-retryable: success or terminal client/server error.
-			if err == nil && (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+			switch {
+			case resp.StatusCode >= 200 && resp.StatusCode < 300:
 				recordOutcome(ctx, metrics, providerType, model, retryOutcomeSucceeded)
-			} else {
+			case quotaCode != "":
+				logger.Warn("provider_quota_exhausted",
+					"event", "provider_quota_exhausted",
+					"provider", providerType,
+					"model", model,
+					"status", resp.StatusCode,
+					"code", quotaCode,
+				)
+				recordOutcome(ctx, metrics, providerType, model, retryOutcomeQuotaExhausted)
+			default:
 				recordOutcome(ctx, metrics, providerType, model, retryOutcomeNonRetryable)
 			}
 			return resp, nil
@@ -446,17 +476,18 @@ func DoWithRetry(
 // optional shouldRetry callback gets first pass: when consumed=true
 // its retryable value is final; when consumed=false the call falls
 // through to the default heuristic, under which a quota-exhausted 429
-// is terminal and every other status follows retryableStatus.
-func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) bool {
+// is terminal (quotaCode names the matched code) and every other
+// status follows retryableStatus.
+func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) (retryable bool, quotaCode string) {
 	if shouldRetry != nil {
 		if retryable, consumed := shouldRetry(resp); consumed {
-			return retryable
+			return retryable, ""
 		}
 	}
-	if quotaExhausted(resp) {
-		return false
+	if code, exhausted := peekQuotaExhausted(resp); exhausted {
+		return false, code
 	}
-	return retryableStatus(resp.StatusCode)
+	return retryableStatus(resp.StatusCode), ""
 }
 
 func recordOutcome(ctx context.Context, m *observability.Metrics, providerType, model, outcome string) {

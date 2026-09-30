@@ -157,3 +157,32 @@ func TestOpenAIResponsesAdapter_HTTPErrorWithoutCodeKeepsMessageOnly(t *testing.
 		t.Errorf("error = %q, want %q", got, want)
 	}
 }
+
+// TestOpenAIResponsesAdapter_QuotaExhausted429SurfacesCode drives the
+// quota classification through the Responses adapter: one attempt, and the
+// caller's error message still decodes the body the classifier read.
+func TestOpenAIResponsesAdapter_QuotaExhausted429SurfacesCode(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"Organization spend limit reached.","type":"insufficient_quota","param":null,"code":"organization_spend_limit_exceeded"}}`)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter.RetryPolicy = fastRetryPolicy()
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
+	if err == nil {
+		t.Fatal("expected an error for a quota 429")
+	}
+	want := "openai responses API returned status 429: Organization spend limit reached. (code: organization_spend_limit_exceeded)"
+	if got := err.Error(); got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("server attempts = %d, want 1", got)
+	}
+}
