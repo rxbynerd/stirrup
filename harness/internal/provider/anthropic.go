@@ -378,9 +378,30 @@ type sseMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
-	Usage *struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage,omitempty"`
+	Usage *anthropicUsage `json:"usage,omitempty"`
+}
+
+// anthropicUsage is the usage object on a streamed message_delta and on
+// a non-streaming Messages response. input_tokens excludes both cache
+// figures; thinking_tokens is a subset of output_tokens.
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	OutputTokensDetails      struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+// applyTo copies the usage onto a message_complete event, folding the
+// cache figures into InputTokens.
+func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
+	ev.InputTokens = u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+	ev.OutputTokens = u.OutputTokens
+	ev.CacheReadTokens = u.CacheReadInputTokens
+	ev.CacheWriteTokens = u.CacheCreationInputTokens
+	ev.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
 }
 
 // buildAnthropicRequest projects a StreamParams into the Anthropic Messages
@@ -695,7 +716,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				StopReason: md.Delta.StopReason,
 			}
 			if md.Usage != nil {
-				ev.OutputTokens = md.Usage.OutputTokens
+				md.Usage.applyTo(&ev)
 			}
 			emitEvent(ev)
 

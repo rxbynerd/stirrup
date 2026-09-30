@@ -426,9 +426,7 @@ func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, prov
 type anthropicBatchResponse struct {
 	Content    []anthropicBatchContentBlock `json:"content"`
 	StopReason string                       `json:"stop_reason"`
-	Usage      struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      anthropicUsage               `json:"usage"`
 }
 
 type anthropicBatchContentBlock struct {
@@ -443,7 +441,7 @@ type anthropicBatchContentBlock struct {
 // produces in anthropic.go: one text_delta per text content block (not
 // per token), one tool_call per tool_use block, then a single
 // message_complete carrying the assembled content blocks plus
-// stop_reason / output_tokens — observationally indistinguishable from
+// stop_reason and reported usage — observationally indistinguishable from
 // the live SSE path for the agentic loop.
 func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp anthropicBatchResponse
@@ -482,12 +480,13 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 		}
 	}
 
-	ch <- types.StreamEvent{
-		Type:         "message_complete",
-		StopReason:   resp.StopReason,
-		OutputTokens: resp.Usage.OutputTokens,
-		Content:      blocks,
+	ev := types.StreamEvent{
+		Type:       "message_complete",
+		StopReason: resp.StopReason,
+		Content:    blocks,
 	}
+	resp.Usage.applyTo(&ev)
+	ch <- ev
 	return nil
 }
 
