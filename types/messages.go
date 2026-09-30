@@ -29,16 +29,23 @@ type Message struct {
 // ContentBlock is a single block of content within a message.
 // Use the Type field to determine which variant fields are populated.
 //
+// The "thinking" and "redacted_thinking" types carry a model's reasoning
+// from an assistant turn so it can be replayed on the next request (see
+// docs/providers.md#anthropic). A thinking block holds the reasoning text
+// (possibly empty) in Text and its signature in ThoughtSignature; a
+// redacted_thinking block holds only opaque data, in ThoughtSignature.
+// Consumers that render or summarise content skip both types.
+//
 // ThoughtSignature is a provider-opaque blob attached to an assistant block
-// so the harness can round-trip it back to the provider on the next turn
-// (currently populated only by the Gemini adapter; see
+// so the harness can round-trip it back to the provider on the next turn:
+// Gemini's thoughtSignature on text and tool_use blocks, and Anthropic's
+// signature or redacted data on thinking blocks (see
 // docs/provider-quirks.md). Treat the value as fully opaque — the harness
-// must not introspect, log, or mutate it. When a second provider needs
-// analogous state, rename this field to `ProviderState` rather than adding
-// a parallel field; adapter-private wire types must continue to omit any
-// provider-state field they do not own.
+// must not introspect, log, or mutate it. Each adapter reads it only from
+// the block types it owns; adapter-private wire types omit it everywhere
+// else.
 type ContentBlock struct {
-	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result"
+	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 	Text             string          `json:"text,omitempty"`
 	ID               string          `json:"id,omitempty"`
 	Name             string          `json:"name,omitempty"`

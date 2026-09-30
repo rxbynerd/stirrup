@@ -8,6 +8,12 @@ import (
 
 // StreamEvent represents a single event from the model's streaming response.
 //
+// A "thinking" event carries one complete reasoning block: Text is the
+// reasoning text (empty when the provider omits it) and ThoughtSignature
+// its signature. A "redacted_thinking" event carries only opaque data in
+// ThoughtSignature. Adapters emit each once per block, in stream order,
+// so the loop persists them between the surrounding text and tool calls.
+//
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
 // provider-specific value (e.g. Anthropic's "refusal" or
@@ -21,7 +27,7 @@ import (
 // CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
 // subset of OutputTokens.
 type StreamEvent struct {
-	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking" | "redacted_thinking" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
@@ -42,9 +48,11 @@ type StreamEvent struct {
 	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 
 	// ThoughtSignature is the opaque provider-private blob captured for
-	// round-trip on the next turn (currently Gemini only). The agentic loop
-	// copies it onto the persisted assistant ContentBlock verbatim; other
-	// adapters must leave it at the zero value. See docs/provider-quirks.md.
+	// round-trip on the next turn: Gemini's thoughtSignature on "tool_call"
+	// events, and Anthropic's signature or redacted data on "thinking" /
+	// "redacted_thinking" events. The agentic loop copies it onto the
+	// persisted assistant ContentBlock verbatim; adapters with no such
+	// state leave it at the zero value. See docs/provider-quirks.md.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 
 	// ReplayFields carries message-level provider-opaque state captured by
