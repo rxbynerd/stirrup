@@ -79,7 +79,7 @@ Per-provider sources:
 |---|---|---|---|
 | `anthropic` | `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens` | `cache_read_input_tokens` / `cache_creation_input_tokens` | `output_tokens_details.thinking_tokens` |
 | `openai-responses` | `input_tokens` | `input_tokens_details.cached_tokens` / `.cache_write_tokens` | `output_tokens_details.reasoning_tokens` |
-| `openai-compatible` | `prompt_tokens` | `prompt_tokens_details.cached_tokens` / `.cache_write_tokens` | `completion_tokens_details.reasoning_tokens` |
+| `openai-compatible` | `prompt_tokens` | `prompt_tokens_details.cached_tokens` / none | `completion_tokens_details.reasoning_tokens` |
 | `gemini` | `promptTokenCount` | `cachedContentTokenCount` / none | `thoughtsTokenCount` (also added into `output`) |
 | `bedrock` | `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` | `cacheReadInputTokens` / `cacheWriteInputTokens` | none |
 

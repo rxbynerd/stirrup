@@ -685,13 +685,12 @@ type openaiToolFunctionDelta struct {
 }
 
 // openaiUsage is the Chat Completions usage object. prompt_tokens
-// already includes both prompt_tokens_details cache figures;
+// already includes prompt_tokens_details.cached_tokens;
 // reasoning_tokens is a subset of completion_tokens.
 type openaiUsage struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	PromptTokensDetails struct {
-		CachedTokens     int `json:"cached_tokens"`
-		CacheWriteTokens int `json:"cache_write_tokens"`
+		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokens        int `json:"completion_tokens"`
 	CompletionTokensDetails struct {
@@ -702,11 +701,10 @@ type openaiUsage struct {
 // applyTo copies the usage onto a message_complete event.
 func (u openaiUsage) applyTo(ev *types.StreamEvent) {
 	setEventUsage(ev, tokenReport{
-		Input:      u.PromptTokens,
-		Output:     u.CompletionTokens,
-		CacheRead:  u.PromptTokensDetails.CachedTokens,
-		CacheWrite: u.PromptTokensDetails.CacheWriteTokens,
-		Reasoning:  u.CompletionTokensDetails.ReasoningTokens,
+		Input:     u.PromptTokens,
+		Output:    u.CompletionTokens,
+		CacheRead: u.PromptTokensDetails.CachedTokens,
+		Reasoning: u.CompletionTokensDetails.ReasoningTokens,
 	})
 }
 

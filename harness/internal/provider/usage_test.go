@@ -335,11 +335,11 @@ func TestOpenAICompatibleAdapter_ReportsTrailingUsageFromCapture(t *testing.T) {
 }
 
 // Usage attached to the finish chunk itself, with
-// prompt_tokens_details cache figures.
+// prompt_tokens_details.cached_tokens.
 func TestOpenAICompatibleAdapter_ReportsUsageOnFinishChunk(t *testing.T) {
-	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000,"cache_write_tokens":500},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64},"total_tokens":9120}}` + "\n\n" +
+	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64},"total_tokens":9120}}` + "\n\n" +
 		"data: [DONE]\n\n"
-	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, CacheWrite: 500, Reasoning: 64}
+	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, Reasoning: 64}
 	if got := streamChatUsage(t, sse); got != want {
 		t.Errorf("usage = %+v, want %+v", got, want)
 	}
@@ -357,8 +357,8 @@ func TestOpenAICompatibleAdapter_NoUsageLeavesCountsUnreported(t *testing.T) {
 
 func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
 	response := `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
-		"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000,"cache_write_tokens":500},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64}}}`
-	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, CacheWrite: 500, Reasoning: 64}
+		"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64}}}`
+	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, Reasoning: 64}
 	if got := fabricatedUsage(t, response, "openai-compatible"); got != want {
 		t.Errorf("usage = %+v, want %+v", got, want)
 	}
