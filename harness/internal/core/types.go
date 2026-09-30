@@ -673,6 +673,20 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
 			}
 
+		case "thinking", "redacted_thinking":
+			// Persisted in stream order so the provider can replay them;
+			// never emitted to the transport.
+			if inText {
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+				inText = false
+				currentText = ""
+			}
+			result.Blocks = append(result.Blocks, types.ContentBlock{
+				Type:             event.Type,
+				Text:             event.Text,
+				ThoughtSignature: event.ThoughtSignature,
+			})
+
 		case "message_complete":
 			if inText {
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
@@ -738,6 +752,11 @@ func estimateCurrentTokens(messages []types.Message) int {
 			// large (e.g. a Gemini object-response result); counting it
 			// avoids under-shooting the budget and overflowing mid-run.
 			total += len(block.Structured) / tokenEstimationDivisor
+			// A replayed thinking block is billed as input, and with the
+			// text omitted its signature is the only size signal.
+			if types.IsThinkingBlock(block) {
+				total += len(block.ThoughtSignature) / tokenEstimationDivisor
+			}
 		}
 	}
 	if total == 0 {

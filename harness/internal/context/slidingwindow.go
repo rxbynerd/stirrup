@@ -80,13 +80,18 @@ func (s *SlidingWindowStrategy) LastCompaction() *CompactionEvent {
 }
 
 // estimateTokens returns a rough token estimate for a message: total
-// characters across all content blocks divided by 4.
+// characters across all content blocks divided by 4. A thinking block's
+// signature counts because the loop's budget estimate counts it; dropping
+// the message must release those tokens too.
 func estimateTokens(msg types.Message) int {
 	chars := 0
 	for _, block := range msg.Content {
 		chars += len(block.Text)
 		chars += len(block.Content)
 		chars += len(block.Input)
+		if types.IsThinkingBlock(block) {
+			chars += len(block.ThoughtSignature)
+		}
 	}
 	est := chars / 4
 	if est == 0 {

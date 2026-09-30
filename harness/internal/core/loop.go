@@ -715,6 +715,14 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			return messages, "error", finalAssistantText, nil
 		}
+		compaction := l.Context.LastCompaction()
+		if compaction != nil {
+			// A thinking block is bound to the exact history before it, so
+			// after any rewrite none can be replayed. History only grows,
+			// so once a strategy compacts it compacts on every later turn
+			// and blocks produced under a rewritten prefix are never sent.
+			preparedMessages = types.StripThinkingBlocks(preparedMessages)
+		}
 		// Feeds the ContextTokens observable gauge registered in Run;
 		// compaction shrinks this value, new messages grow it.
 		tokensAfterPrepare := estimateCurrentTokens(preparedMessages) +
@@ -722,7 +730,7 @@ func (l *AgenticLoop) runInnerLoop(
 			estimateToolDefinitionTokens(toolDefs)
 		l.lastContextTokens.Store(int64(tokensAfterPrepare))
 		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
-		if compaction := l.Context.LastCompaction(); compaction != nil {
+		if compaction != nil {
 			contextSpan.SetAttributes(
 				attribute.String("context.strategy", compaction.Strategy),
 				attribute.Int("context.tokens.after", compaction.TokensAfter),

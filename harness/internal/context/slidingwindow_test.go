@@ -185,6 +185,42 @@ func TestSlidingWindow_ToolUseMessages(t *testing.T) {
 	}
 }
 
+// TestSlidingWindow_DroppingThinkingReleasesSignatureTokens pins that a
+// dropped message's thinking signature is subtracted from the running
+// total. The budget the loop passes counts signatures, so leaving them out
+// here would drop far more history than the budget requires.
+func TestSlidingWindow_DroppingThinkingReleasesSignatureTokens(t *testing.T) {
+	s := NewSlidingWindowStrategy()
+	sig := strings.Repeat("s", 4000) // 1000 tokens
+	thinkingTurn := func(text string) types.Message {
+		return types.Message{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "thinking", ThoughtSignature: sig},
+			{Type: "text", Text: text},
+		}}
+	}
+	msgs := []types.Message{
+		makeMessage("user", "go"),
+		thinkingTurn("one"),
+		makeMessage("user", "next"),
+		thinkingTurn("two"),
+		makeMessage("user", "last"),
+		makeMessage("assistant", "done"),
+	}
+
+	// Four 1-token messages plus two ~1000-token thinking turns, as the
+	// loop's estimate counts them.
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:     1200,
+		CurrentTokens: 2004,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	if len(result) != 4 {
+		t.Errorf("kept %d messages, want 4 (dropping the first thinking turn fits the budget)", len(result))
+	}
+}
+
 func TestSlidingWindow_ImplementsInterface(t *testing.T) {
 	var _ ContextStrategy = (*SlidingWindowStrategy)(nil)
 }

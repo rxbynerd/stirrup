@@ -149,9 +149,9 @@ func genAISystemInstructionsJSON(system string) string {
 //   - "tool_result" → ToolCallResponsePart{type: "tool_call_response", id, result}
 //
 // Anything else is deliberately dropped: unknown block types have no
-// schema shape, and the one concrete case today — Gemini's opaque
-// ThoughtSignature — is provider state the harness must never log.
-// A tool_result's optional Structured envelope is likewise not
+// schema shape, and thinking / redacted_thinking blocks carry
+// provider-opaque signatures the harness must never log (as is Gemini's
+// ThoughtSignature, which is never read here). A tool_result's optional Structured envelope is likewise not
 // serialised; Content is the canonical text rendering and the
 // structured payload has no part shape in the schema. Text blocks
 // with empty content (e.g. a placeholder block a provider emitted

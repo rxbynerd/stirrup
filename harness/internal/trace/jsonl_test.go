@@ -433,6 +433,45 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) 
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures extends the
+// persistence ban to Anthropic thinking blocks: the signature and the
+// redacted data are both opaque, so the recording keeps each block's type
+// and (scrubbed) text but never the blob.
+func TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	const signature = "anthropic-thinking-signature-do-not-persist"
+	const redacted = "anthropic-redacted-data-do-not-persist"
+	thinking := []types.ContentBlock{
+		{Type: "thinking", Text: "plan", ThoughtSignature: signature},
+		{Type: "redacted_thinking", ThoughtSignature: redacted},
+		{Type: "text", Text: "answer"},
+	}
+	emitter.Start("run-thinking-signature", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{
+			Model:    "claude-sonnet-5-5",
+			Messages: []types.Message{{Role: "assistant", Content: thinking}},
+		},
+		ModelOutput: thinking,
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	for _, secret := range []string{signature, redacted} {
+		if strings.Contains(onDisk, secret) {
+			t.Errorf("thinking blob %q survived into the persisted trace:\n%s", secret, onDisk)
+		}
+	}
+	if !strings.Contains(onDisk, `"type":"thinking","text":"plan"`) || !strings.Contains(onDisk, `"type":"redacted_thinking"`) {
+		t.Errorf("thinking block types should stay in the recording, got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields mirrors
 // the ThoughtSignature drop test for the message-level
 // Message.ReplayFields carrier (the quirks ReplayFields round-trip

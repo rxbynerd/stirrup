@@ -774,3 +774,26 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testi
 		}
 	}
 }
+
+// TestGenAIParts_DropsThinkingBlocks pins that thinking and
+// redacted_thinking blocks never reach span content: they have no GenAI
+// part shape and their signatures are provider-opaque.
+func TestGenAIParts_DropsThinkingBlocks(t *testing.T) {
+	parts := genAIParts([]types.ContentBlock{
+		{Type: "thinking", Text: "private plan", ThoughtSignature: "sig-blob"},
+		{Type: "text", Text: "answer"},
+		{Type: "redacted_thinking", ThoughtSignature: "redacted-blob"},
+	})
+	if len(parts) != 1 || parts[0].Type != "text" || parts[0].Content != "answer" {
+		t.Fatalf("parts = %+v, want only the text part", parts)
+	}
+	raw, err := json.Marshal(parts)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leaked := range []string{"private plan", "sig-blob", "redacted-blob"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Errorf("span content carries %q: %s", leaked, raw)
+		}
+	}
+}
