@@ -258,6 +258,45 @@ func TestAnthropicAdapter_OutputOnlyUsageLeavesInputUnreported(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdapter_PartialUsageShapes(t *testing.T) {
+	cases := []struct {
+		name   string
+		deltas []string
+		want   types.TokenUsage
+	}{
+		{
+			name:   "no usage object",
+			deltas: []string{`{"delta":{"stop_reason":"end_turn"}}`},
+			want:   types.TokenUsage{},
+		},
+		{
+			name:   "empty output_tokens_details",
+			deltas: []string{`{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":9,"output_tokens_details":{}}}`},
+			want:   types.TokenUsage{Input: 20, Output: 9},
+		},
+		{
+			name:   "no output_tokens_details",
+			deltas: []string{`{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":20,"output_tokens":9}}`},
+			want:   types.TokenUsage{Input: 20, Output: 9},
+		},
+		{
+			name: "two message_delta events keep the later cumulative usage",
+			deltas: []string{
+				`{"delta":{"stop_reason":null},"usage":{"input_tokens":20,"cache_read_input_tokens":100,"output_tokens":3}}`,
+				`{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":20,"cache_read_input_tokens":100,"output_tokens":9,"output_tokens_details":{"thinking_tokens":4}}}`,
+			},
+			want: types.TokenUsage{Input: 120, Output: 9, CacheRead: 100, Reasoning: 4},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := streamAnthropicUsage(t, tc.deltas...); got != tc.want {
+				t.Errorf("usage = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFabricateStream_AnthropicReportsUsage(t *testing.T) {
 	response := `{
 		"content": [{"type": "text", "text": "ok"}],
@@ -298,6 +337,33 @@ func TestOpenAIResponsesAdapter_ReportsUsage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := streamResponsesUsage(t, tc.terminal); got != responsesUsageWant {
 				t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesAdapter_PartialUsageShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage string
+		want  types.TokenUsage
+	}{
+		{
+			name:  "no usage",
+			usage: ``,
+			want:  types.TokenUsage{},
+		},
+		{
+			name:  "no details objects",
+			usage: `,"usage":{"input_tokens":300,"output_tokens":40,"total_tokens":340}`,
+			want:  types.TokenUsage{Input: 300, Output: 40},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			terminal := makeResponsesEvent("response.completed", `{"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}]`+tc.usage+`}}`)
+			if got := streamResponsesUsage(t, terminal); got != tc.want {
+				t.Errorf("usage = %+v, want %+v", got, tc.want)
 			}
 		})
 	}
@@ -355,6 +421,65 @@ func TestOpenAICompatibleAdapter_NoUsageLeavesCountsUnreported(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleAdapter_PartialUsageShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage string
+		want  types.TokenUsage
+	}{
+		{
+			name:  "no details objects",
+			usage: `{"prompt_tokens":300,"completion_tokens":40,"total_tokens":340}`,
+			want:  types.TokenUsage{Input: 300, Output: 40},
+		},
+		{
+			name:  "null prompt_tokens_details",
+			usage: `{"prompt_tokens":300,"prompt_tokens_details":null,"completion_tokens":40,"completion_tokens_details":null}`,
+			want:  types.TokenUsage{Input: 300, Output: 40},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":` + tc.usage + `}` + "\n\n" +
+				"data: [DONE]\n\n"
+			if got := streamChatUsage(t, sse); got != tc.want {
+				t.Errorf("usage = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A server that attaches usage to the finish chunk and repeats it on a
+// trailing chunk gets exactly one usage-bearing message_complete.
+func TestOpenAICompatibleAdapter_EmitsUsageOnce(t *testing.T) {
+	usage := `"usage":{"prompt_tokens":300,"completion_tokens":40}`
+	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],` + usage + `}` + "\n\n" +
+		"data: " + `{"id":"c1","choices":[],` + usage + `}` + "\n\n" +
+		"data: [DONE]\n\n"
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), serveSSE(t, sse).URL, OpenAIAuthConfig{}, RetryPolicy{})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-6",
+		MaxTokens: 1024,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+	withUsage := 0
+	for _, ev := range events {
+		if ev.Type == "message_complete" && ev.InputTokens > 0 {
+			withUsage++
+		}
+	}
+	if withUsage != 1 {
+		t.Errorf("usage-bearing message_complete events = %d, want 1: %+v", withUsage, events)
+	}
+	if got, want := mergedUsage(t, events), (types.TokenUsage{Input: 300, Output: 40}); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
 func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
 	response := `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64}}}`
@@ -373,6 +498,33 @@ func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
 	want := types.TokenUsage{Input: 5000, Output: 120 + 900, CacheRead: 4096, Reasoning: 900}
 	if got != want {
 		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
+func TestGeminiAdapter_PartialUsageShapes(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage string
+		want  types.TokenUsage
+	}{
+		{
+			name:  "thoughts only",
+			usage: `{"promptTokenCount":50,"thoughtsTokenCount":30,"totalTokenCount":80}`,
+			want:  types.TokenUsage{Input: 50, Output: 30, Reasoning: 30},
+		},
+		{
+			name:  "cached content only",
+			usage: `{"promptTokenCount":5000,"cachedContentTokenCount":4096,"candidatesTokenCount":12,"totalTokenCount":5012}`,
+			want:  types.TokenUsage{Input: 5000, Output: 12, CacheRead: 4096},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := streamGeminiUsage(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":`+tc.usage+`}`)
+			if got != tc.want {
+				t.Errorf("usage = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -469,5 +621,23 @@ func TestBedrock_MetadataWithoutUsageEmitsNoMessageComplete(t *testing.T) {
 	}
 	if got := mergedUsage(t, events); got != (types.TokenUsage{}) {
 		t.Errorf("usage = %+v, want all zero", got)
+	}
+}
+
+func TestFabricateStream_NoUsageLeavesCountsUnreported(t *testing.T) {
+	cases := []struct {
+		providerType string
+		response     string
+	}{
+		{"anthropic", `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`},
+		{"openai-compatible", `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`},
+		{"openai-responses", `{"status":"completed","output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"ok"}]}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.providerType, func(t *testing.T) {
+			if got := fabricatedUsage(t, tc.response, tc.providerType); got != (types.TokenUsage{}) {
+				t.Errorf("usage = %+v, want all zero", got)
+			}
+		})
 	}
 }

@@ -877,6 +877,12 @@ func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
 	if stop.OutputTokens != 50 {
 		t.Errorf("OutputTokens = %d, want 50 (total 80 - prompt 30)", stop.OutputTokens)
 	}
+	if stop.InputTokens != 30 {
+		t.Errorf("InputTokens = %d, want 30 (promptTokenCount)", stop.InputTokens)
+	}
+	if stop.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0 without thoughtsTokenCount", stop.ReasoningTokens)
+	}
 }
 
 // TestGeminiAdapter_RecitationFinishReason pins the RECITATION enum
