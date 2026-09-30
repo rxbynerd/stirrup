@@ -243,6 +243,11 @@ type OpenAIResponsesBehaviourFlags struct {
 	// PromptCacheKey, when true, forwards a non-empty StreamParams.CacheKey
 	// as the top-level prompt_cache_key. The zero value sends no key.
 	PromptCacheKey bool `json:"promptCacheKey"`
+	// IncludeEncryptedReasoning, when true, sends
+	// include:["reasoning.encrypted_content"] so stateless reasoning items
+	// carry the encrypted_content their replay needs. Reasoning families
+	// only: a non-reasoning model may reject the include value.
+	IncludeEncryptedReasoning bool `json:"includeEncryptedReasoning"`
 }
 
 // OpenAIResponsesTokenField controls which JSON key carries the token

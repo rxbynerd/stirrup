@@ -101,3 +101,30 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 	}
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-4o", "request.json"), body)
 }
+
+// TestResponsesContract_GPT56RequestBody pins the outbound Responses request
+// for a GPT-5.6 reasoning turn: reasoning.effort projected, temperature
+// omitted despite a non-nil value, strict tools with a normalised schema, and
+// the encrypted-reasoning include. Documented, not probed.
+func TestResponsesContract_GPT56RequestBody(t *testing.T) {
+	params := types.StreamParams{
+		Model:           "gpt-5.6-sol",
+		System:          "You are helpful.",
+		Messages:        contractFixtureMessages(),
+		Tools:           []types.ToolDefinition{contractFixtureTool()},
+		MaxTokens:       4096,
+		Temperature:     types.Float64Ptr(0.5),
+		ReasoningEffort: "high",
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	req, err := buildResponsesRequest(params, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	req.Stream = true
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "request.json"), body)
+}

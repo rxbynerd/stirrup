@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -82,6 +83,10 @@ func (a *OpenAIResponsesAdapter) WireTap(out io.Writer) {
 
 // --- Responses API wire format ---
 
+// responsesIncludeEncryptedReasoning is the include value that returns each
+// reasoning item's encrypted_content, which stateless replay requires.
+const responsesIncludeEncryptedReasoning = "reasoning.encrypted_content"
+
 // responsesRequest is the JSON body sent to POST /v1/responses.
 //
 // Like the Chat Completions openaiRequest, the canonical fields carry no
@@ -115,6 +120,8 @@ type responsesRequest struct {
 	// PromptCacheKey is the wire value for prompt_cache_key. Empty omits
 	// the key.
 	PromptCacheKey string `json:"-"`
+	// IncludeEncryptedReasoning emits include:["reasoning.encrypted_content"].
+	IncludeEncryptedReasoning bool `json:"-"`
 
 	// TokenField / StoreMode / InputItemShape carry the resolved Responses
 	// quirks for this request and steer MarshalJSON; none is serialised under
@@ -129,9 +136,9 @@ type responsesRequest struct {
 // MarshalJSON projects the canonical responsesRequest into the Responses
 // wire body the resolved quirks selected. Keys are emitted in a fixed
 // order — model, instructions, input, tools, <token key>, temperature,
-// stream, store, parallel_tool_calls, reasoning, prompt_cache_key — and the
-// token-budget key and store value come from the resolved behaviour flags
-// rather than static struct tags.
+// stream, store, include, parallel_tool_calls, reasoning,
+// prompt_cache_key — and the token-budget key and store value come from
+// the resolved behaviour flags rather than static struct tags.
 //
 // Projection rules:
 //   - "model" — always.
@@ -144,6 +151,8 @@ type responsesRequest struct {
 //   - "temperature" — omitted when nil.
 //   - "stream" — omitted when false.
 //   - "store" — always emitted; StoreMode selects the value (false today).
+//   - "include" — ["reasoning.encrypted_content"] when
+//     IncludeEncryptedReasoning is set; omitted otherwise.
 //   - "parallel_tool_calls" — omitted when nil.
 //   - "reasoning" — {"effort": ...}; omitted when ReasoningEffort is empty.
 //   - "prompt_cache_key" — omitted when PromptCacheKey is empty.
@@ -223,6 +232,13 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	first = writeKey(first, "store")
 	if err := writeRaw(responsesStoreValue(r.StoreMode)); err != nil {
 		return nil, err
+	}
+
+	if r.IncludeEncryptedReasoning {
+		first = writeKey(first, "include")
+		if err := writeRaw([]string{responsesIncludeEncryptedReasoning}); err != nil {
+			return nil, err
+		}
 	}
 
 	if r.ParallelToolCalls != nil {
@@ -311,6 +327,13 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 		// decode still runs to reject a malformed (non-bool) store field rather
 		// than silently ignoring it. StoreMode keeps its zero value (StoreFalse).
 		_ = store
+	}
+	if v, ok := raw["include"]; ok {
+		var include []string
+		if err := json.Unmarshal(v, &include); err != nil {
+			return fmt.Errorf("responsesRequest.include: %w", err)
+		}
+		r.IncludeEncryptedReasoning = slices.Contains(include, responsesIncludeEncryptedReasoning)
 	}
 	if v, ok := raw["parallel_tool_calls"]; ok {
 		var b bool
@@ -799,6 +822,8 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
+
+		IncludeEncryptedReasoning: q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning,
 	}, nil
 }
 

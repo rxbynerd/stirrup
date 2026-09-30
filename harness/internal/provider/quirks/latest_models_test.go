@@ -128,6 +128,36 @@ func TestResponsesStrictModeRules(t *testing.T) {
 	}
 }
 
+// TestResponsesIncludeEncryptedReasoningRules pins the encrypted-reasoning
+// include to the reasoning families on the Responses surface. gpt-5-chat is
+// a non-reasoning model inside the gpt-5* glob, so its carve-out clears the
+// flag while keeping strict tools.
+func TestResponsesIncludeEncryptedReasoningRules(t *testing.T) {
+	cases := map[string]bool{
+		"gpt-5":             true,
+		"gpt-5-mini":        true,
+		"gpt-5.5":           true,
+		"gpt-5.6-sol":       true,
+		"gpt-6-luna":        true,
+		"o3":                true,
+		"o4-mini":           true,
+		"gpt-5-chat-latest": false,
+		"gpt-4.1":           false,
+		"gpt-4o":            false,
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-responses", model)
+			if got := q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning; got != want {
+				t.Errorf("IncludeEncryptedReasoning = %v, want %v", got, want)
+			}
+		})
+	}
+	if !DefaultRegistry().Resolve("openai-responses", "gpt-5-chat-latest").BehaviourFlags.OpenAI.StrictMode {
+		t.Error("gpt-5-chat carve-out must not clear StrictMode")
+	}
+}
+
 // TestDeepSeekFlashRules pins the V4.1 Flash id, which the deepseek-v4*
 // glob does not match: without its own rule, reasoning_content is not
 // replayed and every tool loop fails on its second turn.

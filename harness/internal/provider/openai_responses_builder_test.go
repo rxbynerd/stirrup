@@ -294,6 +294,57 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 	}
 }
 
+// TestResponsesRequest_IncludeEncryptedReasoning pins the include key to
+// the reasoning families: they request encrypted reasoning for stateless
+// replay, while non-reasoning models keep the body without include because
+// they may reject the value (unprobed).
+func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
+	const include = `"include":["reasoning.encrypted_content"]`
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-5", true},
+		{"gpt-5.4", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-6-astra", true},
+		{"o3", true},
+		{"gpt-5-chat-latest", false},
+		{"gpt-4o", false},
+		{"gpt-4.1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil)
+			if err != nil {
+				t.Fatalf("buildResponsesRequest: %v", err)
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := strings.Contains(string(body), include); got != tc.want {
+				t.Errorf("include emitted = %v, want %v: %s", got, tc.want, body)
+			}
+			var back responsesRequest
+			if err := json.Unmarshal(body, &back); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if back.IncludeEncryptedReasoning != tc.want {
+				t.Errorf("round-trip IncludeEncryptedReasoning = %v, want %v", back.IncludeEncryptedReasoning, tc.want)
+			}
+		})
+	}
+}
+
+func TestResponsesRequestUnmarshal_RejectsMalformedInclude(t *testing.T) {
+	var r responsesRequest
+	if err := json.Unmarshal([]byte(`{"model":"gpt-5","include":"reasoning.encrypted_content"}`), &r); err == nil {
+		t.Error("expected an error for a non-array include")
+	}
+}
+
 // TestResponsesStrictMode_FailsClosedBeforeSend pins that a tool schema the
 // strict rewriter cannot express (anyOf here, as an MCP server might
 // supply) stops a strict-mode Responses request before any bytes are sent.

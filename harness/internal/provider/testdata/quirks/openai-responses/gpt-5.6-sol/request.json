@@ -1,0 +1,42 @@
+# synthetic: derived from buildResponsesRequest + DefaultRegistry().Resolve; no OpenAI credential was available, so the shape is documented, not probed. Pins the GPT-5.6 reasoning-family request: reasoning.effort projected, temperature omitted although the caller supplied one, strict:true tools with the normalised schema, and include:["reasoning.encrypted_content"] for stateless replay. See testdata/quirks/README.md to refresh.
+{
+  "model": "gpt-5.6-sol",
+  "instructions": "You are helpful.",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the current weather for a city.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "max_output_tokens": 4096,
+  "stream": true,
+  "store": false,
+  "include": ["reasoning.encrypted_content"],
+  "reasoning": {
+    "effort": "high"
+  }
+}
