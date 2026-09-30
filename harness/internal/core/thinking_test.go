@@ -14,54 +14,70 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestStreamEventsToResult_ThinkingBlocksPersistedInOrder pins that
-// thinking and redacted_thinking events become history blocks in stream
-// order, flushing pending text, and never reach the transport.
-func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
+// runStreamEvents feeds events through streamEventsToResult and returns the
+// persisted blocks and the bytes the transport received.
+func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentBlock, string) {
+	t.Helper()
 	var transportBuf bytes.Buffer
 	tp := transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
-
-	ch := make(chan types.StreamEvent, 6)
-	ch <- types.StreamEvent{Type: "thinking", Text: "plan", ThoughtSignature: "sig-1"}
-	ch <- types.StreamEvent{Type: "text_delta", Text: "Reading."}
-	ch <- types.StreamEvent{Type: "redacted_thinking", ThoughtSignature: "data-1"}
-	ch <- types.StreamEvent{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: map[string]any{"path": "a"}}
-	ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
+	ch := make(chan types.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
 	close(ch)
-
 	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
+	return result.Blocks, transportBuf.String()
+}
+
+// TestStreamEventsToResult_ThinkingBlocksPersistedInOrder pins that
+// thinking and redacted_thinking events interleaved with text and tool
+// calls become history blocks in stream order, flushing pending text, and
+// that the transport receives exactly the bytes it would for the same
+// stream with no thinking events.
+func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
+	visible := []types.StreamEvent{
+		{Type: "text_delta", Text: "Reading."},
+		{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: map[string]any{"path": "a"}},
+		{Type: "tool_call", ID: "tc_2", Name: "read_file", Input: map[string]any{"path": "b"}},
+		{Type: "message_complete", StopReason: "tool_use"},
+	}
+	interleaved := []types.StreamEvent{
+		{Type: "thinking", Text: "plan A", ThoughtSignature: "sig-A"},
+		visible[0],
+		{Type: "thinking", Text: "plan B", ThoughtSignature: "sig-B"},
+		visible[1],
+		{Type: "redacted_thinking", ThoughtSignature: "data-C"},
+		visible[2],
+		visible[3],
+	}
+
+	blocks, withThinking := runStreamEvents(t, interleaved)
 
 	want := []types.ContentBlock{
-		{Type: "thinking", Text: "plan", ThoughtSignature: "sig-1"},
+		{Type: "thinking", Text: "plan A", ThoughtSignature: "sig-A"},
 		{Type: "text", Text: "Reading."},
-		{Type: "redacted_thinking", ThoughtSignature: "data-1"},
+		{Type: "thinking", Text: "plan B", ThoughtSignature: "sig-B"},
 		{Type: "tool_use", ID: "tc_1", Name: "read_file", Input: json.RawMessage(`{"path":"a"}`)},
+		{Type: "redacted_thinking", ThoughtSignature: "data-C"},
+		{Type: "tool_use", ID: "tc_2", Name: "read_file", Input: json.RawMessage(`{"path":"b"}`)},
 	}
-	if len(result.Blocks) != len(want) {
-		t.Fatalf("got %d blocks, want %d: %+v", len(result.Blocks), len(want), result.Blocks)
+	if len(blocks) != len(want) {
+		t.Fatalf("got %d blocks, want %d: %+v", len(blocks), len(want), blocks)
 	}
 	for i := range want {
-		got := result.Blocks[i]
+		got := blocks[i]
 		if got.Type != want[i].Type || got.Text != want[i].Text || got.ThoughtSignature != want[i].ThoughtSignature ||
 			got.ID != want[i].ID || string(got.Input) != string(want[i].Input) {
 			t.Errorf("block %d = %+v, want %+v", i, got, want[i])
 		}
 	}
 
-	for _, line := range strings.Split(strings.TrimSpace(transportBuf.String()), "\n") {
-		var e types.HarnessEvent
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("unmarshal emitted event: %v", err)
-		}
-		if strings.Contains(e.Type, "thinking") {
-			t.Errorf("transport received a %q event; thinking is history-only", e.Type)
-		}
-	}
-	if strings.Contains(transportBuf.String(), "sig-1") || strings.Contains(transportBuf.String(), "data-1") {
-		t.Errorf("transport output carries a thinking signature:\n%s", transportBuf.String())
+	_, withoutThinking := runStreamEvents(t, visible)
+	if withThinking != withoutThinking {
+		t.Errorf("transport output differs when thinking events are present\nwith:\n%s\nwithout:\n%s", withThinking, withoutThinking)
 	}
 }
 
