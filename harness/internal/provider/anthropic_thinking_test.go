@@ -1,41 +1,14 @@
 package provider
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
-
-// streamAnthropicSSE serves body as an SSE response and returns every
-// StreamEvent the adapter emits for it.
-func streamAnthropicSSE(t *testing.T, body string) []types.StreamEvent {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
-
-	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
-	adapter.baseURL = srv.URL
-
-	ch, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "claude-sonnet-5-5",
-		MaxTokens: 1024,
-	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
-	return collectEvents(t, ch)
-}
 
 // TestAnthropicAdapter_StreamThinkingBlock pins capture of a thinking block
 // ahead of the text and tool call it precedes: text and signature arrive as
