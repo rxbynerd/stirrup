@@ -78,6 +78,134 @@ func anthropicBuilderCases() []struct {
 				},
 			},
 		},
+		{
+			name: "thinking_replay",
+			params: types.StreamParams{
+				Model:     "claude-sonnet-5-5",
+				MaxTokens: 4096,
+				Messages:  thinkingReplayHistory(),
+			},
+		},
+	}
+}
+
+// thinkingReplayHistory is a tool-use round trip whose assistant turn
+// carries a signed thinking block (empty text, as the API returns by
+// default) and a redacted_thinking block around the text and tool call.
+func thinkingReplayHistory() []types.Message {
+	return []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read main.go"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "thinking", Text: "", ThoughtSignature: "sig-A"},
+			{Type: "text", Text: "Reading it."},
+			{Type: "redacted_thinking", ThoughtSignature: "data-B"},
+			{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+		}},
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "toolu_1", Content: "package main"},
+		}},
+	}
+}
+
+// assistantWireBlocks returns the raw content blocks of messages[idx] in a
+// marshalled Anthropic request body.
+func assistantWireBlocks(t *testing.T, body []byte, idx int) []json.RawMessage {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Content []json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v\nbody: %s", err, body)
+	}
+	if idx >= len(req.Messages) {
+		t.Fatalf("request has %d messages, want index %d\nbody: %s", len(req.Messages), idx, body)
+	}
+	return req.Messages[idx].Content
+}
+
+// TestBuildAnthropicRequest_ThinkingBlockWireShape pins the exact replay
+// shape: "thinking" is present even when empty, the signature and redacted
+// data sit under their own keys, and block order is preserved.
+func TestBuildAnthropicRequest_ThinkingBlockWireShape(t *testing.T) {
+	params := types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: thinkingReplayHistory()}
+	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	want := []string{
+		`{"type":"thinking","thinking":"","signature":"sig-A"}`,
+		`{"type":"text","text":"Reading it."}`,
+		`{"type":"redacted_thinking","data":"data-B"}`,
+		`{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"main.go"}}`,
+	}
+	got := assistantWireBlocks(t, body, 1)
+	if len(got) != len(want) {
+		t.Fatalf("assistant blocks = %d, want %d\nbody: %s", len(got), len(want), body)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Errorf("block %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBuildAnthropicRequest_ThinkingTextReplayed(t *testing.T) {
+	params := types.StreamParams{
+		Model:     "claude-opus-5-5",
+		MaxTokens: 16,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "thinking", Text: "The user greets me.", ThoughtSignature: "sig"},
+				{Type: "text", Text: "Hello."},
+			}},
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "again"}}},
+		},
+	}
+	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := assistantWireBlocks(t, body, 1)
+	if want := `{"type":"thinking","thinking":"The user greets me.","signature":"sig"}`; string(got[0]) != want {
+		t.Errorf("thinking block = %s, want %s", got[0], want)
+	}
+}
+
+// TestBuildAnthropicRequest_UnsignedThinkingDropped pins that a thinking or
+// redacted_thinking block with no signature never reaches the wire (a
+// recording-seeded history carries none), leaving the body byte-identical
+// to the same history without those blocks.
+func TestBuildAnthropicRequest_UnsignedThinkingDropped(t *testing.T) {
+	withUnsigned := thinkingReplayHistory()
+	withUnsigned[1].Content = []types.ContentBlock{
+		{Type: "thinking", Text: "reasoning"},
+		{Type: "text", Text: "Reading it."},
+		{Type: "redacted_thinking"},
+		{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+	}
+	without := thinkingReplayHistory()
+	without[1].Content = []types.ContentBlock{
+		{Type: "text", Text: "Reading it."},
+		{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+	}
+
+	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	gotBody, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: withUnsigned}, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wantBody, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: without}, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(gotBody) != string(wantBody) {
+		t.Errorf("unsigned thinking blocks leaked onto the wire\n got: %s\nwant: %s", gotBody, wantBody)
 	}
 }
 

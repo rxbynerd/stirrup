@@ -285,6 +285,10 @@ type anthropicMessage struct {
 // array of content blocks; the array form is emitted only when the resolved
 // StructuredToolResults capability is on and the result carries a structured
 // envelope. A nil Content omits the key.
+//
+// Signature is the thinking block's signature or the redacted_thinking
+// block's opaque data; MarshalJSON places it under the key each type
+// requires, so it never rides on any other block type.
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -294,6 +298,34 @@ type anthropicContentBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Signature string          `json:"-"`
+}
+
+// anthropicContentBlockFields drops anthropicContentBlock's MarshalJSON so
+// the struct-tag encoding can be reused without recursion.
+type anthropicContentBlockFields anthropicContentBlock
+
+// MarshalJSON emits the exact wire shape per block type. A thinking block
+// must carry the "thinking" key even when the text is empty (the API omits
+// the text by default and the signature carries the content), and a
+// redacted_thinking block carries only "data". Every other type uses the
+// struct tags unchanged.
+func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
+	switch b.Type {
+	case "thinking":
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+		}{Type: b.Type, Thinking: b.Text, Signature: b.Signature})
+	case "redacted_thinking":
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Data string `json:"data"`
+		}{Type: b.Type, Data: b.Signature})
+	default:
+		return json.Marshal(anthropicContentBlockFields(b))
+	}
 }
 
 // anthropicToolResultPart is one entry in the array form of a tool_result
@@ -311,12 +343,27 @@ type anthropicToolResultPart struct {
 // enforces the cross-provider confidentiality invariant: any field on
 // types.ContentBlock not mirrored onto anthropicContentBlock is dropped
 // here, rather than relying on call sites to scrub egress.
+//
+// ThoughtSignature is read only from thinking and redacted_thinking blocks.
+// A thinking block without one is dropped: the API cannot verify an
+// unsigned block, so it is not replayable.
 func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability) []anthropicMessage {
 	out := make([]anthropicMessage, len(messages))
 	for i, msg := range messages {
-		blocks := make([]anthropicContentBlock, len(msg.Content))
-		for j, b := range msg.Content {
-			blocks[j] = anthropicContentBlock{
+		blocks := make([]anthropicContentBlock, 0, len(msg.Content))
+		for _, b := range msg.Content {
+			if types.IsThinkingBlock(b) {
+				if b.ThoughtSignature == "" {
+					continue
+				}
+				blocks = append(blocks, anthropicContentBlock{
+					Type:      b.Type,
+					Text:      b.Text,
+					Signature: b.ThoughtSignature,
+				})
+				continue
+			}
+			blocks = append(blocks, anthropicContentBlock{
 				Type:      b.Type,
 				Text:      b.Text,
 				ID:        b.ID,
@@ -325,7 +372,7 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 				ToolUseID: b.ToolUseID,
 				Content:   anthropicToolResultContent(b, cap),
 				IsError:   b.IsError,
-			}
+			})
 		}
 		out[i] = anthropicMessage{
 			Role:    msg.Role,
