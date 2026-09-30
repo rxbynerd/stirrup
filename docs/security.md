@@ -166,7 +166,7 @@ Every `net/http` provider adapter and the MCP client uses an explicit
 
 | Client | Timeout |
 |---|---|
-| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Gemini) | 10 s TLS handshake, 30 s response header, 120 s idle read on the streamed body; no total cap |
+| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Gemini) | 30 s dial, 10 s TLS handshake, 30 s response header, 120 s idle read on the streamed body; no total cap |
 | Provider streaming (Bedrock, AWS SDK client) | SDK defaults (30 s dial, 10 s TLS handshake) plus a 120 s idle read on the connection, set by the adapter because the SDK applies none to Bedrock Runtime; no total cap |
 | MCP client | 30 s |
 | Web fetch tool | 30 s |

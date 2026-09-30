@@ -75,19 +75,11 @@ type AnthropicAdapter struct {
 // rotate the token without rebuilding the adapter.
 func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *AnthropicAdapter {
 	return &AnthropicAdapter{
-		bearer:   bearer,
-		authMode: authMode,
-		httpClient: &http.Client{
-			// No Client.Timeout: it would cap the whole streamed body. Streamed
-			// reads are bounded by idleTimeoutBody instead.
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
-		baseURL:  anthropicAPIURL,
-		Registry: quirks.DefaultRegistry(),
+		bearer:     bearer,
+		authMode:   authMode,
+		httpClient: newStreamingHTTPClient(),
+		baseURL:    anthropicAPIURL,
+		Registry:   quirks.DefaultRegistry(),
 	}
 }
 

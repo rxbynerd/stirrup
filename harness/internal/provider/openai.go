@@ -104,16 +104,8 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
-		bearer: bearer,
-		httpClient: &http.Client{
-			// No Client.Timeout: it would cap the whole streamed body. Streamed
-			// reads are bounded by idleTimeoutBody instead.
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
+		bearer:        bearer,
+		httpClient:    newStreamingHTTPClient(),
 		baseURL:       baseURL,
 		apiKeyHeader:  auth.APIKeyHeader,
 		queryParams:   auth.QueryParams,

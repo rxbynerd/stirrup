@@ -2,6 +2,9 @@ package provider
 
 import (
 	"log/slog"
+	"net"
+	"net/http"
+	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -34,4 +37,21 @@ func ruleDescriptions(rules []quirks.Rule) []string {
 		out = append(out, r.Description)
 	}
 	return out
+}
+
+// newStreamingHTTPClient returns a client for one net/http streaming
+// adapter. It sets no Client.Timeout, which would cap the whole streamed
+// body; each adapter bounds the body with idleTimeoutBody instead.
+// ForceAttemptHTTP2 is required because net/http stops negotiating
+// HTTP/2 automatically once a custom DialContext is set.
+func newStreamingHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
 }

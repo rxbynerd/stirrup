@@ -88,20 +88,12 @@ func NewGeminiAdapter(
 	safety []types.GeminiSafetySetting,
 ) *GeminiAdapter {
 	return &GeminiAdapter{
-		bearer:    bearer,
-		projectID: projectID,
-		location:  location,
-		safety:    safety,
-		httpClient: &http.Client{
-			// No Client.Timeout: it would cap the whole streamed body. Streamed
-			// reads are bounded by idleTimeoutBody instead.
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
-		Registry: quirks.DefaultRegistry(),
+		bearer:     bearer,
+		projectID:  projectID,
+		location:   location,
+		safety:     safety,
+		httpClient: newStreamingHTTPClient(),
+		Registry:   quirks.DefaultRegistry(),
 	}
 }
 

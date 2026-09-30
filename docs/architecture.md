@@ -191,8 +191,10 @@ Chat Completions; `openai-responses` is for Azure OpenAI Foundry and
 any deployment that requires the Responses wire format.
 
 The four `net/http` adapters (`anthropic`, both OpenAI dialects,
-`gemini`) each build their own HTTP client with explicit transport
-timeouts (10 s TLS handshake, 30 s response header) and no
+`gemini`) each get their own client from `newStreamingHTTPClient`
+(`provider/provider_util.go`), with explicit transport timeouts (30 s
+dial, 10 s TLS handshake, 30 s response header), `ForceAttemptHTTP2`
+so the custom dialer does not disable HTTP/2, and no
 `http.Client.Timeout`, because a total deadline would also cap the
 streamed body and cut long turns mid-stream. The streamed body is
 bounded instead by a 120 s idle-read deadline (`idleTimeoutBody` in
