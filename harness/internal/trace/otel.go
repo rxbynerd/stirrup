@@ -35,6 +35,13 @@ const (
 	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
 	genAIToolNameKey       = "gen_ai.tool.name"
 
+	// Usage breakdown attributes, emitted on a turn span only when
+	// non-zero so providers that report no breakdown keep the base set.
+	genAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
+	genAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
+	genAIUsageReasoningOutputTokens    = "gen_ai.usage.reasoning.output_tokens"
+	tokensInputReportedKey             = "stirrup.tokens.input_reported"
+
 	// errorTypeKey is the stable (non-Development) semconv error
 	// attribute, emitted on failed tool spans with the bounded
 	// observability.ToolFailureCategory vocabulary as its value.
@@ -454,6 +461,7 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 	if e.config != nil {
 		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))
 	}
+	attrs = append(attrs, turnUsageBreakdownAttributes(turn)...)
 	if content != nil {
 		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
 	}
@@ -470,6 +478,25 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		span.SetStatus(codes.Error, "error")
 	}
 	span.End(oteltrace.WithTimestamp(spanEnd))
+}
+
+// turnUsageBreakdownAttributes returns the optional per-turn usage
+// attributes, omitting each one that is zero or false.
+func turnUsageBreakdownAttributes(turn types.TurnTrace) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if turn.InputReported {
+		attrs = append(attrs, attribute.Bool(tokensInputReportedKey, true))
+	}
+	if turn.Tokens.CacheRead > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageCacheReadInputTokens, turn.Tokens.CacheRead))
+	}
+	if turn.Tokens.CacheWrite > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageCacheCreationInputTokens, turn.Tokens.CacheWrite))
+	}
+	if turn.Tokens.Reasoning > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageReasoningOutputTokens, turn.Tokens.Reasoning))
+	}
+	return attrs
 }
 
 // RecordTurnRecord attaches the turn's transcript to its span when

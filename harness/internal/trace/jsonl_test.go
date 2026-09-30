@@ -167,6 +167,12 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	if finished.Trace.PermissionDenials != 2 {
 		t.Errorf("run_finished permission denials: got %d, want 2", finished.Trace.PermissionDenials)
 	}
+	if finished.Trace.TokenUsage != wantTokens {
+		t.Errorf("run_finished tokenUsage: got %+v, want %+v", finished.Trace.TokenUsage, wantTokens)
+	}
+	if !strings.Contains(buf.String(), `"tokenUsage":{"input":300,"output":125,"cacheRead":210,"cacheWrite":30,"reasoning":15}`) {
+		t.Errorf("run_finished line missing the token usage breakdown:\n%s", buf.String())
+	}
 }
 
 // TestJSONLTraceEmitter_SessionNameRoundTrip pins that a SessionName set

@@ -551,6 +551,52 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
 }
 
+// TestOTelTraceEmitter_TurnUsageBreakdownAttributes pins that the cache,
+// reasoning, and input-reported attributes appear on a turn span only
+// when set, so a turn with no breakdown keeps the base attribute set.
+func TestOTelTraceEmitter_TurnUsageBreakdownAttributes(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-usage-1", &types.RunConfig{RunID: "run-usage-1", Provider: types.ProviderConfig{Type: "anthropic"}})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          1,
+		Tokens:        types.TokenUsage{Input: 2476, Output: 941, CacheRead: 2162, CacheWrite: 310, Reasoning: 468},
+		InputReported: true,
+		StopReason:    "tool_use",
+	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:       2,
+		Tokens:     types.TokenUsage{Input: 900, Output: 12},
+		StopReason: "end_turn",
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	spans := exporter.GetSpans()
+
+	reported := findSpanByName(t, spans, "turn[1]")
+	assertIntAttribute(t, reported, genAIUsageInputTokens, 2476)
+	assertIntAttribute(t, reported, genAIUsageCacheReadInputTokens, 2162)
+	assertIntAttribute(t, reported, genAIUsageCacheCreationInputTokens, 310)
+	assertIntAttribute(t, reported, genAIUsageReasoningOutputTokens, 468)
+	var sawReported bool
+	for _, attr := range reported.Attributes {
+		if string(attr.Key) == tokensInputReportedKey {
+			sawReported = attr.Value.AsBool()
+		}
+	}
+	if !sawReported {
+		t.Errorf("turn[1]: %s = false or absent, want true", tokensInputReportedKey)
+	}
+
+	estimated := findSpanByName(t, spans, "turn[2]")
+	for _, attr := range estimated.Attributes {
+		switch string(attr.Key) {
+		case tokensInputReportedKey, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens:
+			t.Errorf("turn[2]: unexpected attribute %s=%v on a turn with no breakdown", attr.Key, attr.Value.String())
+		}
+	}
+}
+
 // TestOTelTraceEmitter_TurnModelFallback pins the gen_ai.request.model
 // resolution order on turn spans: the router's per-turn selection
 // (TurnTrace.Model) wins, the run-level configured model fills in for
