@@ -291,15 +291,20 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 }
 
 // applyBedrockUsage copies Converse usage onto a message_complete event.
-// inputTokens is taken to exclude both cache figures, as on the Anthropic
-// Messages API that Bedrock fronts for Claude, so they are added back to
-// report the whole prompt.
+// The whole prompt is totalTokens minus outputTokens, which holds whether
+// or not inputTokens counts the cache figures; without totalTokens it
+// falls back to inputTokens plus both cache figures.
 func applyBedrockUsage(u *brtypes.TokenUsage, ev *types.StreamEvent) {
+	output := clampTokens(int(aws.ToInt32(u.OutputTokens)))
 	cacheRead := clampTokens(int(aws.ToInt32(u.CacheReadInputTokens)))
 	cacheWrite := clampTokens(int(aws.ToInt32(u.CacheWriteInputTokens)))
+	input := clampTokens(int(aws.ToInt32(u.InputTokens))) + cacheRead + cacheWrite
+	if u.TotalTokens != nil {
+		input = clampTokens(int(*u.TotalTokens)) - output
+	}
 	setEventUsage(ev, tokenReport{
-		Input:      clampTokens(int(aws.ToInt32(u.InputTokens))) + cacheRead + cacheWrite,
-		Output:     int(aws.ToInt32(u.OutputTokens)),
+		Input:      input,
+		Output:     output,
 		CacheRead:  cacheRead,
 		CacheWrite: cacheWrite,
 	})

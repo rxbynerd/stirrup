@@ -376,18 +376,89 @@ func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
 	}
 }
 
-// Bedrock delivers usage on the metadata event after messageStop. The
-// cache figures are added to inputTokens.
+// Bedrock delivers usage on the metadata event after messageStop.
 func TestBedrock_ReportsUsageFromMetadata(t *testing.T) {
-	got := mergedUsage(t, bedrockUsageEvents(t, &brtypes.TokenUsage{
-		InputTokens:           aws.Int32(12),
-		OutputTokens:          aws.Int32(150),
-		TotalTokens:           aws.Int32(3200),
-		CacheReadInputTokens:  aws.Int32(2900),
-		CacheWriteInputTokens: aws.Int32(138),
-	}))
-	want := types.TokenUsage{Input: 12 + 2900 + 138, Output: 150, CacheRead: 2900, CacheWrite: 138}
-	if got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
+	cases := []struct {
+		name  string
+		usage *brtypes.TokenUsage
+		want  types.TokenUsage
+	}{
+		{
+			name: "input derived from totalTokens when inputTokens excludes cache",
+			usage: &brtypes.TokenUsage{
+				InputTokens:           aws.Int32(12),
+				OutputTokens:          aws.Int32(150),
+				TotalTokens:           aws.Int32(3200),
+				CacheReadInputTokens:  aws.Int32(2900),
+				CacheWriteInputTokens: aws.Int32(138),
+			},
+			want: types.TokenUsage{Input: 3050, Output: 150, CacheRead: 2900, CacheWrite: 138},
+		},
+		{
+			name: "input derived from totalTokens when inputTokens includes cache",
+			usage: &brtypes.TokenUsage{
+				InputTokens:           aws.Int32(3050),
+				OutputTokens:          aws.Int32(150),
+				TotalTokens:           aws.Int32(3200),
+				CacheReadInputTokens:  aws.Int32(2900),
+				CacheWriteInputTokens: aws.Int32(138),
+			},
+			want: types.TokenUsage{Input: 3050, Output: 150, CacheRead: 2900, CacheWrite: 138},
+		},
+		{
+			name: "without totalTokens the cache figures are added to inputTokens",
+			usage: &brtypes.TokenUsage{
+				InputTokens:           aws.Int32(12),
+				OutputTokens:          aws.Int32(150),
+				CacheReadInputTokens:  aws.Int32(2900),
+				CacheWriteInputTokens: aws.Int32(138),
+			},
+			want: types.TokenUsage{Input: 3050, Output: 150, CacheRead: 2900, CacheWrite: 138},
+		},
+		{
+			name: "nil cache pointers leave input at inputTokens",
+			usage: &brtypes.TokenUsage{
+				InputTokens:  aws.Int32(812),
+				OutputTokens: aws.Int32(40),
+			},
+			want: types.TokenUsage{Input: 812, Output: 40},
+		},
+		{
+			name:  "nil inputTokens leaves input unreported",
+			usage: &brtypes.TokenUsage{OutputTokens: aws.Int32(40)},
+			want:  types.TokenUsage{Output: 40},
+		},
+		{
+			name: "totalTokens below outputTokens leaves input unreported",
+			usage: &brtypes.TokenUsage{
+				InputTokens:  aws.Int32(812),
+				OutputTokens: aws.Int32(40),
+				TotalTokens:  aws.Int32(10),
+			},
+			want: types.TokenUsage{Output: 40},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mergedUsage(t, bedrockUsageEvents(t, tc.usage)); got != tc.want {
+				t.Errorf("usage = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBedrock_MetadataWithoutUsageEmitsNoMessageComplete(t *testing.T) {
+	events := bedrockUsageEvents(t, nil)
+	completes := 0
+	for _, ev := range events {
+		if ev.Type == "message_complete" {
+			completes++
+		}
+	}
+	if completes != 1 {
+		t.Errorf("message_complete events = %d, want 1 (messageStop only): %+v", completes, events)
+	}
+	if got := mergedUsage(t, events); got != (types.TokenUsage{}) {
+		t.Errorf("usage = %+v, want all zero", got)
 	}
 }

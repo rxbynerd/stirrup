@@ -81,7 +81,7 @@ Per-provider sources:
 | `openai-responses` | `input_tokens` | `input_tokens_details.cached_tokens` / `.cache_write_tokens` | `output_tokens_details.reasoning_tokens` |
 | `openai-compatible` | `prompt_tokens` | `prompt_tokens_details.cached_tokens` / none | `completion_tokens_details.reasoning_tokens` |
 | `gemini` | `promptTokenCount` | `cachedContentTokenCount` / none | `thoughtsTokenCount` (also added into `output`) |
-| `bedrock` | `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` | `cacheReadInputTokens` / `cacheWriteInputTokens` | none |
+| `bedrock` | `totalTokens` − `outputTokens`; without `totalTokens`, `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` | `cacheReadInputTokens` / `cacheWriteInputTokens` | none |
 
 ## Quick choice
 
