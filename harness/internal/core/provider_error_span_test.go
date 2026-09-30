@@ -57,8 +57,8 @@ func TestLoop_ProviderErrorSpanIsScrubbed(t *testing.T) {
 			var exceptionMessage string
 			for _, ev := range span.Events {
 				for _, attr := range ev.Attributes {
-					if strings.Contains(attr.Value.Emit(), probe) {
-						t.Errorf("span event %q attribute %s leaks the probe: %q", ev.Name, attr.Key, attr.Value.Emit())
+					if strings.Contains(attr.Value.String(), probe) {
+						t.Errorf("span event %q attribute %s leaks the probe: %q", ev.Name, attr.Key, attr.Value.String())
 					}
 					if ev.Name == "exception" && attr.Key == "exception.message" {
 						exceptionMessage = attr.Value.AsString()
