@@ -85,7 +85,9 @@ func renderRunTrace(out io.Writer, t *types.RunTrace, color bool) error {
 	fmt.Fprintf(&b, "  duration: %s\n", t.CompletedAt.Sub(t.StartedAt).Round(time.Millisecond))
 	fmt.Fprintf(&b, "  outcome:  %s\n", colorize(color, outcomeColor(t.Outcome), strOrDash(t.Outcome)))
 	fmt.Fprintf(&b, "  turns:    %d\n", t.Turns)
-	fmt.Fprintf(&b, "  tokens:   in=%d out=%d\n", t.TokenUsage.Input, t.TokenUsage.Output)
+	fmt.Fprintf(&b, "  tokens:   in=%d%s out=%d%s\n",
+		t.TokenUsage.Input, inputTokenDetail(t.TokenUsage.CacheRead, t.TokenUsage.CacheWrite),
+		t.TokenUsage.Output, outputTokenDetail(t.TokenUsage.Reasoning))
 
 	if t.Config.RunID != "" {
 		fmt.Fprintf(&b, "  runId:    %s\n", t.Config.RunID)

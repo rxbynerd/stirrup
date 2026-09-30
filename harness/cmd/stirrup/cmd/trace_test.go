@@ -74,6 +74,26 @@ func TestTraceShow_PrintsRecords(t *testing.T) {
 	}
 }
 
+func TestTraceShow_TokenBreakdown(t *testing.T) {
+	traces := sampleTraces()
+	var out bytes.Buffer
+	if err := renderRunTrace(&out, &traces[0], false); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out.String(), "tokens:   in=100 out=200\n") {
+		t.Errorf("a run without breakdown must print bare counts:\n%s", out.String())
+	}
+
+	traces[0].TokenUsage = types.TokenUsage{Input: 1234, Output: 56, CacheRead: 1000, Reasoning: 12}
+	out.Reset()
+	if err := renderRunTrace(&out, &traces[0], false); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if want := "tokens:   in=1234 (cache read 1000) out=56 (reasoning 12)\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("show output missing %q:\n%s", want, out.String())
+	}
+}
+
 // TestToolStatus_RendersErrorCategory pins that a failed tool call
 // carrying an ErrorCategory renders it inline (e.g. "fail
 // (unknown_tool)"), while a failure without a category and a success
@@ -201,6 +221,52 @@ func TestTraceStats_TextOutput(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("text stats missing %q\n%s", want, s)
 		}
+	}
+}
+
+func TestTraceStats_TokenBreakdown(t *testing.T) {
+	traces := sampleTraces()
+	traces[0].TokenUsage = types.TokenUsage{Input: 1234, Output: 56, CacheRead: 1000, CacheWrite: 20, Reasoning: 12}
+	path := writeTraceFile(t, traces)
+
+	var jsonOut bytes.Buffer
+	if err := runTraceStatsWith(path, &jsonOut, "json", 5); err != nil {
+		t.Fatalf("stats json: %v", err)
+	}
+	var stats TraceStats
+	if err := json.Unmarshal(bytes.TrimSpace(jsonOut.Bytes()), &stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.TokensCacheRead != 1000 || stats.TokensCacheWrite != 20 || stats.TokensReasoning != 12 {
+		t.Errorf("breakdown = %d/%d/%d, want 1000/20/12", stats.TokensCacheRead, stats.TokensCacheWrite, stats.TokensReasoning)
+	}
+
+	var textOut bytes.Buffer
+	if err := runTraceStatsWith(path, &textOut, "text", 5); err != nil {
+		t.Fatalf("stats text: %v", err)
+	}
+	if want := "tokens in / out:  1234 (cache read 1000, cache write 20) / 56 (reasoning 12)\n"; !strings.Contains(textOut.String(), want) {
+		t.Errorf("text stats missing %q:\n%s", want, textOut.String())
+	}
+}
+
+func TestTraceStats_OmitsZeroTokenBreakdown(t *testing.T) {
+	path := writeTraceFile(t, sampleTraces())
+	var jsonOut bytes.Buffer
+	if err := runTraceStatsWith(path, &jsonOut, "json", 5); err != nil {
+		t.Fatalf("stats json: %v", err)
+	}
+	for _, key := range []string{"tokensCacheRead", "tokensCacheWrite", "tokensReasoning"} {
+		if strings.Contains(jsonOut.String(), key) {
+			t.Errorf("stats JSON carries %s for a run without breakdown: %s", key, jsonOut.String())
+		}
+	}
+	var textOut bytes.Buffer
+	if err := runTraceStatsWith(path, &textOut, "text", 5); err != nil {
+		t.Fatalf("stats text: %v", err)
+	}
+	if !strings.Contains(textOut.String(), "tokens in / out:  100 / 200\n") {
+		t.Errorf("text stats must print bare counts without breakdown:\n%s", textOut.String())
 	}
 }
 
