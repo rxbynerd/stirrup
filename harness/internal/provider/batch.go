@@ -244,6 +244,9 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
 			return nil, err
 		}
+		// Consecutive batch turns rarely land within the five-minute cache
+		// lifetime, so a cache write would be paid for and not read.
+		q.BehaviourFlags.Anthropic.PromptCaching = false
 		return json.Marshal(buildAnthropicRequest(params, false, q))
 	case "openai-compatible":
 		registry := a.Registry

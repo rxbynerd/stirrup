@@ -349,6 +349,41 @@ func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl pins
+// that a batch body carries a plain string system and no cache_control
+// anywhere, even for a model the registry caches and a request carrying a
+// cache key.
+func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	if !quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
+		t.Fatalf("precondition: registry must enable PromptCaching for %s", model)
+	}
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     model,
+		System:    "sys",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+		CacheKey:  "k",
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	if strings.Contains(string(body), "cache_control") {
+		t.Errorf("batch body carries cache_control: %s", body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if got := string(raw["system"]); got != `"sys"` {
+		t.Errorf("system = %s, want the plain string \"sys\"", got)
+	}
+	if got := string(raw["stream"]); got != "false" {
+		t.Errorf("stream = %s, want false", got)
+	}
+}
+
 // TestBatchAdapter_MarshalUsesInjectedRegistry pins the Registry
 // field plumbing: a BatchAdapter constructed with a registry that
 // includes a compat rule (e.g. Z.ai's TokenFieldMaxTokens +
