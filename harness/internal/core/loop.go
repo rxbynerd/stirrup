@@ -323,6 +323,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// finalStopDetails is overwritten on each runInnerLoop invocation, so
 	// only the invocation that ended the run contributes to RunTrace.
 	var finalStopDetails *types.StopDetails
+	var finalInnerOutcome string
 	if turnZeroAbort {
 		outcome = "rule_of_two_violation"
 	}
@@ -331,6 +332,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 		var innerOutcome, innerFinalText string
 		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
 			finalAssistantText = innerFinalText
 		}
@@ -476,6 +478,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// reach disk.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
+	}
+	// Stop details describe the provider stop that ended the inner loop;
+	// an outcome reclassified afterwards (verification, cancellation,
+	// hooks, command output) no longer reports that stop.
+	if outcome != finalInnerOutcome {
+		finalStopDetails = nil
 	}
 	if recorder, ok := l.Trace.(trace.StopDetailsRecorder); ok && finalStopDetails != nil {
 		recorder.RecordStopDetails(finalStopDetails)
@@ -922,7 +930,10 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopDetails != nil {
 			// Explanation is provider free text bound for the persisted
 			// trace, so it gets the same scrub as final assistant text.
-			sr.StopDetails.Explanation = security.Scrub(sr.StopDetails.Explanation)
+			// The copy leaves the provider's event untouched.
+			scrubbed := *sr.StopDetails
+			scrubbed.Explanation = security.Scrub(scrubbed.Explanation)
+			sr.StopDetails = &scrubbed
 			if sr.StopDetails.Category != "" {
 				providerSpan.SetAttributes(attribute.String("stop.category", sr.StopDetails.Category))
 			}
