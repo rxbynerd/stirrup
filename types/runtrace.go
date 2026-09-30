@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -21,13 +22,54 @@ type TokenUsage struct {
 	Reasoning  int `json:"reasoning,omitempty"`
 }
 
-// Add accumulates o into u.
+// Add accumulates o into u, saturating at math.MaxInt so hostile
+// provider counts cannot wrap a running total negative.
 func (u *TokenUsage) Add(o TokenUsage) {
-	u.Input += o.Input
-	u.Output += o.Output
-	u.CacheRead += o.CacheRead
-	u.CacheWrite += o.CacheWrite
-	u.Reasoning += o.Reasoning
+	u.Input = saturatingAdd(u.Input, o.Input)
+	u.Output = saturatingAdd(u.Output, o.Output)
+	u.CacheRead = saturatingAdd(u.CacheRead, o.CacheRead)
+	u.CacheWrite = saturatingAdd(u.CacheWrite, o.CacheWrite)
+	u.Reasoning = saturatingAdd(u.Reasoning, o.Reasoning)
+}
+
+// Total is Input + Output, saturating at math.MaxInt. Cached input
+// counts in full.
+func (u TokenUsage) Total() int {
+	return saturatingAdd(u.Input, u.Output)
+}
+
+// MergeEvent folds the counts of one message_complete event into u. An
+// event carrying InputTokens is a complete usage snapshot and replaces
+// u; any other event overwrites only its non-zero counts, so a bare stop
+// event or a trailing output-only event never clears a reported count.
+func (u *TokenUsage) MergeEvent(ev StreamEvent) {
+	if ev.InputTokens > 0 {
+		*u = TokenUsage{}
+	}
+	for _, f := range []struct {
+		dst *int
+		v   int
+	}{
+		{&u.Input, ev.InputTokens},
+		{&u.Output, ev.OutputTokens},
+		{&u.CacheRead, ev.CacheReadTokens},
+		{&u.CacheWrite, ev.CacheWriteTokens},
+		{&u.Reasoning, ev.ReasoningTokens},
+	} {
+		if f.v > 0 {
+			*f.dst = f.v
+		}
+	}
+}
+
+func saturatingAdd(a, b int) int {
+	switch {
+	case b > 0 && a > math.MaxInt-b:
+		return math.MaxInt
+	case b < 0 && a < math.MinInt-b:
+		return math.MinInt
+	}
+	return a + b
 }
 
 // RunTrace captures the full telemetry of a single harness run.

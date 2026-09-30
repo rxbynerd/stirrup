@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -308,6 +309,24 @@ func TestTokenUsage_AddAccumulatesEveryField(t *testing.T) {
 	want := TokenUsage{Input: 110, Output: 55, CacheRead: 22, CacheWrite: 33, Reasoning: 11}
 	if total != want {
 		t.Errorf("Add = %+v, want %+v", total, want)
+	}
+}
+
+func TestTokenUsage_AddSaturates(t *testing.T) {
+	total := TokenUsage{Input: math.MaxInt - 5, Output: 1, CacheRead: math.MaxInt}
+	total.Add(TokenUsage{Input: 100, Output: 2, CacheRead: 1})
+	want := TokenUsage{Input: math.MaxInt, Output: 3, CacheRead: math.MaxInt}
+	if total != want {
+		t.Errorf("Add = %+v, want %+v", total, want)
+	}
+}
+
+func TestTokenUsage_TotalSaturates(t *testing.T) {
+	if got := (TokenUsage{Input: math.MaxInt, Output: 10}).Total(); got != math.MaxInt {
+		t.Errorf("Total = %d, want math.MaxInt", got)
+	}
+	if got := (TokenUsage{Input: 1200, Output: 34, CacheRead: 1000}).Total(); got != 1234 {
+		t.Errorf("Total = %d, want 1234 (cached input is already inside Input)", got)
 	}
 }
 

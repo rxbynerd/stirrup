@@ -258,8 +258,7 @@ func (tt *TokenTracker) Tokens() types.TokenUsage {
 // Cached input counts in full: the budget bounds tokens processed, not
 // cost.
 func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
-	totalTokens := tt.total.Input + tt.total.Output
-	if maxTokenBudget != nil && totalTokens > *maxTokenBudget {
+	if maxTokenBudget != nil && tt.total.Total() > *maxTokenBudget {
 		return types.BudgetCheck{
 			WithinBudget:  false,
 			CurrentTokens: tt.Tokens(),
@@ -587,28 +586,6 @@ type streamResult struct {
 	ReplayFields map[string]json.RawMessage
 }
 
-// mergeUsage takes each non-zero token count from a message_complete
-// event. Adapters may split usage across more than one message_complete
-// (e.g. a trailing usage-only event), so a zero never clears a count an
-// earlier event reported.
-func (r *streamResult) mergeUsage(event types.StreamEvent) {
-	if event.InputTokens > 0 {
-		r.Usage.Input = event.InputTokens
-	}
-	if event.OutputTokens > 0 {
-		r.Usage.Output = event.OutputTokens
-	}
-	if event.CacheReadTokens > 0 {
-		r.Usage.CacheRead = event.CacheReadTokens
-	}
-	if event.CacheWriteTokens > 0 {
-		r.Usage.CacheWrite = event.CacheWriteTokens
-	}
-	if event.ReasoningTokens > 0 {
-		r.Usage.Reasoning = event.ReasoningTokens
-	}
-}
-
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage.
 func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, logger *slog.Logger) (*streamResult, error) {
@@ -684,7 +661,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			if event.StopReason != "" {
 				result.StopReason = event.StopReason
 			}
-			result.mergeUsage(event)
+			result.Usage.MergeEvent(event)
 			if len(event.ReplayFields) > 0 {
 				result.ReplayFields = event.ReplayFields
 			}

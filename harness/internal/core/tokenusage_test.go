@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 
@@ -20,26 +21,81 @@ import (
 )
 
 func TestStreamEventsToResult_MergesReportedUsage(t *testing.T) {
-	ch := make(chan types.StreamEvent, 2)
-	ch <- types.StreamEvent{
+	full := types.StreamEvent{
 		Type:             "message_complete",
 		StopReason:       "end_turn",
 		InputTokens:      1200,
+		OutputTokens:     42,
 		CacheReadTokens:  1000,
 		CacheWriteTokens: 150,
 		ReasoningTokens:  30,
 	}
-	// A trailing usage-only event must not clear counts reported earlier.
-	ch <- types.StreamEvent{Type: "message_complete", OutputTokens: 42}
-	close(ch)
-
-	result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), slog.Default())
-	if err != nil {
-		t.Fatalf("streamEventsToResult() error: %v", err)
+	cases := []struct {
+		name   string
+		events []types.StreamEvent
+		want   types.TokenUsage
+	}{
+		{
+			name:   "zero later event leaves counts",
+			events: []types.StreamEvent{full, {Type: "message_complete"}},
+			want:   types.TokenUsage{Input: 1200, Output: 42, CacheRead: 1000, CacheWrite: 150, Reasoning: 30},
+		},
+		{
+			name: "later non-zero count overwrites",
+			events: []types.StreamEvent{
+				{Type: "message_complete", OutputTokens: 10},
+				{Type: "message_complete", OutputTokens: 12},
+			},
+			want: types.TokenUsage{Output: 12},
+		},
+		{
+			name: "later input snapshot replaces the earlier breakdown",
+			events: []types.StreamEvent{
+				{Type: "message_complete", InputTokens: 100, OutputTokens: 10, CacheReadTokens: 50},
+				{Type: "message_complete", InputTokens: 120, OutputTokens: 12},
+			},
+			want: types.TokenUsage{Input: 120, Output: 12},
+		},
+		{
+			name:   "duplicate identical event does not double",
+			events: []types.StreamEvent{full, full},
+			want:   types.TokenUsage{Input: 1200, Output: 42, CacheRead: 1000, CacheWrite: 150, Reasoning: 30},
+		},
+		{
+			name: "usage split across three events",
+			events: []types.StreamEvent{
+				{Type: "message_complete", StopReason: "tool_use"},
+				{Type: "message_complete", InputTokens: 5000, CacheReadTokens: 3000, CacheWriteTokens: 1500},
+				{Type: "message_complete", OutputTokens: 40, ReasoningTokens: 12},
+			},
+			want: types.TokenUsage{Input: 5000, Output: 40, CacheRead: 3000, CacheWrite: 1500, Reasoning: 12},
+		},
 	}
-	want := types.TokenUsage{Input: 1200, Output: 42, CacheRead: 1000, CacheWrite: 150, Reasoning: 30}
-	if result.Usage != want {
-		t.Errorf("Usage = %+v, want %+v", result.Usage, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := make(chan types.StreamEvent, len(tc.events))
+			for _, ev := range tc.events {
+				ch <- ev
+			}
+			close(ch)
+			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), slog.Default())
+			if err != nil {
+				t.Fatalf("streamEventsToResult() error: %v", err)
+			}
+			if result.Usage != tc.want {
+				t.Errorf("Usage = %+v, want %+v", result.Usage, tc.want)
+			}
+		})
+	}
+}
+
+func TestTokenTracker_CheckBudgetSaturates(t *testing.T) {
+	tt := &TokenTracker{}
+	tt.RecordTurn(types.TokenUsage{Input: math.MaxInt - 5})
+	tt.RecordTurn(types.TokenUsage{Input: 100, Output: 100})
+	budget := 1000
+	if check := tt.CheckBudget(&budget); check.WithinBudget {
+		t.Errorf("CheckBudget = within budget for a saturated total %+v, want exceeded", tt.Tokens())
 	}
 }
 
