@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -831,5 +832,28 @@ func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 				t.Fatal("NewBedrockAdapter returned a nil adapter with no error")
 			}
 		})
+	}
+}
+
+// TestNewBedrockAdapter_ReadTimeout pins the idle-read bound on the SDK
+// client, which the SDK does not apply to Bedrock Runtime by default.
+func TestNewBedrockAdapter_ReadTimeout(t *testing.T) {
+	adapter, err := NewBedrockAdapter("", "", nil, RetryPolicy{})
+	if err != nil {
+		t.Fatalf("NewBedrockAdapter: %v", err)
+	}
+	client, ok := adapter.client.(*bedrockruntime.Client)
+	if !ok {
+		t.Fatalf("client is %T, want *bedrockruntime.Client", adapter.client)
+	}
+	buildable, ok := client.Options().HTTPClient.(*awshttp.BuildableClient)
+	if !ok {
+		t.Fatalf("HTTPClient is %T, want *awshttp.BuildableClient", client.Options().HTTPClient)
+	}
+	if got, set := buildable.GetReadTimeout(); !set || got != defaultStreamIdleTimeout {
+		t.Errorf("read timeout = %v (set=%v), want %v", got, set, defaultStreamIdleTimeout)
+	}
+	if got := buildable.GetTimeout(); got != 0 {
+		t.Errorf("total timeout = %v, want 0: it would cap long ConverseStream turns", got)
 	}
 }

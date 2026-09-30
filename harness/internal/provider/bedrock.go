@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sdkretry "github.com/aws/aws-sdk-go-v2/aws/retry"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -84,6 +85,11 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 			}
 		})
 	}))
+	// The SDK exempts Bedrock Runtime from its default read timeout, so a
+	// silent ConverseStream would otherwise hang until the run deadline.
+	opts = append(opts, config.WithHTTPClient(
+		awshttp.NewBuildableClient().WithReadTimeout(defaultStreamIdleTimeout),
+	))
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {

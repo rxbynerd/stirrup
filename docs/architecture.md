@@ -199,10 +199,11 @@ bounded instead by a 120 s idle-read deadline (`idleTimeoutBody` in
 `provider/streamidle.go`): a stream that keeps delivering bytes runs
 for as long as the model generates, and one that goes silent fails
 with `stream idle for 120s`. `bedrock` uses the AWS SDK client,
-which sets no response-header, idle-read, or total timeout for Bedrock
-Runtime, so a Bedrock turn is bounded only by the run timeout.
-Error-body reads are bounded via `io.LimitReader`. Tool JSON is
-accumulated across delta events; context cancellation is respected.
+which applies no read timeout to Bedrock Runtime, so the adapter sets
+the same 120 s idle-read bound through the SDK's `WithReadTimeout`;
+it too has no total cap. Error-body reads are bounded via
+`io.LimitReader`. Tool JSON is accumulated across delta events;
+context cancellation is respected.
 
 Per-adapter configuration including base URLs, API-key headers, query
 params, and credential federation lives in
