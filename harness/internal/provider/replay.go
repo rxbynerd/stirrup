@@ -81,6 +81,18 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 					Input:            inputMap,
 					ThoughtSignature: block.ThoughtSignature,
 				}
+
+			case "thinking", "redacted_thinking":
+				// Recordings drop the signature, so a replayed block is
+				// unsigned and the Anthropic adapter will not resend it;
+				// forwarding it keeps the replayed turn's block sequence
+				// identical to the recorded one.
+				estimatedTokens += len(block.Text) / 4
+				ch <- types.StreamEvent{
+					Type:             block.Type,
+					Text:             block.Text,
+					ThoughtSignature: block.ThoughtSignature,
+				}
 			}
 		}
 
