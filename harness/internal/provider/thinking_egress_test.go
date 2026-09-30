@@ -51,7 +51,7 @@ func assertThinkingDropped(t *testing.T, adapter string, with, without []byte) {
 	}
 }
 
-func TestOpenAIChat_DropsThinkingBlocks(t *testing.T) {
+func TestOpenAIThinkingBlocks_Dropped(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildOpenAIRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, true, q, nil)
@@ -69,7 +69,7 @@ func TestOpenAIChat_DropsThinkingBlocks(t *testing.T) {
 		marshal(types.StripThinkingBlocks(historyWithThinking())))
 }
 
-func TestOpenAIResponses_DropsThinkingBlocks(t *testing.T) {
+func TestOpenAIResponsesThinkingBlocks_Dropped(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("openai-responses", "gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil)
@@ -87,7 +87,7 @@ func TestOpenAIResponses_DropsThinkingBlocks(t *testing.T) {
 		marshal(types.StripThinkingBlocks(historyWithThinking())))
 }
 
-func TestGemini_DropsThinkingBlocks(t *testing.T) {
+func TestGeminiThinkingBlocks_Dropped(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
 	marshal := func(messages []types.Message) []byte {
 		body, _, err := BuildGenerateContentRequest(types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 64, Messages: messages}, nil, q)
@@ -101,7 +101,7 @@ func TestGemini_DropsThinkingBlocks(t *testing.T) {
 		marshal(types.StripThinkingBlocks(historyWithThinking())))
 }
 
-func TestBedrock_DropsThinkingBlocks(t *testing.T) {
+func TestBedrockThinkingBlocks_Dropped(t *testing.T) {
 	params := func(messages []types.Message) types.StreamParams {
 		return types.StreamParams{Model: "anthropic.claude-sonnet-4-5", MaxTokens: 64, Messages: messages}
 	}

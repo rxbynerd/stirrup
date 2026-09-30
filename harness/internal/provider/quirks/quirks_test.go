@@ -829,6 +829,15 @@ func TestToolExamplesCapabilityRules(t *testing.T) {
 			}
 		})
 	}
+
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"} {
+		t.Run("anthropic "+model+" sends input_examples natively", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.ToolExamples != (ToolExamplesCapability{Supported: true, Native: true}) {
+				t.Errorf("anthropic/%s: ToolExamples = %+v, want Supported and Native", model, q.ToolExamples)
+			}
+		})
+	}
 }
 
 // TestOpenAIResponsesBehaviourFlags pins the Responses-specific wire

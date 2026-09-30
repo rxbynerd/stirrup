@@ -2052,6 +2052,96 @@ func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
 	}
 }
 
+// TestFabricateStream_AnthropicThinkingMatchesStream pins the parity the
+// batch path promises: a batch result yields the same events as a streamed
+// response with the same content, thinking text included.
+func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
+	response := []byte(`{
+		"content": [
+			{"type": "thinking", "thinking": "plan it", "signature": "sig-batch"},
+			{"type": "text", "text": "hi"},
+			{"type": "redacted_thinking", "data": "data-batch"},
+			{"type": "tool_use", "id": "tu_a", "name": "read_file", "input": {"path": "a"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"output_tokens": 5}
+	}`)
+	streamed := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"plan it"}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"sig-batch"}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":1,"delta":{"type":"text_delta","text":"hi"}}`),
+		makeSSE("content_block_stop", `{"index":1}`),
+		makeSSE("content_block_start", `{"index":2,"content_block":{"type":"redacted_thinking","data":"data-batch"}}`),
+		makeSSE("content_block_stop", `{"index":2}`),
+		makeSSE("content_block_start", `{"index":3,"content_block":{"type":"tool_use","id":"tu_a","name":"read_file","input":{}}}`),
+		makeSSE("content_block_delta", `{"index":3,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a\"}"}}`),
+		makeSSE("content_block_stop", `{"index":3}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`),
+		makeSSE("message_stop", `{}`),
+	))
+
+	ch := make(chan types.StreamEvent, 8)
+	if err := fabricateAnthropicStream(ch, response); err != nil {
+		t.Fatalf("fabricateAnthropicStream: %v", err)
+	}
+	close(ch)
+	var batched []types.StreamEvent
+	for ev := range ch {
+		batched = append(batched, ev)
+	}
+
+	if len(batched) != len(streamed) {
+		t.Fatalf("batch events %v, streamed events %v", eventTypes(batched), eventTypes(streamed))
+	}
+	for i := range streamed {
+		s, b := streamed[i], batched[i]
+		if s.Type != b.Type || s.Text != b.Text || s.ThoughtSignature != b.ThoughtSignature ||
+			s.ID != b.ID || s.Name != b.Name || fmt.Sprint(s.Input) != fmt.Sprint(b.Input) || s.StopReason != b.StopReason {
+			t.Errorf("event %d: batch %+v, streamed %+v", i, b, s)
+		}
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_AnthropicInputExamples pins that the
+// batch path sends tool examples on the native input_examples field and
+// leaves the schema untouched, as Stream does.
+func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	params := types.StreamParams{
+		Model:     "claude-sonnet-5-5",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+		Tools: []types.ToolDefinition{{
+			Name:         "echo",
+			Description:  "Echo the input.",
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+			Presentation: &types.ToolPresentation{InputExamples: []json.RawMessage{json.RawMessage(`{"x":"hi"}`)}},
+		}},
+	}
+	body, err := a.marshalRequestBody(params)
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var req struct {
+		Tools []struct {
+			InputSchema   map[string]json.RawMessage `json:"input_schema"`
+			InputExamples []json.RawMessage          `json:"input_examples"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode batch body: %v\n%s", err, body)
+	}
+	if len(req.Tools) != 1 || len(req.Tools[0].InputExamples) != 1 || string(req.Tools[0].InputExamples[0]) != `{"x":"hi"}` {
+		t.Fatalf("tools = %+v, want one tool with input_examples [{\"x\":\"hi\"}]\n%s", req.Tools, body)
+	}
+	if _, folded := req.Tools[0].InputSchema["examples"]; folded {
+		t.Errorf("input_schema carries examples; want them only on input_examples\n%s", body)
+	}
+}
+
 // TestBatchAdapter_marshalRequestBody_AnthropicEffort pins that the batch
 // path applies the same effort allow-list as Stream: a supported level is
 // projected onto output_config and an unsupported one fails at marshal

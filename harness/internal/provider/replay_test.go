@@ -15,9 +15,9 @@ func TestReplayProvider_ThinkingBlocks(t *testing.T) {
 	turns := []types.TurnRecord{{
 		Turn: 1,
 		ModelOutput: []types.ContentBlock{
-			{Type: "thinking", Text: "plan"},
+			{Type: "thinking", Text: "plan", ThoughtSignature: "sig-A"},
 			{Type: "text", Text: "Reading."},
-			{Type: "redacted_thinking"},
+			{Type: "redacted_thinking", ThoughtSignature: "data-B"},
 			{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"a"}`)},
 		},
 	}}
@@ -37,8 +37,11 @@ func TestReplayProvider_ThinkingBlocks(t *testing.T) {
 			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
 		}
 	}
-	if events[0].Text != "plan" {
-		t.Errorf("thinking text = %q, want %q", events[0].Text, "plan")
+	if events[0].Text != "plan" || events[0].ThoughtSignature != "sig-A" {
+		t.Errorf("thinking event = %+v, want text plan and signature sig-A", events[0])
+	}
+	if events[2].ThoughtSignature != "data-B" {
+		t.Errorf("redacted_thinking data = %q, want data-B", events[2].ThoughtSignature)
 	}
 	if events[4].StopReason != "tool_use" {
 		t.Errorf("StopReason = %q, want tool_use", events[4].StopReason)

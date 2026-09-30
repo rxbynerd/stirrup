@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -44,7 +45,8 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"check."}}`),
-		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"EqQBCkYIBRgC"}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"EqQBCk"}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"YIBRgC"}}`),
 		makeSSE("content_block_stop", `{"index":0}`),
 		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"text","text":""}}`),
 		makeSSE("content_block_delta", `{"index":1,"delta":{"type":"text_delta","text":"Reading."}}`),
@@ -75,6 +77,88 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 	}
 	if events[2].ThoughtSignature != "" {
 		t.Errorf("tool_call carried a signature %q; only thinking events may", events[2].ThoughtSignature)
+	}
+}
+
+// TestAnthropicAdapter_StreamInterleavedThinking pins event order when
+// thinking blocks follow text and tool_use blocks in one response: each
+// is emitted at its own block stop, between the events around it.
+func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
+	body := joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"first"}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"sig-A"}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":1,"delta":{"type":"text_delta","text":"Reading."}}`),
+		makeSSE("content_block_stop", `{"index":1}`),
+		makeSSE("content_block_start", `{"index":2,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		makeSSE("content_block_delta", `{"index":2,"delta":{"type":"signature_delta","signature":"sig-"}}`),
+		makeSSE("content_block_delta", `{"index":2,"delta":{"type":"signature_delta","signature":"B"}}`),
+		makeSSE("content_block_stop", `{"index":2}`),
+		makeSSE("content_block_start", `{"index":3,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}`),
+		makeSSE("content_block_delta", `{"index":3,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a\"}"}}`),
+		makeSSE("content_block_stop", `{"index":3}`),
+		makeSSE("content_block_start", `{"index":4,"content_block":{"type":"thinking","thinking":"","signature":"sig-C"}}`),
+		makeSSE("content_block_stop", `{"index":4}`),
+		makeSSE("content_block_start", `{"index":5,"content_block":{"type":"tool_use","id":"toolu_2","name":"read_file","input":{}}}`),
+		makeSSE("content_block_delta", `{"index":5,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"b\"}"}}`),
+		makeSSE("content_block_stop", `{"index":5}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"tool_use"}}`),
+		makeSSE("message_stop", `{}`),
+	)
+
+	events := streamAnthropicSSE(t, body)
+
+	want := []types.StreamEvent{
+		{Type: "thinking", Text: "first", ThoughtSignature: "sig-A"},
+		{Type: "text_delta", Text: "Reading."},
+		{Type: "thinking", ThoughtSignature: "sig-B"},
+		{Type: "tool_call", ID: "toolu_1"},
+		{Type: "thinking", ThoughtSignature: "sig-C"},
+		{Type: "tool_call", ID: "toolu_2"},
+		{Type: "message_complete"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("event types = %v, want %d events", eventTypes(events), len(want))
+	}
+	for i, w := range want {
+		got := events[i]
+		if got.Type != w.Type || got.Text != w.Text || got.ThoughtSignature != w.ThoughtSignature || got.ID != w.ID {
+			t.Errorf("event %d = %+v, want %+v", i, got, w)
+		}
+	}
+}
+
+// TestAnthropicAdapter_RedactedThinkingEmptyData pins both halves of an
+// empty redacted block: capture emits it with empty data, and egress never
+// resends it, since the API cannot verify an empty payload.
+func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"redacted_thinking","data":""}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	if len(events) != 2 || events[0].Type != "redacted_thinking" || events[0].ThoughtSignature != "" {
+		t.Fatalf("events = %+v, want redacted_thinking with empty data, then message_complete", events)
+	}
+
+	history := thinkingReplayHistory()
+	history[1].Content = []types.ContentBlock{
+		{Type: "redacted_thinking"},
+		{Type: "text", Text: "Reading it."},
+		{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+	}
+	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	body, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, raw := range assistantWireBlocks(t, body, 1) {
+		if strings.Contains(string(raw), `"redacted_thinking"`) {
+			t.Errorf("empty redacted_thinking block reached the wire: %s", raw)
+		}
 	}
 }
 
