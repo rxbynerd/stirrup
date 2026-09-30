@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -417,6 +418,10 @@ type sseDelta struct {
 type sseMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
+		// StopDetails is decoded separately by parseAnthropicStopDetails so
+		// an unexpected shape degrades to "no details" instead of failing
+		// the whole message_delta.
+		StopDetails json.RawMessage `json:"stop_details,omitempty"`
 	} `json:"delta"`
 	Usage *anthropicUsage `json:"usage,omitempty"`
 }
@@ -446,6 +451,55 @@ func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
 		CacheWrite: cacheWrite,
 		Reasoning:  u.OutputTokensDetails.ThinkingTokens,
 	})
+}
+
+// sseStopDetails holds the documented refusal fields of stop_details.
+// Fallback-related fields are not read.
+type sseStopDetails struct {
+	Type        string `json:"type"`
+	Category    string `json:"category"`
+	Explanation string `json:"explanation"`
+}
+
+// parseAnthropicStopDetails returns nil for an absent, null, empty, or
+// unparseable stop_details value.
+func parseAnthropicStopDetails(raw json.RawMessage) *types.StopDetails {
+	if len(raw) == 0 {
+		return nil
+	}
+	var d sseStopDetails
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return nil
+	}
+	if d == (sseStopDetails{}) {
+		return nil
+	}
+	return &types.StopDetails{Type: d.Type, Category: d.Category, Explanation: d.Explanation}
+}
+
+// sseError is the payload of an SSE "error" event, which the API sends in
+// place of the remaining stream when a request fails after streaming has
+// begun (e.g. overloaded_error).
+type sseError struct {
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// anthropicStreamError builds the error for an SSE "error" event, keeping
+// the provider's error type so it survives into logs and the run trace.
+func anthropicStreamError(data string) error {
+	var se sseError
+	_ = json.Unmarshal([]byte(data), &se)
+	switch {
+	case se.Error.Type != "":
+		return fmt.Errorf("anthropic API stream error (%s): %s", se.Error.Type, se.Error.Message)
+	case se.Error.Message != "":
+		return fmt.Errorf("anthropic API stream error: %s", se.Error.Message)
+	default:
+		return errors.New("anthropic API stream error")
+	}
 }
 
 // buildAnthropicRequest projects a StreamParams into the Anthropic Messages
@@ -786,8 +840,9 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				return
 			}
 			ev := types.StreamEvent{
-				Type:       "message_complete",
-				StopReason: md.Delta.StopReason,
+				Type:        "message_complete",
+				StopReason:  md.Delta.StopReason,
+				StopDetails: parseAnthropicStopDetails(md.Delta.StopDetails),
 			}
 			if md.Usage != nil {
 				md.Usage.applyTo(&ev)
@@ -797,6 +852,10 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 
 		case "message_stop":
 			// Stream is done; the goroutine will exit and close the channel.
+			return
+
+		case "error":
+			emitEvent(types.StreamEvent{Type: "error", Error: anthropicStreamError(data)})
 			return
 		}
 

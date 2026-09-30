@@ -1374,3 +1374,129 @@ func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
 		t.Fatalf("server attempts: got %d, want 1 — a mid-stream failure must not be retried", got)
 	}
 }
+
+// streamAnthropicSSE serves body as a 200 SSE response and returns every
+// StreamEvent the adapter emits for it.
+func streamAnthropicSSE(t *testing.T, body string) []types.StreamEvent {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-5-5",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	return collectEvents(t, ch)
+}
+
+func TestSSE_MessageDeltaRefusalCarriesStopDetails(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"I can't help with that."}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null,"stop_details":{"type":"refusal","category":"cyber","explanation":"This request was declined because it conflicts with Anthropic's Usage Policy.","recommended_model":null}},"usage":{"output_tokens":12}}`),
+		makeSSE("message_stop", `{"type":"message_stop"}`),
+	))
+
+	last := events[len(events)-1]
+	if last.Type != "message_complete" || last.StopReason != "refusal" {
+		t.Fatalf("last event = %+v, want message_complete/refusal", last)
+	}
+	want := types.StopDetails{
+		Type:        "refusal",
+		Category:    "cyber",
+		Explanation: "This request was declined because it conflicts with Anthropic's Usage Policy.",
+	}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+	if last.OutputTokens != 12 {
+		t.Errorf("OutputTokens = %d, want 12", last.OutputTokens)
+	}
+}
+
+func TestSSE_MessageDeltaRefusalNullCategory(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":null,"explanation":null}}}`),
+		makeSSE("message_stop", `{"type":"message_stop"}`),
+	))
+
+	last := events[len(events)-1]
+	want := types.StopDetails{Type: "refusal"}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+}
+
+func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
+	cases := map[string]string{
+		"null":        `{"delta":{"stop_reason":"end_turn","stop_details":null}}`,
+		"absent":      `{"delta":{"stop_reason":"end_turn"}}`,
+		"empty":       `{"delta":{"stop_reason":"end_turn","stop_details":{}}}`,
+		"wrong shape": `{"delta":{"stop_reason":"end_turn","stop_details":{"type":"refusal","category":{"nested":true}}}}`,
+	}
+	for name, delta := range cases {
+		t.Run(name, func(t *testing.T) {
+			events := streamAnthropicSSE(t, joinLines(
+				makeSSE("message_delta", delta),
+				makeSSE("message_stop", `{}`),
+			))
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Type != "message_complete" || events[0].StopReason != "end_turn" {
+				t.Errorf("event = %+v, want message_complete/end_turn", events[0])
+			}
+			if events[0].StopDetails != nil {
+				t.Errorf("StopDetails = %+v, want nil", events[0].StopDetails)
+			}
+		})
+	}
+}
+
+func TestSSE_ErrorEventSurfacesErrorType(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+		makeSSE("error", `{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+
+	if len(events) != 2 {
+		t.Fatalf("expected text_delta then error, got %d events: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" {
+		t.Errorf("event[0] = %+v, want text_delta", events[0])
+	}
+	last := events[1]
+	if last.Type != "error" || last.Error == nil {
+		t.Fatalf("event[1] = %+v, want an error event", last)
+	}
+	if got, want := last.Error.Error(), "anthropic API stream error (overloaded_error): Overloaded"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestAnthropicStreamError_DegenerateBodies(t *testing.T) {
+	cases := map[string]string{
+		`{"error":{"message":"boom"}}`: "anthropic API stream error: boom",
+		`{}`:                           "anthropic API stream error",
+		`not json`:                     "anthropic API stream error",
+	}
+	for data, want := range cases {
+		if got := anthropicStreamError(data).Error(); got != want {
+			t.Errorf("anthropicStreamError(%q) = %q, want %q", data, got, want)
+		}
+	}
+}
