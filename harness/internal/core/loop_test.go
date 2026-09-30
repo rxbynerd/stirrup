@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -213,14 +215,15 @@ func (p *cacheKeyRecorder) Stream(_ context.Context, params types.StreamParams) 
 
 // TestLoop_CacheKeyIsStableHashOfRunID pins StreamParams.CacheKey: the
 // first 32 hex characters of sha256(runID), identical on every turn of a
-// run so the provider sees one conversation, and empty for a run with no
-// ID so unrelated runs never share a key.
+// run so the provider sees one conversation, distinct between run IDs, and
+// empty for a run with no ID so unrelated runs never share a key.
 func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
 	cases := []struct {
 		runID string
 		want  string
 	}{
 		{runID: "test-run-1", want: "404b0dfface497f076048e07aa412671"},
+		{runID: "test-run-2", want: "a7dbe4f7807e61746b98d54eda1f237e"},
 		{runID: "", want: ""},
 	}
 	for _, tc := range cases {
@@ -243,6 +246,59 @@ func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoop_ResponsesBodyCarriesCacheKeyNotRunID drives the loop through
+// the real Responses adapter and pins that the wire body carries the run's
+// cache key as prompt_cache_key and does not carry the raw run ID.
+func TestLoop_ResponsesBodyCarriesCacheKeyNotRunID(t *testing.T) {
+	const runID = "run-7f3a-control-plane-id"
+	sse := "event: response.output_text.delta\n" +
+		`data: {"item_id":"msg_1","output_index":0,"delta":"done"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n"
+
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	loop := buildTestLoop(&mockProvider{})
+	loop.Provider = provider.NewOpenAIResponsesAdapter(func(context.Context) (string, error) { return "test-key", nil }, srv.URL, provider.OpenAIAuthConfig{})
+	loop.Router = router.NewStaticRouter("openai-responses", "gpt-4o")
+	config := buildTestConfig()
+	config.RunID = runID
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) == 0 {
+		t.Fatal("no request reached the Responses endpoint")
+	}
+	want := `"prompt_cache_key":"` + providerCacheKey(runID) + `"`
+	for i, body := range bodies {
+		if !strings.Contains(body, want) {
+			t.Errorf("request %d missing %s: %s", i, want, body)
+		}
+		if strings.Contains(body, runID) {
+			t.Errorf("request %d carries the raw run ID: %s", i, body)
+		}
 	}
 }
 

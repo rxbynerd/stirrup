@@ -150,6 +150,34 @@ func TestSpawnSubAgent_SimpleTextResponse(t *testing.T) {
 	}
 }
 
+// TestSpawnSubAgent_CacheKeyDiffersFromParent pins that a sub-agent's
+// requests carry their own cache key, so the child's conversation is not
+// routed as a continuation of the parent's.
+func TestSpawnSubAgent_CacheKeyDiffersFromParent(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentConfig := buildTestConfig()
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "Do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent() error: %v", err)
+	}
+
+	child := prov.lastParams.CacheKey
+	if child == "" {
+		t.Fatal("sub-agent request carried no cache key")
+	}
+	if parent := providerCacheKey(parentConfig.RunID); child == parent {
+		t.Errorf("sub-agent cache key = parent's %q, want a distinct key", parent)
+	}
+}
+
 func TestSpawnSubAgent_EmptyPromptReturnsError(t *testing.T) {
 	prov := &mockProvider{}
 	parentLoop := buildSubAgentTestLoop(prov)
