@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	anthropicAPIURL     = "https://api.anthropic.com/v1/messages"
-	anthropicAPIVersion = "2023-06-01"
-	maxToolInputSize    = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
+	anthropicAPIURL      = "https://api.anthropic.com/v1/messages"
+	anthropicAPIVersion  = "2023-06-01"
+	maxToolInputSize     = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
+	maxThinkingBlockSize = 10 * 1024 * 1024 // 10 MB cap on one thinking block's text plus signature
 )
 
 // AuthMode selects the authentication header sent on every /v1/messages
@@ -445,11 +446,14 @@ type sseContentBlockStart struct {
 }
 
 type sseContentBlock struct {
-	Type  string          `json:"type"` // "text" | "tool_use"
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Text  string          `json:"text,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Text      string          `json:"text,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 type sseContentBlockDelta struct {
@@ -458,9 +462,11 @@ type sseContentBlockDelta struct {
 }
 
 type sseDelta struct {
-	Type        string `json:"type"` // "text_delta" | "input_json_delta"
+	Type        string `json:"type"` // "text_delta" | "input_json_delta" | "thinking_delta" | "signature_delta"
 	Text        string `json:"text,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`
+	Signature   string `json:"signature,omitempty"`
 }
 
 type sseMessageDelta struct {
@@ -837,14 +843,28 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 		ch <- ev
 	}
 
-	// Track in-flight content blocks by index for tool_use JSON accumulation.
+	// Track in-flight content blocks by index for tool_use JSON and thinking
+	// accumulation. signature holds a redacted_thinking block's data.
 	type blockState struct {
 		blockType string
 		id        string
 		name      string
 		jsonBuf   strings.Builder
+		thinking  strings.Builder
+		signature strings.Builder
 	}
 	blocks := make(map[int]*blockState)
+
+	// appendThinking grows a thinking block's text or signature, enforcing
+	// the combined size cap. Reports false after emitting the error event.
+	appendThinking := func(bs *blockState, dst *strings.Builder, s string) bool {
+		if bs.thinking.Len()+bs.signature.Len()+len(s) > maxThinkingBlockSize {
+			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("thinking block exceeds %d byte limit", maxThinkingBlockSize)})
+			return false
+		}
+		dst.WriteString(s)
+		return true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), maxSSEScannerBuffer)
@@ -878,11 +898,23 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_start: %w", err)})
 				return
 			}
-			blocks[cbs.Index] = &blockState{
+			bs := &blockState{
 				blockType: cbs.ContentBlock.Type,
 				id:        cbs.ContentBlock.ID,
 				name:      cbs.ContentBlock.Name,
 			}
+			switch bs.blockType {
+			case "thinking":
+				if !appendThinking(bs, &bs.thinking, cbs.ContentBlock.Thinking) ||
+					!appendThinking(bs, &bs.signature, cbs.ContentBlock.Signature) {
+					return
+				}
+			case "redacted_thinking":
+				if !appendThinking(bs, &bs.signature, cbs.ContentBlock.Data) {
+					return
+				}
+			}
+			blocks[cbs.Index] = bs
 
 		case "content_block_delta":
 			var cbd sseContentBlockDelta
@@ -906,6 +938,14 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 					return
 				}
 				bs.jsonBuf.WriteString(cbd.Delta.PartialJSON)
+			case "thinking_delta":
+				if !appendThinking(bs, &bs.thinking, cbd.Delta.Thinking) {
+					return
+				}
+			case "signature_delta":
+				if !appendThinking(bs, &bs.signature, cbd.Delta.Signature) {
+					return
+				}
 			}
 
 		case "content_block_stop":
@@ -917,8 +957,13 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_stop: %w", err)})
 				return
 			}
+			var blockType string
 			bs := blocks[stopData.Index]
-			if bs != nil && bs.blockType == "tool_use" {
+			if bs != nil {
+				blockType = bs.blockType
+			}
+			switch blockType {
+			case "tool_use":
 				var input map[string]any
 				raw := bs.jsonBuf.String()
 				if raw != "" {
@@ -932,6 +977,17 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 					ID:    bs.id,
 					Name:  bs.name,
 					Input: input,
+				})
+			case "thinking":
+				emitEvent(types.StreamEvent{
+					Type:             "thinking",
+					Text:             bs.thinking.String(),
+					ThoughtSignature: bs.signature.String(),
+				})
+			case "redacted_thinking":
+				emitEvent(types.StreamEvent{
+					Type:             "redacted_thinking",
+					ThoughtSignature: bs.signature.String(),
 				})
 			}
 			delete(blocks, stopData.Index)
