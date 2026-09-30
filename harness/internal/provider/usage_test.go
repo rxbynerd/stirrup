@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -253,6 +256,35 @@ func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
 		t.Fatalf("Stream() error: %v", err)
 	}
 	want := reportedUsage{Input: 5000, Output: 120 + 900, CacheRead: 4096, Reasoning: 900}
+	if got := mergedUsage(t, collectEvents(t, ch)); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}
+
+// Bedrock delivers usage on the metadata event after messageStop. The
+// cache figures are added to inputTokens (inferred from the Anthropic
+// Messages split, not probed).
+func TestBedrock_ReportsUsageFromMetadata(t *testing.T) {
+	events := []brtypes.ConverseStreamOutput{
+		&brtypes.ConverseStreamOutputMemberMessageStop{
+			Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonEndTurn},
+		},
+		&brtypes.ConverseStreamOutputMemberMetadata{
+			Value: brtypes.ConverseStreamMetadataEvent{
+				Usage: &brtypes.TokenUsage{
+					InputTokens:           aws.Int32(12),
+					OutputTokens:          aws.Int32(150),
+					TotalTokens:           aws.Int32(3200),
+					CacheReadInputTokens:  aws.Int32(2900),
+					CacheWriteInputTokens: aws.Int32(138),
+				},
+			},
+		},
+	}
+	ch := make(chan types.StreamEvent, 8)
+	go consumeBedrockStream(context.Background(), newMockEventReader(events, nil), ch)
+
+	want := reportedUsage{Input: 12 + 2900 + 138, Output: 150, CacheRead: 2900, CacheWrite: 138}
 	if got := mergedUsage(t, collectEvents(t, ch)); got != want {
 		t.Errorf("usage = %+v, want %+v", got, want)
 	}

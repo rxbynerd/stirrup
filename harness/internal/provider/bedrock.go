@@ -277,11 +277,10 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 			})
 
 		case *brtypes.ConverseStreamOutputMemberMetadata:
-			if ev.Value.Usage != nil && ev.Value.Usage.OutputTokens != nil {
-				emitEvent(types.StreamEvent{
-					Type:         "message_complete",
-					OutputTokens: int(*ev.Value.Usage.OutputTokens),
-				})
+			if ev.Value.Usage != nil {
+				usageEv := types.StreamEvent{Type: "message_complete"}
+				applyBedrockUsage(ev.Value.Usage, &usageEv)
+				emitEvent(usageEv)
 			}
 		}
 	}
@@ -289,6 +288,19 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 	if err := stream.Err(); err != nil {
 		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)})
 	}
+}
+
+// applyBedrockUsage copies Converse usage onto a message_complete event.
+// inputTokens is taken to exclude both cache figures, as on the Anthropic
+// Messages API that Bedrock fronts for Claude, so they are added back to
+// report the whole prompt.
+func applyBedrockUsage(u *brtypes.TokenUsage, ev *types.StreamEvent) {
+	cacheRead := int(aws.ToInt32(u.CacheReadInputTokens))
+	cacheWrite := int(aws.ToInt32(u.CacheWriteInputTokens))
+	ev.InputTokens = int(aws.ToInt32(u.InputTokens)) + cacheRead + cacheWrite
+	ev.OutputTokens = int(aws.ToInt32(u.OutputTokens))
+	ev.CacheReadTokens = cacheRead
+	ev.CacheWriteTokens = cacheWrite
 }
 
 // buildConverseStreamInput translates stirrup StreamParams into a Bedrock
