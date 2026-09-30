@@ -841,6 +841,11 @@ func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
 	if rf.InputItemShape != TypedInputItems {
 		t.Errorf("InputItemShape = %v, want TypedInputItems", rf.InputItemShape)
 	}
+	for _, model := range []string{"gpt-4o", "gpt-5.4", "gpt-6-astra"} {
+		if !DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses.PromptCacheKey {
+			t.Errorf("openai-responses/%s: PromptCacheKey = false, want true", model)
+		}
+	}
 
 	// A provider with no rule resolves the same zero-value flags, so the
 	// adapter falls through to today's byte-identical behaviour even when

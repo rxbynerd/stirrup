@@ -94,6 +94,17 @@ func responsesBuilderCases() []struct {
 				},
 			},
 		},
+		{
+			name: "cache_key",
+			params: types.StreamParams{
+				Model:     "gpt-4o",
+				MaxTokens: 1024,
+				CacheKey:  "404b0dfface497f076048e07aa412671",
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+			},
+		},
 	}
 }
 
@@ -276,4 +287,77 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	if strings.Contains(string(body), `"stream"`) {
 		t.Errorf(`expected "stream" key to be omitted from builder output: %s`, body)
 	}
+}
+
+// TestBuildResponsesRequest_PromptCacheKey pins the prompt_cache_key
+// projection: the last key of the body when the resolved flag is on and
+// StreamParams.CacheKey is set, and otherwise absent with the rest of the
+// body unchanged. The Chat Completions adapter never sends the key, since
+// compatible servers may reject unknown fields.
+func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
+	const key = "404b0dfface497f076048e07aa412671"
+	base := types.StreamParams{
+		Model:     "gpt-4o",
+		System:    "sys",
+		MaxTokens: 256,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+	}
+	withKey := base
+	withKey.CacheKey = key
+
+	marshal := func(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) []byte {
+		t.Helper()
+		req, err := buildResponsesRequest(params, q, nil)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return body
+	}
+	flagOn := quirks.DefaultRegistry().Resolve("openai-responses", base.Model)
+	flagOff := quirks.NewRegistry(nil).Resolve("openai-responses", base.Model)
+	noKey := marshal(t, base, flagOn)
+
+	t.Run("flag on with key appends prompt_cache_key", func(t *testing.T) {
+		body := marshal(t, withKey, flagOn)
+		want := strings.TrimSuffix(string(noKey), "}") + `,"prompt_cache_key":"` + key + `"}`
+		if string(body) != want {
+			t.Errorf("body mismatch\n got:  %s\n want: %s", body, want)
+		}
+		var back responsesRequest
+		if err := json.Unmarshal(body, &back); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if back.PromptCacheKey != key {
+			t.Errorf("round-trip PromptCacheKey = %q, want %q", back.PromptCacheKey, key)
+		}
+	})
+	t.Run("flag on without key omits it", func(t *testing.T) {
+		if strings.Contains(string(noKey), "prompt_cache_key") {
+			t.Errorf("unexpected prompt_cache_key in %s", noKey)
+		}
+	})
+	t.Run("flag off with key omits it", func(t *testing.T) {
+		body := marshal(t, withKey, flagOff)
+		if want := marshal(t, base, flagOff); string(body) != string(want) {
+			t.Errorf("flag-off body changed by CacheKey\n got:  %s\n want: %s", body, want)
+		}
+	})
+	t.Run("chat completions never sends it", func(t *testing.T) {
+		q := quirks.DefaultRegistry().Resolve("openai-compatible", withKey.Model)
+		req, err := buildOpenAIRequest(withKey, true, q, nil)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(body), "prompt_cache_key") || strings.Contains(string(body), key) {
+			t.Errorf("chat completions body carries the cache key: %s", body)
+		}
+	})
 }

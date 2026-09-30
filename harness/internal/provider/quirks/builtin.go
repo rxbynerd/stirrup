@@ -355,6 +355,15 @@ func BuiltinRules() []Rule {
 		},
 		{
 			ProviderType: "openai-responses",
+			ModelMatch:   "*",
+			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.PromptCacheKey = true
+			},
+		},
+		{
+			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
 			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max",
 			LastVerified: Date("2026-09-29"),

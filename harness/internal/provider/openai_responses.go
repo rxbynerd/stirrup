@@ -112,6 +112,9 @@ type responsesRequest struct {
 	// ReasoningEffort is the wire value for reasoning.effort. Empty omits
 	// the reasoning object.
 	ReasoningEffort string `json:"-"`
+	// PromptCacheKey is the wire value for prompt_cache_key. Empty omits
+	// the key.
+	PromptCacheKey string `json:"-"`
 
 	// TokenField / StoreMode / InputItemShape carry the resolved Responses
 	// quirks for this request and steer MarshalJSON; none is serialised under
@@ -124,14 +127,13 @@ type responsesRequest struct {
 }
 
 // MarshalJSON projects the canonical responsesRequest into the Responses
-// wire body the resolved quirks selected. Keys are emitted in the exact
-// order the prior struct-tag marshalling produced — model, instructions,
-// input, tools, <token key>, temperature, stream, store, parallel_tool_calls,
-// reasoning — so the body is byte-identical to the pre-quirks shape; the projection
-// merely moves the key-selection decisions (token-budget key, store field)
-// out of static struct tags and behind the resolved behaviour flags.
+// wire body the resolved quirks selected. Keys are emitted in a fixed
+// order — model, instructions, input, tools, <token key>, temperature,
+// stream, store, parallel_tool_calls, reasoning, prompt_cache_key — and the
+// token-budget key and store value come from the resolved behaviour flags
+// rather than static struct tags.
 //
-// Projection rules (matching the prior omitempty / non-omitempty tags):
+// Projection rules:
 //   - "model" — always.
 //   - "instructions" — omitted when empty (system prompt absent).
 //   - "input" — always (even an empty array).
@@ -144,6 +146,7 @@ type responsesRequest struct {
 //   - "store" — always emitted; StoreMode selects the value (false today).
 //   - "parallel_tool_calls" — omitted when nil.
 //   - "reasoning" — {"effort": ...}; omitted when ReasoningEffort is empty.
+//   - "prompt_cache_key" — omitted when PromptCacheKey is empty.
 func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	if r.InputItemShape != quirks.TypedInputItems {
 		return nil, fmt.Errorf("responsesRequest: unsupported input-item shape %v", r.InputItemShape)
@@ -235,6 +238,13 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 	}
+
+	if r.PromptCacheKey != "" {
+		first = writeKey(first, "prompt_cache_key")
+		if err := writeRaw(r.PromptCacheKey); err != nil {
+			return nil, err
+		}
+	}
 	_ = first
 
 	buf.WriteByte('}')
@@ -317,6 +327,11 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("responsesRequest.reasoning: %w", err)
 		}
 		r.ReasoningEffort = reasoning.Effort
+	}
+	if v, ok := raw["prompt_cache_key"]; ok {
+		if err := json.Unmarshal(v, &r.PromptCacheKey); err != nil {
+			return fmt.Errorf("responsesRequest.prompt_cache_key: %w", err)
+		}
 	}
 	return nil
 }
@@ -732,6 +747,10 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if q.BehaviourFlags.OpenAIResponses.OmitSamplingParams {
 		temperature = nil
 	}
+	var cacheKey string
+	if q.BehaviourFlags.OpenAIResponses.PromptCacheKey {
+		cacheKey = params.CacheKey
+	}
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
@@ -741,6 +760,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
 		ReasoningEffort:   projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels),
+		PromptCacheKey:    cacheKey,
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,

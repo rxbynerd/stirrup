@@ -238,6 +238,10 @@ type OpenAIResponsesBehaviourFlags struct {
 	// resolved model accepts, with the same empty-means-omit and
 	// fail-before-send semantics as OpenAIBehaviourFlags.ReasoningEffortLevels.
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
+
+	// PromptCacheKey, when true, forwards a non-empty StreamParams.CacheKey
+	// as the top-level prompt_cache_key. The zero value sends no key.
+	PromptCacheKey bool `json:"promptCacheKey"`
 }
 
 // OpenAIResponsesTokenField controls which JSON key carries the token
