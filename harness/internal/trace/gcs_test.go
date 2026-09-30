@@ -164,6 +164,52 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 	}
 }
 
+// TestGCSTraceEmitter_TurnRecordContentNotUploaded pins that the GCS
+// emitter persists the run summary only: thinking text, signatures and
+// redacted data recorded on a turn never reach the uploaded object.
+func TestGCSTraceEmitter_TurnRecordContentNotUploaded(t *testing.T) {
+	srv := newGCSCaptureServer()
+	httpSrv := httptest.NewServer(srv.handler())
+	defer httpSrv.Close()
+
+	emitter, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
+		Bucket:           "my-bucket",
+		CredentialSource: &staticBearerSource{token: "test-token"},
+		EndpointBaseURL:  httpSrv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewGCSTraceEmitter: %v", err)
+	}
+
+	const thinkingText = "gcs-thinking-text-not-uploaded"
+	const signature = "gcs-thinking-signature-not-uploaded"
+	const redacted = "gcs-redacted-data-not-uploaded"
+	thinking := []types.ContentBlock{
+		{Type: "thinking", Text: thinkingText, ThoughtSignature: signature},
+		{Type: "redacted_thinking", ThoughtSignature: redacted},
+	}
+	emitter.Start("run-gcs-1", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:        1,
+		ModelInput:  types.ModelInput{Messages: []types.Message{{Role: "assistant", Content: thinking}}},
+		ModelOutput: thinking,
+	})
+	emitter.RecordTurn(types.TurnTrace{Turn: 1})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	body := string(srv.last().Body)
+	if body == "" {
+		t.Fatal("uploaded body is empty")
+	}
+	for _, leaked := range []string{thinkingText, signature, redacted, "thinking"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("uploaded trace carries %q:\n%s", leaked, body)
+		}
+	}
+}
+
 func TestGCSTraceEmitter_PrefixWithoutTrailingSlash(t *testing.T) {
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())

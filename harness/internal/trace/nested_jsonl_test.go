@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -215,6 +216,55 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	}
 	if rt.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef must be redacted in returned RunTrace, got %q", rt.Config.Provider.APIKeyRef)
+	}
+}
+
+// TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile pins that a
+// sub-agent's thinking blocks reach the parent's JSONL file under the same
+// rules as the parent's own: the signature and redacted data never persist,
+// and a secret in the thinking text is redacted.
+func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
+	var buf bytes.Buffer
+	parent := NewJSONLTraceEmitter(&buf, false)
+	parent.Start("parent-run-1", nil)
+
+	const signature = "child-thinking-signature-do-not-persist"
+	const redacted = "child-redacted-data-do-not-persist"
+	const secret = "sk-ant-api03-childthinkingleak"
+	thinking := []types.ContentBlock{
+		{Type: "thinking", Text: "the key is " + secret, ThoughtSignature: signature},
+		{Type: "redacted_thinking", ThoughtSignature: redacted},
+		{Type: "text", Text: "done"},
+	}
+
+	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child.Start("sub-run-1", nil)
+	child.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{
+			Model:    "claude-sonnet-5-5",
+			Messages: []types.Message{{Role: "assistant", Content: thinking}},
+		},
+		ModelOutput: thinking,
+	})
+	if _, err := child.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("child Finish: %v", err)
+	}
+	if _, err := parent.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("parent Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if !strings.Contains(onDisk, `"kind":"turn_record"`) {
+		t.Fatalf("child turn record not on the parent file:\n%s", onDisk)
+	}
+	for _, leaked := range []string{signature, redacted, secret} {
+		if strings.Contains(onDisk, leaked) {
+			t.Errorf("%q survived into the parent trace:\n%s", leaked, onDisk)
+		}
+	}
+	if !strings.Contains(onDisk, `"type":"thinking","text":"the key is [REDACTED]`) {
+		t.Errorf("thinking text should persist scrubbed, got:\n%s", onDisk)
 	}
 }
 

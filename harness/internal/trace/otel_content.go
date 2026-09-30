@@ -150,13 +150,12 @@ func genAISystemInstructionsJSON(system string) string {
 //
 // Anything else is deliberately dropped: unknown block types have no
 // schema shape, and thinking / redacted_thinking blocks carry
-// provider-opaque signatures the harness must never log (as is Gemini's
-// ThoughtSignature, which is never read here). A tool_result's optional Structured envelope is likewise not
-// serialised; Content is the canonical text rendering and the
-// structured payload has no part shape in the schema. Text blocks
-// with empty content (e.g. a placeholder block a provider emitted
-// alongside tool calls) are skipped rather than serialised as an
-// empty part.
+// provider-opaque signatures the harness must never log. A tool_result's
+// optional Structured envelope is likewise not serialised; Content is the
+// canonical text rendering and the structured payload has no part shape in
+// the schema. Text blocks with empty content (e.g. a placeholder block a
+// provider emitted alongside tool calls) are skipped rather than
+// serialised as an empty part.
 func genAIParts(blocks []types.ContentBlock) []genAIPart {
 	parts := make([]genAIPart, 0, len(blocks))
 	for _, b := range blocks {
