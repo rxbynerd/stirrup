@@ -91,7 +91,7 @@ func newRefreshHarness(t *testing.T, ttl time.Duration, respond func(n int, requ
 			Type:      "sandbox_token_response",
 			RequestID: requestID,
 			Token:     tokenFor(ordinal),
-			ExpiresAt: int64Ptr(time.Now().Add(ttl).Unix()),
+			ExpiresAt: int64Ptr(unixCeil(time.Now().Add(ttl))),
 		}, true
 	}
 	return &refreshHarness{
@@ -100,6 +100,17 @@ func newRefreshHarness(t *testing.T, ttl time.Duration, respond func(n int, requ
 		logs:      &syncBuffer{},
 		exchanger: NewExchanger(mt),
 	}
+}
+
+// unixCeil rounds t up to whole Unix seconds. Truncating would mint a
+// token that the refresher already sees as expired whenever t falls in the
+// second half of a second, so it would refresh in a tight loop to the
+// request budget instead of waiting for the scheduled refresh.
+func unixCeil(t time.Time) int64 {
+	if t.Nanosecond() == 0 {
+		return t.Unix()
+	}
+	return t.Unix() + 1
 }
 
 func tokenFor(n int) string {
@@ -315,7 +326,7 @@ func TestRefresher_DeclinedRefreshWarns(t *testing.T) {
 				Type:      "sandbox_token_response",
 				RequestID: requestID,
 				Token:     tokenFor(1),
-				ExpiresAt: int64Ptr(time.Now().Add(ttl).Unix()),
+				ExpiresAt: int64Ptr(unixCeil(time.Now().Add(ttl))),
 			}, true
 		}
 		return types.ControlEvent{
@@ -473,7 +484,7 @@ func TestRefresher_CloseCancelsInFlightExchange(t *testing.T) {
 				Type:      "sandbox_token_response",
 				RequestID: requestID,
 				Token:     tokenFor(1),
-				ExpiresAt: int64Ptr(time.Now().Add(ttl).Unix()),
+				ExpiresAt: int64Ptr(unixCeil(time.Now().Add(ttl))),
 			}, true
 		}
 		return types.ControlEvent{}, false
@@ -588,7 +599,7 @@ func TestRefresher_RetriesTransientFailure(t *testing.T) {
 			Type:      "sandbox_token_response",
 			RequestID: requestID,
 			Token:     tokenFor(n),
-			ExpiresAt: int64Ptr(time.Now().Add(ttl).Unix()),
+			ExpiresAt: int64Ptr(unixCeil(time.Now().Add(ttl))),
 		}, true
 	})
 
