@@ -239,3 +239,21 @@ func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
 		t.Errorf("usage = %+v, want %+v", got, want)
 	}
 }
+
+// Gemini reports thoughts beside, not inside, candidatesTokenCount; the
+// adapter adds them into OutputTokens so Reasoning <= Output holds as on
+// every other provider. promptTokenCount already includes the cached
+// content (documented, not probed).
+func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5000,"cachedContentTokenCount":4096,"candidatesTokenCount":120,"thoughtsTokenCount":900,"totalTokenCount":6020}}`)
+	adapter := newGeminiTestAdapter(serveSSE(t, body).URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.8-pro"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	want := reportedUsage{Input: 5000, Output: 120 + 900, CacheRead: 4096, Reasoning: 900}
+	if got := mergedUsage(t, collectEvents(t, ch)); got != want {
+		t.Errorf("usage = %+v, want %+v", got, want)
+	}
+}

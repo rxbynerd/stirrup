@@ -234,6 +234,10 @@ Key implementation notes:
   which 3.6 Flash accepts — so the quirks registry carries a per-model
   allow-list and the adapter fails the request before any wire bytes
   are sent. See [`provider-quirks.md`](provider-quirks.md).
+- **Output tokens include thought tokens.** Vertex reports
+  `thoughtsTokenCount` beside `candidatesTokenCount`, so the adapter
+  reports their sum as output tokens, matching billing, and the
+  thought count as reasoning tokens.
 
 **Intentional exclusions:** multimodal input, server-side built-in
 tools (`google_search`, `code_execution`, etc. — tracked as issue #93),

@@ -578,16 +578,7 @@ func (g *GeminiAdapter) consumeSSE(
 					StopReason: stop,
 				}
 				if chunk.UsageMetadata != nil {
-					ev.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
-					if ev.OutputTokens == 0 && chunk.UsageMetadata.TotalTokenCount > 0 {
-						// Some Vertex deployments only populate the total;
-						// derive the candidate count from that minus the
-						// prompt count when possible.
-						derived := chunk.UsageMetadata.TotalTokenCount - chunk.UsageMetadata.PromptTokenCount
-						if derived > 0 {
-							ev.OutputTokens = derived
-						}
-					}
+					chunk.UsageMetadata.applyTo(&ev)
 				}
 				emitEvent(ev)
 				return

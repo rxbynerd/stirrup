@@ -1,6 +1,10 @@
 package provider
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/rxbynerd/stirrup/types"
+)
 
 // Go shapes for the Vertex AI Gemini adapter's request and SSE response
 // wire format. Field tags follow Vertex AI's `:streamGenerateContent`
@@ -173,11 +177,29 @@ type geminiCandidate struct {
 	Index         int              `json:"index,omitempty"`
 }
 
-// geminiUsageMetadata mirrors Vertex's usageMetadata. The harness reports
-// CandidatesTokenCount as the OutputTokens for stop-event compatibility
-// with the other adapters.
+// geminiUsageMetadata mirrors Vertex's usageMetadata. promptTokenCount
+// already includes cachedContentTokenCount; candidatesTokenCount excludes
+// thoughtsTokenCount, which is billed as output.
 type geminiUsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount,omitempty"`
+	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
+}
+
+// applyTo copies the usage onto a message_complete event. OutputTokens
+// is candidates plus thoughts so ReasoningTokens stays a subset of it.
+// Some Vertex deployments populate only the total; output is then
+// derived as total minus prompt, which already counts thoughts.
+func (u geminiUsageMetadata) applyTo(ev *types.StreamEvent) {
+	ev.InputTokens = u.PromptTokenCount
+	ev.CacheReadTokens = u.CachedContentTokenCount
+	ev.ReasoningTokens = u.ThoughtsTokenCount
+	ev.OutputTokens = u.CandidatesTokenCount + u.ThoughtsTokenCount
+	if ev.OutputTokens == 0 && u.TotalTokenCount > 0 {
+		if derived := u.TotalTokenCount - u.PromptTokenCount; derived > 0 {
+			ev.OutputTokens = derived
+		}
+	}
 }
