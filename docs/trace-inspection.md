@@ -27,6 +27,10 @@ a `kind` discriminator. A complete run produces:
 
 `turn_record` carries the full transcript the model saw and produced
 that turn, including the exact scrubbed tool results shown to it.
+Anthropic `thinking` blocks keep their type and reasoning text, scrubbed
+like assistant text; their signatures, and the data of
+`redacted_thinking` blocks, are never written (see [thinking-block
+replay](providers.md#thinking-block-replay)).
 `command_output_record` links a `run_command` call to bounded stream hashes,
 sizes, references, and its compressed sidecar archive without embedding full
 sandbox output in JSONL. `tool_call_record`

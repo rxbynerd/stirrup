@@ -47,10 +47,11 @@ them.
 
 ### Thinking-block replay
 
-Claude models that think by default stream `thinking` blocks, and
-occasionally `redacted_thinking` blocks, alongside their text and tool
-calls. The harness sends no `thinking` request field and no beta
-header, so each model's default thinking behaviour applies. On
+Claude models that think by default stream `thinking` blocks alongside
+their text and tool calls. The API also documents `redacted_thinking`
+blocks, which the adapter handles but which have not been observed
+live. The harness sends no `thinking` request field and no beta header,
+so each model's default thinking behaviour applies. On
 `claude-sonnet-5-5` the reasoning text arrives empty by default and the
 block carries only an opaque `signature`.
 
@@ -60,34 +61,64 @@ its signature in `ContentBlock.ThoughtSignature` and any reasoning text
 in `Text`; a `redacted_thinking` block keeps its opaque `data` in
 `ThoughtSignature`. The next request replays the blocks verbatim, so the
 model keeps its reasoning state across tool-use turns. A block without a
-signature cannot be verified by the API and is dropped on egress, and a
-single block whose text and signature exceed 10 MiB together fails the
-stream. Batch results are parsed into the same shape.
+signature cannot be verified by the API and is dropped on egress; an
+assistant message left empty by that drop is omitted, and the turns on
+either side are joined when they share a role. A response fails when
+its thinking blocks exceed 10 MiB in total (reasoning text, signatures
+and redacted data counted together) or when it opens more than 64
+content blocks at once. Batch results are parsed into the same shape.
 
-Replayed thinking is billed as input. A probe against
-`claude-sonnet-5-5` on 2026-09-30 showed a continuation's `input_tokens`
-rise by exactly the prior turn's `thinking_tokens` (110). The loop's
-context-size estimate therefore counts signature bytes at the usual
-four bytes per token, and the sliding-window strategy does the same when
-choosing how many messages to drop.
+Replayed thinking is billed as input. In one probe against
+`claude-sonnet-5-5` on 2026-09-30, a continuation cost 668 input tokens
+with the prior turn's thinking block replayed and 558 without it, a
+difference equal to that turn's 110 thinking tokens. The loop's
+context-size estimate, the input side of the token budget, and the
+sliding-window strategy's per-message estimate count reasoning text
+only, not signature bytes. Hidden thinking (a block with empty text,
+the `claude-sonnet-5-5` default) is therefore under-counted by the
+estimate and the budget until both are fed from provider-reported
+usage.
 
-A signature is bound to the exact history that preceded it. On any turn
-where the context strategy rewrites history (a sliding-window trim, a
-summary, or an offload), the loop removes every thinking block from that
-turn's request; the stored history keeps them. History only grows, so a
-strategy that compacts once compacts on every later turn: from the first
-compaction to the end of the run no thinking is replayed, and the model
-continues from the visible transcript alone. Under sliding-window this
-degradation starts the first time the budget is exceeded. The estimate
-still counts the signatures that the strip removes, so trims after the
-first drop slightly more history than strictly necessary.
+Anthropic's [preserved-thinking
+documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
+binds a thinking block to the model that produced it and to the exact
+history that preceded it. The API enforces the history check by
+default only for accounts created on or after 2026-08-31 00:00 UTC;
+older accounts opt in per request, and the check was not reproduced on
+the account used for probing. Once the context strategy rewrites
+history on any turn of a run (a sliding-window trim, a summary, or an
+offload), the loop removes every thinking block from that request and
+from every later request in the run; the stored history keeps them.
+From that point the model continues from the visible transcript alone.
+Under sliding-window this starts the first time the budget is
+exceeded, and a trim can also separate a `tool_result` from its
+`tool_use`, which the API rejects
+([#624](https://github.com/rxbynerd/stirrup/issues/624)).
 
-Thinking blocks never reach another provider: the other adapters build
-their requests from wire types with no thinking block (see the
+JSONL traces and recordings keep each thinking block's type and its
+reasoning text, scrubbed for secrets exactly like assistant text: both
+are model output of the same trust class. Signatures and redacted data
+never persist, even with `--debug`. OTel content capture omits thinking
+blocks, and the GCS trace emitter persists no turn content. Thinking
+blocks never reach another provider: the other adapters build their
+requests from wire types with no thinking block (see the
 [cross-provider confidentiality
-invariant](architecture.md#provider-adapters)). JSONL traces and
-recordings keep the block type but drop the signature, and OTel content
-capture omits thinking blocks.
+invariant](architecture.md#provider-adapters)).
+
+Known limitations:
+
+- Dynamic routing or a fallback can replay a block to a Claude model
+  other than the one that produced it, and the API drops such a block
+  (documented, not probed).
+- Only the `anthropic` adapter replays thinking, and it always sends to
+  the Anthropic Messages API, so a run that switches provider loses
+  reasoning continuity on the other provider's turns without exposing
+  the blocks to it.
+- Within one response the harness re-encodes tool input with sorted
+  keys and joins adjacent text, so a thinking block that follows text
+  or a tool call in the same response would replay after a prefix the
+  model did not produce; models that think only before their first
+  output block never emit that order, but `between_tools` thinking can.
 
 ### Tool input examples
 
@@ -97,8 +128,10 @@ is left untouched. The quirk rule matches every Claude model. The field
 was accepted without a beta header on `claude-opus-5-5` and
 `claude-haiku-4-5` in a direct probe, and through the harness on
 `claude-sonnet-5-5`, `claude-sonnet-4-6` and `claude-haiku-4-5`, on
-2026-09-30; other Claude models are covered by the same rule without a
-probe.
+2026-09-30. Older Claude families are covered by the rule on the
+strength of Anthropic's documentation, not a probe. The API requires
+each example to validate against the tool's input schema, so every
+built-in and edit-strategy example is tested against its own schema.
 
 **Prompt caching.** The loop re-sends the tool list, the system prompt
 and the full history on every turn, and the history only grows between

@@ -178,8 +178,8 @@ are carried for internal use and round-tripped from MCP servers (see
 `ToolExamplesCapability.Native`. Accepted without a beta header on
 `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-4-6` and
 `claude-haiku-4-5` (probed 2026-09-30); the rule matches every Claude
-model. A capability
-with `Supported` but not `Native` falls back to the schema fold.
+model, and older families are documented, not probed. A capability with
+`Supported` but not `Native` falls back to the schema fold.
 
 `StructuredToolResults` (issue #231) gates whether the structured
 tool-result envelope is serialised onto the wire. The first-party

@@ -584,11 +584,13 @@ limit:
 
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt
-tokens, tool definition tokens, and the signatures of replayable
-thinking blocks. On a turn where a strategy rewrites history, the loop
-strips thinking blocks from the request, because a thinking signature
-is bound to the exact history that preceded it; see
-[thinking-block replay](providers.md#thinking-block-replay).
+tokens, tool definition tokens, and the reasoning text of thinking
+blocks (not their signatures). Once a strategy rewrites history on any
+turn, the loop strips thinking blocks from that request and every later
+one in the run: Anthropic's preserved-thinking documentation binds a
+block to the exact history that preceded it, and the API enforces that
+check by default only for accounts created on or after 2026-08-31
+00:00 UTC. See [thinking-block replay](providers.md#thinking-block-replay).
 
 ## Verifiers
 
