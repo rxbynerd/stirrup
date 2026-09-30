@@ -43,9 +43,62 @@ Claude models whose accepted levels have been probed (Opus 4.5 onward,
 Sonnet 4.6 onward, Fable 5 onward); other Claude models receive no
 effort field. Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced tool
 choice, so the harness never sends `tool_choice` `any` or `tool` to
-them. These models think by default and stream `thinking` blocks; the
-adapter drops them, and the API accepts a replayed tool-use turn
-without them.
+them.
+
+### Thinking-block replay
+
+Claude models that think by default stream `thinking` blocks, and
+occasionally `redacted_thinking` blocks, alongside their text and tool
+calls. The harness sends no `thinking` request field and no beta
+header, so each model's default thinking behaviour applies. On
+`claude-sonnet-5-5` the reasoning text arrives empty by default and the
+block carries only an opaque `signature`.
+
+The adapter captures each block when it closes, and the loop persists
+it in the assistant message in stream order: a `thinking` block keeps
+its signature in `ContentBlock.ThoughtSignature` and any reasoning text
+in `Text`; a `redacted_thinking` block keeps its opaque `data` in
+`ThoughtSignature`. The next request replays the blocks verbatim, so the
+model keeps its reasoning state across tool-use turns. A block without a
+signature cannot be verified by the API and is dropped on egress, and a
+single block whose text and signature exceed 10 MiB together fails the
+stream. Batch results are parsed into the same shape.
+
+Replayed thinking is billed as input. A probe against
+`claude-sonnet-5-5` on 2026-09-30 showed a continuation's `input_tokens`
+rise by exactly the prior turn's `thinking_tokens` (110). The loop's
+context-size estimate therefore counts signature bytes at the usual
+four bytes per token, and the sliding-window strategy does the same when
+choosing how many messages to drop.
+
+A signature is bound to the exact history that preceded it. On any turn
+where the context strategy rewrites history (a sliding-window trim, a
+summary, or an offload), the loop removes every thinking block from that
+turn's request; the stored history keeps them. History only grows, so a
+strategy that compacts once compacts on every later turn: from the first
+compaction to the end of the run no thinking is replayed, and the model
+continues from the visible transcript alone. Under sliding-window this
+degradation starts the first time the budget is exceeded. The estimate
+still counts the signatures that the strip removes, so trims after the
+first drop slightly more history than strictly necessary.
+
+Thinking blocks never reach another provider: the other adapters build
+their requests from wire types with no thinking block (see the
+[cross-provider confidentiality
+invariant](architecture.md#provider-adapters)). JSONL traces and
+recordings keep the block type but drop the signature, and OTel content
+capture omits thinking blocks.
+
+### Tool input examples
+
+A tool's worked examples (`ToolPresentation.InputExamples`) are sent on
+the tool definition's native `input_examples` field, and `input_schema`
+is left untouched. The quirk rule matches every Claude model. The field
+was accepted without a beta header on `claude-opus-5-5` and
+`claude-haiku-4-5` in a direct probe, and through the harness on
+`claude-sonnet-5-5`, `claude-sonnet-4-6` and `claude-haiku-4-5`, on
+2026-09-30; other Claude models are covered by the same rule without a
+probe.
 
 **Prompt caching.** The loop re-sends the tool list, the system prompt
 and the full history on every turn, and the history only grows between

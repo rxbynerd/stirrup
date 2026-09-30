@@ -136,7 +136,7 @@ type ProviderQuirks struct {
     ToolChoice            ToolChoiceCapability           // native tool_choice support (auto/required/none/named)
     StructuredToolResults StructuredToolResultCapability // accepts a non-string tool-result payload, and in which shape
     ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
-    ToolExamples          ToolExamplesCapability         // accepts the JSON-Schema `examples` keyword in a tool's parameters (#222)
+    ToolExamples          ToolExamplesCapability         // accepts worked tool-input examples: the JSON-Schema `examples` keyword, or a native wire field when Native is set (#222)
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -162,7 +162,7 @@ model-facing contract added on top of tool-choice and strict mode:
 | Control | Source | OpenAI Chat | OpenAI Responses | Anthropic | Gemini | Bedrock |
 |---|---|---|---|---|---|---|
 | Parallel-tool-call policy | `StreamParams.ParallelToolCalls` | `parallel_tool_calls` | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | — | — |
-| Input examples | `ToolDefinition.Presentation.InputExamples` | schema `examples`¹ | schema `examples`¹ | schema `examples` | —² | — |
+| Input examples | `ToolDefinition.Presentation.InputExamples` | schema `examples`¹ | schema `examples`¹ | `input_examples`⁴ | —² | — |
 | Tool annotations | `ToolDefinition.Presentation.Annotations` | —³ | —³ | —³ | —³ | —³ |
 
 ¹ Folded only on non-strict tools: OpenAI's structured-outputs
@@ -173,6 +173,13 @@ the capability stays off and the description text is the carrier.
 ³ No first-party provider has a tool-annotation wire field; annotations
 are carried for internal use and round-tripped from MCP servers (see
 [#222](architecture.md)), and are a deliberate no-op on every adapter.
+⁴ Sent on the tool definition's native `input_examples` field, leaving
+`input_schema` untouched: the Anthropic rule sets
+`ToolExamplesCapability.Native`. Accepted without a beta header on
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-4-6` and
+`claude-haiku-4-5` (probed 2026-09-30); the rule matches every Claude
+model. A capability
+with `Supported` but not `Native` falls back to the schema fold.
 
 `StructuredToolResults` (issue #231) gates whether the structured
 tool-result envelope is serialised onto the wire. The first-party
@@ -413,6 +420,8 @@ test catch malformed paths at registry-build time.
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: omit sampling params; `reasoning.effort` `low`..`max` |
+| `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
+| `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
 | `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
 | `anthropic`         | `claude-opus-4-5*` | Anthropic Claude Opus 4.5: effort `low`/`medium`/`high` |
 | `anthropic`         | `claude-opus-4-6*` | Anthropic Claude Opus 4.6: effort `low`/`medium`/`high`/`max` |
@@ -554,7 +563,12 @@ not a supported workflow today. This contrasts with
 forwarded by `ReplayProvider` today, so Gemini 3 live-continuation
 seeded from a recording does carry the model's prior reasoning state
 into the next Vertex request — pure eval replay never resubmits it
-anywhere, so forwarding it adds no leakage surface.
+anywhere, so forwarding it adds no leakage surface. `ReplayProvider`
+also forwards Anthropic `thinking` and `redacted_thinking` blocks.
+The JSONL emitter drops `ThoughtSignature` from every persisted block,
+and the Anthropic adapter drops an unsigned thinking block on egress,
+so a live continuation seeded from a persisted recording sends no
+thinking rather than a block the API cannot verify.
 
 The captured-fields debug log line is `quirks replay fields
 captured` at slog DEBUG level. It records a per-path summary of

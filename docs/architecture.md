@@ -218,6 +218,13 @@ relying on call sites to scrub egress. Extending an adapter's local
 wire type is an active decision: add a field only when that
 provider's API documents support for it.
 
+The same rule covers block types. `ContentBlock.ThoughtSignature`
+carries Gemini's thought signature on `text` and `tool_use` blocks
+and Anthropic's signature (or redacted `data`) on `thinking` and
+`redacted_thinking` blocks; each adapter reads it only from the block
+types it owns, and only the Anthropic adapter's wire type has a
+thinking block, so the others drop thinking blocks at translation.
+
 ## Credential federation
 
 The `harness/internal/credential/` package separates *who you are*
@@ -577,7 +584,11 @@ limit:
 
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt
-tokens, and tool definition tokens.
+tokens, tool definition tokens, and the signatures of replayable
+thinking blocks. On a turn where a strategy rewrites history, the loop
+strips thinking blocks from the request, because a thinking signature
+is bound to the exact history that preceded it; see
+[thinking-block replay](providers.md#thinking-block-replay).
 
 ## Verifiers
 
