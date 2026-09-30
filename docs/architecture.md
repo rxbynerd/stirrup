@@ -202,8 +202,15 @@ bounded instead by a 120 s idle-read deadline (`idleTimeoutBody` in
 for as long as the model generates, and one that goes silent fails
 with `stream idle for 120s`. `bedrock` uses the AWS SDK client,
 which applies no read timeout to Bedrock Runtime, so the adapter sets
-the same 120 s idle-read bound through the SDK's `WithReadTimeout`;
-it too has no total cap. Error-body reads are bounded via
+a 120 s per-connection read deadline through the SDK's
+`WithReadTimeout`. The effect is the same but the error differs: a
+silent Bedrock stream fails with the SDK's `ResponseTimeoutError`
+(`read on body reach timeout limit, 2m0s`), not `stream idle`. Neither
+path has a total cap. The idle bound assumes the endpoint sends bytes
+or keep-alives while the model works; a hidden-reasoning stream at
+`high`, `xhigh` or `max` effort from an endpoint that stays silent
+while it reasons could exceed it, and `defaultStreamIdleTimeout` is
+the knob to revisit. Error-body reads are bounded via
 `io.LimitReader`. Tool JSON is accumulated across delta events;
 context cancellation is respected.
 

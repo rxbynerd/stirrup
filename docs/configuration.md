@@ -1458,7 +1458,7 @@ be unbounded:
 | Field | Cap |
 |---|---|
 | `maxTurns` | 100 |
-| `timeout` | 3600 s (same bound on `stirrup harness` and `stirrup job`) |
+| `timeout` | required; > 0 and ≤ 3600 s (same bound on `stirrup harness` and `stirrup job`) |
 | `provider.batch.maxWaitSeconds` | the run's `timeout`; defaults to it when unset. See [`batch.md`](batch.md#the-wait-budget) |
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
@@ -1470,6 +1470,17 @@ be unbounded:
 | sum of `hooks.postRun[].timeoutSeconds` | 1800 s (30 min) |
 
 Read-only modes additionally require the tool list to be set.
+
+Provider streams have no total time cap of their own. Each streamed
+response is bounded by a fixed 120 s idle-read timeout instead: a
+stream that keeps delivering bytes, keep-alive pings included, runs for
+as long as the model generates, and one that stays silent for 120 s
+fails with a read error (`stream idle for 120s` on the `net/http`
+adapters). The run `timeout` is the total bound. Because
+`ValidateRunConfig` rejects a missing or zero `timeout`, a slow but live
+stream cannot outlast the run under `stirrup harness` or `stirrup job`.
+Per-client timeouts are listed in
+[`security.md`](security.md#http-client-hardening).
 
 `maxTokenBudget` is the only budget the harness enforces. It is
 checked between provider calls and terminates the run with

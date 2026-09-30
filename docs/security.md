@@ -171,8 +171,15 @@ Every `net/http` provider adapter and the MCP client uses an explicit
 | MCP client | 30 s |
 | Web fetch tool | 30 s |
 
-Every provider call also inherits the run context, whose `timeout` is
-required and capped at 3600 s, so no stream outlives the run.
+`stirrup harness` and `stirrup job` run every provider call under the
+run context, whose deadline is the RunConfig `timeout`.
+`ValidateRunConfig` rejects a missing or zero `timeout` and caps it at
+3600 s, so no stream outlives the run. For the `net/http` adapters that
+deadline is the only bound on writing a request body; a non-2xx error
+body is read through the same 120 s idle-read timeout, and draining a
+retried response is capped at 4 KB and 10 s. Embedders of `harnessapi`
+supply their own context and so own the run deadline.
+
 `http.DefaultClient` is never used in production code. Error
 response bodies are bounded with `io.LimitReader` to avoid
 unbounded memory consumption when a provider returns an unexpectedly
