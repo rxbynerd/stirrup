@@ -51,26 +51,38 @@ without them.
 and the full history on every turn, and the history only grows between
 compactions, so each request shares a long prefix with the one before
 it. The API caches nothing unless the request marks a breakpoint, so
-the adapter sends two on every Claude model (the `PromptCaching`
-[quirk](provider-quirks.md#21-providerquirks)):
+the adapter marks up to two on every Claude model (the `PromptCaching`
+[quirk](provider-quirks.md#21-providerquirks)). The rule was probed on
+Sonnet 5.5, Haiku 4.5, Sonnet 4.5 and Opus 4.5 on 2026-09-30; the other
+families are documented, not probed. `claude-opus-4-1` returned 404 on
+the same date, so the API no longer serves it.
 
 - `system` goes out as a single text block carrying
-  `"cache_control": {"type": "ephemeral"}`. The cached prefix is tools,
-  then system, then messages, so this breakpoint keeps tools and system
-  cached for the whole run, including after a context strategy rewrites
-  earlier messages.
+  `"cache_control": {"type": "ephemeral"}` on every request. The cached
+  prefix is tools, then system, then messages, so this breakpoint keeps
+  tools and system cached for the whole run, including after a context
+  strategy rewrites earlier messages. One-shot callers (the summarise
+  context strategy, the LLM-judge verifier and the cloud-judge guard)
+  carry it too, but their system prompts fall below every cacheable
+  minimum, so nothing is cached for them.
 - A top-level `"cache_control": {"type": "ephemeral"}` turns on automatic
   caching: the API places a second breakpoint on the last cacheable block
   of each request, so the history written on one turn is read back on
-  the next.
+  the next. Only main-loop turns send it, identified by the per-run cache
+  key described under [OpenAI Responses](#openai-responses-api); a one-shot
+  call never extends a history, so a write there would not be read back.
 
-An empty system prompt sends only the top-level field. The first request
-of a run writes the prefix (`cacheWrite`); each later request reads it
-back (`cacheRead`) and writes only the new tail. Reads bill at 0.1x the
-base input rate (0.05x on Opus 5.5, 0.025x on Fable 5.1) and writes at
-1.25x, with the default five-minute cache lifetime. A live run on Sonnet
-5.5 (2026-09-30) wrote 6,504 tokens on turn 0 and read 6,504 to 6,715 on
-each later turn, leaving 2 to 4 input tokens uncached per turn.
+On a main-loop turn with an empty system prompt, only the top-level
+field is sent. The [batch path](batch.md) sends neither, since
+consecutive batch turns rarely land within the cache lifetime.
+
+The first request of a run writes the prefix (`cacheWrite`); each later
+request reads it back (`cacheRead`) and writes only the new tail. Reads
+bill at 0.1x the base input rate (0.05x on Opus 5.5, 0.025x on Fable
+5.1) and writes at 1.25x, with the default five-minute cache lifetime.
+One Sonnet 5.5 run on 2026-09-30 wrote 6,505 tokens on turn 0 and read
+6,505 to 6,716 on each later turn, leaving 2 to 4 input tokens uncached
+per turn.
 
 A prompt shorter than the model's cacheable minimum is sent uncached,
 with no error: 512 tokens on Opus 5 / 5.5, Sonnet 5.5, Fable 5 / 5.1 and
@@ -78,17 +90,26 @@ Mythos 5 / 5.1; 1,024 on Opus 4.8, Sonnet 5, Sonnet 4.6 and Sonnet 4.5;
 4,096 on Haiku 4.5. The execution-mode toolset clears all of these
 (Haiku 4.5 wrote 4,887 tokens on turn 0 of a live run), but a run with
 fewer tools, such as a reduced `tools.builtIn` list, can fall below
-Haiku's line; a live Haiku run at 1,570 input tokens completed normally
-with nothing cached.
+Haiku's line; a live Haiku run whose turns sent 1,571 to 1,822 input
+tokens completed normally with nothing cached.
 
 A change invalidates the cache from its position in the prefix onward:
 
 | Change within a run | Cache invalidated |
 |---|---|
 | Tool list: a tool added, removed or reordered, or a schema changed | everything |
+| Model: a router selects a different model for a turn | everything; each model keeps its own cache |
 | System prompt | system and messages |
-| Effort, thinking, or `tool_choice` (the missed-tool escalation forces one for a single turn) | messages |
-| Context-strategy rewrite (summarise, offload, sliding-window drop) | messages from the rewritten point |
+| Effort, thinking, or `tool_choice` (the missed-tool escalation forces one for a single turn) | messages (documented, not probed) |
+| Context-strategy compaction | messages, on every turn after the first overflow |
+
+Once the history first overflows the context budget, every later turn
+misses the message cache under all three strategies: sliding-window
+drops more of the head on each turn, summarise re-summarises, and
+offload rewrites tool results as they age. Tools and system stay cached
+through the system breakpoint. A long `run_command` or a blocking
+sub-agent spawn can outlast the five-minute cache lifetime, so the
+parent's next turn writes its whole prefix to the cache again at 1.25x.
 
 Automatic caching looks back 20 content-block positions for a previous
 write, counting a run of consecutive `tool_use` blocks, or of
@@ -96,12 +117,12 @@ write, counting a run of consecutive `tool_use` blocks, or of
 does not push the previous write out of reach.
 
 The `anthropic prompt cache` Debug log line reports `cache.read`,
-`cache.write` and `input.uncached` for every stream, and the same
-figures reach the trace as `cacheRead` and `cacheWrite` (see
-[Token usage](trace-inspection.md#token-usage)). A turn after the first
-whose `cache.read` is zero points at one of the invalidations above.
-The Bedrock adapter sends no cache breakpoints, and the legacy Bedrock
-surface does not offer automatic caching.
+`cache.write` and `input.uncached` for every stream that reports input
+usage, from the same figures that reach the trace as `cacheRead` and
+`cacheWrite` (see [Token usage](trace-inspection.md#token-usage)). A
+turn after the first whose `cache.read` is zero points at one of the
+invalidations above. The Bedrock adapter sends no cache breakpoints,
+and the legacy Bedrock surface does not offer automatic caching.
 
 ## AWS Bedrock
 
@@ -236,8 +257,12 @@ prefix of at least 1,024 tokens. The adapter adds a per-run
 `prompt_cache_key` (the `PromptCacheKey`
 [quirk](provider-quirks.md#21-providerquirks)): the first 32 hex
 characters of the SHA-256 of the run ID, so it is stable across the
-run's turns, distinct between runs and sub-agents, and never exposes the
-run ID itself. On models before GPT-5.6 a stable key routes related
+run's turns and distinct between runs and sub-agents. It does not send
+the run ID, but the digest is not an anonymiser: run IDs are not
+secret, and anyone holding a candidate run ID can recompute the key.
+The key is only as unique as the run ID, so control planes should keep
+run IDs unique per credential; a collision affects routing affinity
+only. On models before GPT-5.6 a stable key routes related
 requests to the same cache, and OpenAI suggests keeping each key to
 about 15 requests per minute; on GPT-5.6 and later routing is automatic
 and the key only keeps cache accounting separate per run. Summariser,

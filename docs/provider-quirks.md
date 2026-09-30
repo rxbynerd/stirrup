@@ -226,7 +226,7 @@ type OpenAIResponsesBehaviourFlags struct {
 type AnthropicBehaviourFlags struct {
     OmitSamplingParams bool     // suppress temperature (400 on non-default value from Opus 4.7 on)
     EffortLevels       []string // output_config.effort allow-list; empty sends nothing (§3.2)
-    PromptCaching      bool     // system as a cached text block + top-level cache_control
+    PromptCaching      bool     // system as a cached text block; top-level cache_control on keyed requests
 }
 ```
 
@@ -247,12 +247,15 @@ will cover them too if those are added later.
 `AnthropicBehaviourFlags.PromptCaching` turns on prompt caching, which
 the Messages API does only when a request marks a breakpoint. When set,
 `buildAnthropicRequest` sends `system` as a single text block carrying
-`cache_control: {"type": "ephemeral"}` and adds a top-level
-`cache_control` of the same shape (automatic caching, which moves the
-breakpoint to the last cacheable block of each request). An empty system
-prompt sends only the top-level field. The zero value keeps `system` a
-plain string and sends no `cache_control`, byte-for-byte the uncached
-shape. The `anthropic / *` rule sets it for every Claude model; the
+`cache_control: {"type": "ephemeral"}` on every request. A request that
+also carries a `StreamParams.CacheKey` (only main-loop turns do) gets a
+top-level `cache_control` of the same shape (automatic caching, which
+moves the breakpoint to the last cacheable block of each request). An
+empty system prompt leaves only the top-level field, on keyed requests.
+The zero value keeps `system` a plain string and sends no
+`cache_control`, byte-for-byte the uncached shape; the batch serialiser
+clears the flag, so batch bodies take that shape too. The
+`anthropic / *` rule sets it for every Claude model; the
 [Anthropic section of the provider guide](providers.md#anthropic)
 covers what is cached, the per-model minimum sizes and what invalidates
 the cache.
@@ -260,7 +263,7 @@ the cache.
 `OpenAIResponsesBehaviourFlags.PromptCacheKey` forwards a non-empty
 `StreamParams.CacheKey` as the top-level `prompt_cache_key`, emitted
 last so every other key keeps its position. The loop sets `CacheKey`
-once per run to a hash of the run ID; see the
+once per run to a digest of the run ID (not an anonymiser); see the
 [Responses section of the provider guide](providers.md#openai-responses-api).
 The Chat Completions adapter has no equivalent flag, because compatible
 servers may reject an unknown top-level key.
@@ -408,9 +411,9 @@ test catch malformed paths at registry-build time.
 | `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"` (same surface split as 3.6); omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400 on Vertex and AI Studio alike) |
 | `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
-| `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented) |
+| `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: omit sampling params; `reasoning.effort` `low`..`max` |
-| `anthropic`         | `*`                | Anthropic: prompt caching; `system` as a text block with an ephemeral `cache_control` breakpoint plus a top-level automatic `cache_control` (probed 2026-09-30) |
+| `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
 | `anthropic`         | `claude-opus-4-5*` | Anthropic Claude Opus 4.5: effort `low`/`medium`/`high` |
 | `anthropic`         | `claude-opus-4-6*` | Anthropic Claude Opus 4.6: effort `low`/`medium`/`high`/`max` |
 | `anthropic`         | `claude-sonnet-4-6*` | Anthropic Claude Sonnet 4.6: effort `low`/`medium`/`high`/`max` |
@@ -663,7 +666,7 @@ singleflight semantics without a separate singleflight dependency.
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
 | `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
-| `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream that reports usage, carrying `cache.read` (`cache_read_input_tokens`), `cache.write` (`cache_creation_input_tokens`) and `input.uncached` (`input_tokens`), plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
+| `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream whose usage reports any input, carrying `cache.read`, `cache.write` and `input.uncached` (input total minus both cache counts) as they appear on the emitted `message_complete` event, so the line matches the trace, plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
 
 ### 5.1 Read-only registry
 
