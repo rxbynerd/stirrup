@@ -190,10 +190,19 @@ LiteLLM, vLLM, Ollama, and Azure OpenAI when the deployment exposes
 Chat Completions; `openai-responses` is for Azure OpenAI Foundry and
 any deployment that requires the Responses wire format.
 
-Adapters share a common HTTP client with explicit timeouts (120s
-streaming) and bounded error-body reads via `io.LimitReader`. Tool
-JSON is accumulated across delta events; context cancellation is
-respected.
+The four `net/http` adapters (`anthropic`, both OpenAI dialects,
+`gemini`) each build their own HTTP client with explicit transport
+timeouts (10 s TLS handshake, 30 s response header) and no
+`http.Client.Timeout`, because a total deadline would also cap the
+streamed body and cut long turns mid-stream. The streamed body is
+bounded instead by a 120 s idle-read deadline (`idleTimeoutBody` in
+`provider/streamidle.go`): a stream that keeps delivering bytes runs
+for as long as the model generates, and one that goes silent fails
+with `stream idle for 120s`. `bedrock` uses the AWS SDK client,
+which sets no response-header, idle-read, or total timeout for Bedrock
+Runtime, so a Bedrock turn is bounded only by the run timeout.
+Error-body reads are bounded via `io.LimitReader`. Tool JSON is
+accumulated across delta events; context cancellation is respected.
 
 Per-adapter configuration including base URLs, API-key headers, query
 params, and credential federation lives in

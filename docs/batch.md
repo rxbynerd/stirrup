@@ -57,7 +57,9 @@ the run timeout, got maxWaitSeconds=3600 and timeout=3600: …
 Sizing the headroom is the operator's call, because it depends on the
 run's own retry configuration. A fallback turn needs
 `provider.retry.wallClockBudgetMs` (default 90 000 ms, ceiling 300 000)
-plus the 120 s streaming HTTP timeout.
+plus the time the turn takes to stream, which has no fixed cap: a
+streamed body is bounded only by a 120 s idle-read timeout, and a turn
+at a 64K `max_tokens` budget can stream for several minutes.
 
 The headroom must also cover *every preceding batch turn*, because each
 turn's cap is measured from its own `Result` call rather than from run
@@ -186,12 +188,12 @@ validated at ≤ 3600 s and bound to the run context on both
 
 **Long-lived credential exposure.** A batch wait keeps the provider's
 API credentials live in memory for up to the run's `timeout` (an hour
-at the cap), against ~120s for a streaming turn. Operators using
-`WebIdentityAWSSource` (or any other `credential.Source` backed by a
-short-lived federated token) should confirm their `CredentialsCache`
-TTL covers the full `MaxWaitSeconds` window — a refresh that fires
-mid-wait can leave the harness holding stale credentials when the
-batch completes.
+at the cap), against the few minutes a streaming turn takes.
+Operators using `WebIdentityAWSSource` (or any other
+`credential.Source` backed by a short-lived federated token) should
+confirm their `CredentialsCache` TTL covers the full `MaxWaitSeconds`
+window — a refresh that fires mid-wait can leave the harness holding
+stale credentials when the batch completes.
 
 ### `MaxTurns` × `MaxWaitSeconds` warning
 

@@ -3282,7 +3282,7 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf(
 			"batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout, got maxWaitSeconds=%d and timeout=%d: "+
 				"the batch wait can never expire before the run deadline, so the fallback would never fire. "+
-				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the 120 s streaming HTTP timeout — "+
+				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the turn's streaming time, which has no total cap (only a 120 s idle-read timeout) — "+
 				"and for every preceding batch turn, whose wait is charged against the same deadline",
 			*batch.MaxWaitSeconds, timeoutBound, defaultProviderRetryWallClockBudgetMs))
 	}

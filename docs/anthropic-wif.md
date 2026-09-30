@@ -345,12 +345,13 @@ requests under contention single-flight through `ReuseTokenSource`'s
 internal mutex, so the OAuth endpoint sees one in-flight exchange
 per source instance.
 
-The exchange-endpoint timeout is 30 seconds. Stream timeouts on the
-Anthropic Messages API are independent (120s for the streaming
-response). A long-running stream that outlives its access token is
-not currently a concern because Anthropic streams typically complete
-in under five minutes; document this if you tune `token_lifetime_seconds`
-below 300 for any reason.
+The exchange-endpoint timeout is 30 seconds. Streamed Messages API
+responses are bounded independently, by a 120 s idle-read timeout with
+no total cap, and a turn at a 64K `max_tokens` budget can stream for
+several minutes. The access token is presented once, when the request
+starts; whether the API ends an in-flight stream when that token
+expires has not been verified, so a `token_lifetime_seconds` shorter
+than the longest expected turn is untested.
 
 ## Risks and mitigations
 

@@ -161,15 +161,18 @@ The most security-relevant invariants:
 
 ## HTTP client hardening
 
-Every provider adapter and the MCP client uses an explicit
+Every `net/http` provider adapter and the MCP client uses an explicit
 `*http.Client` with timeouts:
 
 | Client | Timeout |
 |---|---|
-| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Bedrock, Gemini) | 120 s |
+| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Gemini) | 10 s TLS handshake, 30 s response header, 120 s idle read on the streamed body; no total cap |
+| Provider streaming (Bedrock, AWS SDK client) | SDK defaults: 30 s dial, 10 s TLS handshake; no response-header, idle-read, or total timeout |
 | MCP client | 30 s |
 | Web fetch tool | 30 s |
 
+Every provider call also inherits the run context, whose `timeout` is
+required and capped at 3600 s, so no stream outlives the run.
 `http.DefaultClient` is never used in production code. Error
 response bodies are bounded with `io.LimitReader` to avoid
 unbounded memory consumption when a provider returns an unexpectedly
