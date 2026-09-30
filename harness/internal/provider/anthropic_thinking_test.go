@@ -123,32 +123,115 @@ func TestAnthropicAdapter_StreamRedactedThinking(t *testing.T) {
 	}
 }
 
-// TestAnthropicAdapter_ThinkingBlockSizeCap mirrors the tool-input cap: a
-// thinking block that grows past maxThinkingBlockSize ends the stream with
-// an error rather than accumulating without bound.
-func TestAnthropicAdapter_ThinkingBlockSizeCap(t *testing.T) {
-	huge, err := json.Marshal(strings.Repeat("a", maxThinkingBlockSize+1))
+// jsonString returns n bytes of filler as a JSON string literal.
+func jsonString(t *testing.T, n int) string {
+	t.Helper()
+	b, err := json.Marshal(strings.Repeat("a", n))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	body := joinLines(
-		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
-		makeSSE("content_block_delta", fmt.Sprintf(`{"index":0,"delta":{"type":"thinking_delta","thinking":%s}}`, huge)),
-		makeSSE("content_block_stop", `{"index":0}`),
+	return string(b)
+}
+
+func eventTypes(events []types.StreamEvent) []string {
+	out := make([]string, len(events))
+	for i, ev := range events {
+		out[i] = ev.Type
+	}
+	return out
+}
+
+// TestAnthropicAdapter_ThinkingSizeCap pins the response-wide cap on
+// thinking text plus signatures: a response exactly at the cap streams
+// normally, and every route past it (a delta, a block start, a redacted
+// block, or the sum over several blocks) ends the stream with one error.
+func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
+	const capBytes = maxThinkingResponseSize
+	half := capBytes / 2
+	thinkingStart := makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`)
+	delta := func(index int, kind, field string, n int) string {
+		return makeSSE("content_block_delta", fmt.Sprintf(`{"index":%d,"delta":{"type":%q,%q:%s}}`, index, kind, field, jsonString(t, n)))
+	}
+	end := joinLines(
 		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
 		makeSSE("message_stop", `{}`),
 	)
 
-	events := streamAnthropicSSE(t, body)
+	overflows := map[string]string{
+		"text and signature counted together": joinLines(
+			thinkingStart,
+			delta(0, "thinking_delta", "thinking", half+1),
+			delta(0, "signature_delta", "signature", half),
+		),
+		"signature_delta": joinLines(
+			thinkingStart,
+			delta(0, "signature_delta", "signature", capBytes+1),
+		),
+		"thinking on block start": makeSSE("content_block_start",
+			fmt.Sprintf(`{"index":0,"content_block":{"type":"thinking","thinking":%s,"signature":""}}`, jsonString(t, capBytes+1))),
+		"redacted_thinking on block start": makeSSE("content_block_start",
+			fmt.Sprintf(`{"index":0,"content_block":{"type":"redacted_thinking","data":%s}}`, jsonString(t, capBytes+1))),
+		"sum over two blocks": joinLines(
+			thinkingStart,
+			delta(0, "signature_delta", "signature", half+1),
+			makeSSE("content_block_stop", `{"index":0}`),
+			makeSSE("content_block_start", `{"index":1,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+			delta(1, "signature_delta", "signature", half),
+		),
+	}
+	for name, body := range overflows {
+		t.Run(name, func(t *testing.T) {
+			events := streamAnthropicSSE(t, joinLines(body, makeSSE("content_block_stop", `{"index":0}`), end))
+			last := events[len(events)-1]
+			if last.Type != "error" || !strings.Contains(last.Error.Error(), "thinking blocks exceed") {
+				t.Fatalf("event types = %v, want the stream to end on the thinking size-cap error", eventTypes(events))
+			}
+			for _, ev := range events[:len(events)-1] {
+				if ev.Type == "error" || ev.Type == "message_complete" {
+					t.Errorf("event types = %v, want exactly one error ending the stream", eventTypes(events))
+				}
+			}
+		})
+	}
 
-	gotTypes := make([]string, len(events))
-	for i, ev := range events {
-		gotTypes[i] = ev.Type
+	t.Run("exactly at the cap", func(t *testing.T) {
+		events := streamAnthropicSSE(t, joinLines(
+			thinkingStart,
+			delta(0, "thinking_delta", "thinking", half),
+			delta(0, "signature_delta", "signature", capBytes-half),
+			makeSSE("content_block_stop", `{"index":0}`),
+			end,
+		))
+		if got := eventTypes(events); len(got) != 2 || got[0] != "thinking" || got[1] != "message_complete" {
+			t.Fatalf("event types = %v, want [thinking message_complete]", got)
+		}
+		if n := len(events[0].Text) + len(events[0].ThoughtSignature); n != capBytes {
+			t.Errorf("thinking event carried %d bytes, want %d", n, capBytes)
+		}
+	})
+}
+
+// TestAnthropicAdapter_OpenContentBlockCap pins the bound on content blocks
+// started and not yet stopped, while sequential blocks stay unbounded.
+func TestAnthropicAdapter_OpenContentBlockCap(t *testing.T) {
+	var open, sequential []string
+	for i := 0; i <= maxOpenContentBlocks; i++ {
+		start := makeSSE("content_block_start", fmt.Sprintf(`{"index":%d,"content_block":{"type":"text","text":""}}`, i))
+		open = append(open, start)
+		sequential = append(sequential, start, makeSSE("content_block_stop", fmt.Sprintf(`{"index":%d}`, i)))
 	}
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("event types = %v, want exactly one error event", gotTypes)
+	end := joinLines(
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	)
+
+	events := streamAnthropicSSE(t, joinLines(joinLines(open...), end))
+	if len(events) != 1 || events[0].Type != "error" || !strings.Contains(events[0].Error.Error(), "content blocks open at once") {
+		t.Fatalf("event types = %v, want one open-block cap error", eventTypes(events))
 	}
-	if !strings.Contains(events[0].Error.Error(), "thinking block exceeds") {
-		t.Errorf("error = %v, want thinking size-cap error", events[0].Error)
+
+	events = streamAnthropicSSE(t, joinLines(joinLines(sequential...), end))
+	if got := eventTypes(events); len(got) != 1 || got[0] != "message_complete" {
+		t.Errorf("sequential blocks: event types = %v, want [message_complete]", got)
 	}
 }

@@ -24,10 +24,15 @@ import (
 )
 
 const (
-	anthropicAPIURL      = "https://api.anthropic.com/v1/messages"
-	anthropicAPIVersion  = "2023-06-01"
-	maxToolInputSize     = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
-	maxThinkingBlockSize = 10 * 1024 * 1024 // 10 MB cap on one thinking block's text plus signature
+	anthropicAPIURL     = "https://api.anthropic.com/v1/messages"
+	anthropicAPIVersion = "2023-06-01"
+	maxToolInputSize    = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
+	// maxThinkingResponseSize caps the text plus signatures of every
+	// thinking and redacted_thinking block in one response.
+	maxThinkingResponseSize = 10 * 1024 * 1024
+	// maxOpenContentBlocks caps the content blocks one response may have
+	// started and not yet stopped.
+	maxOpenContentBlocks = 64
 )
 
 // AuthMode selects the authentication header sent on every /v1/messages
@@ -887,12 +892,15 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	blocks := make(map[int]*blockState)
 
 	// appendThinking grows a thinking block's text or signature, enforcing
-	// the combined size cap. Reports false after emitting the error event.
-	appendThinking := func(bs *blockState, dst *strings.Builder, s string) bool {
-		if bs.thinking.Len()+bs.signature.Len()+len(s) > maxThinkingBlockSize {
-			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("thinking block exceeds %d byte limit", maxThinkingBlockSize)})
+	// the response-wide size cap. Reports false after emitting the error
+	// event.
+	thinkingBytes := 0
+	appendThinking := func(dst *strings.Builder, s string) bool {
+		if thinkingBytes+len(s) > maxThinkingResponseSize {
+			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("thinking blocks exceed %d byte limit per response", maxThinkingResponseSize)})
 			return false
 		}
+		thinkingBytes += len(s)
 		dst.WriteString(s)
 		return true
 	}
@@ -929,6 +937,10 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_start: %w", err)})
 				return
 			}
+			if _, open := blocks[cbs.Index]; !open && len(blocks) >= maxOpenContentBlocks {
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("more than %d content blocks open at once", maxOpenContentBlocks)})
+				return
+			}
 			bs := &blockState{
 				blockType: cbs.ContentBlock.Type,
 				id:        cbs.ContentBlock.ID,
@@ -936,12 +948,12 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			switch bs.blockType {
 			case "thinking":
-				if !appendThinking(bs, &bs.thinking, cbs.ContentBlock.Thinking) ||
-					!appendThinking(bs, &bs.signature, cbs.ContentBlock.Signature) {
+				if !appendThinking(&bs.thinking, cbs.ContentBlock.Thinking) ||
+					!appendThinking(&bs.signature, cbs.ContentBlock.Signature) {
 					return
 				}
 			case "redacted_thinking":
-				if !appendThinking(bs, &bs.signature, cbs.ContentBlock.Data) {
+				if !appendThinking(&bs.signature, cbs.ContentBlock.Data) {
 					return
 				}
 			}
@@ -970,11 +982,11 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				}
 				bs.jsonBuf.WriteString(cbd.Delta.PartialJSON)
 			case "thinking_delta":
-				if !appendThinking(bs, &bs.thinking, cbd.Delta.Thinking) {
+				if !appendThinking(&bs.thinking, cbd.Delta.Thinking) {
 					return
 				}
 			case "signature_delta":
-				if !appendThinking(bs, &bs.signature, cbd.Delta.Signature) {
+				if !appendThinking(&bs.signature, cbd.Delta.Signature) {
 					return
 				}
 			}
