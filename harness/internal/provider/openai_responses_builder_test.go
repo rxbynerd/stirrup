@@ -169,12 +169,10 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 }
 
 // TestResponsesStrictMode_WireBodyShape exercises the Responses API's
-// strict-mode wiring through the builder. No built-in rule currently
-// enables StrictMode for openai-responses, so the wiring is dormant in
-// v1; this test pins that the moment a rule does enable it, the
-// rewrite path produces the expected wire shape (`strict: true` on
-// each tool entry, properties expanded into a fully-required nullable
-// shape).
+// strict-mode wiring through the builder with a synthetic rule, so the
+// rewrite's wire shape (`strict: true` on each tool entry, properties
+// expanded into a fully-required nullable shape) is pinned independently
+// of which built-in globs enable it.
 //
 // Mirrors TestOpenAIStrictMode_WireBodyShape on the Chat Completions
 // side. One test is sufficient because both adapters share the same
@@ -253,6 +251,67 @@ func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
 		if !hasNull {
 			t.Errorf("limit.type = %v, want it to contain 'null'", limitType)
 		}
+	}
+}
+
+// TestResponsesStrictMode_BuiltinRules pins which first-party models get an
+// explicit strict:true through DefaultRegistry: the gpt-5, gpt-6 and
+// o-series families do, and older chat models keep the omitted key.
+func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
+	cases := []struct {
+		model      string
+		wantStrict bool
+	}{
+		{"gpt-5", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.6-sol", true},
+		{"gpt-6-astra", true},
+		{"gpt-6.1-sol", true},
+		{"o3", true},
+		{"o4-mini", true},
+		{"gpt-4.1", false},
+		{"gpt-4o", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			params := effortParams(tc.model, "", true)
+			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			req, err := buildResponsesRequest(params, q, nil)
+			if err != nil {
+				t.Fatalf("buildResponsesRequest: %v", err)
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := strings.Contains(string(body), `"strict":true`); got != tc.wantStrict {
+				t.Errorf("strict emitted = %v, want %v: %s", got, tc.wantStrict, body)
+			}
+			if tc.wantStrict && !strings.Contains(string(body), `"additionalProperties":false`) {
+				t.Errorf("strict tool schema not normalised: %s", body)
+			}
+		})
+	}
+}
+
+// TestResponsesStrictMode_FailsClosedBeforeSend pins that a tool schema the
+// strict rewriter cannot express (anyOf here, as an MCP server might
+// supply) stops a strict-mode Responses request before any bytes are sent.
+func TestResponsesStrictMode_FailsClosedBeforeSend(t *testing.T) {
+	params := effortParams("gpt-5.6-sol", "", false)
+	params.Tools = []types.ToolDefinition{{
+		Name:        "mcp_lookup",
+		Description: "Look up a record",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["id"]}`),
+	}}
+	srv, hits := countingServer(t)
+	adapter := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
+	_, err := adapter.Stream(context.Background(), params)
+	if err == nil || !strings.Contains(err.Error(), "strict-mode schema lint failed") {
+		t.Fatalf("Stream() error = %v, want strict-mode lint failure", err)
+	}
+	if hits.Load() != 0 {
+		t.Errorf("server received %d requests, want 0", hits.Load())
 	}
 }
 

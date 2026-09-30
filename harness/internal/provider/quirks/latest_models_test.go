@@ -98,6 +98,36 @@ func TestGPT5ResponsesEffortRules(t *testing.T) {
 	}
 }
 
+// TestResponsesStrictModeRules pins explicit strict tools on the Responses
+// surface for the gpt-5, gpt-6 and o-series families only; the older chat
+// models keep the key omitted.
+func TestResponsesStrictModeRules(t *testing.T) {
+	cases := map[string]bool{
+		"gpt-5":           true,
+		"gpt-5-nano":      true,
+		"gpt-5.4":         true,
+		"gpt-5.6-luna":    true,
+		"gpt-6-astra":     true,
+		"gpt-6.1-sol":     true,
+		"o1":              true,
+		"o3-mini":         true,
+		"o4-mini":         true,
+		"gpt-4.1":         false,
+		"gpt-4o":          false,
+		"gpt-4o-mini":     false,
+		"openai/gpt-5.6":  false,
+		"omni-moderation": false,
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-responses", model)
+			if got := q.BehaviourFlags.OpenAI.StrictMode; got != want {
+				t.Errorf("StrictMode = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 // TestDeepSeekFlashRules pins the V4.1 Flash id, which the deepseek-v4*
 // glob does not match: without its own rule, reasoning_content is not
 // replayed and every tool loop fails on its second turn.

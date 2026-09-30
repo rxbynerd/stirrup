@@ -361,6 +361,27 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAIResponses.InputItemShape = TypedInputItems
 			},
 		},
+		// An omitted `strict` on Responses means strict-when-possible with a
+		// silent non-strict fallback, so the reasoning families pin
+		// strict:true and the harness's schema lint fails closed before send.
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "o[1-9]*",
+			Description:  "OpenAI Responses o-series: strict tools (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5*",
+			Description:  "OpenAI Responses gpt-5 family: strict tools (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "*",
@@ -373,9 +394,10 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
-			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max",
-			LastVerified: Date("2026-09-29"),
+			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max; strict tools (documented)",
+			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
 				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},
