@@ -1,7 +1,15 @@
-# synthetic: derived from buildAnthropicRequest + DefaultRegistry().Resolve because the harness does not yet carry a live capture. Pins the tool-enabled Anthropic Messages request shape: the tools array carries name/description/input_schema, tool_choice projects ToolChoiceRequired onto {"type":"any"}, and content is a typed block array. See testdata/quirks/README.md to refresh.
+# synthetic: derived from buildAnthropicRequest + DefaultRegistry().Resolve because the harness does not yet carry a live capture. Pins the tool-enabled Anthropic Messages request shape: the tools array carries name/description/input_schema, tool_choice projects ToolChoiceRequired onto {"type":"any"}, content is a typed block array, and the PromptCaching quirk sends system as a text block with an ephemeral cache_control breakpoint plus a top-level cache_control. See testdata/quirks/README.md to refresh.
 {
   "model": "claude-sonnet-4-6",
-  "system": "You are helpful.",
+  "system": [
+    {
+      "type": "text",
+      "text": "You are helpful.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
   "messages": [
     {
       "role": "user",
@@ -33,6 +41,9 @@
   "temperature": 0.5,
   "tool_choice": {
     "type": "any"
+  },
+  "cache_control": {
+    "type": "ephemeral"
   },
   "stream": true
 }

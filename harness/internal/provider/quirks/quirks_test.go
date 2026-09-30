@@ -643,6 +643,32 @@ func TestAnthropicEffortLevels(t *testing.T) {
 	}
 }
 
+// TestAnthropicPromptCaching pins that every Anthropic model resolves
+// prompt caching on, and that a registry with no rule leaves it off so a
+// rule-less request keeps the uncached wire shape.
+func TestAnthropicPromptCaching(t *testing.T) {
+	for _, model := range []string{
+		"claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5-20250929",
+		"claude-sonnet-4-6",
+		"claude-opus-4-8",
+		"claude-sonnet-5-5",
+		"claude-opus-5-5",
+		"claude-fable-5-1",
+		"claude-mythos-5-1",
+	} {
+		if !DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
+			t.Errorf("anthropic/%s: PromptCaching = false, want true", model)
+		}
+	}
+	if NewRegistry(nil).Resolve("anthropic", "claude-sonnet-5-5").BehaviourFlags.Anthropic.PromptCaching {
+		t.Error("empty registry: PromptCaching = true, want false")
+	}
+	if DefaultRegistry().Resolve("openai-compatible", "claude-sonnet-5-5").BehaviourFlags.Anthropic.PromptCaching {
+		t.Error("openai-compatible/claude-sonnet-5-5: PromptCaching = true, want false (rule scoped to the anthropic provider)")
+	}
+}
+
 // TestAnthropicForcedToolChoiceRemoved pins the models that return HTTP
 // 400 on tool_choice "any" and "tool". They must advertise auto only so the
 // escalation policy picks its prompt fallback instead of a forced choice,

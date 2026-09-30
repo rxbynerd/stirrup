@@ -308,6 +308,15 @@ func BuiltinRules() []Rule {
 			},
 		},
 		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: prompt caching: system breakpoint + top-level automatic cache_control (probed 2026-09-30)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.PromptCaching = true
+			},
+		},
+		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "*",
 			Description:  "OpenAI-compatible: top-level parallel_tool_calls; accepts schema examples",

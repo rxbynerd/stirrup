@@ -102,8 +102,9 @@ func (a *AnthropicAdapter) WireTap(out io.Writer) {
 // a cross-provider confidentiality invariant — see docs/architecture.md
 // (Provider adapters).
 type anthropicRequest struct {
-	Model       string                 `json:"model"`
-	System      string                 `json:"system,omitempty"`
+	Model string `json:"model"`
+	// System is nil when the system prompt is empty, which omits the key.
+	System      *anthropicSystemPrompt `json:"system,omitempty"`
 	Messages    []anthropicMessage     `json:"messages"`
 	Tools       []types.ToolDefinition `json:"tools,omitempty"`
 	MaxTokens   int                    `json:"max_tokens"`
@@ -115,11 +116,49 @@ type anthropicRequest struct {
 	// OutputConfig carries output_config.effort. Nil omits the key, which
 	// is required for models with no effort control (they 400 on it).
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	// CacheControl is the top-level automatic-caching breakpoint: the API
+	// places it on the last cacheable block of each request, so the cached
+	// prefix grows with the conversation. Nil omits the key.
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 	Stream       bool                   `json:"stream"`
 }
 
 type anthropicOutputConfig struct {
 	Effort string `json:"effort"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
+}
+
+func ephemeralCacheControl() *anthropicCacheControl {
+	return &anthropicCacheControl{Type: "ephemeral"}
+}
+
+// anthropicSystemPrompt renders the `system` field as a plain JSON string,
+// or, when Cache is set, as a single text block carrying an ephemeral
+// cache_control breakpoint. The block form keeps tools and system cached
+// even after the context strategy rewrites earlier messages.
+type anthropicSystemPrompt struct {
+	Text  string
+	Cache bool
+}
+
+type anthropicSystemBlock struct {
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+func (s anthropicSystemPrompt) MarshalJSON() ([]byte, error) {
+	if !s.Cache {
+		return json.Marshal(s.Text)
+	}
+	return json.Marshal([]anthropicSystemBlock{{
+		Type:         "text",
+		Text:         s.Text,
+		CacheControl: ephemeralCacheControl(),
+	}})
 }
 
 // anthropicToolChoice is the Anthropic Messages API tool_choice object.
@@ -413,8 +452,9 @@ func (u anthropicUsage) applyTo(ev *types.StreamEvent) {
 // non-streaming (batch) caller can reuse the same projection.
 //
 // q carries the resolved per-(provider, model) quirks. A zero-value q (both
-// Supported=false) emits no tool_choice field and string-only tool results,
-// so callers that do not route through the registry get the baseline shape.
+// Supported=false) emits no tool_choice field, string-only tool results, a
+// string system prompt and no cache_control, so callers that do not route
+// through the registry get the baseline shape.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
@@ -429,9 +469,18 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 	if effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.Anthropic.EffortLevels); effort != "" {
 		outputConfig = &anthropicOutputConfig{Effort: effort}
 	}
+	caching := q.BehaviourFlags.Anthropic.PromptCaching
+	var system *anthropicSystemPrompt
+	if params.System != "" {
+		system = &anthropicSystemPrompt{Text: params.System, Cache: caching}
+	}
+	var cacheControl *anthropicCacheControl
+	if caching {
+		cacheControl = ephemeralCacheControl()
+	}
 	return anthropicRequest{
 		Model:    params.Model,
-		System:   params.System,
+		System:   system,
 		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
 
 		Tools:        translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
@@ -439,6 +488,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		Temperature:  temperature,
 		ToolChoice:   applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
 		OutputConfig: outputConfig,
+		CacheControl: cacheControl,
 		Stream:       stream,
 	}
 }

@@ -425,3 +425,93 @@ func TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildAnthropicRequest_PromptCaching pins the system/cache_control
+// shapes byte-for-byte. The system text carries HTML-significant characters
+// so the flag-off case also proves the string form escapes exactly as a
+// plain string field does.
+func TestBuildAnthropicRequest_PromptCaching(t *testing.T) {
+	msgs := []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}}
+	cachingOn := quirks.ProviderQuirks{}
+	cachingOn.BehaviourFlags.Anthropic.PromptCaching = true
+
+	cases := []struct {
+		name   string
+		system string
+		q      quirks.ProviderQuirks
+		want   string
+	}{
+		{
+			name:   "flag off sends a string system and no cache_control",
+			system: "Use <b> & tools.",
+			q:      quirks.ProviderQuirks{},
+			want:   `{"model":"claude-sonnet-4-6","system":"Use \u003cb\u003e \u0026 tools.","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"max_tokens":256,"stream":true}`,
+		},
+		{
+			name:   "flag off with empty system omits both keys",
+			system: "",
+			q:      quirks.ProviderQuirks{},
+			want:   `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"max_tokens":256,"stream":true}`,
+		},
+		{
+			name:   "flag on sends a cached system block and top-level cache_control",
+			system: "Use <b> & tools.",
+			q:      cachingOn,
+			want:   `{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"Use \u003cb\u003e \u0026 tools.","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"max_tokens":256,"cache_control":{"type":"ephemeral"},"stream":true}`,
+		},
+		{
+			name:   "flag on with empty system sends only top-level cache_control",
+			system: "",
+			q:      cachingOn,
+			want:   `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"max_tokens":256,"cache_control":{"type":"ephemeral"},"stream":true}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := types.StreamParams{
+				Model:     "claude-sonnet-4-6",
+				System:    tc.system,
+				MaxTokens: 256,
+				Messages:  msgs,
+			}
+			body, err := json.Marshal(buildAnthropicRequest(params, true, tc.q))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(body) != tc.want {
+				t.Errorf("body mismatch\n got:  %s\n want: %s", body, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildAnthropicRequest_PromptCachingOnEveryModel pins that the
+// registry turns caching on for every Anthropic model, including Haiku 4.5
+// whose 4,096-token minimum most prompts miss: the API leaves a short
+// prompt uncached rather than rejecting the breakpoint. The batch body
+// (stream=false) shares the builder, so it carries the same fields.
+func TestBuildAnthropicRequest_PromptCachingOnEveryModel(t *testing.T) {
+	for _, model := range []string{"claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"} {
+		t.Run(model, func(t *testing.T) {
+			params := types.StreamParams{
+				Model:     model,
+				System:    "sys",
+				MaxTokens: 256,
+				Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+			}
+			q := quirks.DefaultRegistry().Resolve("anthropic", model)
+			body, err := json.Marshal(buildAnthropicRequest(params, false, q))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			for _, want := range []string{
+				`"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]`,
+				`"cache_control":{"type":"ephemeral"},"stream":false`,
+			} {
+				if !strings.Contains(string(body), want) {
+					t.Errorf("expected %s in body, got: %s", want, body)
+				}
+			}
+		})
+	}
+}

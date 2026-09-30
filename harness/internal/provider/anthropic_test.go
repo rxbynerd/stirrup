@@ -306,7 +306,13 @@ func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
 }
 
 func TestAnthropicAdapter_RequestBody(t *testing.T) {
-	var received anthropicRequest
+	var received struct {
+		Model        string          `json:"model"`
+		System       json.RawMessage `json:"system"`
+		MaxTokens    int             `json:"max_tokens"`
+		CacheControl json.RawMessage `json:"cache_control"`
+		Stream       bool            `json:"stream"`
+	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
@@ -340,8 +346,11 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	if received.Model != "claude-sonnet-4-6" {
 		t.Errorf("model = %q, want claude-sonnet-4-6", received.Model)
 	}
-	if received.System != "You are helpful." {
-		t.Errorf("system = %q, want 'You are helpful.'", received.System)
+	if want := `[{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}]`; string(received.System) != want {
+		t.Errorf("system = %s, want %s", received.System, want)
+	}
+	if want := `{"type":"ephemeral"}`; string(received.CacheControl) != want {
+		t.Errorf("cache_control = %s, want %s", received.CacheControl, want)
 	}
 	if received.MaxTokens != 4096 {
 		t.Errorf("max_tokens = %d, want 4096", received.MaxTokens)
