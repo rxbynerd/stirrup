@@ -1114,6 +1114,29 @@ func TestRunTraceToProto_StopDetails(t *testing.T) {
 	}
 }
 
+// TestRunTraceToProto_PartialStopDetails pins that a refusal with no
+// category or explanation still reaches the wire as a present message.
+func TestRunTraceToProto_PartialStopDetails(t *testing.T) {
+	raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{
+		Outcome:     "refusal",
+		StopDetails: &types.StopDetails{Type: "refusal"},
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetStopDetails()
+	if got == nil {
+		t.Fatal("stop_details absent, want a message with type refusal")
+	}
+	if got.GetType() != "refusal" || got.GetCategory() != "" || got.GetExplanation() != "" {
+		t.Errorf("stop_details = %v, want type refusal with empty category and explanation", got)
+	}
+}
+
 // TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
 // a TaskAssignment with no hooks sub-message must not synthesise a
 // non-nil types.HooksConfig.

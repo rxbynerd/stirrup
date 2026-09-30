@@ -277,6 +277,32 @@ func TestTurnTrace_ModelOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestTurnTrace_StopDetailsOmittedWhenNil(t *testing.T) {
+	bare, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(bare), `"stopDetails"`) {
+		t.Errorf("nil StopDetails must be omitted; JSON = %s", bare)
+	}
+
+	want := StopDetails{Type: "refusal"}
+	data, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "refusal", StopDetails: &want})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"stopDetails":{"type":"refusal"}`) {
+		t.Errorf("JSON = %s, want stopDetails with only type set", data)
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.StopDetails == nil || *round.StopDetails != want {
+		t.Errorf("round-trip StopDetails = %+v, want %+v", round.StopDetails, want)
+	}
+}
+
 func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
 	var oldTrace RunTrace
 	if err := json.Unmarshal([]byte(`{"id":"run-1","turns":2}`), &oldTrace); err != nil {
