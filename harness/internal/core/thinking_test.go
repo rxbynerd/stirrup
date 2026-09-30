@@ -140,18 +140,20 @@ func (p *thinkingParamsProvider) Stream(_ context.Context, params types.StreamPa
 }
 
 // rewriteFromCallStrategy returns history unchanged but reports a
-// compaction from its compactFrom-th Prepare call onward, standing in for
-// a strategy that has started rewriting history.
+// compaction from its compactFrom-th Prepare call onward (through the
+// compactUntil-th call when compactUntil is non-zero), standing in for a
+// strategy that rewrites history.
 type rewriteFromCallStrategy struct {
-	compactFrom int
-	calls       int
-	last        *contextpkg.CompactionEvent
+	compactFrom  int
+	compactUntil int
+	calls        int
+	last         *contextpkg.CompactionEvent
 }
 
 func (s *rewriteFromCallStrategy) Prepare(_ context.Context, messages []types.Message, _ contextpkg.TokenBudget) ([]types.Message, error) {
 	s.calls++
 	s.last = nil
-	if s.calls >= s.compactFrom {
+	if s.calls >= s.compactFrom && (s.compactUntil == 0 || s.calls <= s.compactUntil) {
 		s.last = &contextpkg.CompactionEvent{Strategy: "test-rewrite", MessagesBefore: len(messages), MessagesAfter: len(messages)}
 	}
 	return messages, nil
@@ -212,5 +214,141 @@ func TestLoop_ReplaysThinkingUntilContextRewrite(t *testing.T) {
 	}
 	if toolUses != 3 {
 		t.Errorf("request 4 carried %d tool_use blocks, want 3", toolUses)
+	}
+}
+
+// TestLoop_StripsThinkingForRestOfRunAfterOneRewrite pins that a single
+// rewrite ends thinking replay for the rest of the run, even when the
+// strategy reports no compaction on later turns.
+func TestLoop_StripsThinkingForRestOfRunAfterOneRewrite(t *testing.T) {
+	prov := &thinkingParamsProvider{turns: 3}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Context = &rewriteFromCallStrategy{compactFrom: 2, compactUntil: 2}
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prov.sent) != 4 {
+		t.Fatalf("provider saw %d requests, want 4", len(prov.sent))
+	}
+	for i := 1; i < len(prov.sent); i++ {
+		if got := thinkingSignatures(prov.sent[i]); len(got) != 0 {
+			t.Errorf("request %d carried thinking %v after the run's rewrite, want none", i+1, got)
+		}
+	}
+}
+
+// recordingStrategy passes Prepare through to a real strategy and records,
+// per call, the loop's token estimate, the thinking blocks in the stored
+// history it was given, and whether the strategy reported a compaction.
+type recordingStrategy struct {
+	inner          contextpkg.ContextStrategy
+	currentTokens  []int
+	storedThinking []int
+	compacted      []bool
+}
+
+func (r *recordingStrategy) Prepare(ctx context.Context, messages []types.Message, budget contextpkg.TokenBudget) ([]types.Message, error) {
+	r.currentTokens = append(r.currentTokens, budget.CurrentTokens)
+	r.storedThinking = append(r.storedThinking, len(thinkingSignatures(messages)))
+	out, err := r.inner.Prepare(ctx, messages, budget)
+	r.compacted = append(r.compacted, r.inner.LastCompaction() != nil)
+	return out, err
+}
+
+func (r *recordingStrategy) LastCompaction() *contextpkg.CompactionEvent {
+	return r.inner.LastCompaction()
+}
+
+type summaryTextProvider struct{}
+
+func (summaryTextProvider) Stream(context.Context, types.StreamParams) (<-chan types.StreamEvent, error) {
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "text_delta", Text: "summary of earlier turns"}
+	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
+	close(ch)
+	return ch, nil
+}
+
+type discardFileWriter struct{}
+
+func (discardFileWriter) WriteFile(context.Context, string, string) error { return nil }
+
+// maxTokensCompactingFrom returns a contextStrategy.maxTokens whose usable
+// budget admits the loop's estimate for call first-1 but not for call
+// first, so an over-budget strategy first compacts on call index first.
+func maxTokensCompactingFrom(t *testing.T, estimates []int, first int) int {
+	t.Helper()
+	lo, hi := estimates[first-1], estimates[first]
+	for m := lo; m <= 2*hi+defaultReserveForResponse; m++ {
+		if avail := m - effectiveReserveForResponse(m); avail >= lo && avail < hi {
+			return m
+		}
+	}
+	t.Fatalf("no maxTokens separates estimates %d and %d", lo, hi)
+	return 0
+}
+
+// TestLoop_RealStrategiesStripThinkingAfterCompaction drives each context
+// strategy past its budget mid-run. It pins that the strategy reports a
+// compaction on every call after its first ("once compacted, always
+// compacted"), that the stored history keeps every thinking block, and
+// that no request after the first compaction carries one.
+func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
+	const turns = 5
+	cases := []struct {
+		name  string
+		first int
+		build func() contextpkg.ContextStrategy
+	}{
+		{"sliding-window", 2, func() contextpkg.ContextStrategy { return contextpkg.NewSlidingWindowStrategy() }},
+		{"summarise", 3, func() contextpkg.ContextStrategy {
+			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model")
+		}},
+		{"offload-to-file", 2, func() contextpkg.ContextStrategy {
+			return contextpkg.NewOffloadToFileStrategy(discardFileWriter{})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calibrate := &recordingStrategy{inner: tc.build()}
+			loop := buildTestLoop(nil)
+			loop.Provider = &thinkingParamsProvider{turns: turns}
+			loop.Context = calibrate
+			if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+				t.Fatalf("calibration Run: %v", err)
+			}
+
+			prov := &thinkingParamsProvider{turns: turns}
+			rec := &recordingStrategy{inner: tc.build()}
+			cfg := buildTestConfig()
+			cfg.ContextStrategy.MaxTokens = maxTokensCompactingFrom(t, calibrate.currentTokens, tc.first)
+			loop = buildTestLoop(nil)
+			loop.Provider = prov
+			loop.Context = rec
+			if _, err := loop.Run(context.Background(), cfg); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(prov.sent) != turns+1 {
+				t.Fatalf("provider saw %d requests, want %d", len(prov.sent), turns+1)
+			}
+
+			for i := range prov.sent {
+				if wantCompacted := i >= tc.first; rec.compacted[i] != wantCompacted {
+					t.Errorf("call %d: compacted = %v, want %v", i, rec.compacted[i], wantCompacted)
+				}
+				if rec.storedThinking[i] != i {
+					t.Errorf("call %d: stored history has %d thinking blocks, want %d", i, rec.storedThinking[i], i)
+				}
+				wantSent := i
+				if i >= tc.first {
+					wantSent = 0
+				}
+				if got := len(thinkingSignatures(prov.sent[i])); got != wantSent {
+					t.Errorf("request %d carried %d thinking blocks, want %d", i+1, got, wantSent)
+				}
+			}
+		})
 	}
 }

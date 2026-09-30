@@ -138,6 +138,12 @@ type AgenticLoop struct {
 	// by the OTel collection goroutine.
 	lastContextTokens atomic.Int64
 
+	// historyRewritten records that a context strategy rewrote the history
+	// sent on some turn of the current run. It is reset at run start and
+	// never cleared mid-run; while set, thinking blocks are stripped from
+	// every request.
+	historyRewritten bool
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.

@@ -295,6 +295,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// gauge callback so the first observation (before any Context.Prepare)
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
+	l.historyRewritten = false
 
 	// Tagged with run.id and run.mode; unregistered at run end so the
 	// OTel SDK does not keep observing this run after it finishes.
@@ -717,10 +718,11 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		compaction := l.Context.LastCompaction()
 		if compaction != nil {
+			l.historyRewritten = true
+		}
+		if l.historyRewritten {
 			// A thinking block is bound to the exact history before it, so
-			// after any rewrite none can be replayed. History only grows,
-			// so once a strategy compacts it compacts on every later turn
-			// and blocks produced under a rewritten prefix are never sent.
+			// none is replayed once the run has sent a rewritten history.
 			preparedMessages = types.StripThinkingBlocks(preparedMessages)
 		}
 		// Feeds the ContextTokens observable gauge registered in Run;
