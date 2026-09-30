@@ -41,9 +41,11 @@ type NestedJSONLEmitter struct {
 	toolCalls          []types.ToolCallTrace
 	permissionDenials  int
 	finalAssistantText string
+	stopDetails        *types.StopDetails
 }
 
 var _ FinalAssistantTextRecorder = (*NestedJSONLEmitter)(nil)
+var _ StopDetailsRecorder = (*NestedJSONLEmitter)(nil)
 var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
@@ -72,6 +74,7 @@ func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
+	e.stopDetails = nil
 }
 
 // RecordTurn appends to the child's local trace and forwards a tagged
@@ -155,6 +158,14 @@ func (e *NestedJSONLEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+// RecordStopDetails stores the child run's final stop details locally and,
+// like RecordFinalAssistantText, does not forward them to the parent.
+func (e *NestedJSONLEmitter) RecordStopDetails(details *types.StopDetails) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopDetails = details
+}
+
 func (e *NestedJSONLEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	if parent, ok := e.parent.(CommandOutputRecorder); ok {
 		parent.RecordCommandOutput(record)
@@ -196,6 +207,7 @@ func (e *NestedJSONLEmitter) Finish(_ context.Context, outcome string) (*types.R
 		ToolCalls:          summaries,
 		PermissionDenials:  e.permissionDenials,
 		Outcome:            outcome,
+		StopDetails:        e.stopDetails,
 		FinalAssistantText: e.finalAssistantText,
 	}, nil
 }

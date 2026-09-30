@@ -75,10 +75,12 @@ type GCSTraceEmitter struct {
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
 	finalAssistantText   string
+	stopDetails          *types.StopDetails
 	commandOutputArchive string
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
+var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 
@@ -163,6 +165,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
+	e.stopDetails = nil
 	e.commandOutputArchive = ""
 }
 
@@ -201,6 +204,14 @@ func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+// RecordStopDetails stores the run's final stop details so the uploaded
+// trace object carries them.
+func (e *GCSTraceEmitter) RecordStopDetails(details *types.StopDetails) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopDetails = details
+}
+
 func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
 
 func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
@@ -228,6 +239,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
 	permissionDenials := e.permissionDenials
 	finalAssistantText := e.finalAssistantText
+	stopDetails := e.stopDetails
 	commandOutputArchive := e.commandOutputArchive
 	e.mu.Unlock()
 
@@ -262,6 +274,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		ToolCalls:            summaries,
 		PermissionDenials:    permissionDenials,
 		Outcome:              outcome,
+		StopDetails:          stopDetails,
 		FinalAssistantText:   finalAssistantText,
 		CommandOutputArchive: commandOutputArchive,
 	}

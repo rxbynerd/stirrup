@@ -112,6 +112,7 @@ type OTelTraceEmitter struct {
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
 	finalAssistantText   string
+	stopDetails          *types.StopDetails
 	commandOutputArchive string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
@@ -150,6 +151,7 @@ var (
 	_ SystemInstructionsRecorder   = (*OTelTraceEmitter)(nil)
 	_ PromptResolutionRecorder     = (*OTelTraceEmitter)(nil)
 	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
+	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
 	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
 	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
 )
@@ -342,6 +344,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
+	e.stopDetails = nil
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -655,6 +658,14 @@ func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+// RecordStopDetails stores the run's final stop details so the RunTrace
+// aggregate returned by Finish carries them.
+func (e *OTelTraceEmitter) RecordStopDetails(details *types.StopDetails) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopDetails = details
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -873,6 +884,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		ToolCalls:            summaries,
 		PermissionDenials:    e.permissionDenials,
 		Outcome:              outcome,
+		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,
 		CommandOutputArchive: e.commandOutputArchive,
 	}

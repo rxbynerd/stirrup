@@ -49,10 +49,12 @@ type JSONLTraceEmitter struct {
 	permissionDenials    int
 	hookResults          []types.HookExecution
 	finalAssistantText   string
+	stopDetails          *types.StopDetails
 	commandOutputArchive string
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
+var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 
@@ -104,6 +106,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.hookResults = nil
 	e.finalAssistantText = ""
+	e.stopDetails = nil
 	e.commandOutputArchive = ""
 
 	startedAt := e.startedAt
@@ -224,6 +227,14 @@ func (e *JSONLTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+// RecordStopDetails stores the run's final stop details so the
+// run_finished event's embedded RunTrace carries them.
+func (e *JSONLTraceEmitter) RecordStopDetails(details *types.StopDetails) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopDetails = details
+}
+
 func (e *JSONLTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -275,6 +286,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		ToolCalls:            summaries,
 		PermissionDenials:    e.permissionDenials,
 		Outcome:              outcome,
+		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,
 		HookResults:          e.hookResults,
 		CommandOutputArchive: e.commandOutputArchive,

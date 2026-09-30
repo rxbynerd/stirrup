@@ -601,6 +601,7 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 type streamResult struct {
 	Blocks       []types.ContentBlock
 	StopReason   string
+	StopDetails  *types.StopDetails
 	Usage        types.TokenUsage
 	ReplayFields map[string]json.RawMessage
 }
@@ -679,6 +680,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			}
 			if event.StopReason != "" {
 				result.StopReason = event.StopReason
+			}
+			if event.StopDetails != nil {
+				result.StopDetails = event.StopDetails
 			}
 			result.Usage.MergeEvent(event)
 			if len(event.ReplayFields) > 0 {

@@ -78,6 +78,13 @@ type FinalAssistantTextRecorder interface {
 	RecordFinalAssistantText(text string)
 }
 
+// StopDetailsRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.StopDetails just before Finish, for the
+// same reason as FinalAssistantTextRecorder.
+type StopDetailsRecorder interface {
+	RecordStopDetails(details *types.StopDetails)
+}
+
 // CommandOutputRecorder receives bounded metadata for complete command
 // captures. Full stream content remains in the sidecar archive.
 type CommandOutputRecorder interface {
