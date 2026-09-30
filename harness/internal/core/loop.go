@@ -101,10 +101,10 @@ func effectiveReserveForResponse(maxTokens int) int {
 	return reserve
 }
 
-// providerCacheKey derives StreamParams.CacheKey from the run ID, so a
-// provider sees a stable per-run cache-affinity hint without learning the
-// run ID itself. An empty run ID yields no key rather than one shared by
-// every such run.
+// providerCacheKey derives StreamParams.CacheKey as an unsalted digest of
+// the run ID: deterministic, so a retried run keeps its routing affinity,
+// and not an anonymiser. An empty run ID yields no key rather than one
+// shared by every such run.
 func providerCacheKey(runID string) string {
 	if runID == "" {
 		return ""
