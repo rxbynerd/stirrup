@@ -839,6 +839,55 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	}
 }
 
+func TestSpawnSubAgent_RecordsSubagentCacheMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok."},
+			{Type: "message_complete", StopReason: "end_turn", InputTokens: 4000, OutputTokens: 20, CacheReadTokens: 3000, CacheWriteTokens: 700},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Metrics = metrics
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-subagent-cache-metrics-1"
+	parentConfig.Mode = "execution"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for name, want := range map[string]int64{
+		"stirrup.subagent.tokens.input":       4000,
+		"stirrup.subagent.tokens.output":      20,
+		"stirrup.subagent.tokens.cache_read":  3000,
+		"stirrup.subagent.tokens.cache_write": 700,
+	} {
+		got := findSubagentCounter(t, rm, name)
+		if got.total != want {
+			t.Errorf("%s total = %d, want %d", name, got.total, want)
+		}
+		if got.attrs["parent.mode"] != "execution" {
+			t.Errorf("%s parent.mode = %q, want execution", name, got.attrs["parent.mode"])
+		}
+	}
+}
+
 // subagentCounterDP is a flattened view of an int64 counter; tests in
 // this file already use a similar helper for harness metrics, but the
 // sub-agent assertions need attribute access too.

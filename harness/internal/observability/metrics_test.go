@@ -68,6 +68,12 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	m.SubagentTokensOutput.Add(ctx, 120, metric.WithAttributes(
 		attribute.String("parent.mode", "execution"),
 	))
+	m.SubagentTokensCacheRead.Add(ctx, 600, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
+	m.SubagentTokensCacheWrite.Add(ctx, 90, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
 	m.MCPCalls.Add(ctx, 6, metric.WithAttributes(
 		attribute.String("server.name", "test-server"),
 		attribute.String("tool.name", "search_docs"),
@@ -125,6 +131,8 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.subagent.spawns", 2)
 	assertInt64Sum(t, sums, "stirrup.subagent.tokens.input", 800)
 	assertInt64Sum(t, sums, "stirrup.subagent.tokens.output", 120)
+	assertInt64Sum(t, sums, "stirrup.subagent.tokens.cache_read", 600)
+	assertInt64Sum(t, sums, "stirrup.subagent.tokens.cache_write", 90)
 	assertInt64Sum(t, sums, "stirrup.mcp.calls", 6)
 	assertInt64Sum(t, sums, "stirrup.edit.attempts", 4)
 	assertInt64Sum(t, sums, "stirrup.verifier.runs", 3)
@@ -330,6 +338,8 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.SubagentSpawns.Add(ctx, 1)
 	m.SubagentTokensInput.Add(ctx, 100)
 	m.SubagentTokensOutput.Add(ctx, 50)
+	m.SubagentTokensCacheRead.Add(ctx, 30)
+	m.SubagentTokensCacheWrite.Add(ctx, 10)
 	m.SubagentDuration.Record(ctx, 250.0)
 	m.MCPCalls.Add(ctx, 1)
 	m.MCPDuration.Record(ctx, 25.0)

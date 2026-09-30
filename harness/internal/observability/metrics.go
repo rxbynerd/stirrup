@@ -46,16 +46,18 @@ type Metrics struct {
 	RuleOfTwoActions      metric.Int64Counter
 
 	// Component-level counters
-	SubagentSpawns       metric.Int64Counter
-	SubagentTokensInput  metric.Int64Counter
-	SubagentTokensOutput metric.Int64Counter
-	MCPCalls             metric.Int64Counter
-	EditAttempts         metric.Int64Counter
-	VerifierRuns         metric.Int64Counter
-	CodeScannerScans     metric.Int64Counter
-	CodeScannerFindings  metric.Int64Counter
-	PermissionDecisions  metric.Int64Counter
-	ContextStrategyRuns  metric.Int64Counter
+	SubagentSpawns           metric.Int64Counter
+	SubagentTokensInput      metric.Int64Counter
+	SubagentTokensOutput     metric.Int64Counter
+	SubagentTokensCacheRead  metric.Int64Counter
+	SubagentTokensCacheWrite metric.Int64Counter
+	MCPCalls                 metric.Int64Counter
+	EditAttempts             metric.Int64Counter
+	VerifierRuns             metric.Int64Counter
+	CodeScannerScans         metric.Int64Counter
+	CodeScannerFindings      metric.Int64Counter
+	PermissionDecisions      metric.Int64Counter
+	ContextStrategyRuns      metric.Int64Counter
 
 	// Histograms
 	RunDuration      metric.Float64Histogram
@@ -446,6 +448,22 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.SubagentTokensOutput, err = meter.Int64Counter("stirrup.subagent.tokens.output",
 		metric.WithUnit("{token}"),
 		metric.WithDescription("Sub-agent output tokens"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.SubagentTokensCacheRead, err = meter.Int64Counter("stirrup.subagent.tokens.cache_read",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Sub-agent input tokens served from the provider's prompt cache"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.SubagentTokensCacheWrite, err = meter.Int64Counter("stirrup.subagent.tokens.cache_write",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Sub-agent input tokens written to the provider's prompt cache"),
 	)
 	if err != nil {
 		return nil, err
