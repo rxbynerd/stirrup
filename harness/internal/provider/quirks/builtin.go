@@ -390,34 +390,11 @@ func BuiltinRules() []Rule {
 		},
 		{
 			ProviderType: "openai-responses",
-			ModelMatch:   "gpt-5-chat*",
-			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include or output replay (inferred, not probed)",
-			LastVerified: Date("2026-09-30"),
-			Apply: func(q *ProviderQuirks) {
-				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = false
-				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = false
-			},
-		},
-		{
-			ProviderType: "openai-responses",
 			ModelMatch:   "*",
 			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.PromptCacheKey = true
-			},
-		},
-		{
-			ProviderType: "openai-responses",
-			ModelMatch:   "gpt-6*",
-			Description:  "OpenAI Responses gpt-6 family: omit sampling params; reasoning.effort low..max; strict tools, request encrypted reasoning, replay output items (documented)",
-			LastVerified: Date("2026-09-30"),
-			Apply: func(q *ProviderQuirks) {
-				q.BehaviourFlags.OpenAI.StrictMode = true
-				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
-				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
-				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
-				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},
 		},
 		// GPT-5.4 onward document effort none..xhigh (5.6: ..max) and no
@@ -436,7 +413,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5.5*",
-			Description:  "OpenAI Responses gpt-5.5: reasoning.effort low..xhigh (documented); omit sampling params (inferred); not probed",
+			Description:  "OpenAI Responses gpt-5.5: reasoning.effort low..xhigh (documented, not probed); omit sampling params (inferred)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
@@ -446,9 +423,32 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5.6*",
-			Description:  "OpenAI Responses gpt-5.6 family: reasoning.effort low..max (documented); omit sampling params (inferred); not probed",
+			Description:  "OpenAI Responses gpt-5.6 family: reasoning.effort low..max (documented, not probed); omit sampling params (inferred)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5-chat*",
+			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include or output replay (inferred, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = false
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = false
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI Responses gpt-6 family: gpt-5 reasoning rules plus omit sampling params, reasoning.effort low..max (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
 				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
 				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 			},
