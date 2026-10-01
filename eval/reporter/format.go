@@ -35,6 +35,8 @@ func FormatText(report eval.ComparisonReport) string {
 			len(report.Tasks), s.Current.Trials, 1/float64(len(report.Tasks)*s.Current.Trials), s.WarnMargin)
 	}
 	writeNoiseFloor(&b, s.NoiseFloor, len(report.Tasks), s.Current.Trials)
+	writeUnpaired(&b, "Missing from current run", report.BaselineOnly)
+	writeUnpaired(&b, "New in current run", report.CurrentOnly)
 
 	b.WriteString("\n")
 
@@ -110,6 +112,13 @@ func writeNoiseFloor(b *strings.Builder, nf *eval.NoiseFloor, n, k int) {
 	}
 	fmt.Fprintf(b, "Noise floor (all-pass baseline, n=%d): per-trial pass rate %.3f over %d pooled trials; a single-run flip gate false-alarms on %.2f%% of pushes, the %d-of-%d flip rule on %.2f%%\n",
 		n, nf.PerTrialPassRate, nf.PooledTrials, nf.SingleRunFalseAlarm*100, k, k, nf.FlipRuleFalseAlarm*100)
+}
+
+func writeUnpaired(b *strings.Builder, label string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "%s (%d): %s\n", label, len(ids), strings.Join(ids, ", "))
 }
 
 func joinFloats(xs []float64) string {

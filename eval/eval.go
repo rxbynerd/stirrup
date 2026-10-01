@@ -127,12 +127,16 @@ type SuiteResult struct {
 }
 
 // ComparisonReport diffs two SuiteResults and flags regressions.
+// BaselineOnly and CurrentOnly list, sorted, the task IDs present on one
+// side only; they are always emitted, as empty arrays when there are none.
 type ComparisonReport struct {
 	CurrentID    string            `json:"currentId"`
 	BaselineID   string            `json:"baselineId"`
 	Regressions  []TaskRegression  `json:"regressions,omitempty"`
 	Improvements []TaskImprovement `json:"improvements,omitempty"`
 	Tasks        []TaskComparison  `json:"tasks,omitempty"`
+	BaselineOnly []string          `json:"baselineOnly"`
+	CurrentOnly  []string          `json:"currentOnly"`
 	Summary      ComparisonSummary `json:"summary"`
 }
 
