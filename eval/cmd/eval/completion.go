@@ -42,7 +42,7 @@ var evalCompletionSubcommands = []string{
 // this lookup for the same reason noted above.
 var evalCompletionFlags = map[string][]string{
 	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit", "accept-quarantine", "model", "prompt-model", "provider", "base-url", "api-key-ref", "judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref", "judge-cache", "judge-cache-dir"},
-	"compare":               {"current", "baseline"},
+	"compare":               {"current", "baseline", "warn-margin", "flip-threshold", "output"},
 	"baseline":              {"lakehouse", "after", "before", "mode", "model", "provider", "output"},
 	"mine-failures":         {"lakehouse", "after", "before", "outcome", "limit", "sample-by", "output", "include-batch", "include-inconclusive", "accept-quarantine"},
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model", "provider"},
