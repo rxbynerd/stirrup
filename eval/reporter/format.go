@@ -56,14 +56,14 @@ func FormatText(report eval.ComparisonReport) string {
 	return b.String()
 }
 
-// FormatWilson95 renders the 95% Wilson interval for rate over n trials
-// or tasks, or "n/a" when n is not positive.
+// FormatWilson95 renders the 95% Wilson interval for rate over n samples
+// as "lo-hi%", or "n/a" when n is not positive.
 func FormatWilson95(rate float64, n int) string {
 	if n <= 0 {
 		return "n/a"
 	}
 	lo, hi := Wilson95(rate*float64(n), n)
-	return fmt.Sprintf("[%.1f%%, %.1f%%]", lo*100, hi*100)
+	return fmt.Sprintf("%.1f-%.1f%%", lo*100, hi*100)
 }
 
 func writeRate(b *strings.Builder, label string, r eval.RateSummary) {

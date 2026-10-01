@@ -1039,6 +1039,7 @@ func printDriftReport(report types.DriftReport) bool {
 
 	fmt.Printf("%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 		"Pass rate", report.Current.PassRate*100, report.Baseline.PassRate*100, report.Deltas.PassRateDelta*100)
+	fmt.Printf("%-16s %12s %12s\n", "  95% Wilson", reporter.FormatWilson95(report.Current.PassRate, report.Current.Count), reporter.FormatWilson95(report.Baseline.PassRate, report.Baseline.Count))
 	fmt.Printf("%-16s %12.1f %12.1f %+12.1f\n",
 		"Mean turns", report.Current.MeanTurns, report.Baseline.MeanTurns, report.Deltas.MeanTurnsDelta)
 	fmt.Printf("%-16s %11.0fms %11.0fms %+11.0fms\n",
