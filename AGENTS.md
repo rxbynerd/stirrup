@@ -41,6 +41,7 @@ stirrup/
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
       security/              # SecretStore, LogScrubber, input validation
+      jsonextract/           # Last-object JSON extraction from free-form model output (guard + verifier verdicts)
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
     cmd/eval/main.go         # CLI: run, compare, baseline, mine-failures, drift, compare-to-production
