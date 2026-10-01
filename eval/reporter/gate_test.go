@@ -824,3 +824,32 @@ func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
 	within(t, "pass^2", s.PassHatK[1], 7.0/9, 1e-12)
 	within(t, "pass@2", s.PassAtK[1], 1, 1e-12)
 }
+
+const workedExampleReportDefault = `Eval Comparison: current-run vs baseline-run
+
+Gate: PASS
+
+Pass Rate: 60.0% → 50.0% (-10.0%)
+  baseline: 60.0% (95% Wilson over tasks [31.3%, 83.2%]), SE 0.130, n=10 tasks, K=3
+            pass^k (k=1..3): 0.600, 0.467, 0.400; pass@k: 0.600, 0.733, 0.800
+  current:  50.0% (95% Wilson over tasks [23.7%, 76.3%]), SE 0.114, n=10 tasks, K=3
+            pass^k (k=1..3): 0.500, 0.300, 0.200; pass@k: 0.500, 0.700, 0.800
+Paired: n=10, mean delta -0.100, SE 0.0711, two-sided 95% t(9) CI [-0.261, +0.061], one-sided 95% upper bound +0.030, sign-flip p 0.375 (exact), MDE 0.22
+
+No regressions found.
+`
+
+func TestFormatText_WorkedExampleGolden(t *testing.T) {
+	baseline, current := trialSuite("baseline-run", 3, workedA), trialSuite("current-run", 3, workedB)
+
+	if got := FormatText(Compare(baseline, current, DefaultOptions())); got != workedExampleReportDefault {
+		t.Errorf("default-options report differs from the golden text:\n%s", got)
+	}
+
+	tight := FormatText(Compare(baseline, current, Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}))
+	wantTight := strings.Replace(workedExampleReportDefault, "Gate: PASS\n",
+		"Gate: WARN\n  - mean delta -0.100 is below -0.050 and the one-sided 95% upper bound +0.030 is not below 0\n", 1)
+	if tight != wantTight {
+		t.Errorf("0.05-margin report differs from the golden text:\n%s", tight)
+	}
+}

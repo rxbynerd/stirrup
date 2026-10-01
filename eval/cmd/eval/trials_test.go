@@ -98,6 +98,9 @@ func TestPrintSummary(t *testing.T) {
 	if !strings.Contains(b.String(), "6 harness runs planned; the dry run validates each task once") {
 		t.Errorf("dry-run summary should state the planned runs:\n%s", b.String())
 	}
+	if strings.Contains(b.String(), "majority of trials") {
+		t.Errorf("dry-run summary describes majority outcomes although each task ran once:\n%s", b.String())
+	}
 }
 
 func TestCmdRun_SingleRunResultAlwaysCarriesTrialsAndPassFraction(t *testing.T) {
