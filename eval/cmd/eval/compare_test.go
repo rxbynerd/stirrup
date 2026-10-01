@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,8 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 		extra    []string
 		wantCode int
 		wantGate string
+		wantText []string
+		notText  []string
 	}{
 		{
 			name:     "unchanged",
@@ -102,6 +105,39 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 			wantCode: 1,
 			wantGate: "Gate: BLOCK",
 		},
+		{
+			name: "an upper-bound block exits 1 although no task is listed as a regression",
+			current: build(func(int) []string {
+				return []string{"pass", "pass", "fail"}
+			}),
+			wantCode: 1,
+			wantGate: "Gate: BLOCK",
+			wantText: []string{"one-sided 95% upper bound"},
+			notText:  []string{"Regressions ("},
+		},
+		{
+			name: "a listed regression under a non-blocking gate exits 0",
+			current: build(func(i int) []string {
+				if i == 0 {
+					return []string{"fail", "fail", "pass"}
+				}
+				return []string{"pass", "pass", "pass"}
+			}),
+			wantCode: 0,
+			wantGate: "Gate: WARN",
+			wantText: []string{"Regressions (1):"},
+		},
+		{
+			name: "a baseline task missing from the current run warns without failing",
+			current: func() eval.SuiteResult {
+				r := build(func(int) []string { return []string{"pass", "pass", "pass"} })
+				r.Tasks = r.Tasks[1:]
+				return r
+			}(),
+			wantCode: 0,
+			wantGate: "Gate: WARN",
+			wantText: []string{"Missing from current run (1): " + ids[0]},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,6 +156,16 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 			if !strings.Contains(out.String(), fmt.Sprintf("n=%d tasks, K=1", len(ids))) {
 				t.Errorf("output should report the K=1 baseline:\n%s", out.String())
 			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output missing %q:\n%s", want, out.String())
+				}
+			}
+			for _, unwanted := range tc.notText {
+				if strings.Contains(out.String(), unwanted) {
+					t.Errorf("output contains %q:\n%s", unwanted, out.String())
+				}
+			}
 
 			raw, err := os.ReadFile(reportPath)
 			if err != nil {
@@ -131,6 +177,57 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 			}
 			if want := strings.ToLower(strings.TrimPrefix(tc.wantGate, "Gate: ")); report.Summary.Gate != want {
 				t.Errorf("report gate = %q, want %q", report.Summary.Gate, want)
+			}
+		})
+	}
+}
+
+func TestCmdCompare_ErrorsExitTwo(t *testing.T) {
+	dir := t.TempDir()
+	baseline := writeResultFile(t, dir, "baseline.json", eval.SuiteResult{
+		SuiteID: "s", RunID: "baseline",
+		Tasks: []eval.TaskResult{{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "pass"}, {TaskID: "c", Outcome: "pass"}},
+	})
+	good := writeResultFile(t, dir, "current.json", eval.SuiteResult{
+		SuiteID: "s", RunID: "current",
+		Tasks: []eval.TaskResult{{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "pass"}, {TaskID: "c", Outcome: "pass"}},
+	})
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.json")
+
+	cases := []struct {
+		name    string
+		args    []string
+		wantLog string
+	}{
+		{"missing current file", []string{"--current", missing, "--baseline", baseline}, "loading current result"},
+		{"missing baseline file", []string{"--current", good, "--baseline", missing}, "loading baseline result"},
+		{"corrupt current JSON", []string{"--current", corrupt, "--baseline", baseline}, "parsing result JSON"},
+		{"corrupt baseline JSON", []string{"--current", good, "--baseline", corrupt}, "parsing result JSON"},
+		{"no current flag", []string{"--baseline", baseline}, "-current is required"},
+		{"no baseline flag", []string{"--current", good}, "-baseline is required"},
+		{"warn margin above 1", []string{"--current", good, "--baseline", baseline, "--warn-margin", "2"}, "invalid compare options"},
+		{"flip threshold of 1", []string{"--current", good, "--baseline", baseline, "--flip-threshold", "1"}, "invalid compare options"},
+		{"unwritable output path", []string{"--current", good, "--baseline", baseline, "--output", filepath.Join(dir, "no", "such", "dir", "out.json")}, "writing comparison report"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+			var out bytes.Buffer
+			if code := run(append([]string{"compare"}, tc.args...), &out); code != 2 {
+				t.Errorf("exit code = %d, want 2\nstdout: %s\nlog: %s", code, out.String(), logged.String())
+			}
+			if !strings.Contains(logged.String(), tc.wantLog) {
+				t.Errorf("log missing %q:\n%s", tc.wantLog, logged.String())
+			}
+			if out.Len() != 0 {
+				t.Errorf("an errored compare printed a report:\n%s", out.String())
 			}
 		})
 	}
