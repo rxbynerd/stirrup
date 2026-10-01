@@ -39,16 +39,16 @@ const (
 	// objects and surrounding text are ignored.
 	JudgeParseOK = "ok"
 
-	// JudgeParseLastMatch means several conforming objects carried the
-	// call's nonce and agreed on the verdict; the last one is used.
+	// JudgeParseLastMatch means several identical conforming objects
+	// carried the call's nonce.
 	JudgeParseLastMatch = "last_match"
 
 	// JudgeParseNoJSON means the response held no balanced JSON object.
 	JudgeParseNoJSON = "no_json"
 
 	// JudgeParseSchemaViolation means no object carried the call's nonce,
-	// an object carrying it did not match the verdict schema, or objects
-	// carrying it disagreed on the verdict.
+	// objects carrying it differed, the object carrying it did not match
+	// the verdict schema, or the reply exhausted the scan budget.
 	JudgeParseSchemaViolation = "schema_violation"
 
 	// JudgeParseRefusal means the model declined to answer.
@@ -98,8 +98,8 @@ type JudgeRecord struct {
 	ParseStatus string `json:"parseStatus,omitempty"`
 
 	// StopReason is the provider's stop reason, normalised to
-	// "end_turn" / "max_tokens" / "refusal" where the provider's own
-	// vocabulary maps onto them.
+	// "end_turn" / "stop_sequence" / "max_tokens" / "refusal" where the
+	// provider's own vocabulary maps onto them.
 	StopReason string `json:"stopReason,omitempty"`
 
 	// ConfigHash identifies the judge configuration: two records with the
