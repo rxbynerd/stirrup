@@ -58,8 +58,8 @@ func main() {
 // shelling out to a built binary or fighting global state.
 //
 // args is the slice of arguments AFTER the program name (i.e. os.Args[1:]),
-// stdout is where short-circuit output is written, and the return value is
-// the process exit code.
+// stdout receives the output of subcommands that take a writer (version,
+// completion, compare), and the return value is the process exit code.
 func run(args []string, stdout io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprint(os.Stderr, usage)
@@ -73,7 +73,7 @@ func run(args []string, stdout io.Writer) int {
 	case "run":
 		cmdRun(args[1:])
 	case "compare":
-		cmdCompare(args[1:])
+		return cmdCompare(args[1:], stdout)
 	case "baseline":
 		cmdBaseline(args[1:])
 	case "mine-failures":
@@ -280,10 +280,15 @@ func cmdConvert(args []string) {
 	fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *toJUnit)
 }
 
-func cmdCompare(args []string) {
+// cmdCompare prints the comparison report and returns 1 only when the
+// gate blocks; warn and inconclusive are reported but exit 0.
+func cmdCompare(args []string, stdout io.Writer) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	currentPath := fs.String("current", "", "Path to current result JSON (required)")
 	baselinePath := fs.String("baseline", "", "Path to baseline result JSON (required)")
+	warnMargin := fs.Float64("warn-margin", reporter.DefaultWarnMargin, "Mean pass-fraction drop that reports `warn` (non-blocking) when the drop is not statistically confirmed")
+	flipThreshold := fs.Float64("flip-threshold", reporter.DefaultFlipThreshold, "Current pass fraction at or below which a task that passed every baseline trial is listed as a regression (and the mirror for improvements)")
+	outputPath := fs.String("output", "", "Write the comparison report JSON to this path (default: text report only)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -293,6 +298,10 @@ func cmdCompare(args []string) {
 	}
 	if *baselinePath == "" {
 		log.Fatal("-baseline is required")
+	}
+	opts := reporter.Options{WarnMargin: *warnMargin, FlipThreshold: *flipThreshold}
+	if err := opts.Validate(); err != nil {
+		log.Fatalf("invalid compare options: %v", err)
 	}
 
 	current, err := loadResult(*currentPath)
@@ -304,12 +313,18 @@ func cmdCompare(args []string) {
 		log.Fatalf("loading baseline result: %v", err)
 	}
 
-	report := reporter.Compare(baseline, current)
-	fmt.Print(reporter.FormatText(report))
-
-	if report.Summary.HasRegressions {
-		os.Exit(1)
+	report := reporter.Compare(baseline, current, opts)
+	if *outputPath != "" {
+		if err := writeJSON(*outputPath, report); err != nil {
+			log.Fatalf("writing comparison report: %v", err)
+		}
 	}
+	_, _ = fmt.Fprint(stdout, reporter.FormatText(report))
+
+	if report.Summary.Gate == eval.GateBlock {
+		return 1
+	}
+	return 0
 }
 
 // loadSuite reads a suite HCL file at path and returns the parsed
