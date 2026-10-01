@@ -177,10 +177,12 @@ func collectStreamText(ctx context.Context, ch <-chan types.StreamEvent) (string
 
 // parseJudgeResponse extracts the verdict from the top-level JSON object
 // carrying nonce, accepting both the reasoning-first shape and the bare
-// {"nonce", "passed", "feedback"} shape. A response with no such object,
-// conflicting ones, or mistyped members returns a failed result with
-// diagnostic details rather than an error, since a malformed response is
-// a verification outcome (failure) not an infrastructure error.
+// {"nonce", "passed", "feedback"} shape. A string reasoning member is
+// kept, scrubbed, in Details; any other reasoning value is ignored. A
+// response with no such object, conflicting ones, or mistyped passed or
+// feedback members returns a failed result with diagnostic details
+// rather than an error, since a malformed response is a verification
+// outcome (failure) not an infrastructure error.
 func parseJudgeResponse(response, nonce string) (*types.VerificationResult, error) {
 	response = strings.TrimSpace(response)
 
@@ -199,10 +201,15 @@ func parseJudgeResponse(response, nonce string) (*types.VerificationResult, erro
 		}
 	}
 
-	return &types.VerificationResult{
+	result := &types.VerificationResult{
 		Passed:   passed,
 		Feedback: feedback,
-	}, nil
+	}
+	var reasoning string
+	if raw, ok := members["reasoning"]; ok && json.Unmarshal(raw, &reasoning) == nil {
+		result.Details = map[string]any{"reasoning": security.Scrub(reasoning)}
+	}
+	return result, nil
 }
 
 func malformedJudgeResponse(response string, parseErr error) *types.VerificationResult {

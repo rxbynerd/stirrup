@@ -598,7 +598,8 @@ back as a user message. Three implementations ship:
   Malformed responses, including a verdict without the nonce or one
   from a stream that ended other than at `end_turn` or
   `stop_sequence` (for example at the 1024-token cap), are treated as
-  failures with the raw response preserved in details.
+  failures with the raw response preserved in details. A well-formed
+  verdict's string `reasoning` is kept, scrubbed, in details.
 - **`composite`** — chains multiple sub-verifiers.
 
 ## Transport

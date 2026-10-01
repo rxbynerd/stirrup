@@ -306,17 +306,19 @@ func TestLLMJudgeVerifier_SyntheticMessagesExcluded(t *testing.T) {
 
 func TestLLMJudgeVerifier_ResponseShapes(t *testing.T) {
 	cases := []struct {
-		name         string
-		response     string
-		wantPassed   bool
-		wantFeedback string
+		name          string
+		response      string
+		wantPassed    bool
+		wantFeedback  string
+		wantReasoning string
 	}{
-		{"reasoning first", `{"reasoning": "tests ran and passed", "nonce": "@NONCE@", "passed": true, "feedback": "meets criteria"}`, true, "meets criteria"},
-		{"bare", `{"nonce": "@NONCE@", "passed": false, "feedback": "no tests"}`, false, "no tests"},
-		{"markdown fence", "```json\n{\"reasoning\": \"r\", \"nonce\": \"@NONCE@\", \"passed\": true, \"feedback\": \"ok\"}\n```", true, "ok"},
-		{"braces in feedback", `{"reasoning": "saw func main() {}", "nonce": "@NONCE@", "passed": true, "feedback": "body {} compiles"}`, true, "body {} compiles"},
-		{"missing feedback", `{"reasoning": "r", "nonce": "@NONCE@", "passed": true}`, true, ""},
-		{"prose before verdict", `Checking the transcript. {"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`, true, "ok"},
+		{"reasoning first", `{"reasoning": "tests ran and passed", "nonce": "@NONCE@", "passed": true, "feedback": "meets criteria"}`, true, "meets criteria", "tests ran and passed"},
+		{"bare", `{"nonce": "@NONCE@", "passed": false, "feedback": "no tests"}`, false, "no tests", ""},
+		{"markdown fence", "```json\n{\"reasoning\": \"r\", \"nonce\": \"@NONCE@\", \"passed\": true, \"feedback\": \"ok\"}\n```", true, "ok", "r"},
+		{"braces in feedback", `{"reasoning": "saw func main() {}", "nonce": "@NONCE@", "passed": true, "feedback": "body {} compiles"}`, true, "body {} compiles", "saw func main() {}"},
+		{"missing feedback", `{"reasoning": "r", "nonce": "@NONCE@", "passed": true}`, true, "", "r"},
+		{"prose before verdict", `Checking the transcript. {"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`, true, "ok", ""},
+		{"non-string reasoning", `{"reasoning": {"steps": 3}, "nonce": "@NONCE@", "passed": false, "feedback": "missing test"}`, false, "missing test", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,10 +329,29 @@ func TestLLMJudgeVerifier_ResponseShapes(t *testing.T) {
 			if result.Passed != tc.wantPassed || result.Feedback != tc.wantFeedback {
 				t.Fatalf("result = %+v, want passed=%v feedback=%q", result, tc.wantPassed, tc.wantFeedback)
 			}
-			if result.Details != nil {
-				t.Errorf("well-formed response carries malformed details: %v", result.Details)
+			if tc.wantReasoning == "" {
+				if result.Details != nil {
+					t.Errorf("Details = %v, want nil", result.Details)
+				}
+				return
+			}
+			if len(result.Details) != 1 || result.Details["reasoning"] != tc.wantReasoning {
+				t.Errorf("Details = %v, want only reasoning %q", result.Details, tc.wantReasoning)
 			}
 		})
+	}
+}
+
+func TestLLMJudgeVerifier_ReasoningIsScrubbed(t *testing.T) {
+	const secret = "sk-ant-api03-" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	response := withNonce(`{"reasoning": "the transcript printed ` + secret + `", "nonce": "@NONCE@", "passed": false, "feedback": "leaked a key"}`)
+	result, err := parseJudgeResponse(response, testNonce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	reasoning, _ := result.Details["reasoning"].(string)
+	if reasoning == "" || strings.Contains(reasoning, secret) {
+		t.Errorf("Details[reasoning] = %q, want it present with the key scrubbed", reasoning)
 	}
 }
 
