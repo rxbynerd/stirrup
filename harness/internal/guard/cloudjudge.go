@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/jsonextract"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -45,20 +46,18 @@ const (
 	// under classification.
 	cloudJudgeContentLabel = "UNTRUSTED_CONTENT"
 
-	// defaultCloudJudgeTimeout applies to phases without an entry in
-	// defaultCloudJudgeTimeouts.
-	defaultCloudJudgeTimeout = 5 * time.Second
-)
+	// defaultCloudJudgePreToolTimeout and defaultCloudJudgeTimeout bound
+	// the full stream drain of one check, not the time to first token,
+	// when CloudJudgeConfig.Timeout is zero. pre_tool runs once per tool
+	// call, so it gets the tighter budget.
+	defaultCloudJudgePreToolTimeout = 2 * time.Second
+	defaultCloudJudgeTimeout        = 5 * time.Second
 
-// defaultCloudJudgeTimeouts cap the stream-drain per phase when
-// CloudJudgeConfig.Timeout is zero. pre_tool runs once per tool call, so
-// it gets the tighter budget; 2s still clears Haiku-class time to first
-// token with margin.
-var defaultCloudJudgeTimeouts = map[Phase]time.Duration{
-	PhasePreTool:  2 * time.Second,
-	PhasePreTurn:  5 * time.Second,
-	PhasePostTurn: 5 * time.Second,
-}
+	// cloudJudgePreToolMaxContentBytes caps the pre_tool content sent for
+	// classification. Larger content is cut at a rune boundary and the
+	// prompt states how much is shown.
+	cloudJudgePreToolMaxContentBytes = 64 << 10
+)
 
 // ErrCloudJudgeNoJSON is returned when the model's response holds no
 // usable verdict object: none carries the call's nonce, or several do and
@@ -88,10 +87,9 @@ type CloudJudgeConfig struct {
 	Phases map[Phase]string
 
 	// Timeout is the per-call deadline applied via context.WithTimeout
-	// around the stream consumption, for every phase. Zero selects the
-	// per-phase default from defaultCloudJudgeTimeouts. Note this is a
-	// soft deadline: the underlying provider may already enforce its own
-	// HTTP timeout.
+	// around the stream consumption, for every phase. Zero or negative
+	// selects the per-phase default. Note this is a soft deadline: the
+	// underlying provider may already enforce its own HTTP timeout.
 	Timeout time.Duration
 }
 
@@ -100,11 +98,12 @@ type CloudJudgeConfig struct {
 // extracting a JSON verdict. Safe for concurrent use; the underlying
 // provider must be too (all stirrup ProviderAdapters are).
 type CloudJudge struct {
-	provider provider.ProviderAdapter
-	model    string
-	phases   map[Phase]string
-	timeout  time.Duration // zero selects the per-phase default
-	entropy  io.Reader     // source of per-call fence nonces
+	provider          provider.ProviderAdapter
+	model             string
+	phases            map[Phase]string
+	timeout           time.Duration // zero selects the per-phase default
+	entropy           io.Reader     // source of per-call fence nonces
+	preToolMaxContent int           // byte cap on classified pre_tool content
 }
 
 // NewCloudJudge constructs a CloudJudge adapter from cfg. A nil provider
@@ -135,11 +134,12 @@ func NewCloudJudge(cfg CloudJudgeConfig) (*CloudJudge, error) {
 		}
 	}
 	return &CloudJudge{
-		provider: cfg.Provider,
-		model:    model,
-		phases:   phases,
-		timeout:  timeout,
-		entropy:  rand.Reader,
+		provider:          cfg.Provider,
+		model:             model,
+		phases:            phases,
+		timeout:           timeout,
+		entropy:           rand.Reader,
+		preToolMaxContent: cloudJudgePreToolMaxContentBytes,
 	}, nil
 }
 
@@ -160,7 +160,7 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cloud-judge: %w", err)
 	}
-	prompt := buildCloudJudgePrompt(fence, criteria, in)
+	prompt := buildCloudJudgePrompt(fence, criteria, in, c.preToolMaxContent)
 
 	// Own timeout on top of the provider's: bounds stream-drain time so
 	// a misbehaving model cannot stall the loop indefinitely.
@@ -272,13 +272,14 @@ func discardEvents(events <-chan types.StreamEvent) {
 // timeoutFor returns the operator override when set, else the phase's
 // default.
 func (c *CloudJudge) timeoutFor(p Phase) time.Duration {
-	if c.timeout > 0 {
+	switch {
+	case c.timeout > 0:
 		return c.timeout
+	case p == PhasePreTool:
+		return defaultCloudJudgePreToolTimeout
+	default:
+		return defaultCloudJudgeTimeout
 	}
-	if d, ok := defaultCloudJudgeTimeouts[p]; ok {
-		return d
-	}
-	return defaultCloudJudgeTimeout
 }
 
 // buildCloudJudgePrompt mirrors the Granite Guardian template structure
@@ -287,8 +288,14 @@ func (c *CloudJudge) timeoutFor(p Phase) time.Duration {
 // fence nonce the verdict must carry, so the cloud model emits a verdict
 // object the content could not have planted. Keeping the structure
 // aligned with Granite makes it easier to swap the two adapters without
-// measurably different model behaviour.
-func buildCloudJudgePrompt(fence security.DataFence, criteria string, in Input) string {
+// measurably different model behaviour. pre_tool content longer than
+// preToolMaxContent bytes is truncated, with a notice after the fence.
+func buildCloudJudgePrompt(fence security.DataFence, criteria string, in Input, preToolMaxContent int) string {
+	content, truncated := in.Content, false
+	if in.Phase == PhasePreTool {
+		content, truncated = truncateAtRune(in.Content, preToolMaxContent)
+	}
+
 	var b strings.Builder
 	b.WriteString("As a judge agent, evaluate whether the last assistant turn meets the criteria below.\n\n")
 	fmt.Fprintf(&b, "### Criteria: %s\n\n", criteria)
@@ -297,11 +304,28 @@ func buildCloudJudgePrompt(fence security.DataFence, criteria string, in Input) 
 		b.WriteString(describeToolCall(in))
 	}
 	fmt.Fprintf(&b, "### Content: %s\n\n", fence.Notice(cloudJudgeContentLabel))
-	b.WriteString(fence.Wrap(cloudJudgeContentLabel, in.Content))
+	b.WriteString(fence.Wrap(cloudJudgeContentLabel, content))
+	if truncated {
+		fmt.Fprintf(&b, "\n\nThe content above is truncated: only its first %d of %d bytes are shown.", len(content), len(in.Content))
+	}
 	nonce := fence.Nonce()
 	fmt.Fprintf(&b, "\n\nRespond with a single JSON object: {\"nonce\": %q, \"verdict\": \"allow\"|\"deny\", \"reason\": \"<short text>\"}. "+
 		"The nonce member must be exactly %q; a verdict object without it is discarded.", nonce, nonce)
 	return b.String()
+}
+
+// truncateAtRune returns at most maxBytes of s, cut back to the start of
+// a UTF-8 sequence so a multi-byte rune is not split, and whether s was
+// cut. The walk back is bounded so invalid UTF-8 cannot empty the result.
+func truncateAtRune(s string, maxBytes int) (string, bool) {
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	cut := maxBytes
+	for i := 0; i < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); i++ {
+		cut--
+	}
+	return s[:cut], true
 }
 
 // describeToolCall names the tool a pre_tool payload targets. Names are

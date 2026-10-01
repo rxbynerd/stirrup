@@ -294,9 +294,30 @@ detect a classifier that the content persuades to answer `allow` with
 the right nonce; the fence and notice make that less likely but do
 not rule it out.
 
+**Content size.** At `pre_tool` the classified content is capped at
+64 KiB. A larger tool input is cut back to a UTF-8 boundary, and the
+prompt states after the fence how many of the input's bytes are
+shown. Only that prefix is classified: anything past the cap never
+reaches the classifier. The deterministic tripwires (step 4 of
+[§ Dispatch order](#dispatch-order)) still scan the full raw input.
+`pre_turn` and `post_turn` content is not capped by the adapter.
+
 **Timeouts.** With `timeoutMs` unset, the per-call deadline is 2 s at
 `pre_tool` and 5 s at `pre_turn` and `post_turn`. Setting
-`timeoutMs` overrides every phase.
+`timeoutMs` overrides every phase. The deadline bounds the whole
+response stream, not just the time to its first token.
+
+- The 2 s `pre_tool` default replaces the 5 s that previously applied
+  to every phase. Under the default `failOpen: false`, a check that
+  runs past the deadline denies the call, and repeated denies trip
+  the stall detector, so provider slowness becomes failed tool
+  calls. Deployments whose provider latency can exceed 2 s set
+  `timeoutMs` explicitly.
+- Under `failOpen: true`, a timeout allows the call. The content
+  under classification influences how long the classifier takes
+  (its length, and what it asks the classifier to write), so a tight
+  deadline combined with `failOpen: true` lets content that slows the
+  classifier turn into an allow.
 
 ### `composite` (operator escape hatch)
 

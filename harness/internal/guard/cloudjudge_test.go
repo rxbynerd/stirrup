@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/jsonextract"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -810,6 +812,62 @@ func TestCloudJudge_StopReasonGatesVerdict(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrCloudJudgeIncomplete); got != tc.incomplete {
 				t.Fatalf("errors.Is(err, ErrCloudJudgeIncomplete) = %v, want %v: %v", got, tc.incomplete, err)
+			}
+		})
+	}
+}
+
+// TestCloudJudge_PreToolContentIsCapped pins the pre_tool size cap: content
+// over the cap is cut back to a rune start, and the prompt states after the
+// fence how much is shown; content at the cap, and content at other phases,
+// is sent whole.
+func TestCloudJudge_PreToolContentIsCapped(t *testing.T) {
+	limit := cloudJudgePreToolMaxContentBytes
+	cases := []struct {
+		name      string
+		phase     Phase
+		content   string
+		wantShown int
+		validUTF8 bool
+	}{
+		{"pre_tool rune straddling the cap", PhasePreTool, strings.Repeat("a", limit-1) + "é" + strings.Repeat("b", 100), limit - 1, true},
+		{"pre_tool exactly at the cap", PhasePreTool, strings.Repeat("a", limit), limit, true},
+		{"pre_tool far over the cap", PhasePreTool, strings.Repeat("x", 4*limit), limit, true},
+		{"pre_tool invalid UTF-8 over the cap", PhasePreTool, strings.Repeat("\x80", limit+10), limit - (utf8.UTFMax - 1), false},
+		{"pre_turn over the cap", PhasePreTurn, strings.Repeat("x", 2*limit), 2 * limit, true},
+		{"post_turn over the cap", PhasePostTurn, strings.Repeat("x", 2*limit), 2 * limit, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakeProvider{events: textEvents(allowVerdict)}
+			_, prompt, err := checkWithFixedFence(t, fp, Input{Phase: tc.phase, Content: tc.content})
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			f := fixedFence(t)
+			open := f.Open(cloudJudgeContentLabel) + "\n"
+			fenceStart := strings.Index(prompt, open)
+			fenceEnd := strings.LastIndex(prompt, "\n"+f.Close(cloudJudgeContentLabel))
+			if fenceStart < 0 || fenceEnd < fenceStart {
+				t.Fatalf("content fence not found")
+			}
+			shown := prompt[fenceStart+len(open) : fenceEnd]
+			if len(shown) != tc.wantShown || shown != tc.content[:tc.wantShown] {
+				t.Fatalf("fenced content is %d bytes, want the first %d bytes of the input", len(shown), tc.wantShown)
+			}
+			if tc.validUTF8 && !utf8.ValidString(shown) {
+				t.Errorf("truncation split a rune")
+			}
+			notice := fmt.Sprintf("only its first %d of %d bytes are shown", tc.wantShown, len(tc.content))
+			at := strings.Index(prompt, notice)
+			if wantNotice := tc.wantShown < len(tc.content); (at >= 0) != wantNotice {
+				t.Fatalf("truncation notice present = %v, want %v", at >= 0, wantNotice)
+			}
+			if at >= 0 && at < fenceEnd {
+				t.Errorf("truncation notice sits inside the fence; it must be harness text after it")
+			}
+			if tc.phase == PhasePreTool && len(prompt) > limit+4096 {
+				t.Errorf("pre_tool prompt is %d bytes; the content cap is not bounding it", len(prompt))
 			}
 		})
 	}
