@@ -29,7 +29,7 @@ every turn:
 | Phase | Where in the loop | What it inspects | What a deny does |
 |---|---|---|---|
 | `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
-| `pre_tool`  | Inside the tool dispatch loop, before each tool call is sent to the executor | The model-proposed tool name and JSON input | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
+| `pre_tool`  | Inside the tool dispatch loop, after the deterministic input checks and before the permission check and executor (see [§ Dispatch order](#dispatch-order)) | The resolved tool name and the cleaned JSON input of a call that passed the deterministic checks | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
 | `post_turn` | After `end_turn` stop reason, before the assistant text leaves the loop | The final assistant message | Aborts the run with outcome `guardrail_blocked` |
 
 All three are optional: a `GuardRail.Type: none` (or an unset
@@ -83,10 +83,13 @@ even when many small tool outputs are returned.
 
 Pre-tool catches three things:
 
-1. **Hallucinated tool calls** — the model invents a tool that
-   doesn't exist or invokes a real tool with malformed input.
-   Granite Guardian's built-in `function_call` criterion is
-   purpose-built for this.
+1. **Hallucinated tool calls** — the model invokes a real tool with
+   arguments that are well-formed but make no sense for the task.
+   Calls to tools that do not exist, and inputs that fail the tool's
+   JSON schema, never reach the guard: the deterministic checks reject
+   them first (see [§ Dispatch order](#dispatch-order)). Granite
+   Guardian's built-in `function_call` criterion, the `pre_tool`
+   default, therefore sees only schema-valid calls.
 2. **Coerced tool calls** — a prompt-injected model emits a
    syntactically valid call that semantically does the attacker's
    bidding. Note: deciding whether a syntactically valid call is
@@ -101,6 +104,39 @@ Pre-tool catches three things:
 Enable when:
 - The mode permits side-effecting tools (`run_command`, `edit_file`,
   `web_fetch`, `spawn_agent`).
+
+#### Dispatch order
+
+Every tool call passes the free, deterministic checks before any
+classifier call, so a call that is rejected anyway never pays a
+guard round-trip:
+
+```text
+tool_use block from the model
+  1. resolve the tool name          unknown          -> unknown_tool
+  2. strip __proto__ / constructor  keys dropped     -> prototype_pollution_blocked event
+  3. JSON-schema validation         invalid          -> schema_validation_failed
+  4. tool-input tripwires           match            -> security_guard_denied
+  5. pre_tool guard                 deny, or error   -> guardrail_denied
+                                    without failOpen
+  6. PermissionPolicy               deny             -> permission_denied
+  7. handler / executor
+```
+
+Step 4 is `security.GuardToolCall`: network-exfiltration utilities
+and shell-escape syntax in command fields, credential paths,
+protected harness write targets, and long base64-like payloads. It
+scans the input before step 2's strip, so a tripwire nested under a
+stripped key still fires. Steps 1-4 are mandatory and cannot be
+disabled.
+
+The guard at step 5 classifies the input after step 2's strip, the
+same bytes the handler receives, and sees the resolved internal tool
+name rather than a toolset-profile alias. A call rejected at steps
+1-4 emits no `guard_*` event and reports its deterministic failure
+category. The permission check follows the guard because
+`ask-upstream` may block on a human approval, which a call the guard
+denies should never request.
 
 ### `post_turn` (recommended for surfaces that show output to humans)
 
@@ -194,6 +230,47 @@ completion and extracts the verdict from a JSON field in the
 response. Use this when the deployment cannot run its own GPU-
 attached vLLM.
 
+`cloud-judge` is an escalation-grade classifier, not a fast path:
+every check is a full round trip to a hosted model, on the order of
+a second or more. At `pre_tool` that cost is paid once per tool call.
+
+**Prompt.** The prompt keeps the Granite Guardian structure (criteria,
+then scoring schema) and the same per-phase default criteria, so
+switching adapters does not change policy. The content under
+classification is fenced as untrusted data:
+
+- It sits between an open and a close marker that carry a random
+  128-bit nonce drawn for each call, after the content already
+  exists, so the content cannot predict the close marker.
+- Every run of three `<` characters in the content gets a space
+  inserted (`<<<` becomes `<< <`), so the content cannot contain or
+  imitate either marker, even with a guessed nonce.
+- The prompt states, ahead of the fence, that the fenced text is
+  data to evaluate and never instructions; the system prompt states
+  the same rule.
+
+At `pre_tool` the prompt also names the tool being called (the
+resolved internal name) and the call source, both quoted so a name
+containing newlines or quotes cannot add prompt structure. A phase
+the adapter does not recognise is classified under the strictest
+default, the `post_turn` criteria.
+
+**Verdict extraction.** The adapter takes the *last* top-level JSON
+object in the response that has a `verdict` member, reading
+`verdict` and `reason` by exact key. The scanner treats braces inside
+JSON strings as text, so a reason that quotes code parses, and a
+verdict wrapped in prose or a markdown fence is found. Taking the
+last object means a verdict the model echoes from the content
+*before* its own answer loses. Parsing cannot catch a model induced
+to echo a planted verdict *after* its own answer; the fence and
+notice make that less likely but do not rule it out. A response with
+no verdict object, or with a verdict other than `allow` or `deny`, is
+an error: with the default `failOpen: false` it denies.
+
+**Timeouts.** With `timeoutMs` unset, the per-call deadline is 2 s at
+`pre_tool` and 5 s at `pre_turn` and `post_turn`. Setting
+`timeoutMs` overrides every phase.
+
 ### `composite` (operator escape hatch)
 
 Layers multiple stages, optionally restricted to specific phases.
@@ -216,20 +293,28 @@ directly via the harnessapi.
 
 ## Latency budget
 
-Approximate added overhead per turn with a stub vLLM responding
-instantly. Real numbers depend on classifier throughput and prompt
-length; treat these as advisory.
+The figures below were measured against a stub vLLM endpoint that
+responds instantly, so they capture the harness's own per-call
+overhead, not classifier inference. Real numbers depend on classifier
+throughput and prompt length; treat these as advisory.
 
 | Phase | p50 | p99 | Notes |
 |---|---|---|---|
 | `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256). |
-| `pre_tool`  | < 30 ms | < 200 ms | One call per tool invocation. Adds up over many tool calls per turn. |
+| `pre_tool`  | < 30 ms | < 200 ms | One call per tool invocation, after the deterministic checks. Adds up over many tool calls per turn. |
 | `post_turn` | < 50 ms | < 600 ms | Single composite-criterion call per turn end. |
 
-With `failOpen: true`, the error path is a single timeout (defaults
-to `timeoutMs: 1500`) before the request is allowed to proceed. With
-`failOpen: false` (the default), a transport error or timeout
-produces a `Deny` and the offending content does not pass.
+None of these figures applies to `cloud-judge`. It is an
+escalation-grade classifier whose calls take seconds, not
+milliseconds, because each is a hosted-model round trip; see
+[§ `cloud-judge`](#cloud-judge).
+
+On a transport error or timeout, the error path costs one adapter
+timeout: `timeoutMs` when set, otherwise the adapter default
+(`granite-guardian` 10 s; `cloud-judge` 2 s at `pre_tool` and 5 s
+elsewhere). With `failOpen: true` the request then proceeds. With
+`failOpen: false` (the default) it produces a `Deny` and the
+offending content does not pass.
 
 The two load-bearing latency mitigations are:
 

@@ -122,6 +122,26 @@ Two hardenings apply on top of standard schema validation:
   validation, preventing schema-conforming inputs that exploit
   JS-style prototype-chain mutation in downstream tooling.
 
+Validation runs before the `pre_tool` guardrail, so a schema-invalid
+or unknown-tool call is rejected without a classifier call, and the
+guardrail classifies the stripped input the handler receives. The
+full per-call order is in
+[`guardrails.md` § Dispatch order](guardrails.md#dispatch-order).
+
+## Judge and classifier prompts
+
+The `cloud-judge` guardrail and the `llm-judge` verifier both put
+untrusted text (tool input, tool output, fetched content, transcripts)
+in front of a model whose answer gates the run. Both fence that text
+with `security.DataFence`: markers carrying a per-call random nonce,
+content with every `<<<` run broken so it cannot contain or imitate
+a marker, and an explicit statement that fenced text is data, never
+instructions. Both parse the verdict from the last top-level JSON
+object carrying the verdict key, so a verdict echoed from the content
+ahead of the model's own answer loses. Details per surface:
+[`guardrails.md` § `cloud-judge`](guardrails.md#cloud-judge) and
+[`architecture.md` § Verifiers](architecture.md#verifiers).
+
 ## `RunConfig` validation
 
 `types.ValidateRunConfig` enforces hard invariants before any
@@ -629,8 +649,10 @@ Controls layered from outside in:
    before it enters context.
 
   ── Per tool call ─────────────────────────────────────────
-   Input validator: JSON Schema + prototype-pollution strip.
-   GuardRail (pre-tool): LLM classifier on the proposed call.
+   Input validator: unknown-tool rejection, prototype-pollution
+   strip, JSON Schema, tool-input tripwires. Deterministic;
+   runs before any classifier call.
+   GuardRail (pre-tool): LLM classifier on the cleaned call.
    PermissionPolicy: structural deny / Cedar policy / ask
    upstream.
 
