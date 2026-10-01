@@ -54,12 +54,9 @@ func StdErr(xs []float64) (se float64, ok bool) {
 }
 
 // Paired computes the paired-difference statistics over per-task
-// differences d_i = current - baseline: mean delta, paired SE (Miller
-// eq. 7), a two-sided 95% Student-t interval, the one-sided 95% upper
-// bound, the sign-flip permutation p-value, and the minimum detectable
-// effect at alpha 0.05 / power 0.80 using the same t degrees of freedom.
-// The MDE is nil when the SE is zero. ok is false below two differences,
-// where the SE is undefined.
+// differences d_i = current - baseline (docs/eval.md#statistics). The MDE
+// is nil when the SE is zero; ok is false below two differences, where
+// the SE is undefined.
 func Paired(diffs []float64) (eval.PairedSummary, bool) {
 	se, ok := StdErr(diffs)
 	if !ok {
@@ -89,12 +86,10 @@ func Paired(diffs []float64) (eval.PairedSummary, bool) {
 	return summary, true
 }
 
-// SignFlipPValue is the two-sided paired permutation test: the fraction of
-// sign assignments to |d_i| whose absolute sum is at least the observed
-// absolute sum. Zero differences are invariant under a flip and are
-// dropped. With at most maxExactSignFlip non-zero differences every
-// assignment is enumerated (exact is true); above that the permutation
-// distribution's normal approximation (mean 0, variance sum d_i^2) is used.
+// SignFlipPValue is the two-sided paired permutation test: the share of
+// sign assignments to |d_i| whose absolute sum reaches the observed one.
+// Zero differences are dropped; above maxExactSignFlip non-zero
+// differences a normal approximation replaces the exact enumeration.
 func SignFlipPValue(diffs []float64) (p float64, exact bool) {
 	var abs []float64
 	var observed, scale float64
@@ -139,10 +134,8 @@ func SignFlipPValue(diffs []float64) (p float64, exact bool) {
 }
 
 // StudentTQuantile returns t with P(T <= t) = p for Student's t with df
-// degrees of freedom. The CDF is evaluated exactly through the regularised
-// incomplete beta function (Lentz continued fraction) and inverted by
-// bisection, so the result is accurate to well below table precision for
-// any df >= 1. It returns NaN for df < 1 or p outside (0, 1).
+// degrees of freedom, by bisection on the exact CDF (regularised
+// incomplete beta). It returns NaN for df < 1 or p outside (0, 1).
 func StudentTQuantile(p float64, df int) float64 {
 	if df < 1 || !(p > 0 && p < 1) {
 		return math.NaN()

@@ -132,10 +132,9 @@ func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 }
 
 // buildTestCase converts a TaskResult into an XML <testcase>. A task run
-// over several trials stays one testcase: its system-out summarises the
-// pass fraction and every trial, and a failure or error message is
-// prefixed with the pass count and followed by each non-passing trial's
-// reason.
+// over several trials stays one testcase: system-out summarises every
+// trial, and a failure or error message carries the pass count and each
+// non-passing trial's reason.
 func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	tc := xmlTestCase{
 		Name:      t.TaskID,

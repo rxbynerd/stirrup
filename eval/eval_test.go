@@ -54,8 +54,8 @@ func TestTrialCounts_Empty(t *testing.T) {
 	}
 }
 
-// TestTaskResult_CountsWithoutTrials pins that a result without Trials,
-// as written before trials existed, counts as one trial of its Outcome.
+// TestTaskResult_CountsWithoutTrials pins that a result without Trials
+// counts as one trial of its Outcome.
 func TestTaskResult_CountsWithoutTrials(t *testing.T) {
 	for outcome, want := range map[string]TrialCounts{
 		"pass":  {Pass: 1},

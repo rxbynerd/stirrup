@@ -419,7 +419,7 @@ func TestCompare_CommittedBaselineWithoutTrials(t *testing.T) {
 				t.Fatalf("unmarshal: %v", err)
 			}
 			if baseline.Trials != 0 || len(baseline.Tasks) == 0 {
-				t.Fatalf("baseline trials=%d tasks=%d, want a legacy single-run file", baseline.Trials, len(baseline.Tasks))
+				t.Fatalf("baseline trials=%d tasks=%d, want a single-run file", baseline.Trials, len(baseline.Tasks))
 			}
 
 			current := eval.SuiteResult{RunID: "curr", Trials: 3}

@@ -24,11 +24,10 @@ func resolveTrials(cfg RunConfig, suite types.EvalSuite) int {
 	return 1
 }
 
-// runTrial executes one trial of a task. Each call gets its own workspace
-// and harness subprocess from runTask. With more than one trial, artifacts
-// land in <suiteArtifactDir>/<taskID>/trial-<n>/: runTask retains into
-// <dir>/<taskID>/, so it is pointed at a staging directory whose task
-// subdirectory is then renamed into place.
+// runTrial executes one trial of a task. With more than one trial,
+// artifacts land in <suiteArtifactDir>/<taskID>/trial-<n>/: runTask is
+// pointed at a staging directory whose task subdirectory is then renamed
+// into place.
 func runTrial(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trial, trials int) eval.TaskResult {
 	if trials == 1 || suiteArtifactDir == "" {
 		return runTask(ctx, task, cfg, suiteArtifactDir, baseline)
@@ -59,12 +58,10 @@ func runTrial(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArti
 	return result
 }
 
-// aggregateTrials folds a task's trial results into one TaskResult. A
-// single trial is returned as-is with its PassFraction set. Otherwise the
-// Outcome follows the majority rule, DurationMs is the sum across trials,
-// and Trace, JudgeVerdict, and Error come from the first trial of the
-// majority outcome; without a strict majority the verdict and error
-// describe the split instead.
+// aggregateTrials folds a task's trials into one TaskResult. Outcome
+// follows the majority rule and DurationMs sums the trials; Trace,
+// JudgeVerdict, and Error come from the first majority-outcome trial, or
+// describe the split. A single trial is returned as-is.
 func aggregateTrials(taskID string, runs []eval.TaskResult) eval.TaskResult {
 	if len(runs) == 1 {
 		r := runs[0]
