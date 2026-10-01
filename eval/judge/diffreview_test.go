@@ -807,3 +807,34 @@ func TestEvaluateDiffReview_InvalidConfigurationFailsWithoutCallingTheModel(t *t
 		})
 	}
 }
+
+func TestEvaluateDiffReview_EmptyDiff(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+
+	t.Run("against a recorded baseline it is an error", func(t *testing.T) {
+		ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
+		fake := &fakeClient{resp: okResponse(verdictPass)}
+		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
+		if err == nil || verdict.Status != types.JudgeStatusError || !strings.Contains(err.Error(), "no reviewable change") {
+			t.Fatalf("verdict = %+v, err = %v", verdict, err)
+		}
+		if fake.calls != 0 {
+			t.Errorf("model called %d times for an empty diff", fake.calls)
+		}
+	})
+
+	t.Run("against the workspace HEAD the model sees no changes", func(t *testing.T) {
+		ws := gitRepoWorkspace(t, map[string]string{"a.txt": "one\n"})
+		fake := &fakeClient{resp: okResponse(verdictFail)}
+		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Options: Options{NewClient: fake.factory(nil, nil)}})
+		if err != nil || verdict.Status != types.JudgeStatusFail {
+			t.Fatalf("verdict = %+v, err = %v", verdict, err)
+		}
+		if fake.calls != 1 || !strings.Contains(fake.got.User, "(no changes)") {
+			t.Errorf("model calls = %d, prompt:\n%s", fake.calls, fake.got.User)
+		}
+		if verdict.Record.BaselineSource != types.JudgeBaselineWorkspaceHead || verdict.Record.InputBytes != 0 {
+			t.Errorf("record = %+v", verdict.Record)
+		}
+	})
+}

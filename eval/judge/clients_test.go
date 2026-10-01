@@ -168,7 +168,7 @@ func TestAnthropicClient_PreservesBasePathAndQuery(t *testing.T) {
 	}
 }
 
-func TestAnthropicClient_NormalisesStopReasons(t *testing.T) {
+func TestAnthropicClient_PassesStopReasonsThrough(t *testing.T) {
 	for _, reason := range []string{"max_tokens", "refusal"} {
 		srv, _ := stubServer(t, 200, `{"model":"m","content":[],"stop_reason":"`+reason+`","usage":{}}`)
 		resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
@@ -721,4 +721,28 @@ func TestBackoffIsJitteredExponential(t *testing.T) {
 			t.Errorf("backoff(%d) is not jittered", attempt)
 		}
 	}
+}
+
+func TestClients_RejectOversizedResponses(t *testing.T) {
+	huge := strings.Repeat("x", maxResponseBytes)
+	for name, build := range map[string]func(url string) JudgeClient{
+		"anthropic": func(url string) JudgeClient { return newTestAnthropic(t, url) },
+		"openai":    func(url string) JudgeClient { return newTestOpenAI(t, url, "k") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := stubServer(t, 200, `{"model":"m","pad":"`+huge+`"}`)
+			_, err := build(srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			if err == nil || !strings.Contains(err.Error(), "provider response exceeds") {
+				t.Fatalf("err = %v, want the response-size error", err)
+			}
+		})
+	}
+	t.Run("exactly at the cap", func(t *testing.T) {
+		body := `{"model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{},"pad":"`
+		body += strings.Repeat("x", maxResponseBytes-len(body)-2) + `"}`
+		srv, _ := stubServer(t, 200, body)
+		if _, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1}); err != nil {
+			t.Fatalf("a %d-byte response was rejected: %v", len(body), err)
+		}
+	})
 }
