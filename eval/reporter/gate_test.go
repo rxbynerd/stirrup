@@ -200,11 +200,12 @@ func TestCompare_GateDecisions(t *testing.T) {
 			wantFlips: []string{"tb"},
 		},
 		{
-			name:      "an all-error current run blocks",
-			baseline:  allPass5,
-			current:   singleRunSuite("curr", "error", "error", "error", "error", "error"),
-			wantGate:  eval.GateBlock,
-			wantFlips: []string{"ta", "tb", "tc", "td", "te"},
+			name:       "an all-error current run blocks",
+			baseline:   allPass5,
+			current:    singleRunSuite("curr", "error", "error", "error", "error", "error"),
+			wantGate:   eval.GateBlock,
+			wantFlips:  []string{"ta", "tb", "tc", "td", "te"},
+			wantReason: "failed or errored every trial",
 		},
 		{
 			name:     "two paired tasks without a regression are inconclusive",
@@ -644,5 +645,45 @@ func TestCompare_UnpairedListsAreEmptyArraysWhenEveryTaskPairs(t *testing.T) {
 	text := FormatText(report)
 	if strings.Contains(text, "Missing from current run") || strings.Contains(text, "New in current run") {
 		t.Errorf("report lists unpaired tasks when every task pairs:\n%s", text)
+	}
+}
+
+// Three of five tasks lose one trial each: the two-sided 95% interval
+// straddles zero, yet the one-sided 95% upper bound sits below it.
+func TestCompare_BlocksOnOneSidedUpperBound(t *testing.T) {
+	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
+	report := Compare(baseline, trialSuite("curr", 3, []int{2, 2, 2, 3, 3}), DefaultOptions())
+	s := report.Summary
+
+	if s.Gate != eval.GateBlock {
+		t.Fatalf("gate = %q, want block (reasons %v)", s.Gate, s.GateReasons)
+	}
+	if len(report.Regressions) != 0 || len(s.DeterministicFlips) != 0 {
+		t.Errorf("regressions %+v and flips %v, want none: the bound alone blocks", report.Regressions, s.DeterministicFlips)
+	}
+	p := s.Paired
+	within(t, "d-bar", p.MeanDelta, -0.2, 1e-9)
+	within(t, "paired SE", p.StdErr, 0.0816, 0.0001)
+	within(t, "upper bound", p.UpperBound, -0.0259, 0.0005)
+	within(t, "CI low", p.CILow, -0.4267, 0.0005)
+	within(t, "CI high", p.CIHigh, 0.0267, 0.0005)
+	within(t, "sign-flip p", p.PValue, 0.25, 1e-12)
+
+	reasons := strings.Join(s.GateReasons, "\n")
+	if !strings.Contains(reasons, "one-sided 95% upper bound on the mean delta is -0.026, below 0") {
+		t.Errorf("block reason = %q, want the one-sided bound wording", reasons)
+	}
+	text := FormatText(report)
+	for _, want := range []string{
+		"Gate: BLOCK",
+		"two-sided 95% t(4) CI [-0.427, +0.027]",
+		"one-sided 95% upper bound -0.026",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "confirmed") {
+		t.Errorf("block report claims a confirmed regression:\n%s", text)
 	}
 }

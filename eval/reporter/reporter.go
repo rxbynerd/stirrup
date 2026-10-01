@@ -203,7 +203,7 @@ func decideGate(in gateInput) (string, []string) {
 func baseGate(in gateInput) (string, []string) {
 	if len(in.flips) > 0 {
 		return eval.GateBlock, []string{fmt.Sprintf(
-			"deterministic flip: %s passed every baseline trial and passed no current trial",
+			"deterministic flip: %s passed every baseline trial but failed or errored every trial in the current run",
 			strings.Join(in.flips, ", "))}
 	}
 	paired := in.paired
