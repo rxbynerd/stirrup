@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
-	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/runner"
 	"github.com/rxbynerd/stirrup/types"
@@ -32,6 +31,7 @@ func cmdReplay(args []string) {
 	output := fs.String("output", "", "Write SuiteResult JSON to this path (default: print summary only)")
 	recordingIDs := newStringSliceFlag(fs, "recording", "RunID of a recording to replay (repeatable). If omitted, all recordings in the lakehouse are replayed.")
 	outcomeFilter := fs.String("outcome", "", "Filter recordings to replay by outcome (e.g. failed, error). Ignored if --recording is set.")
+	judgeFlagSet := addJudgeFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -40,6 +40,10 @@ func cmdReplay(args []string) {
 	}
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
+	}
+	judgeOpts, err := judgeFlagSet.options()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -75,7 +79,7 @@ func cmdReplay(args []string) {
 	for i, rec := range recordings {
 		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
-		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judge.Options{})
+		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judgeOpts)
 		if err != nil {
 			log.Printf("replay %s: %v", rec.RunID, err)
 		}

@@ -133,12 +133,18 @@ func cmdRun(args []string) {
 	anthropicOrganizationID := fs.String("anthropic-organization-id", "", "Anthropic organisation UUID. Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
 	anthropicServiceAccountID := fs.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
 	anthropicFromGitHubActions := fs.Bool("anthropic-from-github-actions", false, "Forward --anthropic-from-github-actions to every harness invocation. The harness then sources the OIDC token from ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN.")
+	judgeFlagSet := addJudgeFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
+	}
+
+	judgeOpts, err := judgeFlagSet.options()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -190,6 +196,7 @@ func cmdRun(args []string) {
 			ServiceAccountID:  *anthropicServiceAccountID,
 			FromGitHubActions: *anthropicFromGitHubActions,
 		},
+		JudgeOptions: judgeOpts,
 	})
 	if err != nil {
 		log.Fatalf("running suite: %v", err)
