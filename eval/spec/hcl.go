@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
+	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -280,6 +281,9 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 	if s.Trials != nil {
 		if *s.Trials < 1 {
 			return types.EvalSuite{}, fmt.Errorf("suite %q: trials must be at least 1, got %d", s.ID, *s.Trials)
+		}
+		if *s.Trials > eval.MaxTrials {
+			return types.EvalSuite{}, fmt.Errorf("suite %q: trials must be at most %d, got %d", s.ID, eval.MaxTrials, *s.Trials)
 		}
 		trials = *s.Trials
 	}

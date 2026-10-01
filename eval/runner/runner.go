@@ -116,6 +116,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	if err := validateSuite(suite); err != nil {
 		return eval.SuiteResult{}, err
 	}
+	if cfg.Trials > eval.MaxTrials {
+		return eval.SuiteResult{}, fmt.Errorf("trials must be at most %d, got %d", eval.MaxTrials, cfg.Trials)
+	}
 
 	if cfg.HarnessPath == "" {
 		cfg.HarnessPath = "stirrup"
@@ -276,6 +279,9 @@ func validateSuite(suite types.EvalSuite) error {
 	}
 	if suite.Trials < 0 {
 		return fmt.Errorf("suite trials must not be negative, got %d", suite.Trials)
+	}
+	if suite.Trials > eval.MaxTrials {
+		return fmt.Errorf("suite trials must be at most %d, got %d", eval.MaxTrials, suite.Trials)
 	}
 	seen := make(map[string]struct{}, len(suite.Tasks))
 	for _, t := range suite.Tasks {

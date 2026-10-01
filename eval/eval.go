@@ -9,6 +9,10 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// MaxTrials is the most runs per task accepted from a CLI flag, a suite
+// attribute, or an EvalSuite.
+const MaxTrials = 20
+
 // TaskResult captures the outcome of evaluating a single EvalTask. A task
 // run more than once carries every run in Trials; the task-level Outcome,
 // Trace, JudgeVerdict, and Error then summarise them (see docs/eval.md).

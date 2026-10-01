@@ -118,7 +118,7 @@ func cmdRun(args []string) {
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of task trials to run in parallel (values <= 0 are treated as 1)")
-	trials := fs.Int("trials", 1, "Independent runs per task, each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.")
+	trials := fs.Int("trials", 1, fmt.Sprintf("Independent runs per task (1-%d), each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.", eval.MaxTrials))
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
@@ -146,6 +146,9 @@ func cmdRun(args []string) {
 	if isFlagSet(fs, "trials") {
 		if *trials < 1 {
 			log.Fatalf("-trials must be at least 1, got %d", *trials)
+		}
+		if *trials > eval.MaxTrials {
+			log.Fatalf("-trials must be at most %d, got %d", eval.MaxTrials, *trials)
 		}
 		runTrials = *trials
 	}
