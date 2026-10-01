@@ -25,6 +25,10 @@ type EvalSuite struct {
 	// The runner refuses to execute a quarantined suite without
 	// --accept-quarantine. See docs/eval.md#quarantine-envelope.
 	QuarantineFlags []QuarantineFlag `json:"quarantineFlags,omitempty"`
+
+	// Trials is the number of independent runs per task when the run
+	// invocation does not set one. Zero means unset (one run).
+	Trials int `json:"trials,omitempty"`
 }
 
 // QuarantineFlag classifies why a mined suite carries

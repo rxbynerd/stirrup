@@ -127,6 +127,7 @@ type suiteSpec struct {
 	RunConfigFile   string         `hcl:"run_config_file,optional"`
 	RunConfig       *runConfigSpec `hcl:"run_config,block"`
 	QuarantineFlags []string       `hcl:"quarantine_flags,optional"`
+	Trials          *int           `hcl:"trials,optional"`
 	Tasks           []taskSpec     `hcl:"task,block"`
 }
 
@@ -275,6 +276,14 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		)
 	}
 
+	trials := 0
+	if s.Trials != nil {
+		if *s.Trials < 1 {
+			return types.EvalSuite{}, fmt.Errorf("suite %q: trials must be at least 1, got %d", s.ID, *s.Trials)
+		}
+		trials = *s.Trials
+	}
+
 	suiteRunConfig := runConfigSpecToType(s.RunConfig)
 	if err := validateInlineAPIKeyRefs(suiteRunConfig, nil); err != nil {
 		return types.EvalSuite{}, fmt.Errorf("suite %q: %w", s.ID, err)
@@ -325,6 +334,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		RunConfigFile:   s.RunConfigFile,
 		RunConfig:       suiteRunConfig,
 		QuarantineFlags: quarantineFlags,
+		Trials:          trials,
 	}, nil
 }
 

@@ -117,7 +117,8 @@ func cmdRun(args []string) {
 	suitePath := fs.String("suite", "", "Path to eval suite HCL file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
-	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
+	concurrency := fs.Int("concurrency", 1, "Maximum number of task trials to run in parallel (values <= 0 are treated as 1)")
+	trials := fs.Int("trials", 1, "Independent runs per task, each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
@@ -139,6 +140,14 @@ func cmdRun(args []string) {
 
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
+	}
+
+	runTrials := 0
+	if isFlagSet(fs, "trials") {
+		if *trials < 1 {
+			log.Fatalf("-trials must be at least 1, got %d", *trials)
+		}
+		runTrials = *trials
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -178,6 +187,7 @@ func cmdRun(args []string) {
 		HarnessPath: *harnessPath,
 		OutputDir:   *outputDir,
 		Concurrency: *concurrency,
+		Trials:      runTrials,
 		DryRun:      *dryRun,
 		Model:       *model,
 		PromptModel: *promptModel,
@@ -196,7 +206,7 @@ func cmdRun(args []string) {
 	}
 
 	if *dryRun {
-		printSummary(result)
+		printSummary(os.Stdout, result, true)
 		return
 	}
 
@@ -224,8 +234,19 @@ func cmdRun(args []string) {
 		}
 	}
 
-	printSummary(result)
+	printSummary(os.Stdout, result, false)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
+}
+
+// isFlagSet reports whether name was passed explicitly on the command line.
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // writeJUnit serialises a SuiteResult to path as JUnit XML using the
@@ -357,7 +378,10 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func printSummary(result eval.SuiteResult) {
+// printSummary writes the run summary. With more than one trial per task
+// the task counts are majority outcomes and the pass rate is the mean
+// per-task pass fraction; dryRun notes that each task was validated once.
+func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 	passed := 0
 	failed := 0
 	errored := 0
@@ -372,10 +396,22 @@ func printSummary(result eval.SuiteResult) {
 		}
 	}
 
-	fmt.Printf("Suite: %s (run: %s)\n", result.SuiteID, result.RunID)
-	fmt.Printf("Tasks: %d total, %d passed, %d failed, %d errors\n",
+	_, _ = fmt.Fprintf(w, "Suite: %s (run: %s)\n", result.SuiteID, result.RunID)
+	if result.Trials > 1 {
+		if dryRun {
+			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs planned; the dry run validates each task once)\n",
+				result.Trials, result.Trials*len(result.Tasks))
+		} else {
+			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs)\n", result.Trials, result.Trials*len(result.Tasks))
+		}
+		_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
+			len(result.Tasks), passed, failed, errored)
+		_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
-	fmt.Printf("Pass rate: %.1f%%\n", result.PassRate*100)
+	_, _ = fmt.Fprintf(w, "Pass rate: %.1f%%\n", result.PassRate*100)
 }
 
 // cmdBaseline pulls production metrics from a lakehouse as experiment baselines.
