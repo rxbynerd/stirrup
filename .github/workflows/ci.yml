@@ -59,6 +59,13 @@ jobs:
       # 4.5's ~$1/$5 and GPT-5.6 Terra's ~$1/$6, which works out at
       # roughly $0.01 per full dogfood-seed run instead of ~$0.09.
       #
+      # The gate runs every task three times (--trials 3) so compare can
+      # separate a flaky task from a broken one, which triples the spend:
+      # roughly $0.03 per gated dogfood-seed run. A single run per task
+      # blocks about one push in ten at a 98% per-trial pass rate over
+      # five tasks; with three trials the gate blocks about one in 500
+      # (docs/eval.md#statistics).
+      #
       # It is NOT the fix for the flake that had this gate red on main
       # from run 30163743698. That was a false positive in the
       # sensitive-data detector — the runner's own workspace path
@@ -221,6 +228,10 @@ jobs:
             # produces the result.json a baseline is minimised from.
             # Once baselined, the compare step gates it like any other
             # suite; until then compare skips it with a message.
+            #
+            # Quirk suites run a single trial: three Terra/Sol trials
+            # would triple an already materially larger bill, and with
+            # one trial compare falls back to the single-run flip rule.
             case "$name" in
               provider-quirks-*)
                 if [ "${RUN_QUIRKS:-false}" != "true" ]; then
@@ -260,6 +271,7 @@ jobs:
             ./stirrup-eval run \
               --suite "$suite" \
               --harness "$GITHUB_WORKSPACE/stirrup" \
+              --trials 3 \
               --provider "$EVAL_PROVIDER" \
               --base-url "$EVAL_BASE_URL" \
               --api-key-ref "$EVAL_API_KEY_REF" \
@@ -276,6 +288,10 @@ jobs:
         # explicit gate makes the dependency between the steps
         # readable in the job log.
         if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true' && steps.preflight.outputs.preflight_ok == 'true'
+        # compare exits non-zero only when the gate blocks. warn and
+        # inconclusive are non-blocking, so they are raised as job
+        # annotations to stay visible; comparison.json is uploaded with
+        # the results.
         shell: bash
         run: |
           shopt -s nullglob
@@ -286,7 +302,14 @@ jobs:
             if [ -f "$baseline" ]; then
               ./stirrup-eval compare \
                 --current "$result" \
-                --baseline "$baseline"
+                --baseline "$baseline" \
+                --output "${result_dir}comparison.json"
+              gate=$(jq -r '.summary.gate' "${result_dir}comparison.json")
+              case "$gate" in
+                warn|inconclusive)
+                  echo "::warning::Eval gate for ${name}: ${gate} (non-blocking; see the compare report in the job log)"
+                  ;;
+              esac
             else
               echo "No baseline found at $baseline — skipping comparison"
             fi
@@ -294,7 +317,7 @@ jobs:
 
       - name: Upload eval results
         # Always upload whatever made it to disk so result.json survives
-        # an unrelated failure (e.g. compare step regression exit, future
+        # an unrelated failure (e.g. a compare-step block, future
         # secondary-artifact steps). The eval-gate's pass/fail signal is
         # carried by the compare step's exit code, not artifact presence.
         # Gated on has_credentials and preflight_ok so a skipped run
