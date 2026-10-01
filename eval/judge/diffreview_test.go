@@ -278,7 +278,7 @@ func TestEvaluateDiffReview_PassVerdictCarriesRecord(t *testing.T) {
 	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{
 		WorkspaceDir: dir,
 		Baseline:     &base,
-		Options:      Options{NewClient: fake.factory(&gotCfg, &gotKey)},
+		Options:      Options{ClientFactory: fake.factory(&gotCfg, &gotKey)},
 	})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -312,7 +312,7 @@ func TestEvaluateDiffReview_RequestShape(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	fake := &fakeClient{resp: okResponse(verdictPass)}
-	jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}}
+	jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}}
 
 	if _, err := Evaluate(context.Background(), diffReviewJudge(), jctx); err != nil {
 		t.Fatal(err)
@@ -377,7 +377,7 @@ func TestEvaluateDiffReview_NonceIsPerCallButIdentityIsStable(t *testing.T) {
 	configs := map[string]bool{}
 	for range 4 {
 		fake := &fakeClient{resp: okResponse(verdictPass)}
-		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -505,7 +505,7 @@ func TestEvaluateDiffReview_ReplyWithoutTheCallNonceIsAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(`{"nonce":"00000000000000000000000000000000","reasoning":"r","verdict":"pass","feedback":"f"}`)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 	if err == nil || verdict.Status != types.JudgeStatusError || verdict.Passed {
 		t.Fatalf("verdict = %+v, err = %v; a reply without this call's nonce must be an error", verdict, err)
 	}
@@ -522,7 +522,7 @@ func TestEvaluateDiffReview_ForwardsTemperatureAndPromptOnlyMode(t *testing.T) {
 	j.LLM = &types.JudgeLLMConfig{Model: "m", Temperature: &temp, MaxTokens: 4096, StructuredOutput: types.JudgeStructuredPromptOnly}
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
-	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}}); err != nil {
+	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}}); err != nil {
 		t.Fatal(err)
 	}
 	if fake.got.Temperature == nil || *fake.got.Temperature != 0.2 {
@@ -543,7 +543,7 @@ func TestEvaluateDiffReview_FailVerdictIsNotAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(verdictFail)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 	if err != nil {
 		t.Fatalf("a criteria failure must not be an error: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestEvaluateDiffReview_ErrorStatuses(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeClient{resp: tc.resp, err: tc.callErr}
-			verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+			verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 			if err == nil {
 				t.Fatalf("expected an error, got %+v", verdict)
 			}
@@ -595,7 +595,7 @@ func TestEvaluateDiffReview_NotAGitRepositoryIsAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: t.TempDir(), Options: Options{NewClient: fake.factory(nil, nil)}})
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: t.TempDir(), Options: Options{ClientFactory: fake.factory(nil, nil)}})
 	if !errors.Is(err, errNotGitRepo) {
 		t.Fatalf("err = %v, want errNotGitRepo", err)
 	}
@@ -617,7 +617,7 @@ func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 		j := diffReviewJudge()
 		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400}
 
-		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 		if err == nil {
 			t.Fatalf("expected an error, got %+v", verdict)
 		}
@@ -642,7 +642,7 @@ func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 		j := diffReviewJudge()
 		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400, AllowTruncated: true}
 
-		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
@@ -674,7 +674,7 @@ func TestEvaluateDiffReview_ConfigurationPrecedence(t *testing.T) {
 		var cfg types.JudgeLLMConfig
 		var key string
 		fake := &fakeClient{resp: okResponse(verdictPass)}
-		jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{LLMDefaults: defaults, NewClient: fake.factory(&cfg, &key)}}
+		jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{LLMDefaults: defaults, ClientFactory: fake.factory(&cfg, &key)}}
 		if _, err := Evaluate(context.Background(), j, jctx); err != nil {
 			t.Fatal(err)
 		}
@@ -702,7 +702,7 @@ func TestEvaluateDiffReview_MissingCredentialIsAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 	if err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("err = %v, want a message naming ANTHROPIC_API_KEY", err)
 	}
@@ -791,7 +791,7 @@ func TestEvaluateDiffReview_InvalidConfigurationFailsWithoutCallingTheModel(t *t
 			fake := &fakeClient{resp: okResponse(verdictPass)}
 			j := diffReviewJudge()
 			j.LLM = llm
-			verdict, err := Evaluate(context.Background(), j, changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+			verdict, err := Evaluate(context.Background(), j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 			if err == nil || verdict.Status != types.JudgeStatusError || verdict.Passed {
 				t.Fatalf("verdict = %+v, err = %v; want an error verdict", verdict, err)
 			}
@@ -814,7 +814,7 @@ func TestEvaluateDiffReview_EmptyDiff(t *testing.T) {
 	t.Run("against a recorded baseline it is an error", func(t *testing.T) {
 		ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 		fake := &fakeClient{resp: okResponse(verdictPass)}
-		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 		if err == nil || verdict.Status != types.JudgeStatusError || !strings.Contains(err.Error(), "no reviewable change") {
 			t.Fatalf("verdict = %+v, err = %v", verdict, err)
 		}
@@ -826,7 +826,7 @@ func TestEvaluateDiffReview_EmptyDiff(t *testing.T) {
 	t.Run("against the workspace HEAD the model sees no changes", func(t *testing.T) {
 		ws := gitRepoWorkspace(t, map[string]string{"a.txt": "one\n"})
 		fake := &fakeClient{resp: okResponse(verdictFail)}
-		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: ws, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 		if err != nil || verdict.Status != types.JudgeStatusFail {
 			t.Fatalf("verdict = %+v, err = %v", verdict, err)
 		}

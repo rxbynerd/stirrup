@@ -98,9 +98,9 @@ type Options struct {
 	// that have no `llm` block. Nil keeps the built-in Anthropic default.
 	LLMDefaults *types.JudgeLLMConfig
 
-	// NewClient overrides client construction, for tests. Nil uses
+	// ClientFactory overrides client construction, for tests. Nil uses
 	// NewClient's HTTP implementations.
-	NewClient ClientFactory
+	ClientFactory ClientFactory
 }
 
 // ResolveLLMConfig produces the configuration for one diff-review judge: an

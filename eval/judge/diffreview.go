@@ -95,7 +95,7 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 			return diffReviewError(rec, fmt.Errorf("resolving api_key_ref: %w", err))
 		}
 	}
-	newClient := jctx.NewClient
+	newClient := jctx.ClientFactory
 	if newClient == nil {
 		newClient = NewClient
 	}
