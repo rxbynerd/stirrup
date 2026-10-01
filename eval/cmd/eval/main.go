@@ -825,6 +825,9 @@ func appendJudgeBlock(parent *hclwrite.Body, j types.EvalJudge) {
 	if j.Criteria != "" {
 		body.SetAttributeValue("criteria", cty.StringVal(j.Criteria))
 	}
+	if j.LLM != nil {
+		appendLLMBlock(body, *j.LLM)
+	}
 	if j.Type == "composite" {
 		if j.Require != "" {
 			body.SetAttributeValue("require", cty.StringVal(j.Require))
@@ -832,6 +835,41 @@ func appendJudgeBlock(parent *hclwrite.Body, j types.EvalJudge) {
 		for _, sub := range j.Judges {
 			appendJudgeBlock(body, sub)
 		}
+	}
+}
+
+// appendLLMBlock appends a diff-review judge's `llm { ... }` block, omitting
+// unset fields so the loader applies the same defaults.
+func appendLLMBlock(parent *hclwrite.Body, c types.JudgeLLMConfig) {
+	body := parent.AppendNewBlock("llm", nil).Body()
+	for _, attr := range []struct{ name, value string }{
+		{"provider", c.Provider},
+		{"model", c.Model},
+		{"base_url", c.BaseURL},
+		{"api_key_ref", c.APIKeyRef},
+		{"structured_output", c.StructuredOutput},
+	} {
+		if attr.value != "" {
+			body.SetAttributeValue(attr.name, cty.StringVal(attr.value))
+		}
+	}
+	for _, attr := range []struct {
+		name  string
+		value int
+	}{
+		{"timeout_seconds", c.TimeoutSeconds},
+		{"max_input_bytes", c.MaxInputBytes},
+		{"max_tokens", c.MaxTokens},
+	} {
+		if attr.value != 0 {
+			body.SetAttributeValue(attr.name, cty.NumberIntVal(int64(attr.value)))
+		}
+	}
+	if c.Temperature != nil {
+		body.SetAttributeValue("temperature", cty.NumberFloatVal(*c.Temperature))
+	}
+	if c.AllowTruncated {
+		body.SetAttributeValue("allow_truncated", cty.True)
 	}
 }
 

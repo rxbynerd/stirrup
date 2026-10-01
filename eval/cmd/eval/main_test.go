@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -953,6 +955,42 @@ func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
 	}
 	if len(got.Tasks[1].Judge.Judges) != 2 {
 		t.Errorf("composite has %d sub-judges, want 2", len(got.Tasks[1].Judge.Judges))
+	}
+}
+
+func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
+	zero, warm := 0.0, 0.7
+	judges := []types.EvalJudge{
+		{Type: "diff-review", Criteria: "adds a test", LLM: &types.JudgeLLMConfig{
+			Provider: "openai-compatible", Model: "openai/gpt-6-luna", BaseURL: "https://openrouter.ai/api/v1",
+			APIKeyRef: "secret://OPENROUTER_API_KEY", TimeoutSeconds: 60, MaxInputBytes: 4096, Temperature: &zero,
+			MaxTokens: 2048, StructuredOutput: types.JudgeStructuredPromptOnly, AllowTruncated: true,
+		}},
+		{Type: "diff-review", Criteria: "minimal", LLM: &types.JudgeLLMConfig{Model: "claude-x"}},
+		{Type: "diff-review", Criteria: "no block"},
+		{Type: "composite", Require: "any", Judges: []types.EvalJudge{
+			{Type: "file-exists", Paths: []string{"a.txt"}},
+			{Type: "diff-review", Criteria: "nested", LLM: &types.JudgeLLMConfig{Model: "claude-y", Temperature: &warm}},
+		}},
+	}
+	original := types.EvalSuite{ID: "llm-suite"}
+	for i, j := range judges {
+		original.Tasks = append(original.Tasks, types.EvalTask{ID: fmt.Sprintf("t%d", i), Prompt: "p", Judge: j})
+	}
+	path := filepath.Join(t.TempDir(), "llm.hcl")
+	if err := writeSuiteHCL(path, original); err != nil {
+		t.Fatalf("writeSuiteHCL: %v", err)
+	}
+	got, err := loadSuite(path)
+	if err != nil {
+		t.Fatalf("loadSuite after writeSuiteHCL: %v", err)
+	}
+	for i, want := range judges {
+		if !reflect.DeepEqual(got.Tasks[i].Judge, want) {
+			gotJSON, _ := json.Marshal(got.Tasks[i].Judge)
+			wantJSON, _ := json.Marshal(want)
+			t.Errorf("task %d judge = %s, want %s", i, gotJSON, wantJSON)
+		}
 	}
 }
 
