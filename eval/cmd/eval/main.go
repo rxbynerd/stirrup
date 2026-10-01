@@ -391,7 +391,8 @@ func writeJSON(path string, v any) error {
 
 // printSummary writes the run summary. With more than one trial per task
 // the task counts are majority outcomes and the pass rate is the mean
-// per-task pass fraction; dryRun notes that each task was validated once.
+// per-task pass fraction; a dry run validates each task once, so it keeps
+// the single-run counts and notes the planned runs.
 func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 	passed := 0
 	failed := 0
@@ -414,11 +415,11 @@ func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 				result.Trials, result.Trials*len(result.Tasks))
 		} else {
 			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs)\n", result.Trials, result.Trials*len(result.Tasks))
+			_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
+				len(result.Tasks), passed, failed, errored)
+			_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
+			return
 		}
-		_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
-			len(result.Tasks), passed, failed, errored)
-		_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
-		return
 	}
 	_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)

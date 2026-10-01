@@ -81,7 +81,7 @@ func writeRate(b *strings.Builder, label string, r eval.RateSummary) {
 	if r.StdErr != nil {
 		se = fmt.Sprintf("%.3f", *r.StdErr)
 	}
-	fmt.Fprintf(b, "  %-9s %.1f%% (95%% Wilson [%.1f%%, %.1f%%]), SE %s, n=%d tasks, K=%d\n",
+	fmt.Fprintf(b, "  %-9s %.1f%% (95%% Wilson over tasks [%.1f%%, %.1f%%]), SE %s, n=%d tasks, K=%d\n",
 		label+":", r.PassRate*100, r.WilsonLow*100, r.WilsonHigh*100, se, r.Tasks, r.Trials)
 	if len(r.PassHatK) > 0 {
 		fmt.Fprintf(b, "  %-9s pass^k (k=1..%d): %s; pass@k: %s\n",
