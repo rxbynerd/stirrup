@@ -321,6 +321,13 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 				return anthropicText("no: "+r.Header.Get("x-api-key"), "refusal")
 			},
 		},
+		"served model and stop reason echo the key": {
+			provider: "anthropic", status: http.StatusOK,
+			reply: func(r *http.Request, nonce string) string {
+				key := r.Header.Get("x-api-key")
+				return `{"model":"` + key + `","content":[{"type":"text","text":"{}"}],"stop_reason":"` + key + `","usage":{"input_tokens":1,"output_tokens":1}}`
+			},
+		},
 		"verdict feedback quotes the key": {
 			provider: "anthropic", status: http.StatusOK,
 			reply: func(r *http.Request, nonce string) string {

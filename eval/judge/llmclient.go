@@ -30,9 +30,10 @@ const (
 // Stop reasons as normalised by the clients. Provider-specific values that
 // have no counterpart here pass through unchanged.
 const (
-	stopEndTurn   = "end_turn"
-	stopMaxTokens = "max_tokens"
-	stopRefusal   = "refusal"
+	stopEndTurn      = "end_turn"
+	stopStopSequence = "stop_sequence"
+	stopMaxTokens    = "max_tokens"
+	stopRefusal      = "refusal"
 )
 
 const (

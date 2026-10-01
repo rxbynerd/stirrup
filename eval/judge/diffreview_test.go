@@ -564,6 +564,9 @@ func TestEvaluateDiffReview_ErrorStatuses(t *testing.T) {
 		{name: "transport failure", callErr: errors.New("provider returned HTTP 503: overloaded"), wantMsg: "overloaded"},
 		{name: "refusal", resp: JudgeResponse{StopReason: "refusal", Model: "m"}, wantParse: types.JudgeParseRefusal, wantMsg: "refused"},
 		{name: "max tokens", resp: JudgeResponse{StopReason: "max_tokens", Text: `{"reasoning":"cut`, Model: "m"}, wantParse: types.JudgeParseTruncatedOutput, wantMsg: "max_tokens"},
+		{name: "tool use stop", resp: JudgeResponse{StopReason: "tool_use", Text: verdictPass, Model: "m"}, wantParse: types.JudgeParseTruncatedOutput, wantMsg: "tool_use"},
+		{name: "paused turn", resp: JudgeResponse{StopReason: "pause_turn", Text: verdictPass, Model: "m"}, wantParse: types.JudgeParseTruncatedOutput, wantMsg: "pause_turn"},
+		{name: "missing stop reason", resp: JudgeResponse{Text: verdictPass, Model: "m"}, wantParse: types.JudgeParseTruncatedOutput, wantMsg: "before completing its turn"},
 		{name: "prose reply", resp: okResponse("I think it is fine."), wantParse: types.JudgeParseNoJSON, wantMsg: "no JSON object"},
 		{name: "schema violation", resp: okResponse(`{"nonce":"` + nonceSlot + `","passed":true}`), wantParse: types.JudgeParseSchemaViolation, wantMsg: "not a valid verdict"},
 	}

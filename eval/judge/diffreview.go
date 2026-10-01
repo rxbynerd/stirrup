@@ -156,10 +156,10 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 	if err != nil {
 		return diffReviewError(rec, redactError(fmt.Errorf("model call failed: %w", err), apiKey))
 	}
-	rec.ServedModel = resp.Model
+	rec.ServedModel = redactSecret(resp.Model, apiKey)
 	rec.InputTokens = resp.InputTokens
 	rec.OutputTokens = resp.OutputTokens
-	rec.StopReason = resp.StopReason
+	rec.StopReason = redactSecret(resp.StopReason, apiKey)
 
 	switch resp.StopReason {
 	case stopRefusal:
@@ -168,6 +168,10 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 	case stopMaxTokens:
 		rec.ParseStatus = types.JudgeParseTruncatedOutput
 		return diffReviewError(rec, fmt.Errorf("model output reached max_tokens (%d) before completing the verdict; raise max_tokens", req.MaxTokens))
+	case stopEndTurn, stopStopSequence:
+	default:
+		rec.ParseStatus = types.JudgeParseTruncatedOutput
+		return diffReviewError(rec, fmt.Errorf("model stopped with reason %s before completing its turn", excerpt(rec.StopReason)))
 	}
 
 	verdict, status, err := parseDiffReviewReply(redactSecret(resp.Text, apiKey), fence.nonce)

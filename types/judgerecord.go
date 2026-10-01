@@ -54,7 +54,9 @@ const (
 	// JudgeParseRefusal means the model declined to answer.
 	JudgeParseRefusal = "refusal"
 
-	// JudgeParseTruncatedOutput means the model hit its output token limit.
+	// JudgeParseTruncatedOutput means the model stopped before finishing
+	// its turn: it hit its output token limit or reported another stop
+	// reason than end of turn or a stop sequence.
 	JudgeParseTruncatedOutput = "truncated_output"
 )
 
