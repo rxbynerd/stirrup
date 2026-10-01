@@ -278,10 +278,13 @@ func TestBuildDiffReviewPrompt_Structure(t *testing.T) {
 	if strings.Count(got, begin) != 1 || strings.Count(got, end) != 1 {
 		t.Fatalf("expected one begin and one end marker:\n%s", got)
 	}
-	idx := func(s string) int { return strings.Index(got, s) }
-	if !(idx("criteria text") < idx(begin) && idx(begin) < idx("Summary (git diff --stat)") &&
-		idx("Summary (git diff --stat)") < idx("+two") && idx("+two") < idx(end)) {
-		t.Errorf("sections out of order:\n%s", got)
+	prev := -1
+	for _, section := range []string{"criteria text", begin, "Summary (git diff --stat)", "+two", end} {
+		at := strings.Index(got, section)
+		if at <= prev {
+			t.Fatalf("section %q is missing or out of order:\n%s", section, got)
+		}
+		prev = at
 	}
 	if strings.Contains(got, "truncated") || strings.Contains(got, "only the first") {
 		t.Errorf("untruncated prompt carries a truncation note:\n%s", got)
