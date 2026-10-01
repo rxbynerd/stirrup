@@ -421,3 +421,77 @@ func jsonEqual(t *testing.T, a, b any) bool {
 	}
 	return string(x) == string(y)
 }
+
+func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
+	const key = "sk-test-0123456789abcdef"
+	echo := func(r *http.Request) string {
+		return r.Header.Get("x-api-key") + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	cases := map[string]struct {
+		status int
+		reply  func(r *http.Request) string
+	}{
+		"error body":            {http.StatusUnauthorized, func(r *http.Request) string { return "bad key\n" + echo(r) + "\r\nauth=" + r.Header.Get("Authorization") }},
+		"key across truncation": {http.StatusBadRequest, func(r *http.Request) string { return strings.Repeat("x", maxErrorBodyBytes-12) + echo(r) }},
+		"json-escaped key":      {http.StatusBadRequest, func(r *http.Request) string { b, _ := json.Marshal(echo(r)); return string(b) }},
+		"error on HTTP 200":     {http.StatusOK, func(r *http.Request) string { return `{"error":{"message":"key ` + echo(r) + ` revoked\nretry"}}` }},
+	}
+	clients := map[string]func(url string) JudgeClient{
+		"anthropic": func(url string) JudgeClient {
+			c, _ := newAnthropicClient(&http.Client{Timeout: 5 * time.Second}, url, key, "m")
+			return c
+		},
+		"openai": func(url string) JudgeClient {
+			c, _ := newOpenAIClient(&http.Client{Timeout: 5 * time.Second}, url, key, "m")
+			return c
+		},
+	}
+	for name, tc := range cases {
+		for client, build := range clients {
+			if tc.status == http.StatusOK && client == "anthropic" {
+				continue
+			}
+			t.Run(name+"/"+client, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.reply(r))
+				}))
+				t.Cleanup(srv.Close)
+				_, err := build(srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				msg := err.Error()
+				if strings.Contains(msg, key[:8]) {
+					t.Errorf("error carries key material: %q", msg)
+				}
+				if strings.ContainsAny(msg, "\r\n") {
+					t.Errorf("error spans several lines: %q", msg)
+				}
+				if len(msg) > maxErrorBodyBytes+64 {
+					t.Errorf("error is %d bytes, want it bounded near %d", len(msg), maxErrorBodyBytes)
+				}
+			})
+		}
+	}
+}
+
+func TestRedactSecret(t *testing.T) {
+	const key = `sk-te"st\0123456789`
+	cases := map[string]struct {
+		in, secret, want string
+	}{
+		"raw":          {"key " + key + " end", key, "key [redacted] end"},
+		"json escaped": {`key sk-te\"st\\0123456789 end`, key, "key [redacted] end"},
+		"bearer":       {"Authorization: Bearer " + key, key, "Authorization: Bearer [redacted]"},
+		"repeated":     {key + key, key, "[redacted][redacted]"},
+		"short secret": {"the word secret", "secret", "the word secret"},
+		"no secret":    {"anything", "", "anything"},
+		"absent":       {"nothing here", key, "nothing here"},
+	}
+	for name, tc := range cases {
+		if got := redactSecret(tc.in, tc.secret); got != tc.want {
+			t.Errorf("%s: redactSecret(%q) = %q, want %q", name, tc.in, got, tc.want)
+		}
+	}
+}

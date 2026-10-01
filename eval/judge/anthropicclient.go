@@ -87,7 +87,7 @@ func (c *anthropicClient) Complete(ctx context.Context, req JudgeRequest) (Judge
 	raw, err := postJSON(ctx, c.http, c.endpoint, map[string]string{
 		"x-api-key":         c.apiKey,
 		"anthropic-version": anthropicAPIVersion,
-	}, body)
+	}, body, c.apiKey)
 	if err != nil {
 		return JudgeResponse{}, err
 	}

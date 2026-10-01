@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,12 @@ const (
 	// maxErrorBodyBytes bounds the provider error text carried into a
 	// verdict reason.
 	maxErrorBodyBytes = 1024
+
+	// minRedactedSecretBytes is the shortest API key that is redacted;
+	// replacing shorter values would mangle unrelated text.
+	minRedactedSecretBytes = 8
+
+	redactedSecret = "[redacted]"
 )
 
 // JudgeClient sends one judge prompt to a model and returns its reply.
@@ -146,8 +153,8 @@ func joinEndpoint(baseURL, path string) (string, error) {
 
 // postJSON POSTs payload and returns the response body on HTTP 200. Errors
 // never carry the request URL, which may hold a gateway credential in its
-// query string.
-func postJSON(ctx context.Context, client *http.Client, endpoint string, headers map[string]string, payload any) ([]byte, error) {
+// query string, and have secret redacted from any provider text they quote.
+func postJSON(ctx context.Context, client *http.Client, endpoint string, headers map[string]string, payload any, secret string) ([]byte, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -167,13 +174,13 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		if errors.As(err, &urlErr) {
 			err = urlErr.Err
 		}
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, redactError(fmt.Errorf("request failed: %w", err), secret)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		return nil, fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxErrorBodyBytes+len(secret))))
+		return nil, fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, providerText(string(body), secret))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -184,4 +191,48 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		return nil, fmt.Errorf("provider response exceeds %d bytes", maxResponseBytes)
 	}
 	return body, nil
+}
+
+// providerText prepares provider-authored text for an error message:
+// secret redacted, then flattened to one line and bounded to
+// maxErrorBodyBytes. Redaction runs first so truncation cannot leave a
+// fragment of the secret behind.
+func providerText(s, secret string) string {
+	s = redactSecret(s, secret)
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > maxErrorBodyBytes {
+		s = string(trimPartialRune([]byte(s[:maxErrorBodyBytes])))
+	}
+	return s
+}
+
+// redactSecret replaces secret in s, raw or in its JSON- or Go-escaped
+// string form, with "[redacted]".
+func redactSecret(s, secret string) string {
+	if len(secret) < minRedactedSecretBytes || s == "" {
+		return s
+	}
+	forms := []string{secret}
+	if j, err := json.Marshal(secret); err == nil {
+		forms = append(forms, string(j[1:len(j)-1]))
+	}
+	q := strconv.Quote(secret)
+	forms = append(forms, q[1:len(q)-1])
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, redactedSecret)
+	}
+	return s
+}
+
+// redactError returns err with secret redacted from its message, or err
+// unchanged when the message does not contain it.
+func redactError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if red := redactSecret(msg, secret); red != msg {
+		return errors.New(red)
+	}
+	return err
 }

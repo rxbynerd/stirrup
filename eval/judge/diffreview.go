@@ -101,7 +101,7 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 	}
 	client, err := newClient(cfg, apiKey)
 	if err != nil {
-		return diffReviewError(rec, err)
+		return diffReviewError(rec, redactError(err, apiKey))
 	}
 
 	base := jctx.Baseline
@@ -154,7 +154,7 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 	resp, err := client.Complete(ctx, req)
 	rec.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
-		return diffReviewError(rec, fmt.Errorf("model call failed: %w", err))
+		return diffReviewError(rec, redactError(fmt.Errorf("model call failed: %w", err), apiKey))
 	}
 	rec.ServedModel = resp.Model
 	rec.InputTokens = resp.InputTokens
@@ -170,7 +170,7 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 		return diffReviewError(rec, fmt.Errorf("model output reached max_tokens (%d) before completing the verdict; raise max_tokens", req.MaxTokens))
 	}
 
-	verdict, status, err := parseDiffReviewReply(resp.Text, fence.nonce)
+	verdict, status, err := parseDiffReviewReply(redactSecret(resp.Text, apiKey), fence.nonce)
 	rec.ParseStatus = status
 	if err != nil {
 		return diffReviewError(rec, err)

@@ -97,7 +97,7 @@ func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeRes
 	if c.apiKey != "" {
 		headers["Authorization"] = "Bearer " + c.apiKey
 	}
-	raw, err := postJSON(ctx, c.http, c.endpoint, headers, body)
+	raw, err := postJSON(ctx, c.http, c.endpoint, headers, body, c.apiKey)
 	if err != nil {
 		return JudgeResponse{}, err
 	}
@@ -107,7 +107,7 @@ func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeRes
 		return JudgeResponse{}, fmt.Errorf("decode response: %w", err)
 	}
 	if or.Error != nil {
-		return JudgeResponse{}, fmt.Errorf("provider returned an error: %s", or.Error.Message)
+		return JudgeResponse{}, fmt.Errorf("provider returned an error: %s", providerText(or.Error.Message, c.apiKey))
 	}
 	if len(or.Choices) == 0 {
 		return JudgeResponse{}, errors.New("provider response contained no choices")

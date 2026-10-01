@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"net/http"
@@ -159,11 +160,8 @@ func writeSuite(t *testing.T, src string) string {
 	return path
 }
 
-func TestCmdRun_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
-	endpoint := newJudgeEndpoint(t)
-	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
-
-	harnessPath := writeFakeHarness(t, `#!/bin/sh
+// createsFileHarness writes created.txt and a successful trace.
+const createsFileHarness = `#!/bin/sh
 shift
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -176,7 +174,13 @@ echo "agent output" > created.txt
 if [ -n "$TRACE" ]; then
   echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
 fi
-`)
+`
+
+func TestCmdRun_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
+	endpoint := newJudgeEndpoint(t)
+	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
+
+	harnessPath := writeFakeHarness(t, createsFileHarness)
 
 	outputDir := filepath.Join(t.TempDir(), "out")
 	exitCode := run([]string{
@@ -273,5 +277,108 @@ func TestCmdReplay_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
 	}
 	if rec := result.Tasks[0].JudgeVerdict.Record; rec == nil || rec.RequestedModel != "replay-judge-model" {
 		t.Errorf("record = %+v", rec)
+	}
+}
+
+func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
+	const key = "sk-test-0123456789abcdef"
+	anthropicText := func(text, stop string) string {
+		quoted, _ := json.Marshal(text)
+		return `{"model":"m","content":[{"type":"text","text":` + string(quoted) + `}],"stop_reason":"` + stop + `","usage":{"input_tokens":1,"output_tokens":1}}`
+	}
+	cases := map[string]struct {
+		provider string
+		status   int
+		reply    func(r *http.Request, nonce string) string
+	}{
+		"error body echoes the headers": {
+			provider: "anthropic", status: http.StatusUnauthorized,
+			reply: func(r *http.Request, _ string) string {
+				return "invalid key\nx-api-key=" + r.Header.Get("x-api-key") + " auth=" + r.Header.Get("Authorization")
+			},
+		},
+		"bearer header echoed": {
+			provider: "openai-compatible", status: http.StatusUnauthorized,
+			reply: func(r *http.Request, _ string) string { return `{"error":{"message":"bad ` + r.Header.Get("Authorization") + `"}}` },
+		},
+		"error message on HTTP 200": {
+			provider: "openai-compatible", status: http.StatusOK,
+			reply: func(r *http.Request, _ string) string {
+				return `{"error":{"message":"key ` + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + ` is revoked"}}`
+			},
+		},
+		"reply without a verdict quotes the key": {
+			provider: "anthropic", status: http.StatusOK,
+			reply: func(r *http.Request, _ string) string { return anthropicText("I saw "+r.Header.Get("x-api-key"), "end_turn") },
+		},
+		"refusal quotes the key": {
+			provider: "anthropic", status: http.StatusOK,
+			reply: func(r *http.Request, _ string) string { return anthropicText("no: "+r.Header.Get("x-api-key"), "refusal") },
+		},
+		"verdict feedback quotes the key": {
+			provider: "anthropic", status: http.StatusOK,
+			reply: func(r *http.Request, nonce string) string {
+				return anthropicText(`{"nonce":"`+nonce+`","reasoning":"r","verdict":"fail","feedback":"leaked `+r.Header.Get("x-api-key")+`"}`, "end_turn")
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CLI_JUDGE_KEY", key)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				nonce := ""
+				if m := regexp.MustCompile(`UNTRUSTED_DIFF_([0-9a-f]{32})`).FindSubmatch(raw); m != nil {
+					nonce = string(m[1])
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.reply(r, nonce))
+			}))
+			t.Cleanup(srv.Close)
+
+			harnessPath := writeFakeHarness(t, createsFileHarness)
+			outputDir := filepath.Join(t.TempDir(), "out")
+			junitPath := filepath.Join(t.TempDir(), "junit.xml")
+			var stdout strings.Builder
+			run([]string{
+				"run",
+				"--suite", writeSuite(t, diffReviewSuiteHCL),
+				"--harness", harnessPath,
+				"--output", outputDir,
+				"--junit", junitPath,
+				"--judge-provider", tc.provider,
+				"--judge-model", "m",
+				"--judge-base-url", srv.URL,
+				"--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
+			}, &stdout)
+
+			result, err := loadResult(filepath.Join(outputDir, "result.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Tasks) != 1 {
+				t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+			}
+			task := result.Tasks[0]
+			if task.Outcome == "pass" {
+				t.Fatalf("task passed: %+v", task)
+			}
+			if !strings.Contains(task.JudgeVerdict.Reason+task.Error, "[redacted]") && name != "refusal quotes the key" {
+				t.Errorf("reason %q / error %q does not show the redaction", task.JudgeVerdict.Reason, task.Error)
+			}
+			artefacts := map[string]string{"reason": task.JudgeVerdict.Reason, "error": task.Error, "stdout": stdout.String()}
+			for _, path := range []string{filepath.Join(outputDir, "result.json"), junitPath} {
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				artefacts[filepath.Base(path)] = string(raw)
+			}
+			for where, text := range artefacts {
+				if strings.Contains(text, key) || strings.Contains(text, key[:12]) {
+					t.Errorf("%s carries the API key:\n%s", where, text)
+				}
+			}
+		})
 	}
 }
