@@ -203,6 +203,19 @@ func TestLoadSuiteHCL_DiffReviewLLMBlockErrors(t *testing.T) {
 	}
 }
 
+func TestLoadSuiteHCL_BadKeyRefErrorDoesNotEchoTheValue(t *testing.T) {
+	for _, ref := range []string{"sk-live-abc123", "secret://sk-live-abc123"} {
+		src := diffReviewSuite("      " + llmBlock(`model = "m"`, `api_key_ref = "`+ref+`"`))
+		_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
+		if err == nil {
+			t.Fatalf("api_key_ref %q accepted", ref)
+		}
+		if strings.Contains(err.Error(), "abc123") {
+			t.Errorf("error echoes the api_key_ref value: %v", err)
+		}
+	}
+}
+
 func TestLoadSuiteHCL_BadBaseURLErrorDoesNotEchoCredentials(t *testing.T) {
 	src := diffReviewSuite(llmBlock(`model = "m"`, `base_url = "https://user:hunter2@example.com"`))
 	_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))

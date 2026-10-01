@@ -314,20 +314,28 @@ func TestResolveSecretRef(t *testing.T) {
 	}
 
 	bad := map[string]string{
-		"secret://JUDGE_EMPTY_KEY":       "JUDGE_EMPTY_KEY",
-		"secret://JUDGE_UNSET_KEY_XYZ":   "JUDGE_UNSET_KEY_XYZ",
-		"secret://":                      "empty environment variable name",
-		"secret://file://":               "empty file path",
-		"secret://file://" + emptyFile:   "is empty",
-		"secret://file:///no/such/file":  "reading secret file",
-		"sk-literal-key":                 "unknown secret reference scheme",
-		"vault://prod/judge":             "unknown secret reference scheme",
-		"https://example.com/secret-key": "unknown secret reference scheme",
+		"secret://JUDGE_EMPTY_KEY":                 "JUDGE_EMPTY_KEY",
+		"secret://JUDGE_UNSET_KEY_XYZ":             "JUDGE_UNSET_KEY_XYZ",
+		"secret://":                                "names no secret",
+		"secret://file://":                         "names no file",
+		"secret://file://" + emptyFile:             "is empty",
+		"secret://file:///no/such/file":            "reading secret file",
+		"secret://ssm:///prod/judge-key":           "not supported",
+		"secret://sk-ant-api03-REALKEYMATERIAL":    "environment variable name",
+		"secret://9STARTS_WITH_DIGIT":              "environment variable name",
+		"secret://HAS SPACE":                       "environment variable name",
+		"sk-literal-key":                           "raw credentials are not permitted",
+		"vault://prod/judge":                       "raw credentials are not permitted",
+		"https://example.com/secret-key-material1": "raw credentials are not permitted",
 	}
 	for ref, wantMsg := range bad {
 		got, err := resolveSecretRef(ref)
 		if err == nil || !strings.Contains(err.Error(), wantMsg) {
 			t.Errorf("resolveSecretRef(%q) = %q, %v; want error containing %q", ref, got, err, wantMsg)
+			continue
+		}
+		if name := strings.TrimPrefix(ref, "secret://"); len(name) > 0 && !strings.HasPrefix(name, "JUDGE_") && !strings.HasPrefix(name, "file://") && strings.Contains(err.Error(), name) {
+			t.Errorf("resolveSecretRef(%q) echoes the reference: %v", ref, err)
 		}
 	}
 }

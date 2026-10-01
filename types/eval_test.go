@@ -71,6 +71,9 @@ func TestJudgeLLMConfigValidate(t *testing.T) {
 		}},
 		{name: "raw api key", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "sk-live-abc" }, wantErr: "secret:// reference"},
 		{name: "empty secret ref", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "secret://" }, wantErr: "names no secret"},
+		{name: "key pasted as a secret name", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "secret://sk-ant-api03-REAL" }, wantErr: "environment variable name"},
+		{name: "ssm secret ref", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "secret://ssm:///prod/key" }, wantErr: "not supported"},
+		{name: "empty file secret ref", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "secret://file://" }, wantErr: "names no file"},
 		{name: "timeout over cap", mutate: func(c *JudgeLLMConfig) { c.TimeoutSeconds = JudgeMaxTimeoutSeconds + 1 }, wantErr: "timeout_seconds"},
 		{name: "negative timeout", mutate: func(c *JudgeLLMConfig) { c.TimeoutSeconds = -1 }, wantErr: "timeout_seconds"},
 		{name: "negative input cap", mutate: func(c *JudgeLLMConfig) { c.MaxInputBytes = -1 }, wantErr: "max_input_bytes"},
@@ -133,6 +136,23 @@ func TestCheckJudgeEndpointAddr(t *testing.T) {
 	}
 	if err := CheckJudgeEndpointAddr(netip.Addr{}, false); err == nil {
 		t.Error("the zero address was accepted")
+	}
+}
+
+func TestJudgeLLMConfigValidateDoesNotEchoKeyRef(t *testing.T) {
+	for _, ref := range []string{"sk-ant-api03-REALKEYMATERIAL", "secret://sk-ant-api03-REALKEYMATERIAL", "secret://REAL KEY MATERIAL"} {
+		err := JudgeLLMConfig{Model: "m", APIKeyRef: ref}.Validate()
+		if err == nil {
+			t.Fatalf("api_key_ref %q accepted", ref)
+		}
+		if strings.Contains(err.Error(), "REAL") {
+			t.Errorf("error echoes the reference: %v", err)
+		}
+	}
+	for _, ref := range []string{"secret://ANTHROPIC_API_KEY", "secret://_K2", "secret://file:///run/secrets/key"} {
+		if err := (JudgeLLMConfig{Model: "m", APIKeyRef: ref}).Validate(); err != nil {
+			t.Errorf("api_key_ref %q rejected: %v", ref, err)
+		}
 	}
 }
 

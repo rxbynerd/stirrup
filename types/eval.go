@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -240,11 +241,10 @@ func (c JudgeLLMConfig) Validate() error {
 	} else if err := validateJudgeBaseURL(c.BaseURL, c.APIKeyRef != ""); err != nil {
 		return err
 	}
-	if c.APIKeyRef != "" && !strings.HasPrefix(c.APIKeyRef, "secret://") {
-		return fmt.Errorf("api_key_ref must be a secret:// reference; raw credentials are not permitted")
-	}
-	if c.APIKeyRef == "secret://" {
-		return fmt.Errorf("api_key_ref %q names no secret", c.APIKeyRef)
+	if c.APIKeyRef != "" {
+		if err := ValidateJudgeKeyRef(c.APIKeyRef); err != nil {
+			return err
+		}
 	}
 	if c.TimeoutSeconds < 0 || c.TimeoutSeconds > JudgeMaxTimeoutSeconds {
 		return fmt.Errorf("timeout_seconds %d must be between 1 and %d (0 selects the default of %d)",
@@ -263,6 +263,38 @@ func (c JudgeLLMConfig) Validate() error {
 	case JudgeStructuredJSONSchema, JudgeStructuredPromptOnly:
 	default:
 		return fmt.Errorf("structured_output %q must be %q or %q", c.StructuredOutput, JudgeStructuredJSONSchema, JudgeStructuredPromptOnly)
+	}
+	return nil
+}
+
+const (
+	judgeKeyRefPrefix     = "secret://"
+	judgeKeyRefFilePrefix = "secret://file://"
+)
+
+var judgeKeyRefEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidateJudgeKeyRef checks the syntax of a judge api_key_ref:
+// secret://ENV_NAME or secret://file://PATH. Errors never echo the
+// reference, which may be a key pasted in the wrong place.
+func ValidateJudgeKeyRef(ref string) error {
+	switch {
+	case !strings.HasPrefix(ref, judgeKeyRefPrefix):
+		return errors.New("api_key_ref must be a secret:// reference; raw credentials are not permitted")
+	case strings.HasPrefix(ref, judgeKeyRefFilePrefix):
+		if ref == judgeKeyRefFilePrefix {
+			return errors.New("api_key_ref secret://file:// names no file")
+		}
+		return nil
+	case strings.HasPrefix(ref, "secret://ssm://"):
+		return errors.New("api_key_ref: secret://ssm:// references are not supported by eval judges; use secret://ENV_NAME or secret://file://PATH")
+	}
+	name := strings.TrimPrefix(ref, judgeKeyRefPrefix)
+	if name == "" {
+		return errors.New("api_key_ref secret:// names no secret")
+	}
+	if !judgeKeyRefEnvName.MatchString(name) {
+		return errors.New("api_key_ref must be secret://ENV_NAME, where ENV_NAME is an environment variable name (letters, digits and underscores, not starting with a digit), or secret://file://PATH")
 	}
 	return nil
 }
