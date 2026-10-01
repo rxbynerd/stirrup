@@ -97,8 +97,8 @@ subprocess, and trace file (`eval/runner/runner.go::runTasksConcurrently`).
 
 A suite can run every task several times by setting `trials` in the
 `suite` block; `stirrup-eval run --trials` overrides it when given.
-The attribute must be at least 1 and defaults to one run per task.
-See [Statistics](#statistics) for how trials are aggregated and
+The attribute must be between 1 and 20 and defaults to one run per
+task. See [Statistics](#statistics) for how trials are aggregated and
 compared.
 
 ```hcl
@@ -474,23 +474,31 @@ trials of a task are independent samples of it. `result.json` keeps one
 `TaskResult` per task:
 
 - `passFraction` is the share of the task's trials that passed. With
-  one trial it is 1 for a pass and 0 otherwise.
+  one trial it is 1 for a pass and 0 otherwise. It is always written
+  and informational: `compare` recomputes the fraction from `trials`,
+  or from `outcome` when `trials` is absent.
 - `trials` lists each trial's outcome, judge verdict, error, duration,
-  and turn count. It is omitted when the task ran once, so single-run
-  results keep their shape.
+  and turn count. It is omitted when the task ran once.
 - `outcome` is the strict majority of the trial outcomes: `pass` when
   more than half the trials passed, `fail` when more than half failed,
-  otherwise `error`. Errored trials never count toward `fail`, so an
-  infrastructure or judge error cannot confirm a failure. A split with
-  no strict majority (any even-K tie included) reports `error` with a
-  message naming the split. `trace`, `judgeVerdict`, and `error` come
-  from the first trial of the majority outcome; `durationMs` is the
-  sum across trials.
+  otherwise `error`. The majority rule never counts an errored trial
+  toward `fail`, so an infrastructure or judge error cannot make a
+  task's outcome `fail`. A split with no strict majority (any even-K
+  tie included) reports `error` with a message naming the split.
+  `trace`, `judgeVerdict`, and `error` come from the first trial of the
+  majority outcome; `durationMs` is the sum across trials.
 
-`SuiteResult.trials` records K, and `passRate` is the mean per-task
-pass fraction, which equals the familiar pass rate when K is 1. A
-result file without `trials` fields, including every committed
-baseline recorded before trials existed, loads as one trial per task.
+`SuiteResult.trials` records K and is always written, as 1 for a single
+run. `passRate` is the mean per-task pass fraction, which equals the
+familiar pass rate when K is 1. A result file without `trials` fields,
+including every committed baseline, loads as one trial per task.
+
+The gate is stricter than the majority rule about errors: the
+deterministic-flip rule in [Gate semantics](#gate-semantics) counts an
+errored trial as a non-pass, so a harness that errors on every run
+blocks instead of passing. The credential preflight that runs before
+the suite is the only separation between an infrastructure failure
+and a regression; once trials run, errors count against the gate.
 
 #### Estimators
 
@@ -504,17 +512,18 @@ s<sub>i</sub> over the tasks present in both results:
 | Task-level standard error (Miller eq. 1) | Sample standard deviation of s<sub>i</sub> divided by √n. Trials of one task are not independent samples of the suite, so they are never pooled. Undefined below two tasks. |
 | Mean delta d̄ and paired standard error (Miller eq. 7) | Mean of d<sub>i</sub>, and the sample standard deviation of d<sub>i</sub> divided by √n. Pairing removes per-task difficulty from the variance, so when difficulty is consistent across runs the paired error is much smaller than two independent errors combined (0.071 against 0.173 in the worked example below). |
 | 95% confidence interval | d̄ ± t<sub>n−1, 0.975</sub> × SE. The Student-t quantile comes from inverting the regularised incomplete beta function, so small suites get the wider interval they warrant. |
-| One-sided upper bound U | d̄ + t<sub>n−1, 0.95</sub> × SE. U below zero rules out "no regression" at 95% confidence. |
-| Sign-flip p-value | Two-sided permutation test on d<sub>i</sub>. Tasks with d<sub>i</sub> = 0 are dropped; with at most 20 remaining, all 2<sup>m</sup> sign assignments are enumerated and p is the share whose absolute sum reaches the observed one. Above 20 a normal approximation is used, and the report says so. |
-| Minimum detectable effect | 2.80 × √(Var(d)/n), where 2.80 = z<sub>0.975</sub> + z<sub>0.80</sub>: the smallest true mean change the suite detects with 80% power at a two-sided 5% level. Smaller drops are unlikely to be confirmed. More tasks or more trials shrink it. |
+| One-sided upper bound U | d̄ + t<sub>n−1, 0.95</sub> × SE: the upper end of a one-sided 95% interval, equivalently of a two-sided 90% interval. U below zero rules out "no regression" at 95% one-sided confidence. The two-sided 95% interval is wider, so it can still include zero when U is negative. |
+| Sign-flip p-value | Two-sided permutation test on d<sub>i</sub>. Tasks with d<sub>i</sub> = 0 are dropped; with at most 20 remaining, all 2<sup>m</sup> sign assignments are enumerated and p is the share whose absolute sum reaches the observed one. Above 20 a normal approximation is used, and the report says so. The p-value is informational and does not decide the gate. Against an all-pass baseline every non-zero d<sub>i</sub> has the same sign, so the exact p is 2<sup>1−m</sup> for m non-zero differences and cannot go lower. |
+| Minimum detectable effect | (t<sub>n−1, 0.975</sub> + t<sub>n−1, 0.80</sub>) × SE, with the same degrees of freedom as the interval: the smallest true mean change the suite detects with 80% power at a two-sided 5% level. Smaller drops are unlikely to be confirmed. More tasks or more trials shrink it. Not reported (`n/a`, omitted from the JSON) when SE is zero, because an observed variance of zero says nothing about sensitivity. |
 | pass^k and pass@k | Per task with c passes in K trials, pass^k = C(c, k) / C(K, k), the chance that k trials drawn without replacement all pass ([τ-bench](https://arxiv.org/abs/2406.12045)), and pass@k = 1 − C(K − c, k) / C(K, k), the chance that at least one does ([Chen et al.](https://arxiv.org/abs/2107.03374)). Averaged over tasks for k = 1 up to the smallest per-task trial count. A falling pass^k shows inconsistency that the pass rate hides. |
-| Wilson 95% interval | Wilson score interval for the suite pass rate over n tasks. |
-| Noise floor | Reported when every paired baseline task passed every trial. With p the per-trial pass rate pooled over both results, a single-run flip gate false-alarms with probability 1 − p<sup>n</sup>, and the K-of-K flip rule with 1 − (1 − (1 − p)<sup>K</sup>)<sup>n</sup>. These cover the flip rule only; the upper-bound rule adds to the overall block rate. |
+| Wilson 95% interval | Wilson score interval for the suite pass rate treated as a proportion over n tasks; the report labels it "over tasks". Trials of one task are not pooled. |
+| Noise floor | Reported when every paired baseline task passed every trial. With p the per-trial pass rate pooled over both results, a single-run flip gate false-alarms with probability 1 − p<sup>n</sup>, and the K-of-K flip rule with 1 − (1 − (1 − p)<sup>K</sup>)<sup>n</sup>. These cover the flip rule only; the upper-bound rule adds to the overall block rate. When every pooled trial passed, p is 1 and carries no variation, so the report prints "insufficient variation" in place of the rates and the JSON omits them. |
 
 `eval/reporter/gate_test.go` reproduces a ten-task, three-trial worked
-example: d̄ −0.100, SE 0.0711, 95% CI (−0.261, +0.061), sign-flip
-p 0.375, MDE 0.20, pass^3 0.40 → 0.20, pass@3 0.80 → 0.80. The gate
-reports `warn`: a ten-point drop the data cannot confirm.
+example: d̄ −0.100, SE 0.0711, 95% CI (−0.261, +0.061), U +0.030,
+sign-flip p 0.375, MDE 0.22, pass^3 0.40 → 0.20, pass@3 0.80 → 0.80.
+The mean drop equals the default margin of 0.10, so the gate reports
+`pass`; with `--warn-margin 0.05` the same data report `warn`.
 
 #### Gate semantics
 
@@ -522,17 +531,41 @@ reports `warn`: a ten-point drop the data cannot confirm.
 
 | Gate | Condition | Exit |
 |---|---|---|
-| `block` | A deterministic flip: a task passed every baseline trial and no current trial. Applies at any n. | `1` |
+| `block` | A deterministic flip: a task passed every baseline trial and failed or errored every current trial. Applies at any n. | `1` |
 | `inconclusive` | Fewer than three paired tasks, or the paired standard error is undefined. | `0` |
-| `block` | U < 0: the drop is statistically confirmed. | `1` |
-| `warn` | d̄ < −m, where m is `--warn-margin` (default 0.05), but U ≥ 0: a drop larger than the margin that the data do not confirm. | `0` |
+| `block` | U < 0: the one-sided 95% upper bound on the mean delta is below zero (equivalently, the upper end of a two-sided 90% interval is below zero). | `1` |
+| `warn` | d̄ < −m, where m is `--warn-margin` (default 0.10), but U ≥ 0: a drop larger than the margin whose upper bound does not fall below zero. | `0` |
 | `pass` | Anything else. | `0` |
 
-The regression list is separate from the gate decision. A task is
+Two floors then raise a `pass` or `inconclusive` result to `warn` and
+add a reason: a listed regression (below), and a baseline task that is
+missing from the current run. Gates order as `pass` < `inconclusive` <
+`warn` < `block`, and a floor never lowers a `block`. The margin
+comparison tolerates 1e-9, so a mean drop exactly equal to the margin
+does not depend on floating-point summation order.
+
+The regression list is separate from the statistical rules. A task is
 listed as a regression when it passed every baseline trial and its
-current pass fraction is at or below `--flip-threshold` (default 0.5).
-Improvements mirror the rule. A listed regression such as 3/3 → 1/3
-blocks only through the rules above.
+current pass fraction is at or below `--flip-threshold` (default 0.5);
+it is listed as an improvement when it passed every current trial and
+its baseline pass fraction is at or below the threshold. A listed
+regression such as 3/3 → 1/3 raises the gate to at least `warn`, and
+blocks only through the rules above. A task at 2/3 in the baseline and
+0/3 in the current run is neither a flip nor a listed regression, so
+only the mean and upper-bound rules see it.
+
+Tasks present in one result only are listed in the report (`Missing
+from current run` and `New in current run`; `baselineOnly` and
+`currentOnly` in the JSON). A baseline task missing from the current
+run floors the gate at `warn`, so a renamed or deleted task does not
+read as a clean run; a task that is new in the current run never
+affects the gate. The side pass rates, Wilson intervals, and pass^k
+rows still cover each side's full task set, while the paired
+statistics use only the tasks both results share.
+
+The text report adds a note when one lost trial exceeds the margin,
+that is, when 1/(n·K) is above m for n paired tasks and K current
+trials. `warn` then reacts to a single flaky trial.
 
 With one trial per task every d<sub>i</sub> is −1, 0, or +1, and a −1
 is always a deterministic flip, so the gate blocks exactly when a task
@@ -544,13 +577,14 @@ these per-run rates:
 
 | Tasks | Per-trial pass rate | Block, one trial | Block, three trials | Warn, three trials |
 |---|---|---|---|---|
-| 5 | 98% | 9.6% | 0.19% | 26% |
-| 5 | 95% | 22.6% | 2.4% | 51% |
-| 10 | 98% | 18.3% | 1.7% | 10% |
-| 10 | 95% | 40.1% | 14.6% | 30% |
+| 5 | 98% | 9.6% | 0.19% | 3.3% |
+| 5 | 95% | 22.6% | 2.4% | 14.7% |
+| 10 | 98% | 18.3% | 1.7% | 1.2% |
+| 10 | 95% | 40.1% | 14.6% | 6.0% |
 
-`warn` is common by design: one task at 2/3 on a five-task suite moves
-d̄ by −0.067, past the default margin. Block rates climb steeply as the
+At the default margin one lost trial on a five-task, three-trial
+suite moves d̄ by −0.067 and does not warn; two lost trials, or a task
+at or below the flip threshold, do. Block rates climb steeply as the
 per-trial pass rate falls because an all-pass baseline overstates any
 agent below 100%: part of every drop is the gap between a lucky
 baseline and the true rate. A baseline recorded with `--trials 3`
@@ -611,7 +645,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--output`       | current dir      | Directory for `result.json` and per-task artifacts. Ignored under `--dry-run`, which writes no artifacts. |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of task trials executed in parallel. Workers preserve suite order in `result.json`. Values larger than the number of task trials cap at that number. Concurrent invocations talking to the same provider hit rate limits faster, so the value should respect the provider account's per-minute caps. |
-| `--trials`       | `1`              | Independent runs per task. When the flag is not given, the suite's `trials` attribute applies, else one run. Values below 1 are rejected. Provider spend scales linearly with K. |
+| `--trials`       | `1`              | Independent runs per task, from 1 to 20. When the flag is not given, the suite's `trials` attribute applies, else one run. Values outside 1-20 are rejected. Provider spend scales linearly with K. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
@@ -649,41 +683,52 @@ Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
 Diffs two `SuiteResult` files task by task, computes the paired
 statistics in [Statistics](#statistics) and per-task turn deltas from
-`RunTrace`, decides a gate result, and prints a text report. It exits **`1` only when the gate is `block`**;
-`warn`, `inconclusive`, and `pass` exit `0`. This is the gate the
-`eval-gate` CI job uses. Either side may be a single-run result,
-including a committed baseline with no `trials` fields, which compares
-as one trial per task.
+`RunTrace`, decides a gate result, and prints a text report. Either
+side may be a single-run result, including a committed baseline with no
+`trials` fields, which compares as one trial per task. This is the gate
+the `eval-gate` CI job uses.
+
+| Exit | Meaning |
+|---|---|
+| `0` | The gate is `pass`, `warn`, or `inconclusive`. |
+| `1` | The gate is `block`. |
+| `2` | Usage or I/O error: an invalid option value, a missing flag, an unreadable result file, corrupt JSON, or a failed `--output` write. |
+
+The distinct codes let a caller tell a regression (`1`) from a
+comparison that did not run (`2`).
 
 | Flag               | Default  | Description |
 |--------------------|----------|-------------|
 | `--current`        | required | Path to the current `SuiteResult` JSON. |
 | `--baseline`       | required | Path to the baseline `SuiteResult` JSON. |
-| `--warn-margin`    | `0.05`   | Mean pass-fraction drop that reports `warn` when the drop is not statistically confirmed. Must be within [0, 1]. |
+| `--warn-margin`    | `0.10`   | Mean pass-fraction drop that reports `warn` when the one-sided upper bound does not fall below zero. Must be within [0, 1]. |
 | `--flip-threshold` | `0.5`    | Current pass fraction at or below which a task that passed every baseline trial is listed as a regression, and the baseline pass fraction at or below which a task that passes every current trial is listed as an improvement. Must be within [0, 1). |
 | `--output`         | empty    | Also write the comparison report as JSON to this path. |
 
 The text report opens with the gate result and its reasons, then the
-pass rate of each side with its Wilson interval, task-level standard
-error, task count n, and trials K, each followed by a pass^k / pass@k
-row. A `Paired:` line gives n, d̄, the paired standard error, the 95%
-t interval, the one-sided upper bound, the sign-flip p
-(marked exact or approximate), and the minimum detectable effect; the
-noise floor, regressions, and improvements follow. For the worked
-example in [Statistics](#statistics):
+pass rate of each side with its Wilson interval over tasks, task-level
+standard error, task count n, and trials K, each followed by a pass^k /
+pass@k row. A `Paired:` line gives n, d̄, the paired standard error,
+the two-sided 95% t interval, the one-sided 95% upper bound, the
+sign-flip p (marked exact or approximate), and the minimum detectable
+effect (`n/a` when the standard error is zero). A `Note:` line appears
+when one lost trial exceeds the warn margin. The noise floor, the tasks
+missing from or new in the current run, regressions, and improvements
+follow. For the worked example in [Statistics](#statistics) at the
+default options (the same data report `warn` with a `--warn-margin` of
+0.05):
 
 ```text
 Eval Comparison: current-run vs baseline-run
 
-Gate: WARN
-  - mean delta -0.100 is below -0.050 but not confirmed (upper bound +0.030 >= 0)
+Gate: PASS
 
 Pass Rate: 60.0% → 50.0% (-10.0%)
-  baseline: 60.0% (95% Wilson [31.3%, 83.2%]), SE 0.130, n=10 tasks, K=3
+  baseline: 60.0% (95% Wilson over tasks [31.3%, 83.2%]), SE 0.130, n=10 tasks, K=3
             pass^k (k=1..3): 0.600, 0.467, 0.400; pass@k: 0.600, 0.733, 0.800
-  current:  50.0% (95% Wilson [23.7%, 76.3%]), SE 0.114, n=10 tasks, K=3
+  current:  50.0% (95% Wilson over tasks [23.7%, 76.3%]), SE 0.114, n=10 tasks, K=3
             pass^k (k=1..3): 0.500, 0.300, 0.200; pass@k: 0.500, 0.700, 0.800
-Paired: n=10, mean delta -0.100, SE 0.0711, 95% t(9) CI [-0.261, +0.061], one-sided upper bound +0.030, sign-flip p 0.375 (exact), MDE 0.20
+Paired: n=10, mean delta -0.100, SE 0.0711, two-sided 95% t(9) CI [-0.261, +0.061], one-sided 95% upper bound +0.030, sign-flip p 0.375 (exact), MDE 0.22
 
 No regressions found.
 ```
@@ -692,7 +737,9 @@ The `--output` JSON (`eval.ComparisonReport`) is stable. `regressions`
 and `improvements` carry each task's outcomes and pass fractions on
 both sides; `tasks` lists every paired task with `baselinePassFraction`,
 `currentPassFraction`, `baselineTrials`, `currentTrials`, and `delta`.
-`summary` holds:
+`baselineOnly` and `currentOnly` list the task IDs present in one
+result only, sorted; they are always written, as empty arrays when
+every task pairs. `summary` holds:
 
 | Field | Meaning |
 |---|---|
@@ -700,10 +747,10 @@ both sides; `tasks` lists every paired task with `baselinePassFraction`,
 | `baselinePassRate`, `currentPassRate`, `passRateDelta` | Mean per-task pass fractions and their difference. |
 | `hasRegressions` | Whether the regression list is non-empty. |
 | `warnMargin`, `flipThreshold` | The options the comparison ran with. |
-| `deterministicFlips` | Task IDs that passed every baseline trial and no current trial. |
+| `deterministicFlips` | Task IDs that passed every baseline trial and failed or errored every current trial. |
 | `baseline`, `current` | Per-side `tasks`, `trials`, `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`. |
-| `paired` | `tasks`, `meanDelta`, `stdErr`, `df`, `ciLow`, `ciHigh`, `upperBound`, `pValue`, `pValueExact`, `mde`. Omitted below two paired tasks. |
-| `noiseFloor` | `perTrialPassRate`, `pooledTrials`, `singleRunFalseAlarm`, `flipRuleFalseAlarm`. Present only when every paired baseline task passed every trial. |
+| `paired` | `tasks`, `meanDelta`, `stdErr`, `df`, `ciLow`, `ciHigh`, `upperBound`, `pValue`, `pValueExact`, `mde` (omitted when `stdErr` is zero). The whole object is omitted below two paired tasks. |
+| `noiseFloor` | `perTrialPassRate`, `pooledTrials`, `singleRunFalseAlarm`, `flipRuleFalseAlarm`. Present only when every paired baseline task passed every trial; the two rates are omitted when every pooled trial passed. |
 
 ### `baseline` — pull production metrics
 
@@ -880,10 +927,11 @@ the framework as a gating job:
   matching baseline in `eval/baselines/` (unbaselined suites are
   opt-in local runs), pins the model to GPT-5.6 Luna over OpenRouter
   via `stirrup-eval run`'s provider flags, runs every task three times
-  (`--trials 3`), compares each result to its baseline via
-  `eval compare`, and uploads the result and comparison JSON as a
-  build artifact. Three trials triple the per-push spend in exchange
-  for the false-alarm rates in [Gate semantics](#gate-semantics).
+  (`--trials 3`) with three concurrent workers, compares each result
+  to its baseline via `eval compare`, and uploads the result and
+  comparison JSON as a build artifact. Three trials triple the
+  per-push spend in exchange for the false-alarm rates in
+  [Gate semantics](#gate-semantics). The job has a 30-minute timeout.
   On-demand `provider-quirks-*` suites run without `--trials` (one
   trial per task unless the suite sets `trials`) to contain their
   larger per-run cost. Authentication is the `OPENROUTER_API_KEY`
@@ -893,9 +941,12 @@ the framework as a gating job:
 - **`publish-container`** — depends on `verify`. On `main` pushes it
   publishes the harness Docker image to `ghcr.io/rxbynerd/stirrup`.
 
-A `block` from `compare` (non-zero exit) fails the gate. `warn` and
+The compare step compares every baselined suite before it exits, so
+one failing suite does not hide another. A `block` (exit `1`) or a
+comparison that could not run (exit `2`) fails the step. `warn` and
 `inconclusive` exit `0`; the job raises them as workflow warning
-annotations so they stay visible without failing the push.
+annotations so they stay visible without failing the push, and every
+non-`pass` report is appended to the job summary.
 At release time, `release.yml::eval-extended` re-runs the baselined
 suites against stronger models (Claude Sonnet 5 and Claude Opus 4.8)
 as a non-blocking-but-visible matrix: a blocking comparison turns the

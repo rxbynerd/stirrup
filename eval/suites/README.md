@@ -13,12 +13,13 @@ baseline in `../baselines/`:
   three times (`--trials 3`), and compares each result to its
   baseline. `compare` reports one of four gate results (see
   [Gate semantics](../../docs/eval.md#gate-semantics)): `block` (a
-  task that passed every baseline trial passed no current trial, or
-  the paired upper bound on the mean pass-fraction change is below
-  zero) fails the gate; `warn` (a mean drop beyond 0.05 that the data
-  do not confirm) and `inconclusive` (too few paired tasks for the
-  interval) are raised as workflow warnings without failing it;
-  `pass` is silent.
+  task that passed every baseline trial failed or errored every
+  current trial, or the paired upper bound on the mean pass-fraction
+  change is below zero) fails the gate; `warn` (a mean drop beyond
+  0.10 that the data do not confirm, a listed regression, or a
+  baseline task missing from the current run) and `inconclusive` (too
+  few paired tasks for the interval) are raised as workflow warnings
+  without failing it; `pass` is silent.
 
   The `main`-and-dispatch scoping is a cost control, not an
   oversight: live eval runs spend real tokens per invocation, and a
@@ -178,9 +179,11 @@ The v0.1 demo narrative (#277) is:
    invocation) so the committed expectations match what CI actually
    executes. Three trials record a fractional pass rate for a flaky
    task, so the gate compares like with like instead of against one
-   lucky run. A single-run baseline still loads and compares as one
-   trial per task. Committing a baseline auto-enrols the suite in both
-   CI eval surfaces.
+   lucky run. This applies to the suites the per-push gate runs:
+   `provider-quirks-*` suites run one trial in CI, so their baselines
+   are single-run files. A single-run baseline still loads and
+   compares as one trial per task. Committing a baseline auto-enrols
+   the suite in both CI eval surfaces.
 
 The seed suite (`dogfood-seed.hcl`) exists to give the eval-gate
 non-empty work while the dogfood corpus matures. When the mined
