@@ -233,9 +233,11 @@ type PairedSummary struct {
 // gate, assuming every paired task passes each trial independently with
 // the pooled per-trial pass rate observed across both results. It is
 // reported only when every paired task passed all of its baseline trials.
+// The false-alarm rates are nil when every pooled trial passed, as the
+// pooled rate then carries no variation to estimate from.
 type NoiseFloor struct {
-	PerTrialPassRate    float64 `json:"perTrialPassRate"`
-	PooledTrials        int     `json:"pooledTrials"`
-	SingleRunFalseAlarm float64 `json:"singleRunFalseAlarm"`
-	FlipRuleFalseAlarm  float64 `json:"flipRuleFalseAlarm"`
+	PerTrialPassRate    float64  `json:"perTrialPassRate"`
+	PooledTrials        int      `json:"pooledTrials"`
+	SingleRunFalseAlarm *float64 `json:"singleRunFalseAlarm,omitempty"`
+	FlipRuleFalseAlarm  *float64 `json:"flipRuleFalseAlarm,omitempty"`
 }

@@ -110,8 +110,13 @@ func writeNoiseFloor(b *strings.Builder, nf *eval.NoiseFloor, n, k int) {
 	if nf == nil {
 		return
 	}
+	if nf.SingleRunFalseAlarm == nil || nf.FlipRuleFalseAlarm == nil {
+		fmt.Fprintf(b, "Noise floor (all-pass baseline, n=%d): per-trial pass rate %.3f over %d pooled trials; insufficient variation to estimate a false-alarm rate\n",
+			n, nf.PerTrialPassRate, nf.PooledTrials)
+		return
+	}
 	fmt.Fprintf(b, "Noise floor (all-pass baseline, n=%d): per-trial pass rate %.3f over %d pooled trials; a single-run flip gate false-alarms on %.2f%% of pushes, the %d-of-%d flip rule on %.2f%%\n",
-		n, nf.PerTrialPassRate, nf.PooledTrials, nf.SingleRunFalseAlarm*100, k, k, nf.FlipRuleFalseAlarm*100)
+		n, nf.PerTrialPassRate, nf.PooledTrials, *nf.SingleRunFalseAlarm*100, k, k, *nf.FlipRuleFalseAlarm*100)
 }
 
 func writeUnpaired(b *strings.Builder, label string, ids []string) {
