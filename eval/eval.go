@@ -21,9 +21,21 @@ type TaskResult struct {
 
 // JudgeVerdict is the result of applying an EvalJudge to a run.
 type JudgeVerdict struct {
-	Passed  bool          `json:"passed"`
+	Passed bool `json:"passed"`
+
+	// Status is types.JudgeStatusPass, JudgeStatusFail or JudgeStatusError
+	// and is always consistent with Passed: only "pass" sets Passed. An
+	// "error" verdict means the judge could not rule, which is distinct
+	// from the criteria not being met. Empty only on results written
+	// before the field existed.
+	Status string `json:"status,omitempty"`
+
 	Reason  string        `json:"reason"`
 	Details []JudgeDetail `json:"details,omitempty"`
+
+	// Record is the provenance of the LLM call behind the verdict. Nil for
+	// deterministic judges.
+	Record *types.JudgeRecord `json:"record,omitempty"`
 }
 
 // JudgeDetail records the verdict of a single sub-judge in a composite.

@@ -288,6 +288,42 @@ func TestDiffReview_RequiresAPIKey(t *testing.T) {
 	}
 }
 
+// TestEvaluate_StatusMatchesPassed pins that every judge type reports a
+// Status consistent with Passed, so consumers can rely on Status alone.
+func TestEvaluate_StatusMatchesPassed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "present.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		judge      types.EvalJudge
+		wantPassed bool
+	}{
+		{"test-command pass", types.EvalJudge{Type: "test-command", Command: "true"}, true},
+		{"test-command fail", types.EvalJudge{Type: "test-command", Command: "false"}, false},
+		{"file-exists pass", types.EvalJudge{Type: "file-exists", Paths: []string{"present.txt"}}, true},
+		{"file-exists fail", types.EvalJudge{Type: "file-exists", Paths: []string{"absent.txt"}}, false},
+		{"composite pass", types.EvalJudge{Type: "composite", Judges: []types.EvalJudge{{Type: "file-exists", Paths: []string{"present.txt"}}}}, true},
+		{"composite fail", types.EvalJudge{Type: "composite", Judges: []types.EvalJudge{{Type: "file-exists", Paths: []string{"absent.txt"}}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := Evaluate(context.Background(), tc.judge, JudgeContext{WorkspaceDir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := types.JudgeStatusFail
+			if tc.wantPassed {
+				want = types.JudgeStatusPass
+			}
+			if v.Passed != tc.wantPassed || v.Status != want {
+				t.Errorf("Passed = %v, Status = %q; want %v, %q", v.Passed, v.Status, tc.wantPassed, want)
+			}
+		})
+	}
+}
+
 func TestPathTraversal_FileExists(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "file-exists", Paths: []string{"../../../etc/passwd"}}

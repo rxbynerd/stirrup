@@ -41,10 +41,28 @@ type JudgeContext struct {
 	// Trace is the run's parsed RunTrace, used by the "tool-trace" judge.
 	// Nil for callers that judge only workspace state.
 	Trace *types.RunTrace
+
+	// Options carries invocation-scoped settings for LLM-backed judges.
+	Options
 }
 
 // Evaluate applies the judge criteria to the workspace and returns a verdict.
+// A non-nil error means the judge could not rule. An LLM-backed judge also
+// returns the verdict explaining the failure (Status "error", with its
+// Record) so callers can retain the provenance; every other judge returns the
+// zero verdict alongside an error.
 func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	verdict, err := evaluate(ctx, j, jctx)
+	if err == nil && verdict.Status == "" {
+		verdict.Status = types.JudgeStatusFail
+		if verdict.Passed {
+			verdict.Status = types.JudgeStatusPass
+		}
+	}
+	return verdict, err
+}
+
+func evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	switch j.Type {
 	case "test-command":
 		return evaluateTestCommand(ctx, j, jctx)
