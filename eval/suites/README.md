@@ -196,8 +196,14 @@ OPENROUTER_API_KEY=... ./stirrup-eval run \
 The **release sweep** authenticates via Anthropic Workload Identity
 Federation (the four non-secret `--anthropic-*` identifiers plus the
 GitHub Actions OIDC token); no static `ANTHROPIC_API_KEY` secret is
-required. Suites that bundle a `diff-review` judge ALSO read an
-Anthropic key at judge-evaluation time.
+required. Suites that bundle a `diff-review` judge ALSO need a
+judge-model key at judge-evaluation time, resolved by the eval process
+rather than the harness. Without `--judge-*` flags or an `llm` block
+the judge calls Anthropic with `secret://ANTHROPIC_API_KEY`, a
+continuity default; the per-push gate should pass `--judge-provider`,
+`--judge-base-url`, `--judge-api-key-ref`, and `--judge-model` so the
+judge uses the gate's own provider and credential. See
+[The `diff-review` judge](../../docs/eval.md#the-diff-review-judge).
 
 Without a usable credential — a fork clone, or a Dependabot-actor
 push, neither of which can read this repository's Actions secrets —

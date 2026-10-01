@@ -154,7 +154,7 @@ The API executor (`executor/api.go`) implements the `Executor` interface for rea
 
 ### Eval framework
 
-- **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, and `composite`.
+- **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, `diff-review` (LLM-backed; stdlib HTTP clients in `llmclient.go`, `anthropicclient.go`, `openaiclient.go`; git diff capture in `gitdiff.go`), `tool-trace`, and `composite`.
 - **Runner** (`eval/runner/`) — loads `EvalSuite` HCL (`.hcl` extension required), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets and formats human-readable reports.

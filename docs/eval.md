@@ -276,11 +276,131 @@ the run's tool-call trace instead (`eval/judge/judge.go`):
 | `test-command`  | Runs a shell command in the workspace; passes on exit code 0. 5 min timeout. |
 | `file-exists`   | At least one of `paths` exists.                                       |
 | `file-contains` | `path` exists and matches the regex in `pattern`.                     |
+| `diff-review`   | A model reviews the change the agent made to the workspace against `criteria` (see [below](#the-diff-review-judge)). Needs a judge-model credential. |
 | `tool-trace`    | The run's `RunTrace.ToolCalls` satisfy a `tool_trace` block (see below). |
 | `composite`     | Combines child `judges` with `require: "all"` or `require: "any"`.    |
 
 All workspace-relative paths go through symlink-aware containment so
 judges cannot escape the workspace.
+
+#### The `diff-review` judge
+
+`diff-review` asks a model whether the agent's change meets `criteria`.
+It exists for outcomes a command or regex cannot check, such as "the
+retry loop wraps the HTTP call without changing the public signature".
+
+```hcl
+judge {
+  type     = "diff-review"
+  criteria = "The change adds a retry loop around the HTTP call without changing the exported function signature."
+  llm {
+    provider    = "anthropic"
+    model       = "claude-haiku-4-5-20251001"
+    api_key_ref = "secret://ANTHROPIC_API_KEY"
+  }
+}
+```
+
+**What the model sees.** The runner diffs the workspace against its
+baseline commit: tracked edits, deletions, and files the agent created
+but never added. Capture uses a temporary index, so the workspace's
+own index is untouched. A task without `repo` has no history, so the
+runner creates a single `baseline` commit after seeding `files`, and
+only for tasks whose judge (or a nested composite child) is
+`diff-review`. A task with `repo` diffs against the clone's `HEAD`.
+The diff is taken against the current `HEAD`, so commits the agent
+makes during the run are not reviewed. For these tasks the merged
+`runconfig.json` is written outside the workspace so that it is not
+part of the diff. The judge fails with a clear error when the
+workspace is not the root of a git repository.
+
+**The `llm` block.** The block is accepted on `diff-review` judges only
+and is rejected on every other type.
+
+| Field               | Default                   | Meaning                                                       |
+|---------------------|---------------------------|---------------------------------------------------------------|
+| `provider`          | `anthropic`               | `anthropic` (Messages API) or `openai-compatible` (Chat Completions). |
+| `model`             | required                  | Model identifier.                                             |
+| `base_url`          | provider default          | Endpoint root. Required for `openai-compatible`; an `http` or `https` URL with a host. |
+| `api_key_ref`       | `secret://ANTHROPIC_API_KEY` for `anthropic`; none otherwise | `secret://` reference. Literal keys are rejected at load time. An `openai-compatible` judge with no reference sends no credential. |
+| `timeout_seconds`   | `30`                      | Per-call timeout, capped at `300`.                            |
+| `max_input_bytes`   | `65536`                   | Cap on the diff bytes sent to the model.                      |
+| `max_tokens`        | `1024`                    | Output token cap.                                             |
+| `temperature`       | omitted                   | Sent only when set; some reasoning models reject it.          |
+| `structured_output` | `json_schema`             | `json_schema` constrains the reply server-side; `prompt_only` relies on the prompt alone, for endpoints without schema support. |
+| `allow_truncated`   | `false`                   | Judge the head of an oversized diff instead of erroring.      |
+
+References resolve at judge time: `secret://NAME` reads the
+environment variable `NAME`, and `secret://file:///path` reads a file.
+The key never appears in suite files, results, or verdict records.
+
+**Defaults and the `--judge-*` flags.** A `diff-review` judge without an
+`llm` block uses `anthropic`, `claude-haiku-4-5-20251001`, and
+`secret://ANTHROPIC_API_KEY`. That default is a continuity choice for
+existing suites, not a recommendation. The `--judge-provider`,
+`--judge-model`, `--judge-base-url`, and `--judge-api-key-ref` flags on
+`run` and `replay` replace it for every judge that lacks an `llm`
+block; an explicit block always wins. A CI gate that authenticates
+against a single provider should pass these flags so the judge uses the
+gate's provider rather than a second credential:
+
+```bash
+./stirrup-eval run \
+  --suite eval/suites/some-suite.hcl \
+  --judge-provider openai-compatible \
+  --judge-base-url https://openrouter.ai/api/v1 \
+  --judge-api-key-ref secret://OPENROUTER_API_KEY \
+  --judge-model openai/gpt-5.6-luna
+```
+
+The Anthropic model and key reference default only for the `anthropic`
+provider, so the Anthropic key is never sent to another provider's
+endpoint.
+
+**Verdict contract.** The model answers with `reasoning`, then
+`verdict` (`pass` or `fail`), then `feedback`; the reasoning comes
+first so the decision follows the analysis. The reply is parsed by
+taking the last balanced JSON object, rejecting unknown fields, and
+requiring all three properties. If that object is malformed the judge
+errors rather than falling back to an earlier one.
+
+**Error versus fail.** `fail` means the model reviewed the change and
+rejected it. Anything that prevents a verdict is `error`, never `fail`:
+an unreachable endpoint, a non-200 response, a refusal, output cut off
+at `max_tokens`, an unparseable reply, a missing credential, a diff
+over `max_input_bytes` (unless `allow_truncated`), or a workspace that
+is not a git repository. A task whose judge errors reports outcome
+`error` with the judge's verdict retained, so provider outages are not
+read as regressions. When truncation is allowed, a note outside the
+delimited diff states the full diff size and how many bytes are shown.
+
+**Provenance.** Each verdict carries a `record` (`types.JudgeRecord`):
+provider, requested and served model, token counts, latency, the
+SHA-256 and size of the full diff, whether it was truncated, the parse
+status, the stop reason, and a `configHash` over the template version,
+provider, model, base URL (without query), criteria, structured-output
+mode, temperature, `max_tokens`, and `max_input_bytes`. Two verdicts
+with equal hashes were produced under the same judge definition.
+
+**Security notes.**
+
+- The diff is untrusted: the agent wrote it. It is placed between
+  delimiters that carry a fresh random token on every call, any
+  occurrence of the token inside the diff is removed, and the system
+  prompt instructs the model to treat everything between the delimiters
+  as data.
+- These measures reduce, but do not eliminate, the chance that a
+  crafted diff steers the verdict. Suites should pair `diff-review`
+  with a deterministic judge (`test-command`, `file-contains`) under
+  `composite` with `require = "all"` for outcomes that matter.
+- Git runs with `core.fsmonitor`, external diff drivers, and textconv
+  disabled, and with repository-location variables (`GIT_DIR` and
+  similar) removed from its environment. Filters configured in the
+  workspace's `.git/config` by the agent are outside that protection,
+  which matches the trust the `test-command` judge already places in
+  the workspace.
+- Credentials are `secret://` references only, and provider error
+  bodies carried into a verdict reason are truncated.
 
 #### The `tool-trace` judge
 
@@ -487,6 +607,13 @@ tree gains a `run_config.redacted.json` per task. See
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block. |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
 | `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
+| `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default. See [The `diff-review` judge](#the-diff-review-judge). |
+| `--judge-model`  | empty            | Model for `diff-review` judges without an `llm` block. Empty keeps the provider's built-in default. |
+| `--judge-base-url` | empty          | API base URL for those judges. Required with `--judge-provider openai-compatible`. |
+| `--judge-api-key-ref` | empty       | `secret://` reference for the judge key, resolved by the eval process at judge time. |
+
+The `--judge-*` flags are validated before any task runs. They apply
+only to `diff-review` judges; the harness never sees them.
 
 The three provider flags exist for the same reason as `--model`: the
 provider a suite runs against is a property of the invocation, not of
@@ -786,6 +913,12 @@ post-run file state, so judges that need file state
 workspace to be preserved separately — `eval run --output ...`
 retains per-task artifacts that suit this. For content-only
 judges, `--workspace` can be empty.
+
+`diff-review` judges replay against the `--workspace` as a git
+repository: the diff is taken against its `HEAD`, so the workspace
+must be a git repository with a baseline commit. `replay`
+accepts the same `--judge-*` flags as `run`, and a judge that cannot
+rule is recorded as outcome `error` with its verdict retained.
 
 The harness-replay flavour (replaying through a stirrup binary
 configured with ReplayProvider+ReplayExecutor) is a future
