@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -568,4 +569,60 @@ exit 3
 			t.Errorf("judge saw %d requests, want 1", n)
 		}
 	})
+}
+
+func TestRunSuite_PreflightFailsBeforeAnyHarnessRun(t *testing.T) {
+	isolateGit(t)
+	t.Setenv("JUDGE_E2E_KEY", "")
+	marker := filepath.Join(t.TempDir(), "harness-ran")
+	harness := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
+	stub := newJudgeStub(t, 200, stubPassReply)
+	suite := types.EvalSuite{ID: "preflight", Tasks: []types.EvalTask{
+		{ID: "first", Prompt: "p", Judge: diffReviewJudgeFor(stub)},
+		{ID: "second", Prompt: "p", Judge: diffReviewJudgeFor(stub)},
+	}}
+	for _, dryRun := range []bool{false, true} {
+		_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: dryRun})
+		if err == nil || !strings.Contains(err.Error(), `task "first"`) || !strings.Contains(err.Error(), "secret://JUDGE_E2E_KEY") {
+			t.Errorf("dry run %v: err = %v, want a preflight error naming the task and reference", dryRun, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("the harness ran despite a failed preflight")
+	}
+	if n := len(stub.requests()); n != 0 {
+		t.Errorf("judge saw %d requests", n)
+	}
+}
+
+func TestRunSuite_JSONSuitesGetTheLoaderLLMChecks(t *testing.T) {
+	cases := map[string]struct {
+		suite   string
+		wantErr string
+	}{
+		"llm on a file-exists judge": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"file-exists","paths":["a"],"llm":{"model":"m"}}}]}`,
+			wantErr: `task "t": judge.type "file-exists" does not support an llm block`,
+		},
+		"llm on a nested file-exists judge": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"composite","judges":[{"type":"file-exists","paths":["a"],"llm":{"model":"m"}}]}}]}`,
+			wantErr: "does not support an llm block",
+		},
+		"invalid llm": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"diff-review","criteria":"c","llm":{"model":"m","apiKeyRef":"sk-raw"}}}]}`,
+			wantErr: `task "t": llm block: api_key_ref must be a secret:// reference`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var suite types.EvalSuite
+			if err := json.Unmarshal([]byte(tc.suite), &suite); err != nil {
+				t.Fatal(err)
+			}
+			_, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
 }

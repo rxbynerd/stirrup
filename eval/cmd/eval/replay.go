@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/runner"
 	"github.com/rxbynerd/stirrup/types"
@@ -63,6 +64,10 @@ func cmdReplay(args []string) {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if err := judge.PreflightSuite(ctx, suite.Tasks, judgeOpts); err != nil {
+		log.Fatalf("checking judges: %v", err)
+	}
 
 	recordings, err := selectRecordings(ctx, store, *recordingIDs, *outcomeFilter)
 	if err != nil {

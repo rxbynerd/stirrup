@@ -395,3 +395,76 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 		})
 	}
 }
+
+// subprocessArgsEnv carries a run() argument list to a re-executed test
+// binary, for commands that exit through log.Fatal.
+const subprocessArgsEnv = "EVAL_CMD_SUBPROCESS_ARGS"
+
+func TestCmdRun_MissingJudgeKeyFailsBeforeAnyHarnessRun(t *testing.T) {
+	if args := os.Getenv(subprocessArgsEnv); args != "" {
+		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
+	}
+	marker := filepath.Join(t.TempDir(), "harness-ran")
+	harnessPath := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
+	suite := writeSuite(t, `
+suite "preflight-suite" {
+  task "first" {
+    prompt = "p"
+    judge {
+      type = "diff-review"
+      criteria = "c"
+    }
+  }
+  task "second" {
+    prompt = "p"
+    judge {
+      type = "diff-review"
+      criteria = "c"
+    }
+  }
+}
+`)
+	for _, extra := range [][]string{nil, {"--dry-run"}} {
+		args := append([]string{"run", "--suite", suite, "--harness", harnessPath, "--output", t.TempDir()}, extra...)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCmdRun_MissingJudgeKeyFailsBeforeAnyHarnessRun$")
+		cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"), "ANTHROPIC_API_KEY=")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("%v: exited 0, want a failure\n%s", extra, out)
+		}
+		for _, want := range []string{`task "first"`, "secret://ANTHROPIC_API_KEY"} {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("%v: output does not contain %q:\n%s", extra, want, out)
+			}
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("the harness ran despite a missing judge key")
+	}
+}
+
+func TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay(t *testing.T) {
+	if args := os.Getenv(subprocessArgsEnv); args != "" {
+		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
+	}
+	lakehouse := seedRecordings(t, []string{"r1"}, []string{"success"})
+	output := filepath.Join(t.TempDir(), "replay.json")
+	args := []string{
+		"replay", "--lakehouse", lakehouse, "--suite", writeSuite(t, diffReviewSuiteHCL),
+		"--workspace", t.TempDir(), "--output", output, "--judge-api-key-ref", "secret://REPLAY_UNSET_KEY",
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay$")
+	cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"), "REPLAY_UNSET_KEY=")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("exited 0, want a failure\n%s", out)
+	}
+	for _, want := range []string{`task "review"`, "secret://REPLAY_UNSET_KEY"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output does not contain %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Error("replay wrote a result despite a missing judge key")
+	}
+}

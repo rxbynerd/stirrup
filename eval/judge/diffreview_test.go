@@ -779,3 +779,31 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(data)
 }
+
+func TestEvaluateDiffReview_InvalidConfigurationFailsWithoutCallingTheModel(t *testing.T) {
+	const raw = "sk-live-0123456789abcdef"
+	for name, llm := range map[string]*types.JudgeLLMConfig{
+		"raw key":           {Model: "m", APIKeyRef: raw},
+		"key as a ref name": {Model: "m", APIKeyRef: "secret://" + raw},
+		"no model":          {Provider: "anthropic"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeClient{resp: okResponse(verdictPass)}
+			j := diffReviewJudge()
+			j.LLM = llm
+			verdict, err := Evaluate(context.Background(), j, changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
+			if err == nil || verdict.Status != types.JudgeStatusError || verdict.Passed {
+				t.Fatalf("verdict = %+v, err = %v; want an error verdict", verdict, err)
+			}
+			if verdict.Record != nil {
+				t.Errorf("record = %+v, want none before a configuration resolves", verdict.Record)
+			}
+			if fake.calls != 0 {
+				t.Errorf("model called %d times", fake.calls)
+			}
+			if strings.Contains(verdict.Reason, raw) || strings.Contains(err.Error(), raw) {
+				t.Errorf("error echoes the key: %v", err)
+			}
+		})
+	}
+}

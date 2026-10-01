@@ -114,6 +114,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	if err := validateSuite(suite); err != nil {
 		return eval.SuiteResult{}, err
 	}
+	if err := judge.PreflightSuite(ctx, suite.Tasks, cfg.JudgeOptions); err != nil {
+		return eval.SuiteResult{}, err
+	}
 
 	if cfg.HarnessPath == "" {
 		cfg.HarnessPath = "stirrup"
@@ -283,6 +286,23 @@ func validateSuite(suite types.EvalSuite) error {
 			return fmt.Errorf("duplicate task ID %q", t.ID)
 		}
 		seen[t.ID] = struct{}{}
+		if err := validateLLMBlocks(t.Judge); err != nil {
+			return fmt.Errorf("task %q: %w", t.ID, err)
+		}
+	}
+	return nil
+}
+
+// validateLLMBlocks applies judge.ValidateLLMBlock to j and every nested
+// judge, as the HCL loader does.
+func validateLLMBlocks(j types.EvalJudge) error {
+	if err := judge.ValidateLLMBlock(j); err != nil {
+		return err
+	}
+	for _, sub := range j.Judges {
+		if err := validateLLMBlocks(sub); err != nil {
+			return err
+		}
 	}
 	return nil
 }

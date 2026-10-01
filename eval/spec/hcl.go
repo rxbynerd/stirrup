@@ -408,14 +408,6 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		)
 	}
 
-	// Same reasoning for llm: only the diff-review judge consumes it.
-	if j.Type != "diff-review" && j.LLM != nil {
-		return types.EvalJudge{}, fmt.Errorf(
-			"%s: judge.type %q does not support an llm block (use type \"diff-review\")",
-			context, j.Type,
-		)
-	}
-
 	out := types.EvalJudge{
 		Type:     j.Type,
 		Command:  j.Command,
@@ -428,10 +420,10 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 
 	if j.LLM != nil {
 		cfg := llmSpecToType(j.LLM)
-		if err := cfg.Validate(); err != nil {
-			return types.EvalJudge{}, fmt.Errorf("%s: llm block: %w", context, err)
-		}
 		out.LLM = &cfg
+	}
+	if err := judge.ValidateLLMBlock(out); err != nil {
+		return types.EvalJudge{}, fmt.Errorf("%s: %w", context, err)
 	}
 
 	if j.Type == "tool-trace" {
