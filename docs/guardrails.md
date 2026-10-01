@@ -255,17 +255,38 @@ containing newlines or quotes cannot add prompt structure. A phase
 the adapter does not recognise is classified under the strictest
 default, the `post_turn` criteria.
 
-**Verdict extraction.** The adapter takes the *last* top-level JSON
-object in the response that has a `verdict` member, reading
-`verdict` and `reason` by exact key. The scanner treats braces inside
-JSON strings as text, so a reason that quotes code parses, and a
-verdict wrapped in prose or a markdown fence is found. Taking the
-last object means a verdict the model echoes from the content
-*before* its own answer loses. Parsing cannot catch a model induced
-to echo a planted verdict *after* its own answer; the fence and
-notice make that less likely but do not rule it out. A response with
-no verdict object, or with a verdict other than `allow` or `deny`, is
-an error: with the default `failOpen: false` it denies.
+**Verdict extraction.** The verdict must carry the call's fence
+nonce. The instruction after the fence asks for
+`{"nonce": "<nonce>", "verdict": "allow"|"deny", "reason": "..."}`
+and states the nonce value; the content was written before the nonce
+existed, so a verdict planted in it cannot carry the right one. The
+adapter scans the response for top-level JSON objects, reads members
+by exact key, and accepts only an object whose `nonce` member equals
+the call's nonce:
+
+- Objects without the nonce, or with a different one, are ignored
+  wherever they appear, so a planted verdict the model echoes before
+  or after its own answer never decides the call.
+- Braces inside JSON strings are text, so a reason that quotes code
+  parses, and a verdict wrapped in prose or a markdown fence is
+  found.
+- A balanced brace pair that is not valid JSON, such as a reasoning
+  string quoting a planted object with unescaped quotes, is skipped
+  whole: nothing nested inside it is a candidate. An unterminated
+  `{` is skipped one byte at a time, so a stray brace in prose does
+  not hide a later verdict.
+- Two objects that carry the nonce but differ are a conflict;
+  identical copies count as one.
+
+A response with no matching object, conflicting objects, mistyped
+members, or a verdict other than `allow` or `deny` is an error. With
+the default `failOpen: false` an error denies. With `failOpen: true`
+every one of these errors allows the call, so the parsing rules
+constrain nothing in a run that sets it: content that makes the
+classifier answer ambiguously gets through. The nonce also does not
+detect a classifier that the content persuades to answer `allow` with
+the right nonce; the fence and notice make that less likely but do
+not rule it out.
 
 **Timeouts.** With `timeoutMs` unset, the per-call deadline is 2 s at
 `pre_tool` and 5 s at `pre_turn` and `post_turn`. Setting

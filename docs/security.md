@@ -136,17 +136,30 @@ in front of a model whose answer gates the run. Both fence that text
 with `security.DataFence`: markers carrying a per-call random nonce,
 content with every `<<<` run broken so it cannot contain or imitate
 a marker, and an explicit statement that fenced text is data, never
-instructions. Both parse the verdict from the last top-level JSON
-object carrying the verdict key, so a verdict echoed from the content
-ahead of the model's own answer loses. Details per surface:
+instructions.
+
+Both require the verdict object to carry the fence nonce, which the
+prompt states after the fenced text (`jsonextract.ObjectWithNonce`).
+Content cannot know a nonce drawn after it was written, so a verdict
+planted in the content is ignored wherever the model echoes it, before
+or after its own answer. A balanced brace pair that is not valid JSON
+is skipped whole, so an object quoted inside a malformed reasoning
+string is never selected. Two differing objects that carry the nonce
+are a conflict, and no matching object is a parse failure; both fail
+closed (`cloud-judge` denies unless `failOpen: true`, `llm-judge`
+reports a failed verification). A `cloud-judge` guardrail with
+`failOpen: true` turns every such parse failure into an allow, so the
+nonce rule does not constrain it. Details per surface:
 [`guardrails.md` § `cloud-judge`](guardrails.md#cloud-judge) and
 [`architecture.md` § Verifiers](architecture.md#verifiers).
 
 The marker grammar (`<<<LABEL_nonce>>>` and `<<<END_LABEL_nonce>>>`),
 the notice wording, and the neutralisation rule are pinned by golden
-vectors in `harness/internal/security/testdata/datafence_vectors.json`.
-The eval module's diff-review judge applies the same grammar without
-importing the harness, and carries a byte-identical copy of that file
+vectors in `harness/internal/security/testdata/datafence_vectors.json`,
+and the nonce extraction rule by
+`harness/internal/jsonextract/testdata/nonce_extraction_vectors.json`.
+The eval module's diff-review judge applies the same rules without
+importing the harness, and carries byte-identical copies of both files
 in `eval/judge/testdata/`. Neither copy changes without the other.
 
 ## `RunConfig` validation
