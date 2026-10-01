@@ -126,9 +126,9 @@ tool_use block from the model
 Step 4 is `security.GuardToolCall`: network-exfiltration utilities
 and shell-escape syntax in command fields, credential paths,
 protected harness write targets, and long base64-like payloads. It
-scans the input before step 2's strip, so a tripwire nested under a
-stripped key still fires. Steps 1-4 are mandatory and cannot be
-disabled.
+scans the original input, including keys step 2 drops, so a tripwire
+nested under a stripped key still fires. Steps 1-4 are mandatory and
+cannot be disabled.
 
 The guard at step 5 classifies the input after step 2's strip, the
 same bytes the handler receives, and sees the resolved internal tool
@@ -137,6 +137,19 @@ name rather than a toolset-profile alias. A call rejected at steps
 category. The permission check follows the guard because
 `ask-upstream` may block on a human approval, which a call the guard
 denies should never request.
+
+**Telemetry shift.** With this order, a call that both the
+deterministic checks and a classifier would reject reports
+`unknown_tool`, `schema_validation_failed`, or
+`security_guard_denied`, where releases that ran the guard first
+reported `guardrail_denied`. Such a call is never classified: it
+produces no `guard.pre_tool` span, no `stirrup.guard.checks` or
+`stirrup.guard.duration_ms` samples, and no `guard_*` security event,
+so the mix of tool-failure categories shifts towards the
+deterministic ones. Alerts that count `guard_denied` events to detect
+injection attempts no longer see calls the deterministic checks
+reject; step 4 still emits `tool_call_guard_triggered` for its
+matches.
 
 ### `post_turn` (recommended for surfaces that show output to humans)
 
