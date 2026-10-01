@@ -159,7 +159,22 @@ type judgeSpec struct {
 	Criteria  string         `hcl:"criteria,optional"`
 	Require   string         `hcl:"require,optional"`
 	ToolTrace *toolTraceSpec `hcl:"tool_trace,block"`
+	LLM       *llmSpec       `hcl:"llm,block"`
 	Judges    []judgeSpec    `hcl:"judge,block"`
+}
+
+// llmSpec mirrors types.JudgeLLMConfig for the "diff-review" judge.
+type llmSpec struct {
+	Provider         string   `hcl:"provider,optional"`
+	Model            string   `hcl:"model,optional"`
+	BaseURL          string   `hcl:"base_url,optional"`
+	APIKeyRef        string   `hcl:"api_key_ref,optional"`
+	TimeoutSeconds   int      `hcl:"timeout_seconds,optional"`
+	MaxInputBytes    int      `hcl:"max_input_bytes,optional"`
+	Temperature      *float64 `hcl:"temperature,optional"`
+	MaxTokens        int      `hcl:"max_tokens,optional"`
+	StructuredOutput string   `hcl:"structured_output,optional"`
+	AllowTruncated   bool     `hcl:"allow_truncated,optional"`
 }
 
 // toolTraceSpec mirrors types.ToolTraceCriteria for the "tool-trace" judge.
@@ -393,6 +408,14 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		)
 	}
 
+	// Same reasoning for llm: only the diff-review judge consumes it.
+	if j.Type != "diff-review" && j.LLM != nil {
+		return types.EvalJudge{}, fmt.Errorf(
+			"%s: judge.type %q does not support an llm block (use type \"diff-review\")",
+			context, j.Type,
+		)
+	}
+
 	out := types.EvalJudge{
 		Type:     j.Type,
 		Command:  j.Command,
@@ -401,6 +424,14 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		Pattern:  j.Pattern,
 		Criteria: j.Criteria,
 		Require:  j.Require,
+	}
+
+	if j.LLM != nil {
+		cfg := llmSpecToType(j.LLM)
+		if err := cfg.Validate(); err != nil {
+			return types.EvalJudge{}, fmt.Errorf("%s: llm block: %w", context, err)
+		}
+		out.LLM = &cfg
 	}
 
 	if j.Type == "tool-trace" {
@@ -451,6 +482,21 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 	}
 
 	return out, nil
+}
+
+func llmSpecToType(s *llmSpec) types.JudgeLLMConfig {
+	return types.JudgeLLMConfig{
+		Provider:         s.Provider,
+		Model:            s.Model,
+		BaseURL:          s.BaseURL,
+		APIKeyRef:        s.APIKeyRef,
+		TimeoutSeconds:   s.TimeoutSeconds,
+		MaxInputBytes:    s.MaxInputBytes,
+		Temperature:      s.Temperature,
+		MaxTokens:        s.MaxTokens,
+		StructuredOutput: s.StructuredOutput,
+		AllowTruncated:   s.AllowTruncated,
+	}
 }
 
 // toolTraceSpecToType materialises a parsed toolTraceSpec into the
