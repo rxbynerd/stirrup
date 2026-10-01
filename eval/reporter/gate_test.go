@@ -853,3 +853,15 @@ func TestFormatText_WorkedExampleGolden(t *testing.T) {
 		t.Errorf("0.05-margin report differs from the golden text:\n%s", tight)
 	}
 }
+
+// TestDocsWorkedExampleMatchesFormatText keeps the report block in
+// docs/eval.md identical to what the code prints for the worked example.
+func TestDocsWorkedExampleMatchesFormatText(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "eval.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(doc), strings.TrimRight(workedExampleReportDefault, "\n")) {
+		t.Error("docs/eval.md does not contain the worked-example report printed by FormatText")
+	}
+}
