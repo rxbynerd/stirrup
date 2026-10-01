@@ -128,7 +128,12 @@ func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMC
 // NewClient builds the HTTP client for cfg's provider. The per-call timeout
 // is cfg's TimeoutSeconds.
 func NewClient(cfg types.JudgeLLMConfig, apiKey string) (JudgeClient, error) {
-	httpClient := &http.Client{Timeout: time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second}
+	httpClient := &http.Client{
+		Timeout: time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second,
+		// A redirect would resend the API key to a host the operator never
+		// configured.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	switch cfg.EffectiveProvider() {
 	case types.JudgeProviderAnthropic:
 		return newAnthropicClient(httpClient, cfg.BaseURL, apiKey, cfg.Model)
@@ -178,6 +183,9 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("provider returned HTTP %d; redirects are not followed", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxErrorBodyBytes+len(secret))))
 		return nil, fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, providerText(string(body), secret))

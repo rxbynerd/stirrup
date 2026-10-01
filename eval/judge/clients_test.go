@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // recordedRequest is what a test server saw.
@@ -493,5 +496,38 @@ func TestRedactSecret(t *testing.T) {
 		if got := redactSecret(tc.in, tc.secret); got != tc.want {
 			t.Errorf("%s: redactSecret(%q) = %q, want %q", name, tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
+	for _, provider := range []string{types.JudgeProviderAnthropic, types.JudgeProviderOpenAICompatible} {
+		t.Run(provider, func(t *testing.T) {
+			var forwarded atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded.Add(1)
+			}))
+			t.Cleanup(target.Close)
+			redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", target.URL+"/stolen")
+				w.WriteHeader(http.StatusTemporaryRedirect)
+				_, _ = io.WriteString(w, `<a href="`+target.URL+`/stolen">Temporary Redirect</a>`)
+			}))
+			t.Cleanup(redirector.Close)
+
+			c, err := NewClient(types.JudgeLLMConfig{Provider: provider, Model: "m", BaseURL: redirector.URL}, "sk-test-0123456789abcdef")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+				t.Fatalf("err = %v, want an HTTP 307 error", err)
+			}
+			if strings.Contains(err.Error(), target.URL) || strings.Contains(err.Error(), "stolen") {
+				t.Errorf("error names the redirect target: %v", err)
+			}
+			if n := forwarded.Load(); n != 0 {
+				t.Errorf("redirect target received %d requests, want 0", n)
+			}
+		})
 	}
 }
