@@ -152,7 +152,7 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 
 	criteria, ok := c.phases[in.Phase]
 	if !ok {
-		// Unknown phase: defensive fallback to the strictest default.
+		// Unknown phase: classify under the post_turn criteria rather than skip.
 		criteria = defaultPhaseCriteria[PhasePostTurn]
 	}
 

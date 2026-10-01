@@ -657,7 +657,7 @@ func TestCloudJudge_PreToolPromptNamesTool(t *testing.T) {
 
 // TestCloudJudge_ToolHeaderOnlyForPreTool pins that the tool-call header
 // is specific to pre_tool, and that an unknown phase still classifies
-// under the strictest (post_turn) criteria rather than skipping.
+// under the post_turn criteria rather than skipping.
 func TestCloudJudge_ToolHeaderOnlyForPreTool(t *testing.T) {
 	for _, phase := range []Phase{PhasePreTurn, PhasePostTurn, Phase("custom")} {
 		t.Run(string(phase), func(t *testing.T) {

@@ -311,7 +311,7 @@ type structuredOutput struct {
 // preflightToolCall runs the deterministic, model-free checks every tool
 // call must pass before the PhasePreTool guard and dispatch: unknown-tool
 // rejection, prototype-pollution strip, JSON-schema validation, and the
-// write-target tripwire. t is call's resolved tool, nil when unknown.
+// tool-input tripwires. t is call's resolved tool, nil when unknown.
 //
 // On success it returns the cleaned input (the form both the guard and the
 // handler see) and an empty category. On rejection it returns the
@@ -348,9 +348,9 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 		return nil, fmt.Sprintf("Invalid input for %s: %v", call.Name, err), observability.ToolFailureSchemaValidation
 	}
 
-	// Key the write-target guard on the internal tool ID (t.Name), not the
-	// model-facing alias (call.Name): a guard rule written against the
-	// internal name must fire under any toolset profile. It scans the raw
+	// Key the tripwire on the internal tool ID (t.Name), not the
+	// model-facing alias (call.Name): a rule written against the internal
+	// name must fire under any toolset profile. It scans the raw
 	// input so a tripwire hidden under a stripped key still fires.
 	if findings := security.GuardToolCall(t.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
 		if l.Security != nil {

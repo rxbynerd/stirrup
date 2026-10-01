@@ -6,9 +6,8 @@
 // Decision: allow the content through, allow it but spotlight (wrap) it,
 // or deny it outright.
 //
-// This package is intentionally leaf-level: it imports nothing from
-// elsewhere in the harness so adapters and loop integration can be
-// wired in by the factory without creating import cycles.
+// The interface and types in this file import only the standard library;
+// the adapters in sibling files import provider, security and jsonextract.
 package guard
 
 import (

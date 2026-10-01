@@ -252,8 +252,8 @@ classification is fenced as untrusted data:
 At `pre_tool` the prompt also names the tool being called (the
 resolved internal name) and the call source, both quoted so a name
 containing newlines or quotes cannot add prompt structure. A phase
-the adapter does not recognise is classified under the strictest
-default, the `post_turn` criteria.
+the adapter does not recognise is classified under the `post_turn`
+default criteria.
 
 **Verdict extraction.** The verdict must carry the call's fence
 nonce. The instruction after the fence asks for
