@@ -157,11 +157,10 @@ func TestWilson95(t *testing.T) {
 }
 
 func TestFlipFalseAlarmRate(t *testing.T) {
-	// Packet 03 §4.3 single-run column.
 	within(t, "p=0.98 n=5", FlipFalseAlarmRate(0.98, 5, 1), 0.096, 0.0005)
 	within(t, "p=0.95 n=10", FlipFalseAlarmRate(0.95, 10, 1), 0.401, 0.0005)
 	within(t, "single run equals 1-p^n", FlipFalseAlarmRate(0.9, 7, 1), 1-math.Pow(0.9, 7), 1e-12)
-	within(t, "3-of-3 flip rule", FlipFalseAlarmRate(0.98, 5, 3), 1-math.Pow(1-math.Pow(0.02, 3), 5), 1e-15)
+	within(t, "3-of-3 flip rule", FlipFalseAlarmRate(0.98, 5, 3), 1-math.Pow(1-0.02*0.02*0.02, 5), 1e-15)
 	if FlipFalseAlarmRate(1, 5, 3) != 0 {
 		t.Error("a perfectly reliable agent never false-alarms")
 	}

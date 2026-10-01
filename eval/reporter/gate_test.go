@@ -40,7 +40,7 @@ func taskName(i int) string {
 	return "t" + string(rune('a'+i))
 }
 
-// Research packet 03 §4.2: ten tasks, three trials each.
+// Worked example with hand-computed statistics: ten tasks, three trials each.
 var (
 	workedA = []int{3, 3, 3, 3, 2, 2, 1, 1, 0, 0}
 	workedB = []int{3, 2, 3, 2, 2, 1, 0, 1, 0, 1}
