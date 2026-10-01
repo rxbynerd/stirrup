@@ -59,9 +59,8 @@ type TrialCounts struct {
 	Error int `json:"error"`
 }
 
-// Counts tallies the task's trials. A result without Trials (a single run,
-// or a result file written before trials existed) is one trial whose
-// outcome is Outcome.
+// Counts tallies the task's trials. A result without Trials is one trial
+// whose outcome is Outcome.
 func (t TaskResult) Counts() TrialCounts {
 	var c TrialCounts
 	if len(t.Trials) == 0 {
@@ -100,9 +99,8 @@ func (c TrialCounts) PassFraction() float64 {
 
 // Outcome applies the majority rule: "pass" when more than half the
 // trials passed, "fail" when more than half failed, otherwise "error".
-// Errors never count toward "fail", so infrastructure or judge errors
-// cannot confirm a failure, and a split with no strict majority (including
-// any even-K tie) is reported as "error" rather than guessed.
+// Errors never count toward "fail", and a split with no strict majority
+// (including any even-K tie) is reported as "error".
 func (c TrialCounts) Outcome() string {
 	n := c.Total()
 	switch {
@@ -116,10 +114,8 @@ func (c TrialCounts) Outcome() string {
 }
 
 // SuiteResult captures the outcome of evaluating an entire EvalSuite.
-// PassRate is the mean of the per-task PassFraction values, which equals
-// the fraction of passing tasks when every task ran once. Trials is the
-// number of runs per task; zero (a result written before trials existed)
-// means one.
+// PassRate is the mean of the per-task PassFraction values. Trials is the
+// number of runs per task; zero means one.
 type SuiteResult struct {
 	SuiteID     string       `json:"suiteId"`
 	RunID       string       `json:"runId"`
@@ -234,11 +230,9 @@ type PairedSummary struct {
 }
 
 // NoiseFloor estimates how often an unchanged agent would trip a flip
-// gate, assuming every paired task passes each trial independently with
-// the pooled per-trial pass rate observed across both results. It is
-// reported only when every paired task passed all of its baseline trials.
-// The false-alarm rates are nil when every pooled trial passed, as the
-// pooled rate then carries no variation to estimate from.
+// gate, assuming independent trials at the pooled per-trial pass rate. It
+// is reported only when every paired baseline task passed every trial; the
+// false-alarm rates are nil when every pooled trial passed.
 type NoiseFloor struct {
 	PerTrialPassRate    float64  `json:"perTrialPassRate"`
 	PooledTrials        int      `json:"pooledTrials"`

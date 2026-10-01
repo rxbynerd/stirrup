@@ -51,11 +51,10 @@ func (o Options) Validate() error {
 	return nil
 }
 
-// Compare diffs a current SuiteResult against a baseline. Per-task and
-// paired statistics use only tasks present in both results; the side
-// summaries and pass rates use every task on that side, and tasks present
-// on one side only are listed in the report. A task without Trials counts
-// as a single trial.
+// Compare diffs a current SuiteResult against a baseline. Paired
+// statistics use only tasks present in both results; side summaries use
+// every task on that side, and one-sided tasks are listed in the report.
+// A task without Trials counts as a single trial.
 func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonReport {
 	baselineByID := indexByTaskID(baseline.Tasks)
 	baselineOnly := unpairedIDs(baseline.Tasks, indexByTaskID(current.Tasks))
@@ -183,12 +182,9 @@ type gateInput struct {
 	warnMargin  float64
 }
 
-// decideGate applies the gate rules in precedence order: a deterministic
-// flip blocks at any n; fewer than minGateTasks paired tasks (or an
-// undefined SE) is inconclusive; a one-sided 95% upper bound below zero
-// blocks; a mean drop beyond the warn margin warns; anything else passes.
-// A listed regression, or a baseline task absent from the current run,
-// then raises a pass or inconclusive gate to warn.
+// decideGate takes baseGate's decision, then raises a pass or inconclusive
+// gate to warn for a listed regression or a baseline task missing from
+// the current run.
 func decideGate(in gateInput) (string, []string) {
 	gate, reasons := baseGate(in)
 	if len(in.regressions) > 0 {
@@ -201,6 +197,10 @@ func decideGate(in gateInput) (string, []string) {
 	return gate, reasons
 }
 
+// baseGate applies the statistical rules in precedence order: a
+// deterministic flip blocks, too few paired tasks is inconclusive, a
+// one-sided 95% upper bound below zero blocks, a mean drop beyond the warn
+// margin warns, anything else passes.
 func baseGate(in gateInput) (string, []string) {
 	if len(in.flips) > 0 {
 		return eval.GateBlock, []string{fmt.Sprintf(
@@ -298,7 +298,7 @@ func rateSummary(r eval.SuiteResult) eval.RateSummary {
 }
 
 // suiteTrials is the result's declared trials per task, falling back to
-// the largest per-task trial count for results that predate the field.
+// the largest per-task trial count when the field is unset.
 func suiteTrials(r eval.SuiteResult) int {
 	if r.Trials > 0 {
 		return r.Trials

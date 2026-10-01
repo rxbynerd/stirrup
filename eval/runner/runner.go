@@ -30,11 +30,10 @@ type RunConfig struct {
 	// If empty, defaults to "stirrup" on PATH.
 	HarnessPath string
 
-	// OutputDir, when non-empty, enables per-task artifact retention. The
+	// OutputDir, when non-empty, enables per-task artifact retention: the
 	// runner writes trace.jsonl, harness.stdout.txt, and harness.stderr.txt
-	// for every task under <OutputDir>/<suiteID>/<taskID>/, or under
-	// <OutputDir>/<suiteID>/<taskID>/trial-<n>/ when a task runs more than
-	// once. The temporary workspace itself is not copied.
+	// under <OutputDir>/<suiteID>/<taskID>/ (trial-<n>/ below that when a
+	// task runs more than once). The temporary workspace is not copied.
 	OutputDir string
 
 	// Concurrency caps the number of task trials executed in parallel.
@@ -194,11 +193,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 }
 
 // runTasksConcurrently dispatches every (task, trial) pair across a bounded
-// worker pool and returns one aggregated result per task in input order.
-// Pairs are fed trial-major, so each task's first trial is dispatched
-// before any task's second. Concurrency is capped at the pair count so we
-// never spawn idle workers; values <= 0 collapse to 1 (sequential).
-// Per-trial errors do not abort siblings — every pair contributes a result.
+// worker pool, trial-major, and returns one aggregated result per task in
+// input order. Concurrency is capped at the pair count; values <= 0
+// collapse to 1. Per-trial errors do not abort siblings.
 func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int) []eval.TaskResult {
 	pairs := len(tasks) * trials
 	concurrency := cfg.Concurrency
