@@ -244,15 +244,7 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 			// Drain remaining tasks as cancellation errors so the result
 			// slice stays in sync with the input slice.
 			for ; i < len(tasks); i++ {
-				results[i] = eval.TaskResult{
-					TaskID:  tasks[i].ID,
-					Outcome: "error",
-					Error:   ctx.Err().Error(),
-					JudgeVerdict: eval.JudgeVerdict{
-						Passed: false,
-						Reason: ctx.Err().Error(),
-					},
-				}
+				results[i] = errorResult(tasks[i].ID, time.Now(), ctx.Err())
 			}
 			close(jobs)
 			wg.Wait()
@@ -500,7 +492,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 			Options:      cfg.JudgeOptions,
 		})
 		if judgeErr != nil {
-			return judgeErrorResult(task.ID, start, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
+			return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
 		}
 		return buildResult(task.ID, start, trace, verdict)
 	}
@@ -517,7 +509,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		Options:      cfg.JudgeOptions,
 	})
 	if err != nil {
-		return judgeErrorResult(task.ID, start, verdict, fmt.Errorf("judge failed: %w", err))
+		return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed: %w", err))
 	}
 
 	return buildResult(task.ID, start, trace, verdict)
@@ -526,8 +518,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 // judgeErrorResult is errorResult for a judge that could not rule. An
 // LLM judge's own error verdict, which carries the call's provenance, is kept
 // in place of the generic one.
-func judgeErrorResult(taskID string, start time.Time, verdict eval.JudgeVerdict, err error) eval.TaskResult {
+func judgeErrorResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, err error) eval.TaskResult {
 	result := errorResult(taskID, start, err)
+	result.Trace = trace
 	if verdict.Status == types.JudgeStatusError {
 		result.JudgeVerdict = verdict
 	}
@@ -763,27 +756,11 @@ func warnIfRawAPIKeyRef(taskID string, cfg *types.RunConfig) {
 func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult {
 	merged, err := buildMergedConfig(baseline, task.RunConfigOverrides)
 	if err != nil {
-		return eval.TaskResult{
-			TaskID:  task.ID,
-			Outcome: "error",
-			Error:   err.Error(),
-			JudgeVerdict: eval.JudgeVerdict{
-				Passed: false,
-				Reason: err.Error(),
-			},
-		}
+		return errorResult(task.ID, time.Now(), err)
 	}
 	if merged != nil {
 		if vErr := types.ValidateRunConfig(merged); vErr != nil {
-			return eval.TaskResult{
-				TaskID:  task.ID,
-				Outcome: "error",
-				Error:   vErr.Error(),
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: false,
-					Reason: vErr.Error(),
-				},
-			}
+			return errorResult(task.ID, time.Now(), vErr)
 		}
 	}
 	return eval.TaskResult{
@@ -791,6 +768,7 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 		Outcome: "pass",
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: true,
+			Status: types.JudgeStatusPass,
 			Reason: "dry run — skipped",
 		},
 	}

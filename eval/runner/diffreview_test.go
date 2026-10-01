@@ -507,3 +507,62 @@ func TestReplayRecordingJudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
 		t.Error("error verdict lost its record")
 	}
 }
+
+func TestRunSuite_HarnessFailureResults(t *testing.T) {
+	t.Run("no trace", func(t *testing.T) {
+		isolateGit(t)
+		stub := newJudgeStub(t, 200, stubPassReply)
+		t.Setenv("JUDGE_E2E_KEY", "k")
+		harness := writeFakeHarness(t, "#!/bin/sh\nexit 3\n")
+		suite := types.EvalSuite{ID: "harness-fail", Tasks: []types.EvalTask{{ID: "t", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
+
+		result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := result.Tasks[0]
+		if tr.Outcome != "error" || tr.JudgeVerdict.Status != types.JudgeStatusError || !strings.Contains(tr.Error, "harness failed") {
+			t.Fatalf("task = %+v", tr)
+		}
+		if n := len(stub.requests()); n != 0 {
+			t.Errorf("judge called %d times without a trace", n)
+		}
+	})
+
+	t.Run("trace left and judge errors", func(t *testing.T) {
+		isolateGit(t)
+		stub := newJudgeStub(t, http.StatusBadRequest, `{"type":"error","error":{"message":"bad request"}}`)
+		t.Setenv("JUDGE_E2E_KEY", "k")
+		harness := writeFakeHarness(t, `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo "agent output" > created.txt
+echo '{"id":"t","turns":1,"outcome":"error"}' > "$TRACE"
+exit 3
+`)
+		suite := types.EvalSuite{ID: "harness-fail", Tasks: []types.EvalTask{{ID: "t", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
+
+		result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := result.Tasks[0]
+		if tr.Outcome != "error" || !strings.Contains(tr.Error, "judge failed after harness error") {
+			t.Fatalf("task = %+v", tr)
+		}
+		if tr.Trace == nil || tr.Trace.ID != "t" {
+			t.Errorf("trace = %+v, want the harness's trace kept", tr.Trace)
+		}
+		if tr.JudgeVerdict.Status != types.JudgeStatusError || tr.JudgeVerdict.Record == nil || tr.JudgeVerdict.Record.Kind != types.JudgeKindDiffReview {
+			t.Errorf("verdict = %+v, want the diff-review error verdict with its record", tr.JudgeVerdict)
+		}
+		if n := len(stub.requests()); n != 1 {
+			t.Errorf("judge saw %d requests, want 1", n)
+		}
+	})
+}

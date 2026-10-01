@@ -573,6 +573,9 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 		if !strings.Contains(tr.Error, "write tool") {
 			t.Errorf("task %s: error = %q, want substring about write tool", tr.TaskID, tr.Error)
 		}
+		if tr.JudgeVerdict.Status != types.JudgeStatusError {
+			t.Errorf("task %s: verdict status = %q, want %q", tr.TaskID, tr.JudgeVerdict.Status, types.JudgeStatusError)
+		}
 	}
 }
 
