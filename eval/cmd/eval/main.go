@@ -301,8 +301,9 @@ func cmdConvert(args []string) {
 	fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *toJUnit)
 }
 
-// cmdCompare prints the comparison report and returns 1 only when the
-// gate blocks; warn and inconclusive are reported but exit 0.
+// cmdCompare prints the comparison report and returns the exit code: 1
+// when the gate blocks, 2 for a usage, load, or write error, and 0
+// otherwise (warn and inconclusive are reported but do not fail).
 func cmdCompare(args []string, stdout io.Writer) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	currentPath := fs.String("current", "", "Path to current result JSON (required)")
@@ -311,33 +312,40 @@ func cmdCompare(args []string, stdout io.Writer) int {
 	flipThreshold := fs.Float64("flip-threshold", reporter.DefaultFlipThreshold, "Current pass fraction at or below which a task that passed every baseline trial is listed as a regression (and the mirror for improvements)")
 	outputPath := fs.String("output", "", "Write the comparison report JSON to this path (default: text report only)")
 	if err := fs.Parse(args); err != nil {
-		log.Fatalf("parsing flags: %v", err)
+		log.Printf("parsing flags: %v", err)
+		return 2
 	}
 
 	if *currentPath == "" {
-		log.Fatal("-current is required")
+		log.Print("-current is required")
+		return 2
 	}
 	if *baselinePath == "" {
-		log.Fatal("-baseline is required")
+		log.Print("-baseline is required")
+		return 2
 	}
 	opts := reporter.Options{WarnMargin: *warnMargin, FlipThreshold: *flipThreshold}
 	if err := opts.Validate(); err != nil {
-		log.Fatalf("invalid compare options: %v", err)
+		log.Printf("invalid compare options: %v", err)
+		return 2
 	}
 
 	current, err := loadResult(*currentPath)
 	if err != nil {
-		log.Fatalf("loading current result: %v", err)
+		log.Printf("loading current result: %v", err)
+		return 2
 	}
 	baseline, err := loadResult(*baselinePath)
 	if err != nil {
-		log.Fatalf("loading baseline result: %v", err)
+		log.Printf("loading baseline result: %v", err)
+		return 2
 	}
 
 	report := reporter.Compare(baseline, current, opts)
 	if *outputPath != "" {
 		if err := writeJSON(*outputPath, report); err != nil {
-			log.Fatalf("writing comparison report: %v", err)
+			log.Printf("writing comparison report: %v", err)
+			return 2
 		}
 	}
 	_, _ = fmt.Fprint(stdout, reporter.FormatText(report))
