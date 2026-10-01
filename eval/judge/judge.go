@@ -56,6 +56,11 @@ type JudgeContext struct {
 	// Nil for callers that judge only workspace state.
 	Trace *types.RunTrace
 
+	// Baseline is the commit "diff-review" judges diff the workspace
+	// against. Nil falls back to the HEAD of the workspace's own
+	// repository.
+	Baseline *Baseline
+
 	// Options carries invocation-scoped settings for LLM-backed judges.
 	Options
 }

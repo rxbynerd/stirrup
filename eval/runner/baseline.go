@@ -3,32 +3,41 @@ package runner
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
+	"os"
+	"path/filepath"
 
 	"github.com/rxbynerd/stirrup/eval/judge"
 )
 
-// initBaselineRepo makes the seeded workspace a git repository with a single
-// "baseline" commit, so a diff-review judge can diff the agent's changes
-// against it. It is applied only to tasks that need it: a task with a repo
-// already has history, and other judges do not read git state.
-func initBaselineRepo(ctx context.Context, dir string) error {
-	steps := [][]string{
-		{"init", "-q"},
-		{"config", "user.name", "stirrup-eval"},
-		{"config", "user.email", "stirrup-eval@localhost.invalid"},
-		{"add", "--all"},
-		{"commit", "-q", "--allow-empty", "--no-verify", "-m", "baseline"},
+// createJudgeBaseline commits the seeded workspace to a judge-owned bare
+// repository in a new 0700 temp dir outside the workspace, so diff-review
+// judges diff the agent's changes against it without git ever reading the
+// workspace's own .git. The returned cleanup removes the temp dir.
+func createJudgeBaseline(ctx context.Context, taskID, workspaceDir string) (*judge.Baseline, func(), error) {
+	dir, err := os.MkdirTemp("", "evaljudge-"+taskID+"-")
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating judge git dir: %w", err)
 	}
-	for _, step := range steps {
-		args := append([]string{"-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, step...)
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = dir
-		cmd.Env = judge.GitEnv()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("creating git baseline: git %s: %w\n%s", step[0], err, strings.TrimSpace(string(out)))
-		}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	base, err := judge.CreateBaseline(ctx, workspaceDir, filepath.Join(dir, "judge.git"))
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("creating diff-review baseline: %w", err)
 	}
-	return nil
+	return &base, cleanup, nil
+}
+
+// retainJudgeBaseline writes the baseline sidecar and bundle beside the
+// task's retained trace so `replay --judge-baseline` can diff against the
+// same commit. Retention errors are reported on stderr but never mask the
+// TaskResult.
+func retainJudgeBaseline(ctx context.Context, suiteArtifactDir, taskID string, base judge.Baseline) {
+	taskDir := filepath.Join(suiteArtifactDir, taskID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
+		return
+	}
+	if err := judge.WriteBaselineSidecar(ctx, base, taskDir); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: judge baseline: %v\n", taskID, err)
+	}
 }

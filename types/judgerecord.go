@@ -15,6 +15,23 @@ const JudgeRecordSchemaVersion = 1
 // JudgeKindDiffReview is the JudgeRecord.Kind of the eval diff-review judge.
 const JudgeKindDiffReview = "diff-review"
 
+// JudgeRecord.BaselineSource values: where the commit a diff-review judge
+// diffed against came from.
+const (
+	// JudgeBaselineRunner is a baseline the eval runner committed to a
+	// judge-owned repository before the agent ran.
+	JudgeBaselineRunner = "runner"
+
+	// JudgeBaselineSidecar is a runner baseline restored from the
+	// judge-baseline.json sidecar retained with the task's artifacts.
+	JudgeBaselineSidecar = "sidecar"
+
+	// JudgeBaselineWorkspaceHead is the HEAD commit of a replayed
+	// workspace's own repository, used when no runner baseline is
+	// available.
+	JudgeBaselineWorkspaceHead = "workspace-head"
+)
+
 // JudgeRecord.ParseStatus values.
 const (
 	// JudgeParseOK means the response was exactly one conforming object.
@@ -67,6 +84,10 @@ type JudgeRecord struct {
 
 	// Truncated reports that the artefact exceeded the input cap.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// BaselineSource is one of the JudgeBaseline* values for judges that
+	// diff the workspace against a baseline commit.
+	BaselineSource string `json:"baselineSource,omitempty"`
 
 	// ParseStatus is one of the JudgeParse* values.
 	ParseStatus string `json:"parseStatus,omitempty"`

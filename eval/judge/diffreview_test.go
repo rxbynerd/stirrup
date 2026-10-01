@@ -2,17 +2,11 @@ package judge
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -53,220 +47,15 @@ func okResponse(text string) JudgeResponse {
 	return JudgeResponse{Text: text, Model: "served-model-1", StopReason: "end_turn", InputTokens: 120, OutputTokens: 30}
 }
 
-func runGitCmd(t *testing.T, dir string, args ...string) string {
+// changedJudgeContext judges changedWorkspace against its runner baseline.
+func changedJudgeContext(t *testing.T, opts Options) JudgeContext {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	return string(out)
-}
-
-func writeFiles(t *testing.T, dir string, files map[string]string) {
-	t.Helper()
-	for rel, content := range files {
-		path := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// newRepo returns a git repository whose baseline commit holds files.
-func newRepo(t *testing.T, files map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	runGitCmd(t, dir, "init", "-q")
-	runGitCmd(t, dir, "config", "user.name", "baseline")
-	runGitCmd(t, dir, "config", "user.email", "baseline@example.invalid")
-	writeFiles(t, dir, files)
-	runGitCmd(t, dir, "add", "-A")
-	runGitCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "baseline")
-	return dir
-}
-
-// changedRepo is a repository with one modified, one deleted and one
-// untracked file relative to its baseline.
-func changedRepo(t *testing.T) string {
-	t.Helper()
-	dir := newRepo(t, map[string]string{"a.txt": "one\n", "gone.txt": "bye\n"})
-	writeFiles(t, dir, map[string]string{"a.txt": "one\ntwo\n", "new.txt": "brand new\n"})
-	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	ws, base := changedWorkspace(t)
+	return JudgeContext{WorkspaceDir: ws, Baseline: &base, Options: opts}
 }
 
 func diffReviewJudge() types.EvalJudge {
 	return types.EvalJudge{Type: "diff-review", Criteria: "a.txt gains a second line"}
-}
-
-func TestCaptureWorkspaceDiff_IncludesUntrackedModifiedAndDeleted(t *testing.T) {
-	dir := changedRepo(t)
-
-	got, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if err != nil {
-		t.Fatalf("captureWorkspaceDiff: %v", err)
-	}
-	for _, want := range []string{"+two", "new.txt", "+brand new", "gone.txt", "-bye"} {
-		if !strings.Contains(got.Head, want) {
-			t.Errorf("diff missing %q:\n%s", want, got.Head)
-		}
-	}
-	for _, file := range []string{"a.txt", "new.txt", "gone.txt"} {
-		if !strings.Contains(got.Stat, file) {
-			t.Errorf("stat missing %q:\n%s", file, got.Stat)
-		}
-	}
-	if got.Truncated {
-		t.Error("small diff reported as truncated")
-	}
-	if got.Size != len(got.Head) {
-		t.Errorf("Size = %d, want len(Head) = %d", got.Size, len(got.Head))
-	}
-	sum := sha256.Sum256([]byte(got.Head))
-	if got.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Errorf("SHA256 = %s, want hash of the untruncated diff", got.SHA256)
-	}
-}
-
-func TestCaptureWorkspaceDiff_LeavesRealIndexUntouched(t *testing.T) {
-	dir := changedRepo(t)
-	before := runGitCmd(t, dir, "status", "--porcelain")
-
-	if _, err := captureWorkspaceDiff(context.Background(), dir, 1<<20); err != nil {
-		t.Fatalf("captureWorkspaceDiff: %v", err)
-	}
-
-	after := runGitCmd(t, dir, "status", "--porcelain")
-	if before != after {
-		t.Errorf("git status changed:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-	if !strings.Contains(after, "?? new.txt") {
-		t.Errorf("untracked file was staged into the real index:\n%s", after)
-	}
-	if staged := runGitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
-		t.Errorf("real index has staged changes: %q", staged)
-	}
-}
-
-func TestCaptureWorkspaceDiff_HonoursGitignore(t *testing.T) {
-	dir := newRepo(t, map[string]string{".gitignore": "*.log\n", "a.txt": "one\n"})
-	writeFiles(t, dir, map[string]string{"debug.log": "noise\n", "b.txt": "kept\n"})
-
-	got, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if err != nil {
-		t.Fatalf("captureWorkspaceDiff: %v", err)
-	}
-	if strings.Contains(got.Head, "debug.log") {
-		t.Errorf("ignored file appears in diff:\n%s", got.Head)
-	}
-	if !strings.Contains(got.Head, "b.txt") {
-		t.Errorf("untracked file missing from diff:\n%s", got.Head)
-	}
-}
-
-func TestCaptureWorkspaceDiff_NoChanges(t *testing.T) {
-	dir := newRepo(t, map[string]string{"a.txt": "one\n"})
-
-	got, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if err != nil {
-		t.Fatalf("captureWorkspaceDiff: %v", err)
-	}
-	if got.Head != "" || got.Size != 0 || got.Truncated {
-		t.Errorf("clean repo produced a diff: %+v", got)
-	}
-}
-
-func TestCaptureWorkspaceDiff_NotARepository(t *testing.T) {
-	_, err := captureWorkspaceDiff(context.Background(), t.TempDir(), 1<<20)
-	if !errors.Is(err, errNotGitRepo) {
-		t.Fatalf("err = %v, want errNotGitRepo", err)
-	}
-}
-
-func TestCaptureWorkspaceDiff_RejectsSubdirectoryOfRepository(t *testing.T) {
-	dir := newRepo(t, map[string]string{"sub/a.txt": "one\n"})
-
-	_, err := captureWorkspaceDiff(context.Background(), filepath.Join(dir, "sub"), 1<<20)
-	if !errors.Is(err, errNotGitRepo) {
-		t.Fatalf("err = %v, want errNotGitRepo", err)
-	}
-}
-
-func TestCaptureWorkspaceDiff_RepositoryWithoutCommits(t *testing.T) {
-	dir := t.TempDir()
-	runGitCmd(t, dir, "init", "-q")
-
-	_, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if !errors.Is(err, errNoCommits) {
-		t.Fatalf("err = %v, want errNoCommits", err)
-	}
-}
-
-func TestCaptureWorkspaceDiff_ScrubsInheritedRepositoryEnv(t *testing.T) {
-	other := newRepo(t, map[string]string{"other.txt": "other\n"})
-	dir := changedRepo(t)
-	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
-	t.Setenv("GIT_WORK_TREE", other)
-
-	got, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if err != nil {
-		t.Fatalf("captureWorkspaceDiff: %v", err)
-	}
-	if !strings.Contains(got.Head, "+brand new") {
-		t.Errorf("diff came from the wrong repository:\n%s", got.Head)
-	}
-}
-
-func TestCaptureWorkspaceDiff_TruncatesHeadButHashesWholeDiff(t *testing.T) {
-	dir := newRepo(t, map[string]string{"a.txt": "one\n"})
-	writeFiles(t, dir, map[string]string{"big.txt": strings.Repeat("line of text\n", 2000)})
-
-	full, err := captureWorkspaceDiff(context.Background(), dir, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cut, err := captureWorkspaceDiff(context.Background(), dir, 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !cut.Truncated {
-		t.Fatal("expected truncation")
-	}
-	if len(cut.Head) > 500 {
-		t.Errorf("Head is %d bytes, want <= 500", len(cut.Head))
-	}
-	if !strings.HasPrefix(full.Head, cut.Head) {
-		t.Error("truncated head is not a prefix of the full diff")
-	}
-	if cut.Size != full.Size || cut.SHA256 != full.SHA256 {
-		t.Errorf("truncated capture identity (%d, %s) differs from full diff (%d, %s)", cut.Size, cut.SHA256, full.Size, full.SHA256)
-	}
-}
-
-func TestCaptureWorkspaceDiff_CutsOnRuneBoundary(t *testing.T) {
-	dir := newRepo(t, map[string]string{"a.txt": "one\n"})
-	writeFiles(t, dir, map[string]string{"u.txt": strings.Repeat("é", 400) + "\n"})
-
-	for limit := 120; limit < 126; limit++ {
-		got, err := captureWorkspaceDiff(context.Background(), dir, limit)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !utf8.ValidString(got.Head) {
-			t.Errorf("limit %d: head is not valid UTF-8: %q", limit, got.Head[len(got.Head)-3:])
-		}
-		if !got.Truncated {
-			t.Errorf("limit %d: expected truncation", limit)
-		}
-	}
 }
 
 func TestBuildDiffReviewPrompt_Structure(t *testing.T) {
@@ -436,13 +225,14 @@ func TestParseDiffReviewReply(t *testing.T) {
 
 func TestEvaluateDiffReview_PassVerdictCarriesRecord(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 	var gotCfg types.JudgeLLMConfig
 	var gotKey string
 
 	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{
 		WorkspaceDir: dir,
+		Baseline:     &base,
 		Options:      Options{NewClient: fake.factory(&gotCfg, &gotKey)},
 	})
 	if err != nil {
@@ -475,9 +265,9 @@ func TestEvaluateDiffReview_PassVerdictCarriesRecord(t *testing.T) {
 
 func TestEvaluateDiffReview_RequestShape(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	fake := &fakeClient{resp: okResponse(verdictPass)}
-	jctx := JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}}
+	jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}}
 
 	if _, err := Evaluate(context.Background(), diffReviewJudge(), jctx); err != nil {
 		t.Fatal(err)
@@ -510,13 +300,13 @@ func TestEvaluateDiffReview_RequestShape(t *testing.T) {
 
 func TestEvaluateDiffReview_DelimiterTokenIsPerCall(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	re := regexp.MustCompile(`BEGIN UNTRUSTED DIFF ([0-9a-f]{32}) ===`)
 
 	tokens := map[string]bool{}
 	for range 4 {
 		fake := &fakeClient{resp: okResponse(verdictPass)}
-		if _, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}}); err != nil {
+		if _, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}}); err != nil {
 			t.Fatal(err)
 		}
 		tokens[re.FindStringSubmatch(fake.got.User)[1]] = true
@@ -528,13 +318,13 @@ func TestEvaluateDiffReview_DelimiterTokenIsPerCall(t *testing.T) {
 
 func TestEvaluateDiffReview_ForwardsTemperatureAndPromptOnlyMode(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	temp := 0.2
 	j := diffReviewJudge()
 	j.LLM = &types.JudgeLLMConfig{Model: "m", Temperature: &temp, MaxTokens: 4096, StructuredOutput: types.JudgeStructuredPromptOnly}
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
-	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}}); err != nil {
+	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}}); err != nil {
 		t.Fatal(err)
 	}
 	if fake.got.Temperature == nil || *fake.got.Temperature != 0.2 {
@@ -552,7 +342,7 @@ func TestEvaluateDiffReview_FailVerdictIsNotAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(verdictFail)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: fake.factory(nil, nil)}})
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
 	if err != nil {
 		t.Fatalf("a criteria failure must not be an error: %v", err)
 	}
@@ -579,7 +369,7 @@ func TestEvaluateDiffReview_ErrorStatuses(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeClient{resp: tc.resp, err: tc.callErr}
-			verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: fake.factory(nil, nil)}})
+			verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
 			if err == nil {
 				t.Fatalf("expected an error, got %+v", verdict)
 			}
@@ -597,6 +387,7 @@ func TestEvaluateDiffReview_ErrorStatuses(t *testing.T) {
 }
 
 func TestEvaluateDiffReview_NotAGitRepositoryIsAnError(t *testing.T) {
+	requireGit(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
@@ -614,7 +405,7 @@ func TestEvaluateDiffReview_NotAGitRepositoryIsAnError(t *testing.T) {
 
 func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	dir := newRepo(t, map[string]string{"a.txt": "one\n"})
+	dir, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	writeFiles(t, dir, map[string]string{"big.txt": strings.Repeat("padding line\n", 500)})
 
 	t.Run("refused by default", func(t *testing.T) {
@@ -622,7 +413,7 @@ func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 		j := diffReviewJudge()
 		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400}
 
-		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
 		if err == nil {
 			t.Fatalf("expected an error, got %+v", verdict)
 		}
@@ -647,7 +438,7 @@ func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 		j := diffReviewJudge()
 		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400, AllowTruncated: true}
 
-		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}})
+		verdict, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{NewClient: fake.factory(nil, nil)}})
 		if err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
@@ -668,7 +459,7 @@ func TestEvaluateDiffReview_TruncationPolicy(t *testing.T) {
 func TestEvaluateDiffReview_ConfigurationPrecedence(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key")
 	t.Setenv("JUDGE_GW_KEY", "gateway-key")
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	defaults := &types.JudgeLLMConfig{
 		Provider: types.JudgeProviderOpenAICompatible, Model: "default-model",
 		BaseURL: "https://gw.example/v1", APIKeyRef: "secret://JUDGE_GW_KEY",
@@ -679,7 +470,7 @@ func TestEvaluateDiffReview_ConfigurationPrecedence(t *testing.T) {
 		var cfg types.JudgeLLMConfig
 		var key string
 		fake := &fakeClient{resp: okResponse(verdictPass)}
-		jctx := JudgeContext{WorkspaceDir: dir, Options: Options{LLMDefaults: defaults, NewClient: fake.factory(&cfg, &key)}}
+		jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{LLMDefaults: defaults, NewClient: fake.factory(&cfg, &key)}}
 		if _, err := Evaluate(context.Background(), j, jctx); err != nil {
 			t.Fatal(err)
 		}
@@ -707,7 +498,7 @@ func TestEvaluateDiffReview_MissingCredentialIsAnError(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 
-	verdict, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: fake.factory(nil, nil)}})
+	verdict, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{NewClient: fake.factory(nil, nil)}))
 	if err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("err = %v, want a message naming ANTHROPIC_API_KEY", err)
 	}

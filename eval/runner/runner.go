@@ -352,13 +352,17 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return errorResult(task.ID, start, err)
 	}
 
-	// A diff-review judge diffs against HEAD, so a workspace seeded from
-	// files rather than a clone needs a baseline commit.
+	// The baseline is taken after clone and seeding, so a diff-review
+	// judge sees only the agent's changes.
 	diffReviewed := judge.ContainsType(task.Judge, "diff-review")
-	if diffReviewed && task.Repo == "" {
-		if err := initBaselineRepo(ctx, workspaceDir); err != nil {
+	var judgeBaseline *judge.Baseline
+	if diffReviewed {
+		base, cleanup, err := createJudgeBaseline(ctx, task.ID, workspaceDir)
+		if err != nil {
 			return errorResult(task.ID, start, err)
 		}
+		defer cleanup()
+		judgeBaseline = base
 	}
 
 	// The trace file lives outside the workspace: writing it inside would
@@ -477,6 +481,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if merged != nil {
 			retainRedactedConfig(suiteArtifactDir, task.ID, merged)
 		}
+		if judgeBaseline != nil {
+			retainJudgeBaseline(ctx, suiteArtifactDir, task.ID, *judgeBaseline)
+		}
 	}
 
 	if cmdErr != nil {
@@ -489,6 +496,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		verdict, judgeErr := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 			WorkspaceDir: workspaceDir,
 			Trace:        trace,
+			Baseline:     judgeBaseline,
 			Options:      cfg.JudgeOptions,
 		})
 		if judgeErr != nil {
@@ -505,6 +513,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
 		Trace:        trace,
+		Baseline:     judgeBaseline,
 		Options:      cfg.JudgeOptions,
 	})
 	if err != nil {

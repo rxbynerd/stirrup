@@ -171,7 +171,7 @@ func TestReplay_WorkspaceCaveat(t *testing.T) {
 	if !os.IsNotExist(err) {
 		t.Fatalf("test setup: empty workspace unexpectedly has output.txt")
 	}
-	res, err := runner.ReplayRecording(context.Background(), recordings[0], task, emptyDir, judge.Options{})
+	res, err := runner.ReplayRecording(context.Background(), recordings[0], task, emptyDir, judge.Options{}, "")
 	if err != nil {
 		t.Fatalf("ReplayRecording: %v", err)
 	}

@@ -277,7 +277,7 @@ func TestReplayRecording_Passing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{})
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestReplayRecording_Failing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{})
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

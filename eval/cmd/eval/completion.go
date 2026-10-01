@@ -47,7 +47,7 @@ var evalCompletionFlags = map[string][]string{
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model", "provider"},
 	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "provider", "output"},
 	"ingest":                {"lakehouse", "trace", "skip-partial"},
-	"replay":                {"lakehouse", "suite", "workspace", "output", "recording", "outcome", "judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref"},
+	"replay":                {"lakehouse", "suite", "workspace", "output", "recording", "outcome", "judge-baseline", "judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref"},
 	"convert":               {"from", "to-junit"},
 	"completion":            {"bash", "zsh", "fish", "powershell"},
 }

@@ -31,6 +31,7 @@ func cmdReplay(args []string) {
 	output := fs.String("output", "", "Write SuiteResult JSON to this path (default: print summary only)")
 	recordingIDs := newStringSliceFlag(fs, "recording", "RunID of a recording to replay (repeatable). If omitted, all recordings in the lakehouse are replayed.")
 	outcomeFilter := fs.String("outcome", "", "Filter recordings to replay by outcome (e.g. failed, error). Ignored if --recording is set.")
+	judgeBaseline := fs.String("judge-baseline", "", "Path to a judge-baseline.json retained by `run --output`. diff-review judges diff --workspace against that baseline instead of the workspace's git HEAD.")
 	judgeFlagSet := addJudgeFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -79,7 +80,7 @@ func cmdReplay(args []string) {
 	for i, rec := range recordings {
 		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
-		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judgeOpts)
+		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judgeOpts, *judgeBaseline)
 		if err != nil {
 			log.Printf("replay %s: %v", rec.RunID, err)
 		}

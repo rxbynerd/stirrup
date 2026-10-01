@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,14 +86,32 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 		return diffReviewError(rec, err)
 	}
 
+	base := jctx.Baseline
+	if base == nil {
+		dir, err := os.MkdirTemp("", "evaljudge-")
+		if err != nil {
+			return diffReviewError(rec, fmt.Errorf("creating judge git dir: %w", err))
+		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		head, err := workspaceHeadBaseline(ctx, jctx.WorkspaceDir, filepath.Join(dir, "judge.git"))
+		if err != nil {
+			return diffReviewError(rec, fmt.Errorf("resolving baseline: %w", err))
+		}
+		base = &head
+	}
+	rec.BaselineSource = base.Source
+
 	maxBytes := cfg.EffectiveMaxInputBytes()
-	diff, err := captureWorkspaceDiff(ctx, jctx.WorkspaceDir, maxBytes)
+	diff, err := captureWorkspaceDiff(ctx, jctx.WorkspaceDir, *base, maxBytes)
 	if err != nil {
 		return diffReviewError(rec, fmt.Errorf("capturing workspace diff: %w", err))
 	}
 	rec.InputSHA256 = diff.SHA256
 	rec.InputBytes = diff.Size
 	rec.Truncated = diff.Truncated
+	if diff.Size == 0 && base.recorded() {
+		return diffReviewError(rec, errors.New("the agent produced no reviewable change: the workspace matches the baseline"))
+	}
 	if diff.Truncated && !cfg.AllowTruncated {
 		return diffReviewError(rec, fmt.Errorf(
 			"diff is %d bytes, exceeding max_input_bytes %d; raise max_input_bytes or set allow_truncated to judge the head of the diff",
