@@ -51,15 +51,5 @@ func ReplayRecording(ctx context.Context, recording types.RunRecording, task typ
 		return judgeErrorResult(task.ID, start, verdict, err), err
 	}
 
-	outcome := "fail"
-	if verdict.Passed {
-		outcome = "pass"
-	}
-	return eval.TaskResult{
-		TaskID:       task.ID,
-		Outcome:      outcome,
-		Trace:        jctx.Trace,
-		JudgeVerdict: verdict,
-		DurationMs:   time.Since(start).Milliseconds(),
-	}, nil
+	return buildResult(task.ID, start, jctx.Trace, verdict), nil
 }

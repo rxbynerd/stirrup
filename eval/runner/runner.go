@@ -796,17 +796,27 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 	}
 }
 
-// buildResult constructs a TaskResult from a trace and verdict.
+// buildResult constructs a TaskResult from a trace and verdict. A verdict
+// whose status is "error" is the error outcome whatever its Passed field
+// says, so a judge that could not rule never counts as a pass or a fail.
 func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict) eval.TaskResult {
-	outcome := "fail"
-	if verdict.Passed {
-		outcome = "pass"
-	}
-	return eval.TaskResult{
+	result := eval.TaskResult{
 		TaskID:       taskID,
-		Outcome:      outcome,
+		Outcome:      "fail",
 		Trace:        trace,
 		JudgeVerdict: verdict,
 		DurationMs:   time.Since(start).Milliseconds(),
 	}
+	switch {
+	case verdict.Status == types.JudgeStatusError:
+		result.Outcome = "error"
+		result.JudgeVerdict.Passed = false
+		result.Error = verdict.Reason
+		if result.Error == "" {
+			result.Error = "judge returned an error verdict"
+		}
+	case verdict.Passed:
+		result.Outcome = "pass"
+	}
+	return result
 }
