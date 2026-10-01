@@ -208,6 +208,24 @@ func TestCompare_GateDecisions(t *testing.T) {
 			wantReason: "failed or errored every trial",
 		},
 		{
+			name:     "three paired tasks are enough for the upper bound to block",
+			baseline: singleRunSuite("base", "pass", "pass", "pass"),
+			current:  trialSuite("curr", 3, []int{2, 2, 2}),
+			wantGate: eval.GateBlock,
+		},
+		{
+			name:     "three paired tasks are enough for a margin warning",
+			baseline: singleRunSuite("base", "pass", "pass", "pass"),
+			current:  trialSuite("curr", 3, []int{3, 3, 2}),
+			wantGate: eval.GateWarn,
+		},
+		{
+			name:     "three unchanged paired tasks pass",
+			baseline: singleRunSuite("base", "pass", "pass", "pass"),
+			current:  trialSuite("curr", 3, []int{3, 3, 3}),
+			wantGate: eval.GatePass,
+		},
+		{
 			name:     "two paired tasks without a regression are inconclusive",
 			baseline: singleRunSuite("base", "pass", "pass"),
 			current:  trialSuite("curr", 3, []int{2, 2}),
@@ -296,6 +314,48 @@ func TestCompare_FlipThreshold(t *testing.T) {
 	improved := Compare(trialSuite("base", 3, []int{1, 3, 0}), singleRunSuite("curr", "pass", "pass", "fail"), DefaultOptions())
 	if len(improved.Improvements) != 1 || improved.Improvements[0].TaskID != "ta" {
 		t.Errorf("improvements = %+v, want only ta (1/3 to 1/1)", improved.Improvements)
+	}
+}
+
+func ids[T any](items []T, id func(T) string) string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = id(it)
+	}
+	return strings.Join(out, ",")
+}
+
+// TestCompare_FlipThresholdBoundary pins that a pass fraction exactly at
+// the threshold counts as a regression (or an improvement on the mirror),
+// at every trial count and with the tolerance on threshold arithmetic.
+func TestCompare_FlipThresholdBoundary(t *testing.T) {
+	cases := []struct {
+		name         string
+		baseline     eval.SuiteResult
+		current      eval.SuiteResult
+		threshold    float64
+		wantRegress  string
+		wantImproved string
+	}{
+		{"K=2 half passed", trialSuite("base", 2, []int{2, 2, 2}), trialSuite("curr", 2, []int{1, 2, 2}), 0.5, "ta", ""},
+		{"K=4 half passed", trialSuite("base", 4, []int{4, 4, 4}), trialSuite("curr", 4, []int{2, 4, 4}), 0.5, "ta", ""},
+		{"K=4 just above the threshold", trialSuite("base", 4, []int{4, 4, 4}), trialSuite("curr", 4, []int{3, 4, 4}), 0.5, "", ""},
+		{"K=2 improvement from half", trialSuite("base", 2, []int{1, 2, 2}), trialSuite("curr", 2, []int{2, 2, 2}), 0.5, "", "ta"},
+		{"K=4 improvement from half", trialSuite("base", 4, []int{2, 4, 4}), trialSuite("curr", 4, []int{4, 4, 4}), 0.5, "", "ta"},
+		{"K=4 improvement from just above", trialSuite("base", 4, []int{3, 4, 4}), trialSuite("curr", 4, []int{4, 4, 4}), 0.5, "", ""},
+		{"one third against a rounded threshold", trialSuite("base", 3, []int{3, 3, 3}), trialSuite("curr", 3, []int{1, 3, 3}), 0.3333333333, "ta", ""},
+		{"one third improvement against a rounded threshold", trialSuite("base", 3, []int{1, 3, 3}), trialSuite("curr", 3, []int{3, 3, 3}), 0.3333333333, "", "ta"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := Compare(tc.baseline, tc.current, Options{WarnMargin: DefaultWarnMargin, FlipThreshold: tc.threshold})
+			if got := ids(report.Regressions, func(r eval.TaskRegression) string { return r.TaskID }); got != tc.wantRegress {
+				t.Errorf("regressions = %q, want %q", got, tc.wantRegress)
+			}
+			if got := ids(report.Improvements, func(r eval.TaskImprovement) string { return r.TaskID }); got != tc.wantImproved {
+				t.Errorf("improvements = %q, want %q", got, tc.wantImproved)
+			}
+		})
 	}
 }
 
@@ -735,4 +795,32 @@ func TestNoiseFloor_PoolWithAFailurePrintsBothRates(t *testing.T) {
 	if strings.Contains(text, "insufficient variation") {
 		t.Errorf("report flags insufficient variation despite a failure:\n%s", text)
 	}
+}
+
+func TestRateSummary_WilsonIntervalOverTasks(t *testing.T) {
+	// Pass fractions 1, 1, 2/3, 1/3, 1/3 give 10/3 successes over 5 tasks.
+	s := rateSummary(trialSuite("r", 3, []int{3, 3, 2, 1, 1}))
+	within(t, "pass rate", s.PassRate, 2.0/3, 1e-12)
+	within(t, "Wilson low", s.WilsonLow, 0.27520, 0.0001)
+	within(t, "Wilson high", s.WilsonHigh, 0.91331, 0.0001)
+
+	whole := rateSummary(trialSuite("r", 3, []int{3, 3, 3, 0, 0}))
+	within(t, "3/5 Wilson low", whole.WilsonLow, 0.23072, 0.0001)
+	within(t, "3/5 Wilson high", whole.WilsonHigh, 0.88238, 0.0001)
+}
+
+func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
+	r := eval.SuiteResult{RunID: "mixed", Tasks: []eval.TaskResult{
+		trialTask("a", 2, 2),
+		trialTask("b", 2, 3),
+		trialTask("c", 3, 3),
+	}}
+	s := rateSummary(r)
+
+	if len(s.PassHatK) != 2 || len(s.PassAtK) != 2 {
+		t.Fatalf("pass^k rows = %v / %v, want length 2 (the smallest trial count)", s.PassHatK, s.PassAtK)
+	}
+	within(t, "pass^1", s.PassHatK[0], 8.0/9, 1e-12)
+	within(t, "pass^2", s.PassHatK[1], 7.0/9, 1e-12)
+	within(t, "pass@2", s.PassAtK[1], 1, 1e-12)
 }
