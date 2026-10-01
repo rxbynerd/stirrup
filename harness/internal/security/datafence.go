@@ -15,6 +15,10 @@ const fenceNonceBytes = 16
 // Markers carry a per-fence random nonce, and fenced text is passed
 // through NeutraliseFenceMarkers, so fenced text can neither contain nor
 // imitate a marker.
+//
+// Only NewDataFence yields a valid fence. The zero value has an empty
+// nonce, so its markers are predictable and its Nonce matches nothing a
+// verdict parser should accept.
 type DataFence struct {
 	nonce string
 }
@@ -27,6 +31,13 @@ func NewDataFence(entropy io.Reader) (DataFence, error) {
 		return DataFence{}, fmt.Errorf("data fence nonce: %w", err)
 	}
 	return DataFence{nonce: hex.EncodeToString(b)}, nil
+}
+
+// Nonce returns the lowercase hex nonce embedded in the fence's markers.
+// Judges echo it in their verdict so a verdict object copied from fenced
+// content, which predates the nonce, cannot be mistaken for the answer.
+func (f DataFence) Nonce() string {
+	return f.nonce
 }
 
 // Open returns the marker that begins a block labelled label.

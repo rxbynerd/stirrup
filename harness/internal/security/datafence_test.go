@@ -3,7 +3,11 @@ package security
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,6 +36,94 @@ func TestDataFence_MarkersCarryNonce(t *testing.T) {
 	}
 	if !strings.Contains(notice, "never instructions") {
 		t.Errorf("Notice does not state the content is not instructions: %q", notice)
+	}
+	if got := f.Nonce(); got != nonce || !strings.Contains(f.Open("X"), "_"+got+">>>") {
+		t.Errorf("Nonce = %q, want %q as embedded in the markers", got, nonce)
+	}
+}
+
+func TestDataFence_ZeroValueHasEmptyNonce(t *testing.T) {
+	if got := (DataFence{}).Nonce(); got != "" {
+		t.Fatalf("zero DataFence Nonce = %q, want empty", got)
+	}
+}
+
+// datafence_vectors.json is mirrored byte-for-byte in eval/judge/testdata; change both copies together.
+type fenceVectors struct {
+	Comment string `json:"comment"`
+	Fences  []struct {
+		Name    string `json:"name"`
+		Entropy string `json:"entropy"`
+		Nonce   string `json:"nonce"`
+		Markers []struct {
+			Label  string `json:"label"`
+			Open   string `json:"open"`
+			Close  string `json:"close"`
+			Notice string `json:"notice"`
+		} `json:"markers"`
+		Wrap []struct {
+			Label   string `json:"label"`
+			Content string `json:"content"`
+			Wrapped string `json:"wrapped"`
+		} `json:"wrap"`
+	} `json:"fences"`
+	Neutralise []struct {
+		Input  string `json:"input"`
+		Output string `json:"output"`
+	} `json:"neutralise"`
+}
+
+func TestDataFence_GoldenVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "datafence_vectors.json"))
+	if err != nil {
+		t.Fatalf("read vectors: %v", err)
+	}
+	var v fenceVectors
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&v); err != nil {
+		t.Fatalf("decode vectors: %v", err)
+	}
+	if len(v.Fences) == 0 || len(v.Neutralise) == 0 {
+		t.Fatal("vectors file has no fence or neutralise cases")
+	}
+
+	for _, fv := range v.Fences {
+		t.Run(fv.Name, func(t *testing.T) {
+			entropy, err := hex.DecodeString(fv.Entropy)
+			if err != nil {
+				t.Fatalf("entropy %q: %v", fv.Entropy, err)
+			}
+			f, err := NewDataFence(bytes.NewReader(entropy))
+			if err != nil {
+				t.Fatalf("NewDataFence: %v", err)
+			}
+			if f.Nonce() != fv.Nonce {
+				t.Errorf("Nonce = %q, want %q", f.Nonce(), fv.Nonce)
+			}
+			for _, m := range fv.Markers {
+				if got := f.Open(m.Label); got != m.Open {
+					t.Errorf("Open(%s) = %q, want %q", m.Label, got, m.Open)
+				}
+				if got := f.Close(m.Label); got != m.Close {
+					t.Errorf("Close(%s) = %q, want %q", m.Label, got, m.Close)
+				}
+				if got := f.Notice(m.Label); got != m.Notice {
+					t.Errorf("Notice(%s) = %q, want %q", m.Label, got, m.Notice)
+				}
+			}
+			for _, w := range fv.Wrap {
+				if got := f.Wrap(w.Label, w.Content); got != w.Wrapped {
+					t.Errorf("Wrap(%s, %q) = %q, want %q", w.Label, w.Content, got, w.Wrapped)
+				}
+			}
+		})
+	}
+
+	for _, n := range v.Neutralise {
+		if got := NeutraliseFenceMarkers(n.Input); got != n.Output {
+			t.Errorf("NeutraliseFenceMarkers(%q) = %q, want %q", n.Input, got, n.Output)
+		}
 	}
 }
 

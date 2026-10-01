@@ -142,6 +142,13 @@ ahead of the model's own answer loses. Details per surface:
 [`guardrails.md` § `cloud-judge`](guardrails.md#cloud-judge) and
 [`architecture.md` § Verifiers](architecture.md#verifiers).
 
+The marker grammar (`<<<LABEL_nonce>>>` and `<<<END_LABEL_nonce>>>`),
+the notice wording, and the neutralisation rule are pinned by golden
+vectors in `harness/internal/security/testdata/datafence_vectors.json`.
+The eval module's diff-review judge applies the same grammar without
+importing the harness, and carries a byte-identical copy of that file
+in `eval/judge/testdata/`. Neither copy changes without the other.
+
 ## `RunConfig` validation
 
 `types.ValidateRunConfig` enforces hard invariants before any
