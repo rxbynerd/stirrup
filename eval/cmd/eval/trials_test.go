@@ -12,8 +12,7 @@ import (
 	"github.com/rxbynerd/stirrup/eval"
 )
 
-func TestCmdRun_TrialsFlag(t *testing.T) {
-	harnessPath := writeFakeHarness(t, `#!/bin/sh
+const traceWritingHarness = `#!/bin/sh
 shift
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -23,7 +22,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$TRACE" ] && echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
-`)
+`
+
+func TestCmdRun_TrialsFlag(t *testing.T) {
+	harnessPath := writeFakeHarness(t, traceWritingHarness)
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "trials.hcl")
 	src := `
@@ -95,5 +97,41 @@ func TestPrintSummary(t *testing.T) {
 	printSummary(&b, multi, true)
 	if !strings.Contains(b.String(), "6 harness runs planned; the dry run validates each task once") {
 		t.Errorf("dry-run summary should state the planned runs:\n%s", b.String())
+	}
+}
+
+func TestCmdRun_SingleRunResultAlwaysCarriesTrialsAndPassFraction(t *testing.T) {
+	harnessPath := writeFakeHarness(t, traceWritingHarness)
+	suitePath := writeTwoTaskSuite(t, "")
+	outputDir := filepath.Join(t.TempDir(), "out")
+
+	if code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir}, io.Discard); code != 0 {
+		t.Fatalf("run() exit code = %d, want 0", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Trials int `json:"trials"`
+		Tasks  []map[string]any
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Trials != 1 {
+		t.Errorf("suite trials = %d, want 1 in %s", doc.Trials, data)
+	}
+	if len(doc.Tasks) != 2 {
+		t.Fatalf("tasks = %d, want 2", len(doc.Tasks))
+	}
+	for _, task := range doc.Tasks {
+		if got, ok := task["passFraction"]; !ok || got != 1.0 {
+			t.Errorf("task %v: passFraction = %v (present %v), want 1", task["taskId"], got, ok)
+		}
+		if _, ok := task["trials"]; ok {
+			t.Errorf("task %v: single-run result lists per-trial entries", task["taskId"])
+		}
 	}
 }
