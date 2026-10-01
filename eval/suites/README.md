@@ -9,8 +9,16 @@ baseline in `../baselines/`:
   the baselined suites on pushes to `main` (and on manual
   `workflow_dispatch`), pinned to a cheap model (GPT-5.6 Luna over
   OpenRouter, selected by `stirrup-eval run`'s `--provider` /
-  `--base-url` / `--api-key-ref` / `--model` flags), compares each
-  result to its baseline, and fails the gate on a regression.
+  `--base-url` / `--api-key-ref` / `--model` flags), runs every task
+  three times (`--trials 3`), and compares each result to its
+  baseline. `compare` reports one of four gate results (see
+  [Gate semantics](../../docs/eval.md#gate-semantics)): `block` (a
+  task that passed every baseline trial passed no current trial, or
+  the paired upper bound on the mean pass-fraction change is below
+  zero) fails the gate; `warn` (a mean drop beyond 0.05 that the data
+  do not confirm) and `inconclusive` (too few paired tasks for the
+  interval) are raised as workflow warnings without failing it;
+  `pass` is silent.
 
   The `main`-and-dispatch scoping is a cost control, not an
   oversight: live eval runs spend real tokens per invocation, and a
@@ -34,12 +42,13 @@ baseline in `../baselines/`:
   CI invokes them with **no** `--model` / `--provider` / `--base-url`
   override, so their inline `run_config` decides the wire posture.
   That is the point: a quirk test whose model can be swapped from the
-  command line tests nothing.
+  command line tests nothing. They also run without `--trials`, one
+  trial per task, to keep their cost down.
 - **Release sweep** — `.github/workflows/release.yml::eval-extended`
   re-runs the same baselined suites against stronger models
   (Claude Sonnet 5 and Claude Opus 4.8) on every release tag. The
-  sweep is non-blocking-but-visible: a regression turns the matrix
-  cell red without holding the release.
+  sweep is non-blocking-but-visible: a blocking comparison turns the
+  matrix cell red without holding the release.
 
 Suites without a baseline are never executed in CI — they are
 opt-in local runs (see the per-suite notes below).
@@ -161,13 +170,17 @@ The v0.1 demo narrative (#277) is:
 4. `stirrup-eval run --suite eval/suites/mined.hcl --output
    results/ --concurrency 8` runs the mined suite at real cadence.
 5. Commit `eval/suites/mined.hcl` and the produced `result.json`
-   as `eval/baselines/mined.json` once you're satisfied with the
-   coverage and the baseline reflects an intentional reference
-   state. Generate the baseline with the provider and model the
-   per-push gate runs (see [Provider credentials](#provider-credentials)
-   for the exact invocation) so the committed expectations match what
-   CI actually executes; committing a baseline auto-enrols the suite in
-   both CI eval surfaces.
+   as `eval/baselines/mined.json` once the coverage is sufficient
+   and the baseline reflects an intentional reference state.
+   Generate the baseline with the provider, model, and
+   `--trials 3` the per-push gate runs (see
+   [Provider credentials](#provider-credentials) for the exact
+   invocation) so the committed expectations match what CI actually
+   executes. Three trials record a fractional pass rate for a flaky
+   task, so the gate compares like with like instead of against one
+   lucky run. A single-run baseline still loads and compares as one
+   trial per task. Committing a baseline auto-enrols the suite in both
+   CI eval surfaces.
 
 The seed suite (`dogfood-seed.hcl`) exists to give the eval-gate
 non-empty work while the dogfood corpus matures. When the mined
@@ -187,6 +200,7 @@ Reproduce the gate's exact invocation locally with:
 OPENROUTER_API_KEY=... ./stirrup-eval run \
   --suite eval/suites/<name>.hcl \
   --harness "$PWD/stirrup" \
+  --trials 3 \
   --provider openai-compatible \
   --base-url https://openrouter.ai/api/v1 \
   --api-key-ref secret://OPENROUTER_API_KEY \
