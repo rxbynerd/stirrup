@@ -69,27 +69,27 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 			wantGate: "Gate: PASS",
 		},
 		{
-			name: "one flaky trial warns without failing",
+			name: "one flaky trial passes at the default margin",
 			current: build(func(i int) []string {
 				if i == 0 {
 					return []string{"pass", "fail", "pass"}
 				}
 				return []string{"pass", "pass", "pass"}
 			}),
-			wantCode: 0,
-			wantGate: "Gate: WARN",
-		},
-		{
-			name: "warn margin flag suppresses the warning",
-			current: build(func(i int) []string {
-				if i == 0 {
-					return []string{"pass", "fail", "pass"}
-				}
-				return []string{"pass", "pass", "pass"}
-			}),
-			extra:    []string{"--warn-margin", "0.1"},
 			wantCode: 0,
 			wantGate: "Gate: PASS",
+		},
+		{
+			name: "warn margin flag tightens the gate to a non-blocking warning",
+			current: build(func(i int) []string {
+				if i == 0 {
+					return []string{"pass", "fail", "pass"}
+				}
+				return []string{"pass", "pass", "pass"}
+			}),
+			extra:    []string{"--warn-margin", "0.05"},
+			wantCode: 0,
+			wantGate: "Gate: WARN",
 		},
 		{
 			name: "deterministic flip blocks",

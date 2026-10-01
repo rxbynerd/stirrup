@@ -30,6 +30,10 @@ func FormatText(report eval.ComparisonReport) string {
 	writeRate(&b, "baseline", s.Baseline)
 	writeRate(&b, "current", s.Current)
 	writePaired(&b, s.Paired, len(report.Tasks))
+	if s.Paired != nil && singleTrialExceedsMargin(len(report.Tasks), s.Current.Trials, s.WarnMargin) {
+		fmt.Fprintf(&b, "Note: with n=%d paired tasks and K=%d, one lost trial lowers the mean pass fraction by %.3f, more than the warn margin %.3f.\n",
+			len(report.Tasks), s.Current.Trials, 1/float64(len(report.Tasks)*s.Current.Trials), s.WarnMargin)
+	}
 	writeNoiseFloor(&b, s.NoiseFloor, len(report.Tasks), s.Current.Trials)
 
 	b.WriteString("\n")

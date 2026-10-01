@@ -2,8 +2,10 @@ package reporter
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,11 +87,10 @@ func TestCompare_WorkedExample(t *testing.T) {
 	within(t, "baseline pass@3", s.Baseline.PassAtK[2], 0.80, 0.005)
 	within(t, "current pass@3", s.Current.PassAtK[2], 0.80, 0.005)
 
-	// A 10-point drop on ten tasks is not distinguishable from noise: the
-	// gate warns but does not block, and no task crosses the flip
-	// threshold even though four tasks lost a pass.
-	if s.Gate != eval.GateWarn {
-		t.Errorf("gate = %q, want %q (reasons %v)", s.Gate, eval.GateWarn, s.GateReasons)
+	// The mean drop equals the default warn margin, so the gate passes;
+	// no task crosses the flip threshold even though four tasks lost a pass.
+	if s.Gate != eval.GatePass {
+		t.Errorf("gate = %q, want %q (reasons %v)", s.Gate, eval.GatePass, s.GateReasons)
 	}
 	if len(report.Regressions) != 0 {
 		t.Errorf("regressions = %+v, want none", report.Regressions)
@@ -99,8 +100,19 @@ func TestCompare_WorkedExample(t *testing.T) {
 	}
 }
 
-// singleRunSuite builds a K=1 result the way pre-trials result files look:
-// no Trials, no PassFraction, no suite-level trials field.
+func TestCompare_WorkedExampleWarnsAtTighterMargin(t *testing.T) {
+	opts := Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}
+	s := Compare(trialSuite("A", 3, workedA), trialSuite("B", 3, workedB), opts).Summary
+	if s.Gate != eval.GateWarn {
+		t.Errorf("gate = %q, want %q (reasons %v)", s.Gate, eval.GateWarn, s.GateReasons)
+	}
+	if len(s.GateReasons) != 1 || !strings.Contains(s.GateReasons[0], "upper bound +0.030 is not below 0") {
+		t.Errorf("gate reasons = %v, want the unconfirmed-drop reason", s.GateReasons)
+	}
+}
+
+// singleRunSuite builds a K=1 result without Trials, PassFraction, or a
+// suite-level trials field, as a single-run result file looks.
 func singleRunSuite(runID string, outcomes ...string) eval.SuiteResult {
 	tasks := make([]eval.TaskResult, len(outcomes))
 	for i, o := range outcomes {
@@ -113,12 +125,13 @@ func TestCompare_GateDecisions(t *testing.T) {
 	allPass5 := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
 
 	cases := []struct {
-		name      string
-		baseline  eval.SuiteResult
-		current   eval.SuiteResult
-		opts      Options
-		wantGate  string
-		wantFlips []string
+		name       string
+		baseline   eval.SuiteResult
+		current    eval.SuiteResult
+		opts       Options
+		wantGate   string
+		wantFlips  []string
+		wantReason string
 	}{
 		{
 			name:     "unchanged K=3 run against a K=1 all-pass baseline passes",
@@ -127,17 +140,37 @@ func TestCompare_GateDecisions(t *testing.T) {
 			wantGate: eval.GatePass,
 		},
 		{
-			name:     "one flaky trial warns without blocking",
+			name:     "one lost trial stays inside the default warn margin",
 			baseline: allPass5,
 			current:  trialSuite("curr", 3, []int{3, 3, 2, 3, 3}),
+			wantGate: eval.GatePass,
+		},
+		{
+			name:     "one lost trial warns under a tighter explicit margin",
+			baseline: allPass5,
+			current:  trialSuite("curr", 3, []int{3, 3, 2, 3, 3}),
+			opts:     Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold},
 			wantGate: eval.GateWarn,
 		},
 		{
-			name:     "a small drop inside the warn margin passes",
+			name:     "two lost trials warn without blocking",
 			baseline: allPass5,
-			current:  trialSuite("curr", 3, []int{3, 3, 2, 3, 3}),
-			opts:     Options{WarnMargin: 0.1, FlipThreshold: DefaultFlipThreshold},
-			wantGate: eval.GatePass,
+			current:  trialSuite("curr", 3, []int{3, 3, 2, 2, 3}),
+			wantGate: eval.GateWarn,
+		},
+		{
+			name:       "a listed regression warns although the mean drop is inside the margin",
+			baseline:   singleRunSuite("base", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass", "pass"),
+			current:    trialSuite("curr", 3, []int{1, 3, 3, 3, 3, 3, 3, 3, 3, 3}),
+			wantGate:   eval.GateWarn,
+			wantReason: "ta (pass fraction 1.00 → 0.33)",
+		},
+		{
+			name:       "two paired tasks with a listed regression warn instead of staying inconclusive",
+			baseline:   singleRunSuite("base", "pass", "pass"),
+			current:    trialSuite("curr", 3, []int{1, 2}),
+			wantGate:   eval.GateWarn,
+			wantReason: "regressed: ta",
 		},
 		{
 			name:     "a confirmed mean drop blocks without any deterministic flip",
@@ -174,9 +207,9 @@ func TestCompare_GateDecisions(t *testing.T) {
 			wantFlips: []string{"ta", "tb", "tc", "td", "te"},
 		},
 		{
-			name:     "two paired tasks are inconclusive",
+			name:     "two paired tasks without a regression are inconclusive",
 			baseline: singleRunSuite("base", "pass", "pass"),
-			current:  trialSuite("curr", 3, []int{1, 2}),
+			current:  trialSuite("curr", 3, []int{2, 2}),
 			wantGate: eval.GateInconclusive,
 		},
 		{
@@ -207,6 +240,9 @@ func TestCompare_GateDecisions(t *testing.T) {
 			}
 			if s.Gate != eval.GatePass && len(s.GateReasons) == 0 {
 				t.Errorf("gate %q carries no reason", s.Gate)
+			}
+			if tc.wantReason != "" && !strings.Contains(strings.Join(s.GateReasons, "\n"), tc.wantReason) {
+				t.Errorf("gate reasons = %v, want one containing %q", s.GateReasons, tc.wantReason)
 			}
 		})
 	}
@@ -337,7 +373,7 @@ func TestFormatText_Statistics(t *testing.T) {
 	got := FormatText(report)
 	for _, want := range []string{
 		"Eval Comparison: run-b vs run-a",
-		"Gate: WARN",
+		"Gate: PASS",
 		"Pass Rate: 60.0% → 50.0% (-10.0%)",
 		"n=10 tasks, K=3",
 		"pass^k (k=1..3): 0.600, 0.467, 0.400; pass@k: 0.600, 0.733, 0.800",
@@ -427,5 +463,97 @@ func TestFormatText_MDEUndefinedAtZeroStdErr(t *testing.T) {
 	}
 	if strings.Contains(got, "MDE 0.00") {
 		t.Errorf("report prints a zero MDE:\n%s", got)
+	}
+}
+
+func TestFloorGate(t *testing.T) {
+	gates := []string{eval.GatePass, eval.GateInconclusive, eval.GateWarn, eval.GateBlock}
+	for _, floor := range gates {
+		for _, base := range gates {
+			t.Run(base+" floored at "+floor, func(t *testing.T) {
+				reasons := []string{"base reason"}
+				gate, got := floorGate(base, reasons, floor, "floor reason")
+
+				want := base
+				if gateSeverity[floor] >= gateSeverity[base] {
+					want = floor
+				}
+				if gate != want {
+					t.Errorf("gate = %q, want %q", gate, want)
+				}
+				recorded := slices.Contains(got, "floor reason")
+				if recorded != (gateSeverity[floor] >= gateSeverity[base]) {
+					t.Errorf("floor reason recorded = %v for reasons %v", recorded, got)
+				}
+				if !slices.Contains(got, "base reason") {
+					t.Errorf("base reason dropped: %v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCompare_FlipRuleBlockSurvivesRegressionFloor(t *testing.T) {
+	s := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{0, 1, 3}), DefaultOptions()).Summary
+	if s.Gate != eval.GateBlock {
+		t.Errorf("gate = %q, want block (reasons %v)", s.Gate, s.GateReasons)
+	}
+	for _, r := range s.GateReasons {
+		if strings.Contains(r, "regressed:") {
+			t.Errorf("block reasons include the regression floor: %v", s.GateReasons)
+		}
+	}
+}
+
+// TestCompare_WarnMarginBoundaryIgnoresTaskOrder pins that a mean delta
+// exactly at the warn margin never warns, whatever order the float
+// summation sees the tasks in.
+func TestCompare_WarnMarginBoundaryIgnoresTaskOrder(t *testing.T) {
+	// Six tasks lose a trial, three gain one, eleven are unchanged: the
+	// mean delta is exactly -0.05 and the upper bound stays above zero.
+	baselinePasses := slices.Concat(repeat(3, 6), repeat(2, 3), repeat(3, 11))
+	currentPasses := slices.Concat(repeat(2, 6), repeat(3, 3), repeat(3, 11))
+	opts := Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}
+
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 200 {
+		order := rng.Perm(len(baselinePasses))
+		b := make([]int, len(order))
+		c := make([]int, len(order))
+		for i, j := range order {
+			b[i], c[i] = baselinePasses[j], currentPasses[j]
+		}
+		s := Compare(trialSuite("base", 3, b), trialSuite("curr", 3, c), opts).Summary
+		if s.Gate != eval.GatePass {
+			t.Fatalf("order %v: gate = %q (reasons %v, mean delta %.17g), want pass", order, s.Gate, s.GateReasons, s.Paired.MeanDelta)
+		}
+	}
+}
+
+func repeat(v, n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
+
+func TestFormatText_ResolutionNote(t *testing.T) {
+	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
+	current := trialSuite("curr", 3, []int{3, 3, 3, 3, 2})
+
+	tight := FormatText(Compare(baseline, current, Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}))
+	if !strings.Contains(tight, "one lost trial lowers the mean pass fraction by 0.067, more than the warn margin 0.050") {
+		t.Errorf("tight margin report missing the resolution note:\n%s", tight)
+	}
+
+	roomy := FormatText(Compare(baseline, current, DefaultOptions()))
+	if strings.Contains(roomy, "one lost trial") {
+		t.Errorf("default margin report carries a resolution note:\n%s", roomy)
+	}
+
+	exact := FormatText(Compare(baseline, current, Options{WarnMargin: 1.0 / 15, FlipThreshold: DefaultFlipThreshold}))
+	if strings.Contains(exact, "one lost trial") {
+		t.Errorf("margin equal to one lost trial carries a resolution note:\n%s", exact)
 	}
 }
