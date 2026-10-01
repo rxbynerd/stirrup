@@ -66,6 +66,12 @@ var defaultCloudJudgeTimeouts = map[Phase]time.Duration{
 // fail-open allows or run-aborting denies.
 var ErrCloudJudgeNoJSON = errors.New("cloud-judge: no usable JSON verdict object in response")
 
+// ErrCloudJudgeIncomplete is returned when the verdict stream did not end
+// in a normal completion before the deadline: it timed out, hit the token
+// cap, was blocked, or closed without a stop reason. Its partial text is
+// never parsed.
+var ErrCloudJudgeIncomplete = errors.New("cloud-judge: stream incomplete")
+
 // CloudJudgeConfig is the constructor argument for NewCloudJudge.
 type CloudJudgeConfig struct {
 	// Provider is the underlying ProviderAdapter to call. Required.
@@ -175,21 +181,12 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 		return nil, fmt.Errorf("cloud-judge: provider stream: %w", err)
 	}
 
-	// Only text_delta matters; tool_call events should not appear since
-	// no tools were passed, but are ignored defensively if they do.
-	var text []byte
-	for ev := range events {
-		switch ev.Type {
-		case "text_delta":
-			text = append(text, ev.Text...)
-		case "error":
-			if ev.Error != nil {
-				return nil, fmt.Errorf("cloud-judge: stream error: %w", ev.Error)
-			}
-		}
+	text, err := drainVerdictStream(streamCtx, events)
+	if err != nil {
+		return nil, err
 	}
 
-	verdict, reason, err := parseCloudJudgeResponse(string(text), fence.Nonce())
+	verdict, reason, err := parseCloudJudgeResponse(text, fence.Nonce())
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +204,69 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 		d.Score = 0.0
 	}
 	return d, nil
+}
+
+// drainVerdictStream returns the text of a verdict stream that closed
+// before ctx ended and reported a normal completion; anything else is an
+// error wrapping ErrCloudJudgeIncomplete, and partial text is never
+// returned. tool_call events should not appear since no tools are
+// offered, and are ignored.
+func drainVerdictStream(ctx context.Context, events <-chan types.StreamEvent) (string, error) {
+	var (
+		text       strings.Builder
+		stopReason string
+	)
+	for {
+		select {
+		case <-ctx.Done():
+			go discardEvents(events)
+			return "", fmt.Errorf("%w: %w", ErrCloudJudgeIncomplete, ctx.Err())
+		case ev, ok := <-events:
+			if !ok {
+				return finishVerdictStream(ctx, text.String(), stopReason)
+			}
+			switch ev.Type {
+			case "text_delta":
+				text.WriteString(ev.Text)
+			case "message_complete":
+				// A usage-only message_complete carries no stop reason and
+				// must not clear an earlier one.
+				if ev.StopReason != "" {
+					stopReason = ev.StopReason
+				}
+			case "error":
+				go discardEvents(events)
+				if ev.Error == nil {
+					return "", errors.New("cloud-judge: stream error event with no details")
+				}
+				return "", fmt.Errorf("cloud-judge: stream error: %w", ev.Error)
+			}
+		}
+	}
+}
+
+// finishVerdictStream checks a closed stream's outcome. A provider may
+// close the channel without a terminal error event once ctx ends, so a
+// close is only a completion when ctx is still live.
+func finishVerdictStream(ctx context.Context, text, stopReason string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrCloudJudgeIncomplete, err)
+	}
+	switch stopReason {
+	case "end_turn", "stop_sequence":
+		return text, nil
+	case "":
+		return "", fmt.Errorf("%w: stream closed without a stop reason", ErrCloudJudgeIncomplete)
+	default:
+		return "", fmt.Errorf("%w: stop reason %q", ErrCloudJudgeIncomplete, stopReason)
+	}
+}
+
+// discardEvents drains an abandoned stream so a provider blocked on a
+// send can finish and close it.
+func discardEvents(events <-chan types.StreamEvent) {
+	for range events {
+	}
 }
 
 // timeoutFor returns the operator override when set, else the phase's

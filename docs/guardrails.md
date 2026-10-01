@@ -278,6 +278,12 @@ the call's nonce:
 - Two objects that carry the nonce but differ are a conflict;
   identical copies count as one.
 
+Only a stream that closes before the deadline with a normal stop
+reason (`end_turn`, or `stop_sequence`) is parsed. A stream cut by
+the deadline, stopped at the token cap (`max_tokens`), blocked by
+the provider, or closed without a stop reason is an error, whatever
+text arrived before it ended.
+
 A response with no matching object, conflicting objects, mistyped
 members, or a verdict other than `allow` or `deny` is an error. With
 the default `failOpen: false` an error denies. With `failOpen: true`

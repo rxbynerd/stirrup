@@ -714,3 +714,103 @@ func TestCloudJudge_DefaultTimeoutPerPhase(t *testing.T) {
 		})
 	}
 }
+
+// heldProvider replays events, then keeps the stream open until ctx ends
+// and closes it closeDelay later without a terminal event, as a provider
+// does when cancellation drops its final error event.
+type heldProvider struct {
+	events     []types.StreamEvent
+	closeDelay time.Duration
+}
+
+func (p *heldProvider) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	nonce := promptNonce(params)
+	ch := make(chan types.StreamEvent, len(p.events))
+	for _, ev := range p.events {
+		ev.Text = strings.ReplaceAll(ev.Text, nonceToken, nonce)
+		ch <- ev
+	}
+	go func() {
+		<-ctx.Done()
+		time.Sleep(p.closeDelay)
+		close(ch)
+	}()
+	return ch, nil
+}
+
+// TestCloudJudge_DeadlineBeforeCompletionIsAnError pins that a stream cut
+// by the judge's deadline is an error even when the text received so far
+// holds a well-formed allow, and that Check returns at the deadline rather
+// than waiting for the provider to close the stream.
+func TestCloudJudge_DeadlineBeforeCompletionIsAnError(t *testing.T) {
+	for name, delay := range map[string]time.Duration{
+		"closed silently at the deadline": 0,
+		"left open past the deadline":     time.Second,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &heldProvider{events: []types.StreamEvent{{Type: "text_delta", Text: allowVerdict}}, closeDelay: delay}
+			cj, err := NewCloudJudge(CloudJudgeConfig{Provider: p, Timeout: 50 * time.Millisecond})
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			start := time.Now()
+			d, err := cj.Check(context.Background(), Input{Phase: PhasePreTool, Content: "{}"})
+			if !errors.Is(err, ErrCloudJudgeIncomplete) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Check = %+v, %v; want ErrCloudJudgeIncomplete wrapping DeadlineExceeded", d, err)
+			}
+			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+				t.Fatalf("Check returned after %s; it must not outlive its deadline", elapsed)
+			}
+		})
+	}
+}
+
+// TestCloudJudge_StopReasonGatesVerdict pins that only a normal
+// completion lets a verdict through: a stream ending at the token cap,
+// blocked, without a stop reason, or with an error event is an error even
+// when its text holds a well-formed allow.
+func TestCloudJudge_StopReasonGatesVerdict(t *testing.T) {
+	text := types.StreamEvent{Type: "text_delta", Text: allowVerdict}
+	complete := func(reason string) types.StreamEvent {
+		return types.StreamEvent{Type: "message_complete", StopReason: reason}
+	}
+	usageOnly := types.StreamEvent{Type: "message_complete", OutputTokens: 12}
+	cases := []struct {
+		name       string
+		events     []types.StreamEvent
+		incomplete bool
+		fails      bool
+	}{
+		{"end_turn", []types.StreamEvent{text, complete("end_turn")}, false, false},
+		{"stop_sequence", []types.StreamEvent{text, complete("stop_sequence")}, false, false},
+		{"end_turn then usage-only completion", []types.StreamEvent{text, complete("end_turn"), usageOnly}, false, false},
+		{"max_tokens", []types.StreamEvent{text, complete("max_tokens")}, true, true},
+		{"safety_blocked", []types.StreamEvent{text, complete("safety_blocked")}, true, true},
+		{"tool_use", []types.StreamEvent{text, complete("tool_use")}, true, true},
+		{"no completion event", []types.StreamEvent{text}, true, true},
+		{"usage-only completion", []types.StreamEvent{text, usageOnly}, true, true},
+		{"error event without details", []types.StreamEvent{text, {Type: "error"}}, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakeProvider{events: tc.events}
+			cj, err := NewCloudJudge(CloudJudgeConfig{Provider: fp})
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			d, err := cj.Check(context.Background(), Input{Phase: PhasePreTool, Content: "{}"})
+			if !tc.fails {
+				if err != nil || d.Verdict != VerdictAllow {
+					t.Fatalf("Check = %+v, %v; want allow", d, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Check = %+v, nil error; want an error", d)
+			}
+			if got := errors.Is(err, ErrCloudJudgeIncomplete); got != tc.incomplete {
+				t.Fatalf("errors.Is(err, ErrCloudJudgeIncomplete) = %v, want %v: %v", got, tc.incomplete, err)
+			}
+		})
+	}
+}
