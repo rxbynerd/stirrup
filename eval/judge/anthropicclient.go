@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +21,9 @@ type anthropicClient struct {
 	endpoint string
 	apiKey   string
 	model    string
+
+	// sleep waits between retries; nil waits on a timer.
+	sleep func(context.Context, time.Duration) error
 }
 
 func newAnthropicClient(httpClient *http.Client, baseURL, apiKey, model string) (*anthropicClient, error) {
@@ -84,10 +88,13 @@ func (c *anthropicClient) Complete(ctx context.Context, req JudgeRequest) (Judge
 		}
 	}
 
-	raw, err := postJSON(ctx, c.http, c.endpoint, map[string]string{
-		"x-api-key":         c.apiKey,
-		"anthropic-version": anthropicAPIVersion,
-	}, body, c.apiKey)
+	raw, err := postJSON(ctx, jsonRequest{
+		client:   c.http,
+		endpoint: c.endpoint,
+		headers:  map[string]string{"x-api-key": c.apiKey, "anthropic-version": anthropicAPIVersion},
+		secret:   c.apiKey,
+		sleep:    c.sleep,
+	}, body)
 	if err != nil {
 		return JudgeResponse{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,8 +73,12 @@ func newTestAnthropic(t *testing.T, baseURL string) *anthropicClient {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.sleep = noSleep
 	return c
 }
+
+// noSleep skips retry waits.
+func noSleep(context.Context, time.Duration) error { return nil }
 
 func TestAnthropicClient_RequestShape(t *testing.T) {
 	srv, rec := stubServer(t, 200, anthropicOKReply)
@@ -246,6 +251,7 @@ func newTestOpenAI(t *testing.T, baseURL, key string) *openaiClient {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.sleep = noSleep
 	return c
 }
 
@@ -531,5 +537,188 @@ func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
 				t.Errorf("redirect target received %d requests, want 0", n)
 			}
 		})
+	}
+}
+
+// sequenceServer answers successive requests with the given statuses,
+// repeating the last, and counts requests. A 200 gets okReply.
+func sequenceServer(t *testing.T, okReply string, header http.Header, statuses ...int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		status := statuses[min(i, len(statuses)-1)]
+		for k, v := range header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = io.WriteString(w, okReply)
+			return
+		}
+		_, _ = io.WriteString(w, `{"error":{"message":"busy"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &n
+}
+
+// recordingSleep records each requested wait without waiting.
+type recordingSleep struct {
+	mu    sync.Mutex
+	waits []time.Duration
+	err   error
+}
+
+func (s *recordingSleep) sleep(_ context.Context, d time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.waits = append(s.waits, d)
+	return s.err
+}
+
+func TestClients_RetryTransientFailures(t *testing.T) {
+	type build func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient
+	clients := map[string]struct {
+		ok    string
+		build build
+	}{
+		"anthropic": {anthropicOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			c, err := newAnthropicClient(&http.Client{Timeout: timeout}, url, "k", "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.sleep = sleep.sleep
+			return c
+		}},
+		"openai": {openaiOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			c, err := newOpenAIClient(&http.Client{Timeout: timeout}, url, "k", "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.sleep = sleep.sleep
+			return c
+		}},
+	}
+	retryAfter := func(v string) http.Header { return http.Header{"Retry-After": []string{v}} }
+	cases := []struct {
+		name         string
+		statuses     []int
+		header       http.Header
+		timeout      time.Duration
+		sleepErr     error
+		wantRequests int32
+		wantErr      string
+		checkWaits   func(t *testing.T, waits []time.Duration)
+	}{
+		{
+			name: "overloaded twice then ok", statuses: []int{529, 529, 200}, wantRequests: 3,
+			checkWaits: func(t *testing.T, waits []time.Duration) {
+				if len(waits) != 2 || waits[0] < 250*time.Millisecond || waits[0] > 500*time.Millisecond ||
+					waits[1] < 500*time.Millisecond || waits[1] > time.Second {
+					t.Errorf("waits = %v, want jittered 250-500ms then 500ms-1s", waits)
+				}
+			},
+		},
+		{
+			name: "rate limited with retry-after seconds", statuses: []int{429, 200}, header: retryAfter("1"), wantRequests: 2,
+			checkWaits: func(t *testing.T, waits []time.Duration) {
+				if len(waits) != 1 || waits[0] != time.Second {
+					t.Errorf("waits = %v, want [1s]", waits)
+				}
+			},
+		},
+		{
+			name: "retry-after http date", statuses: []int{503, 200}, header: retryAfter(time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)), wantRequests: 2,
+			checkWaits: func(t *testing.T, waits []time.Duration) {
+				if len(waits) != 1 || waits[0] < time.Second || waits[0] > 3*time.Second {
+					t.Errorf("waits = %v, want one wait of about 2-3s", waits)
+				}
+			},
+		},
+		{name: "bad request is not retried", statuses: []int{400}, wantRequests: 1, wantErr: "HTTP 400"},
+		{name: "unauthorised is not retried", statuses: []int{401}, wantRequests: 1, wantErr: "HTTP 401"},
+		{name: "persistent outage stops at the attempt cap", statuses: []int{503}, wantRequests: 3, wantErr: "after 3 attempts"},
+		{name: "retry-after beyond the deadline stops at once", statuses: []int{503}, header: retryAfter("30"), timeout: 2 * time.Second, wantRequests: 1, wantErr: "exceeds the remaining timeout"},
+		{name: "cancelled wait stops", statuses: []int{503}, sleepErr: context.Canceled, wantRequests: 1, wantErr: "retry abandoned"},
+	}
+	for name, client := range clients {
+		for _, tc := range cases {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				srv, requests := sequenceServer(t, client.ok, tc.header, tc.statuses...)
+				sleep := &recordingSleep{err: tc.sleepErr}
+				timeout := tc.timeout
+				if timeout == 0 {
+					timeout = 10 * time.Second
+				}
+				_, err := client.build(t, srv.URL, sleep, timeout).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+				if tc.wantErr == "" && err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+				if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				if got := requests.Load(); got != tc.wantRequests {
+					t.Errorf("server saw %d requests, want %d", got, tc.wantRequests)
+				}
+				if tc.checkWaits != nil {
+					tc.checkWaits(t, sleep.waits)
+				}
+			})
+		}
+	}
+}
+
+func TestPostJSON_DeadlineBoundsAllAttempts(t *testing.T) {
+	srv, requests := sequenceServer(t, anthropicOKReply, nil, 503)
+	c, err := newAnthropicClient(&http.Client{Timeout: 700 * time.Millisecond}, srv.URL, "k", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Errorf("retries ran %s past a 700ms timeout", elapsed)
+	}
+	if n := requests.Load(); n < 1 || n > 2 {
+		t.Errorf("server saw %d requests, want the deadline to stop retries before the attempt cap", n)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	cases := map[string]time.Duration{
+		"":                              0,
+		"2":                             2 * time.Second,
+		" 5 ":                           5 * time.Second,
+		"0":                             0,
+		"-3":                            0,
+		"soon":                          0,
+		"99999999999999":                time.Hour,
+		"Thu, 01 Oct 2026 12:00:10 GMT": 10 * time.Second,
+		"Thu, 01 Oct 2026 11:59:00 GMT": 0,
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in, now); got != want {
+			t.Errorf("parseRetryAfter(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestBackoffIsJitteredExponential(t *testing.T) {
+	for attempt, bounds := range map[int][2]time.Duration{1: {250 * time.Millisecond, 500 * time.Millisecond}, 2: {500 * time.Millisecond, time.Second}} {
+		seen := map[time.Duration]bool{}
+		for range 200 {
+			d := backoff(attempt)
+			if d < bounds[0] || d > bounds[1] {
+				t.Fatalf("backoff(%d) = %s, outside [%s, %s]", attempt, d, bounds[0], bounds[1])
+			}
+			seen[d] = true
+		}
+		if len(seen) < 2 {
+			t.Errorf("backoff(%d) is not jittered", attempt)
+		}
 	}
 }

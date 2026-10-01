@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // verdictSchemaName names the response_format schema on the wire.
@@ -18,6 +19,9 @@ type openaiClient struct {
 	endpoint string
 	apiKey   string
 	model    string
+
+	// sleep waits between retries; nil waits on a timer.
+	sleep func(context.Context, time.Duration) error
 }
 
 func newOpenAIClient(httpClient *http.Client, baseURL, apiKey, model string) (*openaiClient, error) {
@@ -97,7 +101,7 @@ func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeRes
 	if c.apiKey != "" {
 		headers["Authorization"] = "Bearer " + c.apiKey
 	}
-	raw, err := postJSON(ctx, c.http, c.endpoint, headers, body, c.apiKey)
+	raw, err := postJSON(ctx, jsonRequest{client: c.http, endpoint: c.endpoint, headers: headers, secret: c.apiKey, sleep: c.sleep}, body)
 	if err != nil {
 		return JudgeResponse{}, err
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/netip"
@@ -246,30 +247,103 @@ func joinEndpoint(baseURL, path string) (string, error) {
 	return u.String(), nil
 }
 
-// postJSON POSTs payload and returns the response body on HTTP 200. Errors
-// never carry the request URL, which may hold a gateway credential in its
-// query string, and have secret redacted from any provider text they quote.
-func postJSON(ctx context.Context, client *http.Client, endpoint string, headers map[string]string, payload any, secret string) ([]byte, error) {
+// Retry policy for judge requests. Only 429 and 5xx responses are
+// retried, and every attempt and wait shares one deadline.
+const (
+	maxAttempts    = 3
+	retryBaseDelay = 500 * time.Millisecond
+
+	// maxRetryAfter bounds a provider-requested wait when the request has
+	// no deadline to bound it.
+	maxRetryAfter = time.Minute
+)
+
+// jsonRequest is one judge request's transport settings.
+type jsonRequest struct {
+	client   *http.Client
+	endpoint string
+	headers  map[string]string
+
+	// secret is redacted from any provider text an error quotes.
+	secret string
+
+	// sleep waits between attempts; nil waits on a timer.
+	sleep func(context.Context, time.Duration) error
+}
+
+// statusError is a non-200 provider response.
+type statusError struct {
+	code       int
+	retryAfter time.Duration
+	msg        string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+func (e *statusError) retryable() bool {
+	return e.code == http.StatusTooManyRequests || e.code >= 500
+}
+
+// postJSON POSTs payload and returns the response body on HTTP 200,
+// retrying 429 and 5xx responses with jittered exponential backoff or the
+// provider's Retry-After. The client's Timeout bounds all attempts and
+// waits together; a wait that would outlast it is not taken. Errors never
+// carry the request URL, which may hold a gateway credential in its query
+// string, and have the secret redacted from any provider text they quote.
+func postJSON(ctx context.Context, r jsonRequest, payload any) ([]byte, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if r.client.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.client.Timeout)
+		defer cancel()
+	}
+	sleep := r.sleep
+	if sleep == nil {
+		sleep = sleepContext
+	}
+	for attempt := 1; ; attempt++ {
+		body, err := postOnce(ctx, r, data)
+		var se *statusError
+		if err == nil || !errors.As(err, &se) || !se.retryable() {
+			return body, err
+		}
+		if attempt == maxAttempts {
+			return nil, fmt.Errorf("%w (after %d attempts)", err, attempt)
+		}
+		wait := se.retryAfter
+		if wait <= 0 {
+			wait = backoff(attempt)
+		}
+		if !waitFits(ctx, wait) {
+			return nil, fmt.Errorf("%w (not retried: a %s wait exceeds the remaining timeout)", err, wait)
+		}
+		if serr := sleep(ctx, wait); serr != nil {
+			return nil, fmt.Errorf("%w (retry abandoned: %v)", err, serr)
+		}
+	}
+}
+
+// postOnce sends one attempt of a judge request.
+func postOnce(ctx context.Context, r jsonRequest, data []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, errors.New("build request: invalid endpoint")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
+	for k, v := range r.headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			err = urlErr.Err
 		}
-		return nil, redactError(fmt.Errorf("request failed: %w", err), secret)
+		return nil, redactError(fmt.Errorf("request failed: %w", err), r.secret)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -277,8 +351,12 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		return nil, fmt.Errorf("provider returned HTTP %d; redirects are not followed", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxErrorBodyBytes+len(secret))))
-		return nil, fmt.Errorf("provider returned HTTP %d: %s", resp.StatusCode, providerText(string(body), secret))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxErrorBodyBytes+len(r.secret))))
+		return nil, &statusError{
+			code:       resp.StatusCode,
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			msg:        fmt.Sprintf("provider returned HTTP %d: %s", resp.StatusCode, providerText(string(body), r.secret)),
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -289,6 +367,53 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		return nil, fmt.Errorf("provider response exceeds %d bytes", maxResponseBytes)
 	}
 	return body, nil
+}
+
+// backoff is the jittered wait before retry number attempt: uniform in
+// [d/2, d] for d = retryBaseDelay * 2^(attempt-1).
+func backoff(attempt int) time.Duration {
+	d := retryBaseDelay << (attempt - 1)
+	return d/2 + rand.N(d/2+1)
+}
+
+// parseRetryAfter reads a Retry-After header in delay-seconds or HTTP-date
+// form. Zero means absent, malformed or already past.
+func parseRetryAfter(h string, now time.Time) time.Duration {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(h, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(min(secs, int64(time.Hour/time.Second))) * time.Second
+	}
+	if t, err := http.ParseTime(h); err == nil {
+		return max(t.Sub(now), 0)
+	}
+	return 0
+}
+
+// waitFits reports whether waiting d leaves time before ctx's deadline, or,
+// without a deadline, whether d is within maxRetryAfter.
+func waitFits(ctx context.Context, d time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return d <= maxRetryAfter
+	}
+	return time.Until(deadline) > d
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // providerText prepares provider-authored text for an error message:

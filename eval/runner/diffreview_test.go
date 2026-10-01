@@ -264,7 +264,7 @@ func TestRunSuite_JudgeDirRemovedOnEveryPath(t *testing.T) {
 		outcome string
 	}{
 		"success":         {status: 200, reply: stubPassReply, harness: workspaceProbeHarness, outcome: "pass"},
-		"judge error":     {status: 503, reply: `{"error":"overloaded"}`, harness: workspaceProbeHarness, outcome: "error"},
+		"judge error":     {status: 400, reply: `{"error":"bad request"}`, harness: workspaceProbeHarness, outcome: "error"},
 		"harness failure": {status: 200, reply: stubPassReply, harness: "#!/bin/sh\nexit 3\n", outcome: "error"},
 	}
 	for name, tc := range cases {
@@ -402,8 +402,11 @@ func TestRunSuite_JudgeErrorKeepsRecordAndIsNotAFail(t *testing.T) {
 	if tr.Outcome != "error" {
 		t.Errorf("outcome = %q, want error: an unreachable judge is not a failed task", tr.Outcome)
 	}
-	if !strings.Contains(tr.Error, "HTTP 503") {
+	if !strings.Contains(tr.Error, "HTTP 503") || !strings.Contains(tr.Error, "after 3 attempts") {
 		t.Errorf("error = %q", tr.Error)
+	}
+	if n := len(stub.requests()); n != 3 {
+		t.Errorf("judge saw %d requests, want 3 attempts", n)
 	}
 	if tr.JudgeVerdict.Status != types.JudgeStatusError || tr.JudgeVerdict.Passed {
 		t.Errorf("verdict = %+v", tr.JudgeVerdict)
@@ -486,7 +489,7 @@ func TestReplayRecordingForwardsJudgeOptions(t *testing.T) {
 
 func TestReplayRecordingJudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
 	isolateGit(t)
-	stub := newJudgeStub(t, 503, `{"error":"overloaded"}`)
+	stub := newJudgeStub(t, 400, `{"error":"bad request"}`)
 	t.Setenv("JUDGE_E2E_KEY", "k")
 
 	workspace := t.TempDir()
