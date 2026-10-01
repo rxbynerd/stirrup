@@ -262,6 +262,31 @@ func TestRunSuite_DryRunReportsPlannedTrials(t *testing.T) {
 	}
 }
 
+func TestRunSuite_RejectsTrialsAboveTheCap(t *testing.T) {
+	task := types.EvalTask{ID: "a", Prompt: "p"}
+	cases := []struct {
+		name  string
+		suite types.EvalSuite
+		cfg   RunConfig
+	}{
+		{"suite attribute", types.EvalSuite{ID: "over", Trials: 21, Tasks: []types.EvalTask{task}}, RunConfig{DryRun: true}},
+		{"invocation value", types.EvalSuite{ID: "over", Tasks: []types.EvalTask{task}}, RunConfig{DryRun: true, Trials: 21}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := RunSuite(context.Background(), tc.suite, tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), "trials must be at most 20, got 21") {
+				t.Errorf("error = %v, want a cap error", err)
+			}
+		})
+	}
+
+	atCap := types.EvalSuite{ID: "cap", Trials: 20, Tasks: []types.EvalTask{task}}
+	if _, err := RunSuite(context.Background(), atCap, RunConfig{DryRun: true}); err != nil {
+		t.Errorf("trials at the cap: %v", err)
+	}
+}
+
 func TestRunSuite_RejectsNegativeSuiteTrials(t *testing.T) {
 	suite := types.EvalSuite{ID: "neg", Trials: -1, Tasks: []types.EvalTask{{ID: "a", Prompt: "p"}}}
 	if _, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true}); err == nil || !strings.Contains(err.Error(), "trials") {

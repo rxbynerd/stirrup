@@ -44,3 +44,18 @@ func TestLoadSuiteHCL_TrialsRejectsNonPositive(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSuiteHCL_TrialsCap(t *testing.T) {
+	got, err := LoadSuiteHCL(writeTemp(t, "cap.hcl", trialsSuiteSource("  trials = 20\n")))
+	if err != nil {
+		t.Fatalf("trials = 20: %v", err)
+	}
+	if got.Trials != 20 {
+		t.Errorf("Trials = %d, want 20", got.Trials)
+	}
+
+	_, err = LoadSuiteHCL(writeTemp(t, "over.hcl", trialsSuiteSource("  trials = 21\n")))
+	if err == nil || !strings.Contains(err.Error(), "trials must be at most 20, got 21") {
+		t.Errorf("trials = 21: error = %v, want a cap error", err)
+	}
+}
