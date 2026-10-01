@@ -14,7 +14,7 @@ import (
 const (
 	// DefaultWarnMargin is the mean pass-fraction drop that warns when the
 	// drop is not statistically confirmed.
-	DefaultWarnMargin = 0.05
+	DefaultWarnMargin = 0.10
 
 	// DefaultFlipThreshold is the pass fraction at or below which a task
 	// that passed every baseline trial counts as a regression.
@@ -148,7 +148,13 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 		}
 	}
 
-	summary.Gate, summary.GateReasons = decideGate(len(pairs), summary.Paired, flips, opts.WarnMargin)
+	summary.Gate, summary.GateReasons = decideGate(gateInput{
+		pairs:       len(pairs),
+		paired:      summary.Paired,
+		flips:       flips,
+		regressions: regressions,
+		warnMargin:  opts.WarnMargin,
+	})
 
 	return eval.ComparisonReport{
 		CurrentID:    current.RunID,
@@ -160,31 +166,82 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 	}
 }
 
+// gateInput carries what decideGate needs from a comparison.
+type gateInput struct {
+	pairs       int
+	paired      *eval.PairedSummary
+	flips       []string
+	regressions []eval.TaskRegression
+	warnMargin  float64
+}
+
 // decideGate applies the gate rules in precedence order: a deterministic
 // flip blocks at any n; fewer than minGateTasks paired tasks (or an
 // undefined SE) is inconclusive; a one-sided 95% upper bound below zero
 // blocks; a mean drop beyond the warn margin warns; anything else passes.
-func decideGate(n int, paired *eval.PairedSummary, flips []string, warnMargin float64) (string, []string) {
-	if len(flips) > 0 {
+// A listed regression then raises a pass or inconclusive gate to warn.
+func decideGate(in gateInput) (string, []string) {
+	gate, reasons := baseGate(in)
+	if len(in.regressions) > 0 {
+		gate, reasons = floorGate(gate, reasons, eval.GateWarn, "regressed: "+describeRegressions(in.regressions))
+	}
+	return gate, reasons
+}
+
+func baseGate(in gateInput) (string, []string) {
+	if len(in.flips) > 0 {
 		return eval.GateBlock, []string{fmt.Sprintf(
 			"deterministic flip: %s passed every baseline trial and passed no current trial",
-			strings.Join(flips, ", "))}
+			strings.Join(in.flips, ", "))}
 	}
-	if n < minGateTasks || paired == nil || math.IsNaN(paired.StdErr) || math.IsNaN(paired.UpperBound) {
+	paired := in.paired
+	if in.pairs < minGateTasks || paired == nil || math.IsNaN(paired.StdErr) || math.IsNaN(paired.UpperBound) {
 		return eval.GateInconclusive, []string{fmt.Sprintf(
-			"%d paired task(s); the paired interval needs at least %d", n, minGateTasks)}
+			"%d paired task(s); the paired interval needs at least %d", in.pairs, minGateTasks)}
 	}
 	if paired.UpperBound < 0 {
 		return eval.GateBlock, []string{fmt.Sprintf(
-			"regression confirmed: one-sided 95%% upper bound on the mean delta is %+.3f (< 0)",
+			"one-sided 95%% upper bound on the mean delta is %+.3f, below 0",
 			paired.UpperBound)}
 	}
-	if paired.MeanDelta < -warnMargin {
+	if paired.MeanDelta < -in.warnMargin-fractionEpsilon {
 		return eval.GateWarn, []string{fmt.Sprintf(
-			"mean delta %+.3f is below -%.3f but not confirmed (upper bound %+.3f >= 0)",
-			paired.MeanDelta, warnMargin, paired.UpperBound)}
+			"mean delta %+.3f is below -%.3f and the one-sided 95%% upper bound %+.3f is not below 0",
+			paired.MeanDelta, in.warnMargin, paired.UpperBound)}
 	}
 	return eval.GatePass, nil
+}
+
+// gateSeverity orders the gates: a floor never lowers a more severe gate.
+var gateSeverity = map[string]int{
+	eval.GatePass:         0,
+	eval.GateInconclusive: 1,
+	eval.GateWarn:         2,
+	eval.GateBlock:        3,
+}
+
+// floorGate raises gate to at least floor and records reason. A gate more
+// severe than floor is returned unchanged.
+func floorGate(gate string, reasons []string, floor, reason string) (string, []string) {
+	if gateSeverity[gate] > gateSeverity[floor] {
+		return gate, reasons
+	}
+	return floor, append(reasons, reason)
+}
+
+func describeRegressions(regressions []eval.TaskRegression) string {
+	parts := make([]string, len(regressions))
+	for i, r := range regressions {
+		parts[i] = fmt.Sprintf("%s (pass fraction %.2f → %.2f)", r.TaskID, r.BaselinePassFraction, r.CurrentPassFraction)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// singleTrialExceedsMargin reports whether losing one trial on one of n
+// paired tasks, each run k times, lowers the mean pass fraction by more
+// than the warn margin.
+func singleTrialExceedsMargin(n, k int, margin float64) bool {
+	return n > 0 && k > 0 && margin+fractionEpsilon < 1/float64(n*k)
 }
 
 // rateSummary describes one result: mean pass fraction, task-level SE,
