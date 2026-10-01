@@ -147,6 +147,13 @@ func TestWilson95(t *testing.T) {
 	if lo, hi := Wilson95(0, 0); lo != 0 || hi != 1 {
 		t.Errorf("n=0: [%v, %v], want [0, 1]", lo, hi)
 	}
+
+	if got := FormatWilson95(1, 5); got != "56.6-100.0%" {
+		t.Errorf("FormatWilson95(1, 5) = %q", got)
+	}
+	if got := FormatWilson95(0.5, 0); got != "n/a" {
+		t.Errorf("FormatWilson95 with no samples = %q, want n/a", got)
+	}
 }
 
 func TestFlipFalseAlarmRate(t *testing.T) {
