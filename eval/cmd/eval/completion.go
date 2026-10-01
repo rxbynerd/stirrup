@@ -40,8 +40,8 @@ var evalCompletionSubcommands = []string{
 // supported shell names rather than true flags, surfaced through
 // this lookup for the same reason noted above.
 var evalCompletionFlags = map[string][]string{
-	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit", "accept-quarantine", "model", "prompt-model", "provider", "base-url", "api-key-ref"},
-	"compare":               {"current", "baseline"},
+	"run":                   {"suite", "harness", "output", "concurrency", "trials", "dry-run", "junit", "accept-quarantine", "model", "prompt-model", "provider", "base-url", "api-key-ref"},
+	"compare":               {"current", "baseline", "warn-margin", "flip-threshold", "output"},
 	"baseline":              {"lakehouse", "after", "before", "mode", "model", "provider", "output"},
 	"mine-failures":         {"lakehouse", "after", "before", "outcome", "limit", "sample-by", "output", "include-batch", "include-inconclusive", "accept-quarantine"},
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model", "provider"},

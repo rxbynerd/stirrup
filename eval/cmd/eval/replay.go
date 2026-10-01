@@ -89,6 +89,7 @@ func cmdReplay(args []string) {
 		// Tag with the source recording's runId; the bare task ID
 		// would collapse when one task replays N recordings.
 		result.TaskID = fmt.Sprintf("%s/%s", task.ID, rec.RunID)
+		result.PassFraction = result.Counts().PassFraction()
 		if result.Outcome == "pass" {
 			pass++
 		}

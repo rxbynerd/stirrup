@@ -120,7 +120,7 @@ func TestCompare(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			report := Compare(tt.baseline, tt.current)
+			report := Compare(tt.baseline, tt.current, DefaultOptions())
 
 			if got := len(report.Regressions); got != tt.wantRegressions {
 				t.Errorf("regressions: got %d, want %d", got, tt.wantRegressions)
@@ -145,7 +145,7 @@ func TestCompare_TurnDeltas(t *testing.T) {
 		task("b", "pass", trace(2)),
 	)
 
-	report := Compare(baseline, current)
+	report := Compare(baseline, current, DefaultOptions())
 
 	if len(report.Regressions) != 1 {
 		t.Fatalf("expected 1 regression, got %d", len(report.Regressions))
@@ -174,7 +174,7 @@ func TestCompare_NilTraces(t *testing.T) {
 	baseline := suite("base", task("a", "pass", nil))
 	current := suite("curr", task("a", "fail", trace(5)))
 
-	report := Compare(baseline, current)
+	report := Compare(baseline, current, DefaultOptions())
 
 	if len(report.Regressions) != 1 {
 		t.Fatalf("expected 1 regression, got %d", len(report.Regressions))
@@ -194,7 +194,7 @@ func TestCompare_Summary(t *testing.T) {
 		task("b", "pass", trace(2)),
 	)
 
-	report := Compare(baseline, current)
+	report := Compare(baseline, current, DefaultOptions())
 	s := report.Summary
 
 	// Baseline: 1/2 pass = 0.5, Current: 2/2 pass = 1.0

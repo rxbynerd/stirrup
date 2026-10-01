@@ -36,6 +36,7 @@ type xmlTestCase struct {
 	Time      string      `xml:"time,attr"`
 	Failure   *xmlFailure `xml:"failure,omitempty"`
 	Error     *xmlError   `xml:"error,omitempty"`
+	SystemOut string      `xml:"system-out,omitempty"`
 }
 
 type xmlFailure struct {
@@ -130,12 +131,20 @@ func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 	}
 }
 
-// buildTestCase converts a TaskResult into an XML <testcase>.
+// buildTestCase converts a TaskResult into an XML <testcase>. A task run
+// over several trials stays one testcase: system-out summarises every
+// trial, and a failure or error message carries the pass count and each
+// non-passing trial's reason.
 func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	tc := xmlTestCase{
 		Name:      t.TaskID,
 		Classname: suiteID,
 		Time:      formatSeconds(float64(t.DurationMs) / 1000.0),
+	}
+
+	multiTrial := len(t.Trials) > 1
+	if multiTrial {
+		tc.SystemOut = trialSummary(t)
 	}
 
 	switch t.Outcome {
@@ -146,16 +155,26 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 		if msg == "" && len(t.JudgeVerdict.Details) > 0 {
 			msg = t.JudgeVerdict.Details[0].Reason
 		}
+		body := failureBody(t.JudgeVerdict)
+		if multiTrial {
+			msg = trialHeadline(t, msg)
+			body += "\n\n" + trialReasons(t)
+		}
 		tc.Failure = &xmlFailure{
 			Type:    "EvalFailure",
 			Message: msg,
-			Body:    failureBody(t.JudgeVerdict),
+			Body:    body,
 		}
 	case "error":
+		msg, body := t.Error, t.Error
+		if multiTrial {
+			msg = trialHeadline(t, msg)
+			body += "\n\n" + trialReasons(t)
+		}
 		tc.Error = &xmlError{
 			Type:    "HarnessError",
-			Message: t.Error,
-			Body:    t.Error,
+			Message: msg,
+			Body:    body,
 		}
 	case "pass":
 
@@ -191,6 +210,53 @@ func failureBody(v eval.JudgeVerdict) string {
 		fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
 	}
 	return b.String()
+}
+
+func trialHeadline(t eval.TaskResult, msg string) string {
+	c := t.Counts()
+	return fmt.Sprintf("%d/%d trials passed: %s", c.Pass, c.Total(), msg)
+}
+
+func trialSummary(t eval.TaskResult) string {
+	c := t.Counts()
+	var b strings.Builder
+	fmt.Fprintf(&b, "pass fraction %.3f (%d/%d trials passed, %d failed, %d errored)",
+		c.PassFraction(), c.Pass, c.Total(), c.Fail, c.Error)
+	for _, tr := range t.Trials {
+		fmt.Fprintf(&b, "\ntrial %d: %s (%ss, %d turns)", tr.Trial, tr.Outcome,
+			formatSeconds(float64(tr.DurationMs)/1000.0), tr.Turns)
+		if tr.Outcome != "pass" {
+			fmt.Fprintf(&b, ": %s", trialReason(tr))
+		}
+	}
+	return b.String()
+}
+
+func trialReasons(t eval.TaskResult) string {
+	var b strings.Builder
+	b.WriteString("Non-passing trials:")
+	for _, tr := range t.Trials {
+		if tr.Outcome == "pass" {
+			continue
+		}
+		fmt.Fprintf(&b, "\ntrial %d (%s): %s", tr.Trial, tr.Outcome, trialReason(tr))
+	}
+	return b.String()
+}
+
+func trialReason(tr eval.TrialResult) string {
+	if tr.Outcome == "fail" {
+		if tr.JudgeVerdict.Reason != "" {
+			return tr.JudgeVerdict.Reason
+		}
+		if len(tr.JudgeVerdict.Details) > 0 {
+			return tr.JudgeVerdict.Details[0].Reason
+		}
+	}
+	if tr.Error != "" {
+		return tr.Error
+	}
+	return tr.JudgeVerdict.Reason
 }
 
 // formatSeconds renders a duration in seconds with three decimal places —
