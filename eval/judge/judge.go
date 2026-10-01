@@ -34,6 +34,20 @@ func KnownJudgeTypes() []string {
 	}
 }
 
+// ContainsType reports whether j, or any judge nested under it, has the given
+// type.
+func ContainsType(j types.EvalJudge, judgeType string) bool {
+	if j.Type == judgeType {
+		return true
+	}
+	for _, sub := range j.Judges {
+		if ContainsType(sub, judgeType) {
+			return true
+		}
+	}
+	return false
+}
+
 // JudgeContext provides the environment for judging a run's outcome.
 type JudgeContext struct {
 	WorkspaceDir string // path to the workspace after the run

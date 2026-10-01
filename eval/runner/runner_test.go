@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -276,7 +277,7 @@ func TestReplayRecording_Passing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace)
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestReplayRecording_Failing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace)
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

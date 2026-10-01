@@ -351,6 +351,22 @@ func TestUnknownJudgeType(t *testing.T) {
 	}
 }
 
+func TestContainsType(t *testing.T) {
+	nested := types.EvalJudge{Type: "composite", Judges: []types.EvalJudge{
+		{Type: "file-exists"},
+		{Type: "composite", Judges: []types.EvalJudge{{Type: "diff-review"}}},
+	}}
+	if !ContainsType(nested, "diff-review") {
+		t.Error("nested diff-review not found")
+	}
+	if ContainsType(nested, "test-command") {
+		t.Error("absent type reported present")
+	}
+	if !ContainsType(types.EvalJudge{Type: "diff-review"}, "diff-review") {
+		t.Error("top-level diff-review not found")
+	}
+}
+
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

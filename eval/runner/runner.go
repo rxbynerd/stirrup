@@ -69,6 +69,10 @@ type RunConfig struct {
 	// Federation flags to every harness invocation. See
 	// docs/anthropic-wif.md.
 	AnthropicWIF AnthropicWIFConfig
+
+	// JudgeOptions carries invocation-scoped settings for LLM-backed judges
+	// (the --judge-* flags).
+	JudgeOptions judge.Options
 }
 
 // AnthropicWIFConfig carries the CLI flags `stirrup harness` accepts to
@@ -348,6 +352,15 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return errorResult(task.ID, start, err)
 	}
 
+	// A diff-review judge diffs against HEAD, so a workspace seeded from
+	// files rather than a clone needs a baseline commit.
+	diffReviewed := judge.ContainsType(task.Judge, "diff-review")
+	if diffReviewed && task.Repo == "" {
+		if err := initBaselineRepo(ctx, workspaceDir); err != nil {
+			return errorResult(task.ID, start, err)
+		}
+	}
+
 	// The trace file lives outside the workspace: writing it inside would
 	// let the agent read its own in-progress trace.jsonl via
 	// list_directory/read_file, breaking task hermeticity (observed
@@ -383,7 +396,13 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 			return errorResult(task.ID, start, vErr)
 		}
 
-		configPath = filepath.Join(tmpDir, "runconfig.json")
+		// A diff-review judge diffs the whole workspace, so the config
+		// is kept out of it to stay out of the diff.
+		configDir := tmpDir
+		if diffReviewed {
+			configDir = traceDir
+		}
+		configPath = filepath.Join(configDir, "runconfig.json")
 		if err := writeMergedConfig(configPath, merged); err != nil {
 			return errorResult(task.ID, start, err)
 		}
@@ -470,9 +489,10 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		verdict, judgeErr := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 			WorkspaceDir: workspaceDir,
 			Trace:        trace,
+			Options:      cfg.JudgeOptions,
 		})
 		if judgeErr != nil {
-			return errorResult(task.ID, start, fmt.Errorf("judge failed after harness error: %w", judgeErr))
+			return judgeErrorResult(task.ID, start, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
 		}
 		return buildResult(task.ID, start, trace, verdict)
 	}
@@ -485,12 +505,24 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
 		Trace:        trace,
+		Options:      cfg.JudgeOptions,
 	})
 	if err != nil {
-		return errorResult(task.ID, start, fmt.Errorf("judge failed: %w", err))
+		return judgeErrorResult(task.ID, start, verdict, fmt.Errorf("judge failed: %w", err))
 	}
 
 	return buildResult(task.ID, start, trace, verdict)
+}
+
+// judgeErrorResult is errorResult for a judge that could not rule. An
+// LLM judge's own error verdict, which carries the call's provenance, is kept
+// in place of the generic one.
+func judgeErrorResult(taskID string, start time.Time, verdict eval.JudgeVerdict, err error) eval.TaskResult {
+	result := errorResult(taskID, start, err)
+	if verdict.Status == types.JudgeStatusError {
+		result.JudgeVerdict = verdict
+	}
+	return result
 }
 
 // appendAnthropicWIFArgs adds the `stirrup harness` WIF flags for any
@@ -607,6 +639,7 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 		Error:   err.Error(),
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: false,
+			Status: types.JudgeStatusError,
 			Reason: err.Error(),
 		},
 		DurationMs: time.Since(start).Milliseconds(),

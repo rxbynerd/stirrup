@@ -138,7 +138,7 @@ var repoLocationEnv = []string{
 func runGit(ctx context.Context, dir string, extraEnv []string, stdout *headWriter, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = gitEnv(extraEnv)
+	cmd.Env = GitEnv(extraEnv...)
 
 	var out, errOut bytes.Buffer
 	if stdout != nil {
@@ -161,7 +161,10 @@ func runGit(ctx context.Context, dir string, extraEnv []string, stdout *headWrit
 	return out.Bytes(), nil
 }
 
-func gitEnv(extra []string) []string {
+// GitEnv returns the process environment prepared for running git against a
+// workspace directory: variables that would redirect git to another
+// repository are removed, prompts are disabled, and extra is appended.
+func GitEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra)+1)
 outer:
 	for _, kv := range os.Environ() {

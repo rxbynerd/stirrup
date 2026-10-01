@@ -14,17 +14,20 @@ import (
 // to the workspace state described in the recording.
 //
 // The caller is responsible for setting up workspaceDir with the
-// post-run file state before calling this function.
-func ReplayRecording(ctx context.Context, recording types.RunRecording, task types.EvalTask, workspaceDir string) (eval.TaskResult, error) {
+// post-run file state before calling this function. opts configures
+// LLM-backed judges. When the judge cannot rule, the returned result is the
+// "error" outcome (keeping an LLM judge's error verdict) alongside the error.
+func ReplayRecording(ctx context.Context, recording types.RunRecording, task types.EvalTask, workspaceDir string, opts judge.Options) (eval.TaskResult, error) {
 	start := time.Now()
 
 	trace := &recording.FinalOutcome
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
 		Trace:        trace,
+		Options:      opts,
 	})
 	if err != nil {
-		return eval.TaskResult{}, err
+		return judgeErrorResult(task.ID, start, verdict, err), err
 	}
 
 	outcome := "fail"

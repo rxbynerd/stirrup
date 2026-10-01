@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/runner"
 	"github.com/rxbynerd/stirrup/types"
@@ -74,17 +75,9 @@ func cmdReplay(args []string) {
 	for i, rec := range recordings {
 		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
-		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir)
+		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judge.Options{})
 		if err != nil {
-			result = eval.TaskResult{
-				TaskID:  task.ID,
-				Outcome: "error",
-				Error:   err.Error(),
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: false,
-					Reason: err.Error(),
-				},
-			}
+			log.Printf("replay %s: %v", rec.RunID, err)
 		}
 		// Tag with the source recording's runId; the bare task ID
 		// would collapse when one task replays N recordings.
