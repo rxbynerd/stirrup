@@ -2,6 +2,7 @@ package reporter
 
 import (
 	"math"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -194,5 +195,75 @@ func TestFlipFalseAlarmRate(t *testing.T) {
 	within(t, "3-of-3 flip rule", FlipFalseAlarmRate(0.98, 5, 3), 1-math.Pow(1-0.02*0.02*0.02, 5), 1e-15)
 	if FlipFalseAlarmRate(1, 5, 3) != 0 {
 		t.Error("a perfectly reliable agent never false-alarms")
+	}
+}
+
+func TestSignFlipPValue_ExactEnumerationBound(t *testing.T) {
+	diffs := func(n int) []float64 {
+		d := make([]float64, n)
+		for i := range d {
+			d[i] = -1.0 / 3
+		}
+		return d
+	}
+
+	p, exact := SignFlipPValue(diffs(20))
+	if !exact {
+		t.Error("20 non-zero diffs should be enumerated exactly")
+	}
+	within(t, "20 equal drops", p, math.Pow(2, -19), 1e-15)
+
+	p, exact = SignFlipPValue(diffs(21))
+	if exact {
+		t.Error("21 non-zero diffs should use the normal approximation")
+	}
+	within(t, "21 equal drops", p, math.Erfc(math.Sqrt(21)/math.Sqrt2), 1e-12)
+}
+
+// TestSignFlipPValue_TiesMatchExactArithmetic compares the enumeration
+// against integer arithmetic on thirds, where sums of 1/3-valued diffs tie
+// exactly in rational arithmetic but not always in floating point.
+func TestSignFlipPValue_TiesMatchExactArithmetic(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 11))
+	for range 400 {
+		n := 2 + rng.IntN(11)
+		thirds := make([]int, n)
+		diffs := make([]float64, n)
+		for i := range thirds {
+			thirds[i] = rng.IntN(7) - 3
+			diffs[i] = float64(thirds[i]) / 3
+		}
+
+		var abs []int
+		observed := 0
+		for _, v := range thirds {
+			if v != 0 {
+				abs = append(abs, max(v, -v))
+				observed += v
+			}
+		}
+		want := 1.0
+		if len(abs) > 0 {
+			hits := 0
+			for mask := range 1 << len(abs) {
+				sum := 0
+				for i, a := range abs {
+					if mask&(1<<i) != 0 {
+						sum -= a
+					} else {
+						sum += a
+					}
+				}
+				if max(sum, -sum) >= max(observed, -observed) {
+					hits++
+				}
+			}
+			want = float64(hits) / float64(int(1)<<len(abs))
+		}
+
+		got, exact := SignFlipPValue(diffs)
+		if !exact || math.Abs(got-want) > 1e-12 {
+			t.Fatalf("diffs %v (thirds %v): p = %v exact=%v, want %v", diffs, thirds, got, exact, want)
+		}
 	}
 }
