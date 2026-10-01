@@ -61,10 +61,9 @@ type JudgeContext struct {
 }
 
 // Evaluate applies the judge criteria to the workspace and returns a verdict.
-// A non-nil error means the judge could not rule. An LLM-backed judge also
-// returns the verdict explaining the failure (Status "error", with its
-// Record) so callers can retain the provenance; every other judge returns the
-// zero verdict alongside an error.
+// A non-nil error means the judge could not rule. An LLM-backed judge then
+// also returns an error-status verdict carrying its Record; every other judge
+// returns the zero verdict.
 func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	verdict, err := evaluate(ctx, j, jctx)
 	if err == nil && verdict.Status == "" {

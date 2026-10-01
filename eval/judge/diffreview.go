@@ -273,12 +273,11 @@ func parseDiffReviewReply(text string) (eval.JudgeVerdict, string, error) {
 	}, parse, nil
 }
 
-// lastJSONObject returns the last balanced top-level {...} in text, scanning
-// brace depth and skipping braces inside JSON strings. exact reports that the
-// object is the whole of text apart from whitespace. The last object wins so
-// that JSON the judged content induced the model to echo earlier cannot
-// displace the model's own verdict; if that object is malformed the caller
-// errors rather than falling back to an earlier one.
+// lastJSONObject returns the last balanced top-level {...} in text, skipping
+// braces inside JSON strings. exact reports that the object is all of text
+// apart from whitespace. The last object wins so JSON echoed from the judged
+// content cannot displace the model's own verdict; callers must not fall back
+// to an earlier object when it is malformed.
 func lastJSONObject(text string) (obj string, exact, ok bool) {
 	start, last := -1, [2]int{-1, -1}
 	depth, count := 0, 0

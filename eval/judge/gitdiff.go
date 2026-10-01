@@ -46,10 +46,9 @@ type workspaceDiff struct {
 }
 
 // captureWorkspaceDiff diffs HEAD against the working tree of the repository
-// rooted at dir. Untracked files are included by staging the tree into a
-// temporary index, so the workspace's own index is left untouched. Only the
-// first maxBytes of the diff are retained; the full diff is still hashed and
-// counted.
+// rooted at dir, including untracked files, via a temporary index that leaves
+// the workspace's own untouched. Only the first maxBytes are retained; the
+// full diff is still hashed and counted.
 func captureWorkspaceDiff(ctx context.Context, dir string, maxBytes int) (workspaceDiff, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitCaptureTimeout)
 	defer cancel()

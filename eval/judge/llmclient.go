@@ -91,11 +91,10 @@ type Options struct {
 	NewClient ClientFactory
 }
 
-// ResolveLLMConfig produces the configuration for one diff-review judge. An
-// explicit `llm` block is used as written; otherwise the invocation defaults
-// are layered over the built-in Anthropic default. The Anthropic model and
-// key reference are only defaulted for the Anthropic provider, so an Anthropic
-// key is never sent to another provider's endpoint.
+// ResolveLLMConfig produces the configuration for one diff-review judge: an
+// explicit `llm` block as written, otherwise the invocation defaults over the
+// Anthropic default. That default applies to the Anthropic provider only, so
+// its key never reaches another endpoint.
 func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMConfig, error) {
 	var cfg types.JudgeLLMConfig
 	switch {
