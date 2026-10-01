@@ -92,8 +92,12 @@ func writePaired(b *strings.Builder, p *eval.PairedSummary, n int) {
 	if p.PValueExact {
 		exactness = "exact"
 	}
-	fmt.Fprintf(b, "Paired: n=%d, mean delta %+.3f, SE %.4f, 95%% t(%d) CI [%+.3f, %+.3f], one-sided upper bound %+.3f, sign-flip p %.3f (%s), MDE %.2f\n",
-		p.Tasks, p.MeanDelta, p.StdErr, p.DF, p.CILow, p.CIHigh, p.UpperBound, p.PValue, exactness, p.MDE)
+	mde := "n/a"
+	if p.MDE != nil {
+		mde = fmt.Sprintf("%.2f", *p.MDE)
+	}
+	fmt.Fprintf(b, "Paired: n=%d, mean delta %+.3f, SE %.4f, two-sided 95%% t(%d) CI [%+.3f, %+.3f], one-sided 95%% upper bound %+.3f, sign-flip p %.3f (%s), MDE %s\n",
+		p.Tasks, p.MeanDelta, p.StdErr, p.DF, p.CILow, p.CIHigh, p.UpperBound, p.PValue, exactness, mde)
 }
 
 func writeNoiseFloor(b *strings.Builder, nf *eval.NoiseFloor, n, k int) {

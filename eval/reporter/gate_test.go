@@ -70,7 +70,11 @@ func TestCompare_WorkedExample(t *testing.T) {
 	if !p.PValueExact {
 		t.Error("sign-flip p should be exact for 10 tasks")
 	}
-	within(t, "MDE", p.MDE, 0.20, 0.005)
+	within(t, "upper bound", p.UpperBound, -0.100+1.83311*0.0711458, 0.0001)
+	if p.MDE == nil {
+		t.Fatal("MDE missing")
+	}
+	within(t, "MDE", *p.MDE, 0.2238, 0.0005)
 
 	wantHatA := []float64{0.60, 0.47, 0.40}
 	wantHatB := []float64{0.50, 0.30, 0.20}
@@ -337,8 +341,8 @@ func TestFormatText_Statistics(t *testing.T) {
 		"Pass Rate: 60.0% → 50.0% (-10.0%)",
 		"n=10 tasks, K=3",
 		"pass^k (k=1..3): 0.600, 0.467, 0.400; pass@k: 0.600, 0.733, 0.800",
-		"Paired: n=10, mean delta -0.100, SE 0.0711, 95% t(9) CI [-0.261, +0.061]",
-		"sign-flip p 0.375 (exact), MDE 0.20",
+		"Paired: n=10, mean delta -0.100, SE 0.0711, two-sided 95% t(9) CI [-0.261, +0.061], one-sided 95% upper bound +0.030",
+		"sign-flip p 0.375 (exact), MDE 0.22",
 		"No regressions found.",
 	} {
 		if !strings.Contains(got, want) {
@@ -390,6 +394,20 @@ func TestComparisonReport_JSONShape(t *testing.T) {
 			t.Errorf("paired missing %q", key)
 		}
 	}
+
+	flat := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
+	flatData, err := json.Marshal(flat)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var flatDoc map[string]any
+	if err := json.Unmarshal(flatData, &flatDoc); err != nil {
+		t.Fatal(err)
+	}
+	flatPaired := flatDoc["summary"].(map[string]any)["paired"].(map[string]any)
+	if _, ok := flatPaired["mde"]; ok {
+		t.Errorf("mde present for a zero standard error: %s", flatData)
+	}
 	current := summary["current"].(map[string]any)
 	for _, key := range []string{"tasks", "trials", "passRate", "stdErr", "wilsonLow", "wilsonHigh", "passHatK", "passAtK"} {
 		if _, ok := current[key]; !ok {
@@ -398,5 +416,16 @@ func TestComparisonReport_JSONShape(t *testing.T) {
 	}
 	if _, ok := doc["tasks"]; !ok {
 		t.Error("report missing per-task pairs")
+	}
+}
+
+func TestFormatText_MDEUndefinedAtZeroStdErr(t *testing.T) {
+	report := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
+	got := FormatText(report)
+	if !strings.Contains(got, "MDE n/a") {
+		t.Errorf("report missing %q:\n%s", "MDE n/a", got)
+	}
+	if strings.Contains(got, "MDE 0.00") {
+		t.Errorf("report prints a zero MDE:\n%s", got)
 	}
 }

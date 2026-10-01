@@ -2,6 +2,8 @@ package reporter
 
 import (
 	"math"
+
+	"github.com/rxbynerd/stirrup/eval"
 )
 
 // The estimators follow Miller, "Adding Error Bars to Evals" (arXiv
@@ -10,11 +12,6 @@ import (
 
 const (
 	z975 = 1.959963984540054
-	z80  = 0.8416212335729143
-
-	// mdeMultiplier is z_{alpha/2} + z_beta for a two-sided alpha of 0.05
-	// at power 0.80.
-	mdeMultiplier = z975 + z80
 
 	// maxExactSignFlip bounds the exact permutation test at 2^20
 	// enumerated sign assignments.
@@ -56,29 +53,17 @@ func StdErr(xs []float64) (se float64, ok bool) {
 	return math.Sqrt(v / float64(len(xs))), true
 }
 
-// PairedStats summarises per-task differences d_i = current - baseline.
-type PairedStats struct {
-	N           int
-	MeanDelta   float64
-	StdErr      float64
-	DF          int
-	CILow       float64
-	CIHigh      float64
-	UpperBound  float64
-	PValue      float64
-	PValueExact bool
-	MDE         float64
-}
-
-// Paired computes the paired-difference statistics: mean delta, paired SE
-// (Miller eq. 7), a two-sided 95% Student-t interval, the one-sided 95%
-// upper bound, the sign-flip permutation p-value, and the minimum
-// detectable effect at alpha 0.05 / power 0.80. ok is false below two
-// differences, where the SE is undefined.
-func Paired(diffs []float64) (PairedStats, bool) {
+// Paired computes the paired-difference statistics over per-task
+// differences d_i = current - baseline: mean delta, paired SE (Miller
+// eq. 7), a two-sided 95% Student-t interval, the one-sided 95% upper
+// bound, the sign-flip permutation p-value, and the minimum detectable
+// effect at alpha 0.05 / power 0.80 using the same t degrees of freedom.
+// The MDE is nil when the SE is zero. ok is false below two differences,
+// where the SE is undefined.
+func Paired(diffs []float64) (eval.PairedSummary, bool) {
 	se, ok := StdErr(diffs)
 	if !ok {
-		return PairedStats{}, false
+		return eval.PairedSummary{}, false
 	}
 	n := len(diffs)
 	df := n - 1
@@ -86,8 +71,8 @@ func Paired(diffs []float64) (PairedStats, bool) {
 	t2 := StudentTQuantile(0.975, df)
 	t1 := StudentTQuantile(0.95, df)
 	p, exact := SignFlipPValue(diffs)
-	return PairedStats{
-		N:           n,
+	summary := eval.PairedSummary{
+		Tasks:       n,
 		MeanDelta:   m,
 		StdErr:      se,
 		DF:          df,
@@ -96,8 +81,12 @@ func Paired(diffs []float64) (PairedStats, bool) {
 		UpperBound:  m + t1*se,
 		PValue:      p,
 		PValueExact: exact,
-		MDE:         mdeMultiplier * se,
-	}, true
+	}
+	if se > 0 {
+		mde := (t2 + StudentTQuantile(0.80, df)) * se
+		summary.MDE = &mde
+	}
+	return summary, true
 }
 
 // SignFlipPValue is the two-sided paired permutation test: the fraction of

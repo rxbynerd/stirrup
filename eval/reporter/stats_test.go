@@ -87,8 +87,11 @@ func TestPaired_Degenerate(t *testing.T) {
 	if !ok {
 		t.Fatal("all-zero diffs should be defined")
 	}
-	if zero.MeanDelta != 0 || zero.StdErr != 0 || zero.CILow != 0 || zero.CIHigh != 0 || zero.UpperBound != 0 || zero.MDE != 0 || zero.PValue != 1 {
+	if zero.MeanDelta != 0 || zero.StdErr != 0 || zero.CILow != 0 || zero.CIHigh != 0 || zero.UpperBound != 0 || zero.PValue != 1 {
 		t.Errorf("all-zero diffs: %+v", zero)
+	}
+	if zero.MDE != nil {
+		t.Errorf("all-zero diffs: MDE = %v, want nil (undefined at zero SE)", *zero.MDE)
 	}
 
 	drop, ok := Paired([]float64{-1.0 / 3, -1.0 / 3, -1.0 / 3})
@@ -99,6 +102,34 @@ func TestPaired_Degenerate(t *testing.T) {
 	if drop.UpperBound >= 0 {
 		t.Errorf("equal drops: upper bound %v, want < 0", drop.UpperBound)
 	}
+}
+
+func TestPaired_MDEUsesStudentT(t *testing.T) {
+	zBased := (z975 + 0.8416212335729143)
+
+	cases := []struct {
+		name  string
+		diffs []float64
+		tSum  float64
+	}{
+		{"df 4", []float64{-0.4, -0.2, 0, 0.1, 0.2}, 2.7764 + 0.9410},
+		{"df 9", []float64{-0.4, -0.2, 0, 0.1, 0.2, -0.1, 0, 0.3, -0.3, 0.1}, 2.2622 + 0.8834},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ps, ok := Paired(tc.diffs)
+			if !ok || ps.MDE == nil {
+				t.Fatalf("paired = %+v ok=%v, want a defined MDE", ps, ok)
+			}
+			within(t, "MDE / SE", *ps.MDE/ps.StdErr, tc.tSum, 0.0005)
+			if *ps.MDE <= zBased*ps.StdErr {
+				t.Errorf("MDE %v does not exceed the z-based %v", *ps.MDE, zBased*ps.StdErr)
+			}
+		})
+	}
+
+	small, _ := Paired(cases[0].diffs)
+	within(t, "df 4 MDE over the z-based MDE", *small.MDE/(zBased*small.StdErr), (2.7764+0.9410)/zBased, 0.001)
 }
 
 func TestStdErr(t *testing.T) {
