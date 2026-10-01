@@ -299,7 +299,9 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 		},
 		"bearer header echoed": {
 			provider: "openai-compatible", status: http.StatusUnauthorized,
-			reply: func(r *http.Request, _ string) string { return `{"error":{"message":"bad ` + r.Header.Get("Authorization") + `"}}` },
+			reply: func(r *http.Request, _ string) string {
+				return `{"error":{"message":"bad ` + r.Header.Get("Authorization") + `"}}`
+			},
 		},
 		"error message on HTTP 200": {
 			provider: "openai-compatible", status: http.StatusOK,
@@ -309,11 +311,15 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 		},
 		"reply without a verdict quotes the key": {
 			provider: "anthropic", status: http.StatusOK,
-			reply: func(r *http.Request, _ string) string { return anthropicText("I saw "+r.Header.Get("x-api-key"), "end_turn") },
+			reply: func(r *http.Request, _ string) string {
+				return anthropicText("I saw "+r.Header.Get("x-api-key"), "end_turn")
+			},
 		},
 		"refusal quotes the key": {
 			provider: "anthropic", status: http.StatusOK,
-			reply: func(r *http.Request, _ string) string { return anthropicText("no: "+r.Header.Get("x-api-key"), "refusal") },
+			reply: func(r *http.Request, _ string) string {
+				return anthropicText("no: "+r.Header.Get("x-api-key"), "refusal")
+			},
 		},
 		"verdict feedback quotes the key": {
 			provider: "anthropic", status: http.StatusOK,

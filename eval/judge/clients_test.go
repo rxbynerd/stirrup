@@ -434,7 +434,9 @@ func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
 		status int
 		reply  func(r *http.Request) string
 	}{
-		"error body":            {http.StatusUnauthorized, func(r *http.Request) string { return "bad key\n" + echo(r) + "\r\nauth=" + r.Header.Get("Authorization") }},
+		"error body": {http.StatusUnauthorized, func(r *http.Request) string {
+			return "bad key\n" + echo(r) + "\r\nauth=" + r.Header.Get("Authorization")
+		}},
 		"key across truncation": {http.StatusBadRequest, func(r *http.Request) string { return strings.Repeat("x", maxErrorBodyBytes-12) + echo(r) }},
 		"json-escaped key":      {http.StatusBadRequest, func(r *http.Request) string { b, _ := json.Marshal(echo(r)); return string(b) }},
 		"error on HTTP 200":     {http.StatusOK, func(r *http.Request) string { return `{"error":{"message":"key ` + echo(r) + ` revoked\nretry"}}` }},
