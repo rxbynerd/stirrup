@@ -147,9 +147,11 @@ is skipped whole, so an object quoted inside a malformed reasoning
 string is never selected. Two differing objects that carry the nonce
 are a conflict, and no matching object is a parse failure; both fail
 closed (`cloud-judge` denies unless `failOpen: true`, `llm-judge`
-reports a failed verification). A `cloud-judge` guardrail with
-`failOpen: true` turns every such parse failure into an allow, so the
-nonce rule does not constrain it. Details per surface:
+reports a failed verification). Both also discard the verdict of a
+stream that did not end at `end_turn` or `stop_sequence`, so a reply
+cut by the token cap or a deadline cannot supply a partial answer. A
+`cloud-judge` guardrail with `failOpen: true` turns every such failure
+into an allow, so neither rule constrains it. Details per surface:
 [`guardrails.md` § `cloud-judge`](guardrails.md#cloud-judge) and
 [`architecture.md` § Verifiers](architecture.md#verifiers).
 

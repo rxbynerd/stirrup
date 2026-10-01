@@ -595,8 +595,10 @@ back as a user message. Three implementations ship:
   fence nonce. The transcript is fenced as untrusted data, with each
   tool result in its own fence (see [`security.md` § Judge and
   classifier prompts](security.md#judge-and-classifier-prompts)).
-  Malformed responses, including a verdict without the nonce, are
-  treated as failures with the raw response preserved in details.
+  Malformed responses, including a verdict without the nonce or one
+  from a stream that ended other than at `end_turn` or
+  `stop_sequence` (for example at the 1024-token cap), are treated as
+  failures with the raw response preserved in details.
 - **`composite`** — chains multiple sub-verifiers.
 
 ## Transport

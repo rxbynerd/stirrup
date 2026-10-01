@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -38,6 +39,10 @@ Do not include any text outside the JSON object.`
 	conversationLabel = "CONVERSATION"
 	toolResultLabel   = "TOOL_RESULT"
 )
+
+// errJudgeIncomplete marks a judge stream that ended without a normal
+// completion, such as one cut at judgeMaxTokens.
+var errJudgeIncomplete = errors.New("judge stream incomplete")
 
 // LLMJudgeVerifier uses an LLM to evaluate whether a conversation meets
 // natural-language criteria. This is useful for subjective or complex
@@ -80,7 +85,10 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 		return nil, fmt.Errorf("llm-judge verifier: stream request failed: %w", err)
 	}
 
-	response, err := collectStreamText(ch)
+	response, err := collectStreamText(ctx, ch)
+	if errors.Is(err, errJudgeIncomplete) {
+		return malformedJudgeResponse(strings.TrimSpace(response), err), nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream error: %w", err)
 	}
@@ -132,15 +140,21 @@ func (v *LLMJudgeVerifier) buildUserMessage(fence security.DataFence, vc VerifyC
 	return sb.String()
 }
 
-// collectStreamText reads all text_delta events from the channel and
-// concatenates them into a single response string. Returns an error if
-// any error event is received.
-func collectStreamText(ch <-chan types.StreamEvent) (string, error) {
+// collectStreamText concatenates the stream's text_delta events. An error
+// event or a cancelled ctx is an error. A stream whose last stop reason is
+// not end_turn or stop_sequence returns the partial text with an error
+// wrapping errJudgeIncomplete.
+func collectStreamText(ctx context.Context, ch <-chan types.StreamEvent) (string, error) {
 	var sb strings.Builder
+	stopReason := ""
 	for event := range ch {
 		switch event.Type {
 		case "text_delta":
 			sb.WriteString(event.Text)
+		case "message_complete":
+			if event.StopReason != "" {
+				stopReason = event.StopReason
+			}
 		case "error":
 			if event.Error != nil {
 				return "", event.Error
@@ -148,7 +162,17 @@ func collectStreamText(ch <-chan types.StreamEvent) (string, error) {
 			return "", fmt.Errorf("stream error event with no details")
 		}
 	}
-	return sb.String(), nil
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	switch stopReason {
+	case "end_turn", "stop_sequence":
+		return sb.String(), nil
+	case "":
+		return sb.String(), fmt.Errorf("%w: stream closed without a stop reason", errJudgeIncomplete)
+	default:
+		return sb.String(), fmt.Errorf("%w: stop reason %q", errJudgeIncomplete, stopReason)
+	}
 }
 
 // parseJudgeResponse extracts the verdict from the top-level JSON object

@@ -3,6 +3,7 @@ package verifier
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -480,6 +481,61 @@ func TestLLMJudgeVerifier_FenceNonceFailureIsAnError(t *testing.T) {
 	}
 	if len(prov.lastParams.Messages) != 0 {
 		t.Fatal("provider was called without a fenced prompt")
+	}
+}
+
+// TestLLMJudgeVerifier_StopReasonGatesVerdict pins that a verdict, even
+// one carrying the right nonce, counts only when the stream completed
+// normally; any other ending is a failed verification, not an error.
+func TestLLMJudgeVerifier_StopReasonGatesVerdict(t *testing.T) {
+	verdict := types.StreamEvent{Type: "text_delta", Text: `{"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`}
+	complete := func(reason string) types.StreamEvent {
+		return types.StreamEvent{Type: "message_complete", StopReason: reason}
+	}
+	usageOnly := types.StreamEvent{Type: "message_complete", OutputTokens: 7}
+	cases := []struct {
+		name       string
+		events     []types.StreamEvent
+		wantPassed bool
+	}{
+		{"end_turn", []types.StreamEvent{verdict, complete("end_turn")}, true},
+		{"stop_sequence", []types.StreamEvent{verdict, complete("stop_sequence")}, true},
+		{"end_turn then usage-only completion", []types.StreamEvent{verdict, complete("end_turn"), usageOnly}, true},
+		{"max_tokens", []types.StreamEvent{verdict, complete("max_tokens")}, false},
+		{"safety_blocked", []types.StreamEvent{verdict, complete("safety_blocked")}, false},
+		{"no completion event", []types.StreamEvent{verdict}, false},
+		{"usage-only completion", []types.StreamEvent{verdict, usageOnly}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := NewLLMJudgeVerifier(&mockProvider{events: tc.events}, "test-model", "anything")
+			result, err := v.Verify(context.Background(), VerifyContext{})
+			if err != nil {
+				t.Fatalf("Verify error: %v", err)
+			}
+			if result.Passed != tc.wantPassed {
+				t.Fatalf("Passed = %v, want %v: %+v", result.Passed, tc.wantPassed, result)
+			}
+			if tc.wantPassed {
+				return
+			}
+			parseErr, _ := result.Details["parseError"].(string)
+			if !strings.Contains(parseErr, errJudgeIncomplete.Error()) {
+				t.Errorf("parseError = %q, want it to name the incomplete stream", parseErr)
+			}
+		})
+	}
+}
+
+func TestLLMJudgeVerifier_CancelledContextIsAnError(t *testing.T) {
+	prov := &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: `{"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	v := NewLLMJudgeVerifier(prov, "test-model", "anything")
+	if result, err := v.Verify(ctx, VerifyContext{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify = %+v, %v; want a context.Canceled error", result, err)
 	}
 }
 
