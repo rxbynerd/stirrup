@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,7 +69,9 @@ type JudgeContext struct {
 // Evaluate applies the judge criteria to the workspace and returns a verdict.
 // A non-nil error means the judge could not rule. An LLM-backed judge then
 // also returns an error-status verdict carrying its Record; every other judge
-// returns the zero verdict.
+// returns the zero verdict. A composite reports a sub-judge that could not
+// rule through Status "error" rather than an error, and returns an error only
+// for an invalid judge tree.
 func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	verdict, err := evaluate(ctx, j, jctx)
 	if err == nil && verdict.Status == "" {
@@ -224,60 +227,144 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 	}, nil
 }
 
+// evaluateComposite runs sub-judges in declared order and stops at the first
+// one that decides the outcome: a fail or error under "all", a pass under
+// "any". Sub-judge errors are carried in Status; only an invalid judge tree
+// returns an error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if len(j.Judges) == 0 {
-		return eval.JudgeVerdict{Passed: true, Reason: "no sub-judges"}, nil
+	if err := validateComposite(j); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	require := j.Require
 	if require == "" {
 		require = "all"
 	}
-	if require != "all" && require != "any" {
-		return eval.JudgeVerdict{}, fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", require)
+	requireAny := require == "any"
+	total := len(j.Judges)
+
+	details := make([]eval.JudgeDetail, 0, total)
+	decider, errored, firstErr := -1, 0, -1
+	for i, sub := range j.Judges {
+		d := evaluateSubJudge(ctx, sub, jctx)
+		details = append(details, d)
+		switch d.Status {
+		case types.JudgeStatusPass:
+			if requireAny {
+				decider = i
+			}
+		case types.JudgeStatusFail:
+			if !requireAny {
+				decider = i
+			}
+		default:
+			errored++
+			if firstErr < 0 {
+				firstErr = i
+			}
+			if !requireAny {
+				decider = i
+			}
+		}
+		if decider >= 0 {
+			break
+		}
 	}
 
-	var details []eval.JudgeDetail
-	passCount := 0
-
-	for _, sub := range j.Judges {
-		verdict, err := Evaluate(ctx, sub, jctx)
-		if err != nil {
-			return eval.JudgeVerdict{}, fmt.Errorf("sub-judge %q: %w", sub.Type, err)
-		}
+	skipped := total - len(details)
+	for i := len(details); i < total; i++ {
 		details = append(details, eval.JudgeDetail{
-			Type:   sub.Type,
-			Passed: verdict.Passed,
-			Reason: verdict.Reason,
+			Type:   j.Judges[i].Type,
+			Status: eval.JudgeStatusSkipped,
+			Reason: fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total),
 		})
-		if verdict.Passed {
-			passCount++
-		}
 	}
 
-	var passed bool
-	var reason string
-
-	switch require {
-	case "all":
-		passed = passCount == len(j.Judges)
-		if passed {
-			reason = fmt.Sprintf("all %d sub-judges passed", len(j.Judges))
-		} else {
-			reason = fmt.Sprintf("%d of %d sub-judges passed (require all)", passCount, len(j.Judges))
+	var status, reason string
+	switch {
+	case decider >= 0:
+		d := details[decider]
+		status = d.Status
+		reason = fmt.Sprintf("sub-judge %d of %d (%s) %s (require %s)", decider+1, total, d.Type, subJudgeVerb(d.Status), require)
+		if skipped > 0 {
+			reason += fmt.Sprintf("; %d skipped", skipped)
 		}
-	case "any":
-		passed = passCount > 0
-		if passed {
-			reason = fmt.Sprintf("%d of %d sub-judges passed (require any)", passCount, len(j.Judges))
-		} else {
-			reason = fmt.Sprintf("0 of %d sub-judges passed (require any)", len(j.Judges))
+		if d.Status == types.JudgeStatusError {
+			reason += ": " + d.Reason
 		}
+	case requireAny && errored > 0:
+		status = types.JudgeStatusError
+		reason = fmt.Sprintf("0 of %d sub-judges passed (require any); %d errored, first: sub-judge %d of %d (%s): %s",
+			total, errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
+	case requireAny:
+		status = types.JudgeStatusFail
+		reason = fmt.Sprintf("0 of %d sub-judges passed (require any)", total)
+	default:
+		status = types.JudgeStatusPass
+		reason = fmt.Sprintf("all %d sub-judges passed", total)
 	}
 
 	return eval.JudgeVerdict{
-		Passed:  passed,
+		Passed:  status == types.JudgeStatusPass,
+		Status:  status,
 		Reason:  reason,
 		Details: details,
 	}, nil
+}
+
+// evaluateSubJudge runs one sub-judge and reports its verdict as a detail. An
+// error from the sub-judge becomes an error-status detail instead of aborting
+// the composite.
+func evaluateSubJudge(ctx context.Context, sub types.EvalJudge, jctx JudgeContext) eval.JudgeDetail {
+	verdict, err := Evaluate(ctx, sub, jctx)
+	d := eval.JudgeDetail{
+		Type:   sub.Type,
+		Passed: verdict.Passed,
+		Status: verdict.Status,
+		Reason: verdict.Reason,
+		Record: verdict.Record,
+	}
+	if err != nil {
+		d.Passed = false
+		d.Status = types.JudgeStatusError
+		if d.Reason == "" {
+			d.Reason = err.Error()
+		}
+	}
+	return d
+}
+
+func subJudgeVerb(status string) string {
+	switch status {
+	case types.JudgeStatusPass:
+		return "passed"
+	case types.JudgeStatusFail:
+		return "failed"
+	default:
+		return "errored"
+	}
+}
+
+// validateComposite rejects a judge tree that cannot be evaluated. It runs
+// before any sub-judge so a configuration error is never mistaken for a
+// sub-judge error or hidden behind a short-circuit.
+func validateComposite(j types.EvalJudge) error {
+	if len(j.Judges) == 0 {
+		return fmt.Errorf("composite judge requires at least one sub-judge")
+	}
+	if j.Require != "" && j.Require != "all" && j.Require != "any" {
+		return fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", j.Require)
+	}
+	known := KnownJudgeTypes()
+	for i, sub := range j.Judges {
+		if !slices.Contains(known, sub.Type) {
+			return fmt.Errorf("sub-judge %d: unknown judge type: %q", i+1, sub.Type)
+		}
+		if sub.Type == "composite" {
+			if err := validateComposite(sub); err != nil {
+				return fmt.Errorf("sub-judge %d: %w", i+1, err)
+			}
+		}
+	}
+	return nil
 }
