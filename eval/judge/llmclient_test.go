@@ -1,6 +1,13 @@
 package judge
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +87,151 @@ func TestResolveLLMConfig(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+}
+
+func TestResolveLLMConfig_EndpointPolicy(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     types.JudgeLLMConfig
+		wantRef string
+		wantErr string
+	}{
+		{name: "default host gets the default key", cfg: types.JudgeLLMConfig{Model: "m"}, wantRef: DefaultLLMKeyRef},
+		{name: "explicit default host gets the default key", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "https://API.anthropic.com./"}, wantRef: DefaultLLMKeyRef},
+		{name: "anthropic gateway without a ref", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "https://gw.example/v1"}, wantErr: "api_key_ref is required"},
+		{name: "lookalike host without a ref", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "https://api.anthropic.com.evil.example"}, wantErr: "api_key_ref is required"},
+		{name: "anthropic gateway with a ref", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "https://gw.example/v1", APIKeyRef: "secret://GW"}, wantRef: "secret://GW"},
+		{name: "http with key to a public address", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "http://8.8.8.8/v1", APIKeyRef: "secret://GW"}, wantErr: "use https"},
+		{name: "http with key to loopback", cfg: types.JudgeLLMConfig{Model: "m", BaseURL: "http://127.0.0.1:8001", APIKeyRef: "secret://GW"}, wantRef: "secret://GW"},
+		{name: "keyless openai-compatible over http", cfg: types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "http://8.8.8.8/v1"}},
+		{name: "metadata endpoint", cfg: types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "http://169.254.169.254/v1"}, wantErr: "link-local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ResolveLLMConfig(&tc.cfg, nil)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.APIKeyRef != tc.wantRef {
+				t.Errorf("APIKeyRef = %q, want %q", cfg.APIKeyRef, tc.wantRef)
+			}
+		})
+	}
+
+	t.Run("invocation defaults follow the same rule", func(t *testing.T) {
+		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"})
+		if err == nil || !strings.Contains(err.Error(), "api_key_ref is required") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestCheckEndpoint(t *testing.T) {
+	resolvesTo := func(addrs ...string) func(context.Context, string, string) ([]netip.Addr, error) {
+		return func(context.Context, string, string) ([]netip.Addr, error) {
+			var out []netip.Addr
+			for _, a := range addrs {
+				out = append(out, netip.MustParseAddr(a))
+			}
+			return out, nil
+		}
+	}
+	cases := []struct {
+		name    string
+		cfg     types.JudgeLLMConfig
+		lookup  func(context.Context, string, string) ([]netip.Addr, error)
+		wantErr string
+	}{
+		{name: "https to a public host", cfg: types.JudgeLLMConfig{BaseURL: "https://gw.example/v1", APIKeyRef: "secret://K"}, lookup: resolvesTo("93.184.216.34")},
+		{name: "http with key to a LAN host", cfg: types.JudgeLLMConfig{BaseURL: "http://vllm.lan:8000/v1", APIKeyRef: "secret://K"}, lookup: resolvesTo("192.168.1.20", "fd12::20")},
+		{name: "http with key to a public host", cfg: types.JudgeLLMConfig{BaseURL: "http://gw.example/v1", APIKeyRef: "secret://K"}, lookup: resolvesTo("93.184.216.34"), wantErr: "use https"},
+		{name: "http with key to a host with one public address", cfg: types.JudgeLLMConfig{BaseURL: "http://gw.example/v1", APIKeyRef: "secret://K"}, lookup: resolvesTo("10.0.0.1", "93.184.216.34"), wantErr: "use https"},
+		{name: "http without key to a public host", cfg: types.JudgeLLMConfig{BaseURL: "http://gw.example/v1"}, lookup: resolvesTo("93.184.216.34")},
+		{name: "host resolving to metadata", cfg: types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"}, lookup: resolvesTo("169.254.169.254"), wantErr: "link-local"},
+		{name: "host resolving to unspecified", cfg: types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"}, lookup: resolvesTo("::"), wantErr: "unspecified"},
+		{name: "host resolving to nothing", cfg: types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"}, lookup: resolvesTo(), wantErr: "no address"},
+		{
+			name: "lookup failure", cfg: types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"},
+			lookup:  func(context.Context, string, string) ([]netip.Addr, error) { return nil, errors.New("no such host") },
+			wantErr: "no such host",
+		},
+		{name: "literal address skips lookup", cfg: types.JudgeLLMConfig{BaseURL: "http://169.254.169.254/v1"}, wantErr: "link-local"},
+		{name: "default endpoint skips lookup", cfg: types.JudgeLLMConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := tc.lookup
+			if lookup == nil {
+				lookup = func(context.Context, string, string) ([]netip.Addr, error) {
+					t.Error("lookup called")
+					return nil, errors.New("unexpected lookup")
+				}
+			}
+			err := checkEndpoint(context.Background(), tc.cfg, lookup)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v, want accepted", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewClient_RefusesForbiddenAddressesAtDialTime(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"model":"m","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":{}}`)
+	}))
+	t.Cleanup(ok.Close)
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(ok.URL, "http://"))
+
+	cases := []struct {
+		name, baseURL, key, wantErr string
+	}{
+		{name: "loopback", baseURL: ok.URL, key: "sk-test-0123456789"},
+		{name: "localhost resolves to loopback", baseURL: "http://localhost:" + port, key: "sk-test-0123456789"},
+		{name: "metadata address", baseURL: "http://169.254.169.254", key: "sk-test-0123456789", wantErr: "link-local"},
+		{name: "unspecified ipv4", baseURL: "http://0.0.0.0:" + port, wantErr: "unspecified"},
+		{name: "unspecified ipv6", baseURL: "http://[::]:" + port, wantErr: "unspecified"},
+		{name: "cleartext key to a public address", baseURL: "http://192.0.2.1:9", key: "sk-test-0123456789", wantErr: "use https"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", BaseURL: tc.baseURL, TimeoutSeconds: 5}, tc.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v, want the call to reach the server", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckDialAddress(t *testing.T) {
+	for _, address := range []string{"169.254.169.254:80", "[fe80::1%lo0]:443", "[fd00:ec2::254]:80", "0.0.0.0:443", "no-port", "host.example:443"} {
+		if err := checkDialAddress(address, false); err == nil {
+			t.Errorf("checkDialAddress(%q) accepted", address)
+		}
+	}
+	for _, address := range []string{"127.0.0.1:443", "[::1]:80", "10.0.0.2:8000", "93.184.216.34:443"} {
+		if err := checkDialAddress(address, false); err != nil {
+			t.Errorf("checkDialAddress(%q) = %v", address, err)
+		}
+	}
+	if err := checkDialAddress("93.184.216.34:80", true); err == nil {
+		t.Error("cleartext key to a public address accepted")
+	}
 }
 
 func TestJoinEndpoint(t *testing.T) {

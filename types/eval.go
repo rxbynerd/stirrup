@@ -1,7 +1,9 @@
 package types
 
 import (
+	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -235,7 +237,7 @@ func (c JudgeLLMConfig) Validate() error {
 		if c.EffectiveProvider() == JudgeProviderOpenAICompatible {
 			return fmt.Errorf("base_url is required for provider %q", JudgeProviderOpenAICompatible)
 		}
-	} else if err := validateJudgeBaseURL(c.BaseURL); err != nil {
+	} else if err := validateJudgeBaseURL(c.BaseURL, c.APIKeyRef != ""); err != nil {
 		return err
 	}
 	if c.APIKeyRef != "" && !strings.HasPrefix(c.APIKeyRef, "secret://") {
@@ -265,7 +267,17 @@ func (c JudgeLLMConfig) Validate() error {
 	return nil
 }
 
-func validateJudgeBaseURL(raw string) error {
+// judgeMetadataHost is a cloud metadata service reachable by name.
+const judgeMetadataHost = "metadata.google.internal"
+
+// judgeMetadataAddrs are cloud metadata services outside the link-local
+// ranges.
+var judgeMetadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254")}
+
+// validateJudgeBaseURL checks what can be decided without resolving the
+// host. Hostnames are resolved and checked again before a run and at
+// connect time.
+func validateJudgeBaseURL(raw string, keyAttached bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("base_url is not a valid URL")
@@ -278,6 +290,41 @@ func validateJudgeBaseURL(raw string) error {
 	}
 	if u.User != nil {
 		return fmt.Errorf("base_url must not embed credentials; use api_key_ref")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == judgeMetadataHost {
+		return fmt.Errorf("base_url host %s is a cloud metadata service", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return CheckJudgeEndpointAddr(addr, u.Scheme == "http" && keyAttached)
+	}
+	return nil
+}
+
+// CheckJudgeEndpointAddr reports why a judge request must not be sent to
+// addr, or nil. Unspecified, link-local, multicast and cloud metadata
+// addresses are always refused. With keyOverHTTP only loopback and private
+// addresses are accepted, since the key would otherwise cross a public
+// network in cleartext.
+func CheckJudgeEndpointAddr(addr netip.Addr, keyOverHTTP bool) error {
+	addr = addr.Unmap().WithZone("")
+	switch {
+	case !addr.IsValid():
+		return errors.New("judge endpoint address is not a valid IP address")
+	case addr.IsUnspecified():
+		return fmt.Errorf("judge endpoint address %s is unspecified", addr)
+	case addr.IsLinkLocalUnicast():
+		return fmt.Errorf("judge endpoint address %s is link-local, the range that holds cloud metadata services", addr)
+	case addr.IsMulticast():
+		return fmt.Errorf("judge endpoint address %s is multicast", addr)
+	}
+	for _, m := range judgeMetadataAddrs {
+		if addr == m {
+			return fmt.Errorf("judge endpoint address %s is a cloud metadata service", addr)
+		}
+	}
+	if keyOverHTTP && !addr.IsLoopback() && !addr.IsPrivate() {
+		return fmt.Errorf("judge endpoint address %s is public and base_url uses http:// with an API key attached; use https", addr)
 	}
 	return nil
 }

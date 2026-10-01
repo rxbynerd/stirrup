@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,37 @@ func TestJudgeLLMConfigValidate(t *testing.T) {
 		{name: "base url scheme", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "ftp://example.com" }, wantErr: "http or https"},
 		{name: "base url host", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "https:///v1" }, wantErr: "include a host"},
 		{name: "base url credentials", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "https://user:pw@example.com" }, wantErr: "must not embed credentials"},
+		{name: "metadata host", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://Metadata.Google.Internal./v1" }, wantErr: "metadata"},
+		{name: "metadata address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://169.254.169.254/v1" }, wantErr: "link-local"},
+		{name: "ipv6 metadata address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://[fd00:ec2::254]/v1" }, wantErr: "metadata"},
+		{name: "ipv4-mapped metadata address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "https://[::ffff:169.254.169.254]/v1" }, wantErr: "link-local"},
+		{name: "unspecified address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://0.0.0.0:8080" }, wantErr: "unspecified"},
+		{name: "unspecified ipv6 address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://[::]:8080" }, wantErr: "unspecified"},
+		{name: "multicast address", mutate: func(c *JudgeLLMConfig) { c.BaseURL = "http://224.0.0.1" }, wantErr: "multicast"},
+		{name: "http with key to public address", mutate: func(c *JudgeLLMConfig) {
+			c.BaseURL = "http://8.8.8.8/v1"
+			c.APIKeyRef = "secret://K"
+		}, wantErr: "use https"},
+		{name: "http without key to public address", mutate: func(c *JudgeLLMConfig) {
+			c.Provider = JudgeProviderOpenAICompatible
+			c.BaseURL = "http://8.8.8.8/v1"
+		}},
+		{name: "https with key to public address", mutate: func(c *JudgeLLMConfig) {
+			c.BaseURL = "https://8.8.8.8/v1"
+			c.APIKeyRef = "secret://K"
+		}},
+		{name: "http with key to loopback", mutate: func(c *JudgeLLMConfig) {
+			c.BaseURL = "http://127.0.0.1:1234/v1"
+			c.APIKeyRef = "secret://K"
+		}},
+		{name: "http with key to private address", mutate: func(c *JudgeLLMConfig) {
+			c.BaseURL = "http://10.1.2.3:8000/v1"
+			c.APIKeyRef = "secret://K"
+		}},
+		{name: "http with key to a hostname is checked at resolve time", mutate: func(c *JudgeLLMConfig) {
+			c.BaseURL = "http://llm.example.com/v1"
+			c.APIKeyRef = "secret://K"
+		}},
 		{name: "raw api key", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "sk-live-abc" }, wantErr: "secret:// reference"},
 		{name: "empty secret ref", mutate: func(c *JudgeLLMConfig) { c.APIKeyRef = "secret://" }, wantErr: "names no secret"},
 		{name: "timeout over cap", mutate: func(c *JudgeLLMConfig) { c.TimeoutSeconds = JudgeMaxTimeoutSeconds + 1 }, wantErr: "timeout_seconds"},
@@ -62,6 +94,45 @@ func TestJudgeLLMConfigValidate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestCheckJudgeEndpointAddr(t *testing.T) {
+	cases := []struct {
+		addr        string
+		keyOverHTTP bool
+		wantErr     string
+	}{
+		{addr: "127.0.0.1"},
+		{addr: "::1", keyOverHTTP: true},
+		{addr: "10.0.0.5", keyOverHTTP: true},
+		{addr: "192.168.1.20", keyOverHTTP: true},
+		{addr: "172.16.0.1", keyOverHTTP: true},
+		{addr: "fd12::1", keyOverHTTP: true},
+		{addr: "93.184.216.34"},
+		{addr: "93.184.216.34", keyOverHTTP: true, wantErr: "use https"},
+		{addr: "2606:4700::1", keyOverHTTP: true, wantErr: "use https"},
+		{addr: "169.254.169.254", wantErr: "link-local"},
+		{addr: "::ffff:169.254.169.254", wantErr: "link-local"},
+		{addr: "169.254.0.1", wantErr: "link-local"},
+		{addr: "fe80::1%en0", wantErr: "link-local"},
+		{addr: "fd00:ec2::254", wantErr: "metadata"},
+		{addr: "0.0.0.0", wantErr: "unspecified"},
+		{addr: "::", wantErr: "unspecified"},
+		{addr: "ff02::1", wantErr: "multicast"},
+		{addr: "239.1.1.1", wantErr: "multicast"},
+	}
+	for _, tc := range cases {
+		err := CheckJudgeEndpointAddr(netip.MustParseAddr(tc.addr), tc.keyOverHTTP)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%s (keyOverHTTP=%v): %v, want accepted", tc.addr, tc.keyOverHTTP, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+			t.Errorf("%s (keyOverHTTP=%v): %v, want error containing %q", tc.addr, tc.keyOverHTTP, err, tc.wantErr)
+		}
+	}
+	if err := CheckJudgeEndpointAddr(netip.Addr{}, false); err == nil {
+		t.Error("the zero address was accepted")
 	}
 }
 

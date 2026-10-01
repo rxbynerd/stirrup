@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -100,8 +103,9 @@ type Options struct {
 
 // ResolveLLMConfig produces the configuration for one diff-review judge: an
 // explicit `llm` block as written, otherwise the invocation defaults over the
-// Anthropic default. That default applies to the Anthropic provider only, so
-// its key never reaches another endpoint.
+// Anthropic default. The default key reference is applied only when the
+// endpoint is the Anthropic API, so that key never reaches another host; an
+// anthropic gateway must name its own api_key_ref.
 func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMConfig, error) {
 	var cfg types.JudgeLLMConfig
 	switch {
@@ -115,21 +119,73 @@ func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMC
 		if cfg.Model == "" && explicit == nil {
 			cfg.Model = DefaultLLMModel
 		}
-		if cfg.APIKeyRef == "" {
+		if cfg.APIKeyRef == "" && isAnthropicAPI(cfg.BaseURL) {
 			cfg.APIKeyRef = DefaultLLMKeyRef
 		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return types.JudgeLLMConfig{}, fmt.Errorf("invalid judge llm configuration: %w", err)
 	}
+	if cfg.Provider == types.JudgeProviderAnthropic && cfg.APIKeyRef == "" {
+		return types.JudgeLLMConfig{}, fmt.Errorf("invalid judge llm configuration: api_key_ref is required when base_url is not %s; %s is sent only to the Anthropic API",
+			anthropicDefaultBaseURL, DefaultLLMKeyRef)
+	}
 	return cfg, nil
+}
+
+// isAnthropicAPI reports whether baseURL is empty or names the Anthropic
+// API host.
+func isAnthropicAPI(baseURL string) bool {
+	if baseURL == "" {
+		return true
+	}
+	u, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), "api.anthropic.com")
+}
+
+// CheckEndpoint resolves cfg's base_url host and applies
+// types.CheckJudgeEndpointAddr to every address, so a refused endpoint
+// fails before any task runs. The client repeats the check on the address
+// it connects to; behind a proxy that address is the proxy's.
+func CheckEndpoint(ctx context.Context, cfg types.JudgeLLMConfig) error {
+	return checkEndpoint(ctx, cfg, net.DefaultResolver.LookupNetIP)
+}
+
+func checkEndpoint(ctx context.Context, cfg types.JudgeLLMConfig, lookup func(ctx context.Context, network, host string) ([]netip.Addr, error)) error {
+	if cfg.BaseURL == "" {
+		return nil
+	}
+	u, err := url.Parse(cfg.BaseURL)
+	if err != nil {
+		return errors.New("judge base URL is not a valid URL")
+	}
+	host := u.Hostname()
+	keyOverHTTP := u.Scheme == "http" && cfg.APIKeyRef != ""
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return types.CheckJudgeEndpointAddr(addr, keyOverHTTP)
+	}
+	addrs, err := lookup(ctx, "ip", host)
+	if err != nil {
+		return fmt.Errorf("resolving judge base_url host %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("judge base_url host %q resolves to no address", host)
+	}
+	for _, addr := range addrs {
+		if err := types.CheckJudgeEndpointAddr(addr, keyOverHTTP); err != nil {
+			return fmt.Errorf("judge base_url host %q: %w", host, err)
+		}
+	}
+	return nil
 }
 
 // NewClient builds the HTTP client for cfg's provider. The per-call timeout
 // is cfg's TimeoutSeconds.
 func NewClient(cfg types.JudgeLLMConfig, apiKey string) (JudgeClient, error) {
+	keyOverHTTP := apiKey != "" && strings.HasPrefix(strings.ToLower(cfg.BaseURL), "http://")
 	httpClient := &http.Client{
-		Timeout: time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second,
+		Timeout:   time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second,
+		Transport: judgeTransport(keyOverHTTP),
 		// A redirect would resend the API key to a host the operator never
 		// configured.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -142,6 +198,39 @@ func NewClient(cfg types.JudgeLLMConfig, apiKey string) (JudgeClient, error) {
 	default:
 		return nil, fmt.Errorf("unsupported judge provider %q", cfg.Provider)
 	}
+}
+
+// judgeTransport is the default transport with types.CheckJudgeEndpointAddr
+// applied to every address it connects to, after DNS resolution, so a
+// hostname that resolves or rebinds to a refused address is caught.
+func judgeTransport(keyOverHTTP bool) *http.Transport {
+	t := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = base.Clone()
+	}
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			return checkDialAddress(address, keyOverHTTP)
+		},
+	}
+	t.DialContext = dialer.DialContext
+	return t
+}
+
+// checkDialAddress applies types.CheckJudgeEndpointAddr to a dialer's
+// "ip:port" address.
+func checkDialAddress(address string, keyOverHTTP bool) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("judge endpoint address %q: %w", address, err)
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("judge endpoint address %q is not an IP address", host)
+	}
+	return types.CheckJudgeEndpointAddr(addr, keyOverHTTP)
 }
 
 // joinEndpoint appends path to the base URL's own path, preserving any query
