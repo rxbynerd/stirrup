@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -56,7 +57,7 @@ func newJudgeStub(t *testing.T, status int, reply string) *judgeStub {
 		s.bodies = append(s.bodies, string(raw))
 		s.mu.Unlock()
 		w.WriteHeader(status)
-		_, _ = io.WriteString(w, reply)
+		_, _ = io.WriteString(w, echoFenceNonce(string(raw), reply))
 	}))
 	t.Cleanup(s.srv.Close)
 	return s
@@ -68,7 +69,21 @@ func (s *judgeStub) requests() []string {
 	return append([]string(nil), s.bodies...)
 }
 
-const stubPassReply = `{"model":"stub-judge","content":[{"type":"text","text":"{\"reasoning\":\"ok\",\"verdict\":\"pass\",\"feedback\":\"looks good\"}"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`
+// requestNoncePattern finds the diff-review fence nonce in a request body;
+// it skips the angle brackets, which JSON encoding escapes.
+var requestNoncePattern = regexp.MustCompile(`UNTRUSTED_DIFF_([0-9a-f]{32})`)
+
+// echoFenceNonce replaces @NONCE@ in reply with the fence nonce of the
+// request, as a compliant judge model would.
+func echoFenceNonce(body, reply string) string {
+	m := requestNoncePattern.FindStringSubmatch(body)
+	if m == nil {
+		return reply
+	}
+	return strings.ReplaceAll(reply, "@NONCE@", m[1])
+}
+
+const stubPassReply = `{"model":"stub-judge","content":[{"type":"text","text":"{\"nonce\":\"@NONCE@\",\"reasoning\":\"ok\",\"verdict\":\"pass\",\"feedback\":\"looks good\"}"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`
 
 func diffReviewJudgeFor(stub *judgeStub) types.EvalJudge {
 	return types.EvalJudge{

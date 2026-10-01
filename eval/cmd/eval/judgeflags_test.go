@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -119,7 +120,11 @@ func newJudgeEndpoint(t *testing.T) *judgeEndpoint {
 		e.bodies = append(e.bodies, string(raw))
 		e.apiKeys = append(e.apiKeys, r.Header.Get("x-api-key"))
 		e.mu.Unlock()
-		_, _ = io.WriteString(w, `{"model":"served-model","content":[{"type":"text","text":"{\"reasoning\":\"ok\",\"verdict\":\"pass\",\"feedback\":\"fine\"}"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}}`)
+		nonce := ""
+		if m := regexp.MustCompile(`UNTRUSTED_DIFF_([0-9a-f]{32})`).FindSubmatch(raw); m != nil {
+			nonce = string(m[1])
+		}
+		_, _ = io.WriteString(w, `{"model":"served-model","content":[{"type":"text","text":"{\"nonce\":\"`+nonce+`\",\"reasoning\":\"ok\",\"verdict\":\"pass\",\"feedback\":\"fine\"}"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}}`)
 	}))
 	t.Cleanup(e.srv.Close)
 	return e

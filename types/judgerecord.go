@@ -34,18 +34,21 @@ const (
 
 // JudgeRecord.ParseStatus values.
 const (
-	// JudgeParseOK means the response was exactly one conforming object.
+	// JudgeParseOK means exactly one JSON object in the response carried
+	// the call's nonce and it conformed to the verdict schema. Other
+	// objects and surrounding text are ignored.
 	JudgeParseOK = "ok"
 
-	// JudgeParseLastMatch means the verdict was extracted as the last JSON
-	// object from a response with surrounding text or several objects.
+	// JudgeParseLastMatch means several conforming objects carried the
+	// call's nonce and agreed on the verdict; the last one is used.
 	JudgeParseLastMatch = "last_match"
 
-	// JudgeParseNoJSON means the response held no JSON object.
+	// JudgeParseNoJSON means the response held no balanced JSON object.
 	JudgeParseNoJSON = "no_json"
 
-	// JudgeParseSchemaViolation means an object was found but did not
-	// match the verdict schema.
+	// JudgeParseSchemaViolation means no object carried the call's nonce,
+	// an object carrying it did not match the verdict schema, or objects
+	// carrying it disagreed on the verdict.
 	JudgeParseSchemaViolation = "schema_violation"
 
 	// JudgeParseRefusal means the model declined to answer.
