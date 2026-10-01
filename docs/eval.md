@@ -493,6 +493,9 @@ outcome `error` without its verdict.
   operator-supplied input.
 - The full diff, including any secret the agent wrote into the
   workspace, is sent to the configured provider.
+- The verdict reason is model-authored. Control characters, including
+  ANSI escapes, become spaces and the reason is cut to 2 KiB before it
+  reaches results, JUnit, or the terminal.
 - Credentials are `secret://` references only. The resolved key (and
   its JSON- and Go-escaped forms, for keys of 8 bytes or more) is
   replaced with `[redacted]` in every provider-derived string that

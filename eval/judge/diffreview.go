@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
@@ -298,8 +299,28 @@ func parseDiffReviewReply(text, nonce string) (eval.JudgeVerdict, string, error)
 	return eval.JudgeVerdict{
 		Passed: fields["verdict"] == types.JudgeStatusPass,
 		Status: fields["verdict"],
-		Reason: reason,
+		Reason: verdictReason(reason),
 	}, parse, nil
+}
+
+// maxReasonBytes bounds the model-authored reason carried into results.
+const maxReasonBytes = 2048
+
+// verdictReason makes model-authored text safe to print in a terminal or
+// JUnit report: control characters, including ANSI escapes, become
+// spaces, whitespace runs collapse, and the text is cut to maxReasonBytes.
+func verdictReason(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > maxReasonBytes {
+		s = string(trimPartialRune([]byte(s[:maxReasonBytes]))) + "..."
+	}
+	return s
 }
 
 // decodeVerdictObject strictly validates a verdict object: exactly the

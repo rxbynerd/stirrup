@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -837,4 +838,24 @@ func TestEvaluateDiffReview_EmptyDiff(t *testing.T) {
 			t.Errorf("record = %+v", verdict.Record)
 		}
 	})
+}
+
+func TestVerdictReason(t *testing.T) {
+	if got := verdictReason("\x1b[31mmissing\x1b[0m a test\r\n\tsee a.txt\x07"); got != "[31mmissing [0m a test see a.txt" {
+		t.Errorf("control characters kept: %q", got)
+	}
+	long := strings.Repeat("é", maxReasonBytes)
+	got := verdictReason(long)
+	if !strings.HasSuffix(got, "...") || len(got) > maxReasonBytes+len("...") || !utf8.ValidString(got) {
+		t.Errorf("long reason: %d bytes, valid=%v", len(got), utf8.ValidString(got))
+	}
+	if exact := strings.Repeat("x", maxReasonBytes); verdictReason(exact) != exact {
+		t.Error("a reason at the limit was cut")
+	}
+
+	reply := `{"nonce":"n1","reasoning":"r","verdict":"fail","feedback":"\u001b[2Jcleared"}`
+	verdict, _, err := parseDiffReviewReply(reply, "n1")
+	if err != nil || verdict.Reason != "[2Jcleared" {
+		t.Errorf("parsed reason = %q, err = %v", verdict.Reason, err)
+	}
 }
