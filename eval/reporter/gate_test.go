@@ -325,8 +325,11 @@ func TestCompare_MixedTrialCounts(t *testing.T) {
 		t.Errorf("pooled trials = %d, want 20 (5 baseline + 15 current)", nf.PooledTrials)
 	}
 	within(t, "per-trial pass rate", nf.PerTrialPassRate, 19.0/20, 1e-12)
-	within(t, "single-run false alarm", nf.SingleRunFalseAlarm, FlipFalseAlarmRate(0.95, 5, 1), 1e-12)
-	within(t, "3-of-3 false alarm", nf.FlipRuleFalseAlarm, FlipFalseAlarmRate(0.95, 5, 3), 1e-12)
+	if nf.SingleRunFalseAlarm == nil || nf.FlipRuleFalseAlarm == nil {
+		t.Fatalf("false-alarm rates missing for a pool with a failure: %+v", nf)
+	}
+	within(t, "single-run false alarm", *nf.SingleRunFalseAlarm, FlipFalseAlarmRate(0.95, 5, 1), 1e-12)
+	within(t, "3-of-3 false alarm", *nf.FlipRuleFalseAlarm, FlipFalseAlarmRate(0.95, 5, 3), 1e-12)
 }
 
 func TestCompare_SinglePairedTask(t *testing.T) {
@@ -685,5 +688,51 @@ func TestCompare_BlocksOnOneSidedUpperBound(t *testing.T) {
 	}
 	if strings.Contains(text, "confirmed") {
 		t.Errorf("block report claims a confirmed regression:\n%s", text)
+	}
+}
+
+func TestNoiseFloor_AllPassPoolReportsInsufficientVariation(t *testing.T) {
+	report := Compare(singleRunSuite("base", "pass", "pass", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3, 3, 3}), DefaultOptions())
+	nf := report.Summary.NoiseFloor
+	if nf == nil {
+		t.Fatal("noise floor missing for an all-pass baseline")
+	}
+	if nf.PerTrialPassRate != 1 || nf.PooledTrials != 20 {
+		t.Errorf("noise floor = %+v, want pass rate 1 over 20 pooled trials", nf)
+	}
+	if nf.SingleRunFalseAlarm != nil || nf.FlipRuleFalseAlarm != nil {
+		t.Errorf("false-alarm rates reported for an all-pass pool: %+v", nf)
+	}
+
+	text := FormatText(report)
+	if !strings.Contains(text, "insufficient variation") {
+		t.Errorf("report missing the insufficient-variation note:\n%s", text)
+	}
+	if strings.Contains(text, "0.00%") {
+		t.Errorf("report prints a 0.00%% false-alarm rate:\n%s", text)
+	}
+
+	data, err := json.Marshal(report.Summary.NoiseFloor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "FalseAlarm") {
+		t.Errorf("noise floor JSON carries a false-alarm rate: %s", data)
+	}
+}
+
+func TestNoiseFloor_PoolWithAFailurePrintsBothRates(t *testing.T) {
+	report := Compare(singleRunSuite("base", "pass", "pass", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3, 3, 2}), DefaultOptions())
+	text := FormatText(report)
+	for _, want := range []string{
+		"per-trial pass rate 0.950 over 20 pooled trials",
+		"a single-run flip gate false-alarms on 22.62% of pushes, the 3-of-3 flip rule on 0.06%",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "insufficient variation") {
+		t.Errorf("report flags insufficient variation despite a failure:\n%s", text)
 	}
 }

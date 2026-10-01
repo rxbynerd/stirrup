@@ -143,12 +143,13 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 
 	if len(pairs) > 0 && allPassBase && pooledTotal > 0 {
 		p := float64(pooledPass) / float64(pooledTotal)
-		summary.NoiseFloor = &eval.NoiseFloor{
-			PerTrialPassRate:    p,
-			PooledTrials:        pooledTotal,
-			SingleRunFalseAlarm: FlipFalseAlarmRate(p, len(pairs), 1),
-			FlipRuleFalseAlarm:  FlipFalseAlarmRate(p, len(pairs), summary.Current.Trials),
+		nf := &eval.NoiseFloor{PerTrialPassRate: p, PooledTrials: pooledTotal}
+		if pooledPass < pooledTotal {
+			singleRun := FlipFalseAlarmRate(p, len(pairs), 1)
+			flipRule := FlipFalseAlarmRate(p, len(pairs), summary.Current.Trials)
+			nf.SingleRunFalseAlarm, nf.FlipRuleFalseAlarm = &singleRun, &flipRule
 		}
+		summary.NoiseFloor = nf
 	}
 
 	summary.Gate, summary.GateReasons = decideGate(gateInput{
