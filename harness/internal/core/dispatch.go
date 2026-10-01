@@ -37,11 +37,16 @@ type pendingCall struct {
 	// under the active toolset profile. Equal to call.Name under the
 	// default profile and for unknown tools.
 	internalName string
-	output       string
-	structured   structuredOutput // optional typed result payload + kind; zero value for text-only tools and every failure path
-	success      bool
-	errorReason  string // guard-deny reason; written to trace (apply security.Scrub before setting)
-	denied       bool   // PhasePreTool deny path; takes priority over (output, success)
+	// tool and input are set once preflightToolCall accepts the call;
+	// input is the cleaned form the guard classified and the handler
+	// receives.
+	tool        *tool.Tool
+	input       json.RawMessage
+	output      string
+	structured  structuredOutput // optional typed result payload + kind; zero value for text-only tools and every failure path
+	success     bool
+	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
+	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
 	// failureCategory is the bounded ToolFailureCategory describing why
 	// this call failed; empty when success is true.
 	failureCategory observability.ToolFailureCategory
@@ -72,17 +77,15 @@ func (l *AgenticLoop) planAndDispatch(
 ) ([]types.ToolResult, []types.ToolCallRecord, string) {
 	plan := make([]pendingCall, len(toolCalls))
 
-	// Phase 1: open the tool span, run PhasePreTool guard, and resolve the
-	// tool. Sync calls (and Unknown tools) execute inline; async survivors
-	// queue for the fan-out in Phase 2.
+	// Phase 1: resolve the tool, open the tool span, run the deterministic
+	// preflight, then the PhasePreTool guard. Sync calls execute inline;
+	// async survivors queue for the fan-out in Phase 2.
 	asyncIndices := make([]int, 0, len(toolCalls))
 	for i, call := range toolCalls {
 		l.Logger.Info("tool dispatched", "tool", call.Name)
 		callStart := time.Now()
 		// Resolve up front so every gating surface below keys on the
-		// internal tool ID rather than the model-facing alias. An
-		// unresolved tool falls through to dispatchToolCall, which fails
-		// fast.
+		// internal tool ID rather than the model-facing alias.
 		t := l.Tools.Resolve(call.Name)
 
 		// Bound the span name's cardinality the same way as the metric
@@ -113,30 +116,37 @@ func (l *AgenticLoop) planAndDispatch(
 			spanCtx:   toolSpanCtx,
 			startedAt: callStart,
 			// internalName defaults to the model-facing name; refined below
-			// once resolution succeeds. Denied and unknown-tool calls keep
-			// this default (alias == internal).
+			// once resolution succeeds. Unknown-tool calls keep this
+			// default (alias == internal).
 			internalName: call.Name,
 		}
-
-		// guardToolName is what the guardrail classifier sees: the internal
-		// ID when resolved, else the model-supplied name. A rule written
-		// against an internal name must fire under any toolset profile.
-		guardToolName := call.Name
 		if t != nil {
-
 			plan[i].internalName = t.Name
-			guardToolName = t.Name
 		}
 
+		// Deterministic checks run before the model guard: a call they
+		// reject never costs a classifier round-trip, and the guard
+		// classifies the cleaned input the handler would receive.
+		input, rejection, rejectCategory := l.preflightToolCall(call, t)
+		if rejectCategory != "" {
+			plan[i].output = rejection
+			plan[i].success = false
+			plan[i].failureCategory = rejectCategory
+			continue
+		}
+		plan[i].tool = t
+		plan[i].input = input
+
 		// PhasePreTool guard. Passes the tool-span ctx so guard.pre_tool
-		// nests under tool.<name>. A deny short-circuits dispatch as a
-		// tool failure.
+		// nests under tool.<name>. ToolName is the internal ID so a rule
+		// written against an internal name fires under any toolset
+		// profile. A deny short-circuits dispatch as a tool failure.
 		preToolIn := guard.Input{
 			Phase:     guard.PhasePreTool,
-			Content:   string(call.Input),
+			Content:   string(input),
 			Source:    "tool_call:" + call.Name,
-			ToolName:  guardToolName,
-			ToolInput: call.Input,
+			ToolName:  t.Name,
+			ToolInput: input,
 			Mode:      config.Mode,
 			RunID:     config.RunID,
 		}
@@ -159,13 +169,12 @@ func (l *AgenticLoop) planAndDispatch(
 			continue
 		}
 
-		if t != nil && t.AsyncHandler != nil {
+		if t.AsyncHandler != nil {
 			asyncIndices = append(asyncIndices, i)
 			continue
 		}
 
-		// Sync path: dispatch inline (including Unknown tools).
-		output, success, category, structured := l.dispatchToolCallCategorized(toolSpanCtx, call)
+		output, success, category, structured := l.executeToolCall(toolSpanCtx, t, call, input)
 		plan[i].output = output
 		plan[i].structured = structured
 		plan[i].success = success
@@ -208,7 +217,7 @@ func (l *AgenticLoop) planAndDispatch(
 						)
 					}
 				}()
-				output, success, category, structured := l.dispatchToolCallCategorized(plan[idx].spanCtx, plan[idx].call)
+				output, success, category, structured := l.executeToolCall(plan[idx].spanCtx, plan[idx].tool, plan[idx].call, plan[idx].input)
 				plan[idx].output = output
 				plan[idx].structured = structured
 				plan[idx].success = success
