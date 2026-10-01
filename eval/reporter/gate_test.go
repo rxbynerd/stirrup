@@ -213,10 +213,37 @@ func TestCompare_GateDecisions(t *testing.T) {
 			wantGate: eval.GateInconclusive,
 		},
 		{
-			name:     "no paired tasks is inconclusive",
-			baseline: eval.SuiteResult{RunID: "base", Tasks: []eval.TaskResult{{TaskID: "other", Outcome: "pass"}}},
+			name:     "an empty baseline pairs nothing and is inconclusive",
+			baseline: eval.SuiteResult{RunID: "base"},
 			current:  trialSuite("curr", 3, []int{3, 3, 3}),
 			wantGate: eval.GateInconclusive,
+		},
+		{
+			name:       "renaming every task warns instead of staying inconclusive",
+			baseline:   eval.SuiteResult{RunID: "base", Tasks: []eval.TaskResult{{TaskID: "other", Outcome: "pass"}}},
+			current:    trialSuite("curr", 3, []int{3, 3, 3}),
+			wantGate:   eval.GateWarn,
+			wantReason: "1 baseline task(s) missing from the current run: other",
+		},
+		{
+			name:       "a baseline task missing from an otherwise passing run warns",
+			baseline:   allPass5,
+			current:    trialSuite("curr", 3, []int{3, 3, 3, 3}),
+			wantGate:   eval.GateWarn,
+			wantReason: "missing from the current run: te",
+		},
+		{
+			name:      "a missing task does not lower a deterministic flip block",
+			baseline:  allPass5,
+			current:   trialSuite("curr", 3, []int{0, 3, 3, 3}),
+			wantGate:  eval.GateBlock,
+			wantFlips: []string{"ta"},
+		},
+		{
+			name:     "a task new in the current run leaves the gate alone",
+			baseline: allPass5,
+			current:  trialSuite("curr", 3, []int{3, 3, 3, 3, 3, 3}),
+			wantGate: eval.GatePass,
 		},
 		{
 			name:     "an improvement passes",
@@ -555,5 +582,67 @@ func TestFormatText_ResolutionNote(t *testing.T) {
 	exact := FormatText(Compare(baseline, current, Options{WarnMargin: 1.0 / 15, FlipThreshold: DefaultFlipThreshold}))
 	if strings.Contains(exact, "one lost trial") {
 		t.Errorf("margin equal to one lost trial carries a resolution note:\n%s", exact)
+	}
+}
+
+func TestCompare_ListsUnpairedTasks(t *testing.T) {
+	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
+	current := trialSuite("curr", 3, []int{3, 3, 3, 3})
+	current.Tasks[1].TaskID = "zz-new"
+	current.Tasks[3].TaskID = "aa-new"
+
+	report := Compare(baseline, current, DefaultOptions())
+	if got := strings.Join(report.BaselineOnly, ","); got != "tb,td,te" {
+		t.Errorf("baselineOnly = %q, want tb,td,te", got)
+	}
+	if got := strings.Join(report.CurrentOnly, ","); got != "aa-new,zz-new" {
+		t.Errorf("currentOnly = %q, want aa-new,zz-new", got)
+	}
+	if len(report.Tasks) != 2 {
+		t.Errorf("paired tasks = %d, want 2", len(report.Tasks))
+	}
+
+	text := FormatText(report)
+	for _, want := range []string{
+		"Missing from current run (3): tb, td, te",
+		"New in current run (2): aa-new, zz-new",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report missing %q:\n%s", want, text)
+		}
+	}
+
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var round eval.ComparisonReport
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if strings.Join(round.BaselineOnly, ",") != "tb,td,te" || strings.Join(round.CurrentOnly, ",") != "aa-new,zz-new" {
+		t.Errorf("round trip lost the unpaired lists: %+v", round)
+	}
+}
+
+func TestCompare_UnpairedListsAreEmptyArraysWhenEveryTaskPairs(t *testing.T) {
+	report := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"baselineOnly", "currentOnly"} {
+		if got := string(doc[key]); got != "[]" {
+			t.Errorf("%s = %s, want []", key, got)
+		}
+	}
+
+	text := FormatText(report)
+	if strings.Contains(text, "Missing from current run") || strings.Contains(text, "New in current run") {
+		t.Errorf("report lists unpaired tasks when every task pairs:\n%s", text)
 	}
 }

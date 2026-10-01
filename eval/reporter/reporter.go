@@ -6,6 +6,7 @@ package reporter
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/eval"
@@ -52,11 +53,13 @@ func (o Options) Validate() error {
 
 // Compare diffs a current SuiteResult against a baseline. Per-task and
 // paired statistics use only tasks present in both results; the side
-// summaries and pass rates use every task on that side. A task without
-// Trials counts as a single trial, so results written before trials
-// existed compare unchanged.
+// summaries and pass rates use every task on that side, and tasks present
+// on one side only are listed in the report. A task without Trials counts
+// as a single trial.
 func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonReport {
 	baselineByID := indexByTaskID(baseline.Tasks)
+	baselineOnly := unpairedIDs(baseline.Tasks, indexByTaskID(current.Tasks))
+	currentOnly := unpairedIDs(current.Tasks, baselineByID)
 
 	var (
 		regressions  []eval.TaskRegression
@@ -153,6 +156,7 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 		paired:      summary.Paired,
 		flips:       flips,
 		regressions: regressions,
+		missing:     baselineOnly,
 		warnMargin:  opts.WarnMargin,
 	})
 
@@ -162,6 +166,8 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 		Regressions:  regressions,
 		Improvements: improvements,
 		Tasks:        pairs,
+		BaselineOnly: baselineOnly,
+		CurrentOnly:  currentOnly,
 		Summary:      summary,
 	}
 }
@@ -172,6 +178,7 @@ type gateInput struct {
 	paired      *eval.PairedSummary
 	flips       []string
 	regressions []eval.TaskRegression
+	missing     []string
 	warnMargin  float64
 }
 
@@ -179,11 +186,16 @@ type gateInput struct {
 // flip blocks at any n; fewer than minGateTasks paired tasks (or an
 // undefined SE) is inconclusive; a one-sided 95% upper bound below zero
 // blocks; a mean drop beyond the warn margin warns; anything else passes.
-// A listed regression then raises a pass or inconclusive gate to warn.
+// A listed regression, or a baseline task absent from the current run,
+// then raises a pass or inconclusive gate to warn.
 func decideGate(in gateInput) (string, []string) {
 	gate, reasons := baseGate(in)
 	if len(in.regressions) > 0 {
 		gate, reasons = floorGate(gate, reasons, eval.GateWarn, "regressed: "+describeRegressions(in.regressions))
+	}
+	if len(in.missing) > 0 {
+		gate, reasons = floorGate(gate, reasons, eval.GateWarn, fmt.Sprintf(
+			"%d baseline task(s) missing from the current run: %s", len(in.missing), strings.Join(in.missing, ", ")))
 	}
 	return gate, reasons
 }
@@ -295,6 +307,19 @@ func suiteTrials(r eval.SuiteResult) int {
 		k = max(k, t.Counts().Total())
 	}
 	return max(k, 1)
+}
+
+// unpairedIDs returns the sorted IDs of tasks absent from other, as a
+// non-nil slice.
+func unpairedIDs(tasks []eval.TaskResult, other map[string]*eval.TaskResult) []string {
+	ids := []string{}
+	for _, t := range tasks {
+		if _, ok := other[t.TaskID]; !ok {
+			ids = append(ids, t.TaskID)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 func indexByTaskID(tasks []eval.TaskResult) map[string]*eval.TaskResult {
