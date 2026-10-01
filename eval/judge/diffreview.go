@@ -266,76 +266,36 @@ func diffReviewConfigHash(cfg types.JudgeLLMConfig, criteria string) (string, er
 }
 
 // parseDiffReviewReply extracts the verdict object that carries this
-// call's nonce from the model's text. Every balanced top-level object is a
-// candidate; one without the nonce is not a verdict, wherever it appears,
-// so JSON echoed from the diff can never be selected. The returned status
-// is a types.JudgeParse* value. A reply without a conforming verdict is an
-// error, never a fail.
+// call's nonce from the model's text. Only top-level objects carrying the
+// nonce are verdicts, wherever they appear, so JSON echoed from the diff
+// can never be selected. The returned status is a types.JudgeParse* value.
+// A reply without a conforming verdict is an error, never a fail.
 func parseDiffReviewReply(text, nonce string) (eval.JudgeVerdict, string, error) {
-	var matches []map[string]string
-	candidates := 0
-	for i := 0; i < len(text); {
-		start := strings.IndexByte(text[i:], '{')
-		if start < 0 {
-			break
-		}
-		start += i
-		end, ok := jsonObjectEnd(text, start)
-		if !ok {
-			i = start + 1
-			continue
-		}
-		candidates++
-		i = end
-		obj := text[start:end]
-		if !carriesNonce(obj, nonce) {
-			continue
-		}
-		fields, err := decodeVerdictObject(obj)
-		if err != nil {
-			return eval.JudgeVerdict{}, types.JudgeParseSchemaViolation, fmt.Errorf("model reply is not a valid verdict object: %v (reply: %s)", err, excerpt(obj))
-		}
-		matches = append(matches, fields)
-	}
-
+	found, err := findNonceObject(text, nonce)
 	switch {
-	case candidates == 0:
+	case errors.Is(err, errNoNonceObject) && found.candidates == 0:
 		return eval.JudgeVerdict{}, types.JudgeParseNoJSON, fmt.Errorf("model reply contained no JSON object (reply: %s)", excerpt(text))
-	case len(matches) == 0:
-		return eval.JudgeVerdict{}, types.JudgeParseSchemaViolation, fmt.Errorf("no JSON object in the model reply carries this call's nonce (reply: %s)", excerpt(text))
+	case err != nil:
+		return eval.JudgeVerdict{}, types.JudgeParseSchemaViolation, fmt.Errorf("%w (reply: %s)", err, excerpt(text))
 	}
-	last := matches[len(matches)-1]
-	for _, m := range matches[:len(matches)-1] {
-		if m["verdict"] != last["verdict"] {
-			return eval.JudgeVerdict{}, types.JudgeParseSchemaViolation, errors.New("model reply holds conflicting verdict objects that carry this call's nonce")
-		}
+	fields, err := decodeVerdictObject(found.raw)
+	if err != nil {
+		return eval.JudgeVerdict{}, types.JudgeParseSchemaViolation, fmt.Errorf("model reply is not a valid verdict object: %v (reply: %s)", err, excerpt(found.raw))
 	}
 
 	parse := types.JudgeParseOK
-	if len(matches) > 1 {
+	if found.matches > 1 {
 		parse = types.JudgeParseLastMatch
 	}
-	reason := last["feedback"]
+	reason := fields["feedback"]
 	if reason == "" {
-		reason = last["reasoning"]
+		reason = fields["reasoning"]
 	}
 	return eval.JudgeVerdict{
-		Passed: last["verdict"] == types.JudgeStatusPass,
-		Status: last["verdict"],
+		Passed: fields["verdict"] == types.JudgeStatusPass,
+		Status: fields["verdict"],
 		Reason: reason,
 	}, parse, nil
-}
-
-// carriesNonce reports whether obj is a JSON object whose "nonce" property
-// is the string nonce.
-func carriesNonce(obj, nonce string) bool {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(obj), &fields); err != nil {
-		return false
-	}
-	var got string
-	raw, ok := fields["nonce"]
-	return ok && json.Unmarshal(raw, &got) == nil && got == nonce
 }
 
 // decodeVerdictObject strictly validates a verdict object: exactly the
@@ -380,40 +340,6 @@ func decodeVerdictObject(obj string) (map[string]string, error) {
 	default:
 		return nil, fmt.Errorf("verdict %s is neither \"pass\" nor \"fail\"", excerpt(fields["verdict"]))
 	}
-}
-
-// jsonObjectEnd returns the index just past the brace-balanced object that
-// starts at text[start], skipping braces inside JSON strings. ok is false
-// when the object never closes.
-func jsonObjectEnd(text string, start int) (end int, ok bool) {
-	depth := 0
-	inString, escaped := false, false
-	for i := start; i < len(text); i++ {
-		c := text[i]
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-		}
-	}
-	return 0, false
 }
 
 // excerpt quotes a bounded prefix of s for inclusion in an error message.
