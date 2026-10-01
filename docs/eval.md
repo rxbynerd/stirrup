@@ -278,7 +278,7 @@ the run's tool-call trace instead (`eval/judge/judge.go`):
 | `file-contains` | `path` exists and matches the regex in `pattern`.                     |
 | `diff-review`   | A model reviews the change the agent made to the workspace against `criteria` (see [below](#the-diff-review-judge)). Needs a judge-model credential. |
 | `tool-trace`    | The run's `RunTrace.ToolCalls` satisfy a `tool_trace` block (see below). |
-| `composite`     | Combines child `judges` with `require: "all"` or `require: "any"`.    |
+| `composite`     | Combines child `judges` with `require: "all"` or `require: "any"`, evaluating them in order and stopping at the first decisive one (see [below](#the-composite-judge)). |
 
 All workspace-relative paths go through symlink-aware containment so
 judges cannot escape the workspace.
@@ -473,7 +473,9 @@ outcome `error` without its verdict.
 - These measures reduce, but do not eliminate, the chance that a
   crafted diff steers the verdict. Suites should pair `diff-review`
   with a deterministic judge (`test-command`, `file-contains`) under
-  `composite` with `require = "all"` for outcomes that matter.
+  `composite` with `require = "all"` for outcomes that matter, listing
+  the deterministic judge first so that its failure skips the model
+  call.
 - The eval host runs git over workspace content the agent wrote. The
   judge-owned repository, host and system git configuration replaced
   by empty files, disabled hooks, and a scrubbed environment keep these
@@ -541,6 +543,78 @@ The judge receives the run's parsed `RunTrace` through
 `JudgeContext.Trace`, which the runner populates from the per-task
 trace it already parses. A `tool-trace` judge with no trace available
 is an error, not a silent pass.
+
+#### The `composite` judge
+
+A `composite` judge combines nested `judge` blocks. `require` is `all`
+(the default) or `any`. The suite loader rejects a composite with no
+nested judges and any other `require` value.
+
+**Order matters.** Nested judges run in declaration order, and
+evaluation stops at the first one that decides the outcome: the first
+fail or error under `all`, the first pass under `any`. Judges after the
+stop are not run, and their `details` entries have status `skipped`.
+Cheap deterministic judges (`file-exists`, `file-contains`,
+`tool-trace`, `test-command`) belong before `diff-review`, so that a
+deterministic fail under `all`, or a deterministic pass under `any`,
+spares the model call:
+
+```hcl
+judge {
+  type    = "composite"
+  require = "all"
+
+  judge {
+    type  = "file-exists"
+    paths = ["retry.go"]
+  }
+
+  judge {
+    type    = "test-command"
+    command = "go test ./..."
+  }
+
+  judge {
+    type     = "diff-review"
+    criteria = "The change adds a retry loop without changing the exported signature."
+  }
+}
+```
+
+**Errors.** A nested judge that errors, such as an unreachable model
+endpoint, does not abort the composite. How it counts depends on
+`require`:
+
+| `require` | Nested judge outcome | Effect on the composite                                                   |
+|-----------|----------------------|---------------------------------------------------------------------------|
+| `all`     | pass                 | Evaluation continues.                                                     |
+| `all`     | fail                 | Composite is `fail`; remaining judges are skipped.                        |
+| `all`     | error                | Composite is `error`; remaining judges are skipped. The composite cannot be known to pass. |
+| `any`     | pass                 | Composite is `pass`; remaining judges are skipped.                        |
+| `any`     | fail                 | Evaluation continues.                                                     |
+| `any`     | error                | Evaluation continues; a later pass still makes the composite `pass`.      |
+
+When no nested judge passes under `any`, the composite is `error` if at
+least one nested judge errored and `fail` otherwise. When every nested
+judge passes under `all`, the composite is `pass`. An `error` composite
+has `passed: false`, and nested composites propagate their status in
+the same way.
+
+**Verdict.** The composite's `status` is always set. Its `reason` names
+the deciding nested judge by 1-based position and type, and counts the
+skipped judges when there are any, for example `sub-judge 2 of 3
+(file-contains) failed (require all); 1 skipped`. For an `error`
+decision the reason ends with the nested judge's error message.
+`details` holds one entry per nested judge in declaration order, each
+with `type`, `status` (`pass`, `fail`, `error`, or `skipped`), `passed`,
+`reason`, and the `record` of an LLM-backed judge, which is kept for
+error verdicts too. A nested composite appears as a single entry with
+its own status and reason; its own `details` are not repeated. The
+composite verdict itself has no `record`.
+
+A misconfigured tree is not a verdict. An empty composite, an invalid
+`require`, or an unknown judge type anywhere in the tree is reported as
+an error before any nested judge runs.
 
 ### Replay doubles
 
