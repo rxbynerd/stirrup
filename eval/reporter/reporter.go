@@ -135,18 +135,7 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 	summary.PassRateDelta = summary.CurrentPassRate - summary.BaselinePassRate
 
 	if ps, ok := Paired(diffs); ok {
-		summary.Paired = &eval.PairedSummary{
-			Tasks:       ps.N,
-			MeanDelta:   ps.MeanDelta,
-			StdErr:      ps.StdErr,
-			DF:          ps.DF,
-			CILow:       ps.CILow,
-			CIHigh:      ps.CIHigh,
-			UpperBound:  ps.UpperBound,
-			PValue:      ps.PValue,
-			PValueExact: ps.PValueExact,
-			MDE:         ps.MDE,
-		}
+		summary.Paired = &ps
 	}
 
 	if len(pairs) > 0 && allPassBase && pooledTotal > 0 {

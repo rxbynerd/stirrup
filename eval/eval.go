@@ -210,18 +210,19 @@ type RateSummary struct {
 }
 
 // PairedSummary holds the paired-difference statistics over tasks present
-// in both results. It is omitted when fewer than two tasks pair.
+// in both results. It is omitted when fewer than two tasks pair. MDE is
+// nil when the standard error is zero.
 type PairedSummary struct {
-	Tasks       int     `json:"tasks"`
-	MeanDelta   float64 `json:"meanDelta"`
-	StdErr      float64 `json:"stdErr"`
-	DF          int     `json:"df"`
-	CILow       float64 `json:"ciLow"`
-	CIHigh      float64 `json:"ciHigh"`
-	UpperBound  float64 `json:"upperBound"`
-	PValue      float64 `json:"pValue"`
-	PValueExact bool    `json:"pValueExact"`
-	MDE         float64 `json:"mde"`
+	Tasks       int      `json:"tasks"`
+	MeanDelta   float64  `json:"meanDelta"`
+	StdErr      float64  `json:"stdErr"`
+	DF          int      `json:"df"`
+	CILow       float64  `json:"ciLow"`
+	CIHigh      float64  `json:"ciHigh"`
+	UpperBound  float64  `json:"upperBound"`
+	PValue      float64  `json:"pValue"`
+	PValueExact bool     `json:"pValueExact"`
+	MDE         *float64 `json:"mde,omitempty"`
 }
 
 // NoiseFloor estimates how often an unchanged agent would trip a flip
