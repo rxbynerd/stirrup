@@ -39,12 +39,15 @@ func TestRunSuite_EmptyID(t *testing.T) {
 	}
 }
 
+// validJudge satisfies suite validation for tests that never run the judge.
+var validJudge = types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}
+
 func TestRunSuite_DryRun(t *testing.T) {
 	suite := types.EvalSuite{
 		ID: "test-suite",
 		Tasks: []types.EvalTask{
-			{ID: "task-1", Prompt: "do something"},
-			{ID: "task-2", Prompt: "do something else"},
+			{ID: "task-1", Prompt: "do something", Judge: validJudge},
+			{ID: "task-2", Prompt: "do something else", Judge: validJudge},
 		},
 	}
 
@@ -382,7 +385,20 @@ func TestValidateSuite(t *testing.T) {
 		},
 		{
 			name:  "valid",
-			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1"}}},
+			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1", Judge: validJudge}}},
+		},
+		{
+			name:    "task without a judge",
+			suite:   types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1"}}},
+			wantErr: `task "t1": unknown judge type: ""`,
+		},
+		{
+			name: "empty nested composite",
+			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1", Judge: types.EvalJudge{
+				Type:   "composite",
+				Judges: []types.EvalJudge{{Type: "composite"}},
+			}}}},
+			wantErr: `task "t1": sub-judge 1: composite judge requires at least one sub-judge`,
 		},
 		{
 			name: "traversal in suite ID",
@@ -404,7 +420,7 @@ func TestValidateSuite(t *testing.T) {
 			name: "duplicate task IDs",
 			suite: types.EvalSuite{
 				ID:    "s1",
-				Tasks: []types.EvalTask{{ID: "t1"}, {ID: "t1"}},
+				Tasks: []types.EvalTask{{ID: "t1", Judge: validJudge}, {ID: "t1", Judge: validJudge}},
 			},
 			wantErr: `duplicate task ID "t1"`,
 		},

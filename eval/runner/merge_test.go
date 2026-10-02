@@ -494,7 +494,7 @@ func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 	}
 	suite := types.EvalSuite{
 		ID:        "inline-no-timeout",
-		Tasks:     []types.EvalTask{{ID: "t1", Prompt: "p"}},
+		Tasks:     []types.EvalTask{{ID: "t1", Prompt: "p", Judge: validJudge}},
 		RunConfig: baseline,
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
@@ -517,8 +517,8 @@ func TestDryRun_NoBaselineIsNoOp(t *testing.T) {
 	suite := types.EvalSuite{
 		ID: "legacy-suite",
 		Tasks: []types.EvalTask{
-			{ID: "t1", Prompt: "p"},
-			{ID: "t2", Prompt: "p"},
+			{ID: "t1", Prompt: "p", Judge: validJudge},
+			{ID: "t2", Prompt: "p", Judge: validJudge},
 		},
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
@@ -553,7 +553,7 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 	}
 	suite := types.EvalSuite{
 		ID:        "ro-suite",
-		Tasks:     []types.EvalTask{{ID: "bad", Prompt: "p"}, {ID: "ok", Prompt: "p"}},
+		Tasks:     []types.EvalTask{{ID: "bad", Prompt: "p", Judge: validJudge}, {ID: "ok", Prompt: "p", Judge: validJudge}},
 		RunConfig: bad,
 	}
 
@@ -598,8 +598,8 @@ func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 		ID:        "mixed-suite",
 		RunConfig: baseline,
 		Tasks: []types.EvalTask{
-			{ID: "ok-task", Prompt: "p"},
-			{ID: "bad-task", Prompt: "p", RunConfigOverrides: &types.RunConfigOverrides{Mode: "planning"}},
+			{ID: "ok-task", Prompt: "p", Judge: validJudge},
+			{ID: "bad-task", Prompt: "p", Judge: validJudge, RunConfigOverrides: &types.RunConfigOverrides{Mode: "planning"}},
 		},
 	}
 

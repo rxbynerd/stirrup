@@ -626,3 +626,42 @@ func TestRunSuite_JSONSuitesGetTheLoaderLLMChecks(t *testing.T) {
 		})
 	}
 }
+
+func TestRunSuite_JSONSuitesGetTheJudgeTreeChecksBeforeAnyHarnessRun(t *testing.T) {
+	cases := map[string]struct {
+		suite   string
+		wantErr string
+	}{
+		"empty nested composite": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"composite","require":"any","judges":[]}]}}]}`,
+			wantErr: `task "t": sub-judge 2: composite judge requires at least one sub-judge`,
+		},
+		"invalid require": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"composite","require":"most","judges":[{"type":"file-exists","paths":["a"]}]}}]}`,
+			wantErr: `task "t": invalid require value: "most"`,
+		},
+		"mis-specified leaf behind a passing sub-judge": {
+			suite:   `{"id":"s","tasks":[{"id":"t","prompt":"p","judge":{"type":"composite","require":"any","judges":[{"type":"file-exists","paths":["a"]},{"type":"file-contains","path":"a","pattern":"("}]}}]}`,
+			wantErr: `task "t": sub-judge 2: invalid pattern "("`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "harness-ran")
+			harness := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
+			var suite types.EvalSuite
+			if err := json.Unmarshal([]byte(tc.suite), &suite); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Error("the harness ran despite an invalid judge tree")
+			}
+		})
+	}
+}

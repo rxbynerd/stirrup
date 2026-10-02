@@ -548,8 +548,9 @@ is an error, not a silent pass.
 #### The `composite` judge
 
 A `composite` judge combines nested `judge` blocks. `require` is `all`
-(the default) or `any`. The suite loader rejects a composite with no
-nested judges and any other `require` value.
+(the default) or `any`. The HCL suite loader and the runner reject a
+composite with no nested judges and any other `require` value; the runner
+does so, for suites from any source, before the first agent run.
 
 **Order matters.** Nested judges run in declaration order, and
 evaluation stops at the first one that decides the outcome: the first

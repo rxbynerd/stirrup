@@ -261,9 +261,10 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 	return results
 }
 
-// validateSuite checks that a suite has the minimum required fields and that
-// every task ID is a path-safe single segment (so per-task artifact directories
-// cannot escape OutputDir via traversal sequences).
+// validateSuite checks that a suite has the minimum required fields, that every
+// task ID is a path-safe single segment (so per-task artifact directories
+// cannot escape OutputDir via traversal sequences), and that every task's judge
+// tree is valid, so a misconfigured judge fails before any agent run.
 func validateSuite(suite types.EvalSuite) error {
 	if suite.ID == "" {
 		return fmt.Errorf("suite ID is required")
@@ -286,22 +287,8 @@ func validateSuite(suite types.EvalSuite) error {
 			return fmt.Errorf("duplicate task ID %q", t.ID)
 		}
 		seen[t.ID] = struct{}{}
-		if err := validateLLMBlocks(t.Judge); err != nil {
+		if err := judge.ValidateTree(t.Judge); err != nil {
 			return fmt.Errorf("task %q: %w", t.ID, err)
-		}
-	}
-	return nil
-}
-
-// validateLLMBlocks applies judge.ValidateLLMBlock to j and every nested
-// judge, as the HCL loader does.
-func validateLLMBlocks(j types.EvalJudge) error {
-	if err := judge.ValidateLLMBlock(j); err != nil {
-		return err
-	}
-	for _, sub := range j.Judges {
-		if err := validateLLMBlocks(sub); err != nil {
-			return err
 		}
 	}
 	return nil
