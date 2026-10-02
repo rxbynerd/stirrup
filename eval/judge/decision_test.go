@@ -434,17 +434,30 @@ func TestCheckDecisionLimits(t *testing.T) {
 	if err := checkDecisionLimits(small); err != nil {
 		t.Fatalf("small request: %v", err)
 	}
-	big := small
-	big.State = strings.Repeat("x", decisionStateTokenLimit)
-	if err := checkDecisionLimits(big); err == nil {
-		t.Error("a state over the per-question limit was accepted")
+
+	empty := small
+	empty.State = ""
+	question, _, err := decisionSizes(empty)
+	if err != nil {
+		t.Fatal(err)
 	}
+	atLimit := small
+	atLimit.State = strings.Repeat("x", decisionStateTokenLimit-decisionTokenReserve-question)
+	if err := checkDecisionLimits(atLimit); err != nil {
+		t.Errorf("a request exactly at the state budget was refused: %v", err)
+	}
+	overLimit := atLimit
+	overLimit.State += "x"
+	if err := checkDecisionLimits(overLimit); err == nil || !strings.Contains(err.Error(), "31488-byte budget for the provider's 32000-token limit on the state plus a question") {
+		t.Errorf("a request one byte over the state budget: err = %v", err)
+	}
+
 	many := decisionRequest{State: "s", Questions: map[string]decisionQuestion{}}
 	for _, k := range []string{"a", "b", "c"} {
 		many.Questions[k] = decisionQuestion{Type: "choice", Instructions: strings.Repeat("q", 25_000)}
 	}
-	if err := checkDecisionLimits(many); err == nil {
-		t.Error("questions over the per-request limit were accepted")
+	if err := checkDecisionLimits(many); err == nil || !strings.Contains(err.Error(), "63488-byte budget for the provider's 64000-token limit on a request") {
+		t.Errorf("questions each within the state budget but over the request budget: err = %v", err)
 	}
 }
 

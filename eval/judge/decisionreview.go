@@ -110,14 +110,20 @@ func decisionSizes(req decisionRequest) (stateAndLongest, total int, err error) 
 	return len(req.State) + longest, len(req.State) + total, nil
 }
 
-// checkDecisionLimits rejects a request over either protocol limit.
+// checkDecisionLimits rejects a request over either protocol limit, naming
+// the limit it exceeds.
 func checkDecisionLimits(req decisionRequest) error {
 	stateAndLongest, total, err := decisionSizes(req)
 	if err != nil {
 		return err
 	}
-	if stateAndLongest > decisionStateTokenLimit-decisionTokenReserve || total > decisionRequestTokenLimit-decisionTokenReserve {
-		return fmt.Errorf("decision request is %d bytes of state and question, over the provider's %d-token limit", stateAndLongest, decisionStateTokenLimit)
+	if budget := decisionStateTokenLimit - decisionTokenReserve; stateAndLongest > budget {
+		return fmt.Errorf("decision request has %d bytes of state and longest question, over the %d-byte budget for the provider's %d-token limit on the state plus a question",
+			stateAndLongest, budget, decisionStateTokenLimit)
+	}
+	if budget := decisionRequestTokenLimit - decisionTokenReserve; total > budget {
+		return fmt.Errorf("decision request has %d bytes of state and questions, over the %d-byte budget for the provider's %d-token limit on a request",
+			total, budget, decisionRequestTokenLimit)
 	}
 	return nil
 }
