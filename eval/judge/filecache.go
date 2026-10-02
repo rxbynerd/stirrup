@@ -120,13 +120,23 @@ func NewFileCache(dir string, opts FileCacheOptions) (*FileCache, error) {
 // resolved.
 func (c *FileCache) Dir() string { return c.dir }
 
-// Get implements Cache.
+// Get implements Cache. The entry must be a regular file reached without
+// following a symlink at any level below the root; anything else is an
+// unusable entry rather than a miss.
 func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
-	path, err := c.path(key)
-	if err != nil {
-		return eval.JudgeVerdict{}, false, err
+	if !validCacheKey(key) {
+		return eval.JudgeVerdict{}, false, fmt.Errorf("invalid judge cache key %q", key)
 	}
-	f, err := os.Open(path) //nolint:gosec // path is built from a validated hex key under the operator's cache dir
+	dir, err := c.shardDir(key, false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return eval.JudgeVerdict{}, false, nil
+	}
+	if err != nil {
+		return eval.JudgeVerdict{}, true, err
+	}
+	// O_NONBLOCK keeps a FIFO planted at the entry path from blocking the
+	// open; the fstat below then rejects it.
+	f, err := os.OpenFile(filepath.Join(dir, key+".json"), os.O_RDONLY|entryOpenFlags, 0) //nolint:gosec // path is built from a validated hex key under checked shard directories
 	if errors.Is(err, fs.ErrNotExist) {
 		return eval.JudgeVerdict{}, false, nil
 	}
@@ -134,6 +144,16 @@ func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
 		return eval.JudgeVerdict{}, true, err
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return eval.JudgeVerdict{}, true, err
+	}
+	if !info.Mode().IsRegular() {
+		return eval.JudgeVerdict{}, true, fmt.Errorf("entry is not a regular file (%s)", info.Mode().Type())
+	}
+	if info.Size() > maxCacheEntryBytes {
+		return eval.JudgeVerdict{}, true, fmt.Errorf("entry exceeds %d bytes", maxCacheEntryBytes)
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxCacheEntryBytes+1))
 	if err != nil {
 		return eval.JudgeVerdict{}, true, err
@@ -159,9 +179,8 @@ func (c *FileCache) Put(key string, v eval.JudgeVerdict) error {
 	if !c.create {
 		return errors.New("judge cache is opened read-only")
 	}
-	path, err := c.path(key)
-	if err != nil {
-		return err
+	if !validCacheKey(key) {
+		return fmt.Errorf("invalid judge cache key %q", key)
 	}
 	data, err := json.MarshalIndent(fileCacheEntry{
 		Key:           key,
@@ -172,9 +191,9 @@ func (c *FileCache) Put(key string, v eval.JudgeVerdict) error {
 	if err != nil {
 		return fmt.Errorf("encoding judge cache entry: %w", err)
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, fileCacheDirPerm); err != nil {
-		return fmt.Errorf("creating judge cache directory: %w", err)
+	dir, err := c.shardDir(key, true)
+	if err != nil {
+		return fmt.Errorf("judge cache directory: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*.json")
 	if err != nil {
@@ -194,22 +213,46 @@ func (c *FileCache) Put(key string, v eval.JudgeVerdict) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("writing judge cache entry: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, filepath.Join(dir, key+".json")); err != nil {
 		return fmt.Errorf("writing judge cache entry: %w", err)
 	}
 	committed = true
 	return nil
 }
 
-// path returns the entry file for key, rejecting anything but a lowercase
-// hex SHA-256 so a key can never name a path outside the cache.
-func (c *FileCache) path(key string) (string, error) {
-	if !validCacheKey(key) {
-		return "", fmt.Errorf("invalid judge cache key %q", key)
+// shardDir returns the directory holding key's entry, checking that each
+// level below the root is a real directory, not a symlink, private to the
+// current user. With create it makes missing levels; otherwise a missing
+// level is reported as fs.ErrNotExist. A same-uid process can still swap a
+// level between this check and its use.
+func (c *FileCache) shardDir(key string, create bool) (string, error) {
+	dir := c.dir
+	for _, part := range []string{key[:2], key[2:4]} {
+		dir = filepath.Join(dir, part)
+		info, err := os.Lstat(dir)
+		if create && errors.Is(err, fs.ErrNotExist) {
+			if err = os.Mkdir(dir, fileCacheDirPerm); err == nil || errors.Is(err, fs.ErrExist) {
+				info, err = os.Lstat(dir)
+			}
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return "", fmt.Errorf("%s is a symbolic link", dir)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%s is not a directory", dir)
+		}
+		if err := checkPrivateDir(info); err != nil && !errors.Is(err, errOwnerUnchecked) {
+			return "", fmt.Errorf("%s: %w", dir, err)
+		}
 	}
-	return filepath.Join(c.dir, key[:2], key[2:4], key+".json"), nil
+	return dir, nil
 }
 
+// validCacheKey accepts only a lowercase hex SHA-256, so a key can never
+// name a path outside the cache.
 func validCacheKey(key string) bool {
 	if len(key) != 64 {
 		return false

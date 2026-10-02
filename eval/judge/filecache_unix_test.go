@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestNewFileCache_RefusesADirectoryOthersCanWrite(t *testing.T) {
@@ -74,6 +75,101 @@ func TestFileCache_KeepsDirectoriesAndEntriesPrivate(t *testing.T) {
 		syscall.Umask(old)
 		if err != nil {
 			t.Fatalf("umask %04o: %v", umask, err)
+		}
+	}
+}
+
+// entryPath returns key's entry file under dir after creating its shard
+// directories.
+func entryPath(t *testing.T, dir, key string) string {
+	t.Helper()
+	shard := filepath.Join(dir, key[:2], key[2:4])
+	if err := os.MkdirAll(shard, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(shard, key+".json")
+}
+
+func TestFileCache_FIFOEntryIsUnusableWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := CacheKey("c", "i", 0)
+	if err := syscall.Mkfifo(entryPath(t, dir, key), 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	type result struct {
+		found bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, found, err := c.Get(key)
+		done <- result{found, err}
+	}()
+	select {
+	case r := <-done:
+		if !r.found || r.err == nil || !strings.Contains(r.err.Error(), "not a regular file") {
+			t.Errorf("found %v, err %v; want an unusable entry", r.found, r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Get blocked on a FIFO entry")
+	}
+}
+
+func TestFileCache_SymlinkedEntryIsUnusable(t *testing.T) {
+	src := t.TempDir()
+	writer, err := NewFileCache(src, FileCacheOptions{Mode: CacheRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := CacheKey("c", "i", 0)
+	if err := writer.Put(key, fileCacheVerdict("planted")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(src, key[:2], key[2:4], key+".json"), entryPath(t, dir, key)); err != nil {
+		t.Fatal(err)
+	}
+	if v, found, err := c.Get(key); !found || err == nil {
+		t.Errorf("found %v, err %v, verdict %+v; want a symlinked entry refused", found, err, v)
+	}
+}
+
+func TestFileCache_SymlinkedShardDirectoryIsRefused(t *testing.T) {
+	for _, level := range []int{1, 2} {
+		dir := t.TempDir()
+		c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := CacheKey("c", "i", 0)
+		target := t.TempDir()
+		link := filepath.Join(dir, key[:2])
+		if level == 2 {
+			if err := os.Mkdir(link, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link = filepath.Join(link, key[2:4])
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Put(key, fileCacheVerdict("x")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Errorf("level %d: Put err = %v, want the symlink refused", level, err)
+		}
+		if _, found, err := c.Get(key); !found || err == nil {
+			t.Errorf("level %d: Get found %v, err %v; want an error", level, found, err)
+		}
+		if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+			t.Errorf("level %d: the link target holds %v (err %v)", level, entries, err)
 		}
 	}
 }

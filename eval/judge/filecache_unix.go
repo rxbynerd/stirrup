@@ -33,3 +33,7 @@ func checkPrivateDir(info fs.FileInfo) error {
 	}
 	return nil
 }
+
+// entryOpenFlags make opening an entry fail on a symlink and return at once
+// on a FIFO.
+const entryOpenFlags = syscall.O_NONBLOCK | syscall.O_NOFOLLOW

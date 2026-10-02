@@ -577,11 +577,12 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 		return fmt.Sprintf(`{"key":%q,"schemaVersion":%d,"createdAt":"2026-10-02T00:00:00Z","verdict":{"passed":true,"status":"pass","reason":"r"}}`, k, version)
 	}
 	cases := map[string]string{
-		"not json":         "{not json",
-		"empty":            "",
-		"another key":      entry(other, 1),
-		"unknown version":  entry(key, 2),
-		"oversized":        `{"key":"` + strings.Repeat("x", maxCacheEntryBytes) + `"}`,
+		"not json":        "{not json",
+		"empty":           "",
+		"another key":     entry(other, 1),
+		"unknown version": entry(key, 2),
+		"oversized": fmt.Sprintf(`{"key":%q,"schemaVersion":1,"createdAt":"2026-10-02T00:00:00Z","verdict":{"passed":true,"status":"pass","reason":%q}}`,
+			key, strings.Repeat("r", maxCacheEntryBytes)),
 		"truncated object": entry(key, 1)[:40],
 	}
 	for name, content := range cases {
@@ -602,6 +603,21 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 				t.Errorf("found %v, err %v; want an unusable existing entry", found, err)
 			}
 		})
+	}
+}
+
+func TestFileCache_DirectoryAtTheEntryPathIsUnusable(t *testing.T) {
+	dir := t.TempDir()
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := CacheKey("c", "i", 0)
+	if err := os.MkdirAll(filepath.Join(dir, key[:2], key[2:4], key+".json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := c.Get(key); !found || err == nil {
+		t.Errorf("found %v, err %v; want an unusable entry, not a miss", found, err)
 	}
 }
 
