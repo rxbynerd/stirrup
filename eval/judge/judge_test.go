@@ -332,7 +332,7 @@ func TestComposite_AllFailSkipsLLMSubJudge(t *testing.T) {
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 	j := composite("all", types.EvalJudge{Type: "file-exists", Paths: []string{"absent.txt"}}, diffReviewJudge())
 
-	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: fake.factory(nil, nil)}})
+	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
 	if v.Status != types.JudgeStatusFail {
 		t.Fatalf("verdict = %+v, want fail", v)
@@ -404,10 +404,10 @@ func TestComposite_AllErrorIsDecisive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := changedRepo(t)
-			jctx := JudgeContext{WorkspaceDir: dir}
+			dir, base := changedWorkspace(t)
+			jctx := JudgeContext{WorkspaceDir: dir, Baseline: &base}
 			if tc.client != nil {
-				jctx.NewClient = tc.client.factory(nil, nil)
+				jctx.ClientFactory = tc.client.factory(nil, nil)
 			}
 			j := composite("all", markerJudge("a", 0), tc.erroring, markerJudge("c", 0))
 
@@ -431,10 +431,10 @@ func TestComposite_AllErrorIsDecisive(t *testing.T) {
 func TestComposite_AnyErrorThenPassPasses(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{err: errors.New("provider returned HTTP 503")}
-	dir := changedRepo(t)
+	dir, base := changedWorkspace(t)
 	j := composite("any", diffReviewJudge(), markerJudge("b", 0), markerJudge("c", 0))
 
-	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}})
+	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 
 	if v.Status != types.JudgeStatusPass || !v.Passed {
 		t.Fatalf("verdict = %+v, want pass", v)
@@ -450,7 +450,7 @@ func TestComposite_AnyErrorWithoutPassIsError(t *testing.T) {
 	fake := &fakeClient{err: errors.New("provider returned HTTP 503")}
 	j := composite("any", diffReviewJudge(), markerJudge("b", 1))
 
-	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: fake.factory(nil, nil)}})
+	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
 	if v.Status != types.JudgeStatusError || v.Passed {
 		t.Fatalf("verdict = %+v, want error", v)
@@ -491,11 +491,11 @@ func TestComposite_NestedStatusPropagates(t *testing.T) {
 
 	t.Run("nested error is decisive for an outer all", func(t *testing.T) {
 		fake := &fakeClient{err: errors.New("provider returned HTTP 503")}
-		dir := changedRepo(t)
+		dir, base := changedWorkspace(t)
 		inner := composite("any", diffReviewJudge(), markerJudge("inner-fail", 1))
 		j := composite("all", inner, markerJudge("after", 0))
 
-		v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Options: Options{NewClient: fake.factory(nil, nil)}})
+		v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 
 		if v.Status != types.JudgeStatusError {
 			t.Fatalf("verdict = %+v, want error", v)
@@ -583,7 +583,7 @@ func TestComposite_DetailsCarryRecords(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			j := composite("any", markerJudge("a", 1), diffReviewJudge())
 
-			v := evaluateOK(t, j, JudgeContext{WorkspaceDir: changedRepo(t), Options: Options{NewClient: tc.client.factory(nil, nil)}})
+			v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: tc.client.factory(nil, nil)}))
 
 			if v.Record != nil {
 				t.Errorf("composite verdict Record = %+v, want nil", v.Record)

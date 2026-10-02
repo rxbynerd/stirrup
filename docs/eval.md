@@ -455,10 +455,10 @@ verdict schema template (without the per-call nonce), provider, model,
 base URL (scheme, host, and path only), criteria, structured-output
 mode, temperature, `max_tokens`, and `max_input_bytes`. Two verdicts
 with equal hashes were produced under the same judge definition.
-Composite provenance is not propagated in this release: a `diff-review`
-judge nested in a `composite` contributes its pass or fail to the
-composite but not its record, and when it errors the task reports
-outcome `error` without its verdict.
+A `diff-review` judge nested in a `composite` keeps its record: each
+entry in the composite's `details` carries the sub-judge's `status` and,
+for LLM-backed sub-judges, its `record`, including when the sub-judge
+errors.
 
 **Security notes.**
 
