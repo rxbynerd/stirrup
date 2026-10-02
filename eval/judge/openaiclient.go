@@ -79,10 +79,10 @@ type openaiResponse struct {
 	} `json:"error"`
 }
 
-// Complete implements JudgeClient.
-func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+// openaiRequestBody is the chat completions body for req.
+func openaiRequestBody(model string, req JudgeRequest) openaiRequest {
 	body := openaiRequest{
-		Model: c.model,
+		Model: model,
 		Messages: []openaiMessage{
 			{Role: "system", Content: req.System},
 			{Role: "user", Content: req.User},
@@ -96,7 +96,12 @@ func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeRes
 			JSONSchema: openaiJSONSchema{Name: verdictSchemaName, Strict: true, Schema: req.Schema},
 		}
 	}
+	return body
+}
 
+// Complete implements JudgeClient.
+func (c *openaiClient) Complete(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+	body := openaiRequestBody(c.model, req)
 	headers := map[string]string{}
 	if c.apiKey != "" {
 		headers["Authorization"] = "Bearer " + c.apiKey

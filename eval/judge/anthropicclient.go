@@ -73,10 +73,10 @@ type anthropicResponse struct {
 	} `json:"usage"`
 }
 
-// Complete implements JudgeClient.
-func (c *anthropicClient) Complete(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+// anthropicRequestBody is the Messages API body for req.
+func anthropicRequestBody(model string, req JudgeRequest) anthropicRequest {
 	body := anthropicRequest{
-		Model:       c.model,
+		Model:       model,
 		System:      req.System,
 		Messages:    []anthropicMessage{{Role: "user", Content: req.User}},
 		MaxTokens:   req.MaxTokens,
@@ -87,7 +87,12 @@ func (c *anthropicClient) Complete(ctx context.Context, req JudgeRequest) (Judge
 			Format: anthropicOutputFormat{Type: "json_schema", Schema: req.Schema},
 		}
 	}
+	return body
+}
 
+// Complete implements JudgeClient.
+func (c *anthropicClient) Complete(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+	body := anthropicRequestBody(c.model, req)
 	raw, err := postJSON(ctx, jsonRequest{
 		client:   c.http,
 		endpoint: c.endpoint,

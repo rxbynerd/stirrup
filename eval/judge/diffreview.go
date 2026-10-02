@@ -3,6 +3,7 @@ package judge
 // The diff-review judge is documented in docs/eval.md.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -22,10 +23,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// diffReviewLayoutVersion identifies the user-message layout built by
-// buildDiffReviewPrompt and is part of the config hash; change it whenever
-// that layout changes. The system prompt and schema template are hashed
-// directly.
+// diffReviewLayoutVersion is part of the config hash; change it whenever
+// the request changes in a way the prompt fingerprint cannot see. Request
+// headers and endpoint paths are covered only by this version.
 const diffReviewLayoutVersion = "diff-review/v3"
 
 // diffReviewFenceLabel labels the fence around the agent's change.
@@ -193,15 +193,7 @@ func callDiffReviewModel(ctx context.Context, cfg types.JudgeLLMConfig, criteria
 	if err != nil {
 		return diffReviewError(rec, err)
 	}
-	req := JudgeRequest{
-		System:      diffReviewSystemPrompt,
-		User:        buildDiffReviewPrompt(criteria, diff, cfg.EffectiveMaxInputBytes(), fence),
-		MaxTokens:   cfg.EffectiveMaxTokens(),
-		Temperature: cfg.Temperature,
-	}
-	if cfg.EffectiveStructuredOutput() == types.JudgeStructuredJSONSchema {
-		req.Schema = diffReviewSchema(fence.nonce)
-	}
+	req := buildDiffReviewRequest(cfg, criteria, diff, fence)
 
 	start := time.Now()
 	resp, err := client.Complete(ctx, req)
@@ -247,6 +239,23 @@ func diffReviewError(rec *types.JudgeRecord, err error) (eval.JudgeVerdict, erro
 	}, err
 }
 
+// diffReviewRequestBuilder renders the request for one diff-review call.
+type diffReviewRequestBuilder func(cfg types.JudgeLLMConfig, criteria string, diff workspaceDiff, fence dataFence) JudgeRequest
+
+// buildDiffReviewRequest is the diffReviewRequestBuilder every call uses.
+func buildDiffReviewRequest(cfg types.JudgeLLMConfig, criteria string, diff workspaceDiff, fence dataFence) JudgeRequest {
+	req := JudgeRequest{
+		System:      diffReviewSystemPrompt,
+		User:        buildDiffReviewPrompt(criteria, diff, cfg.EffectiveMaxInputBytes(), fence),
+		MaxTokens:   cfg.EffectiveMaxTokens(),
+		Temperature: cfg.Temperature,
+	}
+	if cfg.EffectiveStructuredOutput() == types.JudgeStructuredJSONSchema {
+		req.Schema = diffReviewSchema(fence.nonce)
+	}
+	return req
+}
+
 // buildDiffReviewPrompt renders the user message. The diff and its summary
 // carry agent-authored text, so they sit inside a data fence whose nonce is
 // drawn after the diff exists. The truncation notice and the nonce
@@ -286,6 +295,10 @@ type diffReviewConfigIdentity struct {
 	Temperature      *float64 `json:"temperature,omitempty"`
 	MaxTokens        int      `json:"maxTokens"`
 	MaxInputBytes    int      `json:"maxInputBytes"`
+
+	// PromptFingerprint covers how the request is rendered; see
+	// diffReviewPromptFingerprint.
+	PromptFingerprint string `json:"promptFingerprint"`
 }
 
 // diffReviewConfigHash is the SHA-256 of the canonical JSON of the judge's
@@ -295,17 +308,22 @@ type diffReviewConfigIdentity struct {
 // MaxInputBytes is included because it decides which prefix of a large diff
 // is judged.
 func diffReviewConfigHash(cfg types.JudgeLLMConfig, criteria string) (string, error) {
+	fingerprint, err := diffReviewPromptFingerprint(cfg, criteria, buildDiffReviewRequest, gitStatArgs, gitDiffFlags)
+	if err != nil {
+		return "", err
+	}
 	identity := diffReviewConfigIdentity{
-		Layout:           diffReviewLayoutVersion,
-		SystemPrompt:     diffReviewSystemPrompt,
-		Schema:           diffReviewSchemaTemplate,
-		Provider:         cfg.EffectiveProvider(),
-		Model:            cfg.Model,
-		Criteria:         criteria,
-		StructuredOutput: cfg.EffectiveStructuredOutput(),
-		Temperature:      cfg.Temperature,
-		MaxTokens:        cfg.EffectiveMaxTokens(),
-		MaxInputBytes:    cfg.EffectiveMaxInputBytes(),
+		Layout:            diffReviewLayoutVersion,
+		SystemPrompt:      diffReviewSystemPrompt,
+		Schema:            diffReviewSchemaTemplate,
+		Provider:          cfg.EffectiveProvider(),
+		Model:             cfg.Model,
+		Criteria:          criteria,
+		StructuredOutput:  cfg.EffectiveStructuredOutput(),
+		Temperature:       cfg.Temperature,
+		MaxTokens:         cfg.EffectiveMaxTokens(),
+		MaxInputBytes:     cfg.EffectiveMaxInputBytes(),
+		PromptFingerprint: fingerprint,
 	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" && identity.Provider == types.JudgeProviderAnthropic {
@@ -315,6 +333,48 @@ func diffReviewConfigHash(cfg types.JudgeLLMConfig, criteria string) (string, er
 		identity.BaseURL = u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/")
 	}
 	data, err := json.Marshal(identity)
+	if err != nil {
+		return "", fmt.Errorf("hashing judge configuration: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// fingerprintDiff stands for the diff when rendering a request for the
+// prompt fingerprint.
+var fingerprintDiff = workspaceDiff{
+	Stat: " a.txt | 1 +\n 1 file changed, 1 insertion(+)",
+	Head: fingerprintDiffHead,
+	Size: len(fingerprintDiffHead),
+}
+
+const fingerprintDiffHead = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n one\n+two\n"
+
+// diffReviewPromptFingerprint is the SHA-256 of what the judge sends for
+// cfg and criteria apart from the diff itself: the provider request body
+// that build renders over fingerprintDiff, whole and truncated, under a
+// fixed nonce, and the git arguments that shape the diff summary and patch.
+func diffReviewPromptFingerprint(cfg types.JudgeLLMConfig, criteria string, build diffReviewRequestBuilder, statArgs string, diffFlags []string) (string, error) {
+	fence, err := newDataFence(bytes.NewReader(make([]byte, fenceNonceBytes)))
+	if err != nil {
+		return "", err
+	}
+	truncated := fingerprintDiff
+	truncated.Size *= 2
+	truncated.Truncated = true
+	var bodies []json.RawMessage
+	for _, diff := range []workspaceDiff{fingerprintDiff, truncated} {
+		body, err := providerRequestBody(cfg, build(cfg, criteria, diff, fence))
+		if err != nil {
+			return "", fmt.Errorf("hashing judge configuration: %w", err)
+		}
+		bodies = append(bodies, body)
+	}
+	data, err := json.Marshal(struct {
+		Bodies    []json.RawMessage `json:"bodies"`
+		StatArgs  string            `json:"statArgs"`
+		DiffFlags []string          `json:"diffFlags"`
+	}{bodies, statArgs, diffFlags})
 	if err != nil {
 		return "", fmt.Errorf("hashing judge configuration: %w", err)
 	}

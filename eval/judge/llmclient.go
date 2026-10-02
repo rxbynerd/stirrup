@@ -213,6 +213,18 @@ func NewClient(cfg types.JudgeLLMConfig, apiKey string) (JudgeClient, error) {
 	}
 }
 
+// providerRequestBody is the JSON body cfg's provider client sends for req.
+func providerRequestBody(cfg types.JudgeLLMConfig, req JudgeRequest) ([]byte, error) {
+	switch cfg.EffectiveProvider() {
+	case types.JudgeProviderAnthropic:
+		return json.Marshal(anthropicRequestBody(cfg.Model, req))
+	case types.JudgeProviderOpenAICompatible:
+		return json.Marshal(openaiRequestBody(cfg.Model, req))
+	default:
+		return nil, fmt.Errorf("unsupported judge provider %q", cfg.Provider)
+	}
+}
+
 // judgeTransport is the default transport with types.CheckJudgeEndpointAddr
 // applied to every address it connects to, after DNS resolution, so a
 // hostname that resolves or rebinds to a refused address is caught.

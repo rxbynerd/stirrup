@@ -85,6 +85,12 @@ func TestCacheKey(t *testing.T) {
 	}
 }
 
+func TestCacheKey_Golden(t *testing.T) {
+	if got, want := CacheKey(strings.Repeat("a", 64), strings.Repeat("b", 64), 0), "da30bf31d9fa084d90ac6545e096346b2b189f7ee91d970d2eac92aec75aff19"; got != want {
+		t.Errorf("CacheKey = %s, want %s", got, want)
+	}
+}
+
 func TestEvaluateDiffReview_CacheKeyIgnoresTheNonceButNotTheConfig(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
@@ -94,6 +100,9 @@ func TestEvaluateDiffReview_CacheKeyIgnoresTheNonceButNotTheConfig(t *testing.T)
 		v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheRecord, newMemCache(), fake)})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if want := CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, 0); v.Record.CacheKey != want {
+			t.Errorf("cache key %s, want the key of sample 0 of the recorded hashes, %s", v.Record.CacheKey, want)
 		}
 		return v.Record.CacheKey, promptNonce(fake.got.User)
 	}
