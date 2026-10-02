@@ -268,8 +268,8 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 
 // evaluateComposite runs sub-judges in declared order and stops at the first
 // one that decides the outcome: a fail or error under "all", a pass under
-// "any". Sub-judge errors are carried in Status; only an invalid judge tree
-// returns an error.
+// "any". Sub-judge errors are carried in Status, as is a cancelled context
+// between sub-judges; only an invalid judge tree returns an error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	if err := ValidateTree(j); err != nil {
 		return eval.JudgeVerdict{}, err
@@ -284,7 +284,12 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 
 	details := make([]eval.JudgeDetail, 0, total)
 	decider, errored, firstErr := -1, 0, -1
+	cancelled := false
 	for i, sub := range j.Judges {
+		if ctx.Err() != nil {
+			cancelled = true
+			break
+		}
 		d := evaluateSubJudge(ctx, sub, jctx)
 		details = append(details, d)
 		switch d.Status {
@@ -311,16 +316,23 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 	}
 
 	skipped := total - len(details)
+	skipReason := "not evaluated: cancelled"
+	if !cancelled {
+		skipReason = fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total)
+	}
 	for i := len(details); i < total; i++ {
 		details = append(details, eval.JudgeDetail{
 			Type:   j.Judges[i].Type,
 			Status: eval.JudgeStatusSkipped,
-			Reason: fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total),
+			Reason: skipReason,
 		})
 	}
 
 	var status, reason string
 	switch {
+	case cancelled:
+		status = types.JudgeStatusError
+		reason = "cancelled"
 	case decider >= 0:
 		d := details[decider]
 		status = d.Status
@@ -333,14 +345,14 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 		}
 	case requireAny && errored > 0:
 		status = types.JudgeStatusError
-		reason = fmt.Sprintf("0 of %d sub-judges passed (require any); %d errored, first: sub-judge %d of %d (%s): %s",
-			total, errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
+		reason = fmt.Sprintf("0 of %s passed (require any); %d errored, first: sub-judge %d of %d (%s): %s",
+			subJudges(total), errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
 	case requireAny:
 		status = types.JudgeStatusFail
-		reason = fmt.Sprintf("0 of %d sub-judges passed (require any)", total)
+		reason = fmt.Sprintf("0 of %s passed (require any)", subJudges(total))
 	default:
 		status = types.JudgeStatusPass
-		reason = fmt.Sprintf("all %d sub-judges passed", total)
+		reason = fmt.Sprintf("all %s passed", subJudges(total))
 	}
 
 	return eval.JudgeVerdict{
@@ -372,6 +384,13 @@ func evaluateSubJudge(ctx context.Context, sub types.EvalJudge, jctx JudgeContex
 		}
 	}
 	return d
+}
+
+func subJudges(n int) string {
+	if n == 1 {
+		return "1 sub-judge"
+	}
+	return fmt.Sprintf("%d sub-judges", n)
 }
 
 func subJudgeVerb(status string) string {

@@ -481,6 +481,95 @@ func TestComposite_AnyReportsFirstOfSeveralErrors(t *testing.T) {
 	}
 }
 
+// cancellingClient cancels the context when asked for a completion, then
+// answers like the embedded fakeClient.
+type cancellingClient struct {
+	*fakeClient
+	cancel context.CancelFunc
+}
+
+func (c cancellingClient) Complete(ctx context.Context, req JudgeRequest) (JudgeResponse, error) {
+	c.cancel()
+	return c.fakeClient.Complete(ctx, req)
+}
+
+func TestComposite_CancelledBetweenSubJudgesIsError(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	// The first sub-judge must not decide the outcome, or the composite stops
+	// before it looks at the context.
+	cases := map[string]string{"any": verdictFail, "all": verdictPass}
+	for require, undecided := range cases {
+		t.Run(require, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(undecided)}, cancel: cancel}
+			jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
+			j := composite(require, diffReviewJudge(), markerJudge("b", 0), markerJudge("c", 0))
+
+			v, err := Evaluate(ctx, j, jctx)
+			if err != nil {
+				t.Fatalf("Evaluate returned an error: %v", err)
+			}
+
+			if v.Status != types.JudgeStatusError || v.Passed || v.Reason != "cancelled" {
+				t.Fatalf("verdict = %+v, want error with reason cancelled", v)
+			}
+			if ranMarker(t, jctx.WorkspaceDir, "b") || ranMarker(t, jctx.WorkspaceDir, "c") {
+				t.Error("a sub-judge ran after the context was cancelled")
+			}
+			if len(v.Details) != 3 {
+				t.Fatalf("details = %+v, want one entry per sub-judge", v.Details)
+			}
+			for _, d := range v.Details[1:] {
+				if d.Status != eval.JudgeStatusSkipped || d.Reason != "not evaluated: cancelled" {
+					t.Errorf("detail = %+v, want skipped because of cancellation", d)
+				}
+			}
+		})
+	}
+}
+
+func TestComposite_CancelledBeforeStartRunsNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dir := t.TempDir()
+	j := composite("all", markerJudge("a", 0), markerJudge("b", 0))
+
+	v, err := Evaluate(ctx, j, JudgeContext{WorkspaceDir: dir})
+	if err != nil {
+		t.Fatalf("Evaluate returned an error: %v", err)
+	}
+
+	if v.Status != types.JudgeStatusError || v.Passed || v.Reason != "cancelled" {
+		t.Fatalf("verdict = %+v, want error with reason cancelled", v)
+	}
+	if ranMarker(t, dir, "a") || ranMarker(t, dir, "b") {
+		t.Error("a sub-judge ran under a cancelled context")
+	}
+	assertStatuses(t, v, eval.JudgeStatusSkipped, eval.JudgeStatusSkipped)
+}
+
+func TestComposite_ReasonsAreSingularForOneSubJudge(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name  string
+		judge types.EvalJudge
+		want  string
+	}{
+		{"any with no pass", composite("any", markerJudge("a", 1)), "0 of 1 sub-judge passed (require any)"},
+		{"all passing", composite("all", markerJudge("b", 0)), "all 1 sub-judge passed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := evaluateOK(t, tc.judge, JudgeContext{WorkspaceDir: dir})
+
+			if v.Reason != tc.want {
+				t.Errorf("Reason = %q, want %q", v.Reason, tc.want)
+			}
+		})
+	}
+}
+
 func TestComposite_AnyAllFailIsFailNotError(t *testing.T) {
 	v := evaluateOK(t, composite("any", markerJudge("a", 1), markerJudge("b", 2)), JudgeContext{WorkspaceDir: t.TempDir()})
 

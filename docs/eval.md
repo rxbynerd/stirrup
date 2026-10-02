@@ -600,7 +600,9 @@ When no nested judge passes under `any`, the composite is `error` if at
 least one nested judge errored and `fail` otherwise. When every nested
 judge passes under `all`, the composite is `pass`. An `error` composite
 has `passed: false`, and nested composites propagate their status in
-the same way.
+the same way. A composite that finds the run cancelled between nested
+judges, such as after an interrupt, is `error` with the reason
+`cancelled`, and the judges not yet evaluated are `skipped`.
 
 **Verdict.** The composite's `status` is always set. Its `reason` names
 the deciding nested judge by 1-based position and type, and counts the
