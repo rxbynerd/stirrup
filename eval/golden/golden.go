@@ -210,14 +210,24 @@ func (s *Set) files(c Case) (Files, error) {
 		return Files{}, fmt.Errorf("workspace: %w", err)
 	}
 	root := filepath.Join(s.dir, filepath.FromSlash(c.Workspace))
+	info, err := os.Stat(root)
+	if err != nil {
+		return Files{}, fmt.Errorf("workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return Files{}, fmt.Errorf("workspace: %s is not a directory", excerpt(c.Workspace))
+	}
 	budget := maxFixtureBytes
-	before, err := readTree(filepath.Join(root, "before"), &budget)
+	before, hasBefore, err := readSide(filepath.Join(root, "before"), &budget)
 	if err != nil {
 		return Files{}, fmt.Errorf("workspace before/: %w", err)
 	}
-	after, err := readTree(filepath.Join(root, "after"), &budget)
+	after, hasAfter, err := readSide(filepath.Join(root, "after"), &budget)
 	if err != nil {
 		return Files{}, fmt.Errorf("workspace after/: %w", err)
+	}
+	if !hasBefore && !hasAfter {
+		return Files{}, errors.New("workspace has neither before/ nor after/")
 	}
 	if treesEqual(before, after) {
 		return Files{}, errors.New("workspace before/ and after/ are identical")
@@ -248,6 +258,17 @@ func checkTreePaths(files Files) error {
 		}
 	}
 	return nil
+}
+
+// readSide reads a fixture's before/ or after/ tree. A missing directory is
+// an empty tree, since git cannot hold an empty directory; ok reports
+// whether it exists.
+func readSide(dir string, budget *int) (tree Tree, ok bool, err error) {
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return Tree{}, false, nil
+	}
+	tree, err = readTree(dir, budget)
+	return tree, true, err
 }
 
 // readTree reads the regular files under dir, charging their sizes to

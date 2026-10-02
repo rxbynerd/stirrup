@@ -86,7 +86,7 @@ func TestParse_RejectsInvalidCases(t *testing.T) {
 		"neither":             {func(c *Case) { c.Diff = "" }, "exactly one of diff and workspace"},
 		"unparseable diff":    {func(c *Case) { c.Diff = "nonsense\n" }, "diff:"},
 		"workspace traversal": {func(c *Case) { c.Diff, c.Workspace = "", "../elsewhere" }, "workspace:"},
-		"missing workspace":   {func(c *Case) { c.Diff, c.Workspace = "", "absent" }, "workspace before/"},
+		"missing workspace":   {func(c *Case) { c.Diff, c.Workspace = "", "absent" }, "workspace: stat"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -225,5 +225,28 @@ func TestFiles_RejectsPathsAWorkspaceCannotHold(t *testing.T) {
 				t.Fatalf("Files error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestFiles_MissingSideIsAnEmptyTree(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "delete-all/before/a.txt"), "a\n")
+	writeFile(t, filepath.Join(dir, "create-all/after/sub/b.txt"), "b\n")
+	writeFile(t, filepath.Join(dir, "no-sides/README"), "neither side\n")
+	writeFile(t, filepath.Join(dir, "not-a-dir"), "x\n")
+	s := &Set{dir: dir}
+
+	files, err := s.Files(Case{Workspace: "delete-all"})
+	if err != nil || files.Before["a.txt"] != "a\n" || len(files.After) != 0 {
+		t.Errorf("delete-all = %#v, %v; want every file deleted", files, err)
+	}
+	files, err = s.Files(Case{Workspace: "create-all"})
+	if err != nil || len(files.Before) != 0 || files.After["sub/b.txt"] != "b\n" {
+		t.Errorf("create-all = %#v, %v; want every file created", files, err)
+	}
+	for ws, want := range map[string]string{"no-sides": "neither before/ nor after/", "not-a-dir": "is not a directory"} {
+		if _, err := s.Files(Case{Workspace: ws}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: Files error = %v, want it to contain %q", ws, err, want)
+		}
 	}
 }

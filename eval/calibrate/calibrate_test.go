@@ -183,24 +183,27 @@ func TestRun_MaterialisesCreatesDeletesAndFixtures(t *testing.T) {
 	writeFixture(t, dir+"/ws/before/old.txt", "remove me\n")
 	writeFixture(t, dir+"/ws/after/kept.txt", "same\n")
 	writeFixture(t, dir+"/ws/after/nested/new.txt", "fixture addition\n")
+	writeFixture(t, dir+"/gone/before/only.txt", "only line\n")
 	src := `{"version":1,"name":"m","cases":[
 	  {"id":"diff","criteria":"c1","label":"pass","diff":"--- /dev/null\n+++ b/created.txt\n@@ -0,0 +1 @@\n+created line\n--- a/deleted.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-deleted line\n"},
-	  {"id":"fixture","criteria":"c2","label":"fail","workspace":"ws"}]}`
+	  {"id":"fixture","criteria":"c2","label":"fail","workspace":"ws"},
+	  {"id":"delete-all","criteria":"c3","label":"pass","workspace":"gone"}]}`
 	set, err := golden.Parse([]byte(src), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &scriptedClient{script: []string{"pass", "fail"}}
+	client := &scriptedClient{script: []string{"pass", "fail", "pass"}}
 	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: client.factory()}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(js) != 2 || js[0].Verdict != "pass" || js[1].Verdict != "fail" {
+	if len(js) != 3 || js[0].Verdict != "pass" || js[1].Verdict != "fail" || js[2].Verdict != "pass" {
 		t.Fatalf("judgments = %+v", js)
 	}
 	for i, wants := range [][]string{
 		{"+created line", "-deleted line", "deleted file mode"},
 		{"+fixture addition", "-remove me", "nested/new.txt"},
+		{"-only line", "deleted file mode"},
 	} {
 		for _, want := range wants {
 			if !strings.Contains(client.prompts[i], want) {

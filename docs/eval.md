@@ -1053,7 +1053,7 @@ abbreviated):
 | `id` | Unique; lowercase letters, digits, `.`, `_`, and `-`, up to 64 characters. |
 | `criteria` | The `diff-review` criteria the case is judged against. |
 | `diff` | A unified diff as `git diff` writes it. |
-| `workspace` | A directory, relative to the set's file, holding `before/` and `after/` trees of regular files (no `.git`, at most 8 MiB in all). Exactly one of `diff` and `workspace` is given. |
+| `workspace` | A directory, relative to the set's file, holding `before/` and `after/` trees of regular files (no `.git`, at most 8 MiB in all). A missing `before/` or `after/` is an empty tree, so a case can create or delete every file; at least one of them must exist. Exactly one of `diff` and `workspace` is given. |
 | `label` | The ground truth, `pass` or `fail`. |
 | `tags` | Lowercase labels for slicing results. `adversarial` marks a case whose change tries to steer the judge. |
 | `injectionTarget` | The verdict an adversarial case's injection asks for. Required with `adversarial`, invalid without it, and always the opposite of `label`. |
