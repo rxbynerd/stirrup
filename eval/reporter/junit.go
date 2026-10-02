@@ -155,7 +155,7 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 		tc.Error = &xmlError{
 			Type:    "HarnessError",
 			Message: t.Error,
-			Body:    t.Error,
+			Body:    detailBody(t.Error, t.JudgeVerdict.Details),
 		}
 	case "pass":
 
@@ -172,23 +172,32 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	return tc
 }
 
-// failureBody assembles the <failure> body text. The judge verdict reason
-// comes first; when sub-judge details are present, a blank line separates
-// them and each detail is rendered as `Type: Reason`.
+// failureBody assembles the <failure> body text from the judge verdict.
 func failureBody(v eval.JudgeVerdict) string {
-	if len(v.Details) == 0 {
-		return v.Reason
+	return detailBody(v.Reason, v.Details)
+}
+
+// detailBody joins reason and the sub-judge details, separated by a blank
+// line. Each detail is rendered as `Type: Reason`, or `Type: skipped (Reason)`
+// for a sub-judge that was not evaluated.
+func detailBody(reason string, details []eval.JudgeDetail) string {
+	if len(details) == 0 {
+		return reason
 	}
 	var b strings.Builder
-	if v.Reason != "" {
-		b.WriteString(v.Reason)
+	if reason != "" {
+		b.WriteString(reason)
 		b.WriteString("\n\n")
 	}
-	for i, d := range v.Details {
+	for i, d := range details {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
+		if d.Status == eval.JudgeStatusSkipped {
+			fmt.Fprintf(&b, "%s: skipped (%s)", d.Type, d.Reason)
+		} else {
+			fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
+		}
 	}
 	return b.String()
 }

@@ -174,6 +174,76 @@ func TestWriteJUnit_FailEmitsFailure(t *testing.T) {
 	}
 }
 
+func TestWriteJUnit_FailRendersSkippedDetails(t *testing.T) {
+	result := eval.SuiteResult{
+		SuiteID: "s",
+		Tasks: []eval.TaskResult{
+			{
+				TaskID:  "t",
+				Outcome: "fail",
+				JudgeVerdict: eval.JudgeVerdict{
+					Status: "fail",
+					Reason: "sub-judge 1 of 2 (file-exists) failed (require all); 1 skipped",
+					Details: []eval.JudgeDetail{
+						{Type: "file-exists", Status: "fail", Reason: "missing paths: a.txt"},
+						{Type: "diff-review", Status: eval.JudgeStatusSkipped, Reason: "not evaluated: sub-judge 1 of 2 had already decided"},
+					},
+				},
+			},
+		},
+	}
+	tc := parseJUnit(t, runWriteJUnit(t, result)).TestSuites[0].TestCases[0]
+	if tc.Failure == nil {
+		t.Fatal("fail case should have <failure>")
+	}
+	want := "file-exists: missing paths: a.txt\n" +
+		"diff-review: skipped (not evaluated: sub-judge 1 of 2 had already decided)"
+	if !strings.HasSuffix(tc.Failure.Body, want) {
+		t.Errorf("failure body = %q, want it to end with %q", tc.Failure.Body, want)
+	}
+}
+
+func TestWriteJUnit_ErrorCompositeEmitsDetails(t *testing.T) {
+	reason := "sub-judge 2 of 3 (diff-review) errored (require all); 1 skipped: provider returned HTTP 503"
+	result := eval.SuiteResult{
+		SuiteID: "s",
+		Tasks: []eval.TaskResult{
+			{
+				TaskID:  "t",
+				Outcome: "error",
+				Error:   reason,
+				JudgeVerdict: eval.JudgeVerdict{
+					Status: "error",
+					Reason: reason,
+					Details: []eval.JudgeDetail{
+						{Type: "file-exists", Status: "pass", Passed: true, Reason: "all paths exist"},
+						{Type: "diff-review", Status: "error", Reason: "provider returned HTTP 503"},
+						{Type: "test-command", Status: eval.JudgeStatusSkipped, Reason: "not evaluated: sub-judge 2 of 3 had already decided"},
+					},
+				},
+			},
+		},
+	}
+	doc := parseJUnit(t, runWriteJUnit(t, result))
+	if doc.TestSuites[0].Errors != 1 || doc.TestSuites[0].Failures != 0 {
+		t.Errorf("errors = %d, failures = %d, want 1, 0", doc.TestSuites[0].Errors, doc.TestSuites[0].Failures)
+	}
+	tc := doc.TestSuites[0].TestCases[0]
+	if tc.Error == nil || tc.Failure != nil {
+		t.Fatalf("want <error> only, got error=%v failure=%v", tc.Error, tc.Failure)
+	}
+	if tc.Error.Message != reason {
+		t.Errorf("error message = %q, want the composite reason", tc.Error.Message)
+	}
+	want := reason + "\n\n" +
+		"file-exists: all paths exist\n" +
+		"diff-review: provider returned HTTP 503\n" +
+		"test-command: skipped (not evaluated: sub-judge 2 of 3 had already decided)"
+	if tc.Error.Body != want {
+		t.Errorf("error body = %q, want %q", tc.Error.Body, want)
+	}
+}
+
 // TestWriteJUnit_FailMessageFallback pins that when the judge verdict has
 // no top-level Reason but carries sub-judge Details, the <failure
 // message=...> attribute is populated from the first detail.
