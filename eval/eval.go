@@ -49,16 +49,20 @@ type JudgeDetail struct {
 
 	// Status is types.JudgeStatusPass, JudgeStatusFail or JudgeStatusError
 	// for an evaluated sub-judge, or JudgeStatusSkipped for one that was not
-	// evaluated. Only "pass" sets Passed. Empty only on results written
-	// before the field existed.
+	// evaluated. Only "pass" sets Passed.
 	Status string `json:"status,omitempty"`
 
 	Reason string `json:"reason"`
 
 	// Record is the provenance of the LLM call behind the sub-judge's
-	// verdict, including an error verdict. Nil for deterministic and
-	// skipped sub-judges.
+	// verdict, including an error verdict. Nil for deterministic,
+	// composite and skipped sub-judges.
 	Record *types.JudgeRecord `json:"record,omitempty"`
+
+	// Details holds the entries of a nested composite sub-judge, so the
+	// records of judges at any depth stay reachable. Empty for every other
+	// sub-judge.
+	Details []JudgeDetail `json:"details,omitempty"`
 }
 
 // SuiteResult captures the outcome of evaluating an entire EvalSuite.

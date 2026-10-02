@@ -455,10 +455,11 @@ verdict schema template (without the per-call nonce), provider, model,
 base URL (scheme, host, and path only), criteria, structured-output
 mode, temperature, `max_tokens`, and `max_input_bytes`. Two verdicts
 with equal hashes were produced under the same judge definition.
-A `diff-review` judge nested in a `composite` keeps its record: each
-entry in the composite's `details` carries the sub-judge's `status` and,
-for LLM-backed sub-judges, its `record`, including when the sub-judge
-errors.
+A `diff-review` judge nested in a `composite`, at any depth, keeps its
+record: each entry in the composite's `details` carries the sub-judge's
+`status` and, for LLM-backed sub-judges, its `record`, including when the
+sub-judge errors. A nested composite's entry carries its own `details`
+in turn.
 
 **Security notes.**
 
@@ -608,9 +609,9 @@ decision the reason ends with the nested judge's error message.
 `details` holds one entry per nested judge in declaration order, each
 with `type`, `status` (`pass`, `fail`, `error`, or `skipped`), `passed`,
 `reason`, and the `record` of an LLM-backed judge, which is kept for
-error verdicts too. A nested composite appears as a single entry with
-its own status and reason; its own `details` are not repeated. The
-composite verdict itself has no `record`.
+error verdicts too. A nested composite appears as one entry with its own
+`status` and `reason` and its own `details`, so the records of judges at
+any depth stay reachable. The composite verdict itself has no `record`.
 
 A misconfigured tree is not a verdict. An empty composite, an invalid
 `require`, or an unknown judge type anywhere in the tree is reported as

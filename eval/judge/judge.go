@@ -318,11 +318,12 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 func evaluateSubJudge(ctx context.Context, sub types.EvalJudge, jctx JudgeContext) eval.JudgeDetail {
 	verdict, err := Evaluate(ctx, sub, jctx)
 	d := eval.JudgeDetail{
-		Type:   sub.Type,
-		Passed: verdict.Passed,
-		Status: verdict.Status,
-		Reason: verdict.Reason,
-		Record: verdict.Record,
+		Type:    sub.Type,
+		Passed:  verdict.Passed,
+		Status:  verdict.Status,
+		Reason:  verdict.Reason,
+		Record:  verdict.Record,
+		Details: verdict.Details,
 	}
 	if err != nil {
 		d.Passed = false

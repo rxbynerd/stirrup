@@ -605,6 +605,37 @@ func TestComposite_DetailsCarryRecords(t *testing.T) {
 	}
 }
 
+func TestComposite_NestedDetailsKeepRecordsAtAnyDepth(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	fake := &fakeClient{resp: okResponse(verdictPass)}
+	innermost := composite("any", markerJudge("a", 1), diffReviewJudge())
+	j := composite("all", markerJudge("b", 0), composite("all", innermost))
+
+	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
+
+	if v.Status != types.JudgeStatusPass {
+		t.Fatalf("verdict = %+v, want pass", v)
+	}
+	middle := v.Details[1]
+	if middle.Type != "composite" || middle.Record != nil || len(middle.Details) != 1 {
+		t.Fatalf("details[1] = %+v, want a composite entry with one nested entry", middle)
+	}
+	inner := middle.Details[0]
+	if inner.Type != "composite" || inner.Record != nil || len(inner.Details) != 2 {
+		t.Fatalf("details[1].details[0] = %+v, want a composite entry with two nested entries", inner)
+	}
+	review := inner.Details[1]
+	if review.Type != "diff-review" || review.Status != types.JudgeStatusPass {
+		t.Fatalf("innermost entry = %+v, want a passing diff-review", review)
+	}
+	if review.Record == nil || review.Record.Kind != types.JudgeKindDiffReview || review.Record.ServedModel != "served-model-1" {
+		t.Errorf("innermost Record = %+v, want the diff-review provenance", review.Record)
+	}
+	if len(v.Details[0].Details) != 0 {
+		t.Errorf("a deterministic sub-judge carries details: %+v", v.Details[0].Details)
+	}
+}
+
 func TestComposite_ConfigurationErrorsAreHardErrors(t *testing.T) {
 	cases := []struct {
 		name    string
