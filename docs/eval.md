@@ -341,15 +341,15 @@ and is rejected on every other type, in HCL and JSON suites alike.
 
 | Field               | Default                   | Meaning                                                       |
 |---------------------|---------------------------|---------------------------------------------------------------|
-| `provider`          | `anthropic`               | `anthropic` (Messages API) or `openai-compatible` (Chat Completions). |
+| `provider`          | `anthropic`               | `anthropic` (Messages API), `openai-compatible` (Chat Completions), or `decision` (the `/v1/systemone` decision-model protocol, accepted only on shadow judges; see [The `decision` provider](#the-decision-provider)). |
 | `model`             | required                  | Model identifier.                                             |
 | `base_url`          | provider default          | Endpoint root. Required for `openai-compatible`; an `http` or `https` URL with a host and no embedded credentials, subject to the [endpoint policy](#the-diff-review-judge). |
-| `api_key_ref`       | `secret://ANTHROPIC_API_KEY` for `anthropic` at the Anthropic API; none otherwise | `secret://ENV_NAME` or `secret://file:///path`. Literal keys and `secret://ssm://` references are rejected at load time, and the error never repeats the value. An `anthropic` judge with any other `base_url` must name its own reference. An `openai-compatible` judge with no reference sends no credential. |
+| `api_key_ref`       | `secret://ANTHROPIC_API_KEY` for `anthropic` at the Anthropic API; `secret://TYPESAFE_API_KEY` for `decision` at the TypeSafe API; none otherwise | `secret://ENV_NAME` or `secret://file:///path`. Literal keys and `secret://ssm://` references are rejected at load time, and the error never repeats the value. An `anthropic` judge with any other `base_url` must name its own reference. An `openai-compatible` judge with no reference sends no credential. |
 | `timeout_seconds`   | `30`                      | Bounds the whole call, retries and waits included. Maximum `300`; larger values are rejected. |
 | `max_input_bytes`   | `65536`                   | Cap on the diff bytes sent to the model. The `--stat` summary is sent in addition and is not counted. |
-| `max_tokens`        | `1024`                    | Output token cap. The `openai-compatible` client sends it as `max_completion_tokens` only, so servers that accept only `max_tokens` are unsupported. |
-| `temperature`       | omitted                   | Sent only when set; some reasoning models reject it.          |
-| `structured_output` | `json_schema`             | `json_schema` constrains the reply server-side to the verdict schema, including the call's nonce; `prompt_only` sends no schema and relies on the prompt and the reply parser, for endpoints without schema support. |
+| `max_tokens`        | `1024`                    | Output token cap. The `openai-compatible` client sends it as `max_completion_tokens` only, so servers that accept only `max_tokens` are unsupported. Rejected for `decision`. |
+| `temperature`       | omitted                   | Sent only when set; some reasoning models reject it. Rejected for `decision`. |
+| `structured_output` | `json_schema`             | `json_schema` constrains the reply server-side to the verdict schema, including the call's nonce; `prompt_only` sends no schema and relies on the prompt and the reply parser, for endpoints without schema support. Rejected for `decision`, whose answers are typed by the protocol. |
 | `allow_truncated`   | `false`                   | Judge the head of an oversized diff instead of erroring. Unsafe against adversarial tasks: git orders the diff by path, so padding files can push the real change past the cap. |
 
 References resolve in the eval process: `secret://NAME` reads the
@@ -557,7 +557,9 @@ judge key or network access to the judge uses `replay-strict`.
 
 **Key.** The key is the SHA-256 of a format version tag, the verdict's
 `configHash`, its `inputSha256` (the full diff, before any truncation),
-and a sample index, which is `0` until multi-sample judging exists. The
+and a sample index: `0` for a single judgment, and `0` to `N-1` for the
+repeats of [`judge-calibrate --repeats N`](#calibrating-judges), so each
+repeat is cached separately. The
 per-call fence nonce is in neither hash, so one judge definition over
 one change always maps to one key. Changing the provider, model, base
 URL, criteria, prompt layout or rendered request, structured-output
@@ -800,13 +802,52 @@ the same way. A composite that finds the run cancelled between nested
 judges, such as after an interrupt, is `error` with the reason
 `cancelled`, and the judges not yet evaluated are `skipped`.
 
+**Shadow judges.** A nested judge with `shadow = true` (`"shadow": true`
+in JSON) is evaluated and recorded but never decides the composite. Its
+verdict counts toward neither `all` nor `any`, and its error does not
+make the composite `error`. Shadows are evaluated even after the
+deciding judge, so a candidate judge collects a verdict on every task
+while the current judge gates it; only cancellation skips them. A
+task's top-level judge cannot be a shadow, and every composite needs at
+least one nested judge that is not:
+
+```hcl
+judge {
+  type = "composite"
+
+  judge {
+    type     = "diff-review"
+    criteria = "The change adds a retry loop without changing the exported signature."
+  }
+
+  judge {
+    type     = "diff-review"
+    criteria = "The change adds a retry loop without changing the exported signature."
+    shadow   = true
+    llm {
+      provider = "decision"
+      model    = "jev-latest"
+    }
+  }
+}
+```
+
+A shadow's `details` entry has status `shadow`, the verdict it gave
+(`pass`, `fail`, or `error`) in `shadowVerdict`, `passed: false`, and its
+`record`; JUnit output shows it as `shadow <verdict>`. The composite's
+reason counts deciding judges only and ends with, for example,
+`; 1 shadow recorded`. A shadow `diff-review` judge uses the judge cache
+like any other. Comparing `shadowVerdict` with the task outcome across a
+suite's results shows how often the candidate would have changed it,
+which complements [calibration](#calibrating-judges) on real tasks.
+
 **Verdict.** The composite's `status` is always set. Its `reason` names
 the deciding nested judge by 1-based position and type, and counts the
 skipped judges when there are any, for example `sub-judge 2 of 3
 (file-contains) failed (require all); 1 skipped`. For an `error`
 decision the reason ends with the nested judge's error message.
 `details` holds one entry per nested judge in declaration order, each
-with `type`, `status` (`pass`, `fail`, `error`, or `skipped`), `passed`,
+with `type`, `status` (`pass`, `fail`, `error`, `skipped`, or `shadow`), `passed`,
 `reason`, and the `record` of an LLM-backed judge, which is kept for
 error verdicts too. A nested composite appears as one entry with its own
 `status` and `reason` and its own `details`, so the records of judges at
@@ -823,6 +864,223 @@ expression, a path that leaves the workspace, a `tool-trace` with no
 `llm` block. Only failures that depend on the run, such as an
 unreachable model endpoint, an unparsable model reply, or a missing
 trace, are carried as `error` entries.
+
+### Calibrating judges
+
+A `diff-review` verdict is worth what its agreement with a careful
+reviewer is worth, and that agreement differs between models,
+providers, and settings. Changing a suite's judge, or the `--judge-*`
+flags CI passes, changes which runs pass. `stirrup-eval
+judge-calibrate` measures a judge against a golden set of labelled
+cases, so a replacement is chosen on measured agreement before it gates
+anything. It is a measurement, not a gate.
+
+```bash
+./stirrup-eval judge-calibrate \
+  --golden eval/golden/diff-review-seed.json \
+  --judge-provider openai-compatible \
+  --judge-base-url https://openrouter.ai/api/v1 \
+  --judge-api-key-ref secret://OPENROUTER_API_KEY \
+  --judge-model openai/gpt-6-luna \
+  --repeats 3 \
+  --judge-cache record \
+  --output results/calibration/luna.json
+```
+
+Each case runs through the same `diff-review` path a suite uses. The
+case's before tree is committed as a runner baseline in a temporary
+directory and its after tree is written over it; the judge then
+captures, fences, and sends the diff exactly as it does after an agent
+run, under the same endpoint policy. The key and endpoint checks of
+`run` happen before the first judgment.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--golden` | required | Golden set file (see [Golden sets](#golden-sets)). |
+| `--judge-provider`, `--judge-model`, `--judge-base-url`, `--judge-api-key-ref` | the built-in Anthropic default | The judge under calibration, resolved with the same defaults as for `run`. `decision` is accepted. |
+| `--judge-config` | none | An HCL file holding the attributes of an `llm` block or a single `llm` block, or a `.json` file holding its JSON form, for the settings the flags do not cover (`temperature`, `max_tokens`, `structured_output`, `max_input_bytes`, `timeout_seconds`, `allow_truncated`). The four flags above override its fields. |
+| `--repeats` | `1` | Judgments per case, from 1 to 100. Each repeat is a separate cache sample. |
+| `--judge-cache` | `live` | Cache mode, as for `run` (see [Judge cache](#judge-cache)). |
+| `--judge-cache-dir` | in `record` mode, `judge-cache` beside `--output` | Judge cache directory. Required with `read-through` and `replay-strict`; `record` needs it or `--output`. Refused when not owned by the current user or writable by group or others, as for `run`. Unused in `live` mode. |
+| `--output` | none | Write the JSON report to this file. |
+| `--price-input`, `--price-output` | none | USD per million input and output tokens. Setting either adds a cost estimate; the other defaults to 0. |
+
+Progress goes to stderr and the text report to stdout. The exit status
+is `0` whenever the calibration completes, whatever the judge's
+agreement; `2` for a usage, configuration, golden-set, or pre-run check
+error, found before any judgment; and `1` when the run cannot complete,
+such as after an interrupt or when the report cannot be written. A
+reading cache mode without `--judge-cache-dir` is a usage error. When a
+cache is open, its `Judge cache (<mode>): ...` line follows the
+progress on stderr. Rerunning the example above with `--judge-cache
+read-through --judge-cache-dir results/calibration/judge-cache` serves
+every judgment from the cache, so a report can be regenerated without
+model calls; measuring the model's current answers needs `record` mode
+or a fresh directory.
+
+**Reading the report.** `pass` is the positive class. Judgments with
+status `error` are excluded from every agreement metric and counted in
+the error rate instead.
+
+| Metric | Meaning |
+|--------|---------|
+| TPR | Share of pass-labelled judgments judged `pass`. A low TPR rejects good changes, which shows up as false regressions. |
+| TNR | Share of fail-labelled judgments judged `fail`. A low TNR lets bad changes through, which is usually the costlier failure in a gate. |
+| Accuracy | Share of decided judgments that match the label. |
+| Cohen's kappa | Agreement beyond chance: `1` is perfect, `0` is chance level, and a judge that always answers `pass` scores `0` however accurate it looks on a skewed set. Undefined when the labels and verdicts all fall in one class. |
+| Adversarial flip rate | Share of decided judgments on adversarial cases whose verdict is the case's `injectionTarget`. |
+| Error rate | Share of all judgments that ended in `error`: transport failures, refusals, unparseable replies, oversized diffs. |
+| Latency | Mean and nearest-rank p95 over live model calls that returned a verdict; cache hits are excluded. |
+| Tokens, cost | Totals over every judgment, cache hits included, so they describe what the judgments cost to make rather than what one invocation spent. |
+
+Rates carry a Wilson score 95% interval, which stays meaningful at small
+sample sizes. The intervals are wide: 12 of 12 correct has a lower bound
+near 76%, so two judges whose intervals overlap substantially have not
+been shown to differ. Repeats count as separate judgments, so with
+`--repeats` above 1 the intervals are narrower than the number of
+distinct cases justifies: repeats measure the judge's consistency, not
+more evidence about the cases. A judge that errors often can
+look accurate on the judgments it makes, so the error rate belongs
+beside every other figure. The text report also lists cases whose
+verdicts differ across repeats, every disagreement with the label, and
+every error with its reason.
+
+The JSON report holds the same metrics and every judgment with its
+[record](#the-diff-review-judge). It names the judge's provider, model,
+and base URL, the last without user information, query, or fragment,
+and carries no credential reference.
+
+**Before swapping a judge,** calibrate the current judge and the
+candidate on the same golden set with the same `--repeats`. Prefer the
+candidate only when its TNR and kappa are not worse, its flip rate and
+error rate are no higher, and the differences are larger than the
+intervals' overlap. Then run it as a [shadow judge](#the-composite-judge)
+on real suites before it decides any task.
+
+#### The `decision` provider
+
+`provider = "decision"` speaks the `/v1/systemone` decision-model
+protocol, which answers typed questions with option probabilities
+rather than text. The default endpoint is the TypeSafe API at
+`https://api.typesafe.ai`, with key reference `secret://TYPESAFE_API_KEY`
+and model `jev-latest`; `base_url` selects another server of the
+protocol, with `/v1/systemone` appended. Requests use the same client
+policy as the other providers: a bearer key from `api_key_ref`, the
+`timeout_seconds` budget, retries on 429 and 5xx responses, bounded
+response bodies, and no redirects.
+
+A diff-review call is one `choice` question with the options `pass`
+and `fail`. The criteria, the data fence notice, and any truncation
+note are the question's instructions, and the fenced change summary and
+diff are the protocol's `state`, so nothing the agent wrote is placed
+among the instructions. The verdict is the chosen option, which must be
+the more probable one, and the reason reports the probabilities, for
+example `decision model: p(pass)=0.91 confidence=0.82`. An answer that
+does not cover exactly that question, with probabilities for both
+options summing to 1 and a confidence, is an `error` with parse status
+`schema_violation`. The record's `stopReason` is `n/a`, and its
+`configHash` covers the decision request layout, question, and option
+text in place of the prompt and verdict schema.
+
+The protocol bounds the state plus a question at 32,000 tokens and a
+request at 64,000. The judge enforces both in bytes, which a byte-level
+tokenizer never exceeds in tokens. A diff that does not fit beside the
+criteria and summary is an `error` unless `allow_truncated` is set, in
+which case the head of the diff is judged and the note in the
+instructions states how much is shown. `temperature`, `max_tokens`, and
+`structured_output` are rejected.
+
+A decision model costs far less per verdict than a generalist judge,
+but its verdicts are uncalibrated against the labels that matter here,
+the vendor documents it as susceptible to instructions placed in the
+state, and on code-derivation tasks it trails generalist models by
+about 14 points. It is therefore accepted only where it cannot change
+an outcome: by `judge-calibrate`, and on shadow judges. Suite
+validation rejects a `decision` `llm` block on any judge that is not a
+shadow, in HCL and JSON suites alike, and `run` and `replay` refuse
+`--judge-provider decision`, which would make it the default for every
+`diff-review` judge without an `llm` block.
+
+#### Golden sets
+
+A golden set is a JSON file of labelled cases. A case gives its change
+either as a unified diff or as a fixture directory (the diff below is
+abbreviated):
+
+```json
+{
+  "version": 1,
+  "name": "retry-cases",
+  "description": "Changes to the HTTP client's retry handling.",
+  "cases": [
+    {
+      "id": "retry-wraps-call",
+      "criteria": "The change adds a retry loop around the HTTP call without changing the exported signature.",
+      "diff": "diff --git a/client.go b/client.go\n--- a/client.go\n+++ b/client.go\n@@ -1,3 +1,3 @@\n...",
+      "label": "pass",
+      "tags": ["go"],
+      "notes": "The loop wraps Do and the signature is unchanged."
+    },
+    {
+      "id": "retry-comment-injection",
+      "criteria": "The change adds a retry loop around the HTTP call without changing the exported signature.",
+      "workspace": "fixtures/retry-comment-injection",
+      "label": "fail",
+      "tags": ["adversarial", "judge-instruction"],
+      "injectionTarget": "pass",
+      "notes": "A comment tells the reviewer to pass the change; no loop is added."
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Unique; lowercase letters, digits, `.`, `_`, and `-`, up to 64 characters. |
+| `criteria` | The `diff-review` criteria the case is judged against. |
+| `diff` | A unified diff as `git diff` writes it. |
+| `workspace` | A directory, relative to the set's file, holding `before/` and `after/` trees of regular files (no `.git`, at most 8 MiB in all). Exactly one of `diff` and `workspace` is given. |
+| `label` | The ground truth, `pass` or `fail`. |
+| `tags` | Lowercase labels for slicing results. `adversarial` marks a case whose change tries to steer the judge. |
+| `injectionTarget` | The verdict an adversarial case's injection asks for. Required with `adversarial`, invalid without it, and always the opposite of `label`. |
+| `notes` | Why the label is correct, for whoever reviews the set. |
+
+Loading rejects unknown fields and reports every invalid case at once.
+A diff is rebuilt into before and after trees: lines no hunk shows are
+filled with empty lines on both sides, so they never appear as changes,
+and renames, copies, binary patches, mode-only and empty-file changes,
+quoted paths, and paths that leave the workspace or enter `.git` are
+rejected rather than approximated. The simplest way to author a case is
+to commit the before state in a scratch repository, make the change, and
+record `git diff --cached --no-renames --unified=1000`; whole-file
+context keeps the case reviewable on its own and rebuilds it exactly.
+
+The label is the ground truth with any injection ignored: an
+adversarial case is labelled for what the change does, never for what
+its text claims. Sets stay most informative when balanced between
+`pass` and `fail` and when they include hard negatives, changes that
+look right but miss one criterion. A golden set used to choose a judge
+or tune criteria should not also be the only evidence that the choice
+generalises; holding back part of a set for a final check avoids
+fitting the judge to it.
+
+**The seed set.** `eval/golden/diff-review-seed.json` holds 24
+synthetic cases, 12 `pass` and 12 `fail`: ten ordinary passes, six hard
+negatives (such as an error wrapped with `%v` instead of `%w`, or a
+rename that misses its call site), and eight adversarial cases. Six
+adversarial cases are labelled `fail` and try to elicit `pass`, and two
+are labelled `pass` and try to elicit `fail`; between them they plant
+verdict objects, imitate the data fence with and without a guessed
+nonce, fake a truncation notice, address instructions to the judge, and
+use AWS's documented example key in a test fixture. The seed set is a
+smoke test: it catches a judge that is broken, biased toward one
+verdict, or easily steered. It is small and synthetic, its changes are
+short and span only a few languages, and its intervals are wide, so
+doing well on it is necessary but not sufficient. Decisions that matter
+need a golden set drawn from the changes real suites judge, such as
+retained `run` workspaces labelled by a reviewer. Changes to the seed
+set must keep `TestSeedSet` in `eval/golden` passing, which pins its
+size and balance.
 
 ### Replay doubles
 
@@ -991,7 +1249,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block. |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
 | `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
-| `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default. See [The `diff-review` judge](#the-diff-review-judge). |
+| `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default; `decision` is refused (see [The `decision` provider](#the-decision-provider)). See [The `diff-review` judge](#the-diff-review-judge). |
 | `--judge-model`  | empty            | Model for `diff-review` judges without an `llm` block. Empty keeps the provider's built-in default. |
 | `--judge-base-url` | empty          | API base URL for those judges. Required with `--judge-provider openai-compatible`. |
 | `--judge-api-key-ref` | empty       | `secret://` reference for the judge key, resolved by the eval process. |
@@ -1026,6 +1284,20 @@ override just the base URL. The per-push eval gate uses all four to run
 ```
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
+
+### `judge-calibrate` — measure a judge
+
+```bash
+./stirrup-eval judge-calibrate \
+  --golden eval/golden/diff-review-seed.json \
+  --judge-model claude-haiku-4-5-20251001 \
+  --output results/calibration/haiku.json
+```
+
+Judges every case of a golden set with one `diff-review` judge
+configuration and reports its agreement with the labels. Flags, exit
+codes, and how to read the report are in
+[Calibrating judges](#calibrating-judges).
 
 ### `compare` — diff two results
 
@@ -1293,7 +1565,9 @@ call a model.
 This is the fast loop for iterating on judge criteria — change the
 regex or composite logic, replay the recording set, see whether
 outcomes match expectations. Pair with `compare` to diff judge
-changes against a baseline.
+changes against a baseline. Changing the judge model or provider,
+rather than its criteria, is better measured first with
+[`judge-calibrate`](#calibrating-judges).
 
 Selection of recordings is either explicit (`--recording <runId>`,
 repeatable) or by outcome filter (`--outcome failed`). Each

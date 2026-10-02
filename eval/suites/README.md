@@ -47,6 +47,15 @@ opt-in local runs (see the per-suite notes below).
 For the suite schema and the per-task contract see
 [`docs/eval.md`](../../docs/eval.md).
 
+Suites with `diff-review` judges are only as trustworthy as the judge.
+Before changing a suite's judge model or provider, or the `--judge-*`
+flags CI passes, measure the candidate with `stirrup-eval
+judge-calibrate` against `../golden/diff-review-seed.json` (a synthetic
+smoke test) or, better, a golden set drawn from the suite's own tasks,
+and consider running it as a `shadow` sub-judge first, which records
+its verdicts without changing any outcome. See
+[Calibrating judges](../../docs/eval.md#calibrating-judges).
+
 ## Current suites
 
 | Suite | Source | Notes |
