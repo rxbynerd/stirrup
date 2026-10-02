@@ -15,6 +15,10 @@ func shadow(j types.EvalJudge) types.EvalJudge {
 	return j
 }
 
+func fileExistsJudge(paths ...string) types.EvalJudge {
+	return types.EvalJudge{Type: "file-exists", Paths: paths}
+}
+
 func TestComposite_ShadowFailDoesNotFailAll(t *testing.T) {
 	dir := t.TempDir()
 	j := composite("all", markerJudge("a", 0), shadow(markerJudge("s", 1)), markerJudge("b", 0))
@@ -188,5 +192,91 @@ func TestComposite_RejectsAllShadowTreeBeforeRunningAnything(t *testing.T) {
 	}
 	if ranMarker(t, dir, "a") {
 		t.Error("a sub-judge ran in a rejected tree")
+	}
+}
+
+func TestComposite_CancelledShadowDoesNotTurnAnUndecidedOutcomeIntoError(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	cases := map[string]struct{ reply, want, reason string }{
+		"all": {verdictPass, types.JudgeStatusPass, "all 1 sub-judge passed"},
+		"any": {verdictFail, types.JudgeStatusFail, "0 of 1 sub-judge passed (require any)"},
+	}
+	for require, tc := range cases {
+		t.Run(require, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(tc.reply)}, cancel: cancel}
+			jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
+			j := composite(require, diffReviewJudge(), shadow(fileExistsJudge("a.txt")))
+
+			v, err := Evaluate(ctx, j, jctx)
+			if err != nil {
+				t.Fatalf("Evaluate returned an error: %v", err)
+			}
+
+			if v.Status != tc.want || v.Reason != tc.reason {
+				t.Fatalf("verdict = %+v, want %s with reason %q: a skipped shadow must not decide", v, tc.want, tc.reason)
+			}
+			assertStatuses(t, v, tc.want, eval.JudgeStatusSkipped)
+			if d := v.Details[1]; d.Reason != "not evaluated: cancelled" {
+				t.Errorf("shadow detail = %+v, want skipped because of cancellation", d)
+			}
+		})
+	}
+}
+
+func TestComposite_CancelledBeforeADecidingJudgeAfterAShadowIsError(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(verdictPass)}, cancel: cancel}
+	jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
+	j := composite("all", shadow(diffReviewJudge()), fileExistsJudge("a.txt"))
+
+	v, err := Evaluate(ctx, j, jctx)
+	if err != nil {
+		t.Fatalf("Evaluate returned an error: %v", err)
+	}
+
+	if v.Status != types.JudgeStatusError || v.Reason != "cancelled" {
+		t.Fatalf("verdict = %+v, want error: the deciding judge never ran", v)
+	}
+	assertStatuses(t, v, eval.JudgeStatusShadow, eval.JudgeStatusSkipped)
+}
+
+func TestComposite_ShadowNotesCountEveryShadow(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a.txt": "x"})
+	j := composite("all", fileExistsJudge("a.txt"), shadow(fileExistsJudge("a.txt")), shadow(fileExistsJudge("missing.txt")))
+
+	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
+
+	if want := "all 1 sub-judge passed; 2 shadows recorded"; v.Status != types.JudgeStatusPass || v.Reason != want {
+		t.Fatalf("verdict = %+v, want pass with reason %q", v, want)
+	}
+	if v.Details[1].ShadowVerdict != types.JudgeStatusPass || v.Details[2].ShadowVerdict != types.JudgeStatusFail {
+		t.Errorf("shadow verdicts = %q, %q; want pass, fail", v.Details[1].ShadowVerdict, v.Details[2].ShadowVerdict)
+	}
+}
+
+func TestComposite_DecidingErrorBesideAPassingShadowIsError(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"a.txt": "x", "sub/b.txt": "y"})
+	unreadable := types.EvalJudge{Type: "file-contains", Path: "sub", Pattern: "x"}
+	cases := map[string]string{
+		"all": "sub-judge 1 of 2 (file-contains) errored (require all); 1 shadow recorded: ",
+		"any": "0 of 1 sub-judge passed (require any); 1 shadow recorded; 1 errored, first: sub-judge 1 of 2 (file-contains): ",
+	}
+	for require, prefix := range cases {
+		t.Run(require, func(t *testing.T) {
+			v := evaluateOK(t, composite(require, unreadable, shadow(fileExistsJudge("a.txt"))), JudgeContext{WorkspaceDir: dir})
+
+			if v.Status != types.JudgeStatusError || !strings.HasPrefix(v.Reason, prefix) {
+				t.Fatalf("verdict = %+v, want error with reason starting %q", v, prefix)
+			}
+			if d := v.Details[1]; d.Status != eval.JudgeStatusShadow || d.ShadowVerdict != types.JudgeStatusPass {
+				t.Errorf("shadow detail = %+v, want a recorded pass that does not count", d)
+			}
+		})
 	}
 }

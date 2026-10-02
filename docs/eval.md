@@ -798,9 +798,10 @@ When no nested judge passes under `any`, the composite is `error` if at
 least one nested judge errored and `fail` otherwise. When every nested
 judge passes under `all`, the composite is `pass`. An `error` composite
 has `passed: false`, and nested composites propagate their status in
-the same way. A composite that finds the run cancelled between nested
-judges, such as after an interrupt, is `error` with the reason
-`cancelled`, and the judges not yet evaluated are `skipped`.
+the same way. A composite that finds the run cancelled, such as after an
+interrupt, before a nested judge that could decide it is `error` with
+the reason `cancelled`, and the judges not yet evaluated are `skipped`.
+A shadow skipped this way leaves the outcome unchanged.
 
 **Shadow judges.** A nested judge with `shadow = true` (`"shadow": true`
 in JSON) is evaluated and recorded but never decides the composite. Its

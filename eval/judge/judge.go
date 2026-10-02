@@ -275,8 +275,8 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 // one that decides the outcome: a fail or error under "all", a pass under
 // "any". Shadow sub-judges never decide and are evaluated even after the
 // outcome is decided. Sub-judge errors are carried in Status, as is a
-// cancelled context between sub-judges; only an invalid judge tree returns an
-// error.
+// cancelled context before a deciding sub-judge; a skipped shadow changes
+// nothing. Only an invalid judge tree returns an error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	if err := validateTree(j); err != nil {
 		return eval.JudgeVerdict{}, err
@@ -307,8 +307,10 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 			skipped++
 			continue
 		}
-		if cancelled || ctx.Err() != nil {
-			cancelled = true
+		if ctx.Err() != nil {
+			if !sub.Shadow {
+				cancelled = true
+			}
 			details = append(details, skippedDetail(sub, "not evaluated: cancelled"))
 			skipped++
 			continue
