@@ -462,6 +462,25 @@ func TestComposite_AnyErrorWithoutPassIsError(t *testing.T) {
 	}
 }
 
+func TestComposite_AnyReportsFirstOfSeveralErrors(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	fake := &fakeClient{err: errors.New("provider returned HTTP 503")}
+	noTrace := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{}}
+	j := composite("any", markerJudge("a", 1), noTrace, markerJudge("b", 1), diffReviewJudge())
+
+	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
+
+	if v.Status != types.JudgeStatusError || v.Passed {
+		t.Fatalf("verdict = %+v, want error", v)
+	}
+	assertStatuses(t, v, types.JudgeStatusFail, types.JudgeStatusError, types.JudgeStatusFail, types.JudgeStatusError)
+	want := "0 of 4 sub-judges passed (require any); 2 errored, first: sub-judge 2 of 4 (tool-trace): " +
+		"tool-trace judge requires a run trace but none was provided"
+	if v.Reason != want {
+		t.Errorf("Reason = %q, want %q", v.Reason, want)
+	}
+}
+
 func TestComposite_AnyAllFailIsFailNotError(t *testing.T) {
 	v := evaluateOK(t, composite("any", markerJudge("a", 1), markerJudge("b", 2)), JudgeContext{WorkspaceDir: t.TempDir()})
 
