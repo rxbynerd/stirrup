@@ -630,7 +630,10 @@ func TestFileCache_RejectsInvalidKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"", "abc", "../" + strings.Repeat("a", 61), strings.Repeat("A", 64), strings.Repeat("g", 64)} {
+	for _, key := range []string{
+		"", "abc", "abcdef", strings.Repeat("a", 63), strings.Repeat("a", 65),
+		"../" + strings.Repeat("a", 61), strings.Repeat("A", 64), strings.Repeat("g", 64),
+	} {
 		if err := c.Put(key, fileCacheVerdict("x")); err == nil {
 			t.Errorf("Put accepted key %q", key)
 		}
@@ -1058,4 +1061,45 @@ func TestEvaluateDiffReview_HitsCarrySanitisedProvenance(t *testing.T) {
 			t.Errorf("a hit's record JSON lacks %s", field)
 		}
 	}
+}
+
+func TestEvaluateDiffReview_DocumentedCacheableVerdicts(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	recordThenServe := func(t *testing.T, j types.EvalJudge, jctx JudgeContext, reply string) (stored, hit eval.JudgeVerdict) {
+		t.Helper()
+		t.Setenv("ANTHROPIC_API_KEY", "k")
+		c, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: CacheRecord})
+		if err != nil {
+			t.Fatal(err)
+		}
+		jctx.Options = cachedOptions(CacheRecord, c, &fakeClient{resp: okResponse(reply)})
+		if stored, err = Evaluate(context.Background(), j, jctx); err != nil || stored.Record.CacheStatus != types.JudgeCacheStored {
+			t.Fatalf("record: verdict %+v, err %v; want the verdict stored", stored, err)
+		}
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		strict := &fakeClient{resp: okResponse(reply)}
+		jctx.Options = cachedOptions(CacheReplayStrict, c, strict)
+		if hit, err = Evaluate(context.Background(), j, jctx); err != nil || hit.Record.CacheStatus != types.JudgeCacheHit || strict.calls != 0 {
+			t.Fatalf("replay-strict: verdict %+v, err %v, %d calls; want a hit", hit, err, strict.calls)
+		}
+		return stored, hit
+	}
+
+	t.Run("last_match", func(t *testing.T) {
+		stored, hit := recordThenServe(t, diffReviewJudge(), changedJudgeContext(t, Options{}), verdictFail+"\n"+verdictFail)
+		if stored.Record.ParseStatus != types.JudgeParseLastMatch || hit.Record.ParseStatus != types.JudgeParseLastMatch || hit.Status != types.JudgeStatusFail {
+			t.Errorf("stored %+v, hit %+v; want a last_match fail served", stored.Record, hit)
+		}
+	})
+
+	t.Run("truncated input with allow_truncated", func(t *testing.T) {
+		dir, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
+		writeFiles(t, dir, map[string]string{"big.txt": strings.Repeat("padding line\n", 500)})
+		j := diffReviewJudge()
+		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400, AllowTruncated: true}
+		_, hit := recordThenServe(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base}, verdictPass)
+		if !hit.Record.Truncated || hit.Status != types.JudgeStatusPass || hit.Record.InputBytes <= 400 {
+			t.Errorf("hit = %+v, record %+v; want the truncated-input pass served", hit, hit.Record)
+		}
+	})
 }
