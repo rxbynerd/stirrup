@@ -840,7 +840,9 @@ judge {
 
 A shadow's `details` entry has status `shadow`, the verdict it gave
 (`pass`, `fail`, or `error`) in `shadowVerdict`, `passed: false`, and its
-`record`; JUnit output shows it as `shadow <verdict>`. The composite's
+`record`. In JUnit output a shadow directly under the task's judge
+appears as `shadow <verdict>`: in the `<failure>` or `<error>` body of a
+failed or errored task, and in `<system-out>` of a passing one. The composite's
 reason counts deciding judges only and ends with, for example,
 `; 1 shadow recorded`. A shadow `diff-review` judge uses the judge cache
 like any other. Comparing `shadowVerdict` with the task outcome across a

@@ -231,6 +231,41 @@ func TestWriteJUnit_FailRendersShadowVerdicts(t *testing.T) {
 	}
 }
 
+func TestWriteJUnit_PassRendersShadowVerdictsInSystemOut(t *testing.T) {
+	shadowed := eval.TaskResult{
+		TaskID:  "shadowed",
+		Outcome: "pass",
+		JudgeVerdict: eval.JudgeVerdict{
+			Passed: true,
+			Status: "pass",
+			Reason: "all 1 sub-judge passed; 1 shadow recorded",
+			Details: []eval.JudgeDetail{
+				{Type: "file-exists", Passed: true, Status: "pass", Reason: "all paths exist"},
+				{Type: "diff-review", Status: eval.JudgeStatusShadow, ShadowVerdict: "fail", Reason: "decision model: p(pass)=0.12 confidence=0.70"},
+			},
+		},
+	}
+	plain := eval.TaskResult{
+		TaskID:  "plain",
+		Outcome: "pass",
+		JudgeVerdict: eval.JudgeVerdict{Passed: true, Status: "pass", Reason: "all 1 sub-judge passed", Details: []eval.JudgeDetail{
+			{Type: "file-exists", Passed: true, Status: "pass", Reason: "all paths exist"},
+		}},
+	}
+	cases := parseJUnit(t, runWriteJUnit(t, eval.SuiteResult{SuiteID: "s", Tasks: []eval.TaskResult{shadowed, plain}})).TestSuites[0].TestCases
+
+	if cases[0].Failure != nil || cases[0].Error != nil {
+		t.Fatalf("passing case = %+v, want no failure or error", cases[0])
+	}
+	want := "diff-review: shadow fail (decision model: p(pass)=0.12 confidence=0.70)"
+	if !strings.HasPrefix(cases[0].SystemOut, shadowed.JudgeVerdict.Reason) || !strings.HasSuffix(cases[0].SystemOut, want) {
+		t.Errorf("system-out = %q, want the reason and the shadow verdict %q", cases[0].SystemOut, want)
+	}
+	if cases[1].SystemOut != "" {
+		t.Errorf("a passing task without shadows has system-out %q", cases[1].SystemOut)
+	}
+}
+
 func TestWriteJUnit_ErrorCompositeEmitsDetails(t *testing.T) {
 	reason := "sub-judge 2 of 3 (diff-review) errored (require all); 1 skipped: provider returned HTTP 503"
 	result := eval.SuiteResult{

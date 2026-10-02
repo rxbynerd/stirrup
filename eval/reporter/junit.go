@@ -36,6 +36,7 @@ type xmlTestCase struct {
 	Time      string      `xml:"time,attr"`
 	Failure   *xmlFailure `xml:"failure,omitempty"`
 	Error     *xmlError   `xml:"error,omitempty"`
+	SystemOut string      `xml:"system-out,omitempty"`
 }
 
 type xmlFailure struct {
@@ -158,7 +159,11 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 			Body:    detailBody(t.Error, t.JudgeVerdict.Details),
 		}
 	case "pass":
-
+		// A passing task has no failure body, so its shadow verdicts go
+		// to system-out.
+		if hasShadow(t.JudgeVerdict.Details) {
+			tc.SystemOut = failureBody(t.JudgeVerdict)
+		}
 	default:
 		// Surface as <error> so operators can grep for "UnknownOutcome".
 		msg := fmt.Sprintf("unknown task outcome %q", t.Outcome)
@@ -170,6 +175,15 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	}
 
 	return tc
+}
+
+func hasShadow(details []eval.JudgeDetail) bool {
+	for _, d := range details {
+		if d.Status == eval.JudgeStatusShadow {
+			return true
+		}
+	}
+	return false
 }
 
 // failureBody assembles the <failure> body text from the judge verdict.
