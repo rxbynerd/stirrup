@@ -55,7 +55,8 @@ func ParseCacheMode(s string) (CacheMode, error) {
 // IsLive reports whether m leaves the cache unused.
 func (m CacheMode) IsLive() bool { return m == "" || m == CacheLive }
 
-func (m CacheMode) reads() bool { return m == CacheReadThrough || m == CacheReplayStrict }
+// Reads reports whether m serves stored verdicts.
+func (m CacheMode) Reads() bool { return m == CacheReadThrough || m == CacheReplayStrict }
 
 func (m CacheMode) writes() bool { return m == CacheRecord || m == CacheReadThrough }
 

@@ -4,15 +4,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// judgeCacheDirName is the judge cache directory under `run --output` and
-// beside a lakehouse's recordings.
+// judgeCacheDirName is record mode's default judge cache directory, under
+// `run --output` and beside a lakehouse's recordings.
 const judgeCacheDirName = "judge-cache"
 
 // judgeFlags are the --judge-* flags shared by `run` and `replay`. The model
@@ -35,7 +34,7 @@ func addJudgeFlags(fs *flag.FlagSet) *judgeFlags {
 		baseURL:   fs.String("judge-base-url", "", "API base URL for diff-review judges without an llm block. Required for openai-compatible. An anthropic judge with a base URL other than the Anthropic API also needs --judge-api-key-ref."),
 		apiKeyRef: fs.String("judge-api-key-ref", "", "Secret reference for the judge API key, e.g. secret://OPENROUTER_API_KEY. A reference resolved at runtime, never a literal key. Defaults to secret://ANTHROPIC_API_KEY only for the anthropic provider at the Anthropic API."),
 		cache:     fs.String("judge-cache", string(judge.CacheLive), "How diff-review judges use the verdict cache: live (no cache), record (call the model and store every verdict), read-through (serve stored verdicts; call the model and store on a miss), or replay-strict (serve stored verdicts; a miss is an error and the model is never called)."),
-		cacheDir:  fs.String("judge-cache-dir", "", "Judge cache directory. Defaults to <output>/judge-cache for run; for replay, to <lakehouse>/judge-cache when that directory exists, else a new temporary directory. Unused with --judge-cache live."),
+		cacheDir:  fs.String("judge-cache-dir", "", "Judge cache directory. Required with read-through and replay-strict; record defaults to <output>/judge-cache for run and <lakehouse>/judge-cache for replay. The directory must belong to the current user, must not be writable by group or others, and must lie outside every workspace the agent under test can write. Unused with --judge-cache live."),
 	}
 }
 
@@ -47,6 +46,9 @@ func (f *judgeFlags) options() (judge.Options, error) {
 	mode, err := judge.ParseCacheMode(*f.cache)
 	if err != nil {
 		return judge.Options{}, fmt.Errorf("--judge-cache: %w", err)
+	}
+	if mode.Reads() && *f.cacheDir == "" {
+		return judge.Options{}, fmt.Errorf("--judge-cache %s needs --judge-cache-dir: a mode that serves stored verdicts reads only a directory named explicitly", mode)
 	}
 	opts := judge.Options{CacheMode: mode}
 	if *f.provider == "" && *f.model == "" && *f.baseURL == "" && *f.apiKeyRef == "" {
@@ -65,10 +67,12 @@ func (f *judgeFlags) options() (judge.Options, error) {
 	return opts, nil
 }
 
-// openCache gives opts the cache its mode needs, in --judge-cache-dir or
-// else the directory defaultDir returns, and a counter for its outcomes. It
-// returns the directory in use, or "" in live mode, which needs no cache.
-func (f *judgeFlags) openCache(opts *judge.Options, defaultDir func() (string, error)) (string, error) {
+// openCache gives opts the cache its mode needs and a counter for its
+// outcomes. The directory is --judge-cache-dir or, in record mode only,
+// recordDir; forbidden are directories the agent under test can write,
+// which must not hold the cache. It returns the directory in use, or "" in
+// live mode, which needs no cache.
+func (f *judgeFlags) openCache(opts *judge.Options, recordDir string, forbidden []string) (string, error) {
 	if opts.CacheMode.IsLive() {
 		if *f.cacheDir != "" {
 			fmt.Fprintf(os.Stderr, "ignoring --judge-cache-dir %q: --judge-cache is live\n", *f.cacheDir)
@@ -76,14 +80,13 @@ func (f *judgeFlags) openCache(opts *judge.Options, defaultDir func() (string, e
 		return "", nil
 	}
 	dir := *f.cacheDir
-	if dir == "" {
-		d, err := defaultDir()
-		if err != nil {
-			return "", fmt.Errorf("--judge-cache-dir: %w", err)
-		}
-		dir = d
+	if dir == "" && opts.CacheMode == judge.CacheRecord {
+		dir = recordDir
 	}
-	cache, err := judge.NewFileCache(dir, judge.FileCacheOptions{Mode: opts.CacheMode})
+	if dir == "" {
+		return "", fmt.Errorf("--judge-cache %s needs --judge-cache-dir", opts.CacheMode)
+	}
+	cache, err := judge.NewFileCache(dir, judge.FileCacheOptions{Mode: opts.CacheMode, ForbiddenRoots: forbidden})
 	if err != nil {
 		return "", fmt.Errorf("--judge-cache-dir: %w", err)
 	}
@@ -91,18 +94,6 @@ func (f *judgeFlags) openCache(opts *judge.Options, defaultDir func() (string, e
 	opts.CacheStats = &judge.CacheStats{}
 	fmt.Fprintf(os.Stderr, "Using judge cache directory %s (mode %s)\n", dir, opts.CacheMode)
 	return dir, nil
-}
-
-// replayCacheDir is replay's default judge cache directory: the one beside
-// the lakehouse's recordings when it exists, else a new temporary directory.
-func replayCacheDir(lakehousePath string) func() (string, error) {
-	return func() (string, error) {
-		dir := filepath.Join(lakehousePath, judgeCacheDirName)
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return dir, nil
-		}
-		return os.MkdirTemp("", "stirrup-judge-cache-")
-	}
 }
 
 // formatJudgeCache renders the judge cache line of a run or replay summary.

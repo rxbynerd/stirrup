@@ -177,9 +177,7 @@ func cmdRun(args []string) {
 		*outputDir = wd
 	}
 	if !*dryRun {
-		if _, err := judgeFlagSet.openCache(&judgeOpts, func() (string, error) {
-			return filepath.Join(*outputDir, judgeCacheDirName), nil
-		}); err != nil {
+		if _, err := judgeFlagSet.openCache(&judgeOpts, filepath.Join(*outputDir, judgeCacheDirName), nil); err != nil {
 			log.Fatal(err)
 		}
 	}

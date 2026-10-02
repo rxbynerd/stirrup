@@ -107,7 +107,7 @@ func NewFileCache(dir string, opts FileCacheOptions) (*FileCache, error) {
 	}
 	switch err := checkPrivateDir(info); {
 	case errors.Is(err, errOwnerUnchecked):
-		if mode.reads() {
+		if mode.Reads() {
 			return nil, fmt.Errorf("judge cache mode %s serves stored verdicts, but %w", mode, err)
 		}
 	case err != nil:

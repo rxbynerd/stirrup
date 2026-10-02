@@ -65,10 +65,6 @@ func cmdReplay(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := judge.PreflightSuite(ctx, suite.Tasks, judgeOpts); err != nil {
-		log.Fatalf("checking judges: %v", err)
-	}
-
 	recordings, err := selectRecordings(ctx, store, *recordingIDs, *outcomeFilter)
 	if err != nil {
 		log.Fatalf("selecting recordings: %v", err)
@@ -76,8 +72,11 @@ func cmdReplay(args []string) {
 	if len(recordings) == 0 {
 		log.Fatal("no matching recordings found")
 	}
-	if _, err := judgeFlagSet.openCache(&judgeOpts, replayCacheDir(*lakehousePath)); err != nil {
+	if _, err := judgeFlagSet.openCache(&judgeOpts, filepath.Join(*lakehousePath, judgeCacheDirName), replayWorkspaces(*workspaceDir, recordings)); err != nil {
 		log.Fatal(err)
+	}
+	if err := judge.PreflightSuite(ctx, suite.Tasks, judgeOpts); err != nil {
+		log.Fatalf("checking judges: %v", err)
 	}
 
 	runID := fmt.Sprintf("replay-%d", time.Now().UnixMilli())
@@ -140,6 +139,19 @@ func cmdReplay(args []string) {
 		fmt.Println(formatJudgeCache(*result.JudgeCache))
 	}
 	warnJudgeCacheWrite(judgeOpts.CacheStats)
+}
+
+// replayWorkspaces are the directories the replayed agents could write:
+// the workspace under review and each recording's absolute executor
+// workspace.
+func replayWorkspaces(workspaceDir string, recordings []types.RunRecording) []string {
+	roots := []string{workspaceDir}
+	for _, rec := range recordings {
+		if filepath.IsAbs(rec.Config.Executor.Workspace) {
+			roots = append(roots, rec.Config.Executor.Workspace)
+		}
+	}
+	return roots
 }
 
 // selectRecordings resolves the --recording / --outcome flags into a

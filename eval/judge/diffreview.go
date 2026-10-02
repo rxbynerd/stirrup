@@ -148,7 +148,7 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 	key := CacheKey(rec.ConfigHash, rec.InputSHA256, 0)
 	rec.CacheKey = key
 	rec.CacheStatus = types.JudgeCacheMiss
-	if mode.reads() {
+	if mode.Reads() {
 		verdict, hit, err := lookupVerdict(jctx.Cache, key, rec)
 		switch {
 		case hit:
