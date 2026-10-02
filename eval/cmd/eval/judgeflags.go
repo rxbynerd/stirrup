@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/rxbynerd/stirrup/eval"
@@ -100,18 +101,25 @@ func (f *judgeFlags) openCache(opts *judge.Options, recordDir string, forbidden 
 func formatJudgeCache(s eval.JudgeCacheSummary) string {
 	line := fmt.Sprintf("Judge cache (%s): %d hits, %d misses, %d stored, %d bypassed",
 		s.Mode, s.Hits, s.Misses, s.Stored, s.Bypassed)
+	if s.Replaced > 0 {
+		line += fmt.Sprintf(", %d replaced", s.Replaced)
+	}
 	if s.WriteErrors > 0 {
 		line += fmt.Sprintf(", %d write errors", s.WriteErrors)
 	}
 	return line
 }
 
-// warnJudgeCacheWrite reports the first verdict the cache failed to store.
-func warnJudgeCacheWrite(stats *judge.CacheStats) {
+// warnJudgeCache reports the first entry the cache replaced as unusable and
+// the first verdict it failed to store.
+func warnJudgeCache(w io.Writer, stats *judge.CacheStats) {
 	if stats == nil {
 		return
 	}
+	if err := stats.UnusableError(); err != nil {
+		_, _ = fmt.Fprintf(w, "warning: replaced an unusable judge cache entry: %v\n", err)
+	}
 	if err := stats.WriteError(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: judge cache write failed: %v\n", err)
+		_, _ = fmt.Fprintf(w, "warning: judge cache write failed: %v\n", err)
 	}
 }

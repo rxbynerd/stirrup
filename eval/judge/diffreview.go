@@ -156,12 +156,14 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 	rec.CacheKey = key
 	rec.CacheStatus = types.JudgeCacheMiss
 	if mode.Reads() {
-		verdict, hit, err := lookupVerdict(jctx.Cache, key, rec)
+		verdict, found, err := lookupVerdict(jctx.Cache, key, rec)
 		switch {
-		case hit:
+		case found && err == nil:
 			return verdict, nil
 		case mode == CacheReplayStrict:
 			return diffReviewError(rec, fmt.Errorf("%w; judge cache mode replay-strict never calls the model", err))
+		case found:
+			jctx.CacheStats.replacing(err)
 		}
 	}
 	verdict, err := callDiffReviewModel(ctx, cfg, j.Criteria, diff, rec, jctx.ClientFactory)

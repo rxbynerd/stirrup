@@ -150,8 +150,10 @@ func checkCachedVerdict(cached eval.JudgeVerdict, rec *types.JudgeRecord) error 
 }
 
 // lookupVerdict serves rec's verdict from cache, completing rec from the
-// stored record. Without a hit it returns why, for replay-strict to report.
-func lookupVerdict(cache Cache, key string, rec *types.JudgeRecord) (eval.JudgeVerdict, bool, error) {
+// stored record. found reports whether an entry exists. A nil error with
+// found is a hit; otherwise the error says why the entry is missing or
+// unusable.
+func lookupVerdict(cache Cache, key string, rec *types.JudgeRecord) (v eval.JudgeVerdict, found bool, err error) {
 	start := time.Now()
 	cached, found, err := cache.Get(key)
 	if err == nil && found {
@@ -159,7 +161,7 @@ func lookupVerdict(cache Cache, key string, rec *types.JudgeRecord) (eval.JudgeV
 	}
 	switch {
 	case err != nil:
-		return eval.JudgeVerdict{}, false, fmt.Errorf("judge cache entry %s is unusable: %w", key, err)
+		return eval.JudgeVerdict{}, true, fmt.Errorf("judge cache entry %s is unusable: %w", key, err)
 	case !found:
 		return eval.JudgeVerdict{}, false, fmt.Errorf("judge cache has no verdict for key %s", key)
 	}
@@ -182,10 +184,10 @@ func lookupVerdict(cache Cache, key string, rec *types.JudgeRecord) (eval.JudgeV
 // concurrent judge calls. The zero value is ready to use; a nil *CacheStats
 // counts nothing.
 type CacheStats struct {
-	hits, misses, stored, bypassed, writeErrors atomic.Int64
+	hits, misses, stored, bypassed, replaced, writeErrors atomic.Int64
 
-	mu       sync.Mutex
-	writeErr error
+	mu                    sync.Mutex
+	writeErr, unusableErr error
 }
 
 func (s *CacheStats) count(status string) {
@@ -216,6 +218,20 @@ func (s *CacheStats) writeFailed(err error) {
 	}
 }
 
+// replacing counts an unusable entry that read-through judges again in its
+// place.
+func (s *CacheStats) replacing(err error) {
+	if s == nil {
+		return
+	}
+	s.replaced.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unusableErr == nil {
+		s.unusableErr = err
+	}
+}
+
 // Summary returns the counts so far, labelled with mode.
 func (s *CacheStats) Summary(mode CacheMode) eval.JudgeCacheSummary {
 	stored := int(s.stored.Load())
@@ -225,6 +241,7 @@ func (s *CacheStats) Summary(mode CacheMode) eval.JudgeCacheSummary {
 		Misses:      int(s.misses.Load()) + stored,
 		Stored:      stored,
 		Bypassed:    int(s.bypassed.Load()),
+		Replaced:    int(s.replaced.Load()),
 		WriteErrors: int(s.writeErrors.Load()),
 	}
 }
@@ -234,4 +251,11 @@ func (s *CacheStats) WriteError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeErr
+}
+
+// UnusableError returns why the first replaced entry was unusable, or nil.
+func (s *CacheStats) UnusableError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unusableErr
 }

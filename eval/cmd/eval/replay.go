@@ -138,7 +138,7 @@ func cmdReplay(args []string) {
 	if result.JudgeCache != nil {
 		fmt.Println(formatJudgeCache(*result.JudgeCache))
 	}
-	warnJudgeCacheWrite(judgeOpts.CacheStats)
+	warnJudgeCache(os.Stderr, judgeOpts.CacheStats)
 }
 
 // replayWorkspaces are the directories the replayed agents could write:

@@ -193,6 +193,9 @@ func TestEvaluateDiffReview_CacheModes(t *testing.T) {
 			if got := stats.Summary(tc.mode); got != tc.wantStats {
 				t.Errorf("stats = %+v, want %+v", got, tc.wantStats)
 			}
+			if raw, _ := json.Marshal(stats.Summary(tc.mode)); strings.Contains(string(raw), "replaced") {
+				t.Errorf("summary JSON %s carries replaced without an unusable entry", raw)
+			}
 		})
 	}
 }
@@ -370,7 +373,10 @@ func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
 			cache := newMemCache()
 			corrupt(cache)
 			fake := &fakeClient{resp: okResponse(verdictPass)}
-			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReadThrough, cache, fake)})
+			stats := &CacheStats{}
+			opts := cachedOptions(CacheReadThrough, cache, fake)
+			opts.CacheStats = stats
+			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
 			if err != nil || v.Status != types.JudgeStatusPass {
 				t.Fatalf("verdict = %+v, err = %v", v, err)
 			}
@@ -380,17 +386,33 @@ func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
 			if err := checkCachedVerdict(cache.entries[key], v.Record); err != nil || cache.corrupt[key] {
 				t.Errorf("entry not replaced with a usable one: %v", err)
 			}
+			summary := stats.Summary(CacheReadThrough)
+			if want := (eval.JudgeCacheSummary{Mode: "read-through", Misses: 1, Stored: 1, Replaced: 1}); summary != want {
+				t.Errorf("stats = %+v, want %+v", summary, want)
+			}
+			if err := stats.UnusableError(); err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "is unusable") {
+				t.Errorf("UnusableError = %v, want one naming key %s", err, key)
+			}
+			if raw, err := json.Marshal(summary); err != nil || !strings.Contains(string(raw), `"replaced":1`) {
+				t.Errorf("summary JSON %s (err %v) lacks the replaced count", raw, err)
+			}
 		})
 		t.Run(name+"/replay-strict errors", func(t *testing.T) {
 			cache := newMemCache()
 			corrupt(cache)
 			fake := &fakeClient{resp: okResponse(verdictPass)}
-			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReplayStrict, cache, fake)})
-			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "is unusable") {
-				t.Fatalf("verdict = %+v, err = %v, want an unusable-entry error", v, err)
+			stats := &CacheStats{}
+			opts := cachedOptions(CacheReplayStrict, cache, fake)
+			opts.CacheStats = stats
+			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
+			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "is unusable") || !strings.Contains(v.Reason, key) {
+				t.Fatalf("verdict = %+v, err = %v, want an unusable-entry error naming the key", v, err)
 			}
 			if fake.calls != 0 || cache.puts != 0 {
 				t.Errorf("%d model calls and %d puts in replay-strict", fake.calls, cache.puts)
+			}
+			if got := stats.Summary(CacheReplayStrict); got.Replaced != 0 || stats.UnusableError() != nil {
+				t.Errorf("stats = %+v; replay-strict replaces nothing", got)
 			}
 		})
 	}
@@ -910,9 +932,15 @@ func TestEvaluateDiffReview_EntriesFromAnotherParserVersionAreNotServed(t *testi
 			}
 
 			through := &fakeClient{resp: okResponse(verdictPass)}
-			v, err = evaluate(CacheReadThrough, c, through)
+			stats := &CacheStats{}
+			opts := cachedOptions(CacheReadThrough, c, through)
+			opts.CacheStats = stats
+			v, err = Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
 			if err != nil || v.Record.CacheStatus != types.JudgeCacheStored || through.calls != 1 {
 				t.Fatalf("read-through: verdict %+v, err %v, %d calls; want the entry judged again and replaced", v, err, through.calls)
+			}
+			if got := stats.Summary(CacheReadThrough); got.Replaced != 1 {
+				t.Errorf("stats = %+v, want the entry counted as replaced", got)
 			}
 			if _, found, err := c.Get(key); !found || err != nil {
 				t.Errorf("replaced entry: found %v, err %v", found, err)

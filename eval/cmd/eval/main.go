@@ -237,7 +237,7 @@ func cmdRun(args []string) {
 	}
 
 	printSummary(result)
-	warnJudgeCacheWrite(judgeOpts.CacheStats)
+	warnJudgeCache(os.Stderr, judgeOpts.CacheStats)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
 }
 

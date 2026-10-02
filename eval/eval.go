@@ -89,6 +89,10 @@ type JudgeCacheSummary struct {
 	Stored   int    `json:"stored"`
 	Bypassed int    `json:"bypassed"`
 
+	// Replaced counts unusable entries that read-through found and judged
+	// again in their place. Each is also a miss.
+	Replaced int `json:"replaced,omitempty"`
+
 	// WriteErrors counts verdicts the cache failed to store.
 	WriteErrors int `json:"writeErrors,omitempty"`
 }

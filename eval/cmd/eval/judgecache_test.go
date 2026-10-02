@@ -136,6 +136,60 @@ func TestFormatJudgeCache(t *testing.T) {
 	if got := formatJudgeCache(s); !strings.HasSuffix(got, ", 2 write errors") {
 		t.Errorf("got %q, want the write errors reported", got)
 	}
+	s.Replaced = 1
+	if got, want := formatJudgeCache(s), "Judge cache (read-through): 3 hits, 1 misses, 1 stored, 0 bypassed, 1 replaced, 2 write errors"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCmdRun_ReadThroughReplacesAnUnusableEntryWithOneWarning(t *testing.T) {
+	endpoint := newJudgeEndpoint(t)
+	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
+	harnessPath := writeFakeHarness(t, createsFileHarness)
+	suitePath := writeSuite(t, diffReviewSuiteHCL)
+	outputDir := filepath.Join(t.TempDir(), "out")
+	cacheDir := filepath.Join(outputDir, judgeCacheDirName)
+	args := []string{
+		"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir,
+		"--judge-model", "m", "--judge-base-url", endpoint.srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
+	}
+	if code := run(append(args, "--judge-cache", "record"), io.Discard); code != 0 {
+		t.Fatalf("record: exit code %d", code)
+	}
+	recorded, err := loadResult(filepath.Join(outputDir, "result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := recorded.Tasks[0].JudgeVerdict.Record.CacheKey
+	entry := filepath.Join(cacheDir, key[:2], key[2:4], key+".json")
+	raw, err := os.ReadFile(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte(strings.Replace(string(raw), `"parserVersion": `, `"parserVersion": 9`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := runEval(t, nil, append(args, "--judge-cache", "read-through", "--judge-cache-dir", cacheDir)...)
+	if code != 0 {
+		t.Fatalf("read-through: exit code %d:\n%s", code, out)
+	}
+	if n := strings.Count(out, "warning: replaced an unusable judge cache entry"); n != 1 || !strings.Contains(out, key) {
+		t.Errorf("want one warning naming %s, got %d:\n%s", key, n, out)
+	}
+	if !strings.Contains(out, "1 replaced") {
+		t.Errorf("summary line does not report the replacement:\n%s", out)
+	}
+	result, err := loadResult(filepath.Join(outputDir, "result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.JudgeCache == nil || result.JudgeCache.Replaced != 1 || result.JudgeCache.Stored != 1 {
+		t.Errorf("summary = %+v, want one replaced and stored entry", result.JudgeCache)
+	}
+	if bodies, _ := endpoint.seen(); len(bodies) != 2 {
+		t.Errorf("judge saw %d requests, want the unusable entry judged again", len(bodies))
+	}
 }
 
 func TestCompletion_JudgeCacheFlagsRegistered(t *testing.T) {
