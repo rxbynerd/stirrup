@@ -71,7 +71,9 @@ type RunConfig struct {
 	AnthropicWIF AnthropicWIFConfig
 
 	// JudgeOptions carries invocation-scoped settings for LLM-backed judges
-	// (the --judge-* flags).
+	// (the --judge-* flags). When its CacheMode is not live,
+	// SuiteResult.JudgeCache reports the counts in its CacheStats, which
+	// RunSuite creates when nil.
 	JudgeOptions judge.Options
 }
 
@@ -184,6 +186,11 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		}, nil
 	}
 
+	cacheMode := cfg.JudgeOptions.CacheMode
+	if !cacheMode.IsLive() && cfg.JudgeOptions.CacheStats == nil {
+		cfg.JudgeOptions.CacheStats = &judge.CacheStats{}
+	}
+
 	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline)
 
 	passCount := 0
@@ -198,14 +205,19 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		passRate = float64(passCount) / float64(len(results))
 	}
 
-	return eval.SuiteResult{
+	result := eval.SuiteResult{
 		SuiteID:     suite.ID,
 		RunID:       runID,
 		StartedAt:   startedAt,
 		CompletedAt: time.Now(),
 		Tasks:       results,
 		PassRate:    passRate,
-	}, nil
+	}
+	if !cacheMode.IsLive() {
+		summary := cfg.JudgeOptions.CacheStats.Summary(cacheMode)
+		result.JudgeCache = &summary
+	}
+	return result, nil
 }
 
 // runTasksConcurrently dispatches tasks across a bounded worker pool while
