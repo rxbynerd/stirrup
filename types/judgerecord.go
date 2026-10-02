@@ -134,6 +134,6 @@ type JudgeRecord struct {
 	CacheStatus string `json:"cacheStatus,omitempty"`
 
 	// CacheKey is the verdict's content address in the judge cache, set
-	// whenever the cache was consulted or written.
+	// whenever CacheStatus is not JudgeCacheBypass.
 	CacheKey string `json:"cacheKey,omitempty"`
 }

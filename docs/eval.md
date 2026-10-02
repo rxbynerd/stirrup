@@ -357,8 +357,9 @@ environment variable `NAME` (letters, digits, and underscores, not
 starting with a digit), and `secret://file:///path` reads a file.
 `run`, `run --dry-run`, and `replay` resolve every distinct reference
 and check every endpoint before any task runs (see
-[`run`](#run--execute-a-suite)). The key never appears in suite files,
-results, or verdict records.
+[`run`](#run--execute-a-suite)), except under `--judge-cache
+replay-strict`, which never calls a model. The key never appears in
+suite files, results, verdict records, or the judge cache.
 
 **Defaults and the `--judge-*` flags.** A `diff-review` judge without an
 `llm` block uses `anthropic`, `claude-haiku-4-5-20251001`, and
@@ -454,7 +455,9 @@ a `configHash` over the prompt layout version, the system prompt, the
 verdict schema template (without the per-call nonce), provider, model,
 base URL (scheme, host, and path only), criteria, structured-output
 mode, temperature, `max_tokens`, and `max_input_bytes`. Two verdicts
-with equal hashes were produced under the same judge definition.
+with equal hashes were produced under the same judge definition. The
+record also carries the verdict's `cacheStatus` and `cacheKey` (see
+[Judge cache](#judge-cache)).
 A `diff-review` judge nested in a `composite`, at any depth, keeps its
 record: each entry in the composite's `details` carries the sub-judge's
 `status` and, for LLM-backed sub-judges, its `record`, including when the
@@ -506,6 +509,129 @@ in turn.
   served model, and the stop reason. Provider error text is flattened
   to one line and truncated to 1 KiB after redaction, and an error from
   a 3xx response omits its body.
+
+#### Judge cache
+
+`diff-review` verdicts can be recorded in a content-addressed cache and
+served from it later, so re-judging an unchanged change costs no model
+call and a recorded judge leg reproduces exactly. The cache is a
+property of the invocation, not the suite: `run` and `replay` take
+`--judge-cache <mode>` and `--judge-cache-dir <dir>`, and suite files
+have no cache settings. A `diff-review` judge nested in a `composite`
+uses the cache exactly as a top-level one does; other judge types never
+touch it.
+
+| Mode               | Reads the cache | Calls the model | Writes the cache                                   |
+|--------------------|-----------------|-----------------|----------------------------------------------------|
+| `live` (default)   | no              | always          | no                                                 |
+| `record`           | no              | always          | every cacheable verdict, replacing any entry       |
+| `read-through`     | yes             | on a miss       | the cacheable verdict obtained on a miss           |
+| `replay-strict`    | yes             | never           | no                                                 |
+
+Under `replay-strict` a miss is an `error` verdict whose reason names
+the key. No credential is resolved and the checks before the run skip
+references and endpoints, so a strict run needs neither the judge key
+nor network access to the judge.
+
+**Key.** The key is the SHA-256 of a format version tag, the verdict's
+`configHash`, its `inputSha256` (the full diff, before any truncation),
+and a sample index, which is `0` until multi-sample judging exists. The
+per-call fence nonce is in neither hash, so one judge definition over
+one change always maps to one key. Changing the provider, model, base
+URL, criteria, prompt layout, structured-output mode, temperature,
+`max_tokens`, or `max_input_bytes`, or any byte of the diff, produces a
+new key. The `--judge-*` model flags affect the key only through the
+configuration they resolve to, and the credential is not part of it, so
+rotating an API key keeps every entry.
+
+**What is never cached.** Only `pass` and `fail` verdicts parsed from a
+conforming reply (`parseStatus` `ok` or `last_match`) are stored. No
+`error` verdict is stored, so the next `record` or `read-through`
+evaluation judges again: transport failures, non-200 responses,
+refusals, truncated output, replies without a conforming verdict, and
+failures before the model is called, such as a missing credential or an
+empty or oversized diff.
+
+**Records and reporting.** Each `diff-review` record carries a
+`cacheStatus`:
+
+| `cacheStatus` | Meaning                                                                                 |
+|---------------|-----------------------------------------------------------------------------------------|
+| `bypass`      | The cache was not consulted: the mode is `live`, or the judge failed before its key was known. |
+| `miss`        | No usable entry was found, or the mode is `record`, and nothing was stored.             |
+| `stored`      | The model was called and its verdict written to the cache.                              |
+| `hit`         | The verdict was served from the cache without a model call.                             |
+
+`cacheKey` holds the key whenever `cacheStatus` is not `bypass`. On a
+hit, `latencyMs` is the lookup time; the served model, token
+counts, stop reason, and parse status are those of the call that
+produced the entry. When the mode is not `live`, `run` and `replay`
+print a line such as
+`Judge cache (read-through): 3 hits, 0 misses, 0 stored, 0 bypassed`,
+and the result JSON carries the same counts under `judgeCache`, which
+is absent from live results. Misses include the verdicts that were then
+stored. A failed write keeps the verdict, counts under `writeErrors`,
+and prints a warning naming the first failure.
+
+**Directory layout.** Each entry is one JSON file at
+`<dir>/<key[0:2]>/<key[2:4]>/<key>.json` holding `key`,
+`schemaVersion`, `createdAt`, and the full `verdict` (`passed`,
+`status`, `reason`, `record`). Entries are written to a temporary file
+in the same directory and renamed into place, so invocations sharing a
+directory never read a partial entry and the last writer of a key wins.
+An entry that cannot be read or decoded, carries another key or schema
+version, is not a cacheable verdict, or does not match the current
+`configHash` and `inputSha256` is treated as a miss and overwritten
+under `record` and `read-through`, and is an `error` under
+`replay-strict`. Entries never expire; deleting
+an entry or the directory invalidates it.
+
+The default directory depends on the subcommand; `--judge-cache-dir`
+overrides it, and is ignored with a warning in `live` mode:
+
+- `run`: `<output>/judge-cache`, with `--output` defaulting to the
+  current directory. `--dry-run` opens no cache.
+- `replay`: `<lakehouse>/judge-cache` when that directory exists,
+  beside the lakehouse's `recordings/`; otherwise a new temporary
+  directory, whose path is printed on stderr and left in place for a
+  later `--judge-cache-dir`.
+
+**Replay.** A hit needs the same diff, so `replay` serves a verdict
+recorded by `run` only when `--workspace` holds the same content and
+`--judge-baseline` names the baseline that run used. The common loops
+are a second `run`, or a `replay`, over the same input:
+
+```bash
+# Record once, then rerun the judge leg without model calls.
+./stirrup-eval run --suite eval/suites/some-suite.hcl --output results/ --judge-cache record
+./stirrup-eval run --suite eval/suites/some-suite.hcl --output results/ --judge-cache read-through
+
+# Record replay verdicts beside the recordings, then re-judge strictly
+# from there with no judge key.
+./stirrup-eval replay --lakehouse var/lakehouse --suite eval/suites/some-suite.hcl \
+  --workspace path/to/preserved-workspace \
+  --judge-cache record --judge-cache-dir var/lakehouse/judge-cache
+./stirrup-eval replay --lakehouse var/lakehouse --suite eval/suites/some-suite.hcl \
+  --workspace path/to/preserved-workspace --judge-cache replay-strict
+```
+
+Under `read-through`, editing one task's criteria calls the model only
+for that task; every unchanged judge is a hit.
+
+**Reproducibility.** A cached verdict reflects the model as it answered
+when the entry was recorded. Providers update models behind stable
+identifiers, and hosted judges are not deterministic even at
+temperature 0, so a hit reproduces the recorded verdict, not the
+model's current answer. Measuring the current model needs `record` mode
+or a fresh directory; each record's `servedModel` shows which model
+produced it.
+
+**Trust.** Entries are trusted input: whoever can write to the cache
+directory decides the verdicts served from it. The directory needs the
+same protection as the suite files and baselines, and must not be one
+that other users can write. Entries hold the verdict and its record:
+the model-authored reason, which may quote the diff, but neither the
+diff itself nor a credential.
 
 #### The `tool-trace` judge
 
@@ -799,6 +925,8 @@ tree gains a `run_config.redacted.json` per task. See
 | `--judge-model`  | empty            | Model for `diff-review` judges without an `llm` block. Empty keeps the provider's built-in default. |
 | `--judge-base-url` | empty          | API base URL for those judges. Required with `--judge-provider openai-compatible`. |
 | `--judge-api-key-ref` | empty       | `secret://` reference for the judge key, resolved by the eval process. |
+| `--judge-cache`  | `live`           | How `diff-review` judges use the verdict cache: `live`, `record`, `read-through`, or `replay-strict`. See [Judge cache](#judge-cache). |
+| `--judge-cache-dir` | `<output>/judge-cache` | Judge cache directory. Unused in `live` mode and under `--dry-run`. |
 
 The `--judge-*` flags apply only to `diff-review` judges; the harness
 never sees them. Before any task runs, including under `--dry-run`, the
@@ -806,8 +934,10 @@ runner resolves the configuration of every `diff-review` judge
 (composite children included), resolves each distinct `api_key_ref`
 once and discards the value, checks each endpoint against the
 [endpoint policy](#the-diff-review-judge), and checks that `git`
-is on `PATH`. A failure stops the invocation before any harness run and
-names the task and the reference, never the key.
+is on `PATH`. Under `--judge-cache replay-strict` the reference and
+endpoint checks are skipped, since no model is called. A failure stops
+the invocation before any harness run and names the task and the
+reference, never the key.
 
 The three provider flags exist for the same reason as `--model`: the
 provider a suite runs against is a property of the invocation, not of
@@ -1116,7 +1246,11 @@ used; without it, against the `HEAD` of the workspace's own repository
 (see [Baselines in replay](#the-diff-review-judge)). `replay` accepts
 the same `--judge-*` flags as `run`, applies the same checks before
 replaying, and records a judge that cannot rule as outcome `error` with
-its verdict retained.
+its verdict retained. With a `--judge-cache` mode other than `live` and
+no `--judge-cache-dir`, the cache is `<lakehouse>/judge-cache` when
+that directory exists, so verdicts recorded there serve a
+`replay-strict` re-judge with no model calls (see
+[Judge cache](#judge-cache)).
 
 The harness-replay flavour (replaying through a stirrup binary
 configured with ReplayProvider+ReplayExecutor) is a future

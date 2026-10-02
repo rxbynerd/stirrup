@@ -204,6 +204,9 @@ continuity default; the per-push gate should pass `--judge-provider`,
 `--judge-base-url`, `--judge-api-key-ref`, and `--judge-model` so the
 judge uses the gate's own provider and credential. See
 [The `diff-review` judge](../../docs/eval.md#the-diff-review-judge).
+`--judge-cache` and `--judge-cache-dir` record `diff-review` verdicts
+and serve them again without a model call; see
+[Judge cache](../../docs/eval.md#judge-cache).
 
 Without a usable credential — a fork clone, or a Dependabot-actor
 push, neither of which can read this repository's Actions secrets —
