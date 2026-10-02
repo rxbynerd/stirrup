@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -64,8 +65,10 @@ func cmdJudgeCalibrate(args []string, stdout, stderr io.Writer) int {
 			prices = &calibrate.Prices{InputPerMTok: *priceInput, OutputPerMTok: *priceOutput}
 		}
 	})
-	if *priceInput < 0 || *priceOutput < 0 {
-		return usageErr("--price-input and --price-output must not be negative")
+	for _, p := range []float64{*priceInput, *priceOutput} {
+		if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 {
+			return usageErr("--price-input and --price-output must be finite and not negative")
+		}
 	}
 
 	set, err := golden.Load(*goldenPath)
