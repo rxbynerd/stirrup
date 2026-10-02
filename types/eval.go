@@ -118,10 +118,14 @@ type EvalJudge struct {
 // ValidateShadow checks the shadow rules of the judge tree rooted at j;
 // topLevel is true for a task's own judge. A top-level judge decides its
 // task's outcome, so it cannot be a shadow, and every composite needs at
-// least one sub-judge that is not a shadow.
+// least one sub-judge that is not a shadow. A judge whose llm block names
+// the uncalibrated decision provider must be a shadow.
 func (j EvalJudge) ValidateShadow(topLevel bool) error {
 	if topLevel && j.Shadow {
 		return errors.New("shadow is only valid on a composite sub-judge; a task's top-level judge always decides the outcome")
+	}
+	if j.LLM != nil && j.LLM.EffectiveProvider() == JudgeProviderDecision && !j.Shadow {
+		return fmt.Errorf("llm provider %q is usable only on a shadow judge (set shadow = true inside a composite) or by stirrup-eval judge-calibrate: its verdicts are uncalibrated and never gate a task", JudgeProviderDecision)
 	}
 	deciding := 0
 	for i, sub := range j.Judges {
@@ -142,6 +146,11 @@ func (j EvalJudge) ValidateShadow(topLevel bool) error {
 const (
 	JudgeProviderAnthropic        = "anthropic"
 	JudgeProviderOpenAICompatible = "openai-compatible"
+
+	// JudgeProviderDecision speaks the /v1/systemone decision-model
+	// protocol, which answers with option probabilities rather than text.
+	// Suites may use it only on shadow judges; see ValidateShadow.
+	JudgeProviderDecision = "decision"
 )
 
 // Structured-output modes accepted by JudgeLLMConfig.StructuredOutput.
@@ -167,8 +176,8 @@ const (
 // Credentials are never carried inline: APIKeyRef is a "secret://"
 // reference resolved when the judge runs.
 type JudgeLLMConfig struct {
-	// Provider is "anthropic" or "openai-compatible". Empty means
-	// "anthropic".
+	// Provider is "anthropic", "openai-compatible" or "decision". Empty
+	// means "anthropic".
 	Provider string `json:"provider,omitempty"`
 
 	// Model is the provider-side model identifier.
@@ -176,7 +185,9 @@ type JudgeLLMConfig struct {
 
 	// BaseURL is the API root. Required for "openai-compatible" (the
 	// "/chat/completions" path is appended); optional for "anthropic"
-	// (default https://api.anthropic.com, "/v1/messages" is appended).
+	// (default https://api.anthropic.com, "/v1/messages" is appended) and
+	// "decision" (default https://api.typesafe.ai, "/v1/systemone" is
+	// appended).
 	BaseURL string `json:"baseUrl,omitempty"`
 
 	// APIKeyRef is a "secret://" reference to the API key.
@@ -191,15 +202,17 @@ type JudgeLLMConfig struct {
 	MaxInputBytes int `json:"maxInputBytes,omitempty"`
 
 	// Temperature is sent only when set; nil omits the parameter, which
-	// is required for models that reject sampling controls.
+	// is required for models that reject sampling controls. Rejected for
+	// "decision".
 	Temperature *float64 `json:"temperature,omitempty"`
 
 	// MaxTokens bounds the completion, including any reasoning tokens.
-	// Zero means JudgeDefaultMaxTokens.
+	// Zero means JudgeDefaultMaxTokens. Rejected for "decision".
 	MaxTokens int `json:"maxTokens,omitempty"`
 
 	// StructuredOutput is "json_schema" or "prompt_only". Empty means
-	// "json_schema".
+	// "json_schema". Rejected for "decision", whose answers are typed by
+	// the protocol.
 	StructuredOutput string `json:"structuredOutput,omitempty"`
 
 	// AllowTruncated lets the judge rule on the head of a diff larger
@@ -255,9 +268,19 @@ func (c JudgeLLMConfig) EffectiveStructuredOutput() string {
 // layered over the built-in default) before a judge call.
 func (c JudgeLLMConfig) Validate() error {
 	switch c.EffectiveProvider() {
-	case JudgeProviderAnthropic, JudgeProviderOpenAICompatible:
+	case JudgeProviderAnthropic, JudgeProviderOpenAICompatible, JudgeProviderDecision:
 	default:
-		return fmt.Errorf("provider %q must be %q or %q", c.Provider, JudgeProviderAnthropic, JudgeProviderOpenAICompatible)
+		return fmt.Errorf("provider %q must be %q, %q or %q", c.Provider, JudgeProviderAnthropic, JudgeProviderOpenAICompatible, JudgeProviderDecision)
+	}
+	if c.EffectiveProvider() == JudgeProviderDecision {
+		switch {
+		case c.Temperature != nil:
+			return fmt.Errorf("temperature is not supported by provider %q", JudgeProviderDecision)
+		case c.MaxTokens != 0:
+			return fmt.Errorf("max_tokens is not supported by provider %q, whose answers are probabilities rather than text", JudgeProviderDecision)
+		case c.StructuredOutput != "":
+			return fmt.Errorf("structured_output is not supported by provider %q, whose answers are typed by the protocol", JudgeProviderDecision)
+		}
 	}
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("model is required")

@@ -30,7 +30,7 @@ type judgeFlags struct {
 
 func addJudgeFlags(fs *flag.FlagSet) *judgeFlags {
 	return &judgeFlags{
-		provider:  fs.String("judge-provider", "", "Provider for diff-review judges without an llm block: anthropic or openai-compatible. Empty keeps the built-in Anthropic default."),
+		provider:  fs.String("judge-provider", "", "Provider for diff-review judges without an llm block: anthropic or openai-compatible. Empty keeps the built-in Anthropic default. The uncalibrated decision provider is refused here; it is accepted by judge-calibrate and on shadow judges."),
 		model:     fs.String("judge-model", "", "Model for diff-review judges without an llm block. Empty keeps the built-in default for the provider."),
 		baseURL:   fs.String("judge-base-url", "", "API base URL for diff-review judges without an llm block. Required for openai-compatible. An anthropic judge with a base URL other than the Anthropic API also needs --judge-api-key-ref."),
 		apiKeyRef: fs.String("judge-api-key-ref", "", "Secret reference for the judge API key, e.g. secret://OPENROUTER_API_KEY. A reference resolved at runtime, never a literal key. Defaults to secret://ANTHROPIC_API_KEY only for the anthropic provider at the Anthropic API."),

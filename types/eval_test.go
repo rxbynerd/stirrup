@@ -81,6 +81,24 @@ func TestJudgeLLMConfigValidate(t *testing.T) {
 		{name: "temperature too high", mutate: func(c *JudgeLLMConfig) { c.Temperature = temp(2.5) }, wantErr: "temperature"},
 		{name: "temperature negative", mutate: func(c *JudgeLLMConfig) { c.Temperature = temp(-0.1) }, wantErr: "temperature"},
 		{name: "unknown structured output", mutate: func(c *JudgeLLMConfig) { c.StructuredOutput = "tool" }, wantErr: "structured_output"},
+		{name: "decision minimal", mutate: func(c *JudgeLLMConfig) { c.Provider = JudgeProviderDecision }},
+		{name: "decision self-hosted", mutate: func(c *JudgeLLMConfig) {
+			c.Provider = JudgeProviderDecision
+			c.BaseURL = "http://127.0.0.1:8000"
+			c.AllowTruncated = true
+		}},
+		{name: "decision rejects temperature", mutate: func(c *JudgeLLMConfig) {
+			c.Provider = JudgeProviderDecision
+			c.Temperature = temp(0)
+		}, wantErr: "temperature is not supported"},
+		{name: "decision rejects max tokens", mutate: func(c *JudgeLLMConfig) {
+			c.Provider = JudgeProviderDecision
+			c.MaxTokens = 100
+		}, wantErr: "max_tokens is not supported"},
+		{name: "decision rejects structured output", mutate: func(c *JudgeLLMConfig) {
+			c.Provider = JudgeProviderDecision
+			c.StructuredOutput = JudgeStructuredJSONSchema
+		}, wantErr: "structured_output is not supported"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

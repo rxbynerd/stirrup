@@ -53,9 +53,36 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
       }
     }`,
 	}
+	cases["top-level decision judge"] = `
+    judge {
+      type     = "diff-review"
+      criteria = "the change adds a test"
+      llm {
+        provider = "decision"
+        model    = "jev-latest"
+      }
+    }`
+	cases["deciding decision sub-judge"] = `
+    judge {
+      type = "composite"
+      judge {
+        type  = "file-exists"
+        paths = ["a.txt"]
+      }
+      judge {
+        type     = "diff-review"
+        criteria = "the change adds a test"
+        llm {
+          provider = "decision"
+          model    = "jev-latest"
+        }
+      }
+    }`
 	wants := map[string]string{
-		"top-level shadow":     "only valid on a composite sub-judge",
-		"composite of shadows": "at least one sub-judge that is not a shadow",
+		"top-level shadow":            "only valid on a composite sub-judge",
+		"composite of shadows":        "at least one sub-judge that is not a shadow",
+		"top-level decision judge":    `provider "decision" is usable only on a shadow judge`,
+		"deciding decision sub-judge": `sub-judge 2: llm provider "decision"`,
 	}
 	for name, judge := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -65,5 +92,39 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
 				t.Fatalf("LoadSuiteHCL error = %v, want a task-scoped error containing %q", err, wants[name])
 			}
 		})
+	}
+}
+
+func TestLoadSuiteHCL_ShadowDecisionJudge(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    prompt = "p"
+    judge {
+      type = "composite"
+      judge {
+        type  = "file-exists"
+        paths = ["a.txt"]
+      }
+      judge {
+        type     = "diff-review"
+        criteria = "the change adds a test"
+        shadow   = true
+        llm {
+          provider = "decision"
+          model    = "jev-latest"
+        }
+      }
+    }
+  }
+}
+`
+	suite, err := LoadSuiteHCL(writeTemp(t, "decision.hcl", src))
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	sub := suite.Tasks[0].Judge.Judges[1]
+	if !sub.Shadow || sub.LLM == nil || sub.LLM.Provider != "decision" {
+		t.Fatalf("sub-judge = %+v, want a shadow decision judge", sub)
 	}
 }

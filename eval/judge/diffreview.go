@@ -31,8 +31,9 @@ const diffReviewLayoutVersion = "diff-review/v3"
 // diffReviewParserVersion identifies how a reply becomes a verdict and is
 // stored with every cached verdict; an entry from another version is not
 // served. Bump it with any change to parseDiffReviewReply,
-// findNonceObject, decodeVerdictObject, verdictReason, printableText or
-// cacheableVerdict that could change a stored verdict.
+// parseDecisionAnswers, findNonceObject, decodeVerdictObject,
+// verdictReason, printableText or cacheableVerdict that could change a
+// stored verdict.
 const diffReviewParserVersion = 1
 
 // diffReviewFenceLabel labels the fence around the agent's change.
@@ -143,14 +144,36 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 	if diff.Size == 0 && base.recorded() {
 		return diffReviewError(rec, errors.New("the agent produced no reviewable change: the workspace matches the baseline"))
 	}
+	decision := cfg.Provider == types.JudgeProviderDecision
+	budgetCut := false
+	if decision {
+		fitted, err := fitDecisionBudget(j.Criteria, diff)
+		if err != nil {
+			return diffReviewError(rec, err)
+		}
+		budgetCut = len(fitted.Head) < len(diff.Head)
+		diff = fitted
+		rec.Truncated = diff.Truncated
+	}
 	if diff.Truncated && !cfg.AllowTruncated {
+		if budgetCut {
+			return diffReviewError(rec, fmt.Errorf(
+				"diff is %d bytes; the decision provider's %d-token input limit leaves room for %d with the criteria and summary; set allow_truncated to judge the head of the diff",
+				diff.Size, decisionStateTokenLimit, len(diff.Head)))
+		}
 		return diffReviewError(rec, fmt.Errorf(
 			"diff is %d bytes, exceeding max_input_bytes %d; raise max_input_bytes or set allow_truncated to judge the head of the diff",
 			diff.Size, maxBytes))
 	}
 
-	if mode == CacheLive {
+	callModel := func() (eval.JudgeVerdict, error) {
+		if decision {
+			return callDecisionModel(ctx, cfg, j.Criteria, diff, rec)
+		}
 		return callDiffReviewModel(ctx, cfg, j.Criteria, diff, rec, jctx.ClientFactory)
+	}
+	if mode == CacheLive {
+		return callModel()
 	}
 	key := CacheKey(rec.ConfigHash, rec.InputSHA256, 0)
 	rec.CacheKey = key
@@ -166,7 +189,7 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 			jctx.CacheStats.replacing(err)
 		}
 	}
-	verdict, err := callDiffReviewModel(ctx, cfg, j.Criteria, diff, rec, jctx.ClientFactory)
+	verdict, err := callModel()
 	if err != nil || !mode.writes() || !cacheableVerdict(verdict) {
 		return verdict, err
 	}
@@ -182,13 +205,9 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 // rec's call fields. The credential is resolved only here, so a verdict
 // served from the cache needs none.
 func callDiffReviewModel(ctx context.Context, cfg types.JudgeLLMConfig, criteria string, diff workspaceDiff, rec *types.JudgeRecord, newClient ClientFactory) (eval.JudgeVerdict, error) {
-	var apiKey string
-	if cfg.APIKeyRef != "" {
-		key, err := resolveSecretRef(cfg.APIKeyRef)
-		if err != nil {
-			return diffReviewError(rec, fmt.Errorf("resolving api_key_ref: %w", err))
-		}
-		apiKey = key
+	apiKey, err := resolveJudgeKey(cfg)
+	if err != nil {
+		return diffReviewError(rec, err)
 	}
 	if newClient == nil {
 		newClient = NewClient
@@ -237,6 +256,18 @@ func callDiffReviewModel(ctx context.Context, cfg types.JudgeLLMConfig, criteria
 	return verdict, nil
 }
 
+// resolveJudgeKey resolves cfg's api_key_ref, or returns "" when it has none.
+func resolveJudgeKey(cfg types.JudgeLLMConfig) (string, error) {
+	if cfg.APIKeyRef == "" {
+		return "", nil
+	}
+	key, err := resolveSecretRef(cfg.APIKeyRef)
+	if err != nil {
+		return "", fmt.Errorf("resolving api_key_ref: %w", err)
+	}
+	return key, nil
+}
+
 // diffReviewError builds the error-status verdict returned alongside err.
 func diffReviewError(rec *types.JudgeRecord, err error) (eval.JudgeVerdict, error) {
 	err = fmt.Errorf("diff-review: %w", err)
@@ -270,24 +301,29 @@ func buildDiffReviewRequest(cfg types.JudgeLLMConfig, criteria string, diff work
 // drawn after the diff exists. The truncation notice and the nonce
 // instruction are outside the fence, where the agent cannot forge them.
 func buildDiffReviewPrompt(criteria string, diff workspaceDiff, maxBytes int, fence dataFence) string {
-	stat := diff.Stat
-	if stat == "" {
-		stat = "(no changes)"
-	}
-
 	var b strings.Builder
 	b.WriteString("## Criteria\n\n")
 	b.WriteString(criteria)
 	b.WriteString("\n\n## Change under review\n\n")
 	b.WriteString(fence.notice(diffReviewFenceLabel))
 	b.WriteString("\n\n")
-	b.WriteString(fence.wrap(diffReviewFenceLabel, "Summary (git diff --stat):\n"+stat+"\n\nDiff:\n"+diff.Head))
+	b.WriteString(fence.wrap(diffReviewFenceLabel, diffReviewFenceContent(diff)))
 	b.WriteString("\n")
 	if diff.Truncated {
 		fmt.Fprintf(&b, "\nNote: the diff is %d bytes; only the first %d bytes are shown above.\n", diff.Size, maxBytes)
 	}
 	fmt.Fprintf(&b, "\n## Answer\n\nSet \"nonce\" to %s.\n", fence.nonce)
 	return b.String()
+}
+
+// diffReviewFenceContent is the agent-authored text a diff-review judge
+// fences: the change summary and the diff head.
+func diffReviewFenceContent(diff workspaceDiff) string {
+	stat := diff.Stat
+	if stat == "" {
+		stat = "(no changes)"
+	}
+	return "Summary (git diff --stat):\n" + stat + "\n\nDiff:\n" + diff.Head
 }
 
 // diffReviewConfigIdentity is everything that determines what a verdict
@@ -312,10 +348,11 @@ type diffReviewConfigIdentity struct {
 
 // diffReviewConfigHash is the SHA-256 of the canonical JSON of the judge's
 // identity. The base URL is reduced to scheme, host and path so a credential
-// carried in a query string never reaches the hash input, and the Anthropic
+// carried in a query string never reaches the hash input, and a provider's
 // default endpoint hashes the same whether implicit or explicit.
 // MaxInputBytes is included because it decides which prefix of a large diff
-// is judged.
+// is judged. For the decision provider the request layout, question and
+// choices take the place of the system prompt and schema.
 func diffReviewConfigHash(cfg types.JudgeLLMConfig, criteria string) (string, error) {
 	fingerprint, err := diffReviewPromptFingerprint(cfg, criteria, buildDiffReviewRequest, gitStatArgs, gitDiffFlags)
 	if err != nil {
@@ -335,8 +372,20 @@ func diffReviewConfigHash(cfg types.JudgeLLMConfig, criteria string) (string, er
 		PromptFingerprint: fingerprint,
 	}
 	baseURL := cfg.BaseURL
-	if baseURL == "" && identity.Provider == types.JudgeProviderAnthropic {
-		baseURL = anthropicDefaultBaseURL
+	switch identity.Provider {
+	case types.JudgeProviderAnthropic:
+		if baseURL == "" {
+			baseURL = anthropicDefaultBaseURL
+		}
+	case types.JudgeProviderDecision:
+		identity.Layout = diffReviewDecisionLayoutVersion
+		identity.SystemPrompt = decisionQuestionText
+		identity.Schema = decisionChoicesJSON()
+		identity.StructuredOutput = ""
+		identity.MaxTokens = 0
+		if baseURL == "" {
+			baseURL = decisionDefaultBaseURL
+		}
 	}
 	if u, err := url.Parse(baseURL); err == nil && baseURL != "" {
 		identity.BaseURL = u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/")
@@ -363,6 +412,7 @@ const fingerprintDiffHead = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.tx
 // cfg and criteria apart from the diff itself: the provider request body
 // that build renders over fingerprintDiff, whole and truncated, under a
 // fixed nonce, and the git arguments that shape the diff summary and patch.
+// The decision provider's body is rendered by buildDecisionRequest instead.
 func diffReviewPromptFingerprint(cfg types.JudgeLLMConfig, criteria string, build diffReviewRequestBuilder, statArgs string, diffFlags []string) (string, error) {
 	fence, err := newDataFence(bytes.NewReader(make([]byte, fenceNonceBytes)))
 	if err != nil {
@@ -373,7 +423,12 @@ func diffReviewPromptFingerprint(cfg types.JudgeLLMConfig, criteria string, buil
 	truncated.Truncated = true
 	var bodies []json.RawMessage
 	for _, diff := range []workspaceDiff{fingerprintDiff, truncated} {
-		body, err := providerRequestBody(cfg, build(cfg, criteria, diff, fence))
+		var body []byte
+		if cfg.Provider == types.JudgeProviderDecision {
+			body, err = json.Marshal(decisionRequestBody(cfg.Model, buildDecisionRequest(criteria, diff, fence)))
+		} else {
+			body, err = providerRequestBody(cfg, build(cfg, criteria, diff, fence))
+		}
 		if err != nil {
 			return "", fmt.Errorf("hashing judge configuration: %w", err)
 		}

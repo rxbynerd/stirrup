@@ -443,6 +443,30 @@ suite "preflight-suite" {
 	}
 }
 
+func TestCmdRun_DecisionJudgeProviderFailsBeforeAnyHarnessRun(t *testing.T) {
+	if args := os.Getenv(subprocessArgsEnv); args != "" {
+		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
+	}
+	marker := filepath.Join(t.TempDir(), "harness-ran")
+	harnessPath := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
+	args := []string{
+		"run", "--suite", writeSuite(t, diffReviewSuiteHCL), "--harness", harnessPath, "--output", t.TempDir(),
+		"--judge-provider", "decision", "--judge-model", "jev-latest", "--judge-base-url", "http://127.0.0.1:1",
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCmdRun_DecisionJudgeProviderFailsBeforeAnyHarnessRun$")
+	cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"))
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("exited 0, want a failure\n%s", out)
+	}
+	if !strings.Contains(string(out), `"decision" cannot be the default`) {
+		t.Errorf("output does not name the refused provider:\n%s", out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("the harness ran with the decision provider as the judge default")
+	}
+}
+
 func TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay(t *testing.T) {
 	if args := os.Getenv(subprocessArgsEnv); args != "" {
 		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))

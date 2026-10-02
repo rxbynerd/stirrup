@@ -32,10 +32,14 @@ func ValidateLLMBlock(j types.EvalJudge) error {
 // run. Each distinct reference is resolved once and its value discarded;
 // errors name the task and the reference, never the value. Under
 // CacheReplayStrict no model is called, so references and endpoints are not
-// checked.
+// checked. The decision provider is refused as the invocation default, since
+// it would then decide every judge without an llm block.
 func PreflightSuite(ctx context.Context, tasks []types.EvalTask, opts Options) error {
 	if _, err := ParseCacheMode(string(opts.CacheMode)); err != nil {
 		return err
+	}
+	if opts.LLMDefaults != nil && opts.LLMDefaults.EffectiveProvider() == types.JudgeProviderDecision {
+		return fmt.Errorf("judge provider %q cannot be the default for a suite's diff-review judges: it is usable only on shadow judges and by judge-calibrate", types.JudgeProviderDecision)
 	}
 	offline := opts.CacheMode == CacheReplayStrict
 	refs := map[string]error{}

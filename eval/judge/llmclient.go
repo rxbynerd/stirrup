@@ -28,6 +28,13 @@ const (
 	DefaultLLMKeyRef = "secret://ANTHROPIC_API_KEY"
 )
 
+// DefaultDecisionModel and DefaultDecisionKeyRef are the defaults for the
+// decision provider; the key reference applies only at the TypeSafe API.
+const (
+	DefaultDecisionModel  = "jev-latest"
+	DefaultDecisionKeyRef = "secret://TYPESAFE_API_KEY"
+)
+
 // Stop reasons as normalised by the clients. Provider-specific values that
 // have no counterpart here pass through unchanged.
 const (
@@ -117,8 +124,8 @@ type Options struct {
 // ResolveLLMConfig produces the configuration for one diff-review judge: an
 // explicit `llm` block as written, otherwise the invocation defaults over the
 // Anthropic default. The default key reference is applied only when the
-// endpoint is the Anthropic API, so that key never reaches another host; an
-// anthropic gateway must name its own api_key_ref.
+// endpoint is the provider's own API, so that key never reaches another host;
+// an anthropic gateway must name its own api_key_ref.
 func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMConfig, error) {
 	var cfg types.JudgeLLMConfig
 	switch {
@@ -128,12 +135,20 @@ func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMC
 		cfg = *defaults
 	}
 	cfg.Provider = cfg.EffectiveProvider()
-	if cfg.Provider == types.JudgeProviderAnthropic {
+	switch cfg.Provider {
+	case types.JudgeProviderAnthropic:
 		if cfg.Model == "" && explicit == nil {
 			cfg.Model = DefaultLLMModel
 		}
 		if cfg.APIKeyRef == "" && isAnthropicAPI(cfg.BaseURL) {
 			cfg.APIKeyRef = DefaultLLMKeyRef
+		}
+	case types.JudgeProviderDecision:
+		if cfg.Model == "" && explicit == nil {
+			cfg.Model = DefaultDecisionModel
+		}
+		if cfg.APIKeyRef == "" && isAPIHost(cfg.BaseURL, decisionDefaultHost) {
+			cfg.APIKeyRef = DefaultDecisionKeyRef
 		}
 	}
 	if err := cfg.Validate(); err != nil {
@@ -149,11 +164,17 @@ func ResolveLLMConfig(explicit, defaults *types.JudgeLLMConfig) (types.JudgeLLMC
 // isAnthropicAPI reports whether baseURL is empty or names the Anthropic
 // API host.
 func isAnthropicAPI(baseURL string) bool {
+	return isAPIHost(baseURL, "api.anthropic.com")
+}
+
+// isAPIHost reports whether baseURL is empty, selecting the provider's
+// default endpoint, or names host.
+func isAPIHost(baseURL, host string) bool {
 	if baseURL == "" {
 		return true
 	}
 	u, err := url.Parse(baseURL)
-	return err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), "api.anthropic.com")
+	return err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), host)
 }
 
 // CheckEndpoint resolves cfg's base_url host and applies
@@ -193,16 +214,10 @@ func checkEndpoint(ctx context.Context, cfg types.JudgeLLMConfig, lookup func(ct
 }
 
 // NewClient builds the HTTP client for cfg's provider. The per-call timeout
-// is cfg's TimeoutSeconds.
+// is cfg's TimeoutSeconds. The decision provider answers no text prompts and
+// has its own client.
 func NewClient(cfg types.JudgeLLMConfig, apiKey string) (JudgeClient, error) {
-	keyOverHTTP := apiKey != "" && strings.HasPrefix(strings.ToLower(cfg.BaseURL), "http://")
-	httpClient := &http.Client{
-		Timeout:   time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second,
-		Transport: judgeTransport(keyOverHTTP),
-		// A redirect would resend the API key to a host the operator never
-		// configured.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	httpClient := newJudgeHTTPClient(cfg, apiKey)
 	switch cfg.EffectiveProvider() {
 	case types.JudgeProviderAnthropic:
 		return newAnthropicClient(httpClient, cfg.BaseURL, apiKey, cfg.Model)
@@ -222,6 +237,20 @@ func providerRequestBody(cfg types.JudgeLLMConfig, req JudgeRequest) ([]byte, er
 		return json.Marshal(openaiRequestBody(cfg.Model, req))
 	default:
 		return nil, fmt.Errorf("unsupported judge provider %q", cfg.Provider)
+	}
+}
+
+// newJudgeHTTPClient is the HTTP client every judge provider uses: cfg's
+// timeout over all attempts, the endpoint-checking transport, and no
+// redirects.
+func newJudgeHTTPClient(cfg types.JudgeLLMConfig, apiKey string) *http.Client {
+	keyOverHTTP := apiKey != "" && strings.HasPrefix(strings.ToLower(cfg.BaseURL), "http://")
+	return &http.Client{
+		Timeout:   time.Duration(cfg.EffectiveTimeoutSeconds()) * time.Second,
+		Transport: judgeTransport(keyOverHTTP),
+		// A redirect would resend the API key to a host the operator never
+		// configured.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 
