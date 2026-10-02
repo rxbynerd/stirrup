@@ -25,7 +25,8 @@ const maxCalibrateRepeats = 100
 // cmdJudgeCalibrate measures a diff-review judge against a golden set. It
 // is a measurement, not a gate: it exits 0 whatever the judge's agreement,
 // 2 on a usage or configuration error found before any judgment, and 1
-// when the run itself fails.
+// when the run itself fails or every judgment ended in error, which leaves
+// no metric to report.
 func cmdJudgeCalibrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("judge-calibrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -125,6 +126,10 @@ func cmdJudgeCalibrate(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		_, _ = fmt.Fprintf(stderr, "Wrote %s\n", *output)
+	}
+	if report.Metrics.Decided == 0 {
+		_, _ = fmt.Fprintf(stderr, "judge-calibrate: all %d judgments ended in error; no agreement was measured\n", len(judgments))
+		return 1
 	}
 	return 0
 }

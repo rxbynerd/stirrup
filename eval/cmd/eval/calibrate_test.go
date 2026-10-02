@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/eval/calibrate"
@@ -171,19 +172,46 @@ func TestCmdJudgeCalibrate_DecisionJudgeFromConfigFile(t *testing.T) {
 	}
 }
 
-func TestCmdJudgeCalibrate_JudgeErrorsStillExit0(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+func TestCmdJudgeCalibrate_SomeJudgeErrorsStillExit0(t *testing.T) {
+	endpoint := newJudgeEndpoint(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		endpoint.srv.Config.Handler.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY")
 	if code != 0 {
-		t.Fatalf("exit %d, want 0 for a judge that never rules\nstderr:\n%s", code, stderr)
+		t.Fatalf("exit %d, want 0 for a judge that ruled on most cases\nstderr:\n%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Decided 23 of 24 judgments; 1 error") || !strings.Contains(stdout, "HTTP 400") {
+		t.Errorf("report does not show the error:\n%s", stdout)
+	}
+}
+
+func TestCmdJudgeCalibrate_AllJudgmentsErroredExits1WithTheReport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
+	output := filepath.Join(t.TempDir(), "report.json")
+
+	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", srv.URL,
+		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY", "--output", output)
+	if code != 1 || !strings.Contains(stderr, "all 24 judgments ended in error") {
+		t.Fatalf("exit %d, want 1 for a judge that never rules\nstderr:\n%s", code, stderr)
 	}
 	if !strings.Contains(stdout, "Decided 0 of 24 judgments; 24 errors") || !strings.Contains(stdout, "HTTP 400") {
 		t.Errorf("report does not show the errors:\n%s", stdout)
+	}
+	if r := readCalibrationReport(t, output); len(r.Judgments) != 24 || r.Metrics.Errors != 24 {
+		t.Errorf("JSON report = %d judgments, %d errors; want 24 of each", len(r.Judgments), r.Metrics.Errors)
 	}
 }
 

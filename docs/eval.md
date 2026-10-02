@@ -907,11 +907,16 @@ run, under the same endpoint policy. The key and endpoint checks of
 | `--price-input`, `--price-output` | none | USD per million input and output tokens. Setting either adds a cost estimate; the other defaults to 0. |
 
 Progress goes to stderr and the text report to stdout. The exit status
-is `0` whenever the calibration completes, whatever the judge's
-agreement; `2` for a usage, configuration, golden-set, or pre-run check
-error, found before any judgment; and `1` when the run cannot complete,
-such as after an interrupt or when the report cannot be written. A
-reading cache mode without `--judge-cache-dir` is a usage error. When a
+is `0` when the calibration completes, whatever the judge's agreement;
+`2` for a usage, configuration, golden-set, or pre-run check error,
+found before any judgment; and `1` when the run cannot complete, such
+as after an interrupt or when the report cannot be written. A run in
+which every judgment ends in `error` also exits `1`, after the report is
+printed and written, because it measured no agreement at all. A key the
+provider rejects surfaces this way: the pre-run checks confirm that a
+key reference resolves and that the endpoint is allowed, not that the
+provider accepts the key. A reading cache mode without
+`--judge-cache-dir` is a usage error. When a
 cache is open, its `Judge cache (<mode>): ...` line follows the
 progress on stderr. Rerunning the example above with `--judge-cache
 read-through --judge-cache-dir results/calibration/judge-cache` serves

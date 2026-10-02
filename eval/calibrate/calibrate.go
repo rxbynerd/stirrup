@@ -51,7 +51,8 @@ type Judgment struct {
 // Run judges every case of set through the diff-review judge, in order. A
 // judgment the judge cannot make is recorded with Verdict "error" rather
 // than stopping the run; Run fails only when a case cannot be materialised
-// or ctx ends, returning the judgments made so far.
+// or ctx ends, returning the judgments made so far. A judgment that errors
+// because ctx ended is not among them.
 func Run(ctx context.Context, set *golden.Set, cfg Config) ([]Judgment, error) {
 	repeats := max(cfg.Repeats, 1)
 	root := cfg.WorkDir
@@ -89,6 +90,12 @@ func Run(ctx context.Context, set *golden.Set, cfg Config) ([]Judgment, error) {
 				if jm.Reason == "" && err != nil {
 					jm.Reason = err.Error()
 				}
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				if jm.Verdict != types.JudgeStatusError {
+					out = append(out, jm)
+				}
+				return out, ctxErr
 			}
 			out = append(out, jm)
 			if cfg.Progress != nil {

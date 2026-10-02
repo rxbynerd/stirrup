@@ -242,17 +242,21 @@ func TestRun_StopsWhenCancelled(t *testing.T) {
 }
 
 // cancellingClient passes every case and cancels the run after a number
-// of calls.
+// of calls, failing that call when failOnCancel is set.
 type cancellingClient struct {
-	cancel func()
-	after  int
-	calls  int
+	cancel       func()
+	after        int
+	calls        int
+	failOnCancel bool
 }
 
-func (c *cancellingClient) Complete(_ context.Context, req judge.JudgeRequest) (judge.JudgeResponse, error) {
+func (c *cancellingClient) Complete(ctx context.Context, req judge.JudgeRequest) (judge.JudgeResponse, error) {
 	c.calls++
 	if c.calls == c.after {
 		c.cancel()
+		if c.failOnCancel {
+			return judge.JudgeResponse{}, ctx.Err()
+		}
 	}
 	nonce := fenceNonce.FindStringSubmatch(req.User)[1]
 	return judge.JudgeResponse{Text: `{"nonce":"` + nonce + `","reasoning":"r","verdict":"pass","feedback":"f"}`, Model: "m", StopReason: "end_turn"}, nil
@@ -293,5 +297,17 @@ func TestRun_DecisionJudgeOverTheSeedSet(t *testing.T) {
 	}
 	if m := Summarize(js, nil); m.Tokens.Input != 24*300 || m.TNR.K != 0 {
 		t.Errorf("metrics = %+v", m)
+	}
+}
+
+func TestRun_CancelledDuringTheLastJudgmentFails(t *testing.T) {
+	requireGit(t)
+	t.Setenv("CALIBRATE_TEST_KEY", "k")
+	set := loadSeed(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &cancellingClient{cancel: cancel, after: len(set.Cases), failOnCancel: true}
+	js, err := Run(ctx, set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: func(types.JudgeLLMConfig, string) (judge.JudgeClient, error) { return client, nil }}})
+	if !errors.Is(err, context.Canceled) || len(js) != len(set.Cases)-1 {
+		t.Fatalf("Run = %d judgments, err %v; want %d and context.Canceled without the interrupted judgment", len(js), err, len(set.Cases)-1)
 	}
 }
