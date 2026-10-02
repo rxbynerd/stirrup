@@ -109,24 +109,36 @@ func resolvePath(workspaceDir, relPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving workspace: %w", err)
 	}
+	return joinWithin(absWorkspace, relPath)
+}
 
-	joined := filepath.Join(absWorkspace, relPath)
-	resolved, err := filepath.Abs(filepath.Clean(joined))
-	if err != nil {
-		return "", fmt.Errorf("resolving path %q: %w", relPath, err)
-	}
-
-	// Ensure the resolved path is within or equal to the workspace.
-	if !strings.HasPrefix(resolved, absWorkspace+string(filepath.Separator)) && resolved != absWorkspace {
+// joinWithin joins relPath onto root and returns an error if the cleaned
+// result is not root or beneath it.
+func joinWithin(root, relPath string) (string, error) {
+	resolved := filepath.Join(root, relPath)
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q resolves outside workspace", relPath)
 	}
-
 	return resolved, nil
 }
 
-func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+// checkWorkspacePath reports whether relPath stays inside the workspace
+// whatever the workspace's location.
+func checkWorkspacePath(relPath string) error {
+	_, err := joinWithin(string(filepath.Separator)+"workspace", relPath)
+	return err
+}
+
+func validateTestCommand(j types.EvalJudge) error {
 	if j.Command == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("test-command judge requires a command")
+		return fmt.Errorf("test-command judge requires a command")
+	}
+	return nil
+}
+
+func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	if err := validateTestCommand(j); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
@@ -157,7 +169,22 @@ func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeConte
 	}, nil
 }
 
+func validateFileExists(j types.EvalJudge) error {
+	for _, p := range j.Paths {
+		if p == "" {
+			return fmt.Errorf("file-exists judge requires non-empty paths")
+		}
+		if err := checkWorkspacePath(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func evaluateFileExists(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	if err := validateFileExists(j); err != nil {
+		return eval.JudgeVerdict{}, err
+	}
 	if len(j.Paths) == 0 {
 		return eval.JudgeVerdict{Passed: true, Reason: "no paths to check"}, nil
 	}
@@ -185,12 +212,29 @@ func evaluateFileExists(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict
 	}, nil
 }
 
-func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+// fileContainsPattern checks the static fields of a file-contains judge and
+// returns its compiled pattern.
+func fileContainsPattern(j types.EvalJudge) (*regexp.Regexp, error) {
 	if j.Path == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("file-contains judge requires a path")
+		return nil, fmt.Errorf("file-contains judge requires a path")
 	}
 	if j.Pattern == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("file-contains judge requires a pattern")
+		return nil, fmt.Errorf("file-contains judge requires a pattern")
+	}
+	if err := checkWorkspacePath(j.Path); err != nil {
+		return nil, err
+	}
+	re, err := regexp.Compile(j.Pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pattern %q: %w", j.Pattern, err)
+	}
+	return re, nil
+}
+
+func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	re, err := fileContainsPattern(j)
+	if err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	resolved, err := resolvePath(jctx.WorkspaceDir, j.Path)
@@ -209,12 +253,7 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 		return eval.JudgeVerdict{}, fmt.Errorf("reading %q: %w", j.Path, err)
 	}
 
-	matched, err := regexp.MatchString(j.Pattern, string(data))
-	if err != nil {
-		return eval.JudgeVerdict{}, fmt.Errorf("invalid pattern %q: %w", j.Pattern, err)
-	}
-
-	if matched {
+	if re.Match(data) {
 		return eval.JudgeVerdict{
 			Passed: true,
 			Reason: fmt.Sprintf("pattern %q found in %s", j.Pattern, j.Path),
@@ -232,7 +271,7 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 // "any". Sub-judge errors are carried in Status; only an invalid judge tree
 // returns an error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if err := validateComposite(j); err != nil {
+	if err := ValidateTree(j); err != nil {
 		return eval.JudgeVerdict{}, err
 	}
 
@@ -346,9 +385,39 @@ func subJudgeVerb(status string) string {
 	}
 }
 
-// validateComposite rejects a judge tree that cannot be evaluated. It runs
-// before any sub-judge so a configuration error is never mistaken for a
-// sub-judge error or hidden behind a short-circuit.
+// ValidateTree rejects a judge tree that cannot be evaluated, before any
+// judge runs, so a configuration error is neither mistaken for a sub-judge
+// error nor hidden behind a composite short-circuit. For every judge in the
+// tree it checks the type, the llm block, and the configuration that does not
+// depend on the run: required fields, a compilable pattern, workspace-relative
+// paths, the tool-trace block, a non-empty composite, and the require value.
+// Failures that depend on the run, such as a missing trace or a model's
+// reply, are reported when the judge is evaluated.
+func ValidateTree(j types.EvalJudge) error {
+	if !slices.Contains(KnownJudgeTypes(), j.Type) {
+		return fmt.Errorf("unknown judge type: %q", j.Type)
+	}
+	if err := ValidateLLMBlock(j); err != nil {
+		return err
+	}
+	switch j.Type {
+	case "test-command":
+		return validateTestCommand(j)
+	case "file-exists":
+		return validateFileExists(j)
+	case "file-contains":
+		_, err := fileContainsPattern(j)
+		return err
+	case "diff-review":
+		return validateDiffReview(j)
+	case "tool-trace":
+		return validateToolTrace(j)
+	case "composite":
+		return validateComposite(j)
+	}
+	return nil
+}
+
 func validateComposite(j types.EvalJudge) error {
 	if len(j.Judges) == 0 {
 		return fmt.Errorf("composite judge requires at least one sub-judge")
@@ -356,15 +425,9 @@ func validateComposite(j types.EvalJudge) error {
 	if j.Require != "" && j.Require != "all" && j.Require != "any" {
 		return fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", j.Require)
 	}
-	known := KnownJudgeTypes()
 	for i, sub := range j.Judges {
-		if !slices.Contains(known, sub.Type) {
-			return fmt.Errorf("sub-judge %d: unknown judge type: %q", i+1, sub.Type)
-		}
-		if sub.Type == "composite" {
-			if err := validateComposite(sub); err != nil {
-				return fmt.Errorf("sub-judge %d: %w", i+1, err)
-			}
+		if err := ValidateTree(sub); err != nil {
+			return fmt.Errorf("sub-judge %d: %w", i+1, err)
 		}
 	}
 	return nil

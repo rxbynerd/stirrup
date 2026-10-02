@@ -614,8 +614,16 @@ error verdicts too. A nested composite appears as one entry with its own
 any depth stay reachable. The composite verdict itself has no `record`.
 
 A misconfigured tree is not a verdict. An empty composite, an invalid
-`require`, or an unknown judge type anywhere in the tree is reported as
-an error before any nested judge runs.
+`require`, an unknown judge type, or a judge with a missing or invalid
+field anywhere in the tree is reported as an error before any nested
+judge runs. The field checks cover a `test-command` with no `command`, a
+`file-exists` with an empty entry in `paths`, a `file-contains` with no
+`path`, no `pattern`, or a `pattern` that is not a valid regular
+expression, a path that leaves the workspace, a `tool-trace` with no
+`tool_trace` block, and a `diff-review` with no `criteria` or an invalid
+`llm` block. Only failures that depend on the run, such as an
+unreachable model endpoint, an unparsable model reply, or a missing
+trace, are carried as `error` entries.
 
 ### Replay doubles
 

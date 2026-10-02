@@ -62,13 +62,20 @@ func diffReviewSchema(nonce string) json.RawMessage {
 	return json.RawMessage(strings.Replace(diffReviewSchemaTemplate, diffReviewNoncePlaceholder, nonce, 1))
 }
 
+func validateDiffReview(j types.EvalJudge) error {
+	if j.Criteria == "" {
+		return fmt.Errorf("diff-review judge requires a criteria string")
+	}
+	return nil
+}
+
 // evaluateDiffReview diffs the workspace against its baseline commit and asks
 // the configured model whether the change meets the criteria. Every failure to
 // obtain a verdict is reported as Status "error" with the verdict's Record
 // attached, never as a "fail".
 func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if j.Criteria == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("diff-review judge requires a criteria string")
+	if err := validateDiffReview(j); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 	if jctx.WorkspaceDir == "" {
 		return eval.JudgeVerdict{}, fmt.Errorf("diff-review judge requires a workspace dir")

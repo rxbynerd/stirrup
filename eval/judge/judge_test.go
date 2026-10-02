@@ -390,9 +390,9 @@ func TestComposite_AllErrorIsDecisive(t *testing.T) {
 	}{
 		{
 			name:     "sub-judge returns an error",
-			erroring: types.EvalJudge{Type: "test-command"},
-			wantType: "test-command",
-			wantMsg:  "requires a command",
+			erroring: types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{}},
+			wantType: "tool-trace",
+			wantMsg:  "requires a run trace",
 		},
 		{
 			name:     "sub-judge returns an error verdict",
@@ -661,6 +661,125 @@ func TestComposite_ConfigurationErrorsAreHardErrors(t *testing.T) {
 				t.Error("no sub-judge may run when the tree is invalid")
 			}
 		})
+	}
+}
+
+func TestComposite_NestedConfigurationErrorsNamePosition(t *testing.T) {
+	cases := []struct {
+		name  string
+		judge types.EvalJudge
+		want  string
+	}{
+		{
+			"empty composite two levels down",
+			composite("all", markerJudge("a", 0), composite("any", markerJudge("b", 0), composite("any"))),
+			"sub-judge 2: sub-judge 2: composite judge requires at least one sub-judge",
+		},
+		{
+			"invalid leaf in a nested composite",
+			composite("all", markerJudge("a", 0), composite("any", types.EvalJudge{Type: "test-command"})),
+			"sub-judge 2: sub-judge 1: test-command judge requires a command",
+		},
+		{
+			"unknown type",
+			composite("all", markerJudge("a", 0), types.EvalJudge{Type: "nonexistent"}),
+			`sub-judge 2: unknown judge type: "nonexistent"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Evaluate(context.Background(), tc.judge, JudgeContext{WorkspaceDir: t.TempDir()})
+
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestComposite_StaticLeafErrorsAreHardErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		leaf    types.EvalJudge
+		wantMsg string
+	}{
+		{"test-command without a command", types.EvalJudge{Type: "test-command"}, "requires a command"},
+		{"file-exists with an empty path", types.EvalJudge{Type: "file-exists", Paths: []string{"a", ""}}, "non-empty paths"},
+		{"file-exists outside the workspace", types.EvalJudge{Type: "file-exists", Paths: []string{"../outside"}}, "resolves outside workspace"},
+		{"file-contains without a path", types.EvalJudge{Type: "file-contains", Pattern: "x"}, "requires a path"},
+		{"file-contains without a pattern", types.EvalJudge{Type: "file-contains", Path: "a"}, "requires a pattern"},
+		{"file-contains with an invalid pattern", types.EvalJudge{Type: "file-contains", Path: "a", Pattern: "("}, "invalid pattern"},
+		{"file-contains outside the workspace", types.EvalJudge{Type: "file-contains", Path: "../outside", Pattern: "x"}, "resolves outside workspace"},
+		{"tool-trace without a block", types.EvalJudge{Type: "tool-trace"}, "requires a toolTrace block"},
+		{"diff-review without criteria", types.EvalJudge{Type: "diff-review"}, "requires a criteria string"},
+		{
+			"diff-review with an invalid llm block",
+			types.EvalJudge{Type: "diff-review", Criteria: "c", LLM: &types.JudgeLLMConfig{Provider: "bogus", Model: "m"}},
+			"llm block",
+		},
+		{
+			"llm block on another type",
+			types.EvalJudge{Type: "test-command", Command: "true", LLM: &types.JudgeLLMConfig{Model: "m"}},
+			"does not support an llm block",
+		},
+	}
+	for _, require := range []string{"any", "all"} {
+		for _, tc := range cases {
+			t.Run(require+"/"+tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				writeFile(t, dir, "present.txt", "x")
+				first := markerJudge("a", 0)
+				if require == "all" {
+					first = markerJudge("a", 1)
+				}
+				j := composite(require, first, tc.leaf)
+
+				_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+
+				if err == nil || !strings.Contains(err.Error(), "sub-judge 2: ") || !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Fatalf("err = %v, want a sub-judge 2 error mentioning %q", err, tc.wantMsg)
+				}
+				if ranMarker(t, dir, "a") {
+					t.Error("no sub-judge may run when a leaf is mis-specified")
+				}
+			})
+		}
+	}
+}
+
+func TestComposite_InvalidPatternBehindPassingJudgeIsHardError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "present.txt", "x")
+	j := composite("any",
+		types.EvalJudge{Type: "file-exists", Paths: []string{"present.txt"}},
+		types.EvalJudge{Type: "file-contains", Path: "present.txt", Pattern: "("},
+	)
+
+	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+
+	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
+		t.Fatalf("err = %v, want an invalid pattern error", err)
+	}
+	if v.Passed || v.Status == types.JudgeStatusPass {
+		t.Errorf("verdict = %+v, a mis-specified sub-judge must not pass", v)
+	}
+}
+
+func TestValidateTree(t *testing.T) {
+	valid := composite("all",
+		types.EvalJudge{Type: "file-exists", Paths: []string{"a", "dir/b"}},
+		types.EvalJudge{Type: "file-contains", Path: "a", Pattern: `^\d+$`},
+		types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{}},
+		composite("any", types.EvalJudge{Type: "test-command", Command: "true"}, diffReviewJudge()),
+	)
+	if err := ValidateTree(valid); err != nil {
+		t.Errorf("valid tree: %v", err)
+	}
+	if err := ValidateTree(types.EvalJudge{}); err == nil || !strings.Contains(err.Error(), "unknown judge type") {
+		t.Errorf("zero judge: err = %v, want an unknown type error", err)
+	}
+	if err := ValidateTree(types.EvalJudge{Type: "test-command"}); err == nil {
+		t.Error("a root leaf with a missing command was accepted")
 	}
 }
 
