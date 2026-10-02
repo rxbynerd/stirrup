@@ -250,3 +250,23 @@ func TestFiles_MissingSideIsAnEmptyTree(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_NamesTheFileInParseErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.json")
+	writeFile(t, path, `{"version":1,`)
+	if _, err := Load(path); err == nil || !strings.HasPrefix(err.Error(), path+": decoding golden set") {
+		t.Fatalf("Load error = %v, want it prefixed with the path", err)
+	}
+	if _, err := Load(filepath.Join(t.TempDir(), "absent.json")); err == nil {
+		t.Fatal("Load accepted a missing file")
+	}
+}
+
+func TestFiles_RejectsAnOversizedFixture(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "big/before/a.txt"), strings.Repeat("x", maxFixtureBytes/2))
+	writeFile(t, filepath.Join(dir, "big/after/a.txt"), strings.Repeat("y", maxFixtureBytes/2+1))
+	if _, err := (&Set{dir: dir}).Files(Case{Workspace: "big"}); err == nil || !strings.Contains(err.Error(), "workspace after/: fixture exceeds") {
+		t.Fatalf("Files error = %v, want the shared fixture budget exceeded", err)
+	}
+}

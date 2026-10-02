@@ -240,3 +240,19 @@ func readCalibrationReport(t *testing.T, path string) calibrate.Report {
 	}
 	return r
 }
+
+func TestCmdJudgeCalibrate_UnusableTempDirExits1(t *testing.T) {
+	endpoint := newJudgeEndpoint(t)
+	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
+
+	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", endpoint.srv.URL,
+		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY")
+
+	if code != 1 || !strings.Contains(stderr, "creating work directory") {
+		t.Fatalf("exit %d, stderr %q; want exit 1 for an unusable temporary directory", code, stderr)
+	}
+	if bodies, _ := endpoint.seen(); stdout != "" || len(bodies) != 0 {
+		t.Errorf("a failed setup still made %d judgments", len(bodies))
+	}
+}

@@ -151,6 +151,12 @@ func TestParseDiff_Rejects(t *testing.T) {
 		"absolute":        {"--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-a\n+b\n", `does not start with "a/"`},
 		"unclean":         {"--- a/x//y\n+++ b/x//y\n@@ -1 +1 @@\n-a\n+b\n", "clean relative path"},
 		"quoted":          {"--- \"a/x y\"\n+++ \"b/x y\"\n@@ -1 +1 @@\n-a\n+b\n", "quoted path"},
+		"start overflows": {"--- a/x\n+++ b/x\n@@ -99999999999999999999 +1 @@\n-a\n+b\n", "hunk start"},
+		"count overflows": {"--- a/x\n+++ b/x\n@@ -1,99999999999999999999 +1 @@\n-a\n+b\n", "hunk count"},
+		"new start bad":   {"--- a/x\n+++ b/x\n@@ -1 +0,1 @@\n-a\n+b\n", "line 0 must be empty"},
+		"bad new prefix":  {"--- a/x\n+++ c/x\n@@ -1 +1 @@\n-a\n+b\n", `does not start with "b/"`},
+		"headers only":    {"diff --git a/x b/x\nindex 1..2 100644\n", "the last section has no ---/+++"},
+		"two headers":     {"diff --git a/x b/x\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n", "the previous section has no ---/+++"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

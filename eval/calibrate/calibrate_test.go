@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -338,5 +340,40 @@ func TestRun_CancelledDuringTheLastJudgmentFails(t *testing.T) {
 	js, err := Run(ctx, set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: func(types.JudgeLLMConfig, string) (judge.JudgeClient, error) { return client, nil }}})
 	if !errors.Is(err, context.Canceled) || len(js) != len(set.Cases)-1 {
 		t.Fatalf("Run = %d judgments, err %v; want %d and context.Canceled without the interrupted judgment", len(js), err, len(set.Cases)-1)
+	}
+}
+
+func TestRun_FailsWhenACaseCannotBeMaterialised(t *testing.T) {
+	requireGit(t)
+	t.Setenv("CALIBRATE_TEST_KEY", "k")
+	dir := t.TempDir()
+	writeFixture(t, dir+"/ws/before/a.txt", "a\n")
+	writeFixture(t, dir+"/ws/after/a.txt", "b\n")
+	src := `{"version":1,"name":"m","cases":[
+	  {"id":"first","criteria":"c","label":"pass","diff":"--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n"},
+	  {"id":"fixture","criteria":"c","label":"pass","workspace":"ws"}]}`
+	set, err := golden.Parse([]byte(src), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "ws")); err != nil {
+		t.Fatal(err)
+	}
+
+	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: (&scriptedClient{script: []string{"pass"}}).factory()}})
+
+	if err == nil || !strings.HasPrefix(err.Error(), "case fixture: workspace") || len(js) != 1 || js[0].Case != "first" {
+		t.Fatalf("Run = %+v, err %v; want the first judgment and an error naming the fixture case", js, err)
+	}
+}
+
+func TestRun_FailsWhenTheWorkDirIsUnusable(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	writeFixture(t, notADir, "x")
+
+	js, err := Run(context.Background(), loadSeed(t), Config{Judge: testJudge(), WorkDir: notADir})
+
+	if err == nil || !strings.Contains(err.Error(), "creating workspace") || len(js) != 0 {
+		t.Fatalf("Run = %d judgments, err %v; want a workspace creation error before any judgment", len(js), err)
 	}
 }

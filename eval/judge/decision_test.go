@@ -623,3 +623,28 @@ func TestComposite_ShadowDecisionJudgeIsEvaluated(t *testing.T) {
 		})
 	}
 }
+
+func TestDiffReview_DecisionUnresolvableKeyIsErrorWithoutACall(t *testing.T) {
+	srv := newDecisionServer(t, okDecision(decisionPassReply))
+	j := decisionJudge(t, srv.srv.URL)
+	t.Setenv("DECISION_UNSET_KEY", "")
+	j.LLM.APIKeyRef = "secret://DECISION_UNSET_KEY"
+
+	v, err := Evaluate(context.Background(), j, nonDeciding(changedJudgeContext(t, Options{})))
+
+	if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "resolving api_key_ref") {
+		t.Fatalf("verdict = %+v, err = %v; want a key resolution error", v, err)
+	}
+	if v.Record == nil || v.Record.Provider != types.JudgeProviderDecision || v.Record.InputSHA256 == "" {
+		t.Errorf("record = %+v, want the decision record kept", v.Record)
+	}
+	if bodies, _ := srv.requests(); len(bodies) != 0 {
+		t.Errorf("the decision endpoint was called %d times without a key", len(bodies))
+	}
+}
+
+func TestNewDecisionClient_RejectsAnInvalidBaseURL(t *testing.T) {
+	if _, err := newDecisionClient(&http.Client{}, "http://[::1", "k", "jev-latest"); err == nil || !strings.Contains(err.Error(), "not a valid URL") {
+		t.Fatalf("err = %v, want an invalid base URL refused", err)
+	}
+}
