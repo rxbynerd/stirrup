@@ -99,6 +99,25 @@ func (o Options) cacheMode() (CacheMode, error) {
 	return mode, nil
 }
 
+// CheckCacheAvailable returns an error when o's cache mode needs a cache
+// that o lacks and tasks contain a diff-review judge, so the run fails
+// before any agent runs rather than on every judged task after it.
+func (o Options) CheckCacheAvailable(tasks []types.EvalTask) error {
+	mode, err := ParseCacheMode(string(o.CacheMode))
+	if err != nil {
+		return err
+	}
+	if mode.IsLive() || o.Cache != nil {
+		return nil
+	}
+	for _, task := range tasks {
+		if ContainsType(task.Judge, "diff-review") {
+			return fmt.Errorf("task %q: judge cache mode %q needs a cache", task.ID, mode)
+		}
+	}
+	return nil
+}
+
 // CheckCacheOutside returns an error when o's cache is stored in dir or
 // inside it. Callers pass each directory the agent under test can write,
 // once it exists.
@@ -238,6 +257,9 @@ func (s *CacheStats) replacing(err error) {
 
 // Summary returns the counts so far, labelled with mode.
 func (s *CacheStats) Summary(mode CacheMode) eval.JudgeCacheSummary {
+	if s == nil {
+		return eval.JudgeCacheSummary{Mode: string(mode)}
+	}
 	stored := int(s.stored.Load())
 	return eval.JudgeCacheSummary{
 		Mode:        string(mode),
@@ -252,6 +274,9 @@ func (s *CacheStats) Summary(mode CacheMode) eval.JudgeCacheSummary {
 
 // WriteError returns the first error the cache returned from Put, or nil.
 func (s *CacheStats) WriteError() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeErr
@@ -259,6 +284,9 @@ func (s *CacheStats) WriteError() error {
 
 // UnusableError returns why the first replaced entry was unusable, or nil.
 func (s *CacheStats) UnusableError() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.unusableErr

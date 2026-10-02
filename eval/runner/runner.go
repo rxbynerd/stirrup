@@ -186,6 +186,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		}, nil
 	}
 
+	if err := cfg.JudgeOptions.CheckCacheAvailable(suite.Tasks); err != nil {
+		return eval.SuiteResult{}, err
+	}
 	cacheMode := cfg.JudgeOptions.CacheMode
 	if !cacheMode.IsLive() && cfg.JudgeOptions.CacheStats == nil {
 		cfg.JudgeOptions.CacheStats = &judge.CacheStats{}

@@ -544,6 +544,38 @@ func TestCacheStats_NilIsSafe(t *testing.T) {
 	var s *CacheStats
 	s.count(types.JudgeCacheHit)
 	s.writeFailed(errors.New("x"))
+	s.replacing(errors.New("y"))
+	if got := s.Summary(CacheReadThrough); got != (eval.JudgeCacheSummary{Mode: "read-through"}) {
+		t.Errorf("Summary = %+v, want empty counts", got)
+	}
+	if s.WriteError() != nil || s.UnusableError() != nil {
+		t.Error("a nil CacheStats reported an error")
+	}
+}
+
+func TestOptions_CheckCacheAvailable(t *testing.T) {
+	reviewed := []types.EvalTask{{ID: "plain", Judge: types.EvalJudge{Type: "file-exists"}}, {ID: "nested", Judge: composite("all", diffReviewJudge())}}
+	unreviewed := reviewed[:1]
+	for _, mode := range []CacheMode{CacheRecord, CacheReadThrough, CacheReplayStrict} {
+		err := Options{CacheMode: mode}.CheckCacheAvailable(reviewed)
+		if err == nil || !strings.Contains(err.Error(), `task "nested"`) {
+			t.Errorf("%s without a cache: err = %v, want the task named", mode, err)
+		}
+		if err := (Options{CacheMode: mode, Cache: newMemCache()}).CheckCacheAvailable(reviewed); err != nil {
+			t.Errorf("%s with a cache: %v", mode, err)
+		}
+		if err := (Options{CacheMode: mode}).CheckCacheAvailable(unreviewed); err != nil {
+			t.Errorf("%s with no diff-review judge: %v", mode, err)
+		}
+	}
+	for _, mode := range []CacheMode{"", CacheLive} {
+		if err := (Options{CacheMode: mode}).CheckCacheAvailable(reviewed); err != nil {
+			t.Errorf("mode %q: %v", mode, err)
+		}
+	}
+	if err := (Options{CacheMode: "bogus"}).CheckCacheAvailable(reviewed); err == nil {
+		t.Error("an unknown mode passed")
+	}
 }
 
 // fileCacheVerdict is a cacheable verdict for FileCache tests.

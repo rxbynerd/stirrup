@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/eval"
@@ -156,5 +157,25 @@ func TestReplayRecording_ReplayStrictServesTheCacheWithoutACredential(t *testing
 	}
 	if n := len(stub.requests()); n != 1 {
 		t.Errorf("judge saw %d requests, want only the recording call", n)
+	}
+}
+
+func TestRunSuite_ACacheModeWithoutACacheFailsBeforeAnyHarnessRun(t *testing.T) {
+	isolateGit(t)
+	stub := newJudgeStub(t, 200, stubPassReply)
+	t.Setenv("JUDGE_E2E_KEY", "k")
+	marker := filepath.Join(t.TempDir(), "harness-ran")
+	harness := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
+	suite := types.EvalSuite{ID: "no-cache-suite", Tasks: []types.EvalTask{{ID: "reviewed", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, JudgeOptions: judge.Options{CacheMode: judge.CacheReadThrough}})
+	if err == nil || !strings.Contains(err.Error(), "needs a cache") {
+		t.Fatalf("err = %v, want the missing cache reported", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Error("the harness ran without the cache its judge mode needs")
+	}
+	if _, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: true, JudgeOptions: judge.Options{CacheMode: judge.CacheReadThrough}}); err != nil {
+		t.Errorf("dry run: %v; a dry run judges nothing and needs no cache", err)
 	}
 }
