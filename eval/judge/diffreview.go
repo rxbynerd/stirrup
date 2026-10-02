@@ -175,7 +175,7 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 	if mode == CacheLive {
 		return callModel()
 	}
-	key := CacheKey(rec.ConfigHash, rec.InputSHA256, 0)
+	key := CacheKey(rec.ConfigHash, rec.InputSHA256, jctx.Sample)
 	rec.CacheKey = key
 	rec.CacheStatus = types.JudgeCacheMiss
 	if mode.Reads() {

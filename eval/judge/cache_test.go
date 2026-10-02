@@ -243,6 +243,43 @@ func TestEvaluateDiffReview_CacheHitCarriesTheStoredVerdict(t *testing.T) {
 	}
 }
 
+func TestEvaluateDiffReview_SamplesAreCachedSeparately(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	dir, base := changedWorkspace(t)
+	cache := newMemCache()
+	fake := &fakeClient{resp: okResponse(verdictPass)}
+	judgeSample := func(sample int) eval.JudgeVerdict {
+		t.Helper()
+		v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{
+			WorkspaceDir: dir, Baseline: &base, Sample: sample, Options: cachedOptions(CacheReadThrough, cache, fake),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	keys := map[string]bool{}
+	for sample := range 3 {
+		v := judgeSample(sample)
+		if v.Record.CacheStatus != types.JudgeCacheStored || v.Record.CacheKey != CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, sample) {
+			t.Errorf("sample %d: record = %+v, want a stored verdict under the sample's key", sample, v.Record)
+		}
+		keys[v.Record.CacheKey] = true
+	}
+	if len(keys) != 3 || fake.calls != 3 {
+		t.Fatalf("%d distinct keys and %d model calls for 3 samples, want 3 of each", len(keys), fake.calls)
+	}
+	for sample := range 3 {
+		if v := judgeSample(sample); v.Record.CacheStatus != types.JudgeCacheHit {
+			t.Errorf("repeat of sample %d: cache status = %q, want hit", sample, v.Record.CacheStatus)
+		}
+	}
+	if fake.calls != 3 {
+		t.Errorf("model calls = %d after repeating every sample, want 3", fake.calls)
+	}
+}
+
 func TestEvaluateDiffReview_ReplayStrictMissIsAnErrorWithoutAModelCall(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	cache := newMemCache()

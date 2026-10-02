@@ -62,6 +62,11 @@ type JudgeContext struct {
 	// repository.
 	Baseline *Baseline
 
+	// Sample numbers repeated judgments of the same workspace; it is the
+	// sample index of a diff-review judge's cache key, so each repeat is
+	// cached separately. Zero for a single judgment.
+	Sample int
+
 	// Options carries invocation-scoped settings for LLM-backed judges.
 	Options
 }
