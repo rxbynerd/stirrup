@@ -30,8 +30,14 @@ func ValidateLLMBlock(j types.EvalJudge) error {
 // api_key_ref, an allowed endpoint, and git on PATH. A failure here would
 // otherwise surface as an error on every judged task after its agent had
 // run. Each distinct reference is resolved once and its value discarded;
-// errors name the task and the reference, never the value.
+// errors name the task and the reference, never the value. Under
+// CacheReplayStrict no model is called, so references and endpoints are not
+// checked.
 func PreflightSuite(ctx context.Context, tasks []types.EvalTask, opts Options) error {
+	if _, err := ParseCacheMode(string(opts.CacheMode)); err != nil {
+		return err
+	}
+	offline := opts.CacheMode == CacheReplayStrict
 	refs := map[string]error{}
 	endpoints := map[string]error{}
 	needGit := false
@@ -41,6 +47,9 @@ func PreflightSuite(ctx context.Context, tasks []types.EvalTask, opts Options) e
 			cfg, err := ResolveLLMConfig(j.LLM, opts.LLMDefaults)
 			if err != nil {
 				return fmt.Errorf("task %q: diff-review judge: %w", task.ID, err)
+			}
+			if offline {
+				continue
 			}
 			if cfg.APIKeyRef != "" {
 				refErr, seen := refs[cfg.APIKeyRef]

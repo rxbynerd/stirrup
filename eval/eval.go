@@ -73,6 +73,24 @@ type SuiteResult struct {
 	CompletedAt time.Time    `json:"completedAt"`
 	Tasks       []TaskResult `json:"tasks"`
 	PassRate    float64      `json:"passRate"`
+
+	// JudgeCache counts how diff-review verdicts used the judge cache. Nil
+	// when the invocation ran live.
+	JudgeCache *JudgeCacheSummary `json:"judgeCache,omitempty"`
+}
+
+// JudgeCacheSummary tallies the judge cache outcomes of one invocation, one
+// count per diff-review verdict that carries a record. Misses include the
+// verdicts that were then stored.
+type JudgeCacheSummary struct {
+	Mode     string `json:"mode"`
+	Hits     int    `json:"hits"`
+	Misses   int    `json:"misses"`
+	Stored   int    `json:"stored"`
+	Bypassed int    `json:"bypassed"`
+
+	// WriteErrors counts verdicts the cache failed to store.
+	WriteErrors int `json:"writeErrors,omitempty"`
 }
 
 // ComparisonReport diffs two SuiteResults and flags regressions.

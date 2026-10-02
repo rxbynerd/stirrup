@@ -60,6 +60,27 @@ const (
 	JudgeParseTruncatedOutput = "truncated_output"
 )
 
+// JudgeRecord.CacheStatus values: how a verdict relates to the judge
+// verdict cache.
+const (
+	// JudgeCacheBypass means the cache was not consulted: the invocation
+	// runs live, or the judge failed before the verdict's cache key was
+	// known.
+	JudgeCacheBypass = "bypass"
+
+	// JudgeCacheMiss means the cache held no usable verdict, or was not
+	// read, and the verdict was not stored.
+	JudgeCacheMiss = "miss"
+
+	// JudgeCacheStored means the model was called and its verdict written
+	// to the cache.
+	JudgeCacheStored = "stored"
+
+	// JudgeCacheHit means the verdict was served from the cache without a
+	// model call.
+	JudgeCacheHit = "hit"
+)
+
 // JudgeRecord is the provenance of one LLM judge call: which model produced
 // the verdict, over what input, at what cost, and how the response was
 // interpreted. It is attached to a verdict so a result can be audited and,
@@ -107,6 +128,12 @@ type JudgeRecord struct {
 	// request parameters.
 	ConfigHash string `json:"configHash"`
 
-	// CacheStatus is reserved for the judge verdict cache.
+	// CacheStatus is one of the JudgeCache* values. On a hit, LatencyMs is
+	// the cache lookup time and the remaining call fields describe the call
+	// that produced the cached verdict.
 	CacheStatus string `json:"cacheStatus,omitempty"`
+
+	// CacheKey is the verdict's content address in the judge cache, set
+	// whenever the cache was consulted or written.
+	CacheKey string `json:"cacheKey,omitempty"`
 }

@@ -101,6 +101,17 @@ type Options struct {
 	// ClientFactory overrides client construction, for tests. Nil uses
 	// NewClient's HTTP implementations.
 	ClientFactory ClientFactory
+
+	// Cache stores and serves diff-review verdicts as CacheMode directs.
+	// It is unused in live mode and required in every other mode.
+	Cache Cache
+
+	// CacheMode is how diff-review judges use Cache. Empty is CacheLive.
+	CacheMode CacheMode
+
+	// CacheStats, when non-nil, counts each diff-review verdict's cache
+	// status.
+	CacheStats *CacheStats
 }
 
 // ResolveLLMConfig produces the configuration for one diff-review judge: an

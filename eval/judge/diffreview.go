@@ -70,10 +70,18 @@ func validateDiffReview(j types.EvalJudge) error {
 }
 
 // evaluateDiffReview diffs the workspace against its baseline commit and asks
-// the configured model whether the change meets the criteria. Every failure to
-// obtain a verdict is reported as Status "error" with the verdict's Record
-// attached, never as a "fail".
+// the configured model, or the judge cache, whether the change meets the
+// criteria. Every failure to obtain a verdict is reported as Status "error"
+// with the verdict's Record attached, never as a "fail".
 func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	verdict, err := reviewDiff(ctx, j, jctx)
+	if verdict.Record != nil {
+		jctx.CacheStats.count(verdict.Record.CacheStatus)
+	}
+	return verdict, err
+}
+
+func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	if err := validateDiffReview(j); err != nil {
 		return eval.JudgeVerdict{}, err
 	}
@@ -95,21 +103,11 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 		Provider:       cfg.Provider,
 		RequestedModel: cfg.Model,
 		ConfigHash:     configHash,
+		CacheStatus:    types.JudgeCacheBypass,
 	}
-
-	var apiKey string
-	if cfg.APIKeyRef != "" {
-		if apiKey, err = resolveSecretRef(cfg.APIKeyRef); err != nil {
-			return diffReviewError(rec, fmt.Errorf("resolving api_key_ref: %w", err))
-		}
-	}
-	newClient := jctx.ClientFactory
-	if newClient == nil {
-		newClient = NewClient
-	}
-	client, err := newClient(cfg, apiKey)
+	mode, err := jctx.cacheMode()
 	if err != nil {
-		return diffReviewError(rec, redactError(err, apiKey))
+		return diffReviewError(rec, err)
 	}
 
 	base := jctx.Baseline
@@ -144,13 +142,60 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 			diff.Size, maxBytes))
 	}
 
+	if mode == CacheLive {
+		return callDiffReviewModel(ctx, cfg, j.Criteria, diff, rec, jctx.ClientFactory)
+	}
+	key := CacheKey(rec.ConfigHash, rec.InputSHA256, 0)
+	rec.CacheKey = key
+	rec.CacheStatus = types.JudgeCacheMiss
+	if mode.reads() {
+		verdict, hit, err := lookupVerdict(jctx.Cache, key, rec)
+		switch {
+		case hit:
+			return verdict, nil
+		case mode == CacheReplayStrict:
+			return diffReviewError(rec, fmt.Errorf("%w; judge cache mode replay-strict never calls the model", err))
+		}
+	}
+	verdict, err := callDiffReviewModel(ctx, cfg, j.Criteria, diff, rec, jctx.ClientFactory)
+	if err != nil || !mode.writes() || !cacheableVerdict(verdict) {
+		return verdict, err
+	}
+	if err := jctx.Cache.Put(key, cacheEntry(verdict)); err != nil {
+		jctx.CacheStats.writeFailed(err)
+		return verdict, nil
+	}
+	rec.CacheStatus = types.JudgeCacheStored
+	return verdict, nil
+}
+
+// callDiffReviewModel asks the model for a verdict on diff and fills in
+// rec's call fields. The credential is resolved only here, so a verdict
+// served from the cache needs none.
+func callDiffReviewModel(ctx context.Context, cfg types.JudgeLLMConfig, criteria string, diff workspaceDiff, rec *types.JudgeRecord, newClient ClientFactory) (eval.JudgeVerdict, error) {
+	var apiKey string
+	if cfg.APIKeyRef != "" {
+		key, err := resolveSecretRef(cfg.APIKeyRef)
+		if err != nil {
+			return diffReviewError(rec, fmt.Errorf("resolving api_key_ref: %w", err))
+		}
+		apiKey = key
+	}
+	if newClient == nil {
+		newClient = NewClient
+	}
+	client, err := newClient(cfg, apiKey)
+	if err != nil {
+		return diffReviewError(rec, redactError(err, apiKey))
+	}
+
 	fence, err := newDataFence(rand.Reader)
 	if err != nil {
 		return diffReviewError(rec, err)
 	}
 	req := JudgeRequest{
 		System:      diffReviewSystemPrompt,
-		User:        buildDiffReviewPrompt(j.Criteria, diff, maxBytes, fence),
+		User:        buildDiffReviewPrompt(criteria, diff, cfg.EffectiveMaxInputBytes(), fence),
 		MaxTokens:   cfg.EffectiveMaxTokens(),
 		Temperature: cfg.Temperature,
 	}
