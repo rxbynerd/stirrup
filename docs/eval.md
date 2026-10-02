@@ -1065,7 +1065,10 @@ filled with empty lines on both sides, so they never appear as changes,
 and renames, copies, binary patches, mode-only and empty-file changes,
 quoted paths, and paths that leave the workspace or enter `.git` are
 rejected rather than approximated. The rebuilt trees share the 8 MiB
-limit on a `workspace` fixture, filled lines included. The simplest way to author a case is
+limit on a `workspace` fixture, filled lines included. For either kind
+of case, a path that is a file on one side of the change and a directory
+on the other, or two paths that differ only in case, are rejected,
+since one workspace cannot hold both on every filesystem. The simplest way to author a case is
 to commit the before state in a scratch repository, make the change, and
 record `git diff --cached --no-renames --unified=1000`; whole-file
 context keeps the case reviewable on its own and rebuilds it exactly.

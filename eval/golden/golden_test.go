@@ -199,3 +199,31 @@ func TestSeedSet(t *testing.T) {
 		}
 	}
 }
+
+func TestFiles_RejectsPathsAWorkspaceCannotHold(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "dir-to-file/before/x/y.txt"), "a\n")
+	writeFile(t, filepath.Join(dir, "dir-to-file/after/x"), "b\n")
+	s := &Set{dir: dir}
+	cases := map[string]struct {
+		c    Case
+		want string
+	}{
+		"diff replaces a directory with a file": {Case{Diff: "--- a/a/b\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n--- /dev/null\n+++ b/a\n@@ -0,0 +1 @@\n+y\n"},
+			`"a" is a file and also the directory of "a/b"`},
+		"diff replaces a file with a directory": {Case{Diff: "--- a/a\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n--- /dev/null\n+++ b/a/b\n@@ -0,0 +1 @@\n+y\n"},
+			`"a" is a file and also the directory of "a/b"`},
+		"diff paths differ only in case": {Case{Diff: "--- a/A.txt\n+++ b/A.txt\n@@ -1 +1 @@\n-x\n+y\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-x\n+y\n"},
+			`paths "A.txt" and "a.txt" differ only in case`},
+		"directory differs only in case": {Case{Diff: "--- a/Dir\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n--- /dev/null\n+++ b/dir/f\n@@ -0,0 +1 @@\n+y\n"},
+			`"Dir" is a file and also the directory of "dir/f"`},
+		"fixture replaces a directory with a file": {Case{Workspace: "dir-to-file"}, `"x" is a file and also the directory of "x/y.txt"`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := s.Files(tc.c); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Files error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}

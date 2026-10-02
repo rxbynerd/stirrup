@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -185,6 +188,17 @@ func verdictLabel(v string) bool {
 
 // Files returns the workspace before and after c's change.
 func (s *Set) Files(c Case) (Files, error) {
+	files, err := s.files(c)
+	if err != nil {
+		return Files{}, err
+	}
+	if err := checkTreePaths(files); err != nil {
+		return Files{}, err
+	}
+	return files, nil
+}
+
+func (s *Set) files(c Case) (Files, error) {
 	if c.Diff != "" {
 		files, err := ParseDiff(c.Diff)
 		if err != nil {
@@ -209,6 +223,31 @@ func (s *Set) Files(c Case) (Files, error) {
 		return Files{}, errors.New("workspace before/ and after/ are identical")
 	}
 	return Files{Before: before, After: after}, nil
+}
+
+// checkTreePaths rejects paths that one workspace cannot hold across the
+// change: a file that is also another path's directory, or two paths that
+// differ only in case and so collide on a case-insensitive filesystem.
+func checkTreePaths(files Files) error {
+	folded := map[string]string{}
+	for _, tree := range []Tree{files.Before, files.After} {
+		for p := range tree {
+			f := strings.ToLower(p)
+			if other, ok := folded[f]; ok && other != p {
+				return fmt.Errorf("paths %s and %s differ only in case", excerpt(min(other, p)), excerpt(max(other, p)))
+			}
+			folded[f] = p
+		}
+	}
+	keys := slices.Sorted(maps.Keys(folded))
+	for _, f := range keys {
+		for dir := path.Dir(f); dir != "."; dir = path.Dir(dir) {
+			if other, ok := folded[dir]; ok {
+				return fmt.Errorf("%s is a file and also the directory of %s", excerpt(other), excerpt(folded[f]))
+			}
+		}
+	}
+	return nil
 }
 
 // readTree reads the regular files under dir, charging their sizes to
