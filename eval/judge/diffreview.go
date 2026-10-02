@@ -28,6 +28,13 @@ import (
 // headers and endpoint paths are covered only by this version.
 const diffReviewLayoutVersion = "diff-review/v3"
 
+// diffReviewParserVersion identifies how a reply becomes a verdict and is
+// stored with every cached verdict; an entry from another version is not
+// served. Bump it with any change to parseDiffReviewReply,
+// findNonceObject, decodeVerdictObject, verdictReason or cacheableVerdict
+// that could change a stored verdict.
+const diffReviewParserVersion = 1
+
 // diffReviewFenceLabel labels the fence around the agent's change.
 const diffReviewFenceLabel = "UNTRUSTED_DIFF"
 

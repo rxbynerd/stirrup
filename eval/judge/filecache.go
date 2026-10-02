@@ -30,10 +30,14 @@ var errOwnerUnchecked = errors.New("this platform cannot check a directory's own
 
 // fileCacheEntry is the on-disk form of one cached verdict.
 type fileCacheEntry struct {
-	Key           string            `json:"key"`
-	SchemaVersion int               `json:"schemaVersion"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	Verdict       eval.JudgeVerdict `json:"verdict"`
+	Key           string `json:"key"`
+	SchemaVersion int    `json:"schemaVersion"`
+
+	// ParserVersion is the diffReviewParserVersion that produced Verdict.
+	ParserVersion int `json:"parserVersion"`
+
+	CreatedAt time.Time         `json:"createdAt"`
+	Verdict   eval.JudgeVerdict `json:"verdict"`
 }
 
 // FileCacheOptions configures NewFileCache.
@@ -171,6 +175,9 @@ func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
 	if entry.Key != key {
 		return eval.JudgeVerdict{}, true, errors.New("entry is stored under another key")
 	}
+	if entry.ParserVersion != diffReviewParserVersion {
+		return eval.JudgeVerdict{}, true, fmt.Errorf("entry parser version %d, want %d", entry.ParserVersion, diffReviewParserVersion)
+	}
 	return entry.Verdict, true, nil
 }
 
@@ -185,6 +192,7 @@ func (c *FileCache) Put(key string, v eval.JudgeVerdict) error {
 	data, err := json.MarshalIndent(fileCacheEntry{
 		Key:           key,
 		SchemaVersion: fileCacheEntryVersion,
+		ParserVersion: diffReviewParserVersion,
 		CreatedAt:     time.Now().UTC(),
 		Verdict:       v,
 	}, "", "  ")

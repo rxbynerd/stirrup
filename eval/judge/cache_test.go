@@ -2,6 +2,7 @@ package judge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -547,7 +548,7 @@ func TestFileCache_RoundTripAndLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("entry not at the fan-out path: %v", err)
 	}
-	for _, field := range []string{`"key": "` + key + `"`, `"schemaVersion": 1`, `"createdAt"`, `"verdict"`} {
+	for _, field := range []string{`"key": "` + key + `"`, `"schemaVersion": 1`, fmt.Sprintf(`"parserVersion": %d`, diffReviewParserVersion), `"createdAt"`, `"verdict"`} {
 		if !strings.Contains(string(raw), field) {
 			t.Errorf("entry is missing %s:\n%s", field, raw)
 		}
@@ -582,17 +583,21 @@ func TestFileCache_RejectsInvalidKeys(t *testing.T) {
 func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 	key := CacheKey("c", "i", 0)
 	other := CacheKey("c", "i", 1)
-	entry := func(k string, version int) string {
-		return fmt.Sprintf(`{"key":%q,"schemaVersion":%d,"createdAt":"2026-10-02T00:00:00Z","verdict":{"passed":true,"status":"pass","reason":"r"}}`, k, version)
+	entryWith := func(k string, version int, parser, reason string) string {
+		return fmt.Sprintf(`{"key":%q,"schemaVersion":%d,%s"createdAt":"2026-10-02T00:00:00Z","verdict":{"passed":true,"status":"pass","reason":%q}}`, k, version, parser, reason)
 	}
+	current := fmt.Sprintf(`"parserVersion":%d,`, diffReviewParserVersion)
+	entry := func(k string, version int) string { return entryWith(k, version, current, "r") }
 	cases := map[string]string{
-		"not json":        "{not json",
-		"empty":           "",
-		"another key":     entry(other, 1),
-		"unknown version": entry(key, 2),
-		"oversized": fmt.Sprintf(`{"key":%q,"schemaVersion":1,"createdAt":"2026-10-02T00:00:00Z","verdict":{"passed":true,"status":"pass","reason":%q}}`,
-			key, strings.Repeat("r", maxCacheEntryBytes)),
-		"truncated object": entry(key, 1)[:40],
+		"not json":             "{not json",
+		"empty":                "",
+		"another key":          entry(other, 1),
+		"unknown version":      entry(key, 2),
+		"older parser version": entryWith(key, 1, fmt.Sprintf(`"parserVersion":%d,`, diffReviewParserVersion-1), "r"),
+		"newer parser version": entryWith(key, 1, fmt.Sprintf(`"parserVersion":%d,`, diffReviewParserVersion+1), "r"),
+		"no parser version":    entryWith(key, 1, "", "r"),
+		"oversized":            entryWith(key, 1, current, strings.Repeat("r", maxCacheEntryBytes)),
+		"truncated object":     entry(key, 1)[:40],
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -613,6 +618,24 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("control: a current entry is served", func(t *testing.T) {
+		dir := t.TempDir()
+		c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, key[:2], key[2:4], key+".json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(entryWith(key, 1, current, strings.Repeat("r", 1000))), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := c.Get(key); err != nil || !found {
+			t.Errorf("found %v, err %v; want the entry served", found, err)
+		}
+	})
 }
 
 func TestFileCache_DirectoryAtTheEntryPathIsUnusable(t *testing.T) {
@@ -832,5 +855,68 @@ func TestOptions_CheckCacheOutside(t *testing.T) {
 	}
 	if err := (Options{Cache: newMemCache(), CacheMode: CacheReadThrough}).CheckCacheOutside(workspace); err != nil {
 		t.Errorf("a cache with no directory was refused: %v", err)
+	}
+}
+
+// rewriteEntry applies edit to the JSON object stored in the entry file at
+// path.
+func rewriteEntry(t *testing.T, path string, edit func(entry map[string]any)) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	edit(entry)
+	if raw, err = json.Marshal(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvaluateDiffReview_EntriesFromAnotherParserVersionAreNotServed(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	dir, base := changedWorkspace(t)
+	evaluate := func(mode CacheMode, c Cache, fake *fakeClient) (eval.JudgeVerdict, error) {
+		return Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(mode, c, fake)})
+	}
+	for name, edit := range map[string]func(map[string]any){
+		"older parser version": func(e map[string]any) { e["parserVersion"] = diffReviewParserVersion - 1 },
+		"no parser version":    func(e map[string]any) { delete(e, "parserVersion") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cacheDir := t.TempDir()
+			c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := evaluate(CacheRecord, c, &fakeClient{resp: okResponse(verdictPass)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := first.Record.CacheKey
+			path := filepath.Join(cacheDir, key[:2], key[2:4], key+".json")
+			rewriteEntry(t, path, edit)
+
+			strict := &fakeClient{resp: okResponse(verdictPass)}
+			v, err := evaluate(CacheReplayStrict, c, strict)
+			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "parser version") || strict.calls != 0 {
+				t.Fatalf("replay-strict: verdict %+v, err %v, %d calls; want an unusable-entry error", v, err, strict.calls)
+			}
+
+			through := &fakeClient{resp: okResponse(verdictPass)}
+			v, err = evaluate(CacheReadThrough, c, through)
+			if err != nil || v.Record.CacheStatus != types.JudgeCacheStored || through.calls != 1 {
+				t.Fatalf("read-through: verdict %+v, err %v, %d calls; want the entry judged again and replaced", v, err, through.calls)
+			}
+			if _, found, err := c.Get(key); !found || err != nil {
+				t.Errorf("replaced entry: found %v, err %v", found, err)
+			}
+		})
 	}
 }
