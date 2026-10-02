@@ -152,6 +152,7 @@ func TestEvalCompletionFlagMap_TracksDispatcher(t *testing.T) {
 	dispatcherSubs := []string{
 		"run", "compare", "compare-to-production",
 		"baseline", "mine-failures", "drift", "ingest", "replay", "convert",
+		"judge-calibrate",
 		"completion",
 	}
 	if len(evalCompletionSubcommands) != len(dispatcherSubs) {

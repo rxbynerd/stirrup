@@ -42,8 +42,7 @@ func PreflightSuite(ctx context.Context, tasks []types.EvalTask, opts Options) e
 		return fmt.Errorf("judge provider %q cannot be the default for a suite's diff-review judges: it is usable only on shadow judges and by judge-calibrate", types.JudgeProviderDecision)
 	}
 	offline := opts.CacheMode == CacheReplayStrict
-	refs := map[string]error{}
-	endpoints := map[string]error{}
+	check := newConfigChecker()
 	needGit := false
 	for _, task := range tasks {
 		for _, j := range diffReviewJudges(task.Judge) {
@@ -55,31 +54,63 @@ func PreflightSuite(ctx context.Context, tasks []types.EvalTask, opts Options) e
 			if offline {
 				continue
 			}
-			if cfg.APIKeyRef != "" {
-				refErr, seen := refs[cfg.APIKeyRef]
-				if !seen {
-					_, refErr = resolveSecretRef(cfg.APIKeyRef)
-					refs[cfg.APIKeyRef] = refErr
-				}
-				if refErr != nil {
-					return fmt.Errorf("task %q: diff-review judge: resolving api_key_ref %s: %w", task.ID, cfg.APIKeyRef, refErr)
-				}
-			}
-			endpoint := cfg.BaseURL + "\x00" + cfg.APIKeyRef
-			endpointErr, seen := endpoints[endpoint]
-			if !seen {
-				endpointErr = CheckEndpoint(ctx, cfg)
-				endpoints[endpoint] = endpointErr
-			}
-			if endpointErr != nil {
-				return fmt.Errorf("task %q: diff-review judge: %w", task.ID, endpointErr)
+			if err := check(ctx, cfg); err != nil {
+				return fmt.Errorf("task %q: diff-review judge: %w", task.ID, err)
 			}
 		}
 	}
 	if needGit {
-		if _, err := exec.LookPath("git"); err != nil {
-			return fmt.Errorf("diff-review judges need git on PATH: %w", err)
+		return checkGit()
+	}
+	return nil
+}
+
+// PreflightLLMConfig is PreflightSuite for a single resolved diff-review
+// judge configuration, for callers that judge outside a suite.
+func PreflightLLMConfig(ctx context.Context, cfg types.JudgeLLMConfig, mode CacheMode) error {
+	if _, err := ParseCacheMode(string(mode)); err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid judge llm configuration: %w", err)
+	}
+	if mode != CacheReplayStrict {
+		if err := newConfigChecker()(ctx, cfg); err != nil {
+			return err
 		}
+	}
+	return checkGit()
+}
+
+// newConfigChecker returns a check that cfg's api_key_ref resolves and its
+// endpoint is allowed, remembering each reference's and endpoint's result.
+func newConfigChecker() func(context.Context, types.JudgeLLMConfig) error {
+	refs := map[string]error{}
+	endpoints := map[string]error{}
+	return func(ctx context.Context, cfg types.JudgeLLMConfig) error {
+		if cfg.APIKeyRef != "" {
+			refErr, seen := refs[cfg.APIKeyRef]
+			if !seen {
+				_, refErr = resolveSecretRef(cfg.APIKeyRef)
+				refs[cfg.APIKeyRef] = refErr
+			}
+			if refErr != nil {
+				return fmt.Errorf("resolving api_key_ref %s: %w", cfg.APIKeyRef, refErr)
+			}
+		}
+		endpoint := cfg.BaseURL + "\x00" + cfg.APIKeyRef
+		endpointErr, seen := endpoints[endpoint]
+		if !seen {
+			endpointErr = CheckEndpoint(ctx, cfg)
+			endpoints[endpoint] = endpointErr
+		}
+		return endpointErr
+	}
+}
+
+func checkGit() error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("diff-review judges need git on PATH: %w", err)
 	}
 	return nil
 }

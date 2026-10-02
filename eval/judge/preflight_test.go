@@ -99,6 +99,35 @@ func TestPreflightSuite(t *testing.T) {
 	}
 }
 
+func TestPreflightLLMConfig(t *testing.T) {
+	requireGit(t)
+	t.Setenv("PREFLIGHT_KEY", "sk-preflight-0123456789")
+	t.Setenv("PREFLIGHT_UNSET_KEY", "")
+	cfg := func(ref string) types.JudgeLLMConfig {
+		return types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, Model: "jev-latest", BaseURL: "http://127.0.0.1:9", APIKeyRef: ref}
+	}
+	if err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_KEY"), CacheLive); err != nil {
+		t.Errorf("resolvable decision config: %v", err)
+	}
+	err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReadThrough)
+	if err == nil || !strings.Contains(err.Error(), "secret://PREFLIGHT_UNSET_KEY") || strings.Contains(err.Error(), "sk-preflight") {
+		t.Errorf("missing key: err = %v, want the reference named", err)
+	}
+	if err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReplayStrict); err != nil {
+		t.Errorf("replay-strict needs no key: %v", err)
+	}
+	refused := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://169.254.169.254/v1"}
+	if err := PreflightLLMConfig(context.Background(), refused, CacheLive); err == nil || !strings.Contains(err.Error(), "link-local") {
+		t.Errorf("refused endpoint: err = %v", err)
+	}
+	if err := PreflightLLMConfig(context.Background(), types.JudgeLLMConfig{}, CacheLive); err == nil || !strings.Contains(err.Error(), "model is required") {
+		t.Errorf("invalid config: err = %v", err)
+	}
+	if err := PreflightLLMConfig(context.Background(), cfg(""), "bogus"); err == nil || !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("invalid cache mode: err = %v", err)
+	}
+}
+
 func TestPreflightSuite_RequiresGitOnlyForDiffReview(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("PREFLIGHT_KEY", "k")

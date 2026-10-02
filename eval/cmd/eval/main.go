@@ -43,6 +43,7 @@ Commands:
   ingest                 Ingest harness JSONL traces into a lakehouse
   replay                 Re-evaluate recorded runs against suite judges
   convert                Convert a result.json into another format (e.g. JUnit XML)
+  judge-calibrate        Measure a diff-review judge against a golden set
   completion             Emit a shell completion script (bash|zsh|fish|powershell)
 
 Run "eval <command> -help" for details.
@@ -86,6 +87,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdIngest(args[1:])
 	case "replay":
 		cmdReplay(args[1:])
+	case "judge-calibrate":
+		return cmdJudgeCalibrate(args[1:], stdout, os.Stderr)
 	case "convert":
 		cmdConvert(args[1:])
 	case "completion":

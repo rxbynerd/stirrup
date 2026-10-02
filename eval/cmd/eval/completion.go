@@ -30,6 +30,7 @@ var evalCompletionSubcommands = []string{
 	"convert",
 	"drift",
 	"ingest",
+	"judge-calibrate",
 	"mine-failures",
 	"replay",
 	"run",
@@ -49,6 +50,7 @@ var evalCompletionFlags = map[string][]string{
 	"ingest":                {"lakehouse", "trace", "skip-partial"},
 	"replay":                {"lakehouse", "suite", "workspace", "output", "recording", "outcome", "judge-baseline", "judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref", "judge-cache", "judge-cache-dir"},
 	"convert":               {"from", "to-junit"},
+	"judge-calibrate":       {"golden", "judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref", "judge-config", "judge-cache", "judge-cache-dir", "repeats", "output", "price-input", "price-output"},
 	"completion":            {"bash", "zsh", "fish", "powershell"},
 }
 
