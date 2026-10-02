@@ -63,3 +63,25 @@ func TestLoadJudgeLLMConfig_Rejects(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadJudgeLLMConfig_ErrorsDoNotQuoteTheSource(t *testing.T) {
+	const key = "sk-ant-api03-SECRETVALUE123"
+	cases := map[string]string{
+		"unquoted key":         "model = \"m\"\napi_key_ref = " + key + "\n",
+		"unterminated string":  "model = \"m\"\napi_key_ref = \"" + key + "\n",
+		"key in a block":       "llm {\n  api_key_ref = " + key + "\n}\n",
+		"key as an expression": "api_key_ref = " + key + "(1)\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeTemp(t, "judge.hcl", src)
+			_, err := LoadJudgeLLMConfig(path)
+			if err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("LoadJudgeLLMConfig error = %v, want a positioned error", err)
+			}
+			if strings.Contains(err.Error(), "SECRETVALUE") {
+				t.Errorf("error quotes the key: %v", err)
+			}
+		})
+	}
+}
