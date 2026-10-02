@@ -341,7 +341,7 @@ and is rejected on every other type, in HCL and JSON suites alike.
 
 | Field               | Default                   | Meaning                                                       |
 |---------------------|---------------------------|---------------------------------------------------------------|
-| `provider`          | `anthropic`               | `anthropic` (Messages API), `openai-compatible` (Chat Completions), or `decision` (the `/v1/systemone` decision-model protocol, accepted only on shadow judges; see [The `decision` provider](#the-decision-provider)). |
+| `provider`          | `anthropic`               | `anthropic` (Messages API), `openai-compatible` (Chat Completions), or `decision` (the `/v1/systemone` decision-model protocol, accepted only on shadow judges and by `judge-calibrate`; see [The `decision` provider](#the-decision-provider)). |
 | `model`             | required                  | Model identifier.                                             |
 | `base_url`          | provider default          | Endpoint root. Required for `openai-compatible`; an `http` or `https` URL with a host and no embedded credentials, subject to the [endpoint policy](#the-diff-review-judge). |
 | `api_key_ref`       | `secret://ANTHROPIC_API_KEY` for `anthropic` at the Anthropic API; `secret://TYPESAFE_API_KEY` for `decision` at the TypeSafe API; none otherwise | `secret://ENV_NAME` or `secret://file:///path`. Literal keys and `secret://ssm://` references are rejected at load time, and the error never repeats the value. An `anthropic` judge with any other `base_url` must name its own reference. An `openai-compatible` judge with no reference sends no credential. |
@@ -842,12 +842,21 @@ A shadow's `details` entry has status `shadow`, the verdict it gave
 (`pass`, `fail`, or `error`) in `shadowVerdict`, `passed: false`, and its
 `record`. In JUnit output a shadow directly under the task's judge
 appears as `shadow <verdict>`: in the `<failure>` or `<error>` body of a
-failed or errored task, and in `<system-out>` of a passing one. The composite's
-reason counts deciding judges only and ends with, for example,
-`; 1 shadow recorded`. A shadow `diff-review` judge uses the judge cache
-like any other. Comparing `shadowVerdict` with the task outcome across a
-suite's results shows how often the candidate would have changed it,
-which complements [calibration](#calibrating-judges) on real tasks.
+failed or errored task, and in `<system-out>` of a passing one. The
+composite's reason counts deciding judges only and then notes the
+shadows, as in `all 2 sub-judges passed; 1 shadow recorded`; in an
+`error` reason the deciding judge's error follows that note. A shadow
+`diff-review` judge uses the judge cache like any other. Comparing
+`shadowVerdict` with the task outcome across a suite's results shows how
+often the candidate would have changed it, which complements
+[calibration](#calibrating-judges) on real tasks.
+
+The pre-run checks of `run` and `replay` cover shadow `diff-review`
+judges as well as deciding ones: a shadow whose `api_key_ref` does not
+resolve, or whose endpoint is refused, stops the invocation before any
+task runs. A shadow that cannot reach its model would record only
+errors, so its credential and endpoint must be provisioned wherever the
+suite runs, CI included, before the shadow is added.
 
 **Verdict.** The composite's `status` is always set. Its `reason` names
 the deciding nested judge by 1-based position and type, and counts the
@@ -1005,10 +1014,10 @@ instructions states how much is shown. `temperature`, `max_tokens`, and
 
 A decision model costs far less per verdict than a generalist judge,
 but its verdicts are uncalibrated against the labels that matter here,
-the vendor documents it as susceptible to instructions placed in the
-state, and on code-derivation tasks it trails generalist models by
-about 14 points. It is therefore accepted only where it cannot change
-an outcome: by `judge-calibrate`, and on shadow judges. Suite
+and unlike the text judges' replies its answer carries no nonce, so
+nothing in a verdict shows that the diff in the state did not steer it.
+As a precaution it is therefore accepted only where it cannot change an
+outcome: by `judge-calibrate`, and on shadow judges. Suite
 validation rejects a `decision` `llm` block on any judge that is not a
 shadow, in HCL and JSON suites alike, and `run` and `replay` refuse
 `--judge-provider decision`, which would make it the default for every
