@@ -105,7 +105,7 @@ func cmdJudgeCalibrate(args []string, stdout, stderr io.Writer) int {
 	if *output != "" {
 		recordDir = filepath.Join(filepath.Dir(*output), judgeCacheDirName)
 	}
-	if _, err := jf.openCache(&opts, recordDir, []string{workDir}); err != nil {
+	if _, err := jf.openCache(stderr, &opts, recordDir, []string{workDir}); err != nil {
 		return usageErr("%v", err)
 	}
 

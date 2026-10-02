@@ -112,8 +112,8 @@ func TestCmdJudgeCalibrate_ReportsAndReusesTheCache(t *testing.T) {
 	if _, err := os.Stat(cacheDir); err != nil {
 		t.Errorf("no judge cache beside the report: %v", err)
 	}
-	if !strings.Contains(stderr, "Judge cache (record): 0 hits, 48 misses, 48 stored") {
-		t.Errorf("stderr does not summarise the cache:\n%s", stderr)
+	if !strings.Contains(stderr, "Using judge cache directory "+cacheDir+" (mode record)") || !strings.Contains(stderr, "Judge cache (record): 0 hits, 48 misses, 48 stored") {
+		t.Errorf("stderr does not name and summarise the cache:\n%s", stderr)
 	}
 	raw, _ := os.ReadFile(output)
 	if strings.Contains(string(raw), "cli-secret") || strings.Contains(stdout, "cli-secret") {

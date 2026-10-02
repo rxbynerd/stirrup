@@ -72,7 +72,7 @@ func cmdReplay(args []string) {
 	if len(recordings) == 0 {
 		log.Fatal("no matching recordings found")
 	}
-	if _, err := judgeFlagSet.openCache(&judgeOpts, filepath.Join(*lakehousePath, judgeCacheDirName), replayWorkspaces(*workspaceDir, recordings)); err != nil {
+	if _, err := judgeFlagSet.openCache(os.Stderr, &judgeOpts, filepath.Join(*lakehousePath, judgeCacheDirName), replayWorkspaces(*workspaceDir, recordings)); err != nil {
 		log.Fatal(err)
 	}
 	if err := judge.PreflightSuite(ctx, suite.Tasks, judgeOpts); err != nil {

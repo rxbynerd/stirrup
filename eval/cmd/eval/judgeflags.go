@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
@@ -69,14 +68,15 @@ func (f *judgeFlags) options() (judge.Options, error) {
 }
 
 // openCache gives opts the cache its mode needs and a counter for its
-// outcomes. The directory is --judge-cache-dir or, in record mode only,
-// recordDir; forbidden are directories the agent under test can write,
-// which must not hold the cache. It returns the directory in use, or "" in
-// live mode, which needs no cache.
-func (f *judgeFlags) openCache(opts *judge.Options, recordDir string, forbidden []string) (string, error) {
+// outcomes, reporting the directory it opens or ignores to w. The
+// directory is --judge-cache-dir or, in record mode only, recordDir;
+// forbidden are directories the agent under test can write, which must not
+// hold the cache. It returns the directory in use, or "" in live mode,
+// which needs no cache.
+func (f *judgeFlags) openCache(w io.Writer, opts *judge.Options, recordDir string, forbidden []string) (string, error) {
 	if opts.CacheMode.IsLive() {
 		if *f.cacheDir != "" {
-			fmt.Fprintf(os.Stderr, "ignoring --judge-cache-dir %q: --judge-cache is live\n", *f.cacheDir)
+			_, _ = fmt.Fprintf(w, "ignoring --judge-cache-dir %q: --judge-cache is live\n", *f.cacheDir)
 		}
 		return "", nil
 	}
@@ -93,7 +93,7 @@ func (f *judgeFlags) openCache(opts *judge.Options, recordDir string, forbidden 
 	}
 	opts.Cache = cache
 	opts.CacheStats = &judge.CacheStats{}
-	fmt.Fprintf(os.Stderr, "Using judge cache directory %s (mode %s)\n", dir, opts.CacheMode)
+	_, _ = fmt.Fprintf(w, "Using judge cache directory %s (mode %s)\n", dir, opts.CacheMode)
 	return dir, nil
 }
 

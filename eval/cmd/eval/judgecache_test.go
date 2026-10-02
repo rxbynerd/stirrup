@@ -51,7 +51,7 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := jf.openCache(&opts, filepath.Join(t.TempDir(), "record-default"), nil)
+		got, err := jf.openCache(io.Discard, &opts, filepath.Join(t.TempDir(), "record-default"), nil)
 		if err != nil || got != "" || opts.Cache != nil || opts.CacheStats != nil {
 			t.Errorf("dir %q, err %v, opts %+v; want no cache in live mode", got, err, opts)
 		}
@@ -67,7 +67,7 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := jf.openCache(&opts, want, nil)
+		got, err := jf.openCache(io.Discard, &opts, want, nil)
 		if err != nil || got != want {
 			t.Fatalf("dir %q, err %v; want %q", got, err, want)
 		}
@@ -90,7 +90,7 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			recordDir := filepath.Join(t.TempDir(), "unused")
-			if got, err := jf.openCache(&opts, recordDir, nil); err != nil || got != want {
+			if got, err := jf.openCache(io.Discard, &opts, recordDir, nil); err != nil || got != want {
 				t.Errorf("dir %q, err %v; want %q", got, err, want)
 			}
 			if _, err := os.Stat(recordDir); !os.IsNotExist(err) {
@@ -106,7 +106,7 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := jf.openCache(&opts, "", []string{workspace}); err == nil || !strings.Contains(err.Error(), "--judge-cache-dir") {
+		if _, err := jf.openCache(io.Discard, &opts, "", []string{workspace}); err == nil || !strings.Contains(err.Error(), "--judge-cache-dir") {
 			t.Errorf("err = %v, want the directory refused", err)
 		}
 		if opts.Cache != nil {
