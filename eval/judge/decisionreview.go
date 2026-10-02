@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -122,7 +123,8 @@ func checkDecisionLimits(req decisionRequest) error {
 }
 
 // fitDecisionBudget cuts diff's head so that the request built from it fits
-// the protocol's limits, marking the diff truncated when it cuts.
+// the protocol's limits, marking the diff truncated when it cuts. The head
+// is measured as the fence neutralises it, which can lengthen it.
 func fitDecisionBudget(criteria string, diff workspaceDiff) (workspaceDiff, error) {
 	var zero dataFence
 	zero.nonce = strings.Repeat("0", 2*fenceNonceBytes)
@@ -134,10 +136,14 @@ func fitDecisionBudget(criteria string, diff workspaceDiff) (workspaceDiff, erro
 	if room <= 0 {
 		return diff, fmt.Errorf("the criteria and change summary alone exceed the decision provider's %d-token input limit", decisionStateTokenLimit)
 	}
-	if len(diff.Head) > room {
-		diff.Head = string(trimPartialRune([]byte(diff.Head[:room])))
-		diff.Truncated = true
+	fits := func(n int) bool { return len(neutraliseFenceMarkers(diff.Head[:n])) <= room }
+	if fits(len(diff.Head)) {
+		return diff, nil
 	}
+	limit := min(len(diff.Head), room)
+	n := sort.Search(limit+1, func(n int) bool { return !fits(n) }) - 1
+	diff.Head = string(trimPartialRune([]byte(diff.Head[:n])))
+	diff.Truncated = true
 	return diff, nil
 }
 

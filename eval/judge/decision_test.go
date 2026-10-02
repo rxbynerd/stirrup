@@ -363,6 +363,52 @@ func TestDiffReview_DecisionAllowTruncatedFitsTheLimit(t *testing.T) {
 	}
 }
 
+// fenceMarkerWorkspace has a change of about size bytes made of '<' runs,
+// which the data fence lengthens by half.
+func fenceMarkerWorkspace(t *testing.T, size int) JudgeContext {
+	t.Helper()
+	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
+	line := strings.Repeat("<", 63) + "\n"
+	writeFiles(t, ws, map[string]string{"conflict.txt": strings.Repeat(line, size/len(line))})
+	return JudgeContext{WorkspaceDir: ws, Baseline: &base}
+}
+
+func TestDiffReview_DecisionBudgetCountsFenceNeutralisation(t *testing.T) {
+	for name, size := range map[string]int{"raw diff within budget": 24_000, "raw diff over budget": 48_000} {
+		t.Run(name, func(t *testing.T) {
+			srv := newDecisionServer(t, okDecision(decisionPassReply))
+			j := decisionJudge(t, srv.srv.URL)
+			j.LLM.AllowTruncated = true
+
+			v := evaluateOK(t, j, fenceMarkerWorkspace(t, size))
+
+			if v.Status != types.JudgeStatusPass || v.Record == nil || !v.Record.Truncated {
+				t.Fatalf("verdict = %+v, want a pass over a diff cut to fit once neutralised", v)
+			}
+			bodies, _ := srv.requests()
+			state, _ := bodies[0]["state"].(string)
+			qJSON, _ := json.Marshal(bodies[0]["questions"].(map[string]any)["verdict"])
+			if got := len(state) + len(qJSON); got > decisionStateTokenLimit-decisionTokenReserve {
+				t.Errorf("state plus question = %d bytes, over the %d budget", got, decisionStateTokenLimit-decisionTokenReserve)
+			}
+			if strings.Contains(state[strings.Index(state, "Diff:"):strings.LastIndex(state, "<<<END_")], "<<<") {
+				t.Error("the fenced diff contains an unneutralised marker run")
+			}
+		})
+	}
+}
+
+func TestDiffReview_DecisionNeutralisedOverflowNeedsAllowTruncated(t *testing.T) {
+	srv := newDecisionServer(t, okDecision(decisionPassReply))
+	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), fenceMarkerWorkspace(t, 24_000))
+	if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "allow_truncated") {
+		t.Fatalf("verdict = %+v, err = %v; want the budget cut refused without allow_truncated", v, err)
+	}
+	if bodies, _ := srv.requests(); len(bodies) != 0 {
+		t.Errorf("the model was called %d times for an over-budget diff", len(bodies))
+	}
+}
+
 func TestDiffReview_DecisionCriteriaOverBudgetIsError(t *testing.T) {
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
