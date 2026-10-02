@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // Judge verdict statuses. "error" means the judge could not render a
 // verdict (transport failure, refusal, unparseable output) and is distinct
 // from "fail", which means the criteria were evaluated and not met.
@@ -136,4 +138,11 @@ type JudgeRecord struct {
 	// CacheKey is the verdict's content address in the judge cache, set
 	// whenever CacheStatus is not JudgeCacheBypass.
 	CacheKey string `json:"cacheKey,omitempty"`
+
+	// CacheRecordedAt and CacheRecordedBy are set on a hit: when the
+	// served entry was written, and the version of the eval binary that
+	// wrote it. They describe the entry as stored, which anyone able to
+	// write the cache directory can forge.
+	CacheRecordedAt time.Time `json:"cacheRecordedAt,omitzero"`
+	CacheRecordedBy string    `json:"cacheRecordedBy,omitempty"`
 }

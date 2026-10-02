@@ -65,7 +65,8 @@ func (m CacheMode) writes() bool { return m == CacheRecord || m == CacheReadThro
 type Cache interface {
 	// Get returns the verdict stored under key. found is false, with a nil
 	// error, when key has no entry; a non-nil error means an entry exists
-	// but cannot be read or decoded.
+	// but cannot be read or decoded. The record may carry the entry's
+	// provenance in CacheRecordedAt and CacheRecordedBy.
 	Get(key string) (v eval.JudgeVerdict, found bool, err error)
 
 	// Put stores v under key, replacing any existing entry.
@@ -126,10 +127,11 @@ func cacheableVerdict(v eval.JudgeVerdict) bool {
 }
 
 // cacheEntry is the form of v that is stored: the record without the
-// per-evaluation cache fields.
+// per-evaluation and provenance cache fields.
 func cacheEntry(v eval.JudgeVerdict) eval.JudgeVerdict {
 	rec := *v.Record
 	rec.CacheStatus, rec.CacheKey = "", ""
+	rec.CacheRecordedAt, rec.CacheRecordedBy = time.Time{}, ""
 	v.Record = &rec
 	return v
 }
@@ -165,13 +167,15 @@ func lookupVerdict(cache Cache, key string, rec *types.JudgeRecord) (v eval.Judg
 	case !found:
 		return eval.JudgeVerdict{}, false, fmt.Errorf("judge cache has no verdict for key %s", key)
 	}
-	rec.ServedModel = cached.Record.ServedModel
+	rec.ServedModel = printableText(cached.Record.ServedModel, maxRecordFieldBytes)
 	rec.InputTokens = cached.Record.InputTokens
 	rec.OutputTokens = cached.Record.OutputTokens
-	rec.StopReason = cached.Record.StopReason
+	rec.StopReason = printableText(cached.Record.StopReason, maxRecordFieldBytes)
 	rec.ParseStatus = cached.Record.ParseStatus
 	rec.LatencyMs = time.Since(start).Milliseconds()
 	rec.CacheStatus = types.JudgeCacheHit
+	rec.CacheRecordedAt = cached.Record.CacheRecordedAt
+	rec.CacheRecordedBy = printableText(cached.Record.CacheRecordedBy, maxRecordFieldBytes)
 	return eval.JudgeVerdict{
 		Passed: cached.Status == types.JudgeStatusPass,
 		Status: cached.Status,

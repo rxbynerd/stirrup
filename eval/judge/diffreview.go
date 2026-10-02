@@ -31,8 +31,8 @@ const diffReviewLayoutVersion = "diff-review/v3"
 // diffReviewParserVersion identifies how a reply becomes a verdict and is
 // stored with every cached verdict; an entry from another version is not
 // served. Bump it with any change to parseDiffReviewReply,
-// findNonceObject, decodeVerdictObject, verdictReason or cacheableVerdict
-// that could change a stored verdict.
+// findNonceObject, decodeVerdictObject, verdictReason, printableText or
+// cacheableVerdict that could change a stored verdict.
 const diffReviewParserVersion = 1
 
 // diffReviewFenceLabel labels the fence around the agent's change.
@@ -427,10 +427,18 @@ func parseDiffReviewReply(text, nonce string) (eval.JudgeVerdict, string, error)
 // maxReasonBytes bounds the model-authored reason carried into results.
 const maxReasonBytes = 2048
 
-// verdictReason makes model-authored text safe to print in a terminal or
-// JUnit report: control characters, including ANSI escapes, become
-// spaces, whitespace runs collapse, and the text is cut to maxReasonBytes.
-func verdictReason(s string) string {
+// maxRecordFieldBytes bounds an identifier, such as a served model or stop
+// reason, read from a cache entry into a record.
+const maxRecordFieldBytes = 256
+
+// verdictReason makes a model-authored reason safe to print, bounded by
+// maxReasonBytes.
+func verdictReason(s string) string { return printableText(s, maxReasonBytes) }
+
+// printableText makes untrusted text safe to print in a terminal or JUnit
+// report: control characters, including ANSI escapes, become spaces,
+// whitespace runs collapse, and the text is cut to limit bytes.
+func printableText(s string, limit int) string {
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
@@ -438,8 +446,8 @@ func verdictReason(s string) string {
 		return r
 	}, s)
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > maxReasonBytes {
-		s = string(trimPartialRune([]byte(s[:maxReasonBytes]))) + "..."
+	if len(s) > limit {
+		s = string(trimPartialRune([]byte(s[:limit]))) + "..."
 	}
 	return s
 }

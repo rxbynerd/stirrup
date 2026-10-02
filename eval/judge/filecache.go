@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 // fileCacheEntryVersion is the FileCache entry format version.
@@ -35,6 +36,9 @@ type fileCacheEntry struct {
 
 	// ParserVersion is the diffReviewParserVersion that produced Verdict.
 	ParserVersion int `json:"parserVersion"`
+
+	// EvalVersion is the version of the eval binary that wrote the entry.
+	EvalVersion string `json:"evalVersion,omitempty"`
 
 	CreatedAt time.Time         `json:"createdAt"`
 	Verdict   eval.JudgeVerdict `json:"verdict"`
@@ -124,7 +128,9 @@ func NewFileCache(dir string, opts FileCacheOptions) (*FileCache, error) {
 // resolved.
 func (c *FileCache) Dir() string { return c.dir }
 
-// Get implements Cache. The entry must be a regular file reached without
+// Get implements Cache. The returned record carries the entry's creation
+// time and writer version as CacheRecordedAt and CacheRecordedBy. The entry
+// must be a regular file reached without
 // following a symlink at any level below the root; anything else is an
 // unusable entry rather than a miss.
 func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
@@ -178,6 +184,10 @@ func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
 	if entry.ParserVersion != diffReviewParserVersion {
 		return eval.JudgeVerdict{}, true, fmt.Errorf("entry parser version %d, want %d", entry.ParserVersion, diffReviewParserVersion)
 	}
+	if rec := entry.Verdict.Record; rec != nil {
+		rec.CacheRecordedAt = entry.CreatedAt
+		rec.CacheRecordedBy = entry.EvalVersion
+	}
 	return entry.Verdict, true, nil
 }
 
@@ -193,6 +203,7 @@ func (c *FileCache) Put(key string, v eval.JudgeVerdict) error {
 		Key:           key,
 		SchemaVersion: fileCacheEntryVersion,
 		ParserVersion: diffReviewParserVersion,
+		EvalVersion:   version.Full(),
 		CreatedAt:     time.Now().UTC(),
 		Verdict:       v,
 	}, "", "  ")

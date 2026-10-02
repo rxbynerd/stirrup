@@ -10,9 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+	"unicode"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 // memCache is an in-memory Cache that counts its calls.
@@ -562,6 +565,7 @@ func TestFileCache_RoundTripAndLayout(t *testing.T) {
 		t.Fatalf("empty cache: found %v, err %v", found, err)
 	}
 	want := fileCacheVerdict("stored reason")
+	before := time.Now().UTC().Truncate(time.Second)
 	if err := c.Put(key, want); err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +574,7 @@ func TestFileCache_RoundTripAndLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("entry not at the fan-out path: %v", err)
 	}
-	for _, field := range []string{`"key": "` + key + `"`, `"schemaVersion": 1`, fmt.Sprintf(`"parserVersion": %d`, diffReviewParserVersion), `"createdAt"`, `"verdict"`} {
+	for _, field := range []string{`"key": "` + key + `"`, `"schemaVersion": 1`, fmt.Sprintf(`"parserVersion": %d`, diffReviewParserVersion), `"evalVersion": "` + version.Full() + `"`, `"createdAt"`, `"verdict"`} {
 		if !strings.Contains(string(raw), field) {
 			t.Errorf("entry is missing %s:\n%s", field, raw)
 		}
@@ -579,7 +583,12 @@ func TestFileCache_RoundTripAndLayout(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Get: found %v, err %v", found, err)
 	}
-	if got.Reason != want.Reason || got.Status != want.Status || !got.Passed || got.Record == nil || *got.Record != *want.Record {
+	if got.Record == nil || got.Record.CacheRecordedAt.Before(before) || got.Record.CacheRecordedBy != version.Full() {
+		t.Fatalf("record %+v lacks the entry's provenance", got.Record)
+	}
+	rec := *got.Record
+	rec.CacheRecordedAt, rec.CacheRecordedBy = time.Time{}, ""
+	if got.Reason != want.Reason || got.Status != want.Status || !got.Passed || rec != *want.Record {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
@@ -946,5 +955,75 @@ func TestEvaluateDiffReview_EntriesFromAnotherParserVersionAreNotServed(t *testi
 				t.Errorf("replaced entry: found %v, err %v", found, err)
 			}
 		})
+	}
+}
+
+func TestEvaluateDiffReview_HitsCarrySanitisedProvenance(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	dir, base := changedWorkspace(t)
+	cacheDir := t.TempDir()
+	c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluate := func(mode CacheMode) eval.JudgeVerdict {
+		t.Helper()
+		v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(mode, c, &fakeClient{resp: okResponse(verdictPass)})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	recordFields := func(rec *types.JudgeRecord) map[string]json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		return fields
+	}
+
+	stored := evaluate(CacheRecord)
+	for _, field := range []string{"cacheRecordedAt", "cacheRecordedBy"} {
+		if _, ok := recordFields(stored.Record)[field]; ok {
+			t.Errorf("a stored verdict's record carries %s", field)
+		}
+	}
+	key := stored.Record.CacheKey
+	var createdAt time.Time
+	rewriteEntry(t, filepath.Join(cacheDir, key[:2], key[2:4], key+".json"), func(e map[string]any) {
+		e["evalVersion"] = "v9\x1b[2J"
+		rec := e["verdict"].(map[string]any)["record"].(map[string]any)
+		rec["servedModel"] = "\x1b[31mevil\x1b[0m"
+		rec["stopReason"] = "end_turn\n\x00" + strings.Repeat("s", 2*maxRecordFieldBytes)
+		if err := createdAt.UnmarshalText([]byte(e["createdAt"].(string))); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	hit := evaluate(CacheReplayStrict)
+	rec := hit.Record
+	if rec.CacheStatus != types.JudgeCacheHit {
+		t.Fatalf("record = %+v, want a hit", rec)
+	}
+	for name, got := range map[string]string{"servedModel": rec.ServedModel, "stopReason": rec.StopReason, "cacheRecordedBy": rec.CacheRecordedBy} {
+		if strings.ContainsFunc(got, unicode.IsControl) || len(got) > maxRecordFieldBytes+len("...") {
+			t.Errorf("%s = %q, want control characters stripped and the length capped", name, got)
+		}
+	}
+	if rec.ServedModel != "[31mevil [0m" || rec.CacheRecordedBy != "v9 [2J" {
+		t.Errorf("servedModel %q, cacheRecordedBy %q", rec.ServedModel, rec.CacheRecordedBy)
+	}
+	if !rec.CacheRecordedAt.Equal(createdAt) {
+		t.Errorf("cacheRecordedAt = %v, want the entry's createdAt %v", rec.CacheRecordedAt, createdAt)
+	}
+	for _, field := range []string{"cacheRecordedAt", "cacheRecordedBy"} {
+		if _, ok := recordFields(rec)[field]; !ok {
+			t.Errorf("a hit's record JSON lacks %s", field)
+		}
 	}
 }
