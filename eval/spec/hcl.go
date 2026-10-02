@@ -158,6 +158,7 @@ type judgeSpec struct {
 	Pattern   string         `hcl:"pattern,optional"`
 	Criteria  string         `hcl:"criteria,optional"`
 	Require   string         `hcl:"require,optional"`
+	Shadow    bool           `hcl:"shadow,optional"`
 	ToolTrace *toolTraceSpec `hcl:"tool_trace,block"`
 	LLM       *llmSpec       `hcl:"llm,block"`
 	Judges    []judgeSpec    `hcl:"judge,block"`
@@ -304,6 +305,9 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
+		if err := j.ValidateShadow(true); err != nil {
+			return types.EvalSuite{}, fmt.Errorf("task %q: judge: %w", t.ID, err)
+		}
 		taskOverrides := runConfigOverridesSpecToType(t.RunConfigOverrides)
 		if err := validateInlineAPIKeyRefs(nil, taskOverrides); err != nil {
 			return types.EvalSuite{}, fmt.Errorf("task %q: %w", t.ID, err)
@@ -416,6 +420,7 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		Pattern:  j.Pattern,
 		Criteria: j.Criteria,
 		Require:  j.Require,
+		Shadow:   j.Shadow,
 	}
 
 	if j.LLM != nil {

@@ -42,15 +42,25 @@ type JudgeVerdict struct {
 // not evaluate because an earlier sub-judge had already decided the outcome.
 const JudgeStatusSkipped = "skipped"
 
+// JudgeStatusShadow is the JudgeDetail.Status of an evaluated shadow
+// sub-judge, whose verdict is recorded in ShadowVerdict and never counts
+// toward the composite's outcome.
+const JudgeStatusShadow = "shadow"
+
 // JudgeDetail records the verdict of a single sub-judge in a composite.
 type JudgeDetail struct {
 	Type   string `json:"type"`
 	Passed bool   `json:"passed"`
 
 	// Status is types.JudgeStatusPass, JudgeStatusFail or JudgeStatusError
-	// for an evaluated sub-judge, or JudgeStatusSkipped for one that was not
-	// evaluated. Only "pass" sets Passed.
+	// for an evaluated sub-judge, JudgeStatusShadow for an evaluated shadow
+	// sub-judge, or JudgeStatusSkipped for one that was not evaluated. Only
+	// "pass" sets Passed.
 	Status string `json:"status,omitempty"`
+
+	// ShadowVerdict is the pass, fail or error status a shadow sub-judge
+	// reached. Empty for every other sub-judge.
+	ShadowVerdict string `json:"shadowVerdict,omitempty"`
 
 	Reason string `json:"reason"`
 

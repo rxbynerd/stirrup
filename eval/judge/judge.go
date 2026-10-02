@@ -268,10 +268,15 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 
 // evaluateComposite runs sub-judges in declared order and stops at the first
 // one that decides the outcome: a fail or error under "all", a pass under
-// "any". Sub-judge errors are carried in Status, as is a cancelled context
-// between sub-judges; only an invalid judge tree returns an error.
+// "any". Shadow sub-judges never decide and are evaluated even after the
+// outcome is decided. Sub-judge errors are carried in Status, as is a
+// cancelled context between sub-judges; only an invalid judge tree returns an
+// error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if err := ValidateTree(j); err != nil {
+	if err := validateTree(j); err != nil {
+		return eval.JudgeVerdict{}, err
+	}
+	if err := j.ValidateShadow(false); err != nil {
 		return eval.JudgeVerdict{}, err
 	}
 
@@ -281,16 +286,34 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 	}
 	requireAny := require == "any"
 	total := len(j.Judges)
+	deciding := 0
+	for _, sub := range j.Judges {
+		if !sub.Shadow {
+			deciding++
+		}
+	}
 
 	details := make([]eval.JudgeDetail, 0, total)
-	decider, errored, firstErr := -1, 0, -1
+	decider, errored, firstErr, skipped, shadows := -1, 0, -1, 0, 0
 	cancelled := false
 	for i, sub := range j.Judges {
-		if ctx.Err() != nil {
+		if decider >= 0 && !sub.Shadow {
+			details = append(details, skippedDetail(sub, fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total)))
+			skipped++
+			continue
+		}
+		if cancelled || ctx.Err() != nil {
 			cancelled = true
-			break
+			details = append(details, skippedDetail(sub, "not evaluated: cancelled"))
+			skipped++
+			continue
 		}
 		d := evaluateSubJudge(ctx, sub, jctx)
+		if sub.Shadow {
+			details = append(details, shadowDetail(d))
+			shadows++
+			continue
+		}
 		details = append(details, d)
 		switch d.Status {
 		case types.JudgeStatusPass:
@@ -310,27 +333,11 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 				decider = i
 			}
 		}
-		if decider >= 0 {
-			break
-		}
-	}
-
-	skipped := total - len(details)
-	skipReason := "not evaluated: cancelled"
-	if !cancelled {
-		skipReason = fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total)
-	}
-	for i := len(details); i < total; i++ {
-		details = append(details, eval.JudgeDetail{
-			Type:   j.Judges[i].Type,
-			Status: eval.JudgeStatusSkipped,
-			Reason: skipReason,
-		})
 	}
 
 	var status, reason string
 	switch {
-	case cancelled:
+	case cancelled && decider < 0:
 		status = types.JudgeStatusError
 		reason = "cancelled"
 	case decider >= 0:
@@ -340,19 +347,20 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 		if skipped > 0 {
 			reason += fmt.Sprintf("; %d skipped", skipped)
 		}
+		reason += shadowNote(shadows)
 		if d.Status == types.JudgeStatusError {
 			reason += ": " + d.Reason
 		}
 	case requireAny && errored > 0:
 		status = types.JudgeStatusError
-		reason = fmt.Sprintf("0 of %s passed (require any); %d errored, first: sub-judge %d of %d (%s): %s",
-			subJudges(total), errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
+		reason = fmt.Sprintf("0 of %s passed (require any)%s; %d errored, first: sub-judge %d of %d (%s): %s",
+			subJudges(deciding), shadowNote(shadows), errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
 	case requireAny:
 		status = types.JudgeStatusFail
-		reason = fmt.Sprintf("0 of %s passed (require any)", subJudges(total))
+		reason = fmt.Sprintf("0 of %s passed (require any)%s", subJudges(deciding), shadowNote(shadows))
 	default:
 		status = types.JudgeStatusPass
-		reason = fmt.Sprintf("all %s passed", subJudges(total))
+		reason = fmt.Sprintf("all %s passed%s", subJudges(deciding), shadowNote(shadows))
 	}
 
 	return eval.JudgeVerdict{
@@ -386,6 +394,30 @@ func evaluateSubJudge(ctx context.Context, sub types.EvalJudge, jctx JudgeContex
 	return d
 }
 
+func skippedDetail(sub types.EvalJudge, reason string) eval.JudgeDetail {
+	return eval.JudgeDetail{Type: sub.Type, Status: eval.JudgeStatusSkipped, Reason: reason}
+}
+
+// shadowDetail reports an evaluated shadow sub-judge. Its verdict moves to
+// ShadowVerdict, so nothing that reads Status or Passed counts it.
+func shadowDetail(d eval.JudgeDetail) eval.JudgeDetail {
+	d.ShadowVerdict = d.Status
+	d.Status = eval.JudgeStatusShadow
+	d.Passed = false
+	return d
+}
+
+func shadowNote(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "; 1 shadow recorded"
+	default:
+		return fmt.Sprintf("; %d shadows recorded", n)
+	}
+}
+
 func subJudges(n int) string {
 	if n == 1 {
 		return "1 sub-judge"
@@ -404,11 +436,19 @@ func subJudgeVerb(status string) string {
 	}
 }
 
-// ValidateTree rejects, before any judge runs, a tree that cannot be
-// evaluated: an unknown type, an invalid llm block, a mis-specified field that
-// does not depend on the run, or a malformed composite. Failures that depend
-// on the run, such as a missing trace, surface at evaluation.
+// ValidateTree rejects, before any judge runs, a task's judge tree that cannot
+// be evaluated: an unknown type, an invalid llm block, a mis-specified field
+// that does not depend on the run, a malformed composite, or a shadow judge
+// that types.EvalJudge.ValidateShadow refuses. Failures that depend on the
+// run, such as a missing trace, surface at evaluation.
 func ValidateTree(j types.EvalJudge) error {
+	if err := validateTree(j); err != nil {
+		return err
+	}
+	return j.ValidateShadow(true)
+}
+
+func validateTree(j types.EvalJudge) error {
 	if !slices.Contains(KnownJudgeTypes(), j.Type) {
 		return fmt.Errorf("unknown judge type: %q", j.Type)
 	}
@@ -441,7 +481,7 @@ func validateComposite(j types.EvalJudge) error {
 		return fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", j.Require)
 	}
 	for i, sub := range j.Judges {
-		if err := ValidateTree(sub); err != nil {
+		if err := validateTree(sub); err != nil {
 			return fmt.Errorf("sub-judge %d: %w", i+1, err)
 		}
 	}

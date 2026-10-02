@@ -178,8 +178,9 @@ func failureBody(v eval.JudgeVerdict) string {
 }
 
 // detailBody joins reason and the sub-judge details, separated by a blank
-// line. Each detail is rendered as `Type: Reason`, or `Type: skipped (Reason)`
-// for a sub-judge that was not evaluated.
+// line. Each detail is rendered as `Type: Reason`, `Type: skipped (Reason)`
+// for a sub-judge that was not evaluated, or `Type: shadow <verdict>
+// (Reason)` for a shadow sub-judge.
 func detailBody(reason string, details []eval.JudgeDetail) string {
 	if len(details) == 0 {
 		return reason
@@ -193,9 +194,12 @@ func detailBody(reason string, details []eval.JudgeDetail) string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		if d.Status == eval.JudgeStatusSkipped {
+		switch d.Status {
+		case eval.JudgeStatusSkipped:
 			fmt.Fprintf(&b, "%s: skipped (%s)", d.Type, d.Reason)
-		} else {
+		case eval.JudgeStatusShadow:
+			fmt.Fprintf(&b, "%s: shadow %s (%s)", d.Type, d.ShadowVerdict, d.Reason)
+		default:
 			fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
 		}
 	}

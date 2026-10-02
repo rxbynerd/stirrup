@@ -203,6 +203,34 @@ func TestWriteJUnit_FailRendersSkippedDetails(t *testing.T) {
 	}
 }
 
+func TestWriteJUnit_FailRendersShadowVerdicts(t *testing.T) {
+	result := eval.SuiteResult{
+		SuiteID: "s",
+		Tasks: []eval.TaskResult{
+			{
+				TaskID:  "t",
+				Outcome: "fail",
+				JudgeVerdict: eval.JudgeVerdict{
+					Status: "fail",
+					Reason: "sub-judge 1 of 2 (file-exists) failed (require all); 1 shadow recorded",
+					Details: []eval.JudgeDetail{
+						{Type: "file-exists", Status: "fail", Reason: "missing paths: a.txt"},
+						{Type: "diff-review", Status: eval.JudgeStatusShadow, ShadowVerdict: "pass", Reason: "decision model: p(pass)=0.91 confidence=0.82"},
+					},
+				},
+			},
+		},
+	}
+	tc := parseJUnit(t, runWriteJUnit(t, result)).TestSuites[0].TestCases[0]
+	if tc.Failure == nil {
+		t.Fatal("fail case should have <failure>")
+	}
+	want := "diff-review: shadow pass (decision model: p(pass)=0.91 confidence=0.82)"
+	if !strings.HasSuffix(tc.Failure.Body, want) {
+		t.Errorf("failure body = %q, want it to end with %q", tc.Failure.Body, want)
+	}
+}
+
 func TestWriteJUnit_ErrorCompositeEmitsDetails(t *testing.T) {
 	reason := "sub-judge 2 of 3 (diff-review) errored (require all); 1 skipped: provider returned HTTP 503"
 	result := eval.SuiteResult{

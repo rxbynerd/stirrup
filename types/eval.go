@@ -108,6 +108,34 @@ type EvalJudge struct {
 	// "use the invocation defaults, then the built-in default". It is
 	// rejected on every other judge type by the HCL parser.
 	LLM *JudgeLLMConfig `json:"llm,omitempty"`
+
+	// Shadow marks a composite sub-judge that is evaluated and recorded in
+	// the composite's details but never counts toward its outcome. A
+	// task's top-level judge cannot be a shadow; see ValidateShadow.
+	Shadow bool `json:"shadow,omitempty"`
+}
+
+// ValidateShadow checks the shadow rules of the judge tree rooted at j;
+// topLevel is true for a task's own judge. A top-level judge decides its
+// task's outcome, so it cannot be a shadow, and every composite needs at
+// least one sub-judge that is not a shadow.
+func (j EvalJudge) ValidateShadow(topLevel bool) error {
+	if topLevel && j.Shadow {
+		return errors.New("shadow is only valid on a composite sub-judge; a task's top-level judge always decides the outcome")
+	}
+	deciding := 0
+	for i, sub := range j.Judges {
+		if err := sub.ValidateShadow(false); err != nil {
+			return fmt.Errorf("sub-judge %d: %w", i+1, err)
+		}
+		if !sub.Shadow {
+			deciding++
+		}
+	}
+	if j.Type == "composite" && len(j.Judges) > 0 && deciding == 0 {
+		return errors.New("composite judge needs at least one sub-judge that is not a shadow")
+	}
+	return nil
 }
 
 // Judge LLM providers accepted by JudgeLLMConfig.Provider.
