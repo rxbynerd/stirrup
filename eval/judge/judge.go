@@ -404,14 +404,10 @@ func subJudgeVerb(status string) string {
 	}
 }
 
-// ValidateTree rejects a judge tree that cannot be evaluated, before any
-// judge runs, so a configuration error is neither mistaken for a sub-judge
-// error nor hidden behind a composite short-circuit. For every judge in the
-// tree it checks the type, the llm block, and the configuration that does not
-// depend on the run: required fields, a compilable pattern, workspace-relative
-// paths, the tool-trace block, a non-empty composite, and the require value.
-// Failures that depend on the run, such as a missing trace or a model's
-// reply, are reported when the judge is evaluated.
+// ValidateTree rejects, before any judge runs, a tree that cannot be
+// evaluated: an unknown type, an invalid llm block, a mis-specified field that
+// does not depend on the run, or a malformed composite. Failures that depend
+// on the run, such as a missing trace, surface at evaluation.
 func ValidateTree(j types.EvalJudge) error {
 	if !slices.Contains(KnownJudgeTypes(), j.Type) {
 		return fmt.Errorf("unknown judge type: %q", j.Type)
