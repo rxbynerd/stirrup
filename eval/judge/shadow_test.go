@@ -21,7 +21,7 @@ func fileExistsJudge(paths ...string) types.EvalJudge {
 
 func TestComposite_ShadowFailDoesNotFailAll(t *testing.T) {
 	dir := t.TempDir()
-	j := composite("all", markerJudge("a", 0), shadow(markerJudge("s", 1)), markerJudge("b", 0))
+	j := composite("all", markerJudge("a", 0), shadow(fileExistsJudge("missing.txt")), markerJudge("b", 0))
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
@@ -29,7 +29,7 @@ func TestComposite_ShadowFailDoesNotFailAll(t *testing.T) {
 		t.Fatalf("verdict = %+v, want pass: a shadow fail must not decide", v)
 	}
 	assertStatuses(t, v, types.JudgeStatusPass, eval.JudgeStatusShadow, types.JudgeStatusPass)
-	if d := v.Details[1]; d.ShadowVerdict != types.JudgeStatusFail || d.Passed || !strings.Contains(d.Reason, "command failed") {
+	if d := v.Details[1]; d.ShadowVerdict != types.JudgeStatusFail || d.Passed || d.Reason != "missing paths: missing.txt" {
 		t.Errorf("shadow detail = %+v, want verdict fail recorded with its reason", d)
 	}
 	if want := "all 2 sub-judges passed; 1 shadow recorded"; v.Reason != want {
@@ -39,7 +39,8 @@ func TestComposite_ShadowFailDoesNotFailAll(t *testing.T) {
 
 func TestComposite_ShadowPassDoesNotSatisfyAny(t *testing.T) {
 	dir := t.TempDir()
-	j := composite("any", shadow(markerJudge("s", 0)), markerJudge("a", 1))
+	writeFiles(t, dir, map[string]string{"present.txt": "x"})
+	j := composite("any", shadow(fileExistsJudge("present.txt")), markerJudge("a", 1))
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
@@ -81,7 +82,7 @@ func TestComposite_ShadowErrorKeepsRecordAndNeverErrorsComposite(t *testing.T) {
 
 func TestComposite_ShadowRunsAfterTheOutcomeIsDecided(t *testing.T) {
 	dir := t.TempDir()
-	j := composite("all", markerJudge("a", 1), markerJudge("b", 0), shadow(markerJudge("s", 0)))
+	j := composite("all", markerJudge("a", 1), markerJudge("b", 0), shadow(fileExistsJudge("a")))
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
@@ -91,10 +92,10 @@ func TestComposite_ShadowRunsAfterTheOutcomeIsDecided(t *testing.T) {
 	if ranMarker(t, dir, "b") {
 		t.Error("a deciding sub-judge ran after the outcome was decided")
 	}
-	if !ranMarker(t, dir, "s") {
-		t.Error("a shadow sub-judge was not evaluated after the outcome was decided")
-	}
 	assertStatuses(t, v, types.JudgeStatusFail, eval.JudgeStatusSkipped, eval.JudgeStatusShadow)
+	if d := v.Details[2]; d.ShadowVerdict != types.JudgeStatusPass || d.Reason != "all paths exist" {
+		t.Errorf("shadow detail = %+v, want it evaluated after the outcome was decided", d)
+	}
 	if want := "sub-judge 1 of 3 (test-command) failed (require all); 1 skipped; 1 shadow recorded"; v.Reason != want {
 		t.Errorf("Reason = %q, want %q", v.Reason, want)
 	}
@@ -123,7 +124,7 @@ func TestComposite_CancelledShadowAfterDecisionKeepsTheDecision(t *testing.T) {
 	defer cancel()
 	client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(verdictFail)}, cancel: cancel}
 	jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
-	j := composite("all", diffReviewJudge(), shadow(markerJudge("s", 0)))
+	j := composite("all", diffReviewJudge(), shadow(fileExistsJudge("a.txt")))
 
 	v, err := Evaluate(ctx, j, jctx)
 	if err != nil {
@@ -133,9 +134,6 @@ func TestComposite_CancelledShadowAfterDecisionKeepsTheDecision(t *testing.T) {
 	if v.Status != types.JudgeStatusFail {
 		t.Fatalf("verdict = %+v, want the fail decided before cancellation", v)
 	}
-	if ranMarker(t, jctx.WorkspaceDir, "s") {
-		t.Error("a shadow sub-judge ran after the context was cancelled")
-	}
 	if d := v.Details[1]; d.Status != eval.JudgeStatusSkipped || d.Reason != "not evaluated: cancelled" {
 		t.Errorf("shadow detail = %+v, want skipped because of cancellation", d)
 	}
@@ -143,7 +141,7 @@ func TestComposite_CancelledShadowAfterDecisionKeepsTheDecision(t *testing.T) {
 
 func TestComposite_NestedShadowCompositeKeepsItsDetails(t *testing.T) {
 	dir := t.TempDir()
-	inner := shadow(composite("all", markerJudge("x", 1)))
+	inner := shadow(composite("all", fileExistsJudge("missing.txt")))
 	j := composite("all", markerJudge("a", 0), inner)
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
@@ -163,12 +161,14 @@ func TestValidateTree_ShadowRules(t *testing.T) {
 		judge   types.EvalJudge
 		wantErr string
 	}{
-		{"top-level shadow", shadow(markerJudge("a", 0)), "only valid on a composite sub-judge"},
-		{"top-level shadow composite", shadow(composite("all", markerJudge("a", 0))), "only valid on a composite sub-judge"},
-		{"composite of shadows", composite("all", shadow(markerJudge("a", 0))), "at least one sub-judge that is not a shadow"},
-		{"nested composite of shadows", composite("all", markerJudge("a", 0), composite("any", shadow(markerJudge("b", 0)))), "sub-judge 2: composite judge needs at least one"},
-		{"shadow beside a deciding judge", composite("all", markerJudge("a", 0), shadow(markerJudge("b", 0))), ""},
-		{"shadow composite with a deciding member", composite("all", markerJudge("a", 0), shadow(composite("all", markerJudge("b", 0)))), ""},
+		{"top-level shadow", shadow(fileExistsJudge("a")), "only valid on a composite sub-judge"},
+		{"top-level shadow composite", shadow(composite("all", fileExistsJudge("a"))), "only valid on a composite sub-judge"},
+		{"composite of shadows", composite("all", shadow(fileExistsJudge("a"))), "at least one sub-judge that is not a shadow"},
+		{"nested composite of shadows", composite("all", markerJudge("a", 0), composite("any", shadow(fileExistsJudge("b")))), "sub-judge 2: composite judge needs at least one"},
+		{"shadow beside a deciding judge", composite("all", markerJudge("a", 0), shadow(fileExistsJudge("b"))), ""},
+		{"shadow composite with a deciding member", composite("all", markerJudge("a", 0), shadow(composite("all", fileExistsJudge("b")))), ""},
+		{"shadow test-command", composite("all", fileExistsJudge("a"), shadow(markerJudge("b", 0))), `a "test-command" judge cannot be a shadow`},
+		{"test-command inside a shadow composite", composite("all", fileExistsJudge("a"), shadow(composite("all", markerJudge("b", 0)))), "cannot be a shadow or sit inside one"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,7 +185,7 @@ func TestValidateTree_ShadowRules(t *testing.T) {
 
 func TestComposite_RejectsAllShadowTreeBeforeRunningAnything(t *testing.T) {
 	dir := t.TempDir()
-	j := composite("all", shadow(markerJudge("a", 0)))
+	j := composite("all", markerJudge("a", 0), composite("any", shadow(fileExistsJudge("b"))))
 
 	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir}); err == nil {
 		t.Fatal("a composite with no deciding sub-judge was evaluated")
@@ -278,5 +278,17 @@ func TestComposite_DecidingErrorBesideAPassingShadowIsError(t *testing.T) {
 				t.Errorf("shadow detail = %+v, want a recorded pass that does not count", d)
 			}
 		})
+	}
+}
+
+func TestComposite_RejectsAShadowTestCommandBeforeRunningAnything(t *testing.T) {
+	dir := t.TempDir()
+	j := composite("all", markerJudge("a", 0), shadow(markerJudge("s", 0)))
+
+	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir}); err == nil || !strings.Contains(err.Error(), "cannot be a shadow") {
+		t.Fatalf("Evaluate error = %v, want the shadow test-command refused", err)
+	}
+	if ranMarker(t, dir, "a") || ranMarker(t, dir, "s") {
+		t.Error("a sub-judge ran in a rejected tree")
 	}
 }

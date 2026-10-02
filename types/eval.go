@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -115,21 +116,36 @@ type EvalJudge struct {
 	Shadow bool `json:"shadow,omitempty"`
 }
 
+// shadowSafeJudgeTypes are the judge types that only read the workspace
+// and trace, so evaluating one as a shadow cannot change what a deciding
+// judge sees.
+var shadowSafeJudgeTypes = []string{"file-exists", "file-contains", "diff-review", "tool-trace", "composite"}
+
 // ValidateShadow checks the shadow rules of the judge tree rooted at j;
 // topLevel is true for a task's own judge. A top-level judge decides its
 // task's outcome, so it cannot be a shadow, and every composite needs at
-// least one sub-judge that is not a shadow. A judge whose llm block names
-// the uncalibrated decision provider must be a shadow.
+// least one sub-judge that is not a shadow. A shadow, and every judge
+// beneath one, must be of a type without side effects, which excludes
+// test-command. A judge whose llm block names the uncalibrated decision
+// provider must be a shadow.
 func (j EvalJudge) ValidateShadow(topLevel bool) error {
+	return j.validateShadow(topLevel, false)
+}
+
+func (j EvalJudge) validateShadow(topLevel, inShadow bool) error {
 	if topLevel && j.Shadow {
 		return errors.New("shadow is only valid on a composite sub-judge; a task's top-level judge always decides the outcome")
+	}
+	shadowed := inShadow || j.Shadow
+	if shadowed && !slices.Contains(shadowSafeJudgeTypes, j.Type) {
+		return fmt.Errorf("a %q judge cannot be a shadow or sit inside one: it could change the workspace the deciding judges inspect", j.Type)
 	}
 	if j.LLM != nil && j.LLM.EffectiveProvider() == JudgeProviderDecision && !j.Shadow {
 		return fmt.Errorf("llm provider %q is usable only on a shadow judge (set shadow = true inside a composite) or by stirrup-eval judge-calibrate: its verdicts are uncalibrated and never gate a task", JudgeProviderDecision)
 	}
 	deciding := 0
 	for i, sub := range j.Judges {
-		if err := sub.ValidateShadow(false); err != nil {
+		if err := sub.validateShadow(false, shadowed); err != nil {
 			return fmt.Errorf("sub-judge %d: %w", i+1, err)
 		}
 		if !sub.Shadow {

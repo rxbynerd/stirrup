@@ -78,7 +78,21 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
         }
       }
     }`
+	cases["shadow test-command"] = `
+    judge {
+      type = "composite"
+      judge {
+        type  = "file-exists"
+        paths = ["a.txt"]
+      }
+      judge {
+        type    = "test-command"
+        command = "make fmt"
+        shadow  = true
+      }
+    }`
 	wants := map[string]string{
+		"shadow test-command":         `sub-judge 2: a "test-command" judge cannot be a shadow`,
 		"top-level shadow":            "only valid on a composite sub-judge",
 		"composite of shadows":        "at least one sub-judge that is not a shadow",
 		"top-level decision judge":    `provider "decision" is usable only on a shadow judge`,

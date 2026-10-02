@@ -16,6 +16,14 @@ func TestEvalJudgeValidateShadow(t *testing.T) {
 	decisionLeaf := EvalJudge{Type: "diff-review", Criteria: "c", LLM: &JudgeLLMConfig{Provider: JudgeProviderDecision, Model: "jev-latest"}}
 	shadowDecision := decisionLeaf
 	shadowDecision.Shadow = true
+	command := EvalJudge{Type: "test-command", Command: "true"}
+	shadowCommand := command
+	shadowCommand.Shadow = true
+	shadowComposite := func(judges ...EvalJudge) EvalJudge {
+		c := composite(judges...)
+		c.Shadow = true
+		return c
+	}
 
 	cases := []struct {
 		name     string
@@ -32,6 +40,15 @@ func TestEvalJudgeValidateShadow(t *testing.T) {
 		{name: "top-level decision judge", judge: decisionLeaf, topLevel: true, wantErr: `provider "decision" is usable only on a shadow judge`},
 		{name: "deciding decision sub-judge", judge: composite(leaf, decisionLeaf), topLevel: true, wantErr: `sub-judge 2: llm provider "decision"`},
 		{name: "shadow decision sub-judge", judge: composite(leaf, shadowDecision), topLevel: true},
+		{name: "shadow test-command", judge: composite(leaf, shadowCommand), topLevel: true, wantErr: `sub-judge 2: a "test-command" judge cannot be a shadow`},
+		{name: "test-command inside a shadow composite", judge: composite(leaf, shadowComposite(command)), topLevel: true, wantErr: `sub-judge 2: sub-judge 1: a "test-command" judge cannot be a shadow or sit inside one`},
+		{name: "deciding test-command beside a shadow", judge: composite(command, shadowLeaf), topLevel: true},
+		{name: "every side-effect-free type as a shadow", judge: composite(leaf,
+			EvalJudge{Type: "file-exists", Shadow: true},
+			EvalJudge{Type: "file-contains", Shadow: true},
+			EvalJudge{Type: "diff-review", Shadow: true},
+			EvalJudge{Type: "tool-trace", Shadow: true},
+			shadowComposite(leaf)), topLevel: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

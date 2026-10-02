@@ -809,8 +809,13 @@ verdict counts toward neither `all` nor `any`, and its error does not
 make the composite `error`. Shadows are evaluated even after the
 deciding judge, so a candidate judge collects a verdict on every task
 while the current judge gates it; only cancellation skips them. A
-task's top-level judge cannot be a shadow, and every composite needs at
-least one nested judge that is not:
+shadow, and every judge inside a shadow composite, must be of a type
+that only reads the workspace and trace: `file-exists`,
+`file-contains`, `diff-review`, `tool-trace`, or `composite`. A
+`test-command` shadow is rejected, since its command could change the
+workspace the deciding judges inspect. A task's top-level judge cannot
+be a shadow, and every composite needs at least one nested judge that
+is not:
 
 ```hcl
 judge {
