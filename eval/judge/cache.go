@@ -97,6 +97,20 @@ func (o Options) cacheMode() (CacheMode, error) {
 	return mode, nil
 }
 
+// CheckCacheOutside returns an error when o's cache is stored in dir or
+// inside it. Callers pass each directory the agent under test can write,
+// once it exists.
+func (o Options) CheckCacheOutside(dir string) error {
+	if o.CacheMode.IsLive() {
+		return nil
+	}
+	c, ok := o.Cache.(interface{ Dir() string })
+	if !ok {
+		return nil
+	}
+	return checkOutsideRoots(c.Dir(), []string{dir})
+}
+
 // cacheableVerdict reports whether v may be stored: a pass or fail parsed
 // from a conforming reply. Errors, refusals, truncated output, and every
 // other parse status are never cached.

@@ -83,7 +83,7 @@ func (f *judgeFlags) openCache(opts *judge.Options, defaultDir func() (string, e
 		}
 		dir = d
 	}
-	cache, err := judge.NewFileCache(dir)
+	cache, err := judge.NewFileCache(dir, judge.FileCacheOptions{Mode: opts.CacheMode})
 	if err != nil {
 		return "", fmt.Errorf("--judge-cache-dir: %w", err)
 	}

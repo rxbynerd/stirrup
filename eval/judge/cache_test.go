@@ -521,7 +521,7 @@ func fileCacheVerdict(reason string) eval.JudgeVerdict {
 
 func TestFileCache_RoundTripAndLayout(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "judge-cache")
-	c, err := NewFileCache(dir)
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func TestFileCache_RoundTripAndLayout(t *testing.T) {
 }
 
 func TestFileCache_RejectsInvalidKeys(t *testing.T) {
-	c, err := NewFileCache(t.TempDir())
+	c, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +565,7 @@ func TestFileCache_RejectsInvalidKeys(t *testing.T) {
 			t.Errorf("Get accepted key %q", key)
 		}
 	}
-	if _, err := NewFileCache(""); err == nil {
+	if _, err := NewFileCache("", FileCacheOptions{Mode: CacheRecord}); err == nil {
 		t.Error("NewFileCache accepted an empty directory")
 	}
 }
@@ -587,7 +587,7 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			c, err := NewFileCache(dir)
+			c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -607,7 +607,7 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 
 func TestFileCache_FailedPutLeavesNoPartialFile(t *testing.T) {
 	dir := t.TempDir()
-	c, err := NewFileCache(dir)
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +632,7 @@ func TestFileCache_FailedPutLeavesNoPartialFile(t *testing.T) {
 
 func TestFileCache_ConcurrentPutsOfOneKey(t *testing.T) {
 	dir := t.TempDir()
-	c, err := NewFileCache(dir)
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,7 +676,7 @@ func TestEvaluateDiffReview_FileCacheCorruptEntry(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cacheDir := t.TempDir()
-	c, err := NewFileCache(cacheDir)
+	c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,5 +705,107 @@ func TestEvaluateDiffReview_FileCacheCorruptEntry(t *testing.T) {
 	v, err = Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReplayStrict, c, strict)})
 	if err != nil || v.Record.CacheStatus != types.JudgeCacheHit || strict.calls != 0 {
 		t.Errorf("after the overwrite: verdict %+v, err %v, %d calls", v, err, strict.calls)
+	}
+}
+
+// cacheModesWithADirectory are the modes that open a FileCache.
+var cacheModesWithADirectory = []CacheMode{CacheRecord, CacheReadThrough, CacheReplayStrict}
+
+func TestNewFileCache_RefusesADirectoryInsideAForbiddenRoot(t *testing.T) {
+	workspace := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(workspace, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range cacheModesWithADirectory {
+		for name, dir := range map[string]string{
+			"the root itself":   workspace,
+			"inside the root":   filepath.Join(workspace, "nested", "judge-cache"),
+			"through a symlink": filepath.Join(link, "judge-cache"),
+		} {
+			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				if mode == CacheReplayStrict {
+					if err := os.MkdirAll(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				_, err := NewFileCache(dir, FileCacheOptions{Mode: mode, ForbiddenRoots: []string{t.TempDir(), workspace}})
+				if err == nil || !strings.Contains(err.Error(), "agent under test can write") {
+					t.Fatalf("err = %v, want the directory refused", err)
+				}
+				if mode != CacheReplayStrict && dir != workspace {
+					if _, err := os.Stat(dir); !os.IsNotExist(err) {
+						t.Errorf("a refused directory was created: %v", err)
+					}
+				}
+			})
+		}
+	}
+
+	beside := filepath.Join(filepath.Dir(workspace), filepath.Base(workspace)+"-cache")
+	if _, err := NewFileCache(beside, FileCacheOptions{Mode: CacheRecord, ForbiddenRoots: []string{workspace}}); err != nil {
+		t.Errorf("a sibling sharing the root's name as a prefix was refused: %v", err)
+	}
+}
+
+func TestNewFileCache_ReplayStrictNeedsAnExistingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent", "judge-cache")
+	_, err := NewFileCache(missing, FileCacheOptions{Mode: CacheReplayStrict})
+	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("err = %v, want the missing directory named", err)
+	}
+	if _, err := os.Stat(filepath.Dir(missing)); !os.IsNotExist(err) {
+		t.Errorf("replay-strict created %s: %v", filepath.Dir(missing), err)
+	}
+
+	file := filepath.Join(t.TempDir(), "judge-cache")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range cacheModesWithADirectory {
+		if _, err := NewFileCache(file, FileCacheOptions{Mode: mode}); err == nil {
+			t.Errorf("%s: a regular file was accepted as the cache directory", mode)
+		}
+	}
+	for _, mode := range []CacheMode{"", CacheLive, "bogus"} {
+		if _, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: mode}); err == nil {
+			t.Errorf("mode %q opened a FileCache", mode)
+		}
+	}
+}
+
+func TestFileCache_ReplayStrictIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReplayStrict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Put(CacheKey("c", "i", 0), fileCacheVerdict("x")); err == nil {
+		t.Error("Put succeeded on a replay-strict cache")
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("replay-strict Put left %v (err %v)", entries, err)
+	}
+}
+
+func TestOptions_CheckCacheOutside(t *testing.T) {
+	workspace := t.TempDir()
+	c, err := NewFileCache(filepath.Join(workspace, "judge-cache"), FileCacheOptions{Mode: CacheRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Cache: c, CacheMode: CacheReadThrough}
+	if err := opts.CheckCacheOutside(workspace); err == nil || !strings.Contains(err.Error(), "agent under test can write") {
+		t.Errorf("err = %v, want the cache inside the workspace refused", err)
+	}
+	if err := opts.CheckCacheOutside(t.TempDir()); err != nil {
+		t.Errorf("a cache outside the workspace was refused: %v", err)
+	}
+	opts.CacheMode = CacheLive
+	if err := opts.CheckCacheOutside(workspace); err != nil {
+		t.Errorf("live mode checked its unused cache: %v", err)
+	}
+	if err := (Options{Cache: newMemCache(), CacheMode: CacheReadThrough}).CheckCacheOutside(workspace); err != nil {
+		t.Errorf("a cache with no directory was refused: %v", err)
 	}
 }

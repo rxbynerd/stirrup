@@ -65,8 +65,12 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("dir %q, err %v; want %q", got, err, want)
 		}
+		resolved, err := filepath.EvalSymlinks(want)
+		if err != nil {
+			t.Fatal(err)
+		}
 		fc, ok := opts.Cache.(*judge.FileCache)
-		if !ok || fc.Dir() != want || opts.CacheStats == nil {
+		if !ok || fc.Dir() != resolved || opts.CacheStats == nil {
 			t.Errorf("opts = %+v", opts)
 		}
 		if info, err := os.Stat(want); err != nil || !info.IsDir() {

@@ -349,6 +349,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+	if err := cfg.JudgeOptions.CheckCacheOutside(tmpDir); err != nil {
+		return errorResult(task.ID, start, err)
+	}
 
 	workspaceDir := tmpDir
 	if task.Repo != "" {

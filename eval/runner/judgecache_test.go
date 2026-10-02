@@ -31,7 +31,7 @@ func TestRunSuite_ReadThroughCacheSkipsTheModelForAnUnchangedWorkspace(t *testin
 			}},
 		},
 	}
-	cache, err := judge.NewFileCache(filepath.Join(t.TempDir(), "judge-cache"))
+	cache, err := judge.NewFileCache(filepath.Join(t.TempDir(), "judge-cache"), judge.FileCacheOptions{Mode: judge.CacheReadThrough})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestReplayRecording_ReplayStrictServesTheCacheWithoutACredential(t *testing
 	if err := os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cache, err := judge.NewFileCache(t.TempDir())
+	cache, err := judge.NewFileCache(t.TempDir(), judge.FileCacheOptions{Mode: judge.CacheRecord})
 	if err != nil {
 		t.Fatal(err)
 	}
