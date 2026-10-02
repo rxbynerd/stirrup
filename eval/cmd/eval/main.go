@@ -176,6 +176,13 @@ func cmdRun(args []string) {
 		}
 		*outputDir = wd
 	}
+	if !*dryRun {
+		if _, err := judgeFlagSet.openCache(&judgeOpts, func() (string, error) {
+			return filepath.Join(*outputDir, judgeCacheDirName), nil
+		}); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -232,6 +239,7 @@ func cmdRun(args []string) {
 	}
 
 	printSummary(result)
+	warnJudgeCacheWrite(judgeOpts.CacheStats)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
 }
 
@@ -368,6 +376,9 @@ func printSummary(result eval.SuiteResult) {
 	fmt.Printf("Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
 	fmt.Printf("Pass rate: %.1f%%\n", result.PassRate*100)
+	if result.JudgeCache != nil {
+		fmt.Println(formatJudgeCache(*result.JudgeCache))
+	}
 }
 
 // cmdBaseline pulls production metrics from a lakehouse as experiment baselines.

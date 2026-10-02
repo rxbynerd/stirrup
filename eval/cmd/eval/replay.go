@@ -76,6 +76,9 @@ func cmdReplay(args []string) {
 	if len(recordings) == 0 {
 		log.Fatal("no matching recordings found")
 	}
+	if _, err := judgeFlagSet.openCache(&judgeOpts, replayCacheDir(*lakehousePath)); err != nil {
+		log.Fatal(err)
+	}
 
 	runID := fmt.Sprintf("replay-%d", time.Now().UnixMilli())
 	startedAt := time.Now()
@@ -113,6 +116,10 @@ func cmdReplay(args []string) {
 		Tasks:       tasks,
 		PassRate:    passRate,
 	}
+	if !judgeOpts.CacheMode.IsLive() {
+		summary := judgeOpts.CacheStats.Summary(judgeOpts.CacheMode)
+		result.JudgeCache = &summary
+	}
 
 	if *output != "" {
 		// Ensure parent dir exists for callers that pass a fresh path.
@@ -129,6 +136,10 @@ func cmdReplay(args []string) {
 
 	fmt.Printf("Replay: %d recordings, %d passed, %d failed/errored (pass rate %.1f%%)\n",
 		len(tasks), pass, len(tasks)-pass, passRate*100)
+	if result.JudgeCache != nil {
+		fmt.Println(formatJudgeCache(*result.JudgeCache))
+	}
+	warnJudgeCacheWrite(judgeOpts.CacheStats)
 }
 
 // selectRecordings resolves the --recording / --outcome flags into a
