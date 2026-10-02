@@ -1050,7 +1050,8 @@ A diff is rebuilt into before and after trees: lines no hunk shows are
 filled with empty lines on both sides, so they never appear as changes,
 and renames, copies, binary patches, mode-only and empty-file changes,
 quoted paths, and paths that leave the workspace or enter `.git` are
-rejected rather than approximated. The simplest way to author a case is
+rejected rather than approximated. The rebuilt trees share the 8 MiB
+limit on a `workspace` fixture, filled lines included. The simplest way to author a case is
 to commit the before state in a scratch repository, make the change, and
 record `git diff --cached --no-renames --unified=1000`; whole-file
 context keeps the case reviewable on its own and rebuilds it exactly.

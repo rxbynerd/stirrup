@@ -39,7 +39,8 @@ const devNull = "/dev/null"
 // changes. Unchanged lines a hunk does not show are filled with empty lines,
 // identical before and after, so the reconstruction's own diff shows the same
 // changes. Renames, copies, binary patches and sections without hunks (mode
-// changes, empty files) are rejected rather than approximated.
+// changes, empty files) are rejected rather than approximated, as is a
+// reconstruction larger than a workspace fixture may be.
 func ParseDiff(diff string) (Files, error) {
 	sections, err := splitDiff(diff)
 	if err != nil {
@@ -51,6 +52,7 @@ func ParseDiff(diff string) (Files, error) {
 	files := Files{Before: Tree{}, After: Tree{}}
 	seen := map[string]bool{}
 	changed := false
+	budget := maxFixtureBytes
 	for _, s := range sections {
 		p := s.newPath
 		if p == "" {
@@ -60,7 +62,7 @@ func ParseDiff(diff string) (Files, error) {
 			return Files{}, fmt.Errorf("%s: more than one section for the file", p)
 		}
 		seen[p] = true
-		before, after, err := s.reconstruct()
+		before, after, err := s.reconstruct(&budget)
 		if err != nil {
 			return Files{}, fmt.Errorf("%s: %w", p, err)
 		}
@@ -286,40 +288,77 @@ func hunkRange(start, count string) (int, int, error) {
 	if s == 0 && c != 0 {
 		return 0, 0, errors.New("a hunk range starting at line 0 must be empty")
 	}
+	// Every line costs at least its newline, so a larger range cannot fit.
+	if s > maxFixtureBytes || c > maxFixtureBytes {
+		return 0, 0, fmt.Errorf("hunk range %d,%d exceeds the %d-byte limit on reconstructed files", s, c, maxFixtureBytes)
+	}
 	return s, c, nil
 }
 
-// side accumulates one side of a file's reconstruction.
+// side accumulates one side of a file's reconstruction, charging each line
+// and its newline to a budget shared by every file of the diff.
 type side struct {
-	lines   []string
+	content strings.Builder
+	lines   int
 	noEOL   bool
 	present bool
+	budget  *int
 }
+
+var errNotLastLine = errors.New(`"\ No newline at end of file" marks a line that is not the file's last`)
 
 func (s *side) add(line string) error {
 	if s.noEOL {
-		return errors.New(`"\ No newline at end of file" marks a line that is not the file's last`)
+		return errNotLastLine
 	}
-	s.lines = append(s.lines, line)
+	if err := s.charge(len(line) + 1); err != nil {
+		return err
+	}
+	s.content.WriteString(line)
+	s.content.WriteByte('\n')
+	s.lines++
 	return nil
 }
 
-func (s *side) content() *string {
+// pad appends n empty lines.
+func (s *side) pad(n int) error {
+	if n == 0 {
+		return nil
+	}
+	if s.noEOL {
+		return errNotLastLine
+	}
+	if err := s.charge(n); err != nil {
+		return err
+	}
+	s.content.WriteString(strings.Repeat("\n", n))
+	s.lines += n
+	return nil
+}
+
+func (s *side) charge(n int) error {
+	if *s.budget -= n; *s.budget < 0 {
+		return fmt.Errorf("reconstructed files exceed %d bytes", maxFixtureBytes)
+	}
+	return nil
+}
+
+func (s *side) file() *string {
 	if !s.present {
 		return nil
 	}
-	c := strings.Join(s.lines, "\n")
-	if len(s.lines) > 0 && !s.noEOL {
-		c += "\n"
+	c := s.content.String()
+	if s.noEOL {
+		c = strings.TrimSuffix(c, "\n")
 	}
 	return &c
 }
 
-// reconstruct rebuilds the file's content before and after the change; nil
-// means the file is absent on that side.
-func (s fileDiff) reconstruct() (before, after *string, err error) {
-	old := &side{present: s.oldPath != ""}
-	cur := &side{present: s.newPath != ""}
+// reconstruct rebuilds the file's content before and after the change,
+// charging it to budget; nil means the file is absent on that side.
+func (s fileDiff) reconstruct(budget *int) (before, after *string, err error) {
+	old := &side{present: s.oldPath != "", budget: budget}
+	cur := &side{present: s.newPath != "", budget: budget}
 	for _, h := range s.hunks {
 		oldFirst, newFirst := h.oldStart, h.newStart
 		if h.oldCount == 0 {
@@ -333,19 +372,18 @@ func (s fileDiff) reconstruct() (before, after *string, err error) {
 			return nil, nil, fmt.Errorf("hunk %s removes lines from a file the diff creates", h.header)
 		case !cur.present && h.newCount != 0:
 			return nil, nil, fmt.Errorf("hunk %s adds lines to a file the diff deletes", h.header)
-		case oldFirst < len(old.lines)+1:
+		case oldFirst < old.lines+1:
 			return nil, nil, fmt.Errorf("hunk %s overlaps or precedes the hunk before it", h.header)
 		}
-		for len(old.lines)+1 < oldFirst {
-			if err := old.add(""); err != nil {
-				return nil, nil, err
-			}
-			if err := cur.add(""); err != nil {
-				return nil, nil, err
-			}
+		gap := oldFirst - (old.lines + 1)
+		if want := cur.lines + 1 + gap; newFirst != want {
+			return nil, nil, fmt.Errorf("hunk %s starts at new line %d, but the hunks before it put it at %d", h.header, newFirst, want)
 		}
-		if newFirst != len(cur.lines)+1 {
-			return nil, nil, fmt.Errorf("hunk %s starts at new line %d, but the hunks before it put it at %d", h.header, newFirst, len(cur.lines)+1)
+		if err := old.pad(gap); err != nil {
+			return nil, nil, err
+		}
+		if err := cur.pad(gap); err != nil {
+			return nil, nil, err
 		}
 		var last byte
 		for _, line := range h.lines {
@@ -375,7 +413,7 @@ func (s fileDiff) reconstruct() (before, after *string, err error) {
 			last = line[0]
 		}
 	}
-	return old.content(), cur.content(), nil
+	return old.file(), cur.file(), nil
 }
 
 // excerpt bounds text quoted in an error.

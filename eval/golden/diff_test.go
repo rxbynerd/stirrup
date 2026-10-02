@@ -1,6 +1,7 @@
 package golden
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,38 @@ func TestParseDiff_Rejects(t *testing.T) {
 				t.Fatalf("ParseDiff error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseDiff_BoundsTheReconstruction(t *testing.T) {
+	section := func(path string, start int) string {
+		return fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -%d +%d @@\n-a\n+b\n", path, path, start, start)
+	}
+	cases := map[string]struct{ diff, want string }{
+		"start past the limit": {section("x", 10_000_000), "exceeds the 8388608-byte limit"},
+		"start at int max":     {"--- a/x\n+++ b/x\n@@ -9223372036854775807,0 +9223372036854775807 @@\n+b\n", "exceeds the 8388608-byte limit"},
+		"count past the limit": {"--- a/x\n+++ b/x\n@@ -1,9000000 +1 @@\n-a\n+b\n", "exceeds the 8388608-byte limit"},
+		"padding over budget":  {section("x", 5_000_000), "reconstructed files exceed 8388608 bytes"},
+		"budget across files":  {section("x", 2_500_000) + section("y", 2_500_000), "y: reconstructed files exceed"},
+		"drift before padding": {"--- a/x\n+++ b/x\n@@ -4000000 +1 @@\n-a\n+b\n", "starts at new line 1, but the hunks before it put it at 4000000"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseDiff(tc.diff)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseDiff error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDiff_PaddingWithinBudget(t *testing.T) {
+	files, err := ParseDiff("--- a/x\n+++ b/x\n@@ -1000000 +1000000 @@\n-a\n+b\n")
+	if err != nil {
+		t.Fatalf("ParseDiff: %v", err)
+	}
+	if want := strings.Repeat("\n", 999_999) + "a\n"; files.Before["x"] != want {
+		t.Errorf("before is %d bytes, want %d", len(files.Before["x"]), len(want))
 	}
 }
 
