@@ -21,8 +21,10 @@ import (
 // LLM-backed judges. baselineFile, when non-empty, is a judge-baseline.json
 // sidecar retained by `run`; diff-review judges then diff against that
 // baseline, and otherwise against the HEAD of workspaceDir's own
-// repository. When the judge cannot rule, the returned result is the
-// "error" outcome (keeping an LLM judge's error verdict) alongside the error.
+// repository. When the judge cannot rule, the returned result has the "error"
+// outcome. An LLM judge also returns the error, and its error verdict is kept;
+// a composite reports the failure through its verdict's status and returns a
+// nil error, so callers must check the outcome as well as the error.
 func ReplayRecording(ctx context.Context, recording types.RunRecording, task types.EvalTask, workspaceDir string, opts judge.Options, baselineFile string) (eval.TaskResult, error) {
 	start := time.Now()
 

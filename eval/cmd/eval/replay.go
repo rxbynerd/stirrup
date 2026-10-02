@@ -86,8 +86,11 @@ func cmdReplay(args []string) {
 		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
 		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judgeOpts, *judgeBaseline)
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Printf("replay %s: %v", rec.RunID, err)
+		case result.Outcome == "error":
+			log.Printf("replay %s: %s", rec.RunID, result.Error)
 		}
 		// Tag with the source recording's runId; the bare task ID
 		// would collapse when one task replays N recordings.

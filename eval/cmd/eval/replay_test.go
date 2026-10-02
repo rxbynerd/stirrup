@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/eval/judge"
@@ -177,5 +180,47 @@ func TestReplay_WorkspaceCaveat(t *testing.T) {
 	}
 	if res.Outcome == "pass" {
 		t.Errorf("file-exists with absent file: outcome = pass, want fail")
+	}
+}
+
+// TestReplay_LogsErrorVerdictReason pins that a composite judge that could
+// not rule, which returns no error, is still reported on stderr.
+func TestReplay_LogsErrorVerdictReason(t *testing.T) {
+	lakehouseDir := seedRecordings(t, []string{"r1"}, []string{"success"})
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	suitePath := filepath.Join(t.TempDir(), "suite.hcl")
+	suite := `suite "s" {
+  task "t" {
+    prompt = "p"
+    judge {
+      type    = "composite"
+      require = "all"
+      judge {
+        type    = "file-contains"
+        path    = "dir"
+        pattern = "x"
+      }
+      judge {
+        type  = "file-exists"
+        paths = ["dir"]
+      }
+    }
+  }
+}
+`
+	if err := os.WriteFile(suitePath, []byte(suite), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	cmdReplay([]string{"-lakehouse", lakehouseDir, "-suite", suitePath, "-workspace", workspace})
+
+	if want := "replay r1: sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: "; !strings.Contains(logs.String(), want) {
+		t.Errorf("log = %q, want it to contain %q", logs.String(), want)
 	}
 }

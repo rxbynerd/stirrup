@@ -512,6 +512,32 @@ func TestReplayRecordingJudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
 	}
 }
 
+func TestReplayRecordingCompositeErrorIsAnErrorOutcomeWithoutAnError(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	task := types.EvalTask{ID: "c", Judge: types.EvalJudge{Type: "composite", Require: "all", Judges: []types.EvalJudge{
+		{Type: "file-contains", Path: "dir", Pattern: "x"},
+		{Type: "file-exists", Paths: []string{"dir"}},
+	}}}
+
+	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{}, "")
+	if err != nil {
+		t.Fatalf("ReplayRecording: %v", err)
+	}
+
+	if result.Outcome != "error" || result.JudgeVerdict.Status != types.JudgeStatusError || result.JudgeVerdict.Passed {
+		t.Fatalf("result = %+v, want the error outcome", result)
+	}
+	if !strings.HasPrefix(result.Error, "sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: ") {
+		t.Errorf("Error = %q, want the composite reason", result.Error)
+	}
+	if len(result.JudgeVerdict.Details) != 2 || result.JudgeVerdict.Details[1].Status != "skipped" {
+		t.Errorf("details = %+v, want the evaluated and skipped sub-judges kept", result.JudgeVerdict.Details)
+	}
+}
+
 func TestRunSuite_HarnessFailureResults(t *testing.T) {
 	t.Run("no trace", func(t *testing.T) {
 		isolateGit(t)
