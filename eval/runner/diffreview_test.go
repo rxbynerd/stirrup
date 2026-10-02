@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/eval/judge"
@@ -689,5 +690,29 @@ func TestRunSuite_JSONSuitesGetTheJudgeTreeChecksBeforeAnyHarnessRun(t *testing.
 				t.Error("the harness ran despite an invalid judge tree")
 			}
 		})
+	}
+}
+
+func TestReplayRecordingRefusesADecidingDecisionJudge(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unexpected call", http.StatusTeapot)
+	}))
+	defer srv.Close()
+	task := types.EvalTask{ID: "d", Judge: types.EvalJudge{Type: "diff-review", Criteria: "c", LLM: &types.JudgeLLMConfig{
+		Provider: types.JudgeProviderDecision, Model: "jev-latest", BaseURL: srv.URL,
+	}}}
+
+	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, t.TempDir(), judge.Options{}, "")
+
+	if err == nil || !strings.Contains(err.Error(), `task "d"`) || !strings.Contains(err.Error(), "usable only on a shadow judge") {
+		t.Fatalf("err = %v, want the deciding decision judge refused", err)
+	}
+	if result.Outcome != "error" || result.TaskID != "d" {
+		t.Errorf("result = %+v, want the error outcome", result)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("the decision endpoint was called %d times", calls.Load())
 	}
 }

@@ -67,6 +67,11 @@ type JudgeContext struct {
 	// cached separately. Zero for a single judgment.
 	Sample int
 
+	// NonDeciding marks a judgment whose verdict decides no task outcome:
+	// a shadow sub-judge's, which its composite sets, or a calibration
+	// run's. Only such a judgment may use the decision provider.
+	NonDeciding bool
+
 	// Options carries invocation-scoped settings for LLM-backed judges.
 	Options
 }
@@ -315,7 +320,9 @@ func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext
 			skipped++
 			continue
 		}
-		d := evaluateSubJudge(ctx, sub, jctx)
+		subCtx := jctx
+		subCtx.NonDeciding = jctx.NonDeciding || sub.Shadow
+		d := evaluateSubJudge(ctx, sub, subCtx)
 		if sub.Shadow {
 			details = append(details, shadowDetail(d))
 			shadows++

@@ -3,6 +3,7 @@ package judge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -215,6 +216,13 @@ func TestDecisionClient_RedactsKeyFromErrors(t *testing.T) {
 	}
 }
 
+// nonDeciding marks jctx as a judgment that decides no outcome, which a
+// decision judge requires.
+func nonDeciding(jctx JudgeContext) JudgeContext {
+	jctx.NonDeciding = true
+	return jctx
+}
+
 // decisionJudge is a diff-review judge on the decision provider at baseURL.
 func decisionJudge(t *testing.T, baseURL string) types.EvalJudge {
 	t.Helper()
@@ -228,7 +236,7 @@ func TestDiffReview_DecisionVerdictAndRecord(t *testing.T) {
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 
-	v := evaluateOK(t, j, changedJudgeContext(t, Options{}))
+	v := evaluateOK(t, j, nonDeciding(changedJudgeContext(t, Options{})))
 
 	if v.Status != types.JudgeStatusPass || v.Reason != "decision model: p(pass)=0.91 confidence=0.82" {
 		t.Fatalf("verdict = %+v", v)
@@ -261,7 +269,7 @@ func TestDiffReview_DecisionVerdictAndRecord(t *testing.T) {
 
 func TestDiffReview_DecisionFailVerdict(t *testing.T) {
 	srv := newDecisionServer(t, okDecision(`{"model":"jev-1.13.0","answers":{"verdict":{"type":"choice","choice":"fail","probabilities":{"pass":0.3,"fail":0.7},"confidence":0.4}},"usage":{"input_tokens":1,"output_tokens":1}}`))
-	v := evaluateOK(t, decisionJudge(t, srv.srv.URL), changedJudgeContext(t, Options{}))
+	v := evaluateOK(t, decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
 	if v.Status != types.JudgeStatusFail || v.Passed || v.Reason != "decision model: p(pass)=0.30 confidence=0.40" {
 		t.Fatalf("verdict = %+v, want a fail with its probabilities", v)
 	}
@@ -291,7 +299,7 @@ func TestDiffReview_DecisionMalformedAnswersAreErrors(t *testing.T) {
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := newDecisionServer(t, okDecision(reply))
-			v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), changedJudgeContext(t, Options{}))
+			v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
 			if err == nil || v.Status != types.JudgeStatusError || v.Passed {
 				t.Fatalf("verdict = %+v, err = %v; want an error verdict", v, err)
 			}
@@ -304,7 +312,7 @@ func TestDiffReview_DecisionMalformedAnswersAreErrors(t *testing.T) {
 
 func TestDiffReview_DecisionUndecodableBodyIsError(t *testing.T) {
 	srv := newDecisionServer(t, okDecision(`not json`))
-	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), changedJudgeContext(t, Options{}))
+	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
 	if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "decode response") {
 		t.Fatalf("verdict = %+v, err = %v; want a decode error", v, err)
 	}
@@ -313,13 +321,13 @@ func TestDiffReview_DecisionUndecodableBodyIsError(t *testing.T) {
 	}
 }
 
-// bigWorkspace has a change whose diff is larger than the decision budget
-// but within the default max_input_bytes.
+// bigWorkspace is a non-deciding judgment of a change whose diff is larger
+// than the decision budget but within the default max_input_bytes.
 func bigWorkspace(t *testing.T) JudgeContext {
 	t.Helper()
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	writeFiles(t, ws, map[string]string{"big.txt": strings.Repeat("0123456789abcdef\n", 2500)})
-	return JudgeContext{WorkspaceDir: ws, Baseline: &base}
+	return JudgeContext{WorkspaceDir: ws, Baseline: &base, NonDeciding: true}
 }
 
 func TestDiffReview_DecisionOverBudgetIsErrorWithoutAllowTruncated(t *testing.T) {
@@ -363,14 +371,14 @@ func TestDiffReview_DecisionAllowTruncatedFitsTheLimit(t *testing.T) {
 	}
 }
 
-// fenceMarkerWorkspace has a change of about size bytes made of '<' runs,
-// which the data fence lengthens by half.
+// fenceMarkerWorkspace is a non-deciding judgment of a change of about size
+// bytes made of '<' runs, which the data fence lengthens by half.
 func fenceMarkerWorkspace(t *testing.T, size int) JudgeContext {
 	t.Helper()
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	line := strings.Repeat("<", 63) + "\n"
 	writeFiles(t, ws, map[string]string{"conflict.txt": strings.Repeat(line, size/len(line))})
-	return JudgeContext{WorkspaceDir: ws, Baseline: &base}
+	return JudgeContext{WorkspaceDir: ws, Baseline: &base, NonDeciding: true}
 }
 
 func TestDiffReview_DecisionBudgetCountsFenceNeutralisation(t *testing.T) {
@@ -415,7 +423,7 @@ func TestDiffReview_DecisionCriteriaOverBudgetIsError(t *testing.T) {
 	j.Criteria = strings.Repeat("c", decisionStateTokenLimit)
 	j.LLM.AllowTruncated = true
 
-	v, err := Evaluate(context.Background(), j, changedJudgeContext(t, Options{}))
+	v, err := Evaluate(context.Background(), j, nonDeciding(changedJudgeContext(t, Options{})))
 	if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "criteria and change summary alone") {
 		t.Fatalf("verdict = %+v, err = %v; want an over-budget criteria error", v, err)
 	}
@@ -444,7 +452,7 @@ func TestDiffReview_DecisionVerdictsAreCached(t *testing.T) {
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	cache := newMemCache()
-	jctx := changedJudgeContext(t, Options{Cache: cache, CacheMode: CacheReadThrough})
+	jctx := nonDeciding(changedJudgeContext(t, Options{Cache: cache, CacheMode: CacheReadThrough}))
 
 	first := evaluateOK(t, j, jctx)
 	second := evaluateOK(t, j, jctx)
@@ -542,5 +550,63 @@ func TestPreflightSuite_RefusesDecisionDefaults(t *testing.T) {
 	err := PreflightSuite(context.Background(), tasks, Options{LLMDefaults: &types.JudgeLLMConfig{Provider: types.JudgeProviderDecision}})
 	if err == nil || !strings.Contains(err.Error(), "cannot be the default") {
 		t.Fatalf("err = %v, want the decision default refused", err)
+	}
+}
+
+func TestDiffReview_DecisionRefusesADecidingJudgment(t *testing.T) {
+	srv := newDecisionServer(t, okDecision(decisionPassReply))
+	explicit := decisionJudge(t, srv.srv.URL)
+	viaDefaults := Options{LLMDefaults: explicit.LLM}
+	cases := map[string]struct {
+		judge types.EvalJudge
+		opts  Options
+	}{
+		"explicit llm block":  {explicit, Options{}},
+		"invocation defaults": {diffReviewJudge(), viaDefaults},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			v, err := Evaluate(context.Background(), tc.judge, changedJudgeContext(t, tc.opts))
+			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "cannot decide a task") {
+				t.Fatalf("verdict = %+v, err = %v; want the deciding decision judgment refused", v, err)
+			}
+		})
+	}
+	if bodies, _ := srv.requests(); len(bodies) != 0 {
+		t.Errorf("the decision endpoint was called %d times", len(bodies))
+	}
+}
+
+func TestDiffReview_DecisionCachedVerdictIsNotServedToADecidingJudgment(t *testing.T) {
+	srv := newDecisionServer(t, okDecision(decisionPassReply))
+	j := decisionJudge(t, srv.srv.URL)
+	jctx := nonDeciding(changedJudgeContext(t, Options{Cache: newMemCache(), CacheMode: CacheReadThrough}))
+	evaluateOK(t, j, jctx)
+
+	jctx.NonDeciding = false
+	if v, err := Evaluate(context.Background(), j, jctx); err == nil || v.Status != types.JudgeStatusError {
+		t.Fatalf("verdict = %+v, err = %v; want a stored decision verdict refused to a deciding judgment", v, err)
+	}
+}
+
+func TestComposite_ShadowDecisionJudgeIsEvaluated(t *testing.T) {
+	srv := newDecisionServer(t, okDecision(decisionPassReply))
+	jctx := changedJudgeContext(t, Options{})
+	nested := composite("all", fileExistsJudge("a.txt"), shadow(decisionJudge(t, srv.srv.URL)))
+	cases := map[string]types.EvalJudge{
+		"shadow sub-judge":            composite("all", fileExistsJudge("a.txt"), shadow(decisionJudge(t, srv.srv.URL))),
+		"inside a shadow composite":   composite("all", fileExistsJudge("a.txt"), shadow(nested)),
+		"inside a deciding composite": composite("all", fileExistsJudge("a.txt"), nested),
+	}
+	for name, j := range cases {
+		t.Run(name, func(t *testing.T) {
+			v := evaluateOK(t, j, jctx)
+			if v.Status != types.JudgeStatusPass {
+				t.Fatalf("verdict = %+v, want pass decided by file-exists", v)
+			}
+			if !strings.Contains(fmt.Sprintf("%+v", v.Details), "decision model: p(pass)=0.91") {
+				t.Errorf("details = %+v, want the decision shadow's verdict recorded", v.Details)
+			}
+		})
 	}
 }

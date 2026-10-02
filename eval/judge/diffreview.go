@@ -101,6 +101,9 @@ func reviewDiff(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval
 	if err != nil {
 		return diffReviewError(nil, err)
 	}
+	if cfg.Provider == types.JudgeProviderDecision && !jctx.NonDeciding {
+		return diffReviewError(nil, fmt.Errorf("provider %q cannot decide a task: it judges only as a shadow or in judge-calibrate", types.JudgeProviderDecision))
+	}
 	configHash, err := diffReviewConfigHash(cfg, j.Criteria)
 	if err != nil {
 		return diffReviewError(nil, err)

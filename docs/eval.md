@@ -1005,7 +1005,10 @@ an outcome: by `judge-calibrate`, and on shadow judges. Suite
 validation rejects a `decision` `llm` block on any judge that is not a
 shadow, in HCL and JSON suites alike, and `run` and `replay` refuse
 `--judge-provider decision`, which would make it the default for every
-`diff-review` judge without an `llm` block.
+`diff-review` judge without an `llm` block. The judge also refuses, at
+evaluation, any `decision` judgment that is neither a shadow's nor
+`judge-calibrate`'s, so code that calls the `eval/judge` or
+`eval/runner` packages directly cannot make it decide either.
 
 #### Golden sets
 

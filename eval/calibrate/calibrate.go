@@ -80,7 +80,7 @@ func Run(ctx context.Context, set *golden.Set, cfg Config) ([]Judgment, error) {
 			if err := ctx.Err(); err != nil {
 				return out, err
 			}
-			v, err := judge.Evaluate(ctx, j, judge.JudgeContext{WorkspaceDir: ws, Baseline: &base, Sample: sample, Options: opts})
+			v, err := judge.Evaluate(ctx, j, judge.JudgeContext{WorkspaceDir: ws, Baseline: &base, Sample: sample, NonDeciding: true, Options: opts})
 			jm := Judgment{
 				Case: c.ID, Sample: sample, Label: c.Label, Verdict: v.Status, Reason: v.Reason, Record: v.Record,
 				Adversarial: c.Adversarial(), InjectionTarget: c.InjectionTarget,
