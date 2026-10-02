@@ -15,7 +15,7 @@ const (
 
 // decisionClient speaks the /v1/systemone decision-model protocol, served by
 // TypeSafe, OpenRouter and the open-weight Kev and Decis servers. It shares
-// postJSON's retry policy, so 429 and 529 responses are retried within the
+// postJSON's retry policy, so 429 and 5xx responses are retried within the
 // call's timeout.
 type decisionClient struct {
 	http     *http.Client
