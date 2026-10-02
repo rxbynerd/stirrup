@@ -168,11 +168,37 @@ func TestRun_ReconstructsEveryChangeForTheJudge(t *testing.T) {
 		}
 		for _, line := range strings.Split(c.Diff, "\n") {
 			changed := (strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ ")) || (strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "))
-			if changed && !strings.Contains(line, "<<<") && !strings.Contains(prompt, line) {
-				t.Errorf("%s: the judge's diff is missing %q", c.ID, line)
+			if !changed {
+				continue
+			}
+			if !strings.Contains(prompt, "\n"+neutralised(line)+"\n") {
+				t.Errorf("%s: the judge's diff is missing %q", c.ID, neutralised(line))
+			}
+			if strings.Contains(line, "<<<") && strings.Contains(prompt, line) {
+				t.Errorf("%s: the planted fence marker %q reached the judge unneutralised", c.ID, line)
 			}
 		}
 	}
+}
+
+// neutralised is s as the data fence carries it, with every run of '<'
+// split into pairs by spaces so that no "<<<" survives.
+func neutralised(s string) string {
+	var b strings.Builder
+	run := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '<' {
+			if run == 2 {
+				b.WriteByte(' ')
+				run = 0
+			}
+			run++
+		} else {
+			run = 0
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func TestRun_MaterialisesCreatesDeletesAndFixtures(t *testing.T) {
