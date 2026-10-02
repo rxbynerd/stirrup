@@ -130,9 +130,8 @@ func (c *FileCache) Dir() string { return c.dir }
 
 // Get implements Cache. The returned record carries the entry's creation
 // time and writer version as CacheRecordedAt and CacheRecordedBy. The entry
-// must be a regular file reached without
-// following a symlink at any level below the root; anything else is an
-// unusable entry rather than a miss.
+// must be a regular file reached without following a symlink at any level
+// below the root; anything else is an unusable entry rather than a miss.
 func (c *FileCache) Get(key string) (eval.JudgeVerdict, bool, error) {
 	if !validCacheKey(key) {
 		return eval.JudgeVerdict{}, false, fmt.Errorf("invalid judge cache key %q", key)
