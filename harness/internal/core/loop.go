@@ -1393,6 +1393,9 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	)
 	decision, err := l.GuardRail.Check(ctx, in)
 	elapsed := time.Since(start)
+	if err == nil {
+		err = guardContractError(decision)
+	}
 	if err != nil {
 		// Scrub once, reuse for span/log/security-event — see
 		// docs/security.md.
@@ -1422,11 +1425,6 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 			}, false
 		}
 		return false, nil, false
-	}
-	if decision == nil {
-		// Contract violation (nil, nil): record synthetic allow rather
-		// than panicking downstream.
-		decision = &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "unknown"}
 	}
 	span.SetAttributes(
 		attribute.String("guard.id", decision.GuardID),
@@ -1475,7 +1473,21 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	if decision.Verdict == guard.VerdictAllowSpot {
 		return true, decision, true
 	}
-	return decision.Verdict != guard.VerdictDeny, decision, false
+	return decision.Verdict == guard.VerdictAllow, decision, false
+}
+
+// guardContractError reports a GuardRail result that is neither an error
+// nor a decision with a known verdict, so guardCheck routes it through
+// the guard-error path and its failOpen policy instead of allowing it.
+func guardContractError(d *guard.Decision) error {
+	switch {
+	case d == nil:
+		return errors.New("guard returned nil decision")
+	case !guard.IsValidVerdict(d.Verdict):
+		return fmt.Errorf("guard returned invalid verdict %q", d.Verdict)
+	default:
+		return nil
+	}
 }
 
 // recordSpotlightApplied emits the spotlight security event and metric.

@@ -122,6 +122,48 @@ Two hardenings apply on top of standard schema validation:
   validation, preventing schema-conforming inputs that exploit
   JS-style prototype-chain mutation in downstream tooling.
 
+Validation runs before the `pre_tool` guardrail, so a schema-invalid
+or unknown-tool call is rejected without a classifier call, and the
+guardrail classifies the stripped input the handler receives. The
+full per-call order is in
+[`guardrails.md` § Dispatch order](guardrails.md#dispatch-order).
+
+## Judge and classifier prompts
+
+The `cloud-judge` guardrail and the `llm-judge` verifier both put
+untrusted text (tool input, tool output, fetched content, transcripts)
+in front of a model whose answer gates the run. Both fence that text
+with `security.DataFence`: markers carrying a per-call random nonce,
+content with every `<<<` run broken so it cannot contain or imitate
+a marker, and an explicit statement that fenced text is data, never
+instructions.
+
+Both require the verdict object to carry the fence nonce, which the
+prompt states after the fenced text (`jsonextract.ObjectWithNonce`).
+Content cannot know a nonce drawn after it was written, so a verdict
+planted in the content is ignored wherever the model echoes it, before
+or after its own answer. A balanced brace pair that is not valid JSON
+is skipped whole, so an object quoted inside a malformed reasoning
+string is never selected. Two differing objects that carry the nonce
+are a conflict, and no matching object is a parse failure; both fail
+closed (`cloud-judge` denies unless `failOpen: true`, `llm-judge`
+reports a failed verification). Both also discard the verdict of a
+stream that did not end at `end_turn` or `stop_sequence`, so a reply
+cut by the token cap or a deadline cannot supply a partial answer. A
+`cloud-judge` guardrail with `failOpen: true` turns every such failure
+into an allow, so neither rule constrains it. Details per surface:
+[`guardrails.md` § `cloud-judge`](guardrails.md#cloud-judge) and
+[`architecture.md` § Verifiers](architecture.md#verifiers).
+
+The marker grammar (`<<<LABEL_nonce>>>` and `<<<END_LABEL_nonce>>>`),
+the notice wording, and the neutralisation rule are pinned by golden
+vectors in `harness/internal/security/testdata/datafence_vectors.json`,
+and the nonce extraction rule by
+`harness/internal/jsonextract/testdata/nonce_extraction_vectors.json`.
+The eval module's diff-review judge applies the same rules without
+importing the harness, and carries byte-identical copies of both files
+in `eval/judge/testdata/`. Neither copy changes without the other.
+
 ## `RunConfig` validation
 
 `types.ValidateRunConfig` enforces hard invariants before any
@@ -659,8 +701,10 @@ Controls layered from outside in:
    before it enters context.
 
   ── Per tool call ─────────────────────────────────────────
-   Input validator: JSON Schema + prototype-pollution strip.
-   GuardRail (pre-tool): LLM classifier on the proposed call.
+   Input validator: unknown-tool rejection, prototype-pollution
+   strip, JSON Schema, tool-input tripwires. Deterministic;
+   runs before any classifier call.
+   GuardRail (pre-tool): LLM classifier on the cleaned call.
    PermissionPolicy: structural deny / Cedar policy / ask
    upstream.
 

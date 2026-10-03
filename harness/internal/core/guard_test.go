@@ -3,12 +3,16 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -540,38 +544,109 @@ func (f *flakyGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, e
 	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "flaky"}, nil
 }
 
-// TestGuardCheck_NilNilDecisionSynthesisesAllow asserts that the
-// defensive branch in guardCheck — which fires when an adapter
-// violates its contract by returning (nil, nil) — synthesises a
-// tagged allow rather than panicking. Adapter authors should never
-// do this; the test guards against latent nil dereferences inside
-// the metric / event emission code path.
-func TestGuardCheck_NilNilDecisionSynthesisesAllow(t *testing.T) {
+// TestGuardCheck_NilNilDecisionBlocksRun asserts that a guard violating
+// its contract by returning (nil, nil) is a guard error, so under the
+// default failOpen=false the run is blocked rather than allowed.
+func TestGuardCheck_NilNilDecisionBlocksRun(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
 			{Type: "message_complete", StopReason: "end_turn"},
 		},
 	}
-	loop := buildTestLoop(prov)
-	loop.GuardRail = nilDecisionGuard{}
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(prov, &secBuf)
+	loop.GuardRail = scriptedGuard{}
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success' (synthetic allow), got %q", runTrace.Outcome)
+	if runTrace.Outcome != "guardrail_blocked" {
+		t.Errorf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
+	}
+	if !strings.Contains(secBuf.String(), `"guard_error"`) {
+		t.Errorf("no guard_error security event: %s", secBuf.String())
 	}
 }
 
-// nilDecisionGuard violates the GuardRail contract by returning
-// (nil, nil). The loop's defensive branch must not panic.
-type nilDecisionGuard struct{}
+// scriptedGuard returns a fixed (decision, err) pair, including results
+// that violate the GuardRail contract.
+type scriptedGuard struct {
+	decision *guard.Decision
+	err      error
+}
 
-func (nilDecisionGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, error) {
-	return nil, nil
+func (g scriptedGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, error) {
+	return g.decision, g.err
+}
+
+// TestGuardCheck_OnlyKnownVerdictsAllow pins guardCheck's verdict
+// contract at pre_tool: allow and spotlight run the handler, deny does
+// not, and an error, a nil decision, an empty verdict, or an unknown
+// verdict all take the guard-error path, which denies unless failOpen.
+func TestGuardCheck_OnlyKnownVerdictsAllow(t *testing.T) {
+	cases := []struct {
+		name      string
+		guard     scriptedGuard
+		guardErr  bool
+		wantAllow bool
+	}{
+		{"allow", scriptedGuard{decision: &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "g"}}, false, true},
+		{"spotlight", scriptedGuard{decision: &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: "g"}}, false, true},
+		{"deny", scriptedGuard{decision: &guard.Decision{Verdict: guard.VerdictDeny, GuardID: "g"}}, false, false},
+		{"error", scriptedGuard{err: errors.New("classifier unavailable")}, true, false},
+		{"nil decision", scriptedGuard{}, true, false},
+		{"empty verdict", scriptedGuard{decision: &guard.Decision{GuardID: "g"}}, true, false},
+		{"unknown verdict", scriptedGuard{decision: &guard.Decision{Verdict: "bogus", GuardID: "g"}}, true, false},
+	}
+	for _, tc := range cases {
+		for _, failOpen := range []bool{false, true} {
+			name := tc.name + "/failOpen=false"
+			if failOpen {
+				name = tc.name + "/failOpen=true"
+			}
+			t.Run(name, func(t *testing.T) {
+				handlerCalls := 0
+				tl := trivialTool()
+				tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
+					handlerCalls++
+					return "ok", nil
+				}
+				loop, reader := buildMetricsHarness(t, []*tool.Tool{tl}, nil, tc.guard, nil)
+				var secBuf bytes.Buffer
+				loop.Security = security.NewSecurityLogger(&secBuf, "test-run")
+				config := configWithMaxParallel(1)
+				config.GuardRail = &types.GuardRailConfig{FailOpen: failOpen}
+
+				wantAllow := tc.wantAllow || (tc.guardErr && failOpen)
+				allow, decision, _ := loop.guardCheck(context.Background(), guard.Input{Phase: guard.PhasePreTool, Content: "{}"}, failOpen)
+				if allow != wantAllow {
+					t.Fatalf("guardCheck allow = %v, want %v (decision %+v)", allow, wantAllow, decision)
+				}
+				if tc.guardErr && failOpen && (decision == nil || !strings.HasPrefix(decision.Reason, "fail_open: ")) {
+					t.Errorf("fail-open decision = %+v, want a fail_open: reason", decision)
+				}
+
+				secBuf.Reset()
+				results, _, _ := loop.planAndDispatch(context.Background(), config,
+					[]types.ToolCall{{ID: "tc", Name: "trivial", Input: json.RawMessage(`{}`)}}, &stallDetector{}, "", "")
+				if ran := handlerCalls == 1; ran != wantAllow {
+					t.Fatalf("handler ran %d times, want allow=%v; results %+v", handlerCalls, wantAllow, results)
+				}
+				if !wantAllow {
+					failures := collectFailures(t, reader)
+					if len(failures) != 1 || failures[0].category != observability.ToolFailureGuardrailDenied.String() {
+						t.Errorf("tool_failures = %+v, want one guardrail_denied", failures)
+					}
+				}
+				if hasErrEvent := strings.Contains(secBuf.String(), `"guard_error"`); hasErrEvent != tc.guardErr {
+					t.Errorf("guard_error event present = %v, want %v: %s", hasErrEvent, tc.guardErr, secBuf.String())
+				}
+			})
+		}
+	}
 }
 
 // TestBuildGuardRail_NoneReturnsNoop verifies a nil or "none" config

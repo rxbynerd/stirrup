@@ -24,7 +24,8 @@ const (
 	ToolFailureSchemaValidation ToolFailureCategory = "schema_validation_failed"
 
 	// ToolFailureSecurityGuard — security.GuardToolCall returned findings
-	// (e.g. write-tool denylist hit).
+	// (an exfiltration utility, shell-escape syntax, a credential path, a
+	// protected write target, or a long base64-like payload).
 	ToolFailureSecurityGuard ToolFailureCategory = "security_guard_denied"
 
 	// ToolFailurePermissionDenied — permission.PermissionPolicy.Check

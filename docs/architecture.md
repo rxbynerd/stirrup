@@ -621,8 +621,17 @@ back as a user message. Three implementations ship:
   output.
 - **`llm-judge`** — calls a cheap model (default Haiku) with a
   structured prompt and parses a JSON verdict
-  `{"passed": bool, "feedback": string}`. Malformed responses are
-  treated as failures with the raw response preserved in details.
+  `{"reasoning": string, "nonce": string, "passed": bool, "feedback": string}`
+  (reasoning first; the shape without `reasoning` is also accepted)
+  from the top-level JSON object whose `nonce` equals the per-call
+  fence nonce. The transcript is fenced as untrusted data, with each
+  tool result in its own fence (see [`security.md` § Judge and
+  classifier prompts](security.md#judge-and-classifier-prompts)).
+  Malformed responses, including a verdict without the nonce or one
+  from a stream that ended other than at `end_turn` or
+  `stop_sequence` (for example at the 1024-token cap), are treated as
+  failures with the raw response preserved in details. A well-formed
+  verdict's string `reasoning` is kept, scrubbed, in details.
 - **`composite`** — chains multiple sub-verifiers.
 
 ## Transport
