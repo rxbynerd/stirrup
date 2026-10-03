@@ -8,14 +8,21 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+func validateToolTrace(j types.EvalJudge) error {
+	if j.ToolTrace == nil {
+		return fmt.Errorf("tool-trace judge requires a toolTrace block")
+	}
+	return nil
+}
+
 // evaluateToolTrace inspects the run's RunTrace.ToolCalls: where
 // file-exists / file-contains confirm the agent reached the right end
 // state, tool-trace confirms it got there via the expected tool-use path.
 // A nil JudgeContext.Trace is a hard error, not a silent pass, so a
 // misconfigured runner (trace not threaded through) is not masked.
 func evaluateToolTrace(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if j.ToolTrace == nil {
-		return eval.JudgeVerdict{}, fmt.Errorf("tool-trace judge requires a toolTrace block")
+	if err := validateToolTrace(j); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 	if jctx.Trace == nil {
 		return eval.JudgeVerdict{}, fmt.Errorf("tool-trace judge requires a run trace but none was provided")

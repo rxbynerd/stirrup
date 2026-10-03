@@ -43,6 +43,7 @@ Commands:
   ingest                 Ingest harness JSONL traces into a lakehouse
   replay                 Re-evaluate recorded runs against suite judges
   convert                Convert a result.json into another format (e.g. JUnit XML)
+  judge-calibrate        Measure a diff-review judge against a golden set
   completion             Emit a shell completion script (bash|zsh|fish|powershell)
 
 Run "eval <command> -help" for details.
@@ -86,6 +87,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdIngest(args[1:])
 	case "replay":
 		cmdReplay(args[1:])
+	case "judge-calibrate":
+		return cmdJudgeCalibrate(args[1:], stdout, os.Stderr)
 	case "convert":
 		cmdConvert(args[1:])
 	case "completion":
@@ -133,12 +136,18 @@ func cmdRun(args []string) {
 	anthropicOrganizationID := fs.String("anthropic-organization-id", "", "Anthropic organisation UUID. Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
 	anthropicServiceAccountID := fs.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
 	anthropicFromGitHubActions := fs.Bool("anthropic-from-github-actions", false, "Forward --anthropic-from-github-actions to every harness invocation. The harness then sources the OIDC token from ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN.")
+	judgeFlagSet := addJudgeFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
+	}
+
+	judgeOpts, err := judgeFlagSet.options()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -170,6 +179,11 @@ func cmdRun(args []string) {
 		}
 		*outputDir = wd
 	}
+	if !*dryRun {
+		if _, err := judgeFlagSet.openCache(os.Stderr, &judgeOpts, filepath.Join(*outputDir, judgeCacheDirName), nil); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -190,6 +204,7 @@ func cmdRun(args []string) {
 			ServiceAccountID:  *anthropicServiceAccountID,
 			FromGitHubActions: *anthropicFromGitHubActions,
 		},
+		JudgeOptions: judgeOpts,
 	})
 	if err != nil {
 		log.Fatalf("running suite: %v", err)
@@ -225,6 +240,7 @@ func cmdRun(args []string) {
 	}
 
 	printSummary(result)
+	warnJudgeCache(os.Stderr, judgeOpts.CacheStats)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
 }
 
@@ -361,6 +377,9 @@ func printSummary(result eval.SuiteResult) {
 	fmt.Printf("Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
 	fmt.Printf("Pass rate: %.1f%%\n", result.PassRate*100)
+	if result.JudgeCache != nil {
+		fmt.Println(formatJudgeCache(*result.JudgeCache))
+	}
 }
 
 // cmdBaseline pulls production metrics from a lakehouse as experiment baselines.
@@ -818,6 +837,9 @@ func appendJudgeBlock(parent *hclwrite.Body, j types.EvalJudge) {
 	if j.Criteria != "" {
 		body.SetAttributeValue("criteria", cty.StringVal(j.Criteria))
 	}
+	if j.LLM != nil {
+		appendLLMBlock(body, *j.LLM)
+	}
 	if j.Type == "composite" {
 		if j.Require != "" {
 			body.SetAttributeValue("require", cty.StringVal(j.Require))
@@ -825,6 +847,41 @@ func appendJudgeBlock(parent *hclwrite.Body, j types.EvalJudge) {
 		for _, sub := range j.Judges {
 			appendJudgeBlock(body, sub)
 		}
+	}
+}
+
+// appendLLMBlock appends a diff-review judge's `llm { ... }` block, omitting
+// unset fields so the loader applies the same defaults.
+func appendLLMBlock(parent *hclwrite.Body, c types.JudgeLLMConfig) {
+	body := parent.AppendNewBlock("llm", nil).Body()
+	for _, attr := range []struct{ name, value string }{
+		{"provider", c.Provider},
+		{"model", c.Model},
+		{"base_url", c.BaseURL},
+		{"api_key_ref", c.APIKeyRef},
+		{"structured_output", c.StructuredOutput},
+	} {
+		if attr.value != "" {
+			body.SetAttributeValue(attr.name, cty.StringVal(attr.value))
+		}
+	}
+	for _, attr := range []struct {
+		name  string
+		value int
+	}{
+		{"timeout_seconds", c.TimeoutSeconds},
+		{"max_input_bytes", c.MaxInputBytes},
+		{"max_tokens", c.MaxTokens},
+	} {
+		if attr.value != 0 {
+			body.SetAttributeValue(attr.name, cty.NumberIntVal(int64(attr.value)))
+		}
+	}
+	if c.Temperature != nil {
+		body.SetAttributeValue("temperature", cty.NumberFloatVal(*c.Temperature))
+	}
+	if c.AllowTruncated {
+		body.SetAttributeValue("allow_truncated", cty.True)
 	}
 }
 

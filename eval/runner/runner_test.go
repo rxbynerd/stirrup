@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -38,12 +39,15 @@ func TestRunSuite_EmptyID(t *testing.T) {
 	}
 }
 
+// validJudge satisfies suite validation for tests that never run the judge.
+var validJudge = types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}
+
 func TestRunSuite_DryRun(t *testing.T) {
 	suite := types.EvalSuite{
 		ID: "test-suite",
 		Tasks: []types.EvalTask{
-			{ID: "task-1", Prompt: "do something"},
-			{ID: "task-2", Prompt: "do something else"},
+			{ID: "task-1", Prompt: "do something", Judge: validJudge},
+			{ID: "task-2", Prompt: "do something else", Judge: validJudge},
 		},
 	}
 
@@ -62,8 +66,8 @@ func TestRunSuite_DryRun(t *testing.T) {
 		if tr.Outcome != "pass" {
 			t.Errorf("task %s: outcome = %q, want %q", tr.TaskID, tr.Outcome, "pass")
 		}
-		if !tr.JudgeVerdict.Passed {
-			t.Errorf("task %s: verdict not passed in dry run", tr.TaskID)
+		if !tr.JudgeVerdict.Passed || tr.JudgeVerdict.Status != types.JudgeStatusPass {
+			t.Errorf("task %s: verdict %+v, want a passed verdict with status pass in dry run", tr.TaskID, tr.JudgeVerdict)
 		}
 	}
 	if result.PassRate != 1.0 {
@@ -276,7 +280,7 @@ func TestReplayRecording_Passing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace)
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +315,7 @@ func TestReplayRecording_Failing(t *testing.T) {
 		},
 	}
 
-	result, err := ReplayRecording(context.Background(), recording, task, workspace)
+	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +385,20 @@ func TestValidateSuite(t *testing.T) {
 		},
 		{
 			name:  "valid",
-			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1"}}},
+			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1", Judge: validJudge}}},
+		},
+		{
+			name:    "task without a judge",
+			suite:   types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1"}}},
+			wantErr: `task "t1": unknown judge type: ""`,
+		},
+		{
+			name: "empty nested composite",
+			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1", Judge: types.EvalJudge{
+				Type:   "composite",
+				Judges: []types.EvalJudge{{Type: "composite"}},
+			}}}},
+			wantErr: `task "t1": sub-judge 1: composite judge requires at least one sub-judge`,
 		},
 		{
 			name: "traversal in suite ID",
@@ -403,7 +420,7 @@ func TestValidateSuite(t *testing.T) {
 			name: "duplicate task IDs",
 			suite: types.EvalSuite{
 				ID:    "s1",
-				Tasks: []types.EvalTask{{ID: "t1"}, {ID: "t1"}},
+				Tasks: []types.EvalTask{{ID: "t1", Judge: validJudge}, {ID: "t1", Judge: validJudge}},
 			},
 			wantErr: `duplicate task ID "t1"`,
 		},
@@ -840,6 +857,9 @@ sleep 0.5
 	for _, tr := range outcome.result {
 		if tr.Outcome == "error" && strings.Contains(tr.Error, "context canceled") {
 			errCount++
+		}
+		if tr.Outcome == "error" && tr.JudgeVerdict.Status != types.JudgeStatusError {
+			t.Errorf("%s: error outcome with verdict status %q, want %q", tr.TaskID, tr.JudgeVerdict.Status, types.JudgeStatusError)
 		}
 	}
 	if errCount == 0 {

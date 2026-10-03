@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/runner"
 	"github.com/rxbynerd/stirrup/types"
@@ -31,6 +32,8 @@ func cmdReplay(args []string) {
 	output := fs.String("output", "", "Write SuiteResult JSON to this path (default: print summary only)")
 	recordingIDs := newStringSliceFlag(fs, "recording", "RunID of a recording to replay (repeatable). If omitted, all recordings in the lakehouse are replayed.")
 	outcomeFilter := fs.String("outcome", "", "Filter recordings to replay by outcome (e.g. failed, error). Ignored if --recording is set.")
+	judgeBaseline := fs.String("judge-baseline", "", "Path to a judge-baseline.json retained by `run --output`. diff-review judges diff --workspace against that baseline instead of the workspace's git HEAD.")
+	judgeFlagSet := addJudgeFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -39,6 +42,10 @@ func cmdReplay(args []string) {
 	}
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
+	}
+	judgeOpts, err := judgeFlagSet.options()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -65,6 +72,12 @@ func cmdReplay(args []string) {
 	if len(recordings) == 0 {
 		log.Fatal("no matching recordings found")
 	}
+	if _, err := judgeFlagSet.openCache(os.Stderr, &judgeOpts, filepath.Join(*lakehousePath, judgeCacheDirName), replayWorkspaces(*workspaceDir, recordings)); err != nil {
+		log.Fatal(err)
+	}
+	if err := judge.PreflightSuite(ctx, suite.Tasks, judgeOpts); err != nil {
+		log.Fatalf("checking judges: %v", err)
+	}
 
 	runID := fmt.Sprintf("replay-%d", time.Now().UnixMilli())
 	startedAt := time.Now()
@@ -74,17 +87,12 @@ func cmdReplay(args []string) {
 	for i, rec := range recordings {
 		// Pair recording with suite task by position, wrapping.
 		task := suite.Tasks[i%len(suite.Tasks)]
-		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir)
-		if err != nil {
-			result = eval.TaskResult{
-				TaskID:  task.ID,
-				Outcome: "error",
-				Error:   err.Error(),
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: false,
-					Reason: err.Error(),
-				},
-			}
+		result, err := runner.ReplayRecording(ctx, rec, task, *workspaceDir, judgeOpts, *judgeBaseline)
+		switch {
+		case err != nil:
+			log.Printf("replay %s: %v", rec.RunID, err)
+		case result.Outcome == "error":
+			log.Printf("replay %s: %s", rec.RunID, result.Error)
 		}
 		// Tag with the source recording's runId; the bare task ID
 		// would collapse when one task replays N recordings.
@@ -107,6 +115,10 @@ func cmdReplay(args []string) {
 		Tasks:       tasks,
 		PassRate:    passRate,
 	}
+	if !judgeOpts.CacheMode.IsLive() {
+		summary := judgeOpts.CacheStats.Summary(judgeOpts.CacheMode)
+		result.JudgeCache = &summary
+	}
 
 	if *output != "" {
 		// Ensure parent dir exists for callers that pass a fresh path.
@@ -123,6 +135,23 @@ func cmdReplay(args []string) {
 
 	fmt.Printf("Replay: %d recordings, %d passed, %d failed/errored (pass rate %.1f%%)\n",
 		len(tasks), pass, len(tasks)-pass, passRate*100)
+	if result.JudgeCache != nil {
+		fmt.Println(formatJudgeCache(*result.JudgeCache))
+	}
+	warnJudgeCache(os.Stderr, judgeOpts.CacheStats)
+}
+
+// replayWorkspaces are the directories the replayed agents could write:
+// the workspace under review and each recording's absolute executor
+// workspace.
+func replayWorkspaces(workspaceDir string, recordings []types.RunRecording) []string {
+	roots := []string{workspaceDir}
+	for _, rec := range recordings {
+		if filepath.IsAbs(rec.Config.Executor.Workspace) {
+			roots = append(roots, rec.Config.Executor.Workspace)
+		}
+	}
+	return roots
 }
 
 // selectRecordings resolves the --recording / --outcome flags into a

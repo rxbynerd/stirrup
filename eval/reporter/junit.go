@@ -36,6 +36,7 @@ type xmlTestCase struct {
 	Time      string      `xml:"time,attr"`
 	Failure   *xmlFailure `xml:"failure,omitempty"`
 	Error     *xmlError   `xml:"error,omitempty"`
+	SystemOut string      `xml:"system-out,omitempty"`
 }
 
 type xmlFailure struct {
@@ -155,10 +156,14 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 		tc.Error = &xmlError{
 			Type:    "HarnessError",
 			Message: t.Error,
-			Body:    t.Error,
+			Body:    detailBody(t.Error, t.JudgeVerdict.Details),
 		}
 	case "pass":
-
+		// A passing task has no failure body, so its shadow verdicts go
+		// to system-out.
+		if hasShadow(t.JudgeVerdict.Details) {
+			tc.SystemOut = failureBody(t.JudgeVerdict)
+		}
 	default:
 		// Surface as <error> so operators can grep for "UnknownOutcome".
 		msg := fmt.Sprintf("unknown task outcome %q", t.Outcome)
@@ -172,23 +177,45 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	return tc
 }
 
-// failureBody assembles the <failure> body text. The judge verdict reason
-// comes first; when sub-judge details are present, a blank line separates
-// them and each detail is rendered as `Type: Reason`.
+func hasShadow(details []eval.JudgeDetail) bool {
+	for _, d := range details {
+		if d.Status == eval.JudgeStatusShadow {
+			return true
+		}
+	}
+	return false
+}
+
+// failureBody assembles the <failure> body text from the judge verdict.
 func failureBody(v eval.JudgeVerdict) string {
-	if len(v.Details) == 0 {
-		return v.Reason
+	return detailBody(v.Reason, v.Details)
+}
+
+// detailBody joins reason and the sub-judge details, separated by a blank
+// line. Each detail is rendered as `Type: Reason`, `Type: skipped (Reason)`
+// for a sub-judge that was not evaluated, or `Type: shadow <verdict>
+// (Reason)` for a shadow sub-judge.
+func detailBody(reason string, details []eval.JudgeDetail) string {
+	if len(details) == 0 {
+		return reason
 	}
 	var b strings.Builder
-	if v.Reason != "" {
-		b.WriteString(v.Reason)
+	if reason != "" {
+		b.WriteString(reason)
 		b.WriteString("\n\n")
 	}
-	for i, d := range v.Details {
+	for i, d := range details {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
+		switch d.Status {
+		case eval.JudgeStatusSkipped:
+			fmt.Fprintf(&b, "%s: skipped (%s)", d.Type, d.Reason)
+		case eval.JudgeStatusShadow:
+			fmt.Fprintf(&b, "%s: shadow %s (%s)", d.Type, d.ShadowVerdict, d.Reason)
+		default:
+			fmt.Fprintf(&b, "%s: %s", d.Type, d.Reason)
+		}
 	}
 	return b.String()
 }

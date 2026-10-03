@@ -47,6 +47,15 @@ opt-in local runs (see the per-suite notes below).
 For the suite schema and the per-task contract see
 [`docs/eval.md`](../../docs/eval.md).
 
+Suites with `diff-review` judges are only as trustworthy as the judge.
+Before changing a suite's judge model or provider, or the `--judge-*`
+flags CI passes, measure the candidate with `stirrup-eval
+judge-calibrate` against `../golden/diff-review-seed.json` (a synthetic
+smoke test) or, better, a golden set drawn from the suite's own tasks,
+and consider running it as a `shadow` sub-judge first, which records
+its verdicts without changing any outcome. See
+[Calibrating judges](../../docs/eval.md#calibrating-judges).
+
 ## Current suites
 
 | Suite | Source | Notes |
@@ -196,8 +205,17 @@ OPENROUTER_API_KEY=... ./stirrup-eval run \
 The **release sweep** authenticates via Anthropic Workload Identity
 Federation (the four non-secret `--anthropic-*` identifiers plus the
 GitHub Actions OIDC token); no static `ANTHROPIC_API_KEY` secret is
-required. Suites that bundle a `diff-review` judge ALSO read an
-Anthropic key at judge-evaluation time.
+required. Suites that bundle a `diff-review` judge ALSO need a
+judge-model key at judge-evaluation time, resolved by the eval process
+rather than the harness. Without `--judge-*` flags or an `llm` block
+the judge calls Anthropic with `secret://ANTHROPIC_API_KEY`, a
+continuity default; the per-push gate should pass `--judge-provider`,
+`--judge-base-url`, `--judge-api-key-ref`, and `--judge-model` so the
+judge uses the gate's own provider and credential. See
+[The `diff-review` judge](../../docs/eval.md#the-diff-review-judge).
+`--judge-cache` and `--judge-cache-dir` record `diff-review` verdicts
+and serve them again without a model call; see
+[Judge cache](../../docs/eval.md#judge-cache).
 
 Without a usable credential — a fork clone, or a Dependabot-actor
 push, neither of which can read this repository's Actions secrets —

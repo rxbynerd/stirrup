@@ -69,6 +69,12 @@ type RunConfig struct {
 	// Federation flags to every harness invocation. See
 	// docs/anthropic-wif.md.
 	AnthropicWIF AnthropicWIFConfig
+
+	// JudgeOptions carries invocation-scoped settings for LLM-backed judges
+	// (the --judge-* flags). When its CacheMode is not live,
+	// SuiteResult.JudgeCache reports the counts in its CacheStats, which
+	// RunSuite creates when nil.
+	JudgeOptions judge.Options
 }
 
 // AnthropicWIFConfig carries the CLI flags `stirrup harness` accepts to
@@ -108,6 +114,9 @@ func (c AnthropicWIFConfig) configured() bool {
 // order in which the workers actually finished.
 func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.SuiteResult, error) {
 	if err := validateSuite(suite); err != nil {
+		return eval.SuiteResult{}, err
+	}
+	if err := judge.PreflightSuite(ctx, suite.Tasks, cfg.JudgeOptions); err != nil {
 		return eval.SuiteResult{}, err
 	}
 
@@ -177,6 +186,14 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		}, nil
 	}
 
+	if err := cfg.JudgeOptions.CheckCacheAvailable(suite.Tasks); err != nil {
+		return eval.SuiteResult{}, err
+	}
+	cacheMode := cfg.JudgeOptions.CacheMode
+	if !cacheMode.IsLive() && cfg.JudgeOptions.CacheStats == nil {
+		cfg.JudgeOptions.CacheStats = &judge.CacheStats{}
+	}
+
 	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline)
 
 	passCount := 0
@@ -191,14 +208,19 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		passRate = float64(passCount) / float64(len(results))
 	}
 
-	return eval.SuiteResult{
+	result := eval.SuiteResult{
 		SuiteID:     suite.ID,
 		RunID:       runID,
 		StartedAt:   startedAt,
 		CompletedAt: time.Now(),
 		Tasks:       results,
 		PassRate:    passRate,
-	}, nil
+	}
+	if !cacheMode.IsLive() {
+		summary := cfg.JudgeOptions.CacheStats.Summary(cacheMode)
+		result.JudgeCache = &summary
+	}
+	return result, nil
 }
 
 // runTasksConcurrently dispatches tasks across a bounded worker pool while
@@ -240,15 +262,7 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 			// Drain remaining tasks as cancellation errors so the result
 			// slice stays in sync with the input slice.
 			for ; i < len(tasks); i++ {
-				results[i] = eval.TaskResult{
-					TaskID:  tasks[i].ID,
-					Outcome: "error",
-					Error:   ctx.Err().Error(),
-					JudgeVerdict: eval.JudgeVerdict{
-						Passed: false,
-						Reason: ctx.Err().Error(),
-					},
-				}
+				results[i] = errorResult(tasks[i].ID, time.Now(), ctx.Err())
 			}
 			close(jobs)
 			wg.Wait()
@@ -262,9 +276,10 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 	return results
 }
 
-// validateSuite checks that a suite has the minimum required fields and that
-// every task ID is a path-safe single segment (so per-task artifact directories
-// cannot escape OutputDir via traversal sequences).
+// validateSuite checks that a suite has the minimum required fields, that every
+// task ID is a path-safe single segment (so per-task artifact directories
+// cannot escape OutputDir via traversal sequences), and that every task's judge
+// tree is valid, so a misconfigured judge fails before any agent run.
 func validateSuite(suite types.EvalSuite) error {
 	if suite.ID == "" {
 		return fmt.Errorf("suite ID is required")
@@ -287,6 +302,9 @@ func validateSuite(suite types.EvalSuite) error {
 			return fmt.Errorf("duplicate task ID %q", t.ID)
 		}
 		seen[t.ID] = struct{}{}
+		if err := judge.ValidateTree(t.Judge); err != nil {
+			return fmt.Errorf("task %q: %w", t.ID, err)
+		}
 	}
 	return nil
 }
@@ -334,6 +352,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+	if err := cfg.JudgeOptions.CheckCacheOutside(tmpDir); err != nil {
+		return errorResult(task.ID, start, err)
+	}
 
 	workspaceDir := tmpDir
 	if task.Repo != "" {
@@ -346,6 +367,19 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// a cloned file) and before the harness runs.
 	if err := seedWorkspaceFiles(workspaceDir, task.Files); err != nil {
 		return errorResult(task.ID, start, err)
+	}
+
+	// The baseline is taken after clone and seeding, so a diff-review
+	// judge sees only the agent's changes.
+	diffReviewed := judge.ContainsType(task.Judge, "diff-review")
+	var judgeBaseline *judge.Baseline
+	if diffReviewed {
+		base, cleanup, err := createJudgeBaseline(ctx, task.ID, workspaceDir)
+		if err != nil {
+			return errorResult(task.ID, start, err)
+		}
+		defer cleanup()
+		judgeBaseline = base
 	}
 
 	// The trace file lives outside the workspace: writing it inside would
@@ -383,7 +417,13 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 			return errorResult(task.ID, start, vErr)
 		}
 
-		configPath = filepath.Join(tmpDir, "runconfig.json")
+		// A diff-review judge diffs the whole workspace, so the config
+		// is kept out of it to stay out of the diff.
+		configDir := tmpDir
+		if diffReviewed {
+			configDir = traceDir
+		}
+		configPath = filepath.Join(configDir, "runconfig.json")
 		if err := writeMergedConfig(configPath, merged); err != nil {
 			return errorResult(task.ID, start, err)
 		}
@@ -458,6 +498,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if merged != nil {
 			retainRedactedConfig(suiteArtifactDir, task.ID, merged)
 		}
+		if judgeBaseline != nil {
+			retainJudgeBaseline(ctx, suiteArtifactDir, task.ID, *judgeBaseline)
+		}
 	}
 
 	if cmdErr != nil {
@@ -470,9 +513,11 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		verdict, judgeErr := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 			WorkspaceDir: workspaceDir,
 			Trace:        trace,
+			Baseline:     judgeBaseline,
+			Options:      cfg.JudgeOptions,
 		})
 		if judgeErr != nil {
-			return errorResult(task.ID, start, fmt.Errorf("judge failed after harness error: %w", judgeErr))
+			return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
 		}
 		return buildResult(task.ID, start, trace, verdict)
 	}
@@ -485,12 +530,26 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
 		Trace:        trace,
+		Baseline:     judgeBaseline,
+		Options:      cfg.JudgeOptions,
 	})
 	if err != nil {
-		return errorResult(task.ID, start, fmt.Errorf("judge failed: %w", err))
+		return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed: %w", err))
 	}
 
 	return buildResult(task.ID, start, trace, verdict)
+}
+
+// judgeErrorResult is errorResult for a judge that could not rule. An
+// LLM judge's own error verdict, which carries the call's provenance, is kept
+// in place of the generic one.
+func judgeErrorResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, err error) eval.TaskResult {
+	result := errorResult(taskID, start, err)
+	result.Trace = trace
+	if verdict.Status == types.JudgeStatusError {
+		result.JudgeVerdict = verdict
+	}
+	return result
 }
 
 // appendAnthropicWIFArgs adds the `stirrup harness` WIF flags for any
@@ -607,6 +666,7 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 		Error:   err.Error(),
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: false,
+			Status: types.JudgeStatusError,
 			Reason: err.Error(),
 		},
 		DurationMs: time.Since(start).Milliseconds(),
@@ -721,27 +781,11 @@ func warnIfRawAPIKeyRef(taskID string, cfg *types.RunConfig) {
 func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult {
 	merged, err := buildMergedConfig(baseline, task.RunConfigOverrides)
 	if err != nil {
-		return eval.TaskResult{
-			TaskID:  task.ID,
-			Outcome: "error",
-			Error:   err.Error(),
-			JudgeVerdict: eval.JudgeVerdict{
-				Passed: false,
-				Reason: err.Error(),
-			},
-		}
+		return errorResult(task.ID, time.Now(), err)
 	}
 	if merged != nil {
 		if vErr := types.ValidateRunConfig(merged); vErr != nil {
-			return eval.TaskResult{
-				TaskID:  task.ID,
-				Outcome: "error",
-				Error:   vErr.Error(),
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: false,
-					Reason: vErr.Error(),
-				},
-			}
+			return errorResult(task.ID, time.Now(), vErr)
 		}
 	}
 	return eval.TaskResult{
@@ -749,22 +793,33 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 		Outcome: "pass",
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: true,
+			Status: types.JudgeStatusPass,
 			Reason: "dry run — skipped",
 		},
 	}
 }
 
-// buildResult constructs a TaskResult from a trace and verdict.
+// buildResult constructs a TaskResult from a trace and verdict. A verdict
+// whose status is "error" is the error outcome whatever its Passed field
+// says, so a judge that could not rule never counts as a pass or a fail.
 func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict) eval.TaskResult {
-	outcome := "fail"
-	if verdict.Passed {
-		outcome = "pass"
-	}
-	return eval.TaskResult{
+	result := eval.TaskResult{
 		TaskID:       taskID,
-		Outcome:      outcome,
+		Outcome:      "fail",
 		Trace:        trace,
 		JudgeVerdict: verdict,
 		DurationMs:   time.Since(start).Milliseconds(),
 	}
+	switch {
+	case verdict.Status == types.JudgeStatusError:
+		result.Outcome = "error"
+		result.JudgeVerdict.Passed = false
+		result.Error = verdict.Reason
+		if result.Error == "" {
+			result.Error = "judge returned an error verdict"
+		}
+	case verdict.Passed:
+		result.Outcome = "pass"
+	}
+	return result
 }

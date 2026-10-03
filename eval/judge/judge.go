@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,20 @@ func KnownJudgeTypes() []string {
 	}
 }
 
+// ContainsType reports whether j, or any judge nested under it, has the given
+// type.
+func ContainsType(j types.EvalJudge, judgeType string) bool {
+	if j.Type == judgeType {
+		return true
+	}
+	for _, sub := range j.Judges {
+		if ContainsType(sub, judgeType) {
+			return true
+		}
+	}
+	return false
+}
+
 // JudgeContext provides the environment for judging a run's outcome.
 type JudgeContext struct {
 	WorkspaceDir string // path to the workspace after the run
@@ -41,10 +56,44 @@ type JudgeContext struct {
 	// Trace is the run's parsed RunTrace, used by the "tool-trace" judge.
 	// Nil for callers that judge only workspace state.
 	Trace *types.RunTrace
+
+	// Baseline is the commit "diff-review" judges diff the workspace
+	// against. Nil falls back to the HEAD of the workspace's own
+	// repository.
+	Baseline *Baseline
+
+	// Sample numbers repeated judgments of the same workspace; it is the
+	// sample index of a diff-review judge's cache key, so each repeat is
+	// cached separately. Zero for a single judgment.
+	Sample int
+
+	// NonDeciding marks a judgment whose verdict decides no task outcome:
+	// a shadow sub-judge's, which its composite sets, or a calibration
+	// run's. Only such a judgment may use the decision provider.
+	NonDeciding bool
+
+	// Options carries invocation-scoped settings for LLM-backed judges.
+	Options
 }
 
 // Evaluate applies the judge criteria to the workspace and returns a verdict.
+// A non-nil error means the judge could not rule. An LLM-backed judge then
+// also returns an error-status verdict carrying its Record; every other judge
+// returns the zero verdict. A composite reports a sub-judge that could not
+// rule through Status "error" rather than an error, and returns an error only
+// for an invalid judge tree.
 func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	verdict, err := evaluate(ctx, j, jctx)
+	if err == nil && verdict.Status == "" {
+		verdict.Status = types.JudgeStatusFail
+		if verdict.Passed {
+			verdict.Status = types.JudgeStatusPass
+		}
+	}
+	return verdict, err
+}
+
+func evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
 	switch j.Type {
 	case "test-command":
 		return evaluateTestCommand(ctx, j, jctx)
@@ -70,24 +119,36 @@ func resolvePath(workspaceDir, relPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving workspace: %w", err)
 	}
+	return joinWithin(absWorkspace, relPath)
+}
 
-	joined := filepath.Join(absWorkspace, relPath)
-	resolved, err := filepath.Abs(filepath.Clean(joined))
-	if err != nil {
-		return "", fmt.Errorf("resolving path %q: %w", relPath, err)
-	}
-
-	// Ensure the resolved path is within or equal to the workspace.
-	if !strings.HasPrefix(resolved, absWorkspace+string(filepath.Separator)) && resolved != absWorkspace {
+// joinWithin joins relPath onto root and returns an error if the cleaned
+// result is not root or beneath it.
+func joinWithin(root, relPath string) (string, error) {
+	resolved := filepath.Join(root, relPath)
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
 		return "", fmt.Errorf("path %q resolves outside workspace", relPath)
 	}
-
 	return resolved, nil
 }
 
-func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+// checkWorkspacePath reports whether relPath stays inside the workspace
+// whatever the workspace's location.
+func checkWorkspacePath(relPath string) error {
+	_, err := joinWithin(string(filepath.Separator)+"workspace", relPath)
+	return err
+}
+
+func validateTestCommand(j types.EvalJudge) error {
 	if j.Command == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("test-command judge requires a command")
+		return fmt.Errorf("test-command judge requires a command")
+	}
+	return nil
+}
+
+func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	if err := validateTestCommand(j); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
@@ -118,7 +179,22 @@ func evaluateTestCommand(ctx context.Context, j types.EvalJudge, jctx JudgeConte
 	}, nil
 }
 
+func validateFileExists(j types.EvalJudge) error {
+	for _, p := range j.Paths {
+		if p == "" {
+			return fmt.Errorf("file-exists judge requires non-empty paths")
+		}
+		if err := checkWorkspacePath(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func evaluateFileExists(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	if err := validateFileExists(j); err != nil {
+		return eval.JudgeVerdict{}, err
+	}
 	if len(j.Paths) == 0 {
 		return eval.JudgeVerdict{Passed: true, Reason: "no paths to check"}, nil
 	}
@@ -146,12 +222,29 @@ func evaluateFileExists(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict
 	}, nil
 }
 
-func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+// fileContainsPattern checks the static fields of a file-contains judge and
+// returns its compiled pattern.
+func fileContainsPattern(j types.EvalJudge) (*regexp.Regexp, error) {
 	if j.Path == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("file-contains judge requires a path")
+		return nil, fmt.Errorf("file-contains judge requires a path")
 	}
 	if j.Pattern == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("file-contains judge requires a pattern")
+		return nil, fmt.Errorf("file-contains judge requires a pattern")
+	}
+	if err := checkWorkspacePath(j.Path); err != nil {
+		return nil, err
+	}
+	re, err := regexp.Compile(j.Pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pattern %q: %w", j.Pattern, err)
+	}
+	return re, nil
+}
+
+func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
+	re, err := fileContainsPattern(j)
+	if err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	resolved, err := resolvePath(jctx.WorkspaceDir, j.Path)
@@ -170,12 +263,7 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 		return eval.JudgeVerdict{}, fmt.Errorf("reading %q: %w", j.Path, err)
 	}
 
-	matched, err := regexp.MatchString(j.Pattern, string(data))
-	if err != nil {
-		return eval.JudgeVerdict{}, fmt.Errorf("invalid pattern %q: %w", j.Pattern, err)
-	}
-
-	if matched {
+	if re.Match(data) {
 		return eval.JudgeVerdict{
 			Passed: true,
 			Reason: fmt.Sprintf("pattern %q found in %s", j.Pattern, j.Path),
@@ -188,60 +276,228 @@ func evaluateFileContains(j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdi
 	}, nil
 }
 
+// evaluateComposite runs sub-judges in declared order and stops at the first
+// one that decides the outcome: a fail or error under "all", a pass under
+// "any". Shadow sub-judges never decide and are evaluated even after the
+// outcome is decided. Sub-judge errors are carried in Status, as is a
+// cancelled context before a deciding sub-judge; a skipped shadow changes
+// nothing. Only an invalid judge tree returns an error.
 func evaluateComposite(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.JudgeVerdict, error) {
-	if len(j.Judges) == 0 {
-		return eval.JudgeVerdict{Passed: true, Reason: "no sub-judges"}, nil
+	if err := validateTree(j); err != nil {
+		return eval.JudgeVerdict{}, err
+	}
+	if err := j.ValidateShadow(false); err != nil {
+		return eval.JudgeVerdict{}, err
 	}
 
 	require := j.Require
 	if require == "" {
 		require = "all"
 	}
-	if require != "all" && require != "any" {
-		return eval.JudgeVerdict{}, fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", require)
-	}
-
-	var details []eval.JudgeDetail
-	passCount := 0
-
+	requireAny := require == "any"
+	total := len(j.Judges)
+	deciding := 0
 	for _, sub := range j.Judges {
-		verdict, err := Evaluate(ctx, sub, jctx)
-		if err != nil {
-			return eval.JudgeVerdict{}, fmt.Errorf("sub-judge %q: %w", sub.Type, err)
-		}
-		details = append(details, eval.JudgeDetail{
-			Type:   sub.Type,
-			Passed: verdict.Passed,
-			Reason: verdict.Reason,
-		})
-		if verdict.Passed {
-			passCount++
+		if !sub.Shadow {
+			deciding++
 		}
 	}
 
-	var passed bool
-	var reason string
+	details := make([]eval.JudgeDetail, 0, total)
+	decider, errored, firstErr, skipped, shadows := -1, 0, -1, 0, 0
+	cancelled := false
+	for i, sub := range j.Judges {
+		if decider >= 0 && !sub.Shadow {
+			details = append(details, skippedDetail(sub, fmt.Sprintf("not evaluated: sub-judge %d of %d had already decided", decider+1, total)))
+			skipped++
+			continue
+		}
+		if ctx.Err() != nil {
+			if !sub.Shadow {
+				cancelled = true
+			}
+			details = append(details, skippedDetail(sub, "not evaluated: cancelled"))
+			skipped++
+			continue
+		}
+		subCtx := jctx
+		subCtx.NonDeciding = jctx.NonDeciding || sub.Shadow
+		d := evaluateSubJudge(ctx, sub, subCtx)
+		if sub.Shadow {
+			details = append(details, shadowDetail(d))
+			shadows++
+			continue
+		}
+		details = append(details, d)
+		switch d.Status {
+		case types.JudgeStatusPass:
+			if requireAny {
+				decider = i
+			}
+		case types.JudgeStatusFail:
+			if !requireAny {
+				decider = i
+			}
+		default:
+			errored++
+			if firstErr < 0 {
+				firstErr = i
+			}
+			if !requireAny {
+				decider = i
+			}
+		}
+	}
 
-	switch require {
-	case "all":
-		passed = passCount == len(j.Judges)
-		if passed {
-			reason = fmt.Sprintf("all %d sub-judges passed", len(j.Judges))
-		} else {
-			reason = fmt.Sprintf("%d of %d sub-judges passed (require all)", passCount, len(j.Judges))
+	var status, reason string
+	switch {
+	case cancelled && decider < 0:
+		status = types.JudgeStatusError
+		reason = "cancelled"
+	case decider >= 0:
+		d := details[decider]
+		status = d.Status
+		reason = fmt.Sprintf("sub-judge %d of %d (%s) %s (require %s)", decider+1, total, d.Type, subJudgeVerb(d.Status), require)
+		if skipped > 0 {
+			reason += fmt.Sprintf("; %d skipped", skipped)
 		}
-	case "any":
-		passed = passCount > 0
-		if passed {
-			reason = fmt.Sprintf("%d of %d sub-judges passed (require any)", passCount, len(j.Judges))
-		} else {
-			reason = fmt.Sprintf("0 of %d sub-judges passed (require any)", len(j.Judges))
+		reason += shadowNote(shadows)
+		if d.Status == types.JudgeStatusError {
+			reason += ": " + d.Reason
 		}
+	case requireAny && errored > 0:
+		status = types.JudgeStatusError
+		reason = fmt.Sprintf("0 of %s passed (require any)%s; %d errored, first: sub-judge %d of %d (%s): %s",
+			subJudges(deciding), shadowNote(shadows), errored, firstErr+1, total, details[firstErr].Type, details[firstErr].Reason)
+	case requireAny:
+		status = types.JudgeStatusFail
+		reason = fmt.Sprintf("0 of %s passed (require any)%s", subJudges(deciding), shadowNote(shadows))
+	default:
+		status = types.JudgeStatusPass
+		reason = fmt.Sprintf("all %s passed%s", subJudges(deciding), shadowNote(shadows))
 	}
 
 	return eval.JudgeVerdict{
-		Passed:  passed,
+		Passed:  status == types.JudgeStatusPass,
+		Status:  status,
 		Reason:  reason,
 		Details: details,
 	}, nil
+}
+
+// evaluateSubJudge runs one sub-judge and reports its verdict as a detail. An
+// error from the sub-judge becomes an error-status detail instead of aborting
+// the composite.
+func evaluateSubJudge(ctx context.Context, sub types.EvalJudge, jctx JudgeContext) eval.JudgeDetail {
+	verdict, err := Evaluate(ctx, sub, jctx)
+	d := eval.JudgeDetail{
+		Type:    sub.Type,
+		Passed:  verdict.Passed,
+		Status:  verdict.Status,
+		Reason:  verdict.Reason,
+		Record:  verdict.Record,
+		Details: verdict.Details,
+	}
+	if err != nil {
+		d.Passed = false
+		d.Status = types.JudgeStatusError
+		if d.Reason == "" {
+			d.Reason = err.Error()
+		}
+	}
+	return d
+}
+
+func skippedDetail(sub types.EvalJudge, reason string) eval.JudgeDetail {
+	return eval.JudgeDetail{Type: sub.Type, Status: eval.JudgeStatusSkipped, Reason: reason}
+}
+
+// shadowDetail reports an evaluated shadow sub-judge. Its verdict moves to
+// ShadowVerdict, so nothing that reads Status or Passed counts it.
+func shadowDetail(d eval.JudgeDetail) eval.JudgeDetail {
+	d.ShadowVerdict = d.Status
+	d.Status = eval.JudgeStatusShadow
+	d.Passed = false
+	return d
+}
+
+func shadowNote(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "; 1 shadow recorded"
+	default:
+		return fmt.Sprintf("; %d shadows recorded", n)
+	}
+}
+
+func subJudges(n int) string {
+	if n == 1 {
+		return "1 sub-judge"
+	}
+	return fmt.Sprintf("%d sub-judges", n)
+}
+
+func subJudgeVerb(status string) string {
+	switch status {
+	case types.JudgeStatusPass:
+		return "passed"
+	case types.JudgeStatusFail:
+		return "failed"
+	default:
+		return "errored"
+	}
+}
+
+// ValidateTree rejects, before any judge runs, a task's judge tree that cannot
+// be evaluated: an unknown type, an invalid llm block, a mis-specified field
+// that does not depend on the run, a malformed composite, or a shadow judge
+// that types.EvalJudge.ValidateShadow refuses. Failures that depend on the
+// run, such as a missing trace, surface at evaluation.
+func ValidateTree(j types.EvalJudge) error {
+	if err := validateTree(j); err != nil {
+		return err
+	}
+	return j.ValidateShadow(true)
+}
+
+func validateTree(j types.EvalJudge) error {
+	if !slices.Contains(KnownJudgeTypes(), j.Type) {
+		return fmt.Errorf("unknown judge type: %q", j.Type)
+	}
+	if err := ValidateLLMBlock(j); err != nil {
+		return err
+	}
+	switch j.Type {
+	case "test-command":
+		return validateTestCommand(j)
+	case "file-exists":
+		return validateFileExists(j)
+	case "file-contains":
+		_, err := fileContainsPattern(j)
+		return err
+	case "diff-review":
+		return validateDiffReview(j)
+	case "tool-trace":
+		return validateToolTrace(j)
+	case "composite":
+		return validateComposite(j)
+	}
+	return nil
+}
+
+func validateComposite(j types.EvalJudge) error {
+	if len(j.Judges) == 0 {
+		return fmt.Errorf("composite judge requires at least one sub-judge")
+	}
+	if j.Require != "" && j.Require != "all" && j.Require != "any" {
+		return fmt.Errorf("invalid require value: %q (must be \"all\" or \"any\")", j.Require)
+	}
+	for i, sub := range j.Judges {
+		if err := validateTree(sub); err != nil {
+			return fmt.Errorf("sub-judge %d: %w", i+1, err)
+		}
+	}
+	return nil
 }
