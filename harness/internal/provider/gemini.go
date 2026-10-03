@@ -57,6 +57,10 @@ type GeminiAdapter struct {
 	// production, where the URL is derived from projectID + location.
 	baseURLOverride string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// streamCounter namespaces synthesised tool-call IDs
 	// ("gemini-{streamN}-{partIdx}") across concurrent Stream calls on
 	// the same adapter, since Vertex never echoes IDs through
@@ -84,19 +88,12 @@ func NewGeminiAdapter(
 	safety []types.GeminiSafetySetting,
 ) *GeminiAdapter {
 	return &GeminiAdapter{
-		bearer:    bearer,
-		projectID: projectID,
-		location:  location,
-		safety:    safety,
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
-		Registry: quirks.DefaultRegistry(),
+		bearer:     bearer,
+		projectID:  projectID,
+		location:   location,
+		safety:     safety,
+		httpClient: newStreamingHTTPClient(),
+		Registry:   quirks.DefaultRegistry(),
 	}
 }
 
@@ -230,6 +227,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, g.streamIdleTimeout)
 
 	// The 429 add-event mirrors the Anthropic adapter so rate-limit
 	// retries surface uniformly across providers.
@@ -423,6 +421,11 @@ func (g *GeminiAdapter) consumeSSE(
 			return
 		default:
 		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
+		}
 
 		line := scanner.Text()
 		if line == "" {
@@ -578,16 +581,7 @@ func (g *GeminiAdapter) consumeSSE(
 					StopReason: stop,
 				}
 				if chunk.UsageMetadata != nil {
-					ev.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
-					if ev.OutputTokens == 0 && chunk.UsageMetadata.TotalTokenCount > 0 {
-						// Some Vertex deployments only populate the total;
-						// derive the candidate count from that minus the
-						// prompt count when possible.
-						derived := chunk.UsageMetadata.TotalTokenCount - chunk.UsageMetadata.PromptTokenCount
-						if derived > 0 {
-							ev.OutputTokens = derived
-						}
-					}
+					chunk.UsageMetadata.applyTo(&ev)
 				}
 				emitEvent(ev)
 				return
@@ -601,10 +595,14 @@ func (g *GeminiAdapter) consumeSSE(
 		// the resulting "no model output" as a generic stall rather
 		// than the safety_blocked verdict the operator needs to see.
 		if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
-			emitEvent(types.StreamEvent{
+			ev := types.StreamEvent{
 				Type:       "message_complete",
 				StopReason: "safety_blocked",
-			})
+			}
+			if chunk.UsageMetadata != nil {
+				chunk.UsageMetadata.applyTo(&ev)
+			}
+			emitEvent(ev)
 			return
 		}
 	}

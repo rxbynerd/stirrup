@@ -1,7 +1,10 @@
 package trace
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -150,15 +153,16 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	child.Start("sub-run-1", cfg)
 	child.RecordTurn(types.TurnTrace{
 		Turn:       0,
-		Tokens:     types.TokenUsage{Input: 10, Output: 20},
+		Tokens:     types.TokenUsage{Input: 10, Output: 20, CacheRead: 4},
 		StopReason: "end_turn",
 		DurationMs: 5,
 	})
 	child.RecordTurn(types.TurnTrace{
-		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 30, Output: 40},
-		StopReason: "end_turn",
-		DurationMs: 5,
+		Turn:          1,
+		Tokens:        types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
+		InputReported: true,
+		StopReason:    "end_turn",
+		DurationMs:    5,
 	})
 	child.RecordToolCall(types.ToolCallTrace{
 		Name:       "test_tool",
@@ -181,8 +185,25 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	if rt.Turns != 2 {
 		t.Errorf("RunTrace.Turns: got %d, want 2", rt.Turns)
 	}
-	if rt.TokenUsage.Input != 40 || rt.TokenUsage.Output != 60 {
-		t.Errorf("RunTrace.TokenUsage: got %+v, want {40,60}", rt.TokenUsage)
+	wantTokens := types.TokenUsage{Input: 40, Output: 60, CacheRead: 10, CacheWrite: 2, Reasoning: 3}
+	if rt.TokenUsage != wantTokens {
+		t.Errorf("RunTrace.TokenUsage: got %+v, want %+v", rt.TokenUsage, wantTokens)
+	}
+	encoded, err := json.Marshal(rt)
+	if err != nil {
+		t.Fatalf("marshal RunTrace: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"tokenUsage":{"input":40,"output":60,"cacheRead":10,"cacheWrite":2,"reasoning":3}`) {
+		t.Errorf("encoded RunTrace missing the token usage breakdown: %s", encoded)
+	}
+	parent.mu.Lock()
+	forwarded := append([]types.TurnTrace(nil), parent.turns...)
+	parent.mu.Unlock()
+	if len(forwarded) != 2 {
+		t.Fatalf("parent received %d turns, want 2", len(forwarded))
+	}
+	if forwarded[1].Tokens != (types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3}) || !forwarded[1].InputReported {
+		t.Errorf("forwarded turn lost its usage breakdown: %+v", forwarded[1])
 	}
 	if len(rt.ToolCalls) != 1 {
 		t.Errorf("RunTrace.ToolCalls: got %d, want 1", len(rt.ToolCalls))
@@ -195,6 +216,55 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	}
 	if rt.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef must be redacted in returned RunTrace, got %q", rt.Config.Provider.APIKeyRef)
+	}
+}
+
+// TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile pins that a
+// sub-agent's thinking blocks reach the parent's JSONL file under the same
+// rules as the parent's own: the signature and redacted data never persist,
+// and a secret in the thinking text is redacted.
+func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
+	var buf bytes.Buffer
+	parent := NewJSONLTraceEmitter(&buf, false)
+	parent.Start("parent-run-1", nil)
+
+	const signature = "child-thinking-signature-do-not-persist"
+	const redacted = "child-redacted-data-do-not-persist"
+	const secret = "sk-ant-api03-childthinkingleak"
+	thinking := []types.ContentBlock{
+		{Type: "thinking", Text: "the key is " + secret, ThoughtSignature: signature},
+		{Type: "redacted_thinking", ThoughtSignature: redacted},
+		{Type: "text", Text: "done"},
+	}
+
+	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child.Start("sub-run-1", nil)
+	child.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{
+			Model:    "claude-sonnet-5-5",
+			Messages: []types.Message{{Role: "assistant", Content: thinking}},
+		},
+		ModelOutput: thinking,
+	})
+	if _, err := child.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("child Finish: %v", err)
+	}
+	if _, err := parent.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("parent Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if !strings.Contains(onDisk, `"kind":"turn_record"`) {
+		t.Fatalf("child turn record not on the parent file:\n%s", onDisk)
+	}
+	for _, leaked := range []string{signature, redacted, secret} {
+		if strings.Contains(onDisk, leaked) {
+			t.Errorf("%q survived into the parent trace:\n%s", leaked, onDisk)
+		}
+	}
+	if !strings.Contains(onDisk, `"type":"thinking","text":"the key is [REDACTED]`) {
+		t.Errorf("thinking text should persist scrubbed, got:\n%s", onDisk)
 	}
 }
 

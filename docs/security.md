@@ -139,6 +139,9 @@ The most security-relevant invariants:
   budgets only `maxTokenBudget` is enforced at runtime
   (`maxCostBudget` is validated and warned about, never enforced — see
   [`configuration.md`](configuration.md#limits-and-budgets)).
+  `maxTokenBudget` consumes the provider-reported input where the
+  provider reports one, so an endpoint that under-reports its input
+  lowers consumption; the harness estimate is not a floor.
 - **Mutually exclusive credentials:** `apiKeyRef` and
   `credential.type` cannot both be set on the same provider.
 - **Cedar policy file paths** reject `..` traversal segments;
@@ -158,19 +161,46 @@ The most security-relevant invariants:
 
 ## HTTP client hardening
 
-Every provider adapter and the MCP client uses an explicit
+Every `net/http` provider adapter and the MCP client uses an explicit
 `*http.Client` with timeouts:
 
 | Client | Timeout |
 |---|---|
-| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Bedrock, Gemini) | 120 s |
+| Provider streaming (Anthropic, OpenAI, OpenAI Responses, Gemini) | 30 s dial, 10 s TLS handshake, 30 s response header, 120 s idle read on the streamed body; no total cap |
+| Provider streaming (Bedrock, AWS SDK client) | SDK defaults (30 s dial, 10 s TLS handshake) plus a 120 s idle read on the connection, set by the adapter because the SDK applies none to Bedrock Runtime; no total cap |
 | MCP client | 30 s |
 | Web fetch tool | 30 s |
+
+`stirrup harness` and `stirrup job` run every provider call under the
+run context, whose deadline is the RunConfig `timeout`.
+`ValidateRunConfig` rejects a missing or zero `timeout` and caps it at
+3600 s, so no stream outlives the run. For the `net/http` adapters that
+deadline is the only bound on writing a request body; a non-2xx error
+body is read through the same 120 s idle-read timeout, and draining a
+retried response is capped at 4 KB and 10 s. Embedders of `harnessapi`
+supply their own context and so own the run deadline.
 
 `http.DefaultClient` is never used in production code. Error
 response bodies are bounded with `io.LimitReader` to avoid
 unbounded memory consumption when a provider returns an unexpectedly
 large error payload.
+
+## Provider-side prompt caching
+
+The Anthropic adapter requests ephemeral prompt caching by default on
+every main-loop turn (see [Prompt caching](providers.md#anthropic)).
+The cached prefix is the tool list, the system prompt and the message
+history, including tool results, so the provider holds that content
+for the cache lifetime (five minutes by default). Anthropic isolates
+caches per workspace. Retention of request content, cached or not,
+falls under the operator's agreement with the provider; the harness
+makes no claim about it. No opt-out exists: caching is a built-in
+[quirk](provider-quirks.md), and quirks have no `RunConfig` override.
+
+The OpenAI Responses adapter sends a `prompt_cache_key` derived from
+the run ID. It does not send the raw run ID, but the SHA-256 digest is
+not an anonymiser: run IDs are not secret, so anyone holding a
+candidate run ID can recompute the key and match it.
 
 ## Debug builds
 

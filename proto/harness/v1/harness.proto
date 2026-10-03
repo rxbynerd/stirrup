@@ -76,7 +76,9 @@ service HarnessService {
 //   "done"
 //     - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
 //                    "stalled", "tool_failures", "cancelled", "budget_exceeded",
-//                    "error", "setup_failed", "hook_failed").
+//                    "error", "setup_failed", "hook_failed", or a provider
+//                    stop reason such as "refusal" or
+//                    "model_context_window_exceeded" passed through verbatim).
 //     - trace:       RunTrace with execution metrics. Absent when the run
 //                    failed before the loop was built (a rejected RunConfig),
 //                    since no trace was ever started.
@@ -163,7 +165,8 @@ message HarnessEvent {
   // Why the run ended. Set on "done" events.
   // Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
   //         "cancelled", "budget_exceeded", "error", "setup_failed",
-  //         "hook_failed".
+  //         "hook_failed". Provider stop reasons such as "refusal" and
+  //         "model_context_window_exceeded" pass through verbatim.
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
@@ -580,15 +583,15 @@ message RunConfig {
   HooksConfig hooks = 32;
 
   // Optional. Provider-neutral reasoning depth requested from the model:
-  // "minimal", "low", "medium", or "high". Empty says nothing on the
-  // wire and leaves the model on its provider default. Like temperature,
-  // each adapter projects it onto its native control (the Gemini adapter
-  // maps it to generationConfig.thinkingConfig.thinkingLevel) and
-  // adapters with no probed native control ignore it, so one RunConfig
-  // stays portable across providers. Per-model acceptance may be
-  // narrower than the enum (e.g. Gemini 3.7 Flash rejects "minimal");
-  // the provider quirks registry enforces that before any wire bytes
-  // are sent.
+  // "minimal", "low", "medium", "high", "xhigh", or "max". Empty says
+  // nothing on the wire and leaves the model on its provider default.
+  // Like temperature, each adapter projects it onto its native control
+  // (Gemini thinkingLevel, Anthropic output_config.effort, OpenAI
+  // reasoning effort) and models with no probed native control ignore
+  // it, so one RunConfig stays portable across providers. Per-model
+  // acceptance may be narrower than the enum (e.g. Gemini 3.7 Flash
+  // rejects "minimal"); the provider quirks registry enforces that
+  // before any wire bytes are sent.
   string reasoning_effort = 33;
 
   // Optional. Destination for the run's *answer* — a small RunResult
@@ -989,7 +992,9 @@ message RunTrace {
   // Number of agentic loop turns completed.
   int32 turns = 2;
 
-  // Total input tokens consumed across all provider calls.
+  // Total input tokens consumed across all provider calls, cached tokens
+  // included. Provider-reported where the provider reports it, estimated
+  // by the harness otherwise.
   int32 input_tokens = 3;
 
   // Total output tokens consumed across all provider calls.
@@ -1017,7 +1022,46 @@ message RunTrace {
   // Values: "success", "error", "max_turns", "verification_failed",
   //         "verification_error", "budget_exceeded", "stalled",
   //         "tool_failures", "cancelled", "timeout", "max_tokens".
+  // Provider stop reasons pass through verbatim, including:
+  //   "refusal"                       — the model declined to respond;
+  //                                     see stop_details.
+  //   "model_context_window_exceeded" — the response filled the model's
+  //                                     context window and is truncated.
+  // Consumers should preserve unknown values.
   string outcome = 8;
+
+  // Portion of input_tokens the provider served from its prompt cache.
+  // 0 when the provider does not report it.
+  int32 cache_read_tokens = 9;
+
+  // Portion of input_tokens the provider wrote to its prompt cache.
+  // 0 when the provider does not report it.
+  int32 cache_write_tokens = 10;
+
+  // Portion of output_tokens the provider reported as reasoning or
+  // thinking. 0 when the provider does not report it.
+  int32 reasoning_tokens = 11;
+
+  // The final model turn's provider-reported stop detail when the run
+  // ended on a non-tool stop reason. Absent otherwise.
+  StopDetails stop_details = 12;
+}
+
+// StopDetails mirrors types.StopDetails: a provider's structured
+// explanation of why a model response stopped. Anthropic reports it for
+// "refusal" stops.
+message StopDetails {
+  // Detail kind, e.g. "refusal".
+  string type = 1;
+
+  // Policy area of a refusal: "cyber", "bio", "frontier_llm",
+  // "reasoning_extraction", "general_harms", "other" for an undocumented
+  // value, or empty when the refusal maps to no named category.
+  string category = 2;
+
+  // Provider's human-readable reason, scrubbed of secret-shaped content.
+  // Empty when none was given.
+  string explanation = 3;
 }
 
 // ---------------------------------------------------------------------------

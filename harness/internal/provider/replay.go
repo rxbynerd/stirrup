@@ -69,16 +69,26 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 				}
 				// Estimate tokens from the JSON input size.
 				estimatedTokens += len(block.Input) / 4
-				// ThoughtSignature is forwarded so live-continuation paths
-				// seeded from this recording carry the model's prior
-				// reasoning state into the next Vertex request; pure eval
-				// replay never resubmits it, so this adds no leakage
-				// surface.
+				// Recordings drop the signature, so this is empty for a
+				// persisted recording; forwarding it keeps the replayed
+				// event identical to the recorded block.
 				ch <- types.StreamEvent{
 					Type:             "tool_call",
 					ID:               block.ID,
 					Name:             block.Name,
 					Input:            inputMap,
+					ThoughtSignature: block.ThoughtSignature,
+				}
+
+			case "thinking", "redacted_thinking":
+				// Recordings drop the signature, so a replayed block is
+				// unsigned and the Anthropic adapter will not resend it;
+				// forwarding it keeps the replayed turn's block sequence
+				// identical to the recorded one.
+				estimatedTokens += len(block.Text) / 4
+				ch <- types.StreamEvent{
+					Type:             block.Type,
+					Text:             block.Text,
 					ThoughtSignature: block.ThoughtSignature,
 				}
 			}

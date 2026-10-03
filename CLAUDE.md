@@ -103,9 +103,15 @@ to make a feature easier:
   or recording is persisted. Adding a "raw key" path is a
   regression.
 - **`http.DefaultClient` is banned in production code.** Every
-  HTTP client must declare an explicit timeout (120 s for
-  streaming, 30 s for MCP / web fetch). The pattern in
-  `provider/anthropic.go` is the template.
+  HTTP client must declare explicit timeouts. Streaming provider
+  clients use a 30 s dial, 30 s response-header and 120 s idle-read
+  bound (never a total deadline: a 64K-token turn streams for
+  minutes); MCP / web fetch clients use a 30 s total timeout. The
+  pattern is `provider/provider_util.go::newStreamingHTTPClient`
+  with the `idleTimeoutBody` wrap. Bedrock goes through the AWS SDK
+  client and gets the same 120 s bound as a per-connection read
+  deadline via `awshttp.NewBuildableClient().WithReadTimeout` (the
+  SDK exempts Bedrock Runtime from its default read timeout).
 - **Read-only modes** (`planning`, `review`, `research`, `toil`)
   enforce a hard invariant in `ValidateRunConfig`: the tool list
   excludes `write_file` / `run_command` / `edit_file`, and the

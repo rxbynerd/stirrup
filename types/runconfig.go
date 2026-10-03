@@ -137,15 +137,16 @@ type RunConfig struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 
 	// ReasoningEffort requests a reasoning depth from the model:
-	// "minimal", "low", "medium", or "high". Empty says nothing on the
-	// wire and leaves the model on its provider default. Like
-	// Temperature, this is provider-neutral: each adapter projects it
-	// onto its native control (the Gemini adapter maps it to
-	// generationConfig.thinkingConfig.thinkingLevel) and adapters with
-	// no probed native control ignore it, so one RunConfig stays
-	// portable across providers. Whether a *specific model* accepts a
-	// given level is narrower than this enum — e.g. Gemini 3.7 Flash
-	// rejects "minimal" — and is enforced by the provider quirks
+	// "minimal", "low", "medium", "high", "xhigh", or "max". Empty says
+	// nothing on the wire and leaves the model on its provider default.
+	// Like Temperature, this is provider-neutral: each adapter projects
+	// it onto its native control (Gemini thinkingLevel, Anthropic
+	// output_config.effort, OpenAI reasoning_effort / reasoning.effort)
+	// and models with no probed native control ignore it, so one
+	// RunConfig stays portable across providers. Whether a *specific
+	// model* accepts a given level is narrower than this enum — e.g.
+	// Gemini 3.7 Flash rejects "minimal", and only some Claude and GPT
+	// models accept "xhigh" — and is enforced by the provider quirks
 	// registry before any wire bytes are sent.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
@@ -1522,16 +1523,18 @@ var validGeminiSafetyThresholds = map[string]bool{
 }
 
 // validReasoningEfforts enumerates the provider-neutral reasoning
-// depths. The set is the union of what the targeted providers express
-// natively (OpenAI reasoning_effort and the Gemini thinkingLevel REST
-// enum both spell exactly these four); per-model acceptance is narrower
-// and lives in the provider quirks registry, because e.g. Gemini 3.7
-// Flash rejects "minimal" while 3.6 Flash accepts it.
+// depths: the union of the Gemini thinkingLevel REST enum (minimal to
+// high) and the Anthropic and OpenAI effort scales (low to xhigh and
+// max). Per-model acceptance is narrower and lives in the provider quirks
+// registry, because e.g. Gemini 3.7 Flash rejects "minimal" while 3.6
+// Flash accepts it.
 var validReasoningEfforts = map[string]bool{
 	"minimal": true,
 	"low":     true,
 	"medium":  true,
 	"high":    true,
+	"xhigh":   true,
+	"max":     true,
 }
 
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
@@ -2321,7 +2324,7 @@ func ValidateRunConfig(config *RunConfig) error {
 
 	if config.ReasoningEffort != "" && !validReasoningEfforts[config.ReasoningEffort] {
 		errs = append(errs, fmt.Sprintf(
-			"reasoningEffort %q must be one of minimal, low, medium, high",
+			"reasoningEffort %q must be one of minimal, low, medium, high, xhigh, max",
 			config.ReasoningEffort))
 	}
 
@@ -3279,7 +3282,7 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf(
 			"batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below the run timeout, got maxWaitSeconds=%d and timeout=%d: "+
 				"the batch wait can never expire before the run deadline, so the fallback would never fire. "+
-				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the 120 s streaming HTTP timeout — "+
+				"Leave headroom for one streaming turn — provider.retry.wallClockBudgetMs (default %d ms) plus the turn's streaming time, which has no total cap (only a 120 s idle-read timeout) — "+
 				"and for every preceding batch turn, whose wait is charged against the same deadline",
 			*batch.MaxWaitSeconds, timeoutBound, defaultProviderRetryWallClockBudgetMs))
 	}

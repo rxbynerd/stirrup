@@ -1,0 +1,39 @@
+# synthetic: the Message.ReplayFields["openai_responses.output"] value the adapter captures from response.sse in this directory (the response.completed output array, item for item); see that fixture's comment for provenance.
+[
+  {
+    "type": "reasoning",
+    "id": "rs_fx1",
+    "summary": [],
+    "encrypted_content": "gAAAAABoFX1-placeholder-encrypted-reasoning-state"
+  },
+  {
+    "type": "message",
+    "id": "msg_fx1",
+    "status": "completed",
+    "role": "assistant",
+    "phase": "commentary",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [],
+        "text": "Reading both files."
+      }
+    ]
+  },
+  {
+    "type": "function_call",
+    "id": "fc_fx1",
+    "call_id": "call_fx1",
+    "name": "read_file",
+    "arguments": "{\"path\":\"a.go\"}",
+    "status": "completed"
+  },
+  {
+    "type": "function_call",
+    "id": "fc_fx2",
+    "call_id": "call_fx2",
+    "name": "read_file",
+    "arguments": "{\"path\":\"b.go\"}",
+    "status": "completed"
+  }
+]

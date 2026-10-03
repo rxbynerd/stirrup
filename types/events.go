@@ -8,14 +8,26 @@ import (
 
 // StreamEvent represents a single event from the model's streaming response.
 //
+// A "thinking" event carries one complete reasoning block: Text is the
+// reasoning text (empty when the provider omits it) and ThoughtSignature
+// its signature. A "redacted_thinking" event carries only opaque data in
+// ThoughtSignature. Adapters emit each once per block, in stream order,
+// so the loop persists them between the surrounding text and tool calls.
+//
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
-// provider-specific value passed through verbatim as the run's outcome.
-// Adapters MUST emit "tool_use" whenever the stream contains a tool call,
-// regardless of the provider's native finish-reason vocabulary (see
-// docs/providers.md for the Vertex AI STOP-remapping example).
+// provider-specific value (e.g. Anthropic's "refusal" or
+// "model_context_window_exceeded") passed through verbatim as the run's
+// outcome. Adapters MUST emit "tool_use" whenever the stream contains a
+// tool call, regardless of the provider's native finish-reason vocabulary
+// (see docs/providers.md for the Vertex AI STOP-remapping example).
+//
+// Token counts are populated only on "message_complete" (zero means not
+// reported; see TokenUsage.MergeEvent). InputTokens is the whole prompt,
+// CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
+// subset of OutputTokens.
 type StreamEvent struct {
-	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking" | "redacted_thinking" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
@@ -25,10 +37,22 @@ type StreamEvent struct {
 	Content      []ContentBlock `json:"content,omitempty"`
 	Error        error          `json:"-"`
 
+	InputTokens      int `json:"inputTokens,omitempty"`
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
+
+	// StopDetails qualifies StopReason with provider-reported detail.
+	// Populated only on "message_complete" events; nil when the provider
+	// reported none.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
+
 	// ThoughtSignature is the opaque provider-private blob captured for
-	// round-trip on the next turn (currently Gemini only). The agentic loop
-	// copies it onto the persisted assistant ContentBlock verbatim; other
-	// adapters must leave it at the zero value. See docs/provider-quirks.md.
+	// round-trip on the next turn: Gemini's thoughtSignature on "tool_call"
+	// events, and Anthropic's signature or redacted data on "thinking" /
+	// "redacted_thinking" events. The agentic loop copies it onto the
+	// persisted assistant ContentBlock verbatim; adapters with no such
+	// state leave it at the zero value. See docs/provider-quirks.md.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 
 	// ReplayFields carries message-level provider-opaque state captured by
@@ -37,6 +61,20 @@ type StreamEvent struct {
 	// harness must not introspect or mutate the values. See
 	// docs/provider-quirks.md for the flattening rule and threading design.
 	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
+}
+
+// StopDetails is a provider's structured explanation of why a model
+// response stopped. Anthropic reports it for "refusal" stops: Type is
+// "refusal", Category names the policy area ("cyber", "bio",
+// "frontier_llm", "reasoning_extraction", "general_harms", "other" for an
+// undocumented value, or empty when the refusal maps to no named
+// category), and Explanation is the provider's human-readable reason,
+// empty when none was given. The Anthropic adapter caps Type at 64 bytes
+// and Explanation at 1 KiB.
+type StopDetails struct {
+	Type        string `json:"type"`
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
 }
 
 // ToolChoiceMode is a closed enum selecting how the model is steered
@@ -183,12 +221,11 @@ type StreamParams struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 
 	// ReasoningEffort requests a reasoning depth: "minimal", "low",
-	// "medium", or "high" (validated upstream by ValidateRunConfig).
-	// Empty means "say nothing on the wire". Adapters project it onto
-	// their native control where one has been probed — the Gemini
-	// adapter maps it to generationConfig.thinkingConfig.thinkingLevel,
-	// gated by the per-model quirks allow-list — and ignore it
-	// otherwise, so a config stays portable across providers.
+	// "medium", "high", "xhigh", or "max" (validated upstream by
+	// ValidateRunConfig). Empty means "say nothing on the wire". Adapters
+	// project it onto their native control, gated by the per-model quirks
+	// allow-list, and ignore it for models with no probed control, so a
+	// config stays portable across providers.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
 	// ToolChoice steers tool use for this turn. The zero value
@@ -211,6 +248,15 @@ type StreamParams struct {
 	// with no prompt-based fallback since it is an efficiency hint, not a
 	// correctness lever.
 	ParallelToolCalls *bool `json:"parallelToolCalls,omitempty"`
+
+	// CacheKey is a provider-neutral prompt-cache affinity hint: stable
+	// across every request of one conversation and distinct between
+	// conversations. The loop sets it to a digest of the run ID, which is
+	// not an anonymiser (run IDs are not secret) and is only as unique as
+	// the run ID; a collision shares routing affinity, not cache contents.
+	// Empty means "not a multi-turn conversation": OpenAI Responses omits
+	// `prompt_cache_key` and Anthropic omits its top-level breakpoint.
+	CacheKey string `json:"cacheKey,omitempty"`
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a

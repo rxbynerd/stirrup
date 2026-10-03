@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -306,7 +307,13 @@ func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
 }
 
 func TestAnthropicAdapter_RequestBody(t *testing.T) {
-	var received anthropicRequest
+	var received struct {
+		Model        string          `json:"model"`
+		System       json.RawMessage `json:"system"`
+		MaxTokens    int             `json:"max_tokens"`
+		CacheControl json.RawMessage `json:"cache_control"`
+		Stream       bool            `json:"stream"`
+	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
@@ -326,6 +333,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 		System:      "You are helpful.",
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
+		CacheKey:    "k",
 	})
 	if err != nil {
 		t.Fatalf("Stream() error: %v", err)
@@ -340,8 +348,11 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	if received.Model != "claude-sonnet-4-6" {
 		t.Errorf("model = %q, want claude-sonnet-4-6", received.Model)
 	}
-	if received.System != "You are helpful." {
-		t.Errorf("system = %q, want 'You are helpful.'", received.System)
+	if want := `[{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}]`; string(received.System) != want {
+		t.Errorf("system = %s, want %s", received.System, want)
+	}
+	if want := `{"type":"ephemeral"}`; string(received.CacheControl) != want {
+		t.Errorf("cache_control = %s, want %s", received.CacheControl, want)
 	}
 	if received.MaxTokens != 4096 {
 		t.Errorf("max_tokens = %d, want 4096", received.MaxTokens)
@@ -617,6 +628,85 @@ func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_DebugLogsPromptCacheUsage pins the per-stream cache
+// health line: one record carrying the three usage counts when
+// message_delta reports usage, and none when no input is reported.
+func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
+	stop := makeSSE("message_stop", `{}`)
+	cases := []struct {
+		name   string
+		stream string
+		want   map[string]float64 // nil means "no record"
+	}{
+		{
+			name:   "usage reported",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`) + stop,
+			want:   map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 4},
+		},
+		{
+			name:   "negative uncached input logs zero",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":-5,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":9}}`) + stop,
+			want:   map[string]float64{"cache.read": 2162, "cache.write": 310, "input.uncached": 0},
+		},
+		{
+			name:   "no usage",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`) + stop,
+		},
+		{
+			name:   "zero usage",
+			stream: makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":9}}`) + stop,
+		},
+		{
+			name:   "message_start usage without message_delta",
+			stream: makeSSE("message_start", `{"message":{"usage":{"input_tokens":4,"cache_creation_input_tokens":310,"cache_read_input_tokens":2162,"output_tokens":1}}}`) + stop,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = serveSSE(t, tc.stream).URL
+			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 256})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			for range ch {
+			}
+
+			var records []map[string]any
+			dec := json.NewDecoder(&buf)
+			for dec.More() {
+				var rec map[string]any
+				if err := dec.Decode(&rec); err != nil {
+					t.Fatalf("decode log: %v", err)
+				}
+				if rec["msg"] == "anthropic prompt cache" {
+					records = append(records, rec)
+				}
+			}
+			if tc.want == nil {
+				if len(records) != 0 {
+					t.Errorf("got %d prompt cache records, want 0: %v", len(records), records)
+				}
+				return
+			}
+			if len(records) != 1 {
+				t.Fatalf("got %d prompt cache records, want 1: %v", len(records), records)
+			}
+			for key, want := range tc.want {
+				if got := records[0][key]; got != want {
+					t.Errorf("%s = %v, want %v", key, got, want)
+				}
+			}
+			if got := records[0]["provider.model"]; got != "claude-sonnet-5-5" {
+				t.Errorf("provider.model = %v, want claude-sonnet-5-5", got)
+			}
+		})
+	}
+}
+
 func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	// Send a content_block_delta for an index that has no content_block_start.
 	// The adapter should skip it silently — no panic, no error event.
@@ -881,10 +971,10 @@ func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 	}
 }
 
-func TestAnthropicAdapter_HasTimeout(t *testing.T) {
+func TestAnthropicAdapter_StreamingClientTimeouts(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
-	if adapter.httpClient.Timeout == 0 {
-		t.Error("HTTP client should have a non-zero timeout")
+	if adapter.httpClient.Timeout != 0 {
+		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)
 	}
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
 	if !ok {
@@ -1283,5 +1373,225 @@ func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
 
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("server attempts: got %d, want 1 — a mid-stream failure must not be retried", got)
+	}
+}
+
+// streamAnthropicSSE serves body as a 200 SSE response and returns every
+// StreamEvent the adapter emits for it.
+func streamAnthropicSSE(t *testing.T, body string) []types.StreamEvent {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-5-5",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	return collectEvents(t, ch)
+}
+
+func TestSSE_MessageDeltaRefusalCarriesStopDetails(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"I can't help with that."}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null,"stop_details":{"type":"refusal","category":"cyber","explanation":"This request was declined because it conflicts with Anthropic's Usage Policy.","recommended_model":null}},"usage":{"output_tokens":12}}`),
+		makeSSE("message_stop", `{"type":"message_stop"}`),
+	))
+
+	last := events[len(events)-1]
+	if last.Type != "message_complete" || last.StopReason != "refusal" {
+		t.Fatalf("last event = %+v, want message_complete/refusal", last)
+	}
+	want := types.StopDetails{
+		Type:        "refusal",
+		Category:    "cyber",
+		Explanation: "This request was declined because it conflicts with Anthropic's Usage Policy.",
+	}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+	if last.OutputTokens != 12 {
+		t.Errorf("OutputTokens = %d, want 12", last.OutputTokens)
+	}
+}
+
+func TestSSE_MessageDeltaRefusalNullCategory(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":null,"explanation":null}}}`),
+		makeSSE("message_stop", `{"type":"message_stop"}`),
+	))
+
+	last := events[len(events)-1]
+	want := types.StopDetails{Type: "refusal"}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+}
+
+func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
+	cases := map[string]string{
+		"null":       `{"delta":{"stop_reason":"end_turn","stop_details":null}}`,
+		"absent":     `{"delta":{"stop_reason":"end_turn"}}`,
+		"empty":      `{"delta":{"stop_reason":"end_turn","stop_details":{}}}`,
+		"not object": `{"delta":{"stop_reason":"end_turn","stop_details":"refusal"}}`,
+	}
+	for name, delta := range cases {
+		t.Run(name, func(t *testing.T) {
+			events := streamAnthropicSSE(t, joinLines(
+				makeSSE("message_delta", delta),
+				makeSSE("message_stop", `{}`),
+			))
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Type != "message_complete" || events[0].StopReason != "end_turn" {
+				t.Errorf("event = %+v, want message_complete/end_turn", events[0])
+			}
+			if events[0].StopDetails != nil {
+				t.Errorf("StopDetails = %+v, want nil", events[0].StopDetails)
+			}
+		})
+	}
+}
+
+// TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields pins that a
+// malformed field degrades on its own: the refusal type survives a
+// category of the wrong JSON type.
+func TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":{"nested":true},"explanation":42}}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	last := events[len(events)-1]
+	want := types.StopDetails{Type: "refusal", Category: "other"}
+	if last.StopDetails == nil || *last.StopDetails != want {
+		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
+	}
+}
+
+func TestParseAnthropicStopDetails_BoundsAndCategories(t *testing.T) {
+	longExplanation := strings.Repeat("a", maxStopDetailsExplanationBytes-1) + "é" + "tail"
+	cases := []struct {
+		name string
+		raw  string
+		want types.StopDetails
+	}{
+		{
+			name: "documented category kept",
+			raw:  `{"type":"refusal","category":"reasoning_extraction"}`,
+			want: types.StopDetails{Type: "refusal", Category: "reasoning_extraction"},
+		},
+		{
+			name: "undocumented category is other",
+			raw:  `{"type":"refusal","category":"new_policy_area"}`,
+			want: types.StopDetails{Type: "refusal", Category: "other"},
+		},
+		{
+			name: "numeric category is other",
+			raw:  `{"type":"refusal","category":7}`,
+			want: types.StopDetails{Type: "refusal", Category: "other"},
+		},
+		{
+			name: "empty category stays empty",
+			raw:  `{"type":"refusal","category":""}`,
+			want: types.StopDetails{Type: "refusal"},
+		},
+		{
+			name: "type capped",
+			raw:  `{"type":"` + strings.Repeat("t", 100) + `"}`,
+			want: types.StopDetails{Type: strings.Repeat("t", maxStopDetailsTypeBytes)},
+		},
+		{
+			name: "explanation capped on a rune boundary",
+			raw:  `{"type":"refusal","explanation":"` + longExplanation + `"}`,
+			want: types.StopDetails{Type: "refusal", Explanation: strings.Repeat("a", maxStopDetailsExplanationBytes-1)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAnthropicStopDetails(json.RawMessage(tc.raw))
+			if got == nil || *got != tc.want {
+				t.Errorf("parseAnthropicStopDetails(%s) = %+v, want %+v", tc.raw, got, tc.want)
+			}
+			if got != nil && !utf8.ValidString(got.Explanation) {
+				t.Errorf("Explanation %q is not valid UTF-8", got.Explanation)
+			}
+		})
+	}
+}
+
+func TestSSE_ErrorEventSurfacesErrorType(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+		makeSSE("error", `{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+
+	if len(events) != 2 {
+		t.Fatalf("expected text_delta then error, got %d events: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" {
+		t.Errorf("event[0] = %+v, want text_delta", events[0])
+	}
+	last := events[1]
+	if last.Type != "error" || last.Error == nil {
+		t.Fatalf("event[1] = %+v, want an error event", last)
+	}
+	if got, want := last.Error.Error(), "anthropic API stream error (overloaded_error): Overloaded"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSSE_ErrorEventBeforeContent(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("error", `{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	if len(events) != 1 || events[0].Type != "error" || events[0].Error == nil {
+		t.Fatalf("events = %+v, want a single error event", events)
+	}
+	if got, want := events[0].Error.Error(), "anthropic API stream error (api_error): Internal server error"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSSE_TruncatedErrorEventData(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
+		makeSSE("error", `{"type":"error","error":{"type":"overloaded_er`),
+	))
+	last := events[len(events)-1]
+	if last.Type != "error" || last.Error == nil {
+		t.Fatalf("last event = %+v, want an error event", last)
+	}
+	if got, want := last.Error.Error(), "anthropic API stream error"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestAnthropicStreamError_DegenerateBodies(t *testing.T) {
+	cases := map[string]string{
+		`{"error":{"message":"boom"}}`: "anthropic API stream error: boom",
+		`{}`:                           "anthropic API stream error",
+		`not json`:                     "anthropic API stream error",
+	}
+	for data, want := range cases {
+		if got := anthropicStreamError(data).Error(); got != want {
+			t.Errorf("anthropicStreamError(%q) = %q, want %q", data, got, want)
+		}
 	}
 }

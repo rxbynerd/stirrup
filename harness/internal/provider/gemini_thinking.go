@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
@@ -14,13 +15,21 @@ import (
 // keywords. A rejection surfaces as a config error naming the accepted
 // levels rather than as an opaque HTTP 400 mid-stream.
 //
-// An empty allow-list means "not probed for this model": the level passes
-// through untouched so a newly released model is never blocked by a stale
-// guess. The types layer has already confirmed the level is a member of
-// the REST enum.
+// An empty allow-list means "not probed for this model": a level inside
+// the thinkingLevel REST enum passes through untouched so a newly released
+// model is never blocked by a stale guess. Levels beyond that enum ("xhigh",
+// "max") have no Gemini spelling and are always rejected.
 func validateGeminiThinkingLevel(level, model string, q quirks.ProviderQuirks) error {
+	if level == "" {
+		return nil
+	}
+	if !slices.Contains(geminiThinkingLevelEnum, strings.ToLower(level)) {
+		return fmt.Errorf(
+			"gemini: reasoningEffort %q has no thinkingLevel equivalent for model %q (supported: %s)",
+			level, model, strings.Join(geminiThinkingLevelEnum, ", "))
+	}
 	allowed := q.BehaviourFlags.Gemini.ThinkingLevels
-	if level == "" || len(allowed) == 0 {
+	if len(allowed) == 0 {
 		return nil
 	}
 	for _, a := range allowed {
@@ -32,3 +41,7 @@ func validateGeminiThinkingLevel(level, model string, q quirks.ProviderQuirks) e
 		"gemini: reasoningEffort %q is not supported by model %q (supported: %s)",
 		level, model, strings.Join(allowed, ", "))
 }
+
+// geminiThinkingLevelEnum is the generationConfig.thinkingConfig
+// .thinkingLevel REST enum, lower-cased.
+var geminiThinkingLevelEnum = []string{"minimal", "low", "medium", "high"}

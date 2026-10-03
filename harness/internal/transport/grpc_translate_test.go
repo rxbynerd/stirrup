@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -998,7 +999,7 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			tr := &types.RunTrace{
 				ID:          "run-141",
 				Turns:       3,
-				TokenUsage:  types.TokenUsage{Input: 120, Output: 45},
+				TokenUsage:  types.TokenUsage{Input: 120, Output: 45, CacheRead: 80, CacheWrite: 30, Reasoning: 12},
 				StartedAt:   start,
 				CompletedAt: start.Add(2500 * time.Millisecond),
 				Outcome:     tc.outcome,
@@ -1019,6 +1020,10 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			if pt.InputTokens != 120 || pt.OutputTokens != 45 {
 				t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", pt.InputTokens, pt.OutputTokens)
 			}
+			if pt.CacheReadTokens != 80 || pt.CacheWriteTokens != 30 || pt.ReasoningTokens != 12 {
+				t.Errorf("token breakdown: got cache_read=%d cache_write=%d reasoning=%d, want 80/30/12",
+					pt.CacheReadTokens, pt.CacheWriteTokens, pt.ReasoningTokens)
+			}
 			if pt.DurationMs != 2500 {
 				t.Errorf("DurationMs: got %d, want 2500", pt.DurationMs)
 			}
@@ -1037,7 +1042,98 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 			if decoded.StopReason != tc.outcome {
 				t.Errorf("stop_reason did not survive wire round-trip: got %q, want %q", decoded.StopReason, tc.outcome)
 			}
+			if decoded.CacheReadTokens != 80 || decoded.CacheWriteTokens != 30 || decoded.ReasoningTokens != 12 {
+				t.Errorf("token breakdown did not survive wire round-trip: got %d/%d/%d, want 80/30/12",
+					decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
+			}
 		})
+	}
+}
+
+func TestRunTraceToProto_ZeroBreakdownRoundTrip(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{ID: "run-zero", TokenUsage: types.TokenUsage{Input: 120, Output: 45}})
+	raw, err := proto.Marshal(pt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.InputTokens != 120 || decoded.OutputTokens != 45 {
+		t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", decoded.InputTokens, decoded.OutputTokens)
+	}
+	if decoded.CacheReadTokens != 0 || decoded.CacheWriteTokens != 0 || decoded.ReasoningTokens != 0 {
+		t.Errorf("token breakdown: got %d/%d/%d, want all zero",
+			decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
+	}
+}
+
+func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{TokenUsage: types.TokenUsage{
+		Input:     math.MaxInt,
+		Output:    math.MaxInt32 + 1,
+		CacheRead: math.MaxInt32,
+		Reasoning: math.MinInt,
+	}})
+	if pt.InputTokens != math.MaxInt32 || pt.OutputTokens != math.MaxInt32 {
+		t.Errorf("tokens: got in=%d out=%d, want both MaxInt32", pt.InputTokens, pt.OutputTokens)
+	}
+	if pt.CacheReadTokens != math.MaxInt32 || pt.ReasoningTokens != math.MinInt32 {
+		t.Errorf("breakdown: got cache_read=%d reasoning=%d, want MaxInt32/MinInt32", pt.CacheReadTokens, pt.ReasoningTokens)
+	}
+}
+
+// TestRunTraceToProto_StopDetails pins the stop_details mirror through a
+// wire round-trip, and that a nil StopDetails stays absent on the wire.
+func TestRunTraceToProto_StopDetails(t *testing.T) {
+	tr := &types.RunTrace{
+		ID:      "run-refused",
+		Outcome: "refusal",
+		StopDetails: &types.StopDetails{
+			Type:        "refusal",
+			Category:    "reasoning_extraction",
+			Explanation: "declined",
+		},
+	}
+	raw, err := proto.Marshal(runTraceToProto(tr))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetStopDetails()
+	if got.GetType() != "refusal" || got.GetCategory() != "reasoning_extraction" || got.GetExplanation() != "declined" {
+		t.Errorf("stop_details = %v, want refusal/reasoning_extraction/declined", got)
+	}
+
+	if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.StopDetails != nil {
+		t.Errorf("stop_details = %v, want absent for a nil StopDetails", pt.StopDetails)
+	}
+}
+
+// TestRunTraceToProto_PartialStopDetails pins that a refusal with no
+// category or explanation still reaches the wire as a present message.
+func TestRunTraceToProto_PartialStopDetails(t *testing.T) {
+	raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{
+		Outcome:     "refusal",
+		StopDetails: &types.StopDetails{Type: "refusal"},
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetStopDetails()
+	if got == nil {
+		t.Fatal("stop_details absent, want a message with type refusal")
+	}
+	if got.GetType() != "refusal" || got.GetCategory() != "" || got.GetExplanation() != "" {
+		t.Errorf("stop_details = %v, want type refusal with empty category and explanation", got)
 	}
 }
 

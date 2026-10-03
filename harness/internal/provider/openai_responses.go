@@ -2,15 +2,21 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -33,6 +39,10 @@ type OpenAIResponsesAdapter struct {
 	apiKeyHeader string
 	queryParams  map[string]string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
 	// Logger; see its doc comment for the field-by-field contract.
 	AdapterDeps
@@ -44,6 +54,10 @@ type OpenAIResponsesAdapter struct {
 	// strictSchemas memoises strict-mode schema rewrites within this
 	// adapter's lifetime. See OpenAICompatibleAdapter.strictSchemas.
 	strictSchemas *strictSchemaCache
+
+	// replayWarnedNoEncrypted limits the missing encrypted_content replay
+	// WARN to once per adapter.
+	replayWarnedNoEncrypted atomic.Bool
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
@@ -56,15 +70,8 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAIResponsesAdapter{
-		bearer: bearer,
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
+		bearer:        bearer,
+		httpClient:    newStreamingHTTPClient(),
 		baseURL:       baseURL,
 		apiKeyHeader:  auth.APIKeyHeader,
 		queryParams:   auth.QueryParams,
@@ -81,6 +88,10 @@ func (a *OpenAIResponsesAdapter) WireTap(out io.Writer) {
 }
 
 // --- Responses API wire format ---
+
+// responsesIncludeEncryptedReasoning is the include value that returns each
+// reasoning item's encrypted_content, which stateless replay requires.
+const responsesIncludeEncryptedReasoning = "reasoning.encrypted_content"
 
 // responsesRequest is the JSON body sent to POST /v1/responses.
 //
@@ -109,6 +120,14 @@ type responsesRequest struct {
 	// shared with the Chat Completions API. A nil pointer omits the key;
 	// buildResponsesRequest sets it only when requested and supported.
 	ParallelToolCalls *bool `json:"-"`
+	// ReasoningEffort is the wire value for reasoning.effort. Empty omits
+	// the reasoning object.
+	ReasoningEffort string `json:"-"`
+	// PromptCacheKey is the wire value for prompt_cache_key. Empty omits
+	// the key.
+	PromptCacheKey string `json:"-"`
+	// IncludeEncryptedReasoning emits include:["reasoning.encrypted_content"].
+	IncludeEncryptedReasoning bool `json:"-"`
 
 	// TokenField / StoreMode / InputItemShape carry the resolved Responses
 	// quirks for this request and steer MarshalJSON; none is serialised under
@@ -121,14 +140,13 @@ type responsesRequest struct {
 }
 
 // MarshalJSON projects the canonical responsesRequest into the Responses
-// wire body the resolved quirks selected. Keys are emitted in the exact
-// order the prior struct-tag marshalling produced — model, instructions,
-// input, tools, <token key>, temperature, stream, store, parallel_tool_calls
-// — so the body is byte-identical to the pre-quirks shape; the projection
-// merely moves the key-selection decisions (token-budget key, store field)
-// out of static struct tags and behind the resolved behaviour flags.
+// wire body the resolved quirks selected. Keys are emitted in a fixed
+// order — model, instructions, input, tools, <token key>, temperature,
+// stream, store, include, parallel_tool_calls, reasoning,
+// prompt_cache_key — and the token-budget key and store value come from
+// the resolved behaviour flags rather than static struct tags.
 //
-// Projection rules (matching the prior omitempty / non-omitempty tags):
+// Projection rules:
 //   - "model" — always.
 //   - "instructions" — omitted when empty (system prompt absent).
 //   - "input" — always (even an empty array).
@@ -139,7 +157,11 @@ type responsesRequest struct {
 //   - "temperature" — omitted when nil.
 //   - "stream" — omitted when false.
 //   - "store" — always emitted; StoreMode selects the value (false today).
+//   - "include" — ["reasoning.encrypted_content"] when
+//     IncludeEncryptedReasoning is set; omitted otherwise.
 //   - "parallel_tool_calls" — omitted when nil.
+//   - "reasoning" — {"effort": ...}; omitted when ReasoningEffort is empty.
+//   - "prompt_cache_key" — omitted when PromptCacheKey is empty.
 func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	if r.InputItemShape != quirks.TypedInputItems {
 		return nil, fmt.Errorf("responsesRequest: unsupported input-item shape %v", r.InputItemShape)
@@ -218,9 +240,30 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
+	if r.IncludeEncryptedReasoning {
+		first = writeKey(first, "include")
+		if err := writeRaw([]string{responsesIncludeEncryptedReasoning}); err != nil {
+			return nil, err
+		}
+	}
+
 	if r.ParallelToolCalls != nil {
 		first = writeKey(first, "parallel_tool_calls")
 		if err := writeRaw(*r.ParallelToolCalls); err != nil {
+			return nil, err
+		}
+	}
+
+	if r.ReasoningEffort != "" {
+		first = writeKey(first, "reasoning")
+		if err := writeRaw(map[string]string{"effort": r.ReasoningEffort}); err != nil {
+			return nil, err
+		}
+	}
+
+	if r.PromptCacheKey != "" {
+		first = writeKey(first, "prompt_cache_key")
+		if err := writeRaw(r.PromptCacheKey); err != nil {
 			return nil, err
 		}
 	}
@@ -291,12 +334,33 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 		// than silently ignoring it. StoreMode keeps its zero value (StoreFalse).
 		_ = store
 	}
+	if v, ok := raw["include"]; ok {
+		var include []string
+		if err := json.Unmarshal(v, &include); err != nil {
+			return fmt.Errorf("responsesRequest.include: %w", err)
+		}
+		r.IncludeEncryptedReasoning = slices.Contains(include, responsesIncludeEncryptedReasoning)
+	}
 	if v, ok := raw["parallel_tool_calls"]; ok {
 		var b bool
 		if err := json.Unmarshal(v, &b); err != nil {
 			return fmt.Errorf("responsesRequest.parallel_tool_calls: %w", err)
 		}
 		r.ParallelToolCalls = &b
+	}
+	if v, ok := raw["reasoning"]; ok {
+		var reasoning struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.Unmarshal(v, &reasoning); err != nil {
+			return fmt.Errorf("responsesRequest.reasoning: %w", err)
+		}
+		r.ReasoningEffort = reasoning.Effort
+	}
+	if v, ok := raw["prompt_cache_key"]; ok {
+		if err := json.Unmarshal(v, &r.PromptCacheKey); err != nil {
+			return fmt.Errorf("responsesRequest.prompt_cache_key: %w", err)
+		}
 	}
 	return nil
 }
@@ -341,21 +405,29 @@ func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
 // endpoint) reject an empty "output" on message / function_call items.
 // See docs/provider-quirks.md for the function_call_output invariant.
 type responsesInput struct {
-	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output"
+	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "reasoning" (Raw only)
 	Role      string                  `json:"-"` // for "message"
 	Content   []responsesContentBlock `json:"-"` // for "message"
 	Name      string                  `json:"-"` // for "function_call"
 	CallID    string                  `json:"-"` // for "function_call" / "function_call_output"
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
+
+	// Raw is a stored output item to replay; when set, MarshalJSON returns
+	// it and ignores the typed fields. The enclosing json.Marshal compacts
+	// and HTML-escapes it, so the wire JSON is semantically identical.
+	Raw json.RawMessage `json:"-"`
 }
 
 // MarshalJSON emits only the wire fields valid for the input item's Type
 // discriminant. Each Type maps to a dedicated wire struct so a future
 // edit cannot accidentally leak a field across variants. function_call_output
 // requires the "output" key even when empty, so its wire struct's Output
-// field has no omitempty.
+// field has no omitempty. A replayed item (Raw set) is emitted as stored.
 func (r responsesInput) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		return r.Raw, nil
+	}
 	switch r.Type {
 	case "message":
 		return json.Marshal(responsesMessageInputWire{
@@ -390,15 +462,22 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 // roundtrips and any future caller-side parsing continues to work. The
 // adapter itself never decodes request bodies — this exists for symmetry
 // and to keep tests that send-then-receive a request able to inspect the
-// shape through the same struct that built it.
+// shape through the same struct that built it. An item carrying an id is a
+// replayed output item (reconstructed items never carry one) and is kept
+// in Raw.
 func (r *responsesInput) UnmarshalJSON(data []byte) error {
 	var head struct {
 		Type string `json:"type"`
+		ID   string `json:"id"`
 	}
 	if err := json.Unmarshal(data, &head); err != nil {
 		return err
 	}
 	r.Type = head.Type
+	if head.ID != "" && replayableResponsesItem(head.Type) {
+		r.Raw = append(json.RawMessage(nil), data...)
+		return nil
+	}
 	switch head.Type {
 	case "message":
 		var w responsesMessageInputWire
@@ -490,21 +569,44 @@ type responsesTool struct {
 
 // responsesOutputItem is a single item in the response.output array.
 // Streaming events deliver these incrementally via response.output_item.added
-// and response.output_item.done.
+// and response.output_item.done. Replay forwards the raw item JSON, so
+// fields such as a reasoning item's encrypted_content are not modelled here.
 type responsesOutputItem struct {
-	Type      string `json:"type"` // "message" | "function_call" | "reasoning"
-	ID        string `json:"id,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Type      string                  `json:"type"` // "message" | "function_call" | "reasoning"
+	ID        string                  `json:"id,omitempty"`
+	CallID    string                  `json:"call_id,omitempty"`
+	Name      string                  `json:"name,omitempty"`
+	Arguments string                  `json:"arguments,omitempty"`
+	Status    string                  `json:"status,omitempty"`
+	Phase     string                  `json:"phase,omitempty"`   // "message": "commentary" | "final_answer"
+	Content   []responsesContentBlock `json:"content,omitempty"` // "message": output_text / refusal parts
 }
 
-// responsesUsage tracks token usage on response.completed.
+// responsesUsage is the usage object on response.completed and
+// response.incomplete. input_tokens already includes cached_tokens and
+// cache_write_tokens; reasoning_tokens is a subset of output_tokens.
 type responsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens,omitempty"`
+	InputTokens        int `json:"input_tokens"`
+	InputTokensDetails struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
+	OutputTokens        int `json:"output_tokens"`
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+	TotalTokens int `json:"total_tokens,omitempty"`
+}
+
+// applyTo copies the usage onto a message_complete event.
+func (u responsesUsage) applyTo(ev *types.StreamEvent) {
+	setEventUsage(ev, tokenReport{
+		Input:      u.InputTokens,
+		Output:     u.OutputTokens,
+		CacheRead:  u.InputTokensDetails.CachedTokens,
+		CacheWrite: u.InputTokensDetails.CacheWriteTokens,
+		Reasoning:  u.OutputTokensDetails.ReasoningTokens,
+	})
 }
 
 // responsesResponse is the response object delivered on response.completed
@@ -516,16 +618,75 @@ type responsesResponse struct {
 	} `json:"incomplete_details,omitempty"`
 	Output []responsesOutputItem `json:"output,omitempty"`
 	Usage  *responsesUsage       `json:"usage,omitempty"`
+
+	// RawOutput holds each output item as received, for replay capture.
+	RawOutput []json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the envelope once, keeping each output item's raw
+// JSON beside its typed form.
+func (r *responsesResponse) UnmarshalJSON(data []byte) error {
+	type plain responsesResponse
+	var wire struct {
+		plain
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = responsesResponse(wire.plain)
+	r.RawOutput = wire.Output
+	r.Output = make([]responsesOutputItem, len(wire.Output))
+	for i, raw := range wire.Output {
+		if err := json.Unmarshal(raw, &r.Output[i]); err != nil {
+			return fmt.Errorf("output[%d]: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // responsesErrorResponse is the error JSON returned for non-2xx responses.
 // OpenAI uses the same envelope across Chat Completions and Responses.
 type responsesErrorResponse struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    string `json:"code,omitempty"`
+		Message string             `json:"message"`
+		Type    string             `json:"type"`
+		Code    responsesErrorCode `json:"code,omitempty"`
 	} `json:"error"`
+}
+
+// responsesErrorCode decodes an error.code sent as a string or a number,
+// as gateways send either. Any other JSON type decodes to "" rather than
+// failing the surrounding error payload.
+type responsesErrorCode string
+
+func (c *responsesErrorCode) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*c = responsesErrorCode(s)
+		return nil
+	}
+	var n json.Number
+	if json.Unmarshal(b, &n) == nil {
+		*c = responsesErrorCode(n.String())
+		return nil
+	}
+	*c = ""
+	return nil
+}
+
+// responsesErrorText renders an OpenAI error message with its error.code,
+// which is what tells a policy stop (misalignment_policy_violation) or an
+// exhausted quota apart from a transient failure.
+func responsesErrorText(message string, code responsesErrorCode) string {
+	switch {
+	case code == "":
+		return message
+	case message == "":
+		return "(code: " + string(code) + ")"
+	default:
+		return message + " (code: " + string(code) + ")"
+	}
 }
 
 // responsesCallState tracks an in-flight function call assembled across
@@ -542,6 +703,287 @@ type responsesCallState struct {
 	emitted   bool // emitted at most once even if both done events fire
 }
 
+// --- Output replay ---
+
+const (
+	// responsesReplayKey is the adapter-owned Message.ReplayFields key that
+	// carries one turn's ordered output items as a single JSON array. The
+	// dotted form is not a threadable Chat Completions replay path, so the
+	// openai-compatible adapter never echoes it.
+	responsesReplayKey = "openai_responses.output"
+
+	// responsesReplayOriginKey carries, as a JSON string, the
+	// responsesReplayOrigin of the stored items. Items replay only to the
+	// origin that produced them.
+	responsesReplayOriginKey = "openai_responses.origin"
+
+	// maxResponsesReplayBytes caps the output items stored per turn. It is
+	// a guard, not a measurement: encrypted_content has no documented size.
+	maxResponsesReplayBytes = 1 << 20
+)
+
+// Reasons a turn's output items are not replayed. They are logged; item
+// content never is.
+const (
+	replayReasonUndecodable     = "output item failed to decode"
+	replayReasonUnreplayable    = "unreplayable output item type"
+	replayReasonNoEncrypted     = "reasoning item has no encrypted_content"
+	replayReasonNoCallID        = "function_call item has no call_id"
+	replayReasonNotAssistant    = "message item is not assistant output"
+	replayReasonNotCompleted    = "output item is not completed"
+	replayReasonEndsInReasoning = "turn ends with a reasoning item"
+	replayReasonIncomplete      = "response is incomplete"
+	replayReasonOverCap         = "output items exceed replay size cap"
+)
+
+// responsesReplayOrigin identifies the model and endpoint a turn's output
+// items came from. The base URL is hashed so ReplayFields never carries it.
+func responsesReplayOrigin(model, baseURL string) string {
+	sum := sha256.Sum256([]byte(baseURL))
+	return model + "@" + hex.EncodeToString(sum[:6])
+}
+
+// responsesReplayOriginFor returns the replay origin for a request, or ""
+// when the resolved quirks do not replay output items, which disables both
+// capture and replay.
+func responsesReplayOriginFor(q quirks.ProviderQuirks, model, baseURL string) string {
+	if !q.BehaviourFlags.OpenAIResponses.ReplayOutputItems {
+		return ""
+	}
+	return responsesReplayOrigin(model, baseURL)
+}
+
+// replayableResponsesItem reports whether an output item type can be
+// replayed verbatim as an input item. Other types (hosted-tool calls,
+// program items, compaction) disable replay for their turn.
+func replayableResponsesItem(itemType string) bool {
+	switch itemType {
+	case "reasoning", "message", "function_call":
+		return true
+	}
+	return false
+}
+
+// responsesReplayItem is the part of an output item that decides whether
+// it can be replayed.
+type responsesReplayItem struct {
+	responsesOutputItem
+	Role             string `json:"role"`
+	EncryptedContent string `json:"encrypted_content"`
+}
+
+// checkResponsesReplayItems decodes a turn's output items and reports why
+// they cannot be replayed, or an empty reason when they can. Capture and
+// translation apply the same rules, so an edited stored array is refused.
+func checkResponsesReplayItems(raws []json.RawMessage) (items []responsesReplayItem, reason, itemType string) {
+	items = make([]responsesReplayItem, len(raws))
+	for i, raw := range raws {
+		item := &items[i]
+		if err := json.Unmarshal(raw, item); err != nil {
+			return nil, replayReasonUndecodable, ""
+		}
+		switch item.Type {
+		case "reasoning":
+			if item.EncryptedContent == "" {
+				return nil, replayReasonNoEncrypted, item.Type
+			}
+		case "function_call":
+			if item.CallID == "" {
+				return nil, replayReasonNoCallID, item.Type
+			}
+		case "message":
+			if item.Role != "assistant" {
+				return nil, replayReasonNotAssistant, item.Type
+			}
+			for _, part := range item.Content {
+				if part.Type != "output_text" && part.Type != "refusal" {
+					return nil, replayReasonNotAssistant, item.Type
+				}
+			}
+		default:
+			return nil, replayReasonUnreplayable, item.Type
+		}
+		if item.Status != "" && item.Status != "completed" {
+			return nil, replayReasonNotCompleted, item.Type
+		}
+	}
+	if n := len(items); n > 0 && items[n-1].Type == "reasoning" {
+		return nil, replayReasonEndsInReasoning, ""
+	}
+	return items, "", ""
+}
+
+// stripResponsesCreatedBy drops created_by, an output-only field that the
+// official SDK also removes before resending an item.
+func stripResponsesCreatedBy(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if _, ok := fields["created_by"]; !ok {
+		return raw, nil
+	}
+	delete(fields, "created_by")
+	return json.Marshal(fields)
+}
+
+// responsesReplayCapture collects one turn's output items for replay.
+// Replay is all-or-nothing per turn, and logs carry sizes and item types
+// only.
+type responsesReplayCapture struct {
+	logger *slog.Logger
+	model  string
+	origin string
+
+	// warnedNoEncrypted is shared by every turn of one adapter, so a
+	// missing encrypted_content is a WARN once and DEBUG afterwards.
+	warnedNoEncrypted *atomic.Bool
+
+	streamed []responsesStreamedItem
+	size     int
+	disabled bool
+}
+
+// responsesStreamedItem is one raw item from response.output_item.done.
+type responsesStreamedItem struct {
+	outputIdx int
+	raw       json.RawMessage
+}
+
+// newResponsesReplayCapture returns the capture for one turn. An empty
+// origin disables capture without logging.
+func newResponsesReplayCapture(logger *slog.Logger, model, origin string, warnedNoEncrypted *atomic.Bool) *responsesReplayCapture {
+	return &responsesReplayCapture{
+		logger:            logger,
+		model:             model,
+		origin:            origin,
+		warnedNoEncrypted: warnedNoEncrypted,
+		disabled:          origin == "",
+	}
+}
+
+// add records a completed output item from response.output_item.done.
+func (c *responsesReplayCapture) add(ctx context.Context, outputIdx int, itemType string, raw json.RawMessage) {
+	if c.disabled {
+		return
+	}
+	if !replayableResponsesItem(itemType) {
+		c.disable(ctx, replayReasonUnreplayable, slog.String("item_type", itemType))
+		return
+	}
+	if c.size+len(raw) > maxResponsesReplayBytes {
+		c.disable(ctx, replayReasonOverCap,
+			slog.Int("bytes", c.size+len(raw)),
+			slog.Int("limit_bytes", maxResponsesReplayBytes))
+		return
+	}
+	c.size += len(raw)
+	c.streamed = append(c.streamed, responsesStreamedItem{outputIdx: outputIdx, raw: raw})
+}
+
+// finalize returns the ReplayFields for the turn's message_complete event,
+// or nil when the turn is not replayed. output is the terminal event's
+// response.output array; when present it is authoritative (it carries the
+// final encrypted_content), otherwise the streamed done items are used.
+func (c *responsesReplayCapture) finalize(ctx context.Context, output []json.RawMessage, incomplete bool) map[string]json.RawMessage {
+	if c.disabled {
+		return nil
+	}
+	if incomplete {
+		c.disable(ctx, replayReasonIncomplete)
+		return nil
+	}
+	items := output
+	if len(items) == 0 {
+		sort.SliceStable(c.streamed, func(i, j int) bool {
+			return c.streamed[i].outputIdx < c.streamed[j].outputIdx
+		})
+		items = make([]json.RawMessage, len(c.streamed))
+		for i, s := range c.streamed {
+			items[i] = s.raw
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	if _, reason, itemType := checkResponsesReplayItems(items); reason != "" {
+		var attrs []slog.Attr
+		if itemType != "" {
+			attrs = append(attrs, slog.String("item_type", itemType))
+		}
+		c.disable(ctx, reason, attrs...)
+		return nil
+	}
+
+	stored := make([]json.RawMessage, len(items))
+	size := 0
+	for i, raw := range items {
+		item, err := stripResponsesCreatedBy(raw)
+		if err != nil {
+			c.disable(ctx, replayReasonUndecodable)
+			return nil
+		}
+		stored[i] = item
+		size += len(item)
+	}
+	if size > maxResponsesReplayBytes {
+		c.disable(ctx, replayReasonOverCap,
+			slog.Int("bytes", size),
+			slog.Int("limit_bytes", maxResponsesReplayBytes))
+		return nil
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(size + len(stored) + 1)
+	buf.WriteByte('[')
+	for i, item := range stored {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(item)
+	}
+	buf.WriteByte(']')
+	origin, err := json.Marshal(c.origin)
+	if err != nil {
+		c.disable(ctx, replayReasonUndecodable)
+		return nil
+	}
+
+	c.logger.DebugContext(ctx, "openai-responses output replay captured",
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", c.model),
+		slog.Int("items", len(stored)),
+		slog.Int("total_len", size),
+	)
+	return map[string]json.RawMessage{
+		responsesReplayKey:       buf.Bytes(),
+		responsesReplayOriginKey: origin,
+	}
+}
+
+// disable turns replay off for the rest of the turn, logging once.
+func (c *responsesReplayCapture) disable(ctx context.Context, reason string, attrs ...slog.Attr) {
+	if c.disabled {
+		return
+	}
+	c.disabled = true
+	c.streamed = nil
+	level := slog.LevelWarn
+	if reason == replayReasonNoEncrypted && c.warnedNoEncrypted != nil && !c.warnedNoEncrypted.CompareAndSwap(false, true) {
+		level = slog.LevelDebug
+	}
+	args := []any{
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", c.model),
+		slog.String("reason", reason),
+	}
+	for _, a := range attrs {
+		args = append(args, a)
+	}
+	c.logger.Log(ctx, level, "openai-responses output replay disabled for turn; it will be reconstructed", args...)
+}
+
 // --- Message translation ---
 
 // translateMessagesResponses converts stirrup's []types.Message format into
@@ -552,12 +994,22 @@ type responsesCallState struct {
 // Tool calls and tool results become standalone function_call /
 // function_call_output items (rather than being attached to the assistant
 // message), matching the Responses API's model.
-func translateMessagesResponses(messages []types.Message) []responsesInput {
+//
+// When replayOrigin is non-empty, an assistant turn whose stored output
+// items came from that origin and still match its content is replayed
+// instead (see replayedResponsesItems); every other turn is reconstructed
+// without item ids, so one turn never mixes the two.
+func translateMessagesResponses(messages []types.Message, replayOrigin string) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
+			if replayed := replayedResponsesItems(msg, replayOrigin); replayed != nil {
+				out = append(out, replayed...)
+				continue
+			}
+
 			var textParts []string
 			var calls []responsesInput
 
@@ -625,6 +1077,90 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 	return out
 }
 
+// replayedResponsesItems returns msg's stored output items as input items,
+// or nil when the turn must be reconstructed. The stored items are used
+// only when they came from origin, pass checkResponsesReplayItems, and
+// still describe msg: each tool_use block must match a stored function_call
+// by call_id, name and arguments (one to one), and the stored output_text
+// must equal the text blocks. A message the harness has since rewritten
+// therefore never replays stale items. Replayed items are semantically
+// identical to the stored JSON; json.Marshal compacts and HTML-escapes them.
+func replayedResponsesItems(msg types.Message, origin string) []responsesInput {
+	if origin == "" {
+		return nil
+	}
+	var storedOrigin string
+	if err := json.Unmarshal(msg.ReplayFields[responsesReplayOriginKey], &storedOrigin); err != nil || storedOrigin != origin {
+		return nil
+	}
+	var raws []json.RawMessage
+	if err := json.Unmarshal(msg.ReplayFields[responsesReplayKey], &raws); err != nil || len(raws) == 0 {
+		return nil
+	}
+	items, reason, _ := checkResponsesReplayItems(raws)
+	if reason != "" {
+		return nil
+	}
+
+	storedCalls := make(map[string]responsesReplayItem)
+	var storedText strings.Builder
+	for _, item := range items {
+		switch item.Type {
+		case "function_call":
+			if _, dup := storedCalls[item.CallID]; dup {
+				return nil
+			}
+			storedCalls[item.CallID] = item
+		case "message":
+			for _, part := range item.Content {
+				if part.Type == "output_text" {
+					storedText.WriteString(part.Text)
+				}
+			}
+		}
+	}
+
+	matched := make(map[string]bool, len(storedCalls))
+	var blockText strings.Builder
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			blockText.WriteString(block.Text)
+		case "tool_use":
+			call, ok := storedCalls[block.ID]
+			if !ok || matched[block.ID] || call.Name != block.Name || !sameToolArguments(call.Arguments, block.Input) {
+				return nil
+			}
+			matched[block.ID] = true
+		}
+	}
+	if len(matched) != len(storedCalls) || storedText.String() != blockText.String() {
+		return nil
+	}
+
+	out := make([]responsesInput, len(raws))
+	for i, raw := range raws {
+		out[i] = responsesInput{Type: items[i].Type, Raw: raw}
+	}
+	return out
+}
+
+// sameToolArguments reports whether a stored function_call arguments string
+// and a tool_use block's input hold the same JSON value.
+func sameToolArguments(stored string, input json.RawMessage) bool {
+	if stored == "" {
+		stored = "{}"
+	}
+	var storedValue, inputValue any
+	if json.Unmarshal([]byte(stored), &storedValue) != nil {
+		return false
+	}
+	if json.Unmarshal(types.NormalizeToolInput(input), &inputValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(storedValue, inputValue)
+}
+
 // translateToolsResponses converts stirrup ToolDefinitions into the
 // Responses API's flatter tool schema. Unlike Chat Completions, there is no
 // nested "function" object — the name/description/parameters live directly
@@ -681,25 +1217,49 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 // lint surfaces as an error here so the caller can fail-closed before any
 // HTTP request is issued.
 //
+// replayOrigin is the caller's responsesReplayOriginFor value; stored
+// output items from that origin are replayed, and "" reconstructs every
+// turn.
+//
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
-func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (responsesRequest, error) {
+func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
 	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
 	}
+	effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
+	temperature := params.Temperature
+	if responsesOmitsTemperature(q, effort) {
+		temperature = nil
+	}
+	var cacheKey string
+	if q.BehaviourFlags.OpenAIResponses.PromptCacheKey {
+		cacheKey = params.CacheKey
+	}
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
-		Input:             translateMessagesResponses(params.Messages),
+		Input:             translateMessagesResponses(params.Messages, replayOrigin),
 		Tools:             tools,
 		MaxTokens:         params.MaxTokens,
-		Temperature:       params.Temperature,
+		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
+		ReasoningEffort:   effort,
+		PromptCacheKey:    cacheKey,
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
+
+		IncludeEncryptedReasoning: q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning,
 	}, nil
+}
+
+// responsesOmitsTemperature reports whether temperature stays off the wire:
+// the model rejects sampling params outright, or a reasoning effort is sent
+// (OpenAI documents removing temperature whenever effort is not none).
+func responsesOmitsTemperature(q quirks.ProviderQuirks, projectedEffort string) bool {
+	return q.BehaviourFlags.OpenAIResponses.OmitSamplingParams || projectedEffort != ""
 }
 
 // Stream sends a streaming request to the OpenAI Responses API and returns
@@ -757,7 +1317,23 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		)
 	}
 
-	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas)
+	projectedEffort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
+	if params.Temperature != nil && responsesOmitsTemperature(q, projectedEffort) {
+		logger.WarnContext(ctx, "openai-responses quirks suppressed caller temperature",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
+	if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
+	}
+	warnDroppedReasoningEffort(ctx, logger, "openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
+
+	replayOrigin := responsesReplayOriginFor(q, params.Model, o.baseURL)
+	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas, replayOrigin)
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
@@ -812,6 +1388,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		// unwrap the *url.Error so its embedded URL never leaks (CWE-532).
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
 	if o.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
@@ -828,15 +1405,15 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		defer func() { _ = resp.Body.Close() }()
 		o.recordLatency(ctx, start, metricAttrs)
 		var errResp responsesErrorResponse
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && (errResp.Error.Message != "" || errResp.Error.Code != "") {
+			return nil, fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, responsesErrorText(errResp.Error.Message, errResp.Error.Code))
 		}
 		return nil, fmt.Errorf("openai responses API returned status %d", resp.StatusCode)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model, replayOrigin)
 		// Record latency on a background context: the caller's `ctx` may
 		// already have been cancelled by the time the stream completes
 		// (the agentic loop has moved on), and some OTel exporters drop
@@ -861,7 +1438,7 @@ func (o *OpenAIResponsesAdapter) recordLatency(ctx context.Context, start time.T
 // `event: <name>` and `data: <payload>` fields. Unlike the Chat Completions
 // adapter (which only reads `data:` lines), Responses streaming relies on
 // the event name to disambiguate payloads — there is no `[DONE]` sentinel.
-func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
+func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model, replayOrigin string) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -890,6 +1467,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	// present, falling back to a stringified output_index). The value's
 	// outputIdx field is preserved so we can flush in deterministic order.
 	calls := make(map[string]*responsesCallState)
+	replay := newResponsesReplayCapture(logger, model, replayOrigin, &o.replayWarnedNoEncrypted)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase the buffer ceiling so a single SSE record carrying a large
@@ -915,7 +1493,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		if eventName == "" || data == "" {
 			return true
 		}
-		return o.dispatchEvent(ctx, eventName, data, calls, emitEvent)
+		return o.dispatchEvent(ctx, eventName, data, calls, replay, emitEvent)
 	}
 
 	for scanner.Scan() {
@@ -924,6 +1502,11 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 			emitEvent(types.StreamEvent{Type: "error", Error: ctx.Err()})
 			return
 		default:
+		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
 		}
 
 		line := scanner.Text()
@@ -974,17 +1557,16 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		return
+	}
+
 	// Flush any trailing record without a terminating blank line. A
 	// well-behaved server will not do this, but tolerating it avoids
 	// dropped final events on premature EOF.
 	if currentEvent != "" || len(dataParts) > 0 {
-		if !flushRecord() {
-			return
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		flushRecord()
 	}
 }
 
@@ -995,7 +1577,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 // `emit` returns false when the consumer has gone away (context cancelled);
 // every emit call site propagates that to abandon the stream rather than
 // pretending to keep going.
-func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, emit func(types.StreamEvent) bool) bool {
+func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, emit func(types.StreamEvent) bool) bool {
 	switch name {
 	case "response.created":
 		// Optional metadata; nothing to emit.
@@ -1113,39 +1695,47 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 
 	case "response.output_item.done":
 		var payload struct {
-			OutputIndex int                 `json:"output_index"`
-			Item        responsesOutputItem `json:"item"`
+			OutputIndex int             `json:"output_index"`
+			Item        json.RawMessage `json:"item"`
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
 			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse output_item.done: %w", err)})
 			return false
 		}
-		if payload.Item.Type != "function_call" {
+		var item responsesOutputItem
+		if len(payload.Item) > 0 {
+			if err := json.Unmarshal(payload.Item, &item); err != nil {
+				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse output_item.done: %w", err)})
+				return false
+			}
+		}
+		replay.add(ctx, payload.OutputIndex, item.Type, payload.Item)
+		if item.Type != "function_call" {
 			return true
 		}
-		key := callKey(payload.Item.ID, payload.OutputIndex)
+		key := callKey(item.ID, payload.OutputIndex)
 		st, exists := calls[key]
 		if !exists {
 			st = &responsesCallState{
-				itemID:    payload.Item.ID,
+				itemID:    item.ID,
 				outputIdx: payload.OutputIndex,
 			}
 			calls[key] = st
 		}
-		if payload.Item.CallID != "" {
-			st.callID = payload.Item.CallID
+		if item.CallID != "" {
+			st.callID = item.CallID
 		}
-		if payload.Item.Name != "" {
-			st.name = payload.Item.Name
+		if item.Name != "" {
+			st.name = item.Name
 		}
 		// If the .done event carries the full arguments string and the
 		// streamed deltas were never seen, prefer the echoed copy.
-		if st.argsBuf.Len() == 0 && payload.Item.Arguments != "" {
-			if len(payload.Item.Arguments) > openaiMaxToolInputSize {
+		if st.argsBuf.Len() == 0 && item.Arguments != "" {
+			if len(item.Arguments) > openaiMaxToolInputSize {
 				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("tool arguments exceed %d byte limit", openaiMaxToolInputSize)})
 				return false
 			}
-			st.argsBuf.WriteString(payload.Item.Arguments)
+			st.argsBuf.WriteString(item.Arguments)
 		}
 		if !flushOneCall(st, emit) {
 			return false
@@ -1165,11 +1755,12 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			return false
 		}
 		ev := types.StreamEvent{
-			Type:       "message_complete",
-			StopReason: deriveStopReason(payload.Response),
+			Type:         "message_complete",
+			StopReason:   deriveStopReason(payload.Response),
+			ReplayFields: replay.finalize(ctx, payload.Response.RawOutput, false),
 		}
 		if payload.Response.Usage != nil {
-			ev.OutputTokens = payload.Response.Usage.OutputTokens
+			payload.Response.Usage.applyTo(&ev)
 		}
 		emit(ev)
 		// Terminal event: signal caller to stop reading regardless of
@@ -1200,11 +1791,12 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			}
 		}
 		ev := types.StreamEvent{
-			Type:       "message_complete",
-			StopReason: stop,
+			Type:         "message_complete",
+			StopReason:   stop,
+			ReplayFields: replay.finalize(ctx, payload.Response.RawOutput, true),
 		}
 		if payload.Response.Usage != nil {
-			ev.OutputTokens = payload.Response.Usage.OutputTokens
+			payload.Response.Usage.applyTo(&ev)
 		}
 		emit(ev)
 		return false
@@ -1213,30 +1805,35 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		var payload struct {
 			Response struct {
 				Error *struct {
-					Message string `json:"message"`
-					Type    string `json:"type"`
+					Message string             `json:"message"`
+					Type    string             `json:"type"`
+					Code    responsesErrorCode `json:"code"`
 				} `json:"error"`
 				Status string `json:"status"`
 			} `json:"response"`
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API: response failed"
-		if payload.Response.Error != nil && payload.Response.Error.Message != "" {
-			msg = "openai responses API: " + payload.Response.Error.Message
+		if e := payload.Response.Error; e != nil && (e.Message != "" || e.Code != "") {
+			message := e.Message
+			if message == "" {
+				message = "response failed"
+			}
+			msg = "openai responses API: " + responsesErrorText(message, e.Code)
 		}
 		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false
 
 	case "error":
 		var payload struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
+			Message string             `json:"message"`
+			Type    string             `json:"type"`
+			Code    responsesErrorCode `json:"code"`
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API stream error"
-		if payload.Message != "" {
-			msg = "openai responses API stream error: " + payload.Message
+		if payload.Message != "" || payload.Code != "" {
+			msg += ": " + responsesErrorText(payload.Message, payload.Code)
 		}
 		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false

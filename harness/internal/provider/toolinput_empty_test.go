@@ -327,7 +327,7 @@ func TestTranslateMessagesResponses_EmptyToolInputBecomesObjectArguments(t *test
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
 			var args string
-			for _, item := range translateMessagesResponses(zeroArgAssistantTurn(form)) {
+			for _, item := range translateMessagesResponses(zeroArgAssistantTurn(form), "") {
 				if item.Type == "function_call" {
 					args = item.Arguments
 				}

@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -276,6 +277,32 @@ func TestTurnTrace_ModelOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestTurnTrace_StopDetailsOmittedWhenNil(t *testing.T) {
+	bare, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(bare), `"stopDetails"`) {
+		t.Errorf("nil StopDetails must be omitted; JSON = %s", bare)
+	}
+
+	want := StopDetails{Type: "refusal"}
+	data, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "refusal", StopDetails: &want})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"stopDetails":{"type":"refusal"}`) {
+		t.Errorf("JSON = %s, want stopDetails with only type set", data)
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.StopDetails == nil || *round.StopDetails != want {
+		t.Errorf("round-trip StopDetails = %+v, want %+v", round.StopDetails, want)
+	}
+}
+
 func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
 	var oldTrace RunTrace
 	if err := json.Unmarshal([]byte(`{"id":"run-1","turns":2}`), &oldTrace); err != nil {
@@ -299,5 +326,77 @@ func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
 	}
 	if !strings.Contains(string(nonZeroBytes), `"permissionDenials":2`) {
 		t.Errorf("non-zero permissionDenials should be emitted, got %s", nonZeroBytes)
+	}
+}
+
+func TestTokenUsage_AddAccumulatesEveryField(t *testing.T) {
+	total := TokenUsage{Input: 10, Output: 5, CacheRead: 2, CacheWrite: 3, Reasoning: 1}
+	total.Add(TokenUsage{Input: 100, Output: 50, CacheRead: 20, CacheWrite: 30, Reasoning: 10})
+	want := TokenUsage{Input: 110, Output: 55, CacheRead: 22, CacheWrite: 33, Reasoning: 11}
+	if total != want {
+		t.Errorf("Add = %+v, want %+v", total, want)
+	}
+}
+
+func TestTokenUsage_AddSaturates(t *testing.T) {
+	total := TokenUsage{Input: math.MaxInt - 5, Output: 1, CacheRead: math.MaxInt}
+	total.Add(TokenUsage{Input: 100, Output: 2, CacheRead: 1})
+	want := TokenUsage{Input: math.MaxInt, Output: 3, CacheRead: math.MaxInt}
+	if total != want {
+		t.Errorf("Add = %+v, want %+v", total, want)
+	}
+}
+
+func TestTokenUsage_TotalSaturates(t *testing.T) {
+	if got := (TokenUsage{Input: math.MaxInt, Output: 10}).Total(); got != math.MaxInt {
+		t.Errorf("Total = %d, want math.MaxInt", got)
+	}
+	if got := (TokenUsage{Input: 1200, Output: 34, CacheRead: 1000}).Total(); got != 1234 {
+		t.Errorf("Total = %d, want 1234 (cached input is already inside Input)", got)
+	}
+}
+
+// TestTokenUsage_BreakdownOmittedWhenZero pins the wire shape for
+// providers that report no cache or reasoning figures: only input and
+// output appear.
+func TestTokenUsage_BreakdownOmittedWhenZero(t *testing.T) {
+	data, err := json.Marshal(TurnTrace{Tokens: TokenUsage{Input: 10, Output: 5}})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"tokens":{"input":10,"output":5}`) {
+		t.Errorf("tokens must carry only input/output when breakdown is zero: %s", s)
+	}
+	if strings.Contains(s, `"inputReported"`) {
+		t.Errorf("an estimated turn must omit inputReported: %s", s)
+	}
+}
+
+func TestTurnTrace_ReportedUsageRoundTrip(t *testing.T) {
+	tt := TurnTrace{
+		Turn:          1,
+		Tokens:        TokenUsage{Input: 4000, Output: 300, CacheRead: 3000, CacheWrite: 900, Reasoning: 120},
+		InputReported: true,
+	}
+	data, err := json.Marshal(tt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		`"tokens":{"input":4000,"output":300,"cacheRead":3000,"cacheWrite":900,"reasoning":120}`,
+		`"inputReported":true`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("encoded JSON %s missing %s", s, want)
+		}
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.Tokens != tt.Tokens || !round.InputReported {
+		t.Errorf("round-trip = %+v, want %+v", round, tt)
 	}
 }

@@ -955,10 +955,10 @@ func TestOpenAIResponsesAdapter_TrailingSlashBaseURL(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponsesAdapter_HasTimeout(t *testing.T) {
+func TestOpenAIResponsesAdapter_StreamingClientTimeouts(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
-	if adapter.httpClient.Timeout == 0 {
-		t.Error("HTTP client should have a non-zero timeout")
+	if adapter.httpClient.Timeout != 0 {
+		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)
 	}
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
 	if !ok {
@@ -1077,7 +1077,7 @@ func TestTranslateMessagesResponses(t *testing.T) {
 		},
 	}
 
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 
 	// user message -> 1 item (input_text)
 	// assistant text + tool_use -> 1 message item + 1 function_call item
@@ -1124,7 +1124,7 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 		},
 	}
 
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(result))
 	}
@@ -1155,7 +1155,7 @@ func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
 		}},
 	}
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 1 {
 		t.Fatalf("len(result) = %d, want 1", len(result))
 	}
@@ -1191,7 +1191,7 @@ func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "call_1", Content: "", IsError: true},
 		}},
 	}
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 1 {
 		t.Fatalf("len(result) = %d, want 1", len(result))
 	}
@@ -1222,7 +1222,7 @@ func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T
 			{Type: "tool_result", ToolUseID: "call_2", Content: ""},
 		}},
 	}
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 2 {
 		t.Fatalf("len(result) = %d, want 2", len(result))
 	}
@@ -1259,7 +1259,7 @@ func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
 			},
 		},
 	}
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 1 || result[0].Type != "function_call" {
 		t.Fatalf("expected one function_call item, got %+v", result)
 	}
@@ -2243,7 +2243,7 @@ func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 			},
 		},
 	}
-	result := translateMessagesResponses(messages)
+	result := translateMessagesResponses(messages, "")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 items, got %d: %+v", len(result), result)
 	}

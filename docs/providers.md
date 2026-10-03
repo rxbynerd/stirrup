@@ -29,14 +29,225 @@ Anthropic safety settings; the API defaults apply.
 No model-ID allowlist: `RunConfig.Model` is forwarded to the wire
 verbatim, so a newly released Claude model works with no code change
 as long as its request/response shape matches the Messages API
-contract this adapter already speaks. Claude Opus 4.7 and later, Claude
-Sonnet 5, and Claude Fable 5 / Mythos 5 reject a non-default
-`temperature` outright (HTTP 400) rather than ignoring it; since the
-harness always resolves a non-nil default temperature
-(`core.defaultTemperature = 0.1`) when `RunConfig.Temperature` is
-unset, a per-model quirk rule omits the field for those models before
-it reaches the wire — see [Per-model wire-shape
+contract this adapter already speaks. Claude Opus 4.7 and later
+(including Opus 5 and 5.5), Claude Sonnet 5 and 5.5, and Claude Fable 5
+/ 5.1 and Mythos 5 reject a non-default `temperature` outright (HTTP
+400) rather than ignoring it; since the harness always resolves a
+non-nil default temperature (`core.defaultTemperature = 0.1`) when
+`RunConfig.Temperature` is unset, a per-model quirk rule omits the field
+for those models before it reaches the wire — see [Per-model wire-shape
 quirks](#per-model-wire-shape-quirks) below.
+
+`RunConfig.reasoningEffort` maps to `output_config.effort` for the
+Claude models whose accepted levels have been probed (Opus 4.5 onward,
+Sonnet 4.6 onward, Fable 5 onward); other Claude models receive no
+effort field. Sonnet 5.5, Opus 5.5 and Fable 5.1 reject forced tool
+choice, so the harness never sends `tool_choice` `any` or `tool` to
+them.
+
+### Thinking-block replay
+
+Claude models that think by default stream `thinking` blocks alongside
+their text and tool calls. The API also documents `redacted_thinking`
+blocks, which the adapter handles but which have not been observed
+live. The harness sends no `thinking` request field and no beta header,
+so each model's default thinking behaviour applies. On
+`claude-sonnet-5-5` the reasoning text arrives empty by default and the
+block carries only an opaque `signature`.
+
+The adapter captures each block when it closes, and the loop persists
+it in the assistant message in stream order: a `thinking` block keeps
+its signature in `ContentBlock.ThoughtSignature` and any reasoning text
+in `Text`; a `redacted_thinking` block keeps its opaque `data` in
+`ThoughtSignature`. The next request replays the blocks verbatim, so the
+model keeps its reasoning state across tool-use turns. A block without a
+signature cannot be verified by the API and is dropped on egress; an
+assistant message left empty by that drop is omitted, and the turns on
+either side are joined when they share a role. A response fails when
+its thinking blocks exceed 10 MiB in total (reasoning text, signatures
+and redacted data counted together) or when it opens more than 64
+content blocks at once. Batch results are parsed into the same shape.
+
+Replayed thinking is billed as input. In one probe against
+`claude-sonnet-5-5` on 2026-09-30, a continuation cost 668 input tokens
+with the prior turn's thinking block replayed and 558 without it, a
+difference equal to that turn's 110 thinking tokens. The token budget
+counts the provider-reported input figure, which includes replayed
+thinking. The loop's context-size estimate and the sliding-window
+strategy's per-message estimate count reasoning text only, not
+signature bytes, so hidden thinking (a block with empty text, the
+`claude-sonnet-5-5` default) is under-counted by both estimates; a
+compaction can therefore trigger later than the provider's own input
+count would suggest.
+
+Anthropic's [preserved-thinking
+documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
+binds a thinking block to the model that produced it and to the exact
+history that preceded it. The API enforces the history check by
+default only for accounts created on or after 2026-08-31 00:00 UTC;
+older accounts opt in per request, and the check was not reproduced on
+the account used for probing. Once the context strategy rewrites
+history on any turn of a run (a sliding-window trim, a summary, or an
+offload), the loop removes every thinking block from that request and
+from every later request in the run; the stored history keeps them.
+From that point the model continues from the visible transcript alone.
+Under sliding-window this starts the first time the budget is
+exceeded, and a trim can also separate a `tool_result` from its
+`tool_use`, which the API rejects
+([#624](https://github.com/rxbynerd/stirrup/issues/624)).
+
+JSONL traces and recordings keep each thinking block's type and its
+reasoning text, scrubbed for secrets exactly like assistant text: both
+are model output of the same trust class. Signatures and redacted data
+never persist, even with `--debug`. OTel content capture omits thinking
+blocks, and the GCS trace emitter persists no turn content. Thinking
+blocks never reach another provider: the other adapters build their
+requests from wire types with no thinking block (see the
+[cross-provider confidentiality
+invariant](architecture.md#provider-adapters)).
+
+Known limitations:
+
+- Dynamic routing or a fallback can replay a block to a Claude model
+  other than the one that produced it, and the API drops such a block
+  (documented, not probed).
+- Only the `anthropic` adapter replays thinking, and it always sends to
+  the Anthropic Messages API, so a run that switches provider loses
+  reasoning continuity on the other provider's turns without exposing
+  the blocks to it.
+- Within one response the harness re-encodes tool input with sorted
+  keys and joins adjacent text, so a thinking block that follows text
+  or a tool call in the same response would replay after a prefix the
+  model did not produce; models that think only before their first
+  output block never emit that order, but `between_tools` thinking can.
+
+### Tool input examples
+
+A tool's worked examples (`ToolPresentation.InputExamples`) are sent on
+the tool definition's native `input_examples` field, and `input_schema`
+is left untouched. The quirk rule matches every Claude model. The field
+was accepted without a beta header on `claude-opus-5-5` and
+`claude-haiku-4-5` in a direct probe, and through the harness on
+`claude-sonnet-5-5`, `claude-sonnet-4-6` and `claude-haiku-4-5`, on
+2026-09-30. Older Claude families are covered by the rule on the
+strength of Anthropic's documentation, not a probe. The API requires
+each example to validate against the tool's input schema, so every
+built-in and edit-strategy example is tested against its own schema.
+
+**Prompt caching.** The loop re-sends the tool list, the system prompt
+and the full history on every turn, and the history only grows between
+compactions, so each request shares a long prefix with the one before
+it. The API caches nothing unless the request marks a breakpoint, so
+the adapter marks up to two on every Claude model (the `PromptCaching`
+[quirk](provider-quirks.md#21-providerquirks)). The rule was probed on
+Sonnet 5.5, Haiku 4.5, Sonnet 4.5 and Opus 4.5 on 2026-09-30; the other
+families are documented, not probed. `claude-opus-4-1` returned 404 on
+the same date, so the API no longer serves it.
+
+- `system` goes out as a single text block carrying
+  `"cache_control": {"type": "ephemeral"}` on every request. The cached
+  prefix is tools, then system, then messages, so this breakpoint keeps
+  tools and system cached for the whole run, including after a context
+  strategy rewrites earlier messages. One-shot callers (the summarise
+  context strategy, the LLM-judge verifier and the cloud-judge guard)
+  carry it too, but their system prompts fall below every cacheable
+  minimum, so nothing is cached for them.
+- A top-level `"cache_control": {"type": "ephemeral"}` turns on automatic
+  caching: the API places a second breakpoint on the last cacheable block
+  of each request, so the history written on one turn is read back on
+  the next. Only main-loop turns send it, identified by the per-run cache
+  key described under [OpenAI Responses](#openai-responses-api); a one-shot
+  call never extends a history, so a write there would not be read back.
+
+On a main-loop turn with an empty system prompt, only the top-level
+field is sent. The [batch path](batch.md) sends neither, since
+consecutive batch turns rarely land within the cache lifetime.
+
+The first request of a run writes the prefix (`cacheWrite`); each later
+request reads it back (`cacheRead`) and writes only the new tail. Reads
+bill at 0.1x the base input rate (0.05x on Opus 5.5, 0.025x on Fable
+5.1) and writes at 1.25x, with the default five-minute cache lifetime.
+One Sonnet 5.5 run on 2026-09-30 wrote 6,505 tokens on turn 0 and read
+6,505 to 6,716 on each later turn, leaving 2 to 4 input tokens uncached
+per turn.
+
+A prompt shorter than the model's cacheable minimum is sent uncached,
+with no error: 512 tokens on Opus 5 / 5.5, Sonnet 5.5, Fable 5 / 5.1 and
+Mythos 5 / 5.1; 1,024 on Opus 4.8, Sonnet 5, Sonnet 4.6 and Sonnet 4.5;
+4,096 on Haiku 4.5. The execution-mode toolset clears all of these
+(Haiku 4.5 wrote 4,887 tokens on turn 0 of a live run), but a run with
+fewer tools, such as a reduced `tools.builtIn` list, can fall below
+Haiku's line; a live Haiku run whose turns sent 1,571 to 1,822 input
+tokens completed normally with nothing cached.
+
+A change invalidates the cache from its position in the prefix onward:
+
+| Change within a run | Cache invalidated |
+|---|---|
+| Tool list: a tool added, removed or reordered, or a schema changed | everything |
+| Model: a router selects a different model for a turn | everything; each model keeps its own cache |
+| System prompt | system and messages |
+| Effort, thinking, or `tool_choice` (the missed-tool escalation forces one for a single turn) | messages (documented, not probed) |
+| Context-strategy compaction | messages, on every turn after the first overflow |
+
+Once the history first overflows the context budget, every later turn
+misses the message cache under all three strategies: sliding-window
+drops more of the head on each turn, summarise re-summarises, and
+offload rewrites tool results as they age. Tools and system stay cached
+through the system breakpoint. A long `run_command` or a blocking
+sub-agent spawn can outlast the five-minute cache lifetime, so the
+parent's next turn writes its whole prefix to the cache again at 1.25x.
+
+Automatic caching looks back 20 content-block positions for a previous
+write, counting a run of consecutive `tool_use` blocks, or of
+`tool_result` blocks, as one position, so a turn of parallel tool calls
+does not push the previous write out of reach.
+
+The `anthropic prompt cache` Debug log line reports `cache.read`,
+`cache.write` and `input.uncached` for every stream that reports input
+usage, from the same figures that reach the trace as `cacheRead` and
+`cacheWrite` (see [Token usage](trace-inspection.md#token-usage)). A
+turn after the first whose `cache.read` is zero points at one of the
+invalidations above. The Bedrock adapter sends no cache breakpoints,
+and the legacy Bedrock surface does not offer automatic caching.
+
+**Refusals and other stop reasons.** A response the model declines
+ends with `stop_reason: "refusal"`, which becomes the run outcome
+verbatim. The adapter reads the `stop_details` object on the streamed
+`message_delta`: `type` (`"refusal"`), `category`, and `explanation`.
+`category` keeps the documented values (`cyber`, `bio`,
+`frontier_llm`, `reasoning_extraction`, `general_harms`), reports any
+other non-empty value as `other`, and is empty when the API sends
+null. `type` is capped at 64 bytes and `explanation` at 1 KiB, and a
+malformed field is dropped without discarding the others.
+
+The loop records the details on the turn's `TurnTrace.stopDetails`
+and, when the refusal ends the run, on `RunTrace.stopDetails`. It logs
+`provider refused to respond` at Warn with `category` and
+`explanation`, and sets `stop.category` on the `provider.stream` span.
+The explanation is scrubbed of secret-shaped content before it reaches
+a trace or log. `RunTrace.stopDetails` is omitted when the run's
+final outcome is not the stop that produced them, for example when a
+cancellation observed after the refusal becomes the outcome. Operators
+read the details from the trace emitters (the JSONL and GCS
+`RunTrace`, and the OTel span attribute) and from the Warn log line.
+The gRPC `RunTrace.stop_details` field mirrors them, but `stirrup job`
+leaves `done.trace` unset
+([issue #453](https://github.com/rxbynerd/stirrup/issues/453)).
+
+`model_context_window_exceeded` (the response filled the model's
+context window and is truncated) is also returned verbatim as the
+outcome. The harness neither retries nor continues after either stop
+reason, and tool-choice escalation does not re-prompt after them.
+Refusals cannot be triggered benignly, so the `stop_details` shape is
+documented, not probed.
+
+**Stream errors.** A failure after streaming has begun arrives as an
+SSE `error` event, for example `overloaded_error`. The adapter reports
+it as `anthropic API stream error (<type>): <message>`, so the run
+ends with outcome `error` and the `provider stream failed` log line and
+transport `warning` carry the provider's error type. Like every
+failure after the stream opens, it is not retried.
 
 ## AWS Bedrock
 
@@ -48,6 +259,21 @@ wire format. Auth is IAM (not API key); `config.LoadDefaultConfig()`
 resolves credentials from the SDK default chain. Accepts an optional
 `aws.CredentialsProvider` for cross-cloud credential federation (e.g.
 `WebIdentityAWSSource` exchanging a GKE OIDC token for STS credentials).
+
+Token usage arrives on the Converse `metadata` event. The adapter
+reports input as `totalTokens` − `outputTokens` when `totalTokens` is
+present, which counts the whole prompt whether or not `inputTokens`
+includes the cache figures, and otherwise as `inputTokens` plus
+`cacheReadInputTokens` and `cacheWriteInputTokens`. Neither shape has
+been probed against Bedrock.
+
+The Bedrock adapter does not consult the [provider quirks
+registry](provider-quirks.md): it forwards the harness default
+temperature to every model and ignores `reasoningEffort`. Anthropic
+documents that Claude Opus 4.7 onward, Sonnet 5 onward and Fable 5
+onward reject a non-default temperature on every request, so those
+models are expected to fail through Bedrock until the adapter applies
+the same rules; this has not been verified against Bedrock itself.
 
 ## OpenAI Chat Completions
 
@@ -129,7 +355,8 @@ Targets the Responses API (`POST /v1/responses`) — a distinct wire
 format from Chat Completions:
 
 - Top-level `instructions` field (not a system message in the array).
-- Typed `input[]` items: `message`, `function_call`, `function_call_output`.
+- Typed `input[]` items: `message`, `function_call`, `function_call_output`,
+  and replayed `reasoning` items.
 - Flat tool schema.
 - `max_output_tokens` (not `max_tokens`).
 - Explicit `store: false`.
@@ -142,9 +369,100 @@ Selected explicitly via `provider.type: "openai-responses"`. There is
 would mask configuration errors.
 
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
-`file_search`, `computer_use`, `code_interpreter`), server-side state
-via `previous_response_id`, and reasoning controls. The harness manages
-its own conversation history and does not delegate to server-side state.
+`file_search`, `computer_use`, `code_interpreter`) and server-side state
+via `previous_response_id`. The harness manages its own conversation
+history and does not delegate to server-side state.
+
+**Output replay.** With `store: false`, OpenAI documents that stateless
+reasoning models need every prior response output item resent. For the
+reasoning families (`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and
+`gpt-6*`), the adapter captures each turn's `reasoning`, `message`, and
+`function_call` output items and replays them, as semantically identical
+JSON, on later requests to the same model and endpoint, so reasoning
+items (with `encrypted_content`), item ids, `status`, and the assistant
+`phase` reach the model. Replay is all-or-nothing per turn: a turn whose
+stored items no longer match its persisted content (a rewritten tool
+call or text), that came from another model or endpoint, or whose
+capture was disabled (an incomplete turn, an unknown item type, a
+reasoning item without `encrypted_content`, or more than 1 MiB of
+items) is reconstructed without item ids instead. The size of
+`encrypted_content` is unmeasured, so the 1 MiB cap is a guard, not a
+measurement. Batch requests never capture output items, so a turn
+answered through the batch path is always reconstructed. The mechanism
+is described in
+[`provider-quirks.md` §3.1](provider-quirks.md#31-replayfields-rules).
+`reasoning.context` is not sent, so the model default applies
+(`all_turns` on GPT-5.6); `current_turn` is the relief valve if
+replayed reasoning grows the context too far.
+
+Requests for the same reasoning families carry
+`include: ["reasoning.encrypted_content"]` so the encrypted reasoning
+is returned for replay. First-party OpenAI documents the include as
+optional; it stays protective on Azure and gateways. Non-reasoning
+models (`gpt-4o*`, `gpt-4.1*`, `gpt-5-chat*`) receive neither the
+include nor replayed items, and the adapter captures nothing for them,
+so every turn is reconstructed without item ids. Whether those models
+reject the include, or replayed `message` item ids and `status`, with
+HTTP 400 is unverified; a probe against a non-reasoning model should
+check both before either gate is widened.
+
+**Reasoning effort and sampling.** `RunConfig.reasoningEffort` maps to
+`reasoning.effort` for models whose accepted levels are known: GPT-6
+and GPT-5.6 (`low`..`max`), GPT-5.4 and GPT-5.5 (`low`..`xhigh`). A
+request that sends `reasoning.effort` omits `temperature`. GPT-6 never
+receives `temperature`; GPT-5.5 and GPT-5.6 never receive it either,
+which is inferred from their `medium` default effort. GPT-5.4 keeps a
+configured temperature when no effort is set, because its default
+effort is `none`.
+
+**Strict tools.** The reasoning families send every tool with
+`strict: true`, because an omitted `strict` lets the API fall back to
+non-strict silently. A tool schema the strict rewriter cannot express
+(`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, tuple
+`items`; common in MCP-imported tools) fails the request before send.
+An MCP server that declares an optional parameter as an `anyOf` with
+`null`, as FastMCP and Pydantic do, therefore stops the run on these
+models; there is no per-tool fallback to `strict: false`.
+
+The replay, include, GPT-5.x effort, and strict behaviour is
+documented, not probed: no live request against an OpenAI endpoint has
+exercised it.
+
+**Prompt caching.** The Responses API caches automatically, with no
+breakpoint in the request: the cached prefix covers the tools,
+`instructions` and the input history, and GPT-5.6 and later need a
+prefix of at least 1,024 tokens. The adapter adds a per-run
+`prompt_cache_key` (the `PromptCacheKey`
+[quirk](provider-quirks.md#21-providerquirks)): the first 32 hex
+characters of the SHA-256 of the run ID, so it is stable across the
+run's turns and distinct between runs and sub-agents. It does not send
+the run ID, but the digest is not an anonymiser: run IDs are not
+secret, and anyone holding a candidate run ID can recompute the key.
+The key is only as unique as the run ID, so control planes should keep
+run IDs unique per credential; a collision affects routing affinity
+only. On models before GPT-5.6 a stable key routes related
+requests to the same cache, and OpenAI suggests keeping each key to
+about 15 requests per minute; on GPT-5.6 and later routing is automatic
+and the key only keeps cache accounting separate per run. Summariser,
+LLM-judge and guard calls send no key. The Chat Completions adapter
+never sends one, since compatible servers may reject the field. This
+behaviour is documented, not probed.
+
+OpenAI documents these request changes as breaking the cached prefix:
+`model`, the tool list (names, descriptions, schemas or order),
+`parallel_tool_calls`, `text.format`, `reasoning.effort`,
+`text.verbosity`, `context_management`, and any rewrite of earlier
+input, which includes a context-strategy summarise, offload or
+sliding-window drop. The `cacheRead` and `cacheWrite` trace fields
+carry `input_tokens_details.cached_tokens` and `.cache_write_tokens`
+(see [Token usage](trace-inspection.md#token-usage)).
+
+**GPT-6.** GPT-6 Astra and GPT-6.1 Sol call tools only through this
+API, and GPT-6 Sol and Luna only at `reasoning_effort: "none"` on Chat
+Completions, which the harness never sends. Agentic runs on a
+first-party `gpt-6*` id therefore need `provider.type:
+"openai-responses"`; the Chat Completions adapter rejects such a run
+before sending, with an error naming this provider type.
 
 Azure Foundry's `/openai/v1/responses` endpoint is wire-compatible:
 point `provider.baseUrl` at the Azure resource, set
@@ -153,6 +471,23 @@ Entra ID Bearer), and add `provider.queryParams: {"api-version":
 "preview"}`. Azure-only Responses extensions ride the existing
 forward-compatible "unknown SSE event" path and are silently ignored.
 See `examples/runconfig/azure-openai.json`.
+
+**Error codes.** The adapter appends OpenAI's `error.code` to every
+error it reports (the HTTP error path, `response.failed`, and the SSE
+`error` event) as `<message> (code: <code>)`, and keeps the
+message-only form when no code is present. A numeric code, as some
+gateways send, is rendered as its number. The code, not the message
+text, identifies the failure. `misalignment_policy_violation` means
+misalignment monitoring stopped the conversation: it arrives as HTTP
+403 before streaming, or as a stream error after output has begun, and
+must not be retried.
+
+A 429 reporting an exhausted billing, spend, or quota limit is not
+retried; the full classification is in
+[`configuration.md`](configuration.md#retry-policy). A failure after
+the stream opens is never retried. These codes are documented in
+OpenAI's error-codes and misalignment-monitoring guides; they have not
+been probed against the live API.
 
 ## Google Gemini via Vertex AI
 
@@ -207,6 +542,10 @@ Key implementation notes:
   which 3.6 Flash accepts — so the quirks registry carries a per-model
   allow-list and the adapter fails the request before any wire bytes
   are sent. See [`provider-quirks.md`](provider-quirks.md).
+- **Output tokens include thought tokens.** Vertex reports
+  `thoughtsTokenCount` beside `candidatesTokenCount`, so the adapter
+  reports their sum as output tokens, matching billing, and the
+  thought count as reasoning tokens.
 
 **Intentional exclusions:** multimodal input, server-side built-in
 tools (`google_search`, `code_execution`, etc. — tracked as issue #93),
@@ -264,21 +603,22 @@ See `examples/runconfig/vertex-gemini.json` and
 
 Provider/model pairs sometimes diverge from the adapter's canonical
 wire shape: OpenAI's reasoning-class models reject sampling
-parameters, the newest Claude tier (Opus 4.7+, Sonnet 5, Fable 5 /
+parameters, the newest Claude tier (Opus 4.7+, Sonnet 5+, Fable 5+ /
 Mythos 5) rejects a non-default temperature the same way, Z.ai GLM
 requires the legacy `max_tokens` key, Gemini 3.x emits a
 `thoughtSignature` blob that must survive turn boundaries, and
 DeepSeek v4's default-on thinking mode requires the
-`reasoning_content` it streams replayed back on every request after
-a tool-call turn (the API returns 400 otherwise). Rather than
+`reasoning_content` it streams replayed back for every prior assistant
+turn once tools are present (the API returns 400 otherwise). Rather than
 encoding these as adapter-internal model substring checks, the
 harness routes them through a registry-driven quirks layer at
 `harness/internal/provider/quirks/`. DeepSeek v4 runs through the
 stock Chat Completions adapter (`provider.type:
 "openai-compatible"` with `provider.baseUrl:
-"https://api.deepseek.com"`); the built-in `deepseek-v4*` and
-`deepseek/deepseek-v4*` rules supply the replay threading, sampling
-suppression, and legacy token key with no operator configuration.
+"https://api.deepseek.com"`); the built-in `deepseek-v4*`,
+`deepseek-flash*` (V4.1 Flash) and gateway-prefixed rules supply the
+replay threading, sampling suppression, and legacy token key with no
+operator configuration.
 
 Operators do not author quirk rules. Two surfaces are available:
 

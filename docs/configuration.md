@@ -275,7 +275,7 @@ reference.
 | `--max-turns` | `20` | Hard-capped at 100. |
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
-| `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, or `high`. Empty says nothing on the wire and leaves the model on its provider default. Adapters with a probed native control project it — the Gemini adapter maps it to `generationConfig.thinkingConfig.thinkingLevel` — and the rest ignore it, so a single config stays portable across providers. Per-model acceptance may be narrower than the enum (Gemini 3.7 Flash rejects `minimal`); the [provider quirks registry](provider-quirks.md) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
+| `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, GPT-5.4-onward models document no `minimal` level, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Loop behaviour
@@ -283,7 +283,7 @@ reference.
 | Flag | Default | Notes |
 |---|---|---|
 | `--max-tool-parallel` | `0` | Maximum async tool calls dispatched concurrently in a single turn. Range `1`–`16` (hard ceiling enforced by `ValidateRunConfig`); `0` resolves to the library default of `4`. JSON path: `toolDispatch.maxParallel`. |
-| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
+| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). A turn that stops on `refusal` or `model_context_window_exceeded` is not retried. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
 | `--escalate-tool-choice-max-retries` | `0` | Maximum forced retries per inner-loop run. Range `1`–`3`; `0` resolves to the default of `1`. No effect unless `--escalate-tool-choice` is set. JSON path: `toolChoiceEscalation.maxRetries`. |
 
 ### Provider
@@ -320,6 +320,9 @@ The harness retries transient provider failures (HTTP 408, 409, 429,
 500, 502, 503, 504 and transport-level timeouts) with exponential
 backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
 are honoured when present and bounded by the configured max delay.
+A 429 whose error body reports an exhausted billing, spend, or quota
+limit is not retried, since retrying cannot restore access (see the
+classification table below).
 
 | Flag | Config field | Default | Hard ceiling |
 |---|---|---|---|
@@ -355,6 +358,25 @@ seam — `ConverseStream` goes through the AWS SDK's own transport —
 so `maxAttempts` and `maxDelayMs` are mapped onto the SDK's Standard
 retryer instead; `initialDelayMs` and `wallClockBudgetMs` have no
 SDK-native equivalent and are not applied to `bedrock`.
+
+The pre-stream response is classified the same way for every adapter
+that uses `DoWithRetry` (`anthropic`, `gemini`, `openai-compatible`,
+and `openai-responses`), whichever provider the error codes come from:
+
+| Response | Retried |
+|---|---|
+| 429 with `error.code` `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, or `organization_usage_limit_exceeded`, or with `error.type` `insufficient_quota` | No: retrying cannot restore access until the limit is raised |
+| 429 with any other code (for example `slow_down` or `rate_limit_exceeded`) or none | Yes, honouring `Retry-After` |
+| 503 `server_is_overloaded` | Yes, honouring `Retry-After` |
+| 403, including `misalignment_policy_violation` | No |
+
+A quota 429 logs `provider_quota_exhausted` at Warn with the matched
+code and records `quota_exhausted` as the `provider.retry.outcome`
+attribute of `stirrup.harness.provider_retry_outcomes`. The quota check
+reads at most 4 KB of the 429 body, so a larger error body is
+classified by status alone. The codes are OpenAI's documented billing
+codes (see [`providers.md`](providers.md#openai-responses-api)); they
+have not been probed against the live API.
 
 Defaults are tuned for the cost of one extra coding-loop turn rather
 than the OpenAI Python SDK's 8 s cap: a coding agent typically has
@@ -833,7 +855,7 @@ gateway-prefixed IDs are matched by `*/`-prefixed variants).
 
 | Tier | Members (initial) | Guidance shape |
 |---|---|---|
-| `frontier` | `claude-fable-5*`, `claude-mythos-5*`, `claude-sonnet-5*`, `claude-opus-4-8*`, `gpt-5.5*`, `gpt-5.6*` | Lean behavioural additions: act when ready, scope discipline, evidence-grounded progress claims, outcome-first summaries. |
+| `frontier` | `claude-fable-5*`, `claude-mythos-5*`, `claude-sonnet-5*`, `claude-opus-4-8*`, `claude-opus-5*`, `gpt-5.5*`, `gpt-5.6*`, `gpt-6*` | Lean behavioural additions: act when ready, treat the run as unattended, scope discipline, stop once checks pass, evidence-grounded progress claims, outcome-first summaries. |
 | `open-weight` | `gemma*`, `glm-*`, `deepseek*`, `qwen*` | Explicit process scaffolding: read/edit/test loop, invoke-don't-describe, restated output formats and stopping conditions. |
 | `default` | everything else | Base prompt only — byte-identical to the pre-templating prompts. |
 
@@ -1436,7 +1458,7 @@ be unbounded:
 | Field | Cap |
 |---|---|
 | `maxTurns` | 100 |
-| `timeout` | 3600 s (same bound on `stirrup harness` and `stirrup job`) |
+| `timeout` | required; > 0 and ≤ 3600 s (same bound on `stirrup harness` and `stirrup job`) |
 | `provider.batch.maxWaitSeconds` | the run's `timeout`; defaults to it when unset. See [`batch.md`](batch.md#the-wait-budget) |
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
@@ -1449,9 +1471,25 @@ be unbounded:
 
 Read-only modes additionally require the tool list to be set.
 
+Provider streams have no total time cap of their own. Each streamed
+response is bounded by a fixed 120 s idle-read timeout instead: a
+stream that keeps delivering bytes, keep-alive pings included, runs for
+as long as the model generates, and one that stays silent for 120 s
+fails with a read error (`stream idle for 120s` on the `net/http`
+adapters). The run `timeout` is the total bound. Because
+`ValidateRunConfig` rejects a missing or zero `timeout`, a slow but live
+stream cannot outlast the run under `stirrup harness` or `stirrup job`.
+Per-client timeouts are listed in
+[`security.md`](security.md#http-client-hardening).
+
 `maxTokenBudget` is the only budget the harness enforces. It is
 checked between provider calls and terminates the run with
-`outcome: "budget_exceeded"`.
+`outcome: "budget_exceeded"`. Consumption is input plus output summed
+over turns. Input is the provider-reported figure, cached tokens
+included in full, wherever the provider reports one, and the harness
+estimate otherwise; Gemini output includes thought tokens. See
+[`trace-inspection.md`](trace-inspection.md#token-usage) for the
+per-provider sources.
 
 `maxCostBudget` is **accepted and bounded but not enforced**. The
 harness carries no per-model price table, computes no cost, and never
@@ -1490,11 +1528,14 @@ field on the run config still represents intent.
 
 `reasoningEffort` is the second provider-neutral model knob and
 follows the same contract: a closed enum (`minimal`, `low`, `medium`,
-`high`) validated at startup, projected onto the provider's native
-control by the adapter (Gemini `thinkingLevel`), ignored by adapters
-without a probed control, with per-model acceptance enforced by the
-[provider quirks registry](provider-quirks.md) before the request is
-sent.
+`high`, `xhigh`, `max`) validated at startup, projected onto the
+provider's native control by the adapter (Gemini `thinkingLevel`,
+Anthropic `output_config.effort`, OpenAI-compatible `reasoning_effort`,
+OpenAI Responses `reasoning.effort`), ignored for models without a
+probed control, with per-model acceptance enforced by the
+[provider quirks registry](provider-quirks.md#32-reasoning-effort)
+before the request is sent. The Responses adapter omits `temperature`
+from any request that carries `reasoning.effort`.
 
 ## RunConfig examples
 

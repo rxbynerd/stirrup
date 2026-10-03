@@ -190,10 +190,29 @@ LiteLLM, vLLM, Ollama, and Azure OpenAI when the deployment exposes
 Chat Completions; `openai-responses` is for Azure OpenAI Foundry and
 any deployment that requires the Responses wire format.
 
-Adapters share a common HTTP client with explicit timeouts (120s
-streaming) and bounded error-body reads via `io.LimitReader`. Tool
-JSON is accumulated across delta events; context cancellation is
-respected.
+The four `net/http` adapters (`anthropic`, both OpenAI dialects,
+`gemini`) each get their own client from `newStreamingHTTPClient`
+(`provider/provider_util.go`), with explicit transport timeouts (30 s
+dial, 10 s TLS handshake, 30 s response header), `ForceAttemptHTTP2`
+so the custom dialer does not disable HTTP/2, and no
+`http.Client.Timeout`, because a total deadline would also cap the
+streamed body and cut long turns mid-stream. The streamed body is
+bounded instead by a 120 s idle-read deadline (`idleTimeoutBody` in
+`provider/streamidle.go`): a stream that keeps delivering bytes runs
+for as long as the model generates, and one that goes silent fails
+with `stream idle for 120s`. `bedrock` uses the AWS SDK client,
+which applies no read timeout to Bedrock Runtime, so the adapter sets
+a 120 s per-connection read deadline through the SDK's
+`WithReadTimeout`. The effect is the same but the error differs: a
+silent Bedrock stream fails with the SDK's `ResponseTimeoutError`
+(`read on body reach timeout limit, 2m0s`), not `stream idle`. Neither
+path has a total cap. The idle bound assumes the endpoint sends bytes
+or keep-alives while the model works; a hidden-reasoning stream at
+`high`, `xhigh` or `max` effort from an endpoint that stays silent
+while it reasons could exceed it, and `defaultStreamIdleTimeout` is
+the knob to revisit. Error-body reads are bounded via
+`io.LimitReader`. Tool JSON is accumulated across delta events;
+context cancellation is respected.
 
 Per-adapter configuration including base URLs, API-key headers, query
 params, and credential federation lives in
@@ -217,6 +236,13 @@ onto the local type is dropped at translation time, rather than
 relying on call sites to scrub egress. Extending an adapter's local
 wire type is an active decision: add a field only when that
 provider's API documents support for it.
+
+The same rule covers block types. `ContentBlock.ThoughtSignature`
+carries Gemini's thought signature on `text` and `tool_use` blocks
+and Anthropic's signature (or redacted `data`) on `thinking` and
+`redacted_thinking` blocks; each adapter reads it only from the block
+types it owns, and only the Anthropic adapter's wire type has a
+thinking block, so the others drop thinking blocks at translation.
 
 ## Credential federation
 
@@ -577,7 +603,13 @@ limit:
 
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt
-tokens, and tool definition tokens.
+tokens, tool definition tokens, and the reasoning text of thinking
+blocks (not their signatures). Once a strategy rewrites history on any
+turn, the loop strips thinking blocks from that request and every later
+one in the run: Anthropic's preserved-thinking documentation binds a
+block to the exact history that preceded it, and the API enforces that
+check by default only for accounts created on or after 2026-08-31
+00:00 UTC. See [thinking-block replay](providers.md#thinking-block-replay).
 
 ## Verifiers
 
@@ -637,11 +669,14 @@ the same totals are attached to the span as
 both surfaces; never the captured values themselves.
 
 The `harness/internal/observability/` package emits OTel metrics
-alongside tracing: 13 counters (`stirrup.harness.runs`, `.turns`,
-`.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`,
-`.tool_failures`, `.provider.requests`, `.provider.errors`,
-`.context.compactions`, `.security.events`, `.verification.attempts`,
-`.stalls`), 5 histograms (run, turn, tool-call duration; provider
+alongside tracing: the counters in
+[`metrics.go`](../harness/internal/observability/metrics.go) (among
+them `stirrup.harness.runs`, `.turns`, `.tokens.input`,
+`.tokens.output`, `.tokens.cache_read`, `.tokens.cache_write`,
+`.tool_calls`, `.tool_errors`, `.tool_failures`, `.provider.requests`,
+`.provider.errors`, `.context.compactions`, `.security.events`,
+`.verification.attempts`, `.stalls`, and the `stirrup.subagent.*`
+component counters), 5 histograms (run, turn, tool-call duration; provider
 latency; TTFB), and 1 UpDownCounter (context token estimate). All
 instruments use standard attributes (`run.mode`, `provider.type`,
 `tool.name`). `NewNoopMetrics()` provides a zero-cost no-op when

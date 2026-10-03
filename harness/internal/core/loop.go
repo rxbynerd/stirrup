@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +99,18 @@ func effectiveReserveForResponse(maxTokens int) int {
 		reserve = 1
 	}
 	return reserve
+}
+
+// providerCacheKey derives StreamParams.CacheKey as an unsalted digest of
+// the run ID: deterministic, so a retried run keeps its routing affinity,
+// and not an anonymiser. An empty run ID yields no key rather than one
+// shared by every such run.
+func providerCacheKey(runID string) string {
+	if runID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(runID))
+	return hex.EncodeToString(sum[:16])
 }
 
 // Run executes the agentic loop:
@@ -281,6 +295,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// gauge callback so the first observation (before any Context.Prepare)
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
+	l.historyRewritten = false
 
 	// Tagged with run.id and run.mode; unregistered at run end so the
 	// OTel SDK does not keep observing this run after it finishes.
@@ -306,6 +321,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// finalAssistantText accumulates the last non-empty assistant text across
 	// every runInnerLoop invocation (verification retries re-enter the loop).
 	var finalAssistantText string
+	// finalStopDetails is overwritten on each runInnerLoop invocation, so
+	// only the invocation that ended the run contributes to RunTrace.
+	var finalStopDetails *types.StopDetails
+	var finalInnerOutcome string
 	if turnZeroAbort {
 		outcome = "rule_of_two_violation"
 	}
@@ -313,7 +332,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
 
 		var innerOutcome, innerFinalText string
-		messages, innerOutcome, innerFinalText = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
 			finalAssistantText = innerFinalText
 		}
@@ -460,6 +480,15 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
 	}
+	// Stop details describe the provider stop that ended the inner loop;
+	// an outcome reclassified afterwards (verification, cancellation,
+	// hooks, command output) no longer reports that stop.
+	if outcome != finalInnerOutcome {
+		finalStopDetails = nil
+	}
+	if recorder, ok := l.Trace.(trace.StopDetailsRecorder); ok && finalStopDetails != nil {
+		recorder.RecordStopDetails(finalStopDetails)
+	}
 
 	// Uses the parent ctx: the trace exporter's ForceFlush should still
 	// have a usable deadline even if the run-scoped ctx is cancelled.
@@ -526,16 +555,17 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
 // max turns is reached, budget is exceeded, or an error occurs.
-// Returns the updated messages, the outcome, and the last non-empty
+// Returns the updated messages, the outcome, the last non-empty
 // assistant text observed across the turns (empty when no turn produced
-// any text).
+// any text), and the final turn's stop details when the model ended the
+// loop with a non-tool stop reason (nil otherwise).
 func (l *AgenticLoop) runInnerLoop(
 	ctx context.Context,
 	config *types.RunConfig,
 	systemPrompt string,
 	messages []types.Message,
 	tokenTracker *TokenTracker,
-) ([]types.Message, string, string) {
+) ([]types.Message, string, string, *types.StopDetails) {
 	var lastStopReason string
 	// finalAssistantText holds the last non-empty assistant text seen across
 	// all turns. Threaded onto RunTrace.FinalAssistantText at loop completion.
@@ -551,25 +581,27 @@ func (l *AgenticLoop) runInnerLoop(
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto
 
+	cacheKey := providerCacheKey(config.RunID)
+
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		l.Logger.Info("turn started", "turn", turn)
 
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
-			return messages, "budget_exceeded", finalAssistantText
+			return messages, "budget_exceeded", finalAssistantText, nil
 		}
 
 		// Sentinel outcome; see outcomeCtxDone.
 		select {
 		case <-ctx.Done():
-			return messages, outcomeCtxDone, finalAssistantText
+			return messages, outcomeCtxDone, finalAssistantText, nil
 		default:
 		}
 
 		// Turn boundary: operator input that arrived since the last
 		// model call joins the history before this turn's request.
 		if _, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages); blocked != "" {
-			return messages, blocked, finalAssistantText
+			return messages, blocked, finalAssistantText, nil
 		}
 
 		// See collectUntrustedChunks / docs/guardrails.md for what
@@ -589,7 +621,7 @@ func (l *AgenticLoop) runInnerLoop(
 				case "abort":
 					if det.Transition {
 						l.recordRuleOfTwoAction(ctx, "abort")
-						return messages, "rule_of_two_violation", finalAssistantText
+						return messages, "rule_of_two_violation", finalAssistantText, nil
 					}
 				case "redact":
 					if n := l.redactSensitiveSpans(messages, turn); n > 0 {
@@ -612,7 +644,7 @@ func (l *AgenticLoop) runInnerLoop(
 				// Turn-0 vs later-turn deny handling differs; see
 				// docs/guardrails.md.
 				if turn == 0 {
-					return messages, "guardrail_blocked", finalAssistantText
+					return messages, "guardrail_blocked", finalAssistantText, nil
 				}
 
 				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
@@ -680,9 +712,18 @@ func (l *AgenticLoop) runInnerLoop(
 			contextSpan.SetStatus(codes.Error, err.Error())
 			contextSpan.End()
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone, finalAssistantText
+				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
-			return messages, "error", finalAssistantText
+			return messages, "error", finalAssistantText, nil
+		}
+		compaction := l.Context.LastCompaction()
+		if compaction != nil {
+			l.historyRewritten = true
+		}
+		if l.historyRewritten {
+			// A thinking block is bound to the exact history before it, so
+			// none is replayed once the run has sent a rewritten history.
+			preparedMessages = types.StripThinkingBlocks(preparedMessages)
 		}
 		// Feeds the ContextTokens observable gauge registered in Run;
 		// compaction shrinks this value, new messages grow it.
@@ -691,7 +732,7 @@ func (l *AgenticLoop) runInnerLoop(
 			estimateToolDefinitionTokens(toolDefs)
 		l.lastContextTokens.Store(int64(tokensAfterPrepare))
 		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
-		if compaction := l.Context.LastCompaction(); compaction != nil {
+		if compaction != nil {
 			contextSpan.SetAttributes(
 				attribute.String("context.strategy", compaction.Strategy),
 				attribute.Int("context.tokens.after", compaction.TokensAfter),
@@ -723,7 +764,7 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:       "",
 					Model:      selection.Model,
 				})
-				return messages, "error", finalAssistantText
+				return messages, "error", finalAssistantText, nil
 			}
 			selectedProvider = prov
 		}
@@ -736,7 +777,7 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:       "",
 				Model:      selection.Model,
 			})
-			return messages, "error", finalAssistantText
+			return messages, "error", finalAssistantText, nil
 		}
 		providerAttrs := l.metricAttrs(
 			attribute.String("provider.type", selection.Provider),
@@ -775,12 +816,13 @@ func (l *AgenticLoop) runInnerLoop(
 			Temperature:     temperature,
 			ReasoningEffort: config.ReasoningEffort,
 			ToolChoice:      turnToolChoice,
+			CacheKey:        cacheKey,
 		})
 		if err != nil {
 			// ScrubHandler doesn't cover OTel spans; scrub explicitly
-			// before it reaches the span status. See docs/security.md.
+			// before it reaches the span event and status. See docs/security.md.
 			scrubbedErr := security.Scrub(err.Error())
-			providerSpan.RecordError(err)
+			providerSpan.RecordError(errors.New(scrubbedErr))
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
 			// Surfaces the failure outside OTel too (log + transport
@@ -823,9 +865,9 @@ func (l *AgenticLoop) runInnerLoop(
 			// Lets the outer loop classify cancelled/timeout rather
 			// than a generic error.
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone, finalAssistantText
+				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
-			return messages, "error", finalAssistantText
+			return messages, "error", finalAssistantText, nil
 		}
 
 		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.Logger)
@@ -834,7 +876,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if streamErr != nil {
 			// Same rationale as the Stream() scrub above; see docs/security.md.
 			scrubbedErr := security.Scrub(streamErr.Error())
-			providerSpan.RecordError(streamErr)
+			providerSpan.RecordError(errors.New(scrubbedErr))
 			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
 			// Same as the Stream() log+emit above.
@@ -873,37 +915,56 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 			// Lets the outer loop classify a ctx-abort correctly.
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone, finalAssistantText
+				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
-			return messages, "error", finalAssistantText
+			return messages, "error", finalAssistantText, nil
 		}
+		// Input is the provider's figure when it reports one; otherwise
+		// it is estimated from the messages sent plus system prompt and
+		// tools.
+		turnTokens := sr.Usage
+		inputReported := turnTokens.Input > 0
+		if !inputReported {
+			turnTokens.Input = estimateCurrentTokens(preparedMessages) +
+				estimateSystemPromptTokens(systemPrompt) +
+				estimateToolDefinitionTokens(toolDefs)
+		}
+
 		providerSpan.SetAttributes(
-			attribute.Int("tokens.output", sr.OutputTokens),
+			attribute.Int("tokens.input", turnTokens.Input),
+			attribute.Bool("tokens.input_reported", inputReported),
+			attribute.Int("tokens.output", turnTokens.Output),
 			attribute.String("stop_reason", sr.StopReason),
 		)
+		providerSpan.SetAttributes(usageBreakdownAttributes(turnTokens)...)
+		if sr.StopDetails != nil {
+			// Explanation is provider free text bound for the persisted
+			// trace, so it gets the same scrub as final assistant text.
+			// The copy leaves the provider's event untouched.
+			scrubbed := *sr.StopDetails
+			scrubbed.Explanation = security.Scrub(scrubbed.Explanation)
+			sr.StopDetails = &scrubbed
+			if sr.StopDetails.Category != "" {
+				providerSpan.SetAttributes(attribute.String("stop.category", sr.StopDetails.Category))
+			}
+		}
 		providerSpan.End()
 
 		lastStopReason = sr.StopReason
 
-		// Output tokens come from the stream; input is estimated from
-		// the messages sent plus system prompt and tools.
-		inputTokenEstimate := estimateCurrentTokens(preparedMessages) +
-			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
-		tokenTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens)
+		tokenTracker.RecordTurn(turnTokens)
 
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		l.Trace.RecordTurn(types.TurnTrace{
-			Turn: turn,
-			Tokens: types.TokenUsage{
-				Input:  inputTokenEstimate,
-				Output: sr.OutputTokens,
-			},
-			StopReason: sr.StopReason,
-			DurationMs: turnDuration.Milliseconds(),
-			Mode:       turnMode,
-			BatchID:    turnBatchID,
-			Model:      selection.Model,
+			Turn:          turn,
+			Tokens:        turnTokens,
+			InputReported: inputReported,
+			StopReason:    sr.StopReason,
+			StopDetails:   sr.StopDetails,
+			DurationMs:    turnDuration.Milliseconds(),
+			Mode:          turnMode,
+			BatchID:       turnBatchID,
+			Model:         selection.Model,
 		})
 
 		// Persisted as a TurnRecord (full transcript) by recording
@@ -921,13 +982,23 @@ func (l *AgenticLoop) runInnerLoop(
 
 		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 		l.Metrics.Turns.Add(ctx, 1, modeAttr)
-		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate), l.metricAttrs())
-		l.Metrics.TokensOutput.Add(ctx, int64(sr.OutputTokens), l.metricAttrs())
+		l.Metrics.TokensInput.Add(ctx, int64(turnTokens.Input), l.metricAttrs())
+		l.Metrics.TokensOutput.Add(ctx, int64(turnTokens.Output), l.metricAttrs())
+		if turnTokens.CacheRead > 0 {
+			l.Metrics.TokensCacheRead.Add(ctx, int64(turnTokens.CacheRead), l.metricAttrs())
+		}
+		if turnTokens.CacheWrite > 0 {
+			l.Metrics.TokensCacheWrite.Add(ctx, int64(turnTokens.CacheWrite), l.metricAttrs())
+		}
 		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
 
 		l.Logger.Info("turn completed", "turn", turn,
-			"tokens.input", inputTokenEstimate,
-			"tokens.output", sr.OutputTokens,
+			"tokens.input", turnTokens.Input,
+			"tokens.input_reported", inputReported,
+			"tokens.output", turnTokens.Output,
+			"tokens.cache_read", turnTokens.CacheRead,
+			"tokens.cache_write", turnTokens.CacheWrite,
+			"tokens.reasoning", turnTokens.Reasoning,
 			"stopReason", sr.StopReason)
 
 		// Carries provider replay state so the next request can
@@ -990,7 +1061,7 @@ func (l *AgenticLoop) runInnerLoop(
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
 
-					return messages, "guardrail_blocked", priorFinalText
+					return messages, "guardrail_blocked", priorFinalText, nil
 				}
 				if spotlight {
 
@@ -1002,28 +1073,41 @@ func (l *AgenticLoop) runInnerLoop(
 			// turn instead of a "done".
 			injected, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages)
 			if blocked != "" {
-				return messages, blocked, finalAssistantText
+				return messages, blocked, finalAssistantText, nil
 			}
 			if injected > 0 {
 				continue
 			}
-			return messages, "success", finalAssistantText
+			return messages, "success", finalAssistantText, sr.StopDetails
 		}
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
 				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
-				return messages, "error", finalAssistantText
+				return messages, "error", finalAssistantText, nil
+			}
+			if sr.StopReason == "refusal" {
+				var category, explanation string
+				if sr.StopDetails != nil {
+					category, explanation = sr.StopDetails.Category, sr.StopDetails.Explanation
+				}
+				l.Logger.Warn("provider refused to respond",
+					"turn", turn,
+					"provider", selection.Provider,
+					"model", selection.Model,
+					"category", category,
+					"explanation", explanation,
+				)
 			}
 			// Non-tool-use, non-end-turn stop reasons still represent
 			// a completed exchange that replay/mining cares about.
 			l.Trace.RecordTurnRecord(turnRecord)
-			return messages, sr.StopReason, finalAssistantText
+			return messages, sr.StopReason, finalAssistantText, sr.StopDetails
 		}
 		if len(toolCalls) == 0 {
 			// Provider declared tool_use but produced no tool blocks —
 			// degenerate but observable.
 			l.Trace.RecordTurnRecord(turnRecord)
-			return messages, "error", finalAssistantText
+			return messages, "error", finalAssistantText, nil
 		}
 
 		// planAndDispatch preserves result/stall order, per-call
@@ -1042,13 +1126,13 @@ func (l *AgenticLoop) runInnerLoop(
 		// is a legitimate judgement and left alone.
 		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
-			return messages, stallOutcome, finalAssistantText
+			return messages, stallOutcome, finalAssistantText, nil
 		}
 
 		// Prevents the next turn from sending an over-budget context.
 		budgetCheck = tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
-			return messages, "budget_exceeded", finalAssistantText
+			return messages, "budget_exceeded", finalAssistantText, nil
 		}
 
 		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
@@ -1063,7 +1147,7 @@ func (l *AgenticLoop) runInnerLoop(
 		checkpointSpan.End()
 	}
 
-	return messages, "max_turns", finalAssistantText
+	return messages, "max_turns", finalAssistantText, nil
 }
 
 // applyEscalation performs the recovery EscalationPolicy chose for a

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +184,121 @@ func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
 				t.Errorf("loop temperature = %v, want *=%v", *prov.lastParams.Temperature, tc.want)
 			}
 		})
+	}
+}
+
+// cacheKeyRecorder answers the first Stream call with a tool call and
+// every later call with a final answer, recording each call's CacheKey.
+type cacheKeyRecorder struct {
+	keys []string
+}
+
+func (p *cacheKeyRecorder) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	p.keys = append(p.keys, params.CacheKey)
+	events := []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}
+	if len(p.keys) == 1 {
+		events = []types.StreamEvent{
+			{Type: "tool_call", ID: "tc1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		}
+	}
+	ch := make(chan types.StreamEvent, len(events))
+	for _, e := range events {
+		ch <- e
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestLoop_CacheKeyIsStableHashOfRunID pins StreamParams.CacheKey: the
+// first 32 hex characters of sha256(runID), identical on every turn of a
+// run so the provider sees one conversation, distinct between run IDs, and
+// empty for a run with no ID so unrelated runs never share a key.
+func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
+	cases := []struct {
+		runID string
+		want  string
+	}{
+		{runID: "test-run-1", want: "404b0dfface497f076048e07aa412671"},
+		{runID: "test-run-2", want: "a7dbe4f7807e61746b98d54eda1f237e"},
+		{runID: "", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run("runID="+tc.runID, func(t *testing.T) {
+			prov := &cacheKeyRecorder{}
+			loop := buildTestLoop(&mockProvider{})
+			loop.Provider = prov
+			config := buildTestConfig()
+			config.RunID = tc.runID
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if len(prov.keys) != 2 {
+				t.Fatalf("Stream calls = %d, want 2", len(prov.keys))
+			}
+			for turn, got := range prov.keys {
+				if got != tc.want {
+					t.Errorf("turn %d CacheKey = %q, want %q", turn, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoop_ResponsesBodyCarriesCacheKeyNotRunID drives the loop through
+// the real Responses adapter and pins that the wire body carries the run's
+// cache key as prompt_cache_key and does not carry the raw run ID.
+func TestLoop_ResponsesBodyCarriesCacheKeyNotRunID(t *testing.T) {
+	const runID = "run-7f3a-control-plane-id"
+	sse := "event: response.output_text.delta\n" +
+		`data: {"item_id":"msg_1","output_index":0,"delta":"done"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n"
+
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	loop := buildTestLoop(&mockProvider{})
+	loop.Provider = provider.NewOpenAIResponsesAdapter(func(context.Context) (string, error) { return "test-key", nil }, srv.URL, provider.OpenAIAuthConfig{})
+	loop.Router = router.NewStaticRouter("openai-responses", "gpt-4o")
+	config := buildTestConfig()
+	config.RunID = runID
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) == 0 {
+		t.Fatal("no request reached the Responses endpoint")
+	}
+	want := `"prompt_cache_key":"` + providerCacheKey(runID) + `"`
+	for i, body := range bodies {
+		if !strings.Contains(body, want) {
+			t.Errorf("request %d missing %s: %s", i, want, body)
+		}
+		if strings.Contains(body, runID) {
+			t.Errorf("request %d carries the raw run ID: %s", i, body)
+		}
 	}
 }
 
@@ -689,7 +806,7 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 func TestTokenTracker(t *testing.T) {
 	tt := &TokenTracker{}
 
-	tt.RecordTurn(1000, 500)
+	tt.RecordTurn(types.TokenUsage{Input: 1000, Output: 500})
 
 	tokens := tt.Tokens()
 	if tokens.Input != 1000 || tokens.Output != 500 {
@@ -1093,7 +1210,7 @@ func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.
 
 func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
 	tt := &TokenTracker{}
-	tt.RecordTurn(1_000_000, 100_000)
+	tt.RecordTurn(types.TokenUsage{Input: 1_000_000, Output: 100_000})
 
 	maxTokens := 500_000
 	check := tt.CheckBudget(&maxTokens)
@@ -1351,6 +1468,24 @@ func TestEstimateCurrentTokens(t *testing.T) {
 	// 4 (msg) + 3 (block) + 4 (ID) + 2 (Name) + 3 (Input) = 16
 	if got != 16 {
 		t.Errorf("tool_use message: want 16, got %d", got)
+	}
+}
+
+// TestEstimateCurrentTokens_CountsReplayFields pins that replay state
+// resent with a message counts toward the estimate: a 40 KB stored
+// Responses output array adds 10240 tokens.
+func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
+	msg := types.Message{
+		Role:    "assistant",
+		Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
+		ReplayFields: map[string]json.RawMessage{
+			"openai_responses.output": json.RawMessage(`["` + strings.Repeat("A", 40*1024-4) + `"]`),
+			"openai_responses.origin": json.RawMessage(`"m@abc"`),
+		},
+	}
+	// 4 (msg) + 3 (block) + (40960 + 7) / 4 = 10248
+	if got := estimateCurrentTokens([]types.Message{msg}); got != 10248 {
+		t.Errorf("message with 40 KB replay state: want 10248, got %d", got)
 	}
 }
 
@@ -1726,8 +1861,8 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	if result.StopReason != "end_turn" {
 		t.Fatalf("expected stop reason to be preserved, got %q", result.StopReason)
 	}
-	if result.OutputTokens != 42 {
-		t.Fatalf("expected output tokens to be preserved, got %d", result.OutputTokens)
+	if result.Usage.Output != 42 {
+		t.Fatalf("expected output tokens to be preserved, got %d", result.Usage.Output)
 	}
 }
 

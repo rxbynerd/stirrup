@@ -349,6 +349,41 @@ func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl pins
+// that a batch body carries a plain string system and no cache_control
+// anywhere, even for a model the registry caches and a request carrying a
+// cache key.
+func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing.T) {
+	const model = "claude-sonnet-4-6"
+	if !quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
+		t.Fatalf("precondition: registry must enable PromptCaching for %s", model)
+	}
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     model,
+		System:    "sys",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+		CacheKey:  "k",
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	if strings.Contains(string(body), "cache_control") {
+		t.Errorf("batch body carries cache_control: %s", body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if got := string(raw["system"]); got != `"sys"` {
+		t.Errorf("system = %s, want the plain string \"sys\"", got)
+	}
+	if got := string(raw["stream"]); got != "false" {
+		t.Errorf("stream = %s, want false", got)
+	}
+}
+
 // TestBatchAdapter_MarshalUsesInjectedRegistry pins the Registry
 // field plumbing: a BatchAdapter constructed with a registry that
 // includes a compat rule (e.g. Z.ai's TokenFieldMaxTokens +
@@ -444,6 +479,91 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	}
 	if _, ok := raw["stream"]; ok {
 		t.Errorf("openai-responses body must not carry stream key (omitempty), got: %s", body)
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity pins
+// that a batch request carries the same quirk-driven fields as a streamed
+// one: the encrypted-reasoning include, strict tools, and verbatim replay
+// of a stored turn from the inner adapter's origin, all only on a
+// reasoning model.
+func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testing.T) {
+	const baseURL = "https://api.example.test/v1"
+	cases := []struct {
+		model  string
+		gated  bool
+		strict bool
+	}{
+		{model: "gpt-5.6-sol", gated: true, strict: true},
+		{model: "gpt-4o", gated: false, strict: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			inner := NewOpenAIResponsesAdapter(staticBearer("test-key"), baseURL, OpenAIAuthConfig{})
+			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+			assistant := storedTurn(t, responsesReplayOrigin(tc.model, baseURL),
+				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
+				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,
+				`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"}`)
+			body, err := a.marshalRequestBody(types.StreamParams{
+				Model: tc.model,
+				Messages: []types.Message{
+					replayUserPrompt,
+					assistant,
+					{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "package a"}}},
+				},
+				Tools: []types.ToolDefinition{{
+					Name:        "read_file",
+					Description: "Read a file",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+				}},
+				MaxTokens: 256,
+			})
+			if err != nil {
+				t.Fatalf("marshalRequestBody: %v", err)
+			}
+			s := string(body)
+			for field, want := range map[string]bool{
+				`"include":["reasoning.encrypted_content"]`: tc.gated,
+				`"strict":true`:                   tc.strict,
+				`"encrypted_content":"enc-batch"`: tc.gated,
+				`"id":"fc_1"`:                     tc.gated,
+			} {
+				if got := strings.Contains(s, field); got != want {
+					t.Errorf("body contains %s = %v, want %v: %s", field, got, want, s)
+				}
+			}
+			assertCallsPaired(t, requestInput(t, body))
+		})
+	}
+}
+
+// TestFabricateStream_OpenAIResponsesNeverCaptures pins that batch results
+// carry no stored output items, so a batched turn is reconstructed on the
+// next request even on a reasoning model.
+func TestFabricateStream_OpenAIResponsesNeverCaptures(t *testing.T) {
+	response := []byte(`{
+		"status": "completed",
+		"output": [
+			{"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc"},
+			{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+			 "content": [{"type": "output_text", "text": "hi"}]}
+		]
+	}`)
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "openai-responses")
+	close(ch)
+	sawComplete := false
+	for ev := range ch {
+		if ev.Type == "message_complete" {
+			sawComplete = true
+		}
+		if ev.ReplayFields != nil {
+			t.Errorf("%s event carries ReplayFields: %v", ev.Type, ev.ReplayFields)
+		}
+	}
+	if !sawComplete {
+		t.Error("no message_complete event")
 	}
 }
 
@@ -1966,5 +2086,169 @@ func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
 				t.Errorf("event %d: tool input path %v, want %v", i, got[i].Input, want[i].Input)
 			}
 		}
+	}
+}
+
+// TestFabricateStream_AnthropicThinkingParity pins that a batch result's
+// thinking and redacted_thinking blocks produce the same events, in the
+// same order, as consumeSSE does for a streamed response.
+func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
+	response := []byte(`{
+		"content": [
+			{"type": "thinking", "thinking": "", "signature": "sig-batch"},
+			{"type": "text", "text": "hi"},
+			{"type": "redacted_thinking", "data": "data-batch"},
+			{"type": "tool_use", "id": "tu_a", "name": "read_file", "input": {"path": "a"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"output_tokens": 5}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	if err := fabricateAnthropicStream(ch, response); err != nil {
+		t.Fatalf("fabricateAnthropicStream: %v", err)
+	}
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+
+	want := []types.StreamEvent{
+		{Type: "thinking", ThoughtSignature: "sig-batch"},
+		{Type: "text_delta", Text: "hi"},
+		{Type: "redacted_thinking", ThoughtSignature: "data-batch"},
+		{Type: "tool_call", ID: "tu_a"},
+		{Type: "message_complete"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event count: got %d, want %d (%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type || got[i].Text != want[i].Text ||
+			got[i].ThoughtSignature != want[i].ThoughtSignature || got[i].ID != want[i].ID {
+			t.Errorf("event %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	blocks := got[4].Content
+	if len(blocks) != 4 || blocks[0].Type != "thinking" || blocks[0].ThoughtSignature != "sig-batch" ||
+		blocks[2].Type != "redacted_thinking" || blocks[2].ThoughtSignature != "data-batch" {
+		t.Errorf("message_complete content = %+v, want the thinking blocks in order", blocks)
+	}
+}
+
+// TestFabricateStream_AnthropicThinkingMatchesStream pins the parity the
+// batch path promises: a batch result yields the same events as a streamed
+// response with the same content, thinking text included.
+func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
+	response := []byte(`{
+		"content": [
+			{"type": "thinking", "thinking": "plan it", "signature": "sig-batch"},
+			{"type": "text", "text": "hi"},
+			{"type": "redacted_thinking", "data": "data-batch"},
+			{"type": "tool_use", "id": "tu_a", "name": "read_file", "input": {"path": "a"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"output_tokens": 5}
+	}`)
+	streamed := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"plan it"}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"sig-batch"}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":1,"delta":{"type":"text_delta","text":"hi"}}`),
+		makeSSE("content_block_stop", `{"index":1}`),
+		makeSSE("content_block_start", `{"index":2,"content_block":{"type":"redacted_thinking","data":"data-batch"}}`),
+		makeSSE("content_block_stop", `{"index":2}`),
+		makeSSE("content_block_start", `{"index":3,"content_block":{"type":"tool_use","id":"tu_a","name":"read_file","input":{}}}`),
+		makeSSE("content_block_delta", `{"index":3,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a\"}"}}`),
+		makeSSE("content_block_stop", `{"index":3}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}`),
+		makeSSE("message_stop", `{}`),
+	))
+
+	ch := make(chan types.StreamEvent, 8)
+	if err := fabricateAnthropicStream(ch, response); err != nil {
+		t.Fatalf("fabricateAnthropicStream: %v", err)
+	}
+	close(ch)
+	var batched []types.StreamEvent
+	for ev := range ch {
+		batched = append(batched, ev)
+	}
+
+	if len(batched) != len(streamed) {
+		t.Fatalf("batch events %v, streamed events %v", eventTypes(batched), eventTypes(streamed))
+	}
+	for i := range streamed {
+		s, b := streamed[i], batched[i]
+		if s.Type != b.Type || s.Text != b.Text || s.ThoughtSignature != b.ThoughtSignature ||
+			s.ID != b.ID || s.Name != b.Name || fmt.Sprint(s.Input) != fmt.Sprint(b.Input) || s.StopReason != b.StopReason {
+			t.Errorf("event %d: batch %+v, streamed %+v", i, b, s)
+		}
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_AnthropicInputExamples pins that the
+// batch path sends tool examples on the native input_examples field and
+// leaves the schema untouched, as Stream does.
+func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	params := types.StreamParams{
+		Model:     "claude-sonnet-5-5",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+		Tools: []types.ToolDefinition{{
+			Name:         "echo",
+			Description:  "Echo the input.",
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+			Presentation: &types.ToolPresentation{InputExamples: []json.RawMessage{json.RawMessage(`{"x":"hi"}`)}},
+		}},
+	}
+	body, err := a.marshalRequestBody(params)
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var req struct {
+		Tools []struct {
+			InputSchema   map[string]json.RawMessage `json:"input_schema"`
+			InputExamples []json.RawMessage          `json:"input_examples"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode batch body: %v\n%s", err, body)
+	}
+	if len(req.Tools) != 1 || len(req.Tools[0].InputExamples) != 1 || string(req.Tools[0].InputExamples[0]) != `{"x":"hi"}` {
+		t.Fatalf("tools = %+v, want one tool with input_examples [{\"x\":\"hi\"}]\n%s", req.Tools, body)
+	}
+	if _, folded := req.Tools[0].InputSchema["examples"]; folded {
+		t.Errorf("input_schema carries examples; want them only on input_examples\n%s", body)
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_AnthropicEffort pins that the batch
+// path applies the same effort allow-list as Stream: a supported level is
+// projected onto output_config and an unsupported one fails at marshal
+// time rather than as a per-item batch error hours later.
+func TestBatchAdapter_marshalRequestBody_AnthropicEffort(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	params := types.StreamParams{
+		Model:           "claude-sonnet-5-5",
+		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens:       256,
+		ReasoningEffort: "high",
+	}
+	body, err := a.marshalRequestBody(params)
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	if !strings.Contains(string(body), `"output_config":{"effort":"high"}`) {
+		t.Errorf("batch body missing output_config.effort: %s", body)
+	}
+
+	params.ReasoningEffort = "minimal"
+	if _, err := a.marshalRequestBody(params); err == nil {
+		t.Error("marshalRequestBody accepted reasoningEffort \"minimal\" for claude-sonnet-5-5, want error")
 	}
 }

@@ -107,11 +107,14 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
 		Timeout:  &timeout,
 	})
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 50, Output: 25}})
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}})
 
 	tr, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
 		t.Fatalf("Finish: %v", err)
+	}
+	if want := (types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}); tr.TokenUsage != want {
+		t.Errorf("returned trace TokenUsage: got %+v, want %+v", tr.TokenUsage, want)
 	}
 	if tr.ID != "run-abc" {
 		t.Errorf("returned trace ID: got %q, want run-abc", tr.ID)
@@ -153,8 +156,57 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 	if decoded.ID != "run-abc" {
 		t.Errorf("decoded trace ID: got %q, want run-abc", decoded.ID)
 	}
+	if !strings.Contains(body, `"tokenUsage":{"input":50,"output":25,"cacheRead":40,"cacheWrite":5,"reasoning":3}`) {
+		t.Errorf("uploaded body missing the token usage breakdown: %s", body)
+	}
 	if decoded.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", decoded.Config.Provider.APIKeyRef)
+	}
+}
+
+// TestGCSTraceEmitter_TurnRecordContentNotUploaded pins that the GCS
+// emitter persists the run summary only: thinking text, signatures and
+// redacted data recorded on a turn never reach the uploaded object.
+func TestGCSTraceEmitter_TurnRecordContentNotUploaded(t *testing.T) {
+	srv := newGCSCaptureServer()
+	httpSrv := httptest.NewServer(srv.handler())
+	defer httpSrv.Close()
+
+	emitter, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
+		Bucket:           "my-bucket",
+		CredentialSource: &staticBearerSource{token: "test-token"},
+		EndpointBaseURL:  httpSrv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewGCSTraceEmitter: %v", err)
+	}
+
+	const thinkingText = "gcs-thinking-text-not-uploaded"
+	const signature = "gcs-thinking-signature-not-uploaded"
+	const redacted = "gcs-redacted-data-not-uploaded"
+	thinking := []types.ContentBlock{
+		{Type: "thinking", Text: thinkingText, ThoughtSignature: signature},
+		{Type: "redacted_thinking", ThoughtSignature: redacted},
+	}
+	emitter.Start("run-gcs-1", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:        1,
+		ModelInput:  types.ModelInput{Messages: []types.Message{{Role: "assistant", Content: thinking}}},
+		ModelOutput: thinking,
+	})
+	emitter.RecordTurn(types.TurnTrace{Turn: 1})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	body := string(srv.last().Body)
+	if body == "" {
+		t.Fatal("uploaded body is empty")
+	}
+	for _, leaked := range []string{thinkingText, signature, redacted, "thinking"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("uploaded trace carries %q:\n%s", leaked, body)
+		}
 	}
 }
 

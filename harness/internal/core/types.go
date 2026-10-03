@@ -138,6 +138,12 @@ type AgenticLoop struct {
 	// by the OTel collection goroutine.
 	lastContextTokens atomic.Int64
 
+	// historyRewritten records that a context strategy rewrote the history
+	// sent on some turn of the current run. It is reset at run start and
+	// never cleared mid-run; while set, thinking blocks are stripped from
+	// every request.
+	historyRewritten bool
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.
@@ -241,25 +247,24 @@ func (l *AgenticLoop) asyncCorrelatorForTest() *transport.Correlator {
 // TokenTracker tracks cumulative token usage per run and enforces token budgets.
 // Cost estimation is a control plane concern — the harness only tracks tokens.
 type TokenTracker struct {
-	totalInputTokens  int
-	totalOutputTokens int
+	total types.TokenUsage
 }
 
 // RecordTurn records token usage for a single turn.
-func (tt *TokenTracker) RecordTurn(inputTokens, outputTokens int) {
-	tt.totalInputTokens += inputTokens
-	tt.totalOutputTokens += outputTokens
+func (tt *TokenTracker) RecordTurn(usage types.TokenUsage) {
+	tt.total.Add(usage)
 }
 
 // Tokens returns the cumulative token usage.
 func (tt *TokenTracker) Tokens() types.TokenUsage {
-	return types.TokenUsage{Input: tt.totalInputTokens, Output: tt.totalOutputTokens}
+	return tt.total
 }
 
 // CheckBudget verifies the run is within the configured token budget.
+// Cached input counts in full: the budget bounds tokens processed, not
+// cost.
 func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
-	totalTokens := tt.totalInputTokens + tt.totalOutputTokens
-	if maxTokenBudget != nil && totalTokens > *maxTokenBudget {
+	if maxTokenBudget != nil && tt.total.Total() > *maxTokenBudget {
 		return types.BudgetCheck{
 			WithinBudget:  false,
 			CurrentTokens: tt.Tokens(),
@@ -270,6 +275,25 @@ func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
 		WithinBudget:  true,
 		CurrentTokens: tt.Tokens(),
 	}
+}
+
+// usageBreakdownAttributes returns the provider.stream span attributes
+// for the cache and reasoning counts, omitting each one that is zero.
+func usageBreakdownAttributes(u types.TokenUsage) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	for _, f := range []struct {
+		key string
+		v   int
+	}{
+		{"tokens.cache_read", u.CacheRead},
+		{"tokens.cache_write", u.CacheWrite},
+		{"tokens.reasoning", u.Reasoning},
+	} {
+		if f.v > 0 {
+			attrs = append(attrs, attribute.Int(f.key, f.v))
+		}
+	}
+	return attrs
 }
 
 // traceCtx returns the context carrying the root OTel span, falling back to
@@ -576,13 +600,15 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 }
 
 // streamResult holds the results of consuming a model response stream.
-// ReplayFields is provider-opaque round-trip state from the message_complete
-// event, plumbed through to the persisted assistant Message without being
-// inspected or logged.
+// Usage holds only what the provider reported; a zero Usage.Input means
+// the provider reported no input figure. ReplayFields is provider-opaque
+// round-trip state from the message_complete event, plumbed through to
+// the persisted assistant Message without being inspected or logged.
 type streamResult struct {
 	Blocks       []types.ContentBlock
 	StopReason   string
-	OutputTokens int
+	StopDetails  *types.StopDetails
+	Usage        types.TokenUsage
 	ReplayFields map[string]json.RawMessage
 }
 
@@ -653,6 +679,20 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
 			}
 
+		case "thinking", "redacted_thinking":
+			// Persisted in stream order so the provider can replay them;
+			// never emitted to the transport.
+			if inText {
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+				inText = false
+				currentText = ""
+			}
+			result.Blocks = append(result.Blocks, types.ContentBlock{
+				Type:             event.Type,
+				Text:             event.Text,
+				ThoughtSignature: event.ThoughtSignature,
+			})
+
 		case "message_complete":
 			if inText {
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
@@ -661,9 +701,10 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			if event.StopReason != "" {
 				result.StopReason = event.StopReason
 			}
-			if event.OutputTokens > 0 {
-				result.OutputTokens = event.OutputTokens
+			if event.StopDetails != nil {
+				result.StopDetails = event.StopDetails
 			}
+			result.Usage.MergeEvent(event)
 			if len(event.ReplayFields) > 0 {
 				result.ReplayFields = event.ReplayFields
 			}
@@ -718,11 +759,23 @@ func estimateCurrentTokens(messages []types.Message) int {
 			// avoids under-shooting the budget and overflowing mid-run.
 			total += len(block.Structured) / tokenEstimationDivisor
 		}
+		// Replay state (encrypted reasoning, reasoning_content) is resent
+		// with the message, so it counts toward the context.
+		total += replayFieldsLen(msg) / tokenEstimationDivisor
 	}
 	if total == 0 {
 		total = 1
 	}
 	return total
+}
+
+// replayFieldsLen returns the total byte length of msg's replay state.
+func replayFieldsLen(msg types.Message) int {
+	n := 0
+	for _, v := range msg.ReplayFields {
+		n += len(v)
+	}
+	return n
 }
 
 // estimateSystemPromptTokens estimates the token count for the system prompt.

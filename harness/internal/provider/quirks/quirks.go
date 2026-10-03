@@ -62,9 +62,10 @@ type ProviderQuirks struct {
 	ParallelToolCalls ParallelToolCallsCapability `json:"parallelToolCalls"`
 
 	// ToolExamples declares whether the resolved (provider, model) accepts
-	// the JSON-Schema `examples` keyword inside a tool's parameters object.
-	// The zero value advertises no support. Gemini deliberately stays at the
-	// zero value — its Schema dialect rejects `examples`.
+	// worked tool-input examples: folded into the JSON-Schema `examples`
+	// keyword, or on a native wire field when Native is set. The zero value
+	// advertises no support. Gemini deliberately stays at the zero value —
+	// its Schema dialect rejects `examples`.
 	ToolExamples ToolExamplesCapability `json:"toolExamples"`
 
 	// --- Behaviour flags ---
@@ -100,6 +101,21 @@ type AnthropicBehaviourFlags struct {
 	// outright with an HTTP 400: see docs/provider-quirks.md for the
 	// affected model list.
 	OmitSamplingParams bool `json:"omitSamplingParams"`
+
+	// EffortLevels is the allow-list of output_config.effort values the
+	// resolved model accepts. Empty (the default) means the model has no
+	// probed effort control and the adapter sends no output_config at all,
+	// because models without one reject the key outright. Non-empty means
+	// a configured reasoningEffort outside the list fails before any wire
+	// bytes are sent.
+	EffortLevels []string `json:"effortLevels"`
+
+	// PromptCaching, when true, sends the system prompt as a text block
+	// carrying an ephemeral cache_control breakpoint and, on requests with
+	// a StreamParams.CacheKey, adds a top-level cache_control, so tools,
+	// system and the growing message history are read from cache on later
+	// turns. The zero value sends neither, and the API caches nothing.
+	PromptCaching bool `json:"promptCaching"`
 }
 
 // OpenAIBehaviourFlags covers behaviour divergences in openai-compatible
@@ -135,6 +151,18 @@ type OpenAIBehaviourFlags struct {
 	// containing a construct that cannot be expressed in strict form fails
 	// the request before any wire bytes are sent.
 	StrictMode bool `json:"strictMode"`
+
+	// ReasoningEffortLevels is the allow-list of top-level reasoning_effort
+	// values the resolved model accepts. Empty (the default) sends no
+	// reasoning_effort, since non-reasoning models reject the key; a
+	// configured level outside a non-empty list fails before any wire bytes
+	// are sent.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
+
+	// ToolsRequireResponses marks models whose Chat Completions surface
+	// cannot call tools. A request carrying tools fails before any wire
+	// bytes are sent, naming the openai-responses provider as the fix.
+	ToolsRequireResponses bool `json:"toolsRequireResponses"`
 }
 
 // OpenAITokenField controls which JSON key carries the token budget in an
@@ -201,6 +229,31 @@ type OpenAIResponsesBehaviourFlags struct {
 	// discriminated-union shape with per-variant wire structs. No
 	// alternative shape ships in v1.
 	InputItemShape OpenAIResponsesInputShape `json:"inputItemShape"`
+
+	// OmitSamplingParams, when true, forces "temperature" out of the
+	// request body even when StreamParams.Temperature is non-nil. Reasoning
+	// models reject sampling params whenever reasoning is active.
+	OmitSamplingParams bool `json:"omitSamplingParams"`
+
+	// ReasoningEffortLevels is the allow-list of reasoning.effort values the
+	// resolved model accepts, with the same empty-means-omit and
+	// fail-before-send semantics as OpenAIBehaviourFlags.ReasoningEffortLevels.
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
+
+	// PromptCacheKey, when true, forwards a non-empty StreamParams.CacheKey
+	// as the top-level prompt_cache_key. The zero value sends no key.
+	PromptCacheKey bool `json:"promptCacheKey"`
+	// IncludeEncryptedReasoning, when true, sends
+	// include:["reasoning.encrypted_content"] so stateless reasoning items
+	// carry the encrypted_content their replay needs. Reasoning families
+	// only: a non-reasoning model may reject the include value.
+	IncludeEncryptedReasoning bool `json:"includeEncryptedReasoning"`
+
+	// ReplayOutputItems, when true, replays a prior turn's captured output
+	// items verbatim (ids, status, phase, encrypted reasoning) instead of
+	// reconstructing them. Reasoning families only: replay is documented for
+	// stateless reasoning models and unverified elsewhere.
+	ReplayOutputItems bool `json:"replayOutputItems"`
 }
 
 // OpenAIResponsesTokenField controls which JSON key carries the token

@@ -2,13 +2,74 @@ package types
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
-// TokenUsage tracks input and output token counts.
+// TokenUsage tracks token counts for a turn or a run.
+//
+// Invariants: Input includes cached tokens (CacheRead + CacheWrite <=
+// Input), and Reasoning is a subset of Output (Reasoning <= Output).
+// Input is the provider-reported prompt size when the provider reports
+// one, otherwise the harness's estimate; TurnTrace.InputReported tells
+// them apart per turn. The three breakdown fields are zero when the
+// provider does not report them.
 type TokenUsage struct {
-	Input  int `json:"input"`
-	Output int `json:"output"`
+	Input      int `json:"input"`
+	Output     int `json:"output"`
+	CacheRead  int `json:"cacheRead,omitempty"`
+	CacheWrite int `json:"cacheWrite,omitempty"`
+	Reasoning  int `json:"reasoning,omitempty"`
+}
+
+// Add accumulates o into u, saturating at math.MaxInt so hostile
+// provider counts cannot wrap a running total negative.
+func (u *TokenUsage) Add(o TokenUsage) {
+	u.Input = saturatingAdd(u.Input, o.Input)
+	u.Output = saturatingAdd(u.Output, o.Output)
+	u.CacheRead = saturatingAdd(u.CacheRead, o.CacheRead)
+	u.CacheWrite = saturatingAdd(u.CacheWrite, o.CacheWrite)
+	u.Reasoning = saturatingAdd(u.Reasoning, o.Reasoning)
+}
+
+// Total is Input + Output, saturating at math.MaxInt. Cached input
+// counts in full.
+func (u TokenUsage) Total() int {
+	return saturatingAdd(u.Input, u.Output)
+}
+
+// MergeEvent folds the counts of one message_complete event into u. An
+// event carrying InputTokens is a complete usage snapshot and replaces
+// u; any other event overwrites only its non-zero counts, so a bare stop
+// event or a trailing output-only event never clears a reported count.
+func (u *TokenUsage) MergeEvent(ev StreamEvent) {
+	if ev.InputTokens > 0 {
+		*u = TokenUsage{}
+	}
+	for _, f := range []struct {
+		dst *int
+		v   int
+	}{
+		{&u.Input, ev.InputTokens},
+		{&u.Output, ev.OutputTokens},
+		{&u.CacheRead, ev.CacheReadTokens},
+		{&u.CacheWrite, ev.CacheWriteTokens},
+		{&u.Reasoning, ev.ReasoningTokens},
+	} {
+		if f.v > 0 {
+			*f.dst = f.v
+		}
+	}
+}
+
+func saturatingAdd(a, b int) int {
+	switch {
+	case b > 0 && a > math.MaxInt-b:
+		return math.MaxInt
+	case b < 0 && a < math.MinInt-b:
+		return math.MinInt
+	}
+	return a + b
 }
 
 // RunTrace captures the full telemetry of a single harness run.
@@ -31,12 +92,20 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "command_output_capture_failed" | "command_output_archive_failed".
+	// "command_output_capture_failed" | "command_output_archive_failed", or a
+	// provider stop reason passed through verbatim, such as "refusal" (the
+	// model declined to respond; see StopDetails) or
+	// "model_context_window_exceeded" (the response filled the model's
+	// context window and is truncated).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
 	// hook_failed and both command_output_* outcomes claim only an
 	// otherwise-successful run — the primary failure cause stays
 	// authoritative — and a capture failure outranks an archive failure.
 	Outcome string `json:"outcome"`
+	// StopDetails is the final model turn's provider-reported stop detail
+	// when the run ended on a non-tool stop reason, such as the category
+	// and explanation of a "refusal". Nil otherwise.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 	// FinalAssistantText is the loop's last non-empty assistant text,
 	// concatenated across the text blocks of the final response and carried
 	// through to RunResult.FinalAssistantText. Omitted when the run produced
@@ -188,11 +257,14 @@ const (
 
 // TurnTrace captures telemetry for a single agentic loop turn.
 type TurnTrace struct {
-	Turn       int        `json:"turn"`
-	Tokens     TokenUsage `json:"tokens"`
-	ToolCalls  int        `json:"toolCalls"`
-	StopReason string     `json:"stopReason"`
-	DurationMs int64      `json:"durationMs"`
+	Turn   int        `json:"turn"`
+	Tokens TokenUsage `json:"tokens"`
+	// InputReported is true when Tokens.Input is the provider's figure
+	// rather than the harness's estimate.
+	InputReported bool   `json:"inputReported,omitempty"`
+	ToolCalls     int    `json:"toolCalls"`
+	StopReason    string `json:"stopReason"`
+	DurationMs    int64  `json:"durationMs"`
 	// Model is the router's resolved model for this turn. Empty on traces
 	// that predate the field; consumers fall back to the run-level
 	// configured model when absent.
@@ -212,6 +284,9 @@ type TurnTrace struct {
 	// Empty for streaming turns. Allows cross-referencing a TurnTrace
 	// with the provider's batch console / API.
 	BatchID string `json:"batchId,omitempty"`
+	// StopDetails is the provider-reported detail qualifying StopReason;
+	// nil when the provider reported none.
+	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.

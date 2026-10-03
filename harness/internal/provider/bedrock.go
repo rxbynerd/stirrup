@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sdkretry "github.com/aws/aws-sdk-go-v2/aws/retry"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -84,6 +85,11 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 			}
 		})
 	}))
+	// The SDK exempts Bedrock Runtime from its default read timeout, so a
+	// silent ConverseStream would otherwise hang until the run deadline.
+	opts = append(opts, config.WithHTTPClient(
+		awshttp.NewBuildableClient().WithReadTimeout(defaultStreamIdleTimeout),
+	))
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
@@ -277,11 +283,10 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 			})
 
 		case *brtypes.ConverseStreamOutputMemberMetadata:
-			if ev.Value.Usage != nil && ev.Value.Usage.OutputTokens != nil {
-				emitEvent(types.StreamEvent{
-					Type:         "message_complete",
-					OutputTokens: int(*ev.Value.Usage.OutputTokens),
-				})
+			if ev.Value.Usage != nil {
+				usageEv := types.StreamEvent{Type: "message_complete"}
+				applyBedrockUsage(ev.Value.Usage, &usageEv)
+				emitEvent(usageEv)
 			}
 		}
 	}
@@ -289,6 +294,26 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 	if err := stream.Err(); err != nil {
 		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)})
 	}
+}
+
+// applyBedrockUsage copies Converse usage onto a message_complete event.
+// The whole prompt is totalTokens minus outputTokens, which holds whether
+// or not inputTokens counts the cache figures; without totalTokens it
+// falls back to inputTokens plus both cache figures.
+func applyBedrockUsage(u *brtypes.TokenUsage, ev *types.StreamEvent) {
+	output := clampTokens(int(aws.ToInt32(u.OutputTokens)))
+	cacheRead := clampTokens(int(aws.ToInt32(u.CacheReadInputTokens)))
+	cacheWrite := clampTokens(int(aws.ToInt32(u.CacheWriteInputTokens)))
+	input := clampTokens(int(aws.ToInt32(u.InputTokens))) + cacheRead + cacheWrite
+	if u.TotalTokens != nil {
+		input = clampTokens(int(*u.TotalTokens)) - output
+	}
+	setEventUsage(ev, tokenReport{
+		Input:      input,
+		Output:     output,
+		CacheRead:  cacheRead,
+		CacheWrite: cacheWrite,
+	})
 }
 
 // buildConverseStreamInput translates stirrup StreamParams into a Bedrock

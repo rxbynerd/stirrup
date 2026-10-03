@@ -34,8 +34,9 @@ var modeRequirements = map[string]modeRequirement{
 
 // defaultEscalationPolicy is the production EscalationPolicy. It is off
 // unless maxRetries > 0. It fires only on the first assistant turn of an
-// inner-loop run when tools were available, none was called, the mode has
-// a tool requirement, and the retry cap has not been reached; native vs
+// inner-loop run when tools were available, none was called, the turn did
+// not stop on a refusal or a full context window, the mode has a tool
+// requirement, and the retry cap has not been reached; native vs
 // prompt fallback is chosen from the resolved provider tool-choice
 // capability.
 type defaultEscalationPolicy struct {
@@ -62,7 +63,10 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	if in.EscalationsSoFar >= p.maxRetries {
 		return none
 	}
-	if in.StopReason == "tool_use" {
+	// A refusal or a full context window is not a missed tool call, and
+	// re-prompting would retry the stop rather than recover from it.
+	switch in.StopReason {
+	case "tool_use", "refusal", "model_context_window_exceeded":
 		return none
 	}
 	if !in.ToolsAvailable {

@@ -183,7 +183,14 @@ IMDS, GitHub Actions OIDC). See
    full `RunTrace.Outcome` set, which adds `success`,
    `verification_failed`, `verification_error`, and `max_tokens` on
    top of the loop's stop reasons. `trace.stop_reason` mirrors it for
-   backward compatibility.
+   backward compatibility. Provider stop reasons such as `refusal` and
+   `model_context_window_exceeded` pass through verbatim as the
+   outcome. A refusal's category and explanation reach operators
+   through the trace emitters (the JSONL and GCS `RunTrace`, and the
+   `stop.category` attribute on the OTel `provider.stream` span) and
+   the `provider refused to respond` Warn log line;
+   `trace.stop_details` mirrors them on the proto for when `done.trace`
+   is populated (issue #453).
 9. **Finalise.** The run's `RunResult` is emitted on the configured
    `resultSink` and, when `executor.workspaceExportTo` is set, the
    workspace is exported. Every run — primary and follow-up — is

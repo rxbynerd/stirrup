@@ -30,7 +30,8 @@ func contractFixtureMessages() []types.Message {
 }
 
 // TestAnthropicContract_ToolEnabledRequestBody pins the outbound Anthropic
-// Messages request for a tool-enabled, required-tool-choice turn.
+// Messages request for a tool-enabled, required-tool-choice main-loop turn
+// (one carrying a cache key).
 func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 	params := types.StreamParams{
 		Model:       "claude-sonnet-4-6",
@@ -40,6 +41,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 		ToolChoice:  types.ToolChoiceRequired,
+		CacheKey:    "contract-cache-key",
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
@@ -65,6 +67,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 		ToolChoice:  types.ToolChoiceRequired,
+		CacheKey:    "contract-cache-key",
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
@@ -87,7 +90,7 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 		Temperature: types.Float64Ptr(0.5),
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
-	req, err := buildResponsesRequest(params, q, nil)
+	req, err := buildResponsesRequest(params, q, nil, "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -97,4 +100,31 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-4o", "request.json"), body)
+}
+
+// TestResponsesContract_GPT56RequestBody pins the outbound Responses request
+// for a GPT-5.6 reasoning turn: reasoning.effort projected, temperature
+// omitted despite a non-nil value, strict tools with a normalised schema, and
+// the encrypted-reasoning include. Documented, not probed.
+func TestResponsesContract_GPT56RequestBody(t *testing.T) {
+	params := types.StreamParams{
+		Model:           "gpt-5.6-sol",
+		System:          "You are helpful.",
+		Messages:        contractFixtureMessages(),
+		Tools:           []types.ToolDefinition{contractFixtureTool()},
+		MaxTokens:       4096,
+		Temperature:     types.Float64Ptr(0.5),
+		ReasoningEffort: "high",
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	req, err := buildResponsesRequest(params, q, nil, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	req.Stream = true
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "request.json"), body)
 }

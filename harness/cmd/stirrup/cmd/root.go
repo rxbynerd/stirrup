@@ -126,7 +126,9 @@ func printRunSummary(runTrace *types.RunTrace) {
 	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
 	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
 	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)
-	fmt.Fprintf(os.Stderr, "Tokens: %d in / %d out\n", runTrace.TokenUsage.Input, runTrace.TokenUsage.Output)
+	fmt.Fprintf(os.Stderr, "Tokens: %d in%s / %d out%s\n",
+		runTrace.TokenUsage.Input, inputTokenDetail(runTrace.TokenUsage.CacheRead, runTrace.TokenUsage.CacheWrite),
+		runTrace.TokenUsage.Output, outputTokenDetail(runTrace.TokenUsage.Reasoning))
 	fmt.Fprintf(os.Stderr, "Tool calls: %d\n", len(runTrace.ToolCalls))
 	fmt.Fprintf(os.Stderr, "Duration: %s\n", runTrace.CompletedAt.Sub(runTrace.StartedAt).Round(time.Millisecond))
 	if len(runTrace.HookResults) > 0 {

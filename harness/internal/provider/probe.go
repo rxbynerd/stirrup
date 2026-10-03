@@ -132,7 +132,9 @@ func (g *GeminiAdapter) Probe(ctx context.Context) error {
 // draining the body first so the keep-alive connection can be reused by a
 // subsequent probe on the same client. A non-2xx status carries up to
 // probeBodyLimit bytes of the body so a 401/403 surfaces the provider's
-// diagnostic without exfiltrating an unbounded payload.
+// diagnostic without exfiltrating an unbounded payload. The probe clients
+// set no Client.Timeout; the request context (the preflight budget) bounds
+// both reads.
 func checkProbeStatus(provider string, resp *http.Response) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -67,6 +69,68 @@ func retryableStatus(s int) bool {
 		return false
 	}
 }
+
+// maxQuotaBodyPeek bounds how much of a 429 body is buffered to read its
+// error code; it matches the adapters' own error-body read limit.
+const maxQuotaBodyPeek = 4096
+
+// quotaErrorCodes are the documented OpenAI 429 error codes for billing,
+// spend, and quota limits. Retrying cannot restore access until an
+// operator raises the limit, so they are terminal despite the 429.
+var quotaErrorCodes = map[string]bool{
+	"insufficient_quota":                true,
+	"credit_balance_exhausted":          true,
+	"organization_spend_limit_exceeded": true,
+	"project_spend_limit_exceeded":      true,
+	"organization_usage_limit_exceeded": true,
+}
+
+// peekQuotaExhausted reports whether resp is a 429 whose JSON error body
+// names a billing, spend, or quota limit, by error.code or by the broader
+// error.type "insufficient_quota", and returns the matched value. It reads
+// at most maxQuotaBodyPeek bytes and replaces resp.Body so the caller still
+// reads the whole body, including any error the peek hit.
+func peekQuotaExhausted(resp *http.Response) (code string, exhausted bool) {
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
+		return "", false
+	}
+	peek, readErr := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBodyPeek))
+	var rest io.Reader = resp.Body
+	if readErr != nil {
+		rest = errReader{readErr}
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(peek), rest), resp.Body}
+
+	// any, not string: gateways and other providers send numeric codes
+	// (Gemini's error.code is the HTTP status), which must not fail the
+	// decode of a sibling field.
+	var body struct {
+		Error struct {
+			Type any `json:"type"`
+			Code any `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(peek, &body) != nil {
+		return "", false
+	}
+	code, _ = body.Error.Code.(string)
+	errType, _ := body.Error.Type.(string)
+	switch {
+	case quotaErrorCodes[code]:
+		return code, true
+	case errType == "insufficient_quota":
+		return errType, true
+	}
+	return "", false
+}
+
+// errReader returns err from every Read.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // transientErr reports whether a transport-level error is retryable.
 // Timeouts always qualify; io.EOF qualifies only on the first attempt,
@@ -156,6 +220,7 @@ const (
 	retryOutcomeSucceeded       = "succeeded"
 	retryOutcomeExhausted       = "exhausted"
 	retryOutcomeNonRetryable    = "non_retryable"
+	retryOutcomeQuotaExhausted  = "quota_exhausted"
 	retryOutcomeBudgetExhausted = "budget_exhausted"
 	retryOutcomeContextDone     = "context_done"
 	retryOutcomeRewindFailed    = "rewind_failed"
@@ -183,6 +248,24 @@ type RetryOptions struct {
 	ProviderType string
 	Model        string
 	ShouldRetry  func(*http.Response) (retryable bool, consumed bool)
+
+	// drainTimeout overrides retryDrainTimeout; zero selects the default.
+	drainTimeout time.Duration
+}
+
+// retryDrainTimeout bounds the total time spent draining a retried
+// response body. The streaming clients set no Client.Timeout, so without
+// it a body that trickles bytes would hold the retry until the run context
+// ends.
+const retryDrainTimeout = 10 * time.Second
+
+// drainAndClose discards up to 4 KB of body so the connection can be
+// reused, then closes it. The body is closed early once timeout elapses.
+func drainAndClose(body io.ReadCloser, timeout time.Duration) {
+	t := time.AfterFunc(timeout, func() { _ = body.Close() })
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 4096))
+	t.Stop()
+	_ = body.Close()
 }
 
 // DoWithRetry issues req using client, retrying on retryable statuses
@@ -219,6 +302,10 @@ func DoWithRetry(
 	providerType := opts.ProviderType
 	model := opts.Model
 	shouldRetry := opts.ShouldRetry
+	drainTimeout := opts.drainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = retryDrainTimeout
+	}
 
 	seed := uint64(time.Now().UnixNano())
 	prng := rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15))
@@ -247,8 +334,7 @@ func DoWithRetry(
 					// Drain and close the previous response so the
 					// connection can be reused.
 					if lastResp != nil {
-						_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
-						_ = lastResp.Body.Close()
+						drainAndClose(lastResp.Body, drainTimeout)
 					}
 					logger.Warn("provider_retry_rewind_failed",
 						"event", "provider_retry_rewind_failed",
@@ -267,6 +353,10 @@ func DoWithRetry(
 		resp, err := client.Do(req)
 
 		retryable := false
+		var quotaCode string
+		if err == nil {
+			retryable, quotaCode = classifyRetryable(resp, shouldRetry)
+		}
 		var delay time.Duration
 		var delaySource string
 
@@ -279,10 +369,9 @@ func DoWithRetry(
 				delay = backoffDelay(attempt, policy, prng)
 				delaySource = delaySourceBackoff
 			}
-		case classifyRetryable(resp, shouldRetry):
+		case retryable:
 			lastResp = resp
 			lastErr = nil
-			retryable = true
 			now := time.Now()
 			hint, source := parseRetryAfter(resp.Header, now)
 			if hint > 0 {
@@ -297,9 +386,19 @@ func DoWithRetry(
 			}
 		default:
 			// Non-retryable: success or terminal client/server error.
-			if err == nil && (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+			switch {
+			case resp.StatusCode >= 200 && resp.StatusCode < 300:
 				recordOutcome(ctx, metrics, providerType, model, retryOutcomeSucceeded)
-			} else {
+			case quotaCode != "":
+				logger.Warn("provider_quota_exhausted",
+					"event", "provider_quota_exhausted",
+					"provider", providerType,
+					"model", model,
+					"status", resp.StatusCode,
+					"code", quotaCode,
+				)
+				recordOutcome(ctx, metrics, providerType, model, retryOutcomeQuotaExhausted)
+			default:
 				recordOutcome(ctx, metrics, providerType, model, retryOutcomeNonRetryable)
 			}
 			return resp, nil
@@ -366,11 +465,10 @@ func DoWithRetry(
 			span.AddEvent("provider_retry_attempt", oteltrace.WithAttributes(spanAttrs...))
 		}
 
-		// Bound the drain at 4 KB so a hostile upstream cannot stall
-		// progress by streaming an unbounded body.
+		// Bound the drain in size and time so a hostile upstream cannot
+		// stall progress with an unbounded or trickling body.
 		if lastResp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
-			_ = lastResp.Body.Close()
+			drainAndClose(lastResp.Body, drainTimeout)
 			lastResp = nil
 		}
 
@@ -397,14 +495,19 @@ func DoWithRetry(
 // classifyRetryable decides whether resp should be retried. The
 // optional shouldRetry callback gets first pass: when consumed=true
 // its retryable value is final; when consumed=false the call falls
-// through to the default retryableStatus heuristic.
-func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) bool {
+// through to the default heuristic, under which a quota-exhausted 429
+// is terminal (quotaCode names the matched code) and every other
+// status follows retryableStatus.
+func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) (retryable bool, quotaCode string) {
 	if shouldRetry != nil {
 		if retryable, consumed := shouldRetry(resp); consumed {
-			return retryable
+			return retryable, ""
 		}
 	}
-	return retryableStatus(resp.StatusCode)
+	if code, exhausted := peekQuotaExhausted(resp); exhausted {
+		return false, code
+	}
+	return retryableStatus(resp.StatusCode), ""
 }
 
 func recordOutcome(ctx context.Context, m *observability.Metrics, providerType, model, outcome string) {

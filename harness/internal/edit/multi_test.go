@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
 func TestMultiStrategy_ToolDefinition(t *testing.T) {
@@ -105,13 +106,41 @@ func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 	}
 
 	// The structured InputExamples must mirror the description example
-	// byte-for-byte; adapters fold it into the schema `examples` keyword
-	// for providers that support it.
+	// byte-for-byte; adapters send it natively or fold it into the schema
+	// `examples` keyword for providers that support it.
 	if def.Presentation == nil || len(def.Presentation.InputExamples) != 1 {
 		t.Fatalf("ToolDefinition().Presentation = %+v, want exactly one InputExample", def.Presentation)
 	}
 	if got := string(def.Presentation.InputExamples[0]); got != example {
 		t.Errorf("InputExamples[0] drifted from description:\n got = %s\nwant = %s", got, example)
+	}
+}
+
+// TestEditStrategyInputExamples_PassDispatchValidation pins that every edit
+// strategy's worked example validates against the strategy's own schema
+// with the validator dispatch uses, mirroring the built-in tools test.
+func TestEditStrategyInputExamples_PassDispatchValidation(t *testing.T) {
+	strategies := []EditStrategy{
+		NewMultiStrategy(defaultFuzzyThreshold),
+		NewUdiffStrategy(defaultFuzzyThreshold),
+		NewSearchReplaceStrategy(),
+		NewWholeFileStrategy(),
+	}
+	validated := 0
+	for _, s := range strategies {
+		def := s.ToolDefinition()
+		if def.Presentation == nil {
+			continue
+		}
+		for i, example := range def.Presentation.InputExamples {
+			if err := security.ValidateJSONSchema(example, def.InputSchema); err != nil {
+				t.Errorf("%T: InputExamples[%d] fails its InputSchema: %v\nexample: %s", s, i, err, example)
+			}
+			validated++
+		}
+	}
+	if validated == 0 {
+		t.Fatal("no edit strategy input examples were validated")
 	}
 }
 

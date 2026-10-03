@@ -49,11 +49,18 @@ func TestResolveEmptyRegistry(t *testing.T) {
 	}
 	want := ProviderBehaviourFlags{
 		OpenAI: OpenAIBehaviourFlags{
-			ExtraBodyFields: map[string]any{},
+			ExtraBodyFields:       map[string]any{},
+			ReasoningEffortLevels: []string{},
+		},
+		OpenAIResponses: OpenAIResponsesBehaviourFlags{
+			ReasoningEffortLevels: []string{},
 		},
 		Gemini: GeminiBehaviourFlags{
 			SchemaUnsupportedFeatures: []string{},
 			ThinkingLevels:            []string{},
+		},
+		Anthropic: AnthropicBehaviourFlags{
+			EffortLevels: []string{},
 		},
 	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {
@@ -564,7 +571,11 @@ func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 		"claude-opus-4-7",
 		"claude-opus-4-8",
 		"claude-sonnet-5",
+		"claude-sonnet-5-5",
+		"claude-opus-5",
+		"claude-opus-5-5",
 		"claude-fable-5",
+		"claude-fable-5-1",
 		"claude-mythos-5",
 	}
 	for _, model := range omits {
@@ -596,6 +607,100 @@ func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 	}
 }
 
+// TestAnthropicEffortLevels pins the per-model output_config.effort
+// allow-lists. An empty list is load-bearing: Haiku 4.5 and Sonnet 4.5
+// return HTTP 400 on the effort key itself, so those models must resolve
+// to "send nothing" rather than to a guessed list.
+func TestAnthropicEffortLevels(t *testing.T) {
+	full := []string{"low", "medium", "high", "xhigh", "max"}
+	cases := []struct {
+		model string
+		want  []string
+	}{
+		{"claude-haiku-4-5-20251001", []string{}},
+		{"claude-sonnet-4-5-20250929", []string{}},
+		{"claude-opus-4-5-20251101", []string{"low", "medium", "high"}},
+		{"claude-opus-4-6", []string{"low", "medium", "high", "max"}},
+		{"claude-sonnet-4-6", []string{"low", "medium", "high", "max"}},
+		{"claude-opus-4-7", full},
+		{"claude-opus-4-8", full},
+		{"claude-sonnet-5", full},
+		{"claude-sonnet-5-5", full},
+		{"claude-opus-5", full},
+		{"claude-opus-5-5", full},
+		{"claude-fable-5", full},
+		{"claude-fable-5-1", full},
+		// Unprobed: keeps the send-nothing default.
+		{"claude-mythos-5", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			got := DefaultRegistry().Resolve("anthropic", tc.model).BehaviourFlags.Anthropic.EffortLevels
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("EffortLevels = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnthropicPromptCaching pins that every Anthropic model resolves
+// prompt caching on, and that a registry with no rule leaves it off so a
+// rule-less request keeps the uncached wire shape.
+func TestAnthropicPromptCaching(t *testing.T) {
+	for _, model := range []string{
+		"claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5",
+		"claude-sonnet-4-5-20250929",
+		"claude-sonnet-4-6",
+		"claude-opus-4-5",
+		"claude-opus-4-6",
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-sonnet-5-5",
+		"claude-opus-5-5",
+		"claude-fable-5-1",
+		"claude-mythos-5-1",
+	} {
+		if !DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
+			t.Errorf("anthropic/%s: PromptCaching = false, want true", model)
+		}
+	}
+	if NewRegistry(nil).Resolve("anthropic", "claude-sonnet-5-5").BehaviourFlags.Anthropic.PromptCaching {
+		t.Error("empty registry: PromptCaching = true, want false")
+	}
+	if DefaultRegistry().Resolve("openai-compatible", "claude-sonnet-5-5").BehaviourFlags.Anthropic.PromptCaching {
+		t.Error("openai-compatible/claude-sonnet-5-5: PromptCaching = true, want false (rule scoped to the anthropic provider)")
+	}
+}
+
+// TestAnthropicForcedToolChoiceRemoved pins the models that return HTTP
+// 400 on tool_choice "any" and "tool". They must advertise auto only so the
+// escalation policy picks its prompt fallback instead of a forced choice,
+// while the earlier 5.x models keep the full base capability.
+func TestAnthropicForcedToolChoiceRemoved(t *testing.T) {
+	autoOnly := ToolChoiceCapability{Supported: true, Auto: true}
+	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1"} {
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.ToolChoice != autoOnly {
+				t.Errorf("ToolChoice = %+v, want %+v", q.ToolChoice, autoOnly)
+			}
+			if !q.ParallelToolCalls.Disable {
+				t.Error("ParallelToolCalls.Disable = false; disable_parallel_tool_use still works with auto")
+			}
+		})
+	}
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8"} {
+		t.Run(model+" keeps forced choice", func(t *testing.T) {
+			tc := DefaultRegistry().Resolve("anthropic", model).ToolChoice
+			if !tc.Required || !tc.NamedTool {
+				t.Errorf("ToolChoice = %+v, want Required and NamedTool", tc)
+			}
+		})
+	}
+}
+
 // TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities pins that
 // the claude-*-glob OmitSamplingParams rules, which resolve after the
 // pre-existing "anthropic / *" capability rules, do not clobber
@@ -607,6 +712,7 @@ func TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities(t *testing.
 		"claude-opus-4-7",
 		"claude-opus-4-8",
 		"claude-sonnet-5",
+		"claude-opus-5",
 		"claude-fable-5",
 		"claude-mythos-5",
 	} {
@@ -686,22 +792,26 @@ func TestParallelToolCallsCapabilityRules(t *testing.T) {
 	}
 }
 
-// TestToolExamplesCapabilityRules pins which providers accept the JSON-Schema
-// `examples` keyword in a tool's parameters (#222). Gemini is the load-bearing
-// negative: its Schema dialect rejects `examples`, so the example must reach
-// the model via the description text instead — never folded into the schema.
+// TestToolExamplesCapabilityRules pins which providers accept worked tool
+// examples and where (#222): Anthropic on its native input_examples field,
+// the OpenAI adapters in the JSON-Schema `examples` keyword. Gemini is the
+// load-bearing negative: its Schema dialect rejects `examples`, so the
+// example must reach the model via the description text instead — never
+// folded into the schema.
 func TestToolExamplesCapabilityRules(t *testing.T) {
-	supported := map[string]string{
-		"anthropic":         "claude-sonnet-4-5",
-		"openai-compatible": "gpt-4o",
-		"openai-responses":  "gpt-4o",
+	supported := map[string]struct {
+		model string
+		want  ToolExamplesCapability
+	}{
+		"anthropic":         {"claude-sonnet-4-5", ToolExamplesCapability{Supported: true, Native: true}},
+		"openai-compatible": {"gpt-4o", ToolExamplesCapability{Supported: true}},
+		"openai-responses":  {"gpt-4o", ToolExamplesCapability{Supported: true}},
 	}
-	for provider, model := range supported {
-		t.Run(provider+" accepts schema examples", func(t *testing.T) {
-			q := DefaultRegistry().Resolve(provider, model)
-			want := ToolExamplesCapability{Supported: true}
-			if q.ToolExamples != want {
-				t.Errorf("%s: ToolExamples = %+v, want %+v", provider, q.ToolExamples, want)
+	for provider, tc := range supported {
+		t.Run(provider+" accepts examples", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, tc.model)
+			if q.ToolExamples != tc.want {
+				t.Errorf("%s: ToolExamples = %+v, want %+v", provider, q.ToolExamples, tc.want)
 			}
 		})
 	}
@@ -716,6 +826,15 @@ func TestToolExamplesCapabilityRules(t *testing.T) {
 			q := DefaultRegistry().Resolve(provider, model)
 			if q.ToolExamples != (ToolExamplesCapability{}) {
 				t.Errorf("%s: ToolExamples = %+v, want zero value (unsupported)", provider, q.ToolExamples)
+			}
+		})
+	}
+
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"} {
+		t.Run("anthropic "+model+" sends input_examples natively", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.ToolExamples != (ToolExamplesCapability{Supported: true, Native: true}) {
+				t.Errorf("anthropic/%s: ToolExamples = %+v, want Supported and Native", model, q.ToolExamples)
 			}
 		})
 	}
@@ -740,13 +859,24 @@ func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
 	if rf.InputItemShape != TypedInputItems {
 		t.Errorf("InputItemShape = %v, want TypedInputItems", rf.InputItemShape)
 	}
+	for _, model := range []string{"gpt-4o", "gpt-5.4", "gpt-6-astra", "some-new-model"} {
+		if !DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses.PromptCacheKey {
+			t.Errorf("openai-responses/%s: PromptCacheKey = false, want true", model)
+		}
+	}
+	for _, providerType := range []string{"openai-compatible", "anthropic"} {
+		if DefaultRegistry().Resolve(providerType, "gpt-4o").BehaviourFlags.OpenAIResponses.PromptCacheKey {
+			t.Errorf("%s/gpt-4o: PromptCacheKey = true, want false (rule scoped to openai-responses)", providerType)
+		}
+	}
 
 	// A provider with no rule resolves the same zero-value flags, so the
 	// adapter falls through to today's byte-identical behaviour even when
 	// the registry is empty for the (provider, model) pair.
 	empty := NewRegistry(nil).Resolve("openai-responses", "gpt-4o")
-	if empty.BehaviourFlags.OpenAIResponses != (OpenAIResponsesBehaviourFlags{}) {
-		t.Errorf("empty registry: OpenAIResponses = %+v, want zero value", empty.BehaviourFlags.OpenAIResponses)
+	wantEmpty := OpenAIResponsesBehaviourFlags{ReasoningEffortLevels: []string{}}
+	if !reflect.DeepEqual(empty.BehaviourFlags.OpenAIResponses, wantEmpty) {
+		t.Errorf("empty registry: OpenAIResponses = %+v, want %+v", empty.BehaviourFlags.OpenAIResponses, wantEmpty)
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
@@ -52,14 +54,14 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 
 	emitter.RecordTurn(types.TurnTrace{
 		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 100, Output: 50},
+		Tokens:     types.TokenUsage{Input: 100, Output: 50, CacheRead: 60, CacheWrite: 30, Reasoning: 10},
 		ToolCalls:  2,
 		StopReason: "tool_use",
 		DurationMs: 1500,
 	})
 	emitter.RecordTurn(types.TurnTrace{
 		Turn:       2,
-		Tokens:     types.TokenUsage{Input: 200, Output: 75},
+		Tokens:     types.TokenUsage{Input: 200, Output: 75, CacheRead: 150, Reasoning: 5},
 		ToolCalls:  0,
 		StopReason: "end_turn",
 		DurationMs: 800,
@@ -87,8 +89,9 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	if trace.Turns != 2 {
 		t.Errorf("Turns: got %d, want 2", trace.Turns)
 	}
-	if trace.TokenUsage.Input != 300 || trace.TokenUsage.Output != 125 {
-		t.Errorf("TokenUsage: got %+v, want {300, 125}", trace.TokenUsage)
+	wantTokens := types.TokenUsage{Input: 300, Output: 125, CacheRead: 210, CacheWrite: 30, Reasoning: 15}
+	if trace.TokenUsage != wantTokens {
+		t.Errorf("TokenUsage: got %+v, want %+v", trace.TokenUsage, wantTokens)
 	}
 	if len(trace.ToolCalls) != 2 {
 		t.Errorf("ToolCalls: got %d, want 2", len(trace.ToolCalls))
@@ -548,6 +551,113 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	// Tool span: tool name and operation name.
 	assertAttribute(t, tool, genAIToolNameKey, "read_file")
 	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
+}
+
+// TestOTelTraceEmitter_TurnUsageBreakdownAttributes pins that the cache,
+// reasoning, and input-reported attributes appear on a turn span only
+// when set, so a turn with no breakdown keeps the base attribute set.
+func TestOTelTraceEmitter_TurnUsageBreakdownAttributes(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-usage-1", &types.RunConfig{RunID: "run-usage-1", Provider: types.ProviderConfig{Type: "anthropic"}})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          1,
+		Tokens:        types.TokenUsage{Input: 2476, Output: 941, CacheRead: 2162, CacheWrite: 310, Reasoning: 468},
+		InputReported: true,
+		StopReason:    "tool_use",
+	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:       2,
+		Tokens:     types.TokenUsage{Input: 900, Output: 12},
+		StopReason: "end_turn",
+	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          3,
+		Tokens:        types.TokenUsage{Input: 5000, Output: 30, CacheRead: 4096},
+		InputReported: true,
+		StopReason:    "tool_use",
+	})
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:          4,
+		Tokens:        types.TokenUsage{Input: 700, Output: 5},
+		InputReported: true,
+		StopReason:    "end_turn",
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	spans := exporter.GetSpans()
+
+	reported := findSpanByName(t, spans, "turn[1]")
+	assertIntAttribute(t, reported, genAIUsageInputTokens, 2476)
+	assertIntAttribute(t, reported, genAIUsageCacheReadInputTokens, 2162)
+	assertIntAttribute(t, reported, genAIUsageCacheCreationInputTokens, 310)
+	assertIntAttribute(t, reported, genAIUsageReasoningOutputTokens, 468)
+	var sawReported bool
+	for _, attr := range reported.Attributes {
+		if string(attr.Key) == tokensInputReportedKey {
+			sawReported = attr.Value.AsBool()
+		}
+	}
+	if !sawReported {
+		t.Errorf("turn[1]: %s = false or absent, want true", tokensInputReportedKey)
+	}
+
+	estimated := findSpanByName(t, spans, "turn[2]")
+	for _, attr := range estimated.Attributes {
+		switch string(attr.Key) {
+		case tokensInputReportedKey, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens:
+			t.Errorf("turn[2]: unexpected attribute %s=%v on a turn with no breakdown", attr.Key, attr.Value.String())
+		}
+	}
+
+	cacheReadOnly := findSpanByName(t, spans, "turn[3]")
+	assertIntAttribute(t, cacheReadOnly, genAIUsageCacheReadInputTokens, 4096)
+	assertBoolAttribute(t, cacheReadOnly, tokensInputReportedKey, true)
+	assertAttributesAbsent(t, cacheReadOnly, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
+
+	reportedNoCache := findSpanByName(t, spans, "turn[4]")
+	assertBoolAttribute(t, reportedNoCache, tokensInputReportedKey, true)
+	assertAttributesAbsent(t, reportedNoCache, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
+}
+
+func assertBoolAttribute(t *testing.T, span tracetest.SpanStub, key string, want bool) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			if got := attr.Value.AsBool(); got != want {
+				t.Errorf("%s: %s = %v, want %v", span.Name, key, got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("%s: attribute %s absent, want %v", span.Name, key, want)
+}
+
+func assertAttributesAbsent(t *testing.T, span tracetest.SpanStub, keys ...string) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		for _, key := range keys {
+			if string(attr.Key) == key {
+				t.Errorf("%s: unexpected attribute %s=%s", span.Name, key, attr.Value.String())
+			}
+		}
+	}
+}
+
+// The GenAI usage keys are string constants; this pins them to the
+// semconv release that defines all five.
+func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
+	for got, want := range map[string]attribute.Key{
+		genAIUsageInputTokens:              semconv.GenAIUsageInputTokensKey,
+		genAIUsageOutputTokens:             semconv.GenAIUsageOutputTokensKey,
+		genAIUsageCacheReadInputTokens:     semconv.GenAIUsageCacheReadInputTokensKey,
+		genAIUsageCacheCreationInputTokens: semconv.GenAIUsageCacheCreationInputTokensKey,
+		genAIUsageReasoningOutputTokens:    semconv.GenAIUsageReasoningOutputTokensKey,
+	} {
+		if got != string(want) {
+			t.Errorf("attribute key %q, want semconv %q", got, want)
+		}
+	}
 }
 
 // TestOTelTraceEmitter_TurnModelFallback pins the gen_ai.request.model

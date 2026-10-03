@@ -5860,6 +5860,22 @@ func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPrintRunSummary_TokenBreakdown(t *testing.T) {
+	rt := outputModeRunTrace()
+	stderrDone := captureStderr(t)
+	printRunSummary(rt)
+	if stderr := stderrDone(); !strings.Contains(stderr, "Tokens: 1234 in / 567 out\n") {
+		t.Errorf("a run without breakdown must print bare counts, got: %q", stderr)
+	}
+
+	rt.TokenUsage = types.TokenUsage{Input: 1234, Output: 567, CacheRead: 1000, CacheWrite: 20, Reasoning: 12}
+	stderrDone = captureStderr(t)
+	printRunSummary(rt)
+	if want, stderr := "Tokens: 1234 in (cache read 1000, cache write 20) / 567 out (reasoning 12)\n", stderrDone(); !strings.Contains(stderr, want) {
+		t.Errorf("stderr missing %q, got: %q", want, stderr)
+	}
+}
+
 // TestPrintRunSummary_HooksLineOmittedWhenAbsent pins that a hookless
 // run's summary carries no "Hooks:" line at all.
 func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {

@@ -130,6 +130,9 @@ For the current `stirrup job` implementation, read
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
 `hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
+Provider stop reasons also pass through verbatim: `refusal` (the model
+declined to respond) and `model_context_window_exceeded` (the response
+filled the model's context window and is truncated).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 
@@ -139,6 +142,12 @@ The proto also defines `done.trace`, but the job path currently emits
 turn counts, token usage, duration, verifier details, and final
 assistant text from a configured `resultSink`, process stdout, or a
 trace emitter instead. `cost_usd` is not calculated by the harness.
+A refusal's category and explanation reach operators through the trace
+emitters (the JSONL and GCS `RunTrace`, and the `stop.category`
+attribute on the OTel `provider.stream` span) and the `provider refused
+to respond` Warn log line. `RunTrace.stop_details` mirrors them on the
+proto for when `done.trace` is populated; `RunResult` does not carry
+them.
 
 A `done` is emitted for every failure that happens after the task
 assignment arrives, including a `RunConfig` rejected on arrival: the
@@ -531,7 +540,9 @@ hard — or different providers per mode.
   and `dynamic`. The dynamic router chooses the cheap model when the
   previous stop reason is in `cheapStopReasons`, the expensive model
   after a configured turn/output-token threshold, and the default
-  model otherwise.
+  model otherwise. `expensiveTokenThreshold` compares the run's
+  cumulative output tokens, which include reasoning tokens (Gemini
+  thought tokens included), so thinking-heavy runs reach it sooner.
 - Behaviour knobs are provider-neutral: `temperature` and
   `reasoningEffort` sit at the top level of `RunConfig`. Adapters with
   a supported native control project them; other adapters may ignore
@@ -865,7 +876,7 @@ Four independent channels; use the ones the topology supports:
 | Channel | Carries | Topology |
 |---|---|---|
 | `done` event | Outcome in `stop_reason` | gRPC. The primary terminal signal for a control plane; its `trace` field is currently unset. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage, duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Soft-fail by default; `--export-workspace-required` hardens it on the CLI. |
 

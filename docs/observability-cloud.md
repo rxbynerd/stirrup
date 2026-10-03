@@ -202,6 +202,28 @@ backends. IDs are the 32-hex-char trace ID and 16-hex-char span ID
 forms. Records emitted outside an active span (boot-time,
 context-less logging) carry no correlation fields.
 
+## Token usage on turn spans
+
+Every `turn[N]` span carries `gen_ai.usage.input_tokens` and
+`gen_ai.usage.output_tokens`. Input includes cached tokens and is the
+provider's figure where the provider reports one, otherwise the
+harness's estimate. When set, a turn span also carries:
+
+| Attribute | Meaning |
+|---|---|
+| `gen_ai.usage.cache_read.input_tokens` | Part of the input served from the provider's prompt cache. |
+| `gen_ai.usage.cache_creation.input_tokens` | Part of the input written to the provider's prompt cache. |
+| `gen_ai.usage.reasoning.output_tokens` | Part of the output spent on reasoning or thinking. |
+| `stirrup.tokens.input_reported` | `true` when the input is the provider's figure rather than the estimate. |
+
+Each is omitted when zero or false. The per-provider sources are
+listed in [`trace-inspection.md`](trace-inspection.md#token-usage).
+The `stirrup.harness.tokens.cache_read` and `.cache_write` counters
+carry the same cache figures as metrics, and
+`stirrup.subagent.tokens.cache_read` and `.cache_write` carry a
+sub-agent's totals under the parent's `parent.mode`. Each cache
+counter records only non-zero figures.
+
 ## Span content capture (opt-in)
 
 By default the otel emitter records turn-level counters (tokens,

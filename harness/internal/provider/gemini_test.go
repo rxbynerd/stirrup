@@ -877,6 +877,12 @@ func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
 	if stop.OutputTokens != 50 {
 		t.Errorf("OutputTokens = %d, want 50 (total 80 - prompt 30)", stop.OutputTokens)
 	}
+	if stop.InputTokens != 30 {
+		t.Errorf("InputTokens = %d, want 30 (promptTokenCount)", stop.InputTokens)
+	}
+	if stop.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0 without thoughtsTokenCount", stop.ReasoningTokens)
+	}
 }
 
 // TestGeminiAdapter_RecitationFinishReason pins the RECITATION enum
@@ -930,12 +936,12 @@ func TestGeminiAdapter_EmptyStream(t *testing.T) {
 	}
 }
 
-// TestGeminiAdapter_HasTimeout pins the HTTP client timeout shape so a
-// future refactor cannot accidentally drop the safety bounds.
-func TestGeminiAdapter_HasTimeout(t *testing.T) {
+// TestGeminiAdapter_StreamingClientTimeouts pins the streaming client shape:
+// no total deadline, with bounded TLS handshake and response-header phases.
+func TestGeminiAdapter_StreamingClientTimeouts(t *testing.T) {
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "p", "global", nil)
-	if a.httpClient.Timeout == 0 {
-		t.Error("HTTP client should have a non-zero timeout")
+	if a.httpClient.Timeout != 0 {
+		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", a.httpClient.Timeout)
 	}
 	tr, ok := a.httpClient.Transport.(*http.Transport)
 	if !ok {

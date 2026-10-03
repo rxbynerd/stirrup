@@ -29,6 +29,22 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
 			},
 		},
+		// GPT-6 tool calling is Responses-only for Astra and 6.1 Sol, and
+		// Chat-Completions-only-at-effort-none for Sol and Luna, which the
+		// harness never sends; tools on this surface are therefore rejected
+		// up front for every first-party gpt-6 id.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI gpt-6 family: omit sampling params, strict tools, reasoning_effort low..max; tools require openai-responses",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				applyOpenAIReasoningClass(q)
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAI.ToolsRequireResponses = true
+				q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
 		// The */... globs repeat the three rules above for one level of
 		// vendor prefix, the form gateways such as OpenRouter serve.
 		// path.Match's `*` does not cross `/`, so the bare globs cannot
@@ -46,6 +62,13 @@ func BuiltinRules() []Rule {
 			ModelMatch:   "*/gpt-5*",
 			Description:  "OpenAI gpt-5 family via gateway prefix: omit sampling params (reasoning-class)",
 			LastVerified: Date("2026-07-30"),
+			Apply:        applyOpenAIReasoningClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-6*",
+			Description:  "OpenAI gpt-6 family via gateway prefix: omit sampling params (reasoning-class)",
+			LastVerified: Date("2026-09-29"),
 			Apply:        applyOpenAIReasoningClass,
 		},
 		{
@@ -88,16 +111,26 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
-			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens, reasoning_effort (threaded)",
 			LastVerified: Date("2026-06-07"),
+			Apply:        applyDeepSeekThinkingClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek-flash*",
+			Description:  "DeepSeek V4.1 Flash: replay reasoning_content, omit sampling params, legacy max_tokens, reasoning_effort (threaded)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyDeepSeekThinkingClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek/deepseek-flash*",
+			Description:  "DeepSeek V4.1 Flash via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			LastVerified: Date("2026-09-29"),
 			Apply: func(q *ProviderQuirks) {
-
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-
 				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-
 			},
 		},
 		{
@@ -266,12 +299,29 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "*",
-			Description:  "Anthropic: disable_parallel_tool_use on tool_choice; accepts schema examples",
+			Description:  "Anthropic: disable_parallel_tool_use on tool_choice",
 			LastVerified: Date("2026-05-24"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
-				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: tool examples on the native input_examples field",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.ToolExamples = ToolExamplesCapability{Supported: true, Native: true}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: prompt caching via system cache_control breakpoint plus top-level automatic cache_control",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.PromptCaching = true
 			},
 		},
 		{
@@ -311,34 +361,163 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAIResponses.InputItemShape = TypedInputItems
 			},
 		},
+		// An omitted `strict` on Responses means strict-when-possible with a
+		// silent non-strict fallback, so the reasoning families pin
+		// strict:true and the harness's schema lint fails closed before send.
+		// The same families request encrypted reasoning and replay output
+		// items verbatim.
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "o[1-9]*",
+			Description:  "OpenAI Responses o-series: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5*",
+			Description:  "OpenAI Responses gpt-5 family: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "*",
+			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.PromptCacheKey = true
+			},
+		},
+		// GPT-5.4 onward document effort none..xhigh (5.6: ..max) and no
+		// model documents minimal. Sampling suppression follows the default
+		// effort: gpt-5.4 defaults to none and keeps temperature, 5.5 and
+		// 5.6 default to medium.
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.4*",
+			Description:  "OpenAI Responses gpt-5.4: reasoning.effort low..xhigh (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.5*",
+			Description:  "OpenAI Responses gpt-5.5: reasoning.effort low..xhigh (documented, not probed); omit sampling params (inferred)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.6*",
+			Description:  "OpenAI Responses gpt-5.6 family: reasoning.effort low..max (documented, not probed); omit sampling params (inferred)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5-chat*",
+			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include or output replay (inferred, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = false
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = false
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI Responses gpt-6 family: gpt-5 reasoning rules plus omit sampling params, reasoning.effort low..max (documented, not probed)",
+			LastVerified: Date("2026-09-30"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
+				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
+		},
 
+		// Effort allow-lists are per-model: output_config.effort is a 400 on
+		// Haiku 4.5 and Sonnet 4.5, Opus 4.5 stops at high, and the 4.6
+		// generation accepts max but not xhigh.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-5*",
+			Description:  "Anthropic Claude Opus 4.5: output_config.effort low/medium/high",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high"}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-6*",
+			Description:  "Anthropic Claude Opus 4.6: output_config.effort low/medium/high/max",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high", "max"}
+			},
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-4-6*",
+			Description:  "Anthropic Claude Sonnet 4.6: output_config.effort low/medium/high/max",
+			LastVerified: Date("2026-09-29"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Anthropic.EffortLevels = []string{"low", "medium", "high", "max"}
+			},
+		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-7*",
-			Description:  "Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-8*",
-			Description:  "Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-sonnet-5*",
-			Description:  "Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Sonnet 5 / 5.5: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-5*",
+			Description:  "Anthropic Claude Opus 5 / 5.5: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-fable-5*",
-			Description:  "Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
-			LastVerified: Date("2026-07-01"),
-			Apply:        applyAnthropicNoSamplingParamsClass,
+			Description:  "Anthropic Claude Fable 5 / 5.1: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAdaptiveClass,
 		},
 		{
 			ProviderType: "anthropic",
@@ -346,6 +525,39 @@ func BuiltinRules() []Rule {
 			Description:  "Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k)",
 			LastVerified: Date("2026-07-01"),
 			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
+
+		// Forced tool choice ("any" / "tool") is a 400 from this generation
+		// on; auto and disable_parallel_tool_use still work, and the loop's
+		// missed-tool escalation falls back to a prompt nudge when Required
+		// is unadvertised.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-5-5*",
+			Description:  "Anthropic Claude Sonnet 5.5: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-5-5*",
+			Description:  "Anthropic Claude Opus 5.5: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-fable-5-1*",
+			Description:  "Anthropic Claude Fable 5.1: tool_choice auto only (any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-mythos-5-1*",
+			Description:  "Anthropic Claude Mythos 5.1: tool_choice auto only (same API surface as Fable 5.1; any/tool are a 400)",
+			LastVerified: Date("2026-09-29"),
+			Apply:        applyAnthropicAutoToolChoiceOnly,
 		},
 
 		// The tool-result role is the one flag here not driven by a
@@ -373,6 +585,20 @@ func BuiltinRules() []Rule {
 			ModelMatch:   "gemini-3.7*",
 			Description:  "Gemini 3.7: tool results on role:\"user\" (role:\"function\" is a 400 on the AI Studio surface); omit deprecated sampling params; thinkingLevel low/medium/high (minimal is a 400 on Vertex and AI Studio alike)",
 			LastVerified: Date("2026-08-13"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
+				q.BehaviourFlags.Gemini.OmitSamplingParams = true
+				q.BehaviourFlags.Gemini.ThinkingLevels = append(
+					q.BehaviourFlags.Gemini.ThinkingLevels,
+					"low", "medium", "high",
+				)
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.8*",
+			Description:  "Gemini 3.8: tool results on role:\"user\" (role:\"function\" is a 400 on the AI Studio surface); omit deprecated sampling params; thinkingLevel low/medium/high (minimal is a 400 on Vertex and AI Studio alike)",
+			LastVerified: Date("2026-09-29"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.Gemini.ToolResultRole = ToolResultRoleUser
 				q.BehaviourFlags.Gemini.OmitSamplingParams = true

@@ -150,6 +150,34 @@ func TestSpawnSubAgent_SimpleTextResponse(t *testing.T) {
 	}
 }
 
+// TestSpawnSubAgent_CacheKeyDiffersFromParent pins that a sub-agent's
+// requests carry their own cache key, so the child's conversation is not
+// routed as a continuation of the parent's.
+func TestSpawnSubAgent_CacheKeyDiffersFromParent(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentConfig := buildTestConfig()
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "Do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent() error: %v", err)
+	}
+
+	child := prov.lastParams.CacheKey
+	if child == "" {
+		t.Fatal("sub-agent request carried no cache key")
+	}
+	if parent := providerCacheKey(parentConfig.RunID); child == parent {
+		t.Errorf("sub-agent cache key = parent's %q, want a distinct key", parent)
+	}
+}
+
 func TestSpawnSubAgent_EmptyPromptReturnsError(t *testing.T) {
 	prov := &mockProvider{}
 	parentLoop := buildSubAgentTestLoop(prov)
@@ -836,6 +864,55 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	}
 	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.output").attrs["parent.mode"] != "execution" {
 		t.Error("stirrup.subagent.tokens.output missing parent.mode=execution attribute")
+	}
+}
+
+func TestSpawnSubAgent_RecordsSubagentCacheMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok."},
+			{Type: "message_complete", StopReason: "end_turn", InputTokens: 4000, OutputTokens: 20, CacheReadTokens: 3000, CacheWriteTokens: 700},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Metrics = metrics
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-subagent-cache-metrics-1"
+	parentConfig.Mode = "execution"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for name, want := range map[string]int64{
+		"stirrup.subagent.tokens.input":       4000,
+		"stirrup.subagent.tokens.output":      20,
+		"stirrup.subagent.tokens.cache_read":  3000,
+		"stirrup.subagent.tokens.cache_write": 700,
+	} {
+		got := findSubagentCounter(t, rm, name)
+		if got.total != want {
+			t.Errorf("%s total = %d, want %d", name, got.total, want)
+		}
+		if got.attrs["parent.mode"] != "execution" {
+			t.Errorf("%s parent.mode = %q, want execution", name, got.attrs["parent.mode"])
+		}
 	}
 }
 

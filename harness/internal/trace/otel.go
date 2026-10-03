@@ -35,6 +35,13 @@ const (
 	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
 	genAIToolNameKey       = "gen_ai.tool.name"
 
+	// Usage breakdown attributes, emitted on a turn span only when
+	// non-zero so providers that report no breakdown keep the base set.
+	genAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
+	genAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
+	genAIUsageReasoningOutputTokens    = "gen_ai.usage.reasoning.output_tokens"
+	tokensInputReportedKey             = "stirrup.tokens.input_reported"
+
 	// errorTypeKey is the stable (non-Development) semconv error
 	// attribute, emitted on failed tool spans with the bounded
 	// observability.ToolFailureCategory vocabulary as its value.
@@ -105,6 +112,7 @@ type OTelTraceEmitter struct {
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
 	finalAssistantText   string
+	stopDetails          *types.StopDetails
 	commandOutputArchive string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
@@ -143,6 +151,7 @@ var (
 	_ SystemInstructionsRecorder   = (*OTelTraceEmitter)(nil)
 	_ PromptResolutionRecorder     = (*OTelTraceEmitter)(nil)
 	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
+	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
 	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
 	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
 )
@@ -335,6 +344,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
+	e.stopDetails = nil
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -454,6 +464,7 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 	if e.config != nil {
 		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))
 	}
+	attrs = append(attrs, turnUsageBreakdownAttributes(turn)...)
 	if content != nil {
 		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
 	}
@@ -470,6 +481,25 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		span.SetStatus(codes.Error, "error")
 	}
 	span.End(oteltrace.WithTimestamp(spanEnd))
+}
+
+// turnUsageBreakdownAttributes returns the optional per-turn usage
+// attributes, omitting each one that is zero or false.
+func turnUsageBreakdownAttributes(turn types.TurnTrace) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if turn.InputReported {
+		attrs = append(attrs, attribute.Bool(tokensInputReportedKey, true))
+	}
+	if turn.Tokens.CacheRead > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageCacheReadInputTokens, turn.Tokens.CacheRead))
+	}
+	if turn.Tokens.CacheWrite > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageCacheCreationInputTokens, turn.Tokens.CacheWrite))
+	}
+	if turn.Tokens.Reasoning > 0 {
+		attrs = append(attrs, attribute.Int(genAIUsageReasoningOutputTokens, turn.Tokens.Reasoning))
+	}
+	return attrs
 }
 
 // RecordTurnRecord attaches the turn's transcript to its span when
@@ -626,6 +656,14 @@ func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalAssistantText = text
+}
+
+// RecordStopDetails stores the run's final stop details so the RunTrace
+// aggregate returned by Finish carries them.
+func (e *OTelTraceEmitter) RecordStopDetails(details *types.StopDetails) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopDetails = details
 }
 
 func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
@@ -819,8 +857,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	// Build the RunTrace aggregate (same logic as JSONLTraceEmitter).
 	var totalTokens types.TokenUsage
 	for _, turn := range e.turns {
-		totalTokens.Input += turn.Tokens.Input
-		totalTokens.Output += turn.Tokens.Output
+		totalTokens.Add(turn.Tokens)
 	}
 
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
@@ -847,6 +884,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		ToolCalls:            summaries,
 		PermissionDenials:    e.permissionDenials,
 		Outcome:              outcome,
+		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,
 		CommandOutputArchive: e.commandOutputArchive,
 	}

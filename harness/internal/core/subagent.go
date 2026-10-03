@@ -194,7 +194,8 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 }
 
 // recordSpawnMetrics emits stirrup.subagent.{spawns,duration_ms,
-// tokens.input,tokens.output} for one sub-agent run. parent.mode is
+// tokens.input,tokens.output,tokens.cache_read,tokens.cache_write} for
+// one sub-agent run; the cache counters only when non-zero. parent.mode is
 // the *parent loop's* mode (not the sub-agent's), so dashboards can
 // attribute sub-agent activity to the calling run mode (e.g. an
 // execution-mode parent spawning a research-mode child still appears
@@ -226,6 +227,16 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode str
 	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 	))
+	if runTrace.TokenUsage.CacheRead > 0 {
+		parent.Metrics.SubagentTokensCacheRead.Add(ctx, int64(runTrace.TokenUsage.CacheRead), parent.metricAttrs(
+			attribute.String("parent.mode", parentMode),
+		))
+	}
+	if runTrace.TokenUsage.CacheWrite > 0 {
+		parent.Metrics.SubagentTokensCacheWrite.Add(ctx, int64(runTrace.TokenUsage.CacheWrite), parent.metricAttrs(
+			attribute.String("parent.mode", parentMode),
+		))
+	}
 }
 
 // capSubAgentMaxTurns returns the effective MaxTurns a sub-agent should

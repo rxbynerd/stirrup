@@ -824,6 +824,53 @@ func TestDoWithRetry_PersistentEOF(t *testing.T) {
 	}
 }
 
+func TestDoWithRetry_TricklingRetryBodyDrainIsTimeBounded(t *testing.T) {
+	const drainTimeout = 200 * time.Millisecond
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) > 1 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		for range 100 { // 100 x 50 ms = 5 s, far past drainTimeout
+			if _, err := w.Write([]byte("x")); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}))
+	defer srv.Close()
+
+	client := newStreamingHTTPClient()
+	defer client.CloseIdleConnections()
+	opts := testOpts(RetryPolicy{MaxAttempts: 2, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}, nil)
+	opts.drainTimeout = drainTimeout
+
+	start := time.Now()
+	resp, err := DoWithRetry(context.Background(), client, newPostReq(t, srv.URL, `{}`), opts)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+	if n := hits.Load(); n != 2 {
+		t.Errorf("server saw %d requests, want 2", n)
+	}
+	if elapsed < drainTimeout || elapsed > 2*time.Second {
+		t.Errorf("DoWithRetry returned after %v, want the drain cut off shortly after %v", elapsed, drainTimeout)
+	}
+}
+
 func TestRetryPolicyFromConfig(t *testing.T) {
 	t.Run("nil cfg returns zero policy", func(t *testing.T) {
 		got := RetryPolicyFromConfig(nil)

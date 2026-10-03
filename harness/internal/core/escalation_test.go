@@ -246,6 +246,18 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 			wantKind: EscalationNone,
 		},
 		{
+			name:     "no_escalation_on_refusal",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.StopReason = "refusal" },
+			wantKind: EscalationNone,
+		},
+		{
+			name:     "no_escalation_on_context_window_exceeded",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.StopReason = "model_context_window_exceeded" },
+			wantKind: EscalationNone,
+		},
+		{
 			name:     "no_escalation_when_no_tools",
 			policy:   newDefaultEscalationPolicy(1, nativeCaps),
 			mutate:   func(in *EscalationInput) { in.ToolsAvailable = false },
@@ -410,6 +422,35 @@ func TestEscalation_DisabledNoRetry(t *testing.T) {
 	}
 	if n := countNoToolWhenRequired(t, reader); n != 0 {
 		t.Errorf("no_tool_when_required count = %d, want 0 when disabled", n)
+	}
+}
+
+// TestEscalation_TerminalStopReasonsNoRetry pins that an enabled policy
+// accepts a first-turn refusal or full context window as the run outcome
+// instead of re-prompting for a tool call.
+func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
+	for _, stop := range []string{"refusal", "model_context_window_exceeded"} {
+		t.Run(stop, func(t *testing.T) {
+			prov := &sequencedProvider{scripts: [][]types.StreamEvent{
+				{{Type: "text_delta", Text: "I can't help with that."}, {Type: "message_complete", StopReason: stop}},
+				toolCallTurn(),
+			}}
+			loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+
+			runTrace, err := loop.Run(context.Background(), escalationConfig("execution"))
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if prov.calls() != 1 {
+				t.Errorf("%s must not escalate; got %d provider calls", stop, prov.calls())
+			}
+			if runTrace.Outcome != stop {
+				t.Errorf("Outcome = %q, want %q", runTrace.Outcome, stop)
+			}
+			if n := countNoToolWhenRequired(t, reader); n != 0 {
+				t.Errorf("no_tool_when_required count = %d, want 0", n)
+			}
+		})
 	}
 }
 

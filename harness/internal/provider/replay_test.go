@@ -8,6 +8,46 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// TestReplayProvider_ThinkingBlocks pins that recorded thinking and
+// redacted_thinking blocks replay as their own events in recorded order,
+// so a replayed turn rebuilds the same block sequence.
+func TestReplayProvider_ThinkingBlocks(t *testing.T) {
+	turns := []types.TurnRecord{{
+		Turn: 1,
+		ModelOutput: []types.ContentBlock{
+			{Type: "thinking", Text: "plan", ThoughtSignature: "sig-A"},
+			{Type: "text", Text: "Reading."},
+			{Type: "redacted_thinking", ThoughtSignature: "data-B"},
+			{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"a"}`)},
+		},
+	}}
+
+	ch, err := NewReplayProvider(turns).Stream(context.Background(), types.StreamParams{})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	wantTypes := []string{"thinking", "text_delta", "redacted_thinking", "tool_call", "message_complete"}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("got %d events, want %d: %+v", len(events), len(wantTypes), events)
+	}
+	for i, want := range wantTypes {
+		if events[i].Type != want {
+			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
+		}
+	}
+	if events[0].Text != "plan" || events[0].ThoughtSignature != "sig-A" {
+		t.Errorf("thinking event = %+v, want text plan and signature sig-A", events[0])
+	}
+	if events[2].ThoughtSignature != "data-B" {
+		t.Errorf("redacted_thinking data = %q, want data-B", events[2].ThoughtSignature)
+	}
+	if events[4].StopReason != "tool_use" {
+		t.Errorf("StopReason = %q, want tool_use", events[4].StopReason)
+	}
+}
+
 func TestReplayProvider_TextOnly(t *testing.T) {
 	turns := []types.TurnRecord{
 		{

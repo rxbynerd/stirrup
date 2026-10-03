@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestGeminiFlashRules_Resolution pins the model gating of the 3.6/3.7
+// TestGeminiFlashRules_Resolution pins the model gating of the 3.6+
 // rules. The families whose API generation dropped role:"function" are
 // exactly the ones that resolve to ToolResultRoleUser; everything older
-// keeps the zero value, which is the historical role. Both rules carry the
-// per-model thinkingLevel allow-list, and 3.7 is the narrower of the two
+// keeps the zero value, which is the historical role. Each rule carries the
+// per-model thinkingLevel allow-list, and 3.7 onward is narrower than 3.6
 // because it rejects "minimal".
 func TestGeminiFlashRules_Resolution(t *testing.T) {
 	cases := []struct {
@@ -26,6 +26,7 @@ func TestGeminiFlashRules_Resolution(t *testing.T) {
 		{"gemini-3.6-pro", ToolResultRoleUser, true, []string{"minimal", "low", "medium", "high"}},
 		{"gemini-3.7-flash", ToolResultRoleUser, true, []string{"low", "medium", "high"}},
 		{"gemini-3.7-flash-preview-08-01", ToolResultRoleUser, true, []string{"low", "medium", "high"}},
+		{"gemini-3.8-flash", ToolResultRoleUser, true, []string{"low", "medium", "high"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
@@ -52,7 +53,7 @@ func TestGeminiFlashRules_Resolution(t *testing.T) {
 func TestGeminiFlashRules_DoNotLeakAcrossProviders(t *testing.T) {
 	for _, pt := range []string{"openai-compatible", "anthropic", "openai-responses"} {
 		t.Run(pt, func(t *testing.T) {
-			g := DefaultRegistry().Resolve(pt, "gemini-3.7-flash").BehaviourFlags.Gemini
+			g := DefaultRegistry().Resolve(pt, "gemini-3.8-flash").BehaviourFlags.Gemini
 			if g.ToolResultRole != ToolResultRoleFunction || g.OmitSamplingParams || len(g.ThinkingLevels) != 0 {
 				t.Errorf("Gemini flags leaked into %s resolution: %+v", pt, g)
 			}

@@ -316,7 +316,7 @@ func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
 func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
 
-	for _, model := range []string{"glm-4.7", "glm-4.5-air", "glm-5", "glm-5.1"} {
+	for _, model := range []string{"glm-4.7", "glm-4.5-air", "glm-5", "glm-5.1", "glm-5.3", "glm-5.3-flash"} {
 		t.Run(model, func(t *testing.T) {
 			q := reg.Resolve("openai-compatible", model)
 
@@ -340,6 +340,29 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 			}
 			if !reflect.DeepEqual(thinking, map[string]any{"type": "enabled"}) {
 				t.Errorf("%s: thinking = %#v, want map[string]any{\"type\":\"enabled\"}", model, thinking)
+			}
+		})
+	}
+}
+
+// TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
+// allow-list. GLM-5.3 maps any unlisted value to max, so "medium" must be
+// rejected up front rather than forwarded; earlier GLM-5 releases have no
+// probed effort control and send nothing.
+func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
+	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
+	cases := map[string][]string{
+		"glm-5.3":        {"low", "high", "max"},
+		"glm-5.3-flash":  {"low", "high", "max"},
+		"glm-5.3-flashx": {"low", "high", "max"},
+		"glm-5.1":        {},
+		"glm-4.7":        {},
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			got := reg.Resolve("openai-compatible", model).BehaviourFlags.OpenAI.ReasoningEffortLevels
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("ReasoningEffortLevels = %v, want %v", got, want)
 			}
 		})
 	}
@@ -533,7 +556,7 @@ func scanForSecretRefs(v any) string {
 func TestCompatRuleExtraBodyFieldsNoSecrets(t *testing.T) {
 	// Representative model id per rule, in declaration order, so
 	// Resolve materialises each rule's Apply.
-	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "z-ai/glm-4.7"}
+	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7"}
 	rules := zai.CompatRules()
 	if len(models) != len(rules) {
 		t.Fatalf("models slice (%d) out of sync with CompatRules() (%d); add a representative model for the new rule", len(models), len(rules))

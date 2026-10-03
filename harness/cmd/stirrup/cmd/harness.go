@@ -118,7 +118,8 @@ type harnessCLIOptions struct {
 	Temperature *float64
 
 	// ReasoningEffort requests a provider-neutral reasoning depth
-	// (minimal/low/medium/high). Empty leaves the model on its default.
+	// (minimal/low/medium/high/xhigh/max). Empty leaves the model on its
+	// default.
 	ReasoningEffort string
 
 	// Vertex AI Gemini provider fields; meaningful only when

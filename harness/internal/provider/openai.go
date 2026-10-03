@@ -68,6 +68,10 @@ type OpenAICompatibleAdapter struct {
 	apiKeyHeader string
 	queryParams  map[string]string
 
+	// streamIdleTimeout bounds silence on a streamed response body; zero
+	// selects defaultStreamIdleTimeout.
+	streamIdleTimeout time.Duration
+
 	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
 	// Logger; see its doc comment for the field-by-field contract.
 	AdapterDeps
@@ -100,15 +104,8 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
-		bearer: bearer,
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-			},
-		},
+		bearer:        bearer,
+		httpClient:    newStreamingHTTPClient(),
 		baseURL:       baseURL,
 		apiKeyHeader:  auth.APIKeyHeader,
 		queryParams:   auth.QueryParams,
@@ -148,6 +145,9 @@ type openaiRequest struct {
 	// "parallel_tool_calls" bool. A nil pointer omits the field; steers
 	// MarshalJSON only.
 	ParallelToolCalls *bool
+	// ReasoningEffort is the wire value for the top-level
+	// "reasoning_effort" field. Empty omits it.
+	ReasoningEffort string
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body the
@@ -179,6 +179,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	if !r.OmitSamplingParams && r.Temperature != nil {
 		out["temperature"] = *r.Temperature
+	}
+	if r.ReasoningEffort != "" {
+		out["reasoning_effort"] = r.ReasoningEffort
 	}
 	for k, v := range r.ExtraBodyFields {
 		if _, exists := out[k]; exists {
@@ -258,6 +261,12 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		}
 		r.ParallelToolCalls = &b
 		delete(raw, "parallel_tool_calls")
+	}
+	if v, ok := raw["reasoning_effort"]; ok {
+		if err := json.Unmarshal(v, &r.ReasoningEffort); err != nil {
+			return fmt.Errorf("openaiRequest.reasoning_effort: %w", err)
+		}
+		delete(raw, "reasoning_effort")
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
@@ -457,6 +466,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"stream":                {},
 	"stream_options":        {},
 	"parallel_tool_calls":   {},
+	"reasoning_effort":      {},
 }
 
 // isCanonicalOpenAIField gates ExtraBodyFields merges to prevent a rule
@@ -671,9 +681,28 @@ type openaiToolFunctionDelta struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-// openaiUsage tracks token usage in the final chunk.
+// openaiUsage is the Chat Completions usage object. prompt_tokens
+// already includes prompt_tokens_details.cached_tokens;
+// reasoning_tokens is a subset of completion_tokens.
 type openaiUsage struct {
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokens        int `json:"completion_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// applyTo copies the usage onto a message_complete event.
+func (u openaiUsage) applyTo(ev *types.StreamEvent) {
+	setEventUsage(ev, tokenReport{
+		Input:     u.PromptTokens,
+		Output:    u.CompletionTokens,
+		CacheRead: u.PromptTokensDetails.CachedTokens,
+		Reasoning: u.CompletionTokensDetails.ReasoningTokens,
+	})
 }
 
 // openaiErrorResponse is the error format returned by the OpenAI API.
@@ -952,7 +981,17 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
 		ToolChoice:         openAIToolChoiceFromParams(params, q.ToolChoice),
 		ParallelToolCalls:  openAIParallelFromParams(params, q.ParallelToolCalls),
+		ReasoningEffort:    projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAI.ReasoningEffortLevels),
 	}, nil
+}
+
+// checkOpenAIRequestSupported rejects a request the resolved model cannot
+// serve on Chat Completions, before any wire bytes are sent.
+func checkOpenAIRequestSupported(params types.StreamParams, q quirks.ProviderQuirks) error {
+	if q.BehaviourFlags.OpenAI.ToolsRequireResponses && len(params.Tools) > 0 {
+		return fmt.Errorf("openai-compatible: model %q cannot call tools on Chat Completions; use provider type \"openai-responses\"", params.Model)
+	}
+	return validateReasoningEffort("openai-compatible", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 }
 
 // Stream sends a streaming request to the OpenAI Chat Completions API and
@@ -1012,6 +1051,12 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		)
 	}
 
+	if err := checkOpenAIRequestSupported(params, q); err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
+	}
+	warnDroppedReasoningEffort(ctx, logger, "openai-compatible", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
+
 	reqBody, err := buildOpenAIRequest(params, true, q, o.strictSchemas)
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
@@ -1060,6 +1105,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		// does not query-redact; unwrap before wrapping (CWE-532).
 		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
+	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
 	// rate_limited fires on a terminal 429 (retries exhausted or disabled);
 	// DoWithRetry records provider_retry_attempt for intermediate retries.
@@ -1142,19 +1188,18 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	// it in a trailing empty-choices chunk after finish_reason, or attach it
 	// to the finish chunk itself.
 	var streamUsage *openaiUsage
-	// Guards against double-counting once a message_complete already
-	// carried the output-token count.
-	outputTokensEmitted := false
+	// Guards against a second usage-only message_complete once one
+	// already carried the usage.
+	usageEmitted := false
 
 	flushTrailingUsage := func() {
-		if streamUsage == nil || outputTokensEmitted {
+		if streamUsage == nil || usageEmitted {
 			return
 		}
-		emitEvent(types.StreamEvent{
-			Type:         "message_complete",
-			OutputTokens: streamUsage.CompletionTokens,
-		})
-		outputTokensEmitted = true
+		ev := types.StreamEvent{Type: "message_complete"}
+		streamUsage.applyTo(&ev)
+		emitEvent(ev)
+		usageEmitted = true
 	}
 	// Emit the per-stream ReplayFields summary on any exit path. Length-only:
 	// captured content must never reach a log or trace sink.
@@ -1181,6 +1226,11 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 			emitEvent(types.StreamEvent{Type: "error", Error: ctx.Err()})
 			return
 		default:
+		}
+		// After a read error Scan still yields the partial last line; it is
+		// not a complete record, so report the read error instead.
+		if scanner.Err() != nil {
+			break
 		}
 
 		line := scanner.Text()
@@ -1301,8 +1351,8 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				// that put it on the finish chunk). LM Studio and OpenAI
 				// send it in a later chunk, handled by flushTrailingUsage.
 				if streamUsage != nil {
-					ev.OutputTokens = streamUsage.CompletionTokens
-					outputTokensEmitted = true
+					streamUsage.applyTo(&ev)
+					usageEmitted = true
 				}
 				emitEvent(ev)
 				messageCompleted = true

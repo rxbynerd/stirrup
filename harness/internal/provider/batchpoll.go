@@ -181,8 +181,8 @@ func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollin
 	}
 	return &harnessPollingBatchClient{
 		httpClient: &http.Client{
-			// 30s non-streaming timeout; batch endpoints don't produce
-			// the long-lived SSE responses the 120s streaming client covers.
+			// Batch endpoints serve complete, non-streamed bodies, so a
+			// total deadline is safe here, unlike the streaming clients.
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,

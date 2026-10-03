@@ -115,9 +115,10 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
 			"Example: {\"path\": \"path/to/file.go\", \"start_line\": 100, \"limit\": 50}",
 		// InputExamples mirrors the description's worked example as structured
-		// data; adapters fold it into the schema `examples` keyword where the
-		// provider supports it. TestBuiltinInputExamples_MatchDescription pins
-		// it byte-for-byte against the description so the two cannot drift.
+		// data; adapters send it on a native examples field or fold it into
+		// the schema `examples` keyword where the provider supports it.
+		// TestBuiltinInputExamples_MatchDescription pins it byte-for-byte
+		// against the description so the two cannot drift.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"path": "path/to/file.go", "start_line": 100, "limit": 50}`)},
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,

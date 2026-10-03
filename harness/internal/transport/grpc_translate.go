@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"math"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -75,15 +76,38 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 // wire format suitable for streaming back to the control plane.
 func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	// StopReason mirrors Outcome for consumers predating the outcome field.
-	return &pb.RunTrace{
-		RunId:        t.ID,
-		Turns:        int32(t.Turns),
-		InputTokens:  int32(t.TokenUsage.Input),
-		OutputTokens: int32(t.TokenUsage.Output),
-		DurationMs:   t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
-		Outcome:      t.Outcome,
-		StopReason:   t.Outcome,
+	pt := &pb.RunTrace{
+		RunId:            t.ID,
+		Turns:            saturateInt32(t.Turns),
+		InputTokens:      saturateInt32(t.TokenUsage.Input),
+		OutputTokens:     saturateInt32(t.TokenUsage.Output),
+		CacheReadTokens:  saturateInt32(t.TokenUsage.CacheRead),
+		CacheWriteTokens: saturateInt32(t.TokenUsage.CacheWrite),
+		ReasoningTokens:  saturateInt32(t.TokenUsage.Reasoning),
+		DurationMs:       t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
+		Outcome:          t.Outcome,
+		StopReason:       t.Outcome,
 	}
+	if d := t.StopDetails; d != nil {
+		pt.StopDetails = &pb.StopDetails{
+			Type:        d.Type,
+			Category:    d.Category,
+			Explanation: d.Explanation,
+		}
+	}
+	return pt
+}
+
+// saturateInt32 narrows n to int32, pinning out-of-range values to the
+// nearest bound so a run total past MaxInt32 does not wrap on the wire.
+func saturateInt32(n int) int32 {
+	switch {
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	case n < math.MinInt32:
+		return math.MinInt32
+	}
+	return int32(n)
 }
 
 // runConfigFromProto translates a proto RunConfig to the internal

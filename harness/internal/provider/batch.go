@@ -241,6 +241,12 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("anthropic", params.Model)
+		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
+			return nil, err
+		}
+		// Consecutive batch turns rarely land within the five-minute cache
+		// lifetime, so a cache write would be paid for and not read.
+		q.BehaviourFlags.Anthropic.PromptCaching = false
 		return json.Marshal(buildAnthropicRequest(params, false, q))
 	case "openai-compatible":
 		registry := a.Registry
@@ -248,6 +254,9 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-compatible", params.Model)
+		if err := checkOpenAIRequestSupported(params, q); err != nil {
+			return nil, err
+		}
 		// Pass nil cache: a batch submission is rare enough that the
 		// per-tool normaliser walk cost is negligible.
 		req, err := buildOpenAIRequest(params, false, q, nil)
@@ -261,7 +270,16 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-responses", params.Model)
-		req, err := buildResponsesRequest(params, q, nil)
+		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
+			return nil, err
+		}
+		// Only turns the inner adapter streamed carry stored items: batch
+		// results are never captured.
+		replayOrigin := ""
+		if inner, ok := a.inner.(*OpenAIResponsesAdapter); ok {
+			replayOrigin = responsesReplayOriginFor(q, params.Model, inner.baseURL)
+		}
+		req, err := buildResponsesRequest(params, q, nil, replayOrigin)
 		if err != nil {
 			return nil, err
 		}
@@ -417,24 +435,26 @@ func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, prov
 type anthropicBatchResponse struct {
 	Content    []anthropicBatchContentBlock `json:"content"`
 	StopReason string                       `json:"stop_reason"`
-	Usage      struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      anthropicUsage               `json:"usage"`
 }
 
 type anthropicBatchContentBlock struct {
-	Type  string          `json:"type"` // "text" | "tool_use"
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 // fabricateAnthropicStream mirrors the SSE event sequence consumeSSE
 // produces in anthropic.go: one text_delta per text content block (not
-// per token), one tool_call per tool_use block, then a single
+// per token), one tool_call per tool_use block, one thinking or
+// redacted_thinking event per reasoning block, then a single
 // message_complete carrying the assembled content blocks plus
-// stop_reason / output_tokens — observationally indistinguishable from
+// stop_reason and reported usage — observationally indistinguishable from
 // the live SSE path for the agentic loop.
 func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp anthropicBatchResponse
@@ -470,15 +490,29 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 				Name:  block.Name,
 				Input: block.Input,
 			})
+		case "thinking":
+			ch <- types.StreamEvent{Type: "thinking", Text: block.Thinking, ThoughtSignature: block.Signature}
+			blocks = append(blocks, types.ContentBlock{
+				Type:             "thinking",
+				Text:             block.Thinking,
+				ThoughtSignature: block.Signature,
+			})
+		case "redacted_thinking":
+			ch <- types.StreamEvent{Type: "redacted_thinking", ThoughtSignature: block.Data}
+			blocks = append(blocks, types.ContentBlock{
+				Type:             "redacted_thinking",
+				ThoughtSignature: block.Data,
+			})
 		}
 	}
 
-	ch <- types.StreamEvent{
-		Type:         "message_complete",
-		StopReason:   resp.StopReason,
-		OutputTokens: resp.Usage.OutputTokens,
-		Content:      blocks,
+	ev := types.StreamEvent{
+		Type:       "message_complete",
+		StopReason: resp.StopReason,
+		Content:    blocks,
 	}
+	resp.Usage.applyTo(&ev)
+	ch <- ev
 	return nil
 }
 
@@ -758,10 +792,7 @@ func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID strin
 // field. Only the fields the fabrication path consumes are decoded.
 type openaiChatBatchResponse struct {
 	Choices []openaiChatBatchChoice `json:"choices"`
-	Usage   *struct {
-		PromptTokens     int `json:"prompt_tokens,omitempty"`
-		CompletionTokens int `json:"completion_tokens,omitempty"`
-	} `json:"usage,omitempty"`
+	Usage   *openaiUsage            `json:"usage,omitempty"`
 }
 
 type openaiChatBatchChoice struct {
@@ -789,7 +820,7 @@ type openaiChatBatchToolCall struct {
 // produces in openai.go: one text_delta for any non-empty assistant
 // content, one tool_call per tool_calls entry (in upstream order), then
 // a single message_complete carrying the mapped finish_reason and the
-// usage.completion_tokens count. Content is left nil on message_complete
+// reported usage. Content is left nil on message_complete
 // to match consumeSSE, which does not populate it either.
 func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiChatBatchResponse
@@ -824,7 +855,7 @@ func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMes
 		StopReason: mapFinishReason(choice.FinishReason),
 	}
 	if resp.Usage != nil {
-		ev.OutputTokens = resp.Usage.CompletionTokens
+		resp.Usage.applyTo(&ev)
 	}
 	ch <- ev
 	return nil
@@ -840,10 +871,7 @@ type openaiResponsesBatchResponse struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details,omitempty"`
 	Output []openaiResponsesBatchOutputItem `json:"output,omitempty"`
-	Usage  *struct {
-		InputTokens  int `json:"input_tokens,omitempty"`
-		OutputTokens int `json:"output_tokens,omitempty"`
-	} `json:"usage,omitempty"`
+	Usage  *responsesUsage                  `json:"usage,omitempty"`
 }
 
 // openaiResponsesBatchOutputItem is one item in response.output. Type
@@ -868,7 +896,7 @@ type openaiResponsesBatchContentBlock struct {
 // text_delta per assistant output_text content block, one tool_call per
 // function_call output item (in upstream order — the JSON array
 // preserves document order), then a single message_complete carrying
-// the derived stop reason and usage.output_tokens.
+// the derived stop reason and the reported usage.
 func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiResponsesBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -907,7 +935,7 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 		StopReason: stop,
 	}
 	if resp.Usage != nil {
-		ev.OutputTokens = resp.Usage.OutputTokens
+		resp.Usage.applyTo(&ev)
 	}
 	ch <- ev
 	return nil

@@ -48,9 +48,9 @@ Concrete v1 divergences:
   fix is a registry-driven `ReplayFields` capture.
 - DeepSeek's reasoner and v4 families surface chain-of-thought
   through a `reasoning_content` sibling field on the assistant
-  delta. DeepSeek v4 thinking mode (default-on) additionally
-  *requires* the field replayed on every request after a tool-call
-  turn — the API returns 400 otherwise — so the `ReplayFields`
+  delta. DeepSeek v4 and V4.1 thinking mode (default-on) additionally
+  *requires* the field replayed for every prior assistant turn once a
+  request carries tools — the API returns 400 otherwise — so the `ReplayFields`
   capture is threaded back outbound on the openai-compatible
   adapter (see [§3.1](#31-replayfields-rules)).
 
@@ -111,6 +111,7 @@ harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
     openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
     gemini/<model>/{request.json, response.sse[, replay.json]}
+    openai-responses/<model>/{request.json[, response.sse, replay.json]}
 ```
 
 A gateway-prefixed model id (e.g. `deepseek/deepseek-v4-flash`) maps
@@ -136,7 +137,7 @@ type ProviderQuirks struct {
     ToolChoice            ToolChoiceCapability           // native tool_choice support (auto/required/none/named)
     StructuredToolResults StructuredToolResultCapability // accepts a non-string tool-result payload, and in which shape
     ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
-    ToolExamples          ToolExamplesCapability         // accepts the JSON-Schema `examples` keyword in a tool's parameters (#222)
+    ToolExamples          ToolExamplesCapability         // accepts worked tool-input examples: the JSON-Schema `examples` keyword, or a native wire field when Native is set (#222)
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -162,7 +163,7 @@ model-facing contract added on top of tool-choice and strict mode:
 | Control | Source | OpenAI Chat | OpenAI Responses | Anthropic | Gemini | Bedrock |
 |---|---|---|---|---|---|---|
 | Parallel-tool-call policy | `StreamParams.ParallelToolCalls` | `parallel_tool_calls` | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | — | — |
-| Input examples | `ToolDefinition.Presentation.InputExamples` | schema `examples`¹ | schema `examples`¹ | schema `examples` | —² | — |
+| Input examples | `ToolDefinition.Presentation.InputExamples` | schema `examples`¹ | schema `examples`¹ | `input_examples`⁴ | —² | — |
 | Tool annotations | `ToolDefinition.Presentation.Annotations` | —³ | —³ | —³ | —³ | —³ |
 
 ¹ Folded only on non-strict tools: OpenAI's structured-outputs
@@ -173,6 +174,13 @@ the capability stays off and the description text is the carrier.
 ³ No first-party provider has a tool-annotation wire field; annotations
 are carried for internal use and round-tripped from MCP servers (see
 [#222](architecture.md)), and are a deliberate no-op on every adapter.
+⁴ Sent on the tool definition's native `input_examples` field, leaving
+`input_schema` untouched: the Anthropic rule sets
+`ToolExamplesCapability.Native`. Accepted without a beta header on
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-4-6` and
+`claude-haiku-4-5` (probed 2026-09-30); the rule matches every Claude
+model, and older families are documented, not probed. A capability with
+`Supported` but not `Native` falls back to the schema fold.
 
 `StructuredToolResults` (issue #231) gates whether the structured
 tool-result envelope is serialised onto the wire. The first-party
@@ -199,9 +207,12 @@ Behaviour-flag sub-structs:
 
 ```go
 type OpenAIBehaviourFlags struct {
-    TokenField         OpenAITokenField  // max_completion_tokens (default) or max_tokens
-    OmitSamplingParams bool              // suppress temperature, top_p, penalties, log* fields
-    ExtraBodyFields    map[string]any    // gateway-specific top-level keys (Z.ai's tool_stream)
+    TokenField            OpenAITokenField // max_completion_tokens (default) or max_tokens
+    OmitSamplingParams    bool             // suppress temperature, top_p, penalties, log* fields
+    ExtraBodyFields       map[string]any   // gateway-specific top-level keys (Z.ai's tool_stream)
+    StrictMode            bool             // strict: true tools with a normalised schema
+    ReasoningEffortLevels []string         // reasoning_effort allow-list; empty sends nothing (§3.2)
+    ToolsRequireResponses bool             // a request with tools fails before send (GPT-6 on Chat Completions)
 }
 
 type GeminiBehaviourFlags struct {
@@ -212,19 +223,26 @@ type GeminiBehaviourFlags struct {
 }
 
 type OpenAIResponsesBehaviourFlags struct {
-    TokenField     OpenAIResponsesTokenField // max_output_tokens (default; distinct from Chat's keys)
-    StoreMode      OpenAIResponsesStoreMode  // store_false (default): always emit explicit store:false
-    InputItemShape OpenAIResponsesInputShape // typed_input_items (default): #172 + #199 discriminated union
+    TokenField                OpenAIResponsesTokenField // max_output_tokens (default; distinct from Chat's keys)
+    StoreMode                 OpenAIResponsesStoreMode  // store_false (default): always emit explicit store:false
+    InputItemShape            OpenAIResponsesInputShape // typed_input_items (default): #172 + #199 discriminated union
+    OmitSamplingParams        bool                      // suppress temperature (GPT-6 rejects it whenever reasoning is on)
+    ReasoningEffortLevels     []string                  // reasoning.effort allow-list; empty sends nothing (§3.2)
+    PromptCacheKey            bool                      // forward StreamParams.CacheKey as prompt_cache_key
+    IncludeEncryptedReasoning bool                      // include:["reasoning.encrypted_content"] (reasoning families only)
+    ReplayOutputItems         bool                      // replay captured output items verbatim (reasoning families only)
 }
 
 type AnthropicBehaviourFlags struct {
-    OmitSamplingParams bool // suppress temperature (400 on non-default value for the newest Claude tier)
+    OmitSamplingParams bool     // suppress temperature (400 on non-default value from Opus 4.7 on)
+    EffortLevels       []string // output_config.effort allow-list; empty sends nothing (§3.2)
+    PromptCaching      bool     // system as a cached text block; top-level cache_control on keyed requests
 }
 ```
 
 `AnthropicBehaviourFlags` mirrors `OpenAIBehaviourFlags.OmitSamplingParams`
-for the one Anthropic wire divergence the harness has needed so far: Claude
-Opus 4.7+, Claude Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400
+for the Anthropic sampling divergence: Claude Opus 4.7, 4.8, 5 and 5.5,
+Claude Sonnet 5 and 5.5, and Claude Fable 5 / 5.1 and Mythos 5 return an HTTP 400
 on a non-default `temperature` rather than ignoring it, and the harness
 loop unconditionally resolves a non-nil default temperature
 (`core.defaultTemperature = 0.1`) for every provider call when
@@ -235,6 +253,30 @@ the existing `omitempty` tag rather than a custom `MarshalJSON` (unlike
 `openaiRequest`, which needs one for unrelated token-field-selection
 reasons). `StreamParams` carries no `top_p`/`top_k` fields today; the flag
 will cover them too if those are added later.
+
+`AnthropicBehaviourFlags.PromptCaching` turns on prompt caching, which
+the Messages API does only when a request marks a breakpoint. When set,
+`buildAnthropicRequest` sends `system` as a single text block carrying
+`cache_control: {"type": "ephemeral"}` on every request. A request that
+also carries a `StreamParams.CacheKey` (only main-loop turns do) gets a
+top-level `cache_control` of the same shape (automatic caching, which
+moves the breakpoint to the last cacheable block of each request). An
+empty system prompt leaves only the top-level field, on keyed requests.
+The zero value keeps `system` a plain string and sends no
+`cache_control`, byte-for-byte the uncached shape; the batch serialiser
+clears the flag, so batch bodies take that shape too. The
+`anthropic / *` rule sets it for every Claude model; the
+[Anthropic section of the provider guide](providers.md#anthropic)
+covers what is cached, the per-model minimum sizes and what invalidates
+the cache.
+
+`OpenAIResponsesBehaviourFlags.PromptCacheKey` forwards a non-empty
+`StreamParams.CacheKey` as the top-level `prompt_cache_key`, emitted
+last so every other key keeps its position. The loop sets `CacheKey`
+once per run to a digest of the run ID (not an anonymiser); see the
+[Responses section of the provider guide](providers.md#openai-responses-api).
+The Chat Completions adapter has no equivalent flag, because compatible
+servers may reject an unknown top-level key.
 
 `GeminiBehaviourFlags` gained three fields for the 3.6/3.7 families:
 
@@ -294,7 +336,30 @@ a Responses request resolved with no rule is byte-identical:
   shape ships in v1; the flag exists so the resolved quirks struct is
   the single source of truth for the input-item decision and a future
   divergent gateway shape branches in the adapter's `MarshalJSON` rather
-  than re-shaping the adapter.
+  than re-shaping the adapter. A turn whose output items are replayed
+  verbatim (§3.1) bypasses the typed variants: the stored items are
+  emitted as semantically identical JSON (compacted; HTML-escaped).
+- `IncludeEncryptedReasoning` adds
+  `"include":["reasoning.encrypted_content"]`, so that each reasoning
+  item carries the `encrypted_content` that stateless replay needs.
+  First-party OpenAI returns it by default under `store:false` and
+  still accepts the include value. A secondary report says Azure
+  Foundry does not populate it reliably unless it is requested; whether
+  Bedrock and other gateways do is an open question. Only the
+  reasoning-family rules set the flag (`o[1-9]*`, `gpt-5*` without
+  `gpt-5-chat*`, and `gpt-6*`). An HTTP 400 on non-reasoning models is
+  reported but unverified, so gpt-4o and gpt-4.1 keep a body without
+  `include`.
+- `ReplayOutputItems` makes the adapter capture each turn's output items
+  and `translateMessagesResponses` emit them verbatim on later requests
+  ([§3.1](#31-replayfields-rules)). The same rules set it as
+  `IncludeEncryptedReasoning`: replay is documented for stateless
+  reasoning models, and replaying item ids and `status` to a
+  non-reasoning model is unverified, so gpt-4o, gpt-4.1, and gpt-5-chat
+  retain no output items and keep the reconstructed shape. The two
+  flags are separate because the include value and verbatim replay can
+  fail independently on a future model; the rules test pins that they
+  are set together.
 
 Like the Chat Completions `openaiRequest`, the Responses adapter's
 `responsesRequest` carries the resolved flags as steering fields and a
@@ -366,23 +431,45 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/o[1-9]*`        | OpenAI reasoning-class via gateway prefix (OpenRouter-style ids): same as `o[1-9]*` |
 | `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix (OpenRouter-style ids): same as `gpt-5*` |
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
+| `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
+| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
 | `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
-| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
+| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
+| `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
+| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via gateway prefix: replay, omit sampling, `max_tokens`; no `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400 on AI Studio, still accepted by Vertex); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
 | `gemini`            | `gemini-3.7*`      | Gemini 3.7: tool results on `role:"user"` (same surface split as 3.6); omit deprecated sampling params; thinking levels `low`/`medium`/`high` (`minimal` is a 400 on Vertex and AI Studio alike) |
+| `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
-| `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
-| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k) |
+| `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
+| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `gpt-5.4*`         | OpenAI Responses gpt-5.4: `reasoning.effort` `low`..`xhigh` (documented, not probed) |
+| `openai-responses`  | `gpt-5.5*`         | OpenAI Responses gpt-5.5: `reasoning.effort` `low`..`xhigh` (documented, not probed); omit sampling params (inferred) |
+| `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
+| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
+| `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
+| `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
+| `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
+| `anthropic`         | `claude-opus-4-5*` | Anthropic Claude Opus 4.5: effort `low`/`medium`/`high` |
+| `anthropic`         | `claude-opus-4-6*` | Anthropic Claude Opus 4.6: effort `low`/`medium`/`high`/`max` |
+| `anthropic`         | `claude-sonnet-4-6*` | Anthropic Claude Sonnet 4.6: effort `low`/`medium`/`high`/`max` |
+| `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p); effort `low`..`max` |
+| `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
+| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
+| `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
 
-`claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` are
-deliberately unmatched — those models still accept a non-default
-temperature. `claude-mythos-preview` (the Mythos 5 predecessor) is also
+`claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` get no
+sampling rule — those models still accept a non-default temperature — and
+`claude-haiku-4-5*` and `claude-sonnet-4-5*` get no effort rule because
+they reject the `output_config.effort` key itself. `claude-mythos-preview` (the Mythos 5 predecessor) is also
 unmatched: its sampling-param behaviour is not confirmed against a live
 capture, so a rule is added once verified rather than assumed from the
 Fable 5 family resemblance.
@@ -394,6 +481,53 @@ current snapshot, and a wider glob risks a 400 on a deployment whose
 `gpt-4o` snapshot diverges from the guide. `TestBuiltinRulesStrictMode`
 pins the negative case (bare `gpt-4o` gets no rule) so widening the
 glob is a deliberate, tested edit rather than an accidental regression.
+
+Claude Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos 5.1 reject forced tool
+choice (`tool_choice` `any` or `tool`) with an HTTP 400, while `auto`,
+`none`, and `auto` with `disable_parallel_tool_use` still work. Their rule
+narrows `ToolChoice` to `{Supported, Auto}`, which makes the missed-tool
+escalation policy pick its prompt fallback instead of forcing a tool, and
+makes the adapter emit no `tool_choice` for a forced request. Mythos 5.1 is
+covered from documentation only; the other three were probed on
+2026-09-29. Claude Opus 5, Sonnet 5, and Fable 5 still accept forced tool
+choice.
+
+GPT-6 tool calling is Responses-only for Astra and 6.1 Sol, and available
+on Chat Completions for Sol and Luna only at `reasoning_effort: "none"`,
+which the harness never sends. The first-party `gpt-6*` rule therefore
+sets `ToolsRequireResponses`, and a request with tools fails before send
+with an error naming `openai-responses`. The gateway `*/gpt-6*` rule does
+not, because a gateway may translate to the Responses API itself.
+
+On `openai-responses`, the `o[1-9]*`, `gpt-5*`, and `gpt-6*` rules set
+`StrictMode`. An omitted `strict` on that surface means strict when
+possible with a silent non-strict fallback, so the harness pins
+`strict: true` and the strict-schema rewriter rejects a construct it
+cannot express (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`,
+tuple `items`) before send, matching the Chat Completions `gpt-5*` rule.
+An MCP tool whose schema uses one of those constructs therefore fails
+the request on these models rather than degrading silently. The cost is
+availability: MCP servers built on FastMCP or Pydantic declare an
+`Optional[...]` parameter as an `anyOf` with `null`, so one such tool
+stops every request before send and the run cannot proceed until the
+tool is removed or its schema rewritten. Neither adapter falls back to
+`strict: false` per tool. The same
+three rules set `IncludeEncryptedReasoning` and `ReplayOutputItems`
+([§3.1](#31-replayfields-rules)); the `gpt-5-chat*` carve-out clears
+both because the chat snapshots do not reason. All three flags are
+documented, not probed, and the carve-out is inferred.
+
+Temperature on `openai-responses` follows the projected effort. The
+`gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
+`temperature` is never sent. On any other Responses model the adapter
+drops `temperature` whenever it sends a `reasoning.effort`, applying
+the GPT-6 guidance ("when reasoning effort is not none, remove
+temperature") to every model, and logs the same suppression warning.
+GPT-5.4 defaults to effort `none` and keeps a caller temperature when
+no effort is set; 5.5 and 5.6 default to `medium`, so their sampling
+suppression is inferred from that default rather than probed. The
+older o-series and gpt-5 models still forward `temperature` when no
+effort is sent; their behaviour on this surface has not been probed.
 
 The `gemini-3.6*` and `gemini-3.7*` rules sit alongside the broader
 `gemini-3*` rule rather than replacing it: glob resolution sorts by
@@ -414,11 +548,13 @@ a validation rule. The built-in tool schemas do not use either
 keyword, so the rule only catches operator-supplied or MCP-imported
 schemas.
 
-The `openai-responses / *` rule pins the Responses-specific behaviour
-flags (`OpenAIResponsesBehaviourFlags`) to their zero values so the
-resolved struct, not the adapter, is the source of truth for the
+The first `openai-responses / *` rule pins the Responses-specific
+behaviour flags (`OpenAIResponsesBehaviourFlags`) to their zero values so
+the resolved struct, not the adapter, is the source of truth for the
 Responses send path; the pinned values reproduce the adapter's prior
-hard-coded shape byte-for-byte. See [§2.1](#21-providerquirks).
+hard-coded shape byte-for-byte. The second sets `PromptCacheKey`; it is
+a separate rule so its `LastVerified` date covers only that claim. See
+[§2.1](#21-providerquirks).
 
 The compat profile rules for Z.ai GLM are registered separately via
 `harness/internal/provider/compat/zai/CompatRules()`; they are not in
@@ -463,6 +599,69 @@ ReplayFields rule's Description must end in exactly one of the two
 markers, openai-compatible rules must be `(threaded)` with
 threadable paths, and other providers must be `(parse-side only)`.
 
+The `openai-responses` adapter owns two further keys outside the rule
+registry. It writes them only when the resolved rules set
+`ReplayOutputItems` (the reasoning families; see
+[§3](#3-wave-2-rules-builtinrules)); on any other model nothing is
+captured and every turn is reconstructed.
+
+- `openai_responses.output` holds the turn's ordered `reasoning`,
+  `message`, and `function_call` output items as a JSON array. The
+  `response.completed` event's `output` array is preferred because it
+  carries the final `encrypted_content`; the
+  `response.output_item.done` items, ordered by `output_index`, are the
+  fallback. The output-only `created_by` field is stripped from every
+  item, as the official SDK does before resending one.
+- `openai_responses.origin` records where the items came from: the
+  model id and the first 12 hex characters of the SHA-256 of the
+  adapter's base URL. The URL itself is never stored.
+
+The next request's `translateMessagesResponses` emits the stored items
+verbatim, as semantically identical JSON (compacted; HTML-escaped): ids,
+`status`, assistant `phase`, and `encrypted_content` included, in place
+of the reconstructed phase-less message. It does so only when all of the
+following hold, and reconstructs the turn otherwise:
+
+- the stored origin equals the request's model and endpoint, so a
+  router switch to another model or provider never sends reasoning
+  minted elsewhere;
+- every stored item passes the same checks as capture (below), so an
+  edited array is refused;
+- the items still describe the persisted message: each `tool_use` block
+  matches one stored `function_call` by `call_id`, name, and arguments
+  (compared as JSON values), no id is duplicated or left unmatched, and
+  the stored `output_text` equals the concatenated text blocks.
+
+Replay is all-or-nothing per turn, because partial replay (ids without
+their partner items, or reasoning without `encrypted_content`) is
+reported to return HTTP 400. A turn is not stored (one WARN naming the
+reason, with sizes and item types only) when it is incomplete
+(`response.incomplete`, an item whose `status` is not `completed`, or a
+trailing `reasoning` item); when it has an item of any other type, a
+`reasoning` item without `encrypted_content`, a `function_call` without
+`call_id`, or a `message` that is not assistant output made of
+`output_text` and `refusal` parts; or when its items exceed 1 MiB.
+Incomplete items are therefore never stored. The size of
+`encrypted_content` is unmeasured: the 1 MiB cap is a guard, not a
+measurement. The missing-`encrypted_content` WARN fires once per adapter
+and logs at DEBUG afterwards, since an endpoint that never returns the
+field would otherwise warn on every turn.
+
+Stored items are resent with their message, so the loop's context
+estimate and the sliding window count every `ReplayFields` value at four
+bytes per token; the same rule covers DeepSeek and GLM
+`reasoning_content`. A context strategy that summarises or drops an
+assistant message drops its stored items with it, and one that edits
+the message's text or tool calls triggers the reconstruction fallback.
+
+The dotted keys are never threaded by the Chat Completions adapter
+(they are not single-segment paths and no rule names them), and the
+JSONL trace drops them with the rest of `ReplayFields`. The batch path
+never captures output items: `fabricateStream` produces no
+`ReplayFields`, so a batched turn is reconstructed on the next request
+even on a reasoning model. The eval `ReplayProvider` gap below applies
+the same way.
+
 Known limitation: the gRPC `BatchAdapter` shares the
 openai-compatible request builder, so the outbound half rides along
 for batch submissions — but its result-parse path
@@ -486,7 +685,12 @@ not a supported workflow today. This contrasts with
 forwarded by `ReplayProvider` today, so Gemini 3 live-continuation
 seeded from a recording does carry the model's prior reasoning state
 into the next Vertex request — pure eval replay never resubmits it
-anywhere, so forwarding it adds no leakage surface.
+anywhere, so forwarding it adds no leakage surface. `ReplayProvider`
+also forwards Anthropic `thinking` and `redacted_thinking` blocks.
+The JSONL emitter drops `ThoughtSignature` from every persisted block,
+and the Anthropic adapter drops an unsigned thinking block on egress,
+so a live continuation seeded from a persisted recording sends no
+thinking rather than a block the API cannot verify.
 
 The captured-fields debug log line is `quirks replay fields
 captured` at slog DEBUG level. It records a per-path summary of
@@ -500,6 +704,52 @@ log sinks. The same totals are mirrored onto the OTel span as
 so trace-only consumers see the rule fired without correlating
 back to slog. `TestReplayFields_DeepSeekReasoner_LogIsLengthOnly`
 pins the side-channel guard on the slog side.
+
+### 3.2 Reasoning effort
+
+`RunConfig.reasoningEffort` is projected per adapter onto the model's
+native control, gated by a per-model allow-list the rules populate:
+
+| Adapter | Wire field | Allow-list flag | Empty list |
+|---|---|---|---|
+| `anthropic` | `output_config.effort` | `Anthropic.EffortLevels` | send nothing, log a warning |
+| `openai-compatible` | top-level `reasoning_effort` | `OpenAI.ReasoningEffortLevels` | send nothing, log a warning |
+| `openai-responses` | `reasoning.effort` | `OpenAIResponses.ReasoningEffortLevels` | send nothing, log a warning |
+| `gemini` | `generationConfig.thinkingConfig.thinkingLevel` | `Gemini.ThinkingLevels` | pass through (`minimal`..`high` only) |
+
+A configured level outside a non-empty list fails before any wire bytes
+are sent, with an error naming the accepted levels. The empty-list
+behaviour differs by provider on purpose. Claude Haiku 4.5 and Sonnet
+4.5 return a 400 on the `output_config.effort` key itself, and
+non-reasoning OpenAI-compatible models reject `reasoning_effort`, so an
+unprobed model on those adapters must not receive the key; the adapter
+logs `reasoningEffort ignored: model has no known effort control` each
+turn so the omission is visible. Every Gemini 3
+model has a `thinkingLevel` control, so an unprobed Gemini model gets the
+level; `xhigh` and `max` have no Gemini spelling and are always rejected.
+
+Probed or documented acceptance as of 2026-09-30:
+
+| Models | Levels |
+|---|---|
+| Claude Opus 4.7 / 4.8 / 5 / 5.5, Sonnet 5 / 5.5, Fable 5 / 5.1 | `low` `medium` `high` `xhigh` `max` (probed) |
+| Claude Opus 4.6, Sonnet 4.6 | `low` `medium` `high` `max` (probed) |
+| Claude Opus 4.5 | `low` `medium` `high` (probed) |
+| GPT-6 Astra / Sol / 6.1 Sol / Luna | `low` `medium` `high` `xhigh` `max` (documented) |
+| GPT-5.6 Sol / Terra / Luna (`openai-responses` only) | `low` `medium` `high` `xhigh` `max` (documented) |
+| GPT-5.4 / 5.5 (`openai-responses` only) | `low` `medium` `high` `xhigh` (documented) |
+| DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
+| GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
+| Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
+| Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
+
+No Claude or GPT-6 model accepts `minimal`, the GPT-5.4-onward models
+document no `minimal` level, and `none` is not in the `reasoningEffort`
+enum. On `openai-responses` a sent
+`reasoning.effort` also removes `temperature` from the request; see
+[§3](#3-wave-2-rules-builtinrules). The GPT-5.x lists apply to the
+Responses adapter only: the Chat Completions `gpt-5*` rules set no
+effort allow-list, so an effort there is dropped with the warning above.
 
 ## 4. Composition with the NormalizingAdapter
 
@@ -560,6 +810,7 @@ singleflight semantics without a separate singleflight dependency.
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
 | `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream whose usage reports any input, carrying `cache.read`, `cache.write` and `input.uncached` (input total minus both cache counts) as they appear on the emitted `message_complete` event, so the line matches the trace, plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
 
 ### 5.1 Read-only registry
 
@@ -595,7 +846,8 @@ its fields:
 |------------------|--------------------------------------------------------------|-------|
 | `glm-*`          | legacy `max_tokens`; `tool_stream: true`                     | all GLM, incl. the legacy hyphenated line (`glm-4-plus`) |
 | `glm-4.[5-9]*`   | + replay `reasoning_content`; + `thinking: {"type":"enabled"}` | GLM-4.5/4.6/4.7 thinking family; the dot excludes the hyphenated legacy line |
-| `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1 thinking family |
+| `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1/5.3 thinking family |
+| `glm-5.3*`       | + `reasoning_effort` allow-list `low`/`high`/`max`           | GLM-5.3 defaults to `max` and maps any unlisted value to `max`, so `medium` is rejected before send |
 | `z-ai/glm-*`     | legacy `max_tokens`; + replay `reasoning_content`            | OpenRouter gateway-prefixed ids (`*` does not cross `/`); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
 
 `reasoning_content` threading (the `(threaded)` ReplayFields suffix in

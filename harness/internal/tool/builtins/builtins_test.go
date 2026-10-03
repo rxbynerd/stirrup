@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
@@ -783,7 +784,7 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 // example embedded in its description: the description carries the
 // human-readable example for providers whose schema dialect rejects the
 // `examples` keyword (Gemini), while InputExamples carries the structured
-// form adapters fold into the schema where supported. edit_file is covered
+// form adapters send natively or fold into the schema. edit_file is covered
 // separately in the edit package (it is registered via the factory's
 // strategy wrapper).
 func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
@@ -823,6 +824,33 @@ func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 				t.Errorf("InputExamples[0] is not valid JSON: %v", err)
 			}
 		})
+	}
+}
+
+// TestBuiltinInputExamples_PassDispatchValidation pins that every built-in
+// worked example is an input the harness would accept: the Anthropic API
+// requires each input_examples entry to validate against the tool's
+// schema, and a model imitating an invalid example would have its call
+// rejected at dispatch.
+func TestBuiltinInputExamples_PassDispatchValidation(t *testing.T) {
+	registry := tool.NewRegistry()
+	registerAllForTest(registry, &mockExecutor{})
+	defs := append(registry.List(), SpawnAgentTool(nil).Definition())
+
+	validated := 0
+	for _, def := range defs {
+		if def.Presentation == nil {
+			continue
+		}
+		for i, example := range def.Presentation.InputExamples {
+			if err := security.ValidateJSONSchema(example, def.InputSchema); err != nil {
+				t.Errorf("%s: InputExamples[%d] fails its InputSchema: %v\nexample: %s", def.Name, i, err, example)
+			}
+			validated++
+		}
+	}
+	if validated == 0 {
+		t.Fatal("no built-in input examples were validated")
 	}
 }
 

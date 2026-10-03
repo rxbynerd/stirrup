@@ -830,10 +830,10 @@ func TestOpenAIAdapter_BearerClosureError(t *testing.T) {
 	}
 }
 
-func TestOpenAIAdapter_HasTimeout(t *testing.T) {
+func TestOpenAIAdapter_StreamingClientTimeouts(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{}, RetryPolicy{})
-	if adapter.httpClient.Timeout == 0 {
-		t.Error("HTTP client should have a non-zero timeout")
+	if adapter.httpClient.Timeout != 0 {
+		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)
 	}
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
 	if !ok {
