@@ -136,14 +136,24 @@ func differenceKinds(fileWindow, oldLines []string, content, old string) []strin
 		if a == b {
 			continue
 		}
-		if strings.TrimSpace(a) != strings.TrimSpace(b) {
+		// The first old line may match the end of its file line and the
+		// last old line its start, so edges of a partial line are compared
+		// only where the line's text actually ends.
+		text := strings.TrimSpace(b)
+		atStart := strings.HasPrefix(strings.TrimLeft(a, " \t"), text)
+		atEnd := strings.HasSuffix(strings.TrimRight(a, " \t"), text)
+		first, last := i == 0, i == len(oldLines)-1
+		aligned := strings.TrimSpace(a) == text ||
+			(first && atEnd) || (last && atStart) ||
+			(first && last && strings.Contains(a, text))
+		if !aligned {
 			add("spacing within lines")
 			continue
 		}
-		if la, lb := leadingSpace(a), leadingSpace(b); la != lb {
+		if la, lb := leadingSpace(a), leadingSpace(b); atStart && la != lb {
 			add(indentationKind(la, lb))
 		}
-		if trailingSpace(a) != trailingSpace(b) {
+		if atEnd && trailingSpace(a) != trailingSpace(b) {
 			add("trailing whitespace")
 		}
 	}

@@ -104,6 +104,19 @@ func TestSearchReplace_MismatchHint(t *testing.T) {
 			want:      []string{"line 1", "spacing within lines"},
 		},
 		{
+			name:      "old_string starts and ends mid-line",
+			content:   "func f() {\n\tx := foo(bar)\n\treturn x + 1\n}\n",
+			oldString: "foo(bar)\n    return x",
+			want:      []string{"lines 2-3", "indentation (the file indents with tabs, old_string uses spaces)"},
+			wantNot:   []string{"spacing within lines", "trailing whitespace"},
+		},
+		{
+			name:      "spacing within a partial line",
+			content:   "func f() {\n\tx := foo(a,  b)\n\treturn x\n}\n",
+			oldString: "foo(a, b)\n\treturn x",
+			want:      []string{"lines 2-3", "spacing within lines"},
+		},
+		{
 			name:      "moved and edited block",
 			content:   "// header\n// header\n// header\nfunc target() {\n\tstep1()\n\tstep2Changed()\n\tstep3()\n}\nfunc other() {}\n",
 			oldString: "func target() {\n\tstep1()\n\tstep2()\n\tstep3()\n}",
