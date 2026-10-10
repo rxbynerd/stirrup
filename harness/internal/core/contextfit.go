@@ -20,13 +20,13 @@ func (l *AgenticLoop) fitPreparedRequest(
 	prepared []types.Message,
 	systemPrompt string,
 	toolDefs []types.ToolDefinition,
-	budget contextpkg.TokenBudget,
+	budget turnBudget,
 	span oteltrace.Span,
 ) ([]types.Message, int, error) {
 	systemTokens := estimateSystemPromptTokens(systemPrompt)
 	toolTokens := estimateToolDefinitionTokens(toolDefs)
 	tokens := estimateCurrentTokens(prepared) + systemTokens + toolTokens
-	limit := contextpkg.FitLimit(budget)
+	limit := contextpkg.FitLimit(budget.prepare)
 	if tokens <= limit {
 		return prepared, tokens, nil
 	}
@@ -54,10 +54,9 @@ func (l *AgenticLoop) fitPreparedRequest(
 		taskTokens = estimateCurrentTokens(fitted[:1])
 	}
 	return fitted, tokens, fmt.Errorf(
-		"context budget exhausted: the request needs about %d tokens (system prompt %d, tool definitions %d, task %d, other messages %d after truncating %d tool results) "+
-			"but contextStrategy.maxTokens=%d allows %d after the %d-token response reserve and a safety margin; "+
-			"raise contextStrategy.maxTokens or shorten the system prompt, the tool set or the task",
+		"context budget exhausted: the request needs about %d estimated tokens (system prompt %d, tool definitions %d, task %d, other messages %d after truncating %d tool results) "+
+			"but %s; %s or shorten the system prompt, the tool set or the task",
 		tokens, systemTokens, toolTokens, taskTokens, tokens-systemTokens-toolTokens-taskTokens, cut,
-		budget.MaxTokens, max(limit, 0), budget.ReserveForResponse,
+		budget.describeLimit(), budget.window.remedy,
 	)
 }

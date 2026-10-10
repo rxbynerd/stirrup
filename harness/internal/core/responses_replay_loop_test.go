@@ -38,14 +38,14 @@ func responsesToolTurnSSE(n int) string {
 		responsesSSEEvent("response.function_call_arguments.delta", fmt.Sprintf(`{"item_id":"fc_%d","output_index":1,"delta":"%s"}`, n, args)) +
 		responsesSSEEvent("response.function_call_arguments.done", fmt.Sprintf(`{"item_id":"fc_%d","output_index":1,"arguments":"%s"}`, n, args)) +
 		responsesSSEEvent("response.output_item.done", `{"output_index":1,"item":`+call+`}`) +
-		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+reasoning+`,`+call+`],"usage":{"input_tokens":10,"output_tokens":5}}}`)
+		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+reasoning+`,`+call+`],"usage":{"output_tokens":5}}}`)
 }
 
 // responsesFinalTurnSSE is a closing text-only turn.
 func responsesFinalTurnSSE() string {
 	message := `{"type":"message","id":"msg_final","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}`
 	return responsesSSEEvent("response.output_text.delta", `{"item_id":"msg_final","output_index":0,"delta":"done"}`) +
-		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+message+`],"usage":{"input_tokens":10,"output_tokens":5}}}`)
+		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+message+`],"usage":{"output_tokens":5}}}`)
 }
 
 // responsesTurnServer answers each request with the next scripted SSE body

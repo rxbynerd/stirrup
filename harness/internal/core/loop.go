@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -642,6 +641,7 @@ func (l *AgenticLoop) runInnerLoop(
 	pendingToolChoice := types.ToolChoiceAuto
 
 	cacheKey := providerCacheKey(config.RunID)
+	var calibration tokenCalibration
 
 	for *nextTurn < config.MaxTurns {
 		turn := *nextTurn
@@ -737,39 +737,33 @@ func (l *AgenticLoop) runInnerLoop(
 		currentTokens := estimateCurrentTokens(messages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
-		maxTokens := defaultMaxContextTokens
-		if config.ContextStrategy.MaxTokens > 0 {
-			maxTokens = config.ContextStrategy.MaxTokens
-		}
-		responseReserve := effectiveReserveForResponse(maxTokens)
+		window := resolveContextWindow(config)
+		responseReserve := effectiveReserveForResponse(window.tokens)
 		if turn == 0 && responseReserve < defaultReserveForResponse {
-			// Once per run (turn 0): maxTokens is constant, so
+			// Once per run (turn 0): the window is constant, so
 			// re-emitting this every turn would be noise.
 			l.Logger.Warn("context response reserve scaled down for small context budget",
-				"maxTokens", maxTokens,
+				"maxTokens", window.tokens,
 				"reserve", responseReserve,
 				"defaultReserve", defaultReserveForResponse,
 			)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type: "warning",
 				Message: fmt.Sprintf(
-					"contextStrategy.maxTokens=%d is at or below the default response reserve (%d); scaling the reserve down to %d tokens so history packing keeps a usable budget",
-					maxTokens, defaultReserveForResponse, responseReserve,
+					"%s is at or below the default response reserve (%d); scaling the reserve down to %d tokens so history packing keeps a usable budget",
+					window.source, defaultReserveForResponse, responseReserve,
 				),
 			})
 		}
+		budget := newTurnBudget(window, responseReserve, calibration, currentTokens)
 		_, contextSpan := l.Tracer.Start(l.traceCtx(ctx), "context.prepare",
 			oteltrace.WithAttributes(
 				attribute.Int("messages.before", len(messages)),
 				attribute.Int("tokens.before", currentTokens),
+				attribute.Float64("context.token_ratio", budget.ratio),
 			),
 		)
-		budget := contextpkg.TokenBudget{
-			MaxTokens:          maxTokens,
-			CurrentTokens:      currentTokens,
-			ReserveForResponse: responseReserve,
-		}
-		preparedMessages, err := l.Context.Prepare(ctx, messages, budget)
+		preparedMessages, err := l.Context.Prepare(ctx, messages, budget.prepare)
 		if err != nil {
 			scrubbed := recordSpanError(contextSpan, err)
 			contextSpan.End()
@@ -996,10 +990,10 @@ func (l *AgenticLoop) runInnerLoop(
 		// tools.
 		turnTokens := sr.Usage
 		inputReported := turnTokens.Input > 0
-		if !inputReported {
-			turnTokens.Input = estimateCurrentTokens(preparedMessages) +
-				estimateSystemPromptTokens(systemPrompt) +
-				estimateToolDefinitionTokens(toolDefs)
+		if inputReported {
+			calibration.observe(tokensAfterPrepare, turnTokens.Input)
+		} else {
+			turnTokens.Input = tokensAfterPrepare
 		}
 
 		providerSpan.SetAttributes(
