@@ -42,6 +42,9 @@ type podExecCore struct {
 	// sandboxIdentity records whether the token volume was mounted on the
 	// Pod; WriteSandboxIdentityToken refuses to run without it.
 	sandboxIdentity bool
+	// execFn replaces the pods/exec round trip when set; unit tests use it to
+	// observe the exec calls without a cluster.
+	execFn func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
 // WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
@@ -375,6 +378,9 @@ func (e *podExecCore) killGroup(g groupedCommand) {
 // SPDY/remotecommand chokepoint shared by Exec and the tar-based file
 // I/O methods. A nil stdin omits the stdin stream from the request.
 func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if e.execFn != nil {
+		return e.execFn(ctx, command, stdin, stdout, stderr)
+	}
 	req := e.clientset.CoreV1().RESTClient().
 		Post().
 		Resource("pods").

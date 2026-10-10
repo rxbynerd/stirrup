@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -711,4 +713,74 @@ func TestClassifyPodCreateError(t *testing.T) {
 			t.Errorf("original error must remain wrapped, got: %v", err)
 		}
 	})
+}
+
+// recordingExecCore returns a podExecCore whose exec calls are appended to
+// calls. The first (run) call blocks until its ctx ends when hang is set; the
+// follow-up kill call always returns at once.
+func recordingExecCore(hang bool) (*podExecCore, *[][]string) {
+	var calls [][]string
+	core := &podExecCore{}
+	core.execFn = func(ctx context.Context, command []string, _ io.Reader, _, _ io.Writer) error {
+		calls = append(calls, command)
+		if hang && len(calls) == 1 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	return core, &calls
+}
+
+func assertKillFollowedRun(t *testing.T, calls [][]string) {
+	t.Helper()
+	if len(calls) != 2 {
+		t.Fatalf("exec calls = %d, want the run followed by one kill", len(calls))
+	}
+	run, kill := calls[0], calls[1]
+	if run[3] != "stirrup-exec" || kill[3] != "stirrup-kill" {
+		t.Fatalf("argv[3] = %q then %q, want the run script then the kill script", run[3], kill[3])
+	}
+	if kill[2] != groupKillScript {
+		t.Errorf("kill exec ran %q, want groupKillScript", kill[2])
+	}
+	if kill[4] != run[5] {
+		t.Errorf("kill pid file = %q, want the run's pid file %q", kill[4], run[5])
+	}
+}
+
+func TestPodExecCore_ExecKillsGroupAfterTimeout(t *testing.T) {
+	core, calls := recordingExecCore(true)
+	_, err := core.Exec(context.Background(), "sleep 600", 50*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillFollowedRun(t, *calls)
+}
+
+func TestPodExecCore_ExecStreamKillsGroupAfterTimeout(t *testing.T) {
+	core, calls := recordingExecCore(true)
+	_, err := core.ExecStream(context.Background(), "sleep 600", 50*time.Millisecond, io.Discard, io.Discard)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillFollowedRun(t, *calls)
+}
+
+func TestPodExecCore_CompletedCommandIsNotKilled(t *testing.T) {
+	core, calls := recordingExecCore(false)
+	if _, err := core.Exec(context.Background(), "true", time.Second); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if _, err := core.ExecStream(context.Background(), "true", time.Second, io.Discard, io.Discard); err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Errorf("exec calls = %d, want one run per command and no kill", len(*calls))
+	}
+	for _, c := range *calls {
+		if c[3] != "stirrup-exec" {
+			t.Errorf("unexpected kill exec: %q", c)
+		}
+	}
 }
