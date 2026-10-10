@@ -95,6 +95,24 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Explanation: d.Explanation,
 		}
 	}
+	if g := t.Git; g != nil {
+		pt.Git = &pb.GitHandoff{
+			Branch:  g.Branch,
+			Sha:     g.SHA,
+			BaseSha: g.BaseSHA,
+			Dirty:   g.Dirty,
+			Error:   g.Error,
+		}
+	}
+	if r := t.WorkspaceExport; r != nil {
+		pt.WorkspaceExport = &pb.ExportReceipt{
+			Uri:      r.URI,
+			Status:   r.Status,
+			Required: r.Required,
+			Error:    r.Error,
+		}
+	}
+	pt.Error = t.Error
 	return pt
 }
 
@@ -491,6 +509,10 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		K8sEgressProxyURL: pc.K8SEgressProxyUrl,
 		WorkspaceExportTo: pc.WorkspaceExportTo,
 		RegistryAllowlist: append([]string(nil), pc.RegistryAllowlist...),
+	}
+	if pc.WorkspaceExportRequired != nil {
+		v := *pc.WorkspaceExportRequired
+		ec.WorkspaceExportRequired = &v
 	}
 	if pc.SandboxIdentity != nil {
 		ec.SandboxIdentity = &types.SandboxIdentityConfig{

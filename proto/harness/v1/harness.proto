@@ -162,18 +162,18 @@ message HarnessEvent {
   // Tool execution result. Set on "tool_result" events.
   string content = 7;
 
-  // Why the run ended. Set on "done" events.
-  // Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
-  //         "cancelled", "budget_exceeded", "error", "setup_failed",
-  //         "hook_failed". Provider stop reasons such as "refusal" and
-  //         "model_context_window_exceeded" pass through verbatim.
+  // Why the run ended. Set on "done" events to the run outcome, the same
+  // value as RunTrace.outcome; see that field for the values. A "done"
+  // sent for a task rejected before its run started carries "error".
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
   string message = 9;
 
-  // Execution metrics. Set on "done" events, except when the run failed
-  // before a trace was started.
+  // The run's summary. Set on "done" events. The harness sends "done" only
+  // after the final git checkpoint, the workspace export and the trace
+  // upload have finished, so the summary reports their results. Unset when
+  // the task was rejected before its run started.
   RunTrace trace = 10;
 
   // Unique request ID for correlation. Set on "permission_request" and
@@ -1014,14 +1014,18 @@ message RunTrace {
   string stop_reason = 7;
 
   // Canonical terminal status of the run, mirroring the Go-side
-  // types.RunTrace.Outcome. Unlike stop_reason (which on the loop's own
-  // events is one of 7 values and has no "success" concept), outcome is
-  // the authoritative field for downstream analytics: a wire-driven
-  // lakehouse writer can persist it directly without inferring it from
-  // stop_reason + verification_results + budget state.
+  // types.RunTrace.Outcome. It is the authoritative field for downstream
+  // analytics.
   // Values: "success", "error", "max_turns", "verification_failed",
   //         "verification_error", "budget_exceeded", "stalled",
-  //         "tool_failures", "cancelled", "timeout", "max_tokens".
+  //         "tool_failures", "cancelled", "timeout", "max_tokens",
+  //         "setup_failed", "hook_failed", "handoff_failed",
+  //         "guardrail_blocked", "rule_of_two_violation",
+  //         "command_output_capture_failed",
+  //         "command_output_archive_failed".
+  // "handoff_failed" reports a failed final git checkpoint or a failed
+  // required workspace export; like "hook_failed" and the command_output
+  // outcomes it only replaces "success", never an earlier failure.
   // Provider stop reasons pass through verbatim, including:
   //   "refusal"                       — the model declined to respond;
   //                                     see stop_details.
@@ -1045,6 +1049,58 @@ message RunTrace {
   // The final model turn's provider-reported stop detail when the run
   // ended on a non-tool stop reason. Absent otherwise.
   StopDetails stop_details = 12;
+
+  // The git state the run handed off after its final checkpoint. Absent
+  // when the git strategy does not manage git ("none").
+  GitHandoff git = 20;
+
+  // The receipt of the end-of-run workspace export. Absent when no export
+  // destination is configured.
+  ExportReceipt workspace_export = 21;
+
+  // Scrubbed, length-capped reason for a non-success outcome: the run's
+  // earliest failure. Also set on a successful run whose trace upload
+  // failed. Empty otherwise.
+  string error = 22;
+}
+
+// GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
+// run hands off.
+message GitHandoff {
+  // The run branch.
+  string branch = 1;
+
+  // The commit holding the run's result.
+  string sha = 2;
+
+  // HEAD when the run branch was created. Empty when the branch was
+  // created on a repository with no commits.
+  string base_sha = 3;
+
+  // True when the working tree still had changes after the final
+  // checkpoint (ignored files excluded).
+  bool dirty = 4;
+
+  // Scrubbed, length-capped reason the final checkpoint failed or left
+  // the working tree dirty. Empty on success.
+  string error = 5;
+}
+
+// ExportReceipt mirrors types.ExportReceipt: the result of one run's
+// workspace export.
+message ExportReceipt {
+  // The destination the workspace archive was written to.
+  string uri = 1;
+
+  // "uploaded" when the exporter completed, "failed" otherwise.
+  string status = 2;
+
+  // Whether a failed export fails the run (executor.workspace_export_required).
+  bool required = 3;
+
+  // Scrubbed, length-capped export failure. Empty unless status is
+  // "failed".
+  string error = 4;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured
@@ -1645,7 +1701,8 @@ message ExecutorConfig {
   repeated string registry_allowlist = 14;
 
   // Optional. Destination URI for a tarball of the executor's workspace,
-  // uploaded at end-of-run. Only the "gs://bucket/path" scheme is accepted
+  // uploaded at the end of every run, whatever its outcome, before the
+  // run's "done" event. Only the "gs://bucket/path" scheme is accepted
   // today; the bucket path must be non-empty. Rejected for the "api" and
   // "none" executors, neither of which has a workspace. A run with an
   // empty workspace skips the upload silently.
@@ -1667,7 +1724,13 @@ message ExecutorConfig {
   // populated. Same transport and executor-type restrictions apply.
   GitProxyConfig git_proxy = 17;
 
-  // Next available field number: 18.
+  // Optional. Whether a failed workspace export fails an otherwise
+  // successful run with outcome "handoff_failed". Unset defaults to true
+  // when workspace_export_to is set. Rejected when workspace_export_to is
+  // empty.
+  optional bool workspace_export_required = 18;
+
+  // Next available field number: 19.
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
