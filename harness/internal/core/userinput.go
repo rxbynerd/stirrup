@@ -361,22 +361,40 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 // Origin is kept, so merged verifier feedback is still classified as
 // untrusted, together with the operator's words.
 func injectUserInput(messages []types.Message, texts []string) []types.Message {
-	joined := strings.Join(texts, "\n\n")
+	return appendUserText(messages, strings.Join(texts, "\n\n"), false)
+}
+
+// injectSyntheticUserText appends harness-authored text with the same
+// merge rule as injectUserInput. A new message is marked Synthetic; a
+// merge keeps the trailing message's mark, because that message also
+// carries content the harness did not author.
+func injectSyntheticUserText(messages []types.Message, text string) []types.Message {
+	return appendUserText(messages, text, true)
+}
+
+func appendUserText(messages []types.Message, text string, synthetic bool) []types.Message {
 	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
 		last := messages[n-1]
 		content := append([]types.ContentBlock(nil), last.Content...)
 		if m := len(content); m > 0 && content[m-1].Type == "text" {
-			content[m-1].Text += "\n\n" + joined
+			content[m-1].Text += "\n\n" + text
 		} else {
-			content = append(content, types.ContentBlock{Type: "text", Text: joined})
+			content = append(content, types.ContentBlock{Type: "text", Text: text})
 		}
 		last.Content = content
-		last.Synthetic = false
-		messages[n-1] = last
-		return messages
+		if !synthetic {
+			last.Synthetic = false
+		}
+		// A fresh slice: the previous turn's request (and its turn
+		// record) may still alias the old backing array.
+		out := make([]types.Message, n)
+		copy(out, messages)
+		out[n-1] = last
+		return out
 	}
 	return append(messages, types.Message{
-		Role:    "user",
-		Content: []types.ContentBlock{{Type: "text", Text: joined}},
+		Role:      "user",
+		Synthetic: synthetic,
+		Content:   []types.ContentBlock{{Type: "text", Text: text}},
 	})
 }

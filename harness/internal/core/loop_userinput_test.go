@@ -213,6 +213,38 @@ func TestInjectUserInput_Composition(t *testing.T) {
 	}
 }
 
+func TestInjectSyntheticUserText_Composition(t *testing.T) {
+	prompt := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "prompt"}}}
+	assistant := types.Message{Role: "assistant", Content: []types.ContentBlock{{Type: "tool_use", ID: "c1", Name: "test_tool"}}}
+	results := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: "ok"}}}
+
+	// After an assistant message: a new user message marked synthetic.
+	got := injectSyntheticUserText([]types.Message{prompt, assistant}, "nudge")
+	if len(got) != 3 || got[2].Role != "user" || !got[2].Synthetic || strings.Join(textBlocks(got[2]), "") != "nudge" {
+		t.Errorf("injected after an assistant message = %+v, want a new synthetic user message", got[len(got)-1])
+	}
+
+	// Onto tool results: appended after them, and the message keeps its
+	// unmarked state because the results are not harness-authored.
+	msgs := []types.Message{prompt, assistant, results}
+	got = injectSyntheticUserText(msgs, "nudge")
+	if len(got) != 3 || got[2].Synthetic || strings.Join(blockTypes(got[2]), ",") != "tool_result,text" {
+		t.Errorf("injected onto tool results = %+v, want tool_result then text, unmarked", got[2])
+	}
+	if len(msgs[2].Content) != 1 {
+		t.Errorf("caller's history was mutated: trailing message has %d blocks, want 1", len(msgs[2].Content))
+	}
+
+	// Onto a harness-injected message: merged and still synthetic.
+	synthetic := []types.Message{prompt, assistant,
+		{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
+	}
+	got = injectSyntheticUserText(synthetic, "nudge")
+	if len(got) != 3 || !got[2].Synthetic || got[2].Content[0].Text != "Verification failed.\n\nnudge" {
+		t.Errorf("injected onto a synthetic message = %+v, want a merged synthetic message", got[2])
+	}
+}
+
 // TestUserInputQueue_NotifyTokenAccounting pins the wake-up contract the
 // follow-up loop relies on: a token left over after a drain is a
 // harmless miss, and two items pushed while idle need only one token
