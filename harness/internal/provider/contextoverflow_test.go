@@ -53,6 +53,8 @@ func TestAnthropicAdapter_ContextOverflowError(t *testing.T) {
 	cases := append([]overflowCase{
 		{"prompt too long", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 208310 tokens > 200000 maximum"}}`, true},
 		{"input and max_tokens exceed the limit", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"input length and ` + "`max_tokens`" + ` exceed context limit: 188240 + 21333 > 200000, decrease input length or ` + "`max_tokens`" + ` and try again"}}`, true},
+		{"recorded claude-haiku-4-5 prompt too long", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 457447 tokens > 200000 maximum"},"request_id":"req_011CfsqkTS5mDXo1yzAaRVJM"}`, true},
+		{"recorded claude-haiku-4-5 max_tokens above the model limit", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 250000 > 64000, which is the maximum allowed number of output tokens for claude-haiku-4-5-20251001"},"request_id":"req_011Cfsr8H2dTCkcDgc7oFREJ"}`, false},
 		{"prompt too long with another type", http.StatusBadRequest, `{"type":"error","error":{"type":"api_error","message":"prompt is too long"}}`, false},
 		{"request body too large", http.StatusRequestEntityTooLarge, `{"type":"error","error":{"type":"request_too_large","message":"Request exceeds the maximum allowed number of bytes."}}`, false},
 	}, authAndUnrelatedCases...)
