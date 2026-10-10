@@ -48,9 +48,10 @@ func NewProtectedWriteTargets(entries []string, resolve func(string) (string, er
 	return p
 }
 
-// Matches reports whether value names a protected path. Matching applies
-// the guard's path normalisation ("./" prefix, backslashes, quotes, "..")
-// and, when the set has a resolver, also compares canonical forms.
+// Matches reports whether value names a protected path, ignoring case.
+// Matching applies the guard's path normalisation ("./" prefix,
+// backslashes, quotes, "..") and, when the set has a resolver, also
+// compares canonical forms.
 func (p ProtectedWriteTargets) Matches(value string) bool {
 	if len(p.targets) == 0 {
 		return false
@@ -96,6 +97,10 @@ func (p ProtectedWriteTargets) worthResolving(candidate string) bool {
 	}
 }
 
+// covers compares case-insensitively because macOS and Windows workspaces
+// usually sit on case-insensitive filesystems, where "agents.md" names the
+// same file as "AGENTS.md".
 func (t protectedWriteTarget) covers(candidate, target string) bool {
-	return candidate == target || (t.dir && strings.HasPrefix(candidate, target+"/"))
+	return strings.EqualFold(candidate, target) ||
+		(t.dir && strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(target)+"/"))
 }

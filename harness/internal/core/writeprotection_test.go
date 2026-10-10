@@ -75,6 +75,7 @@ func TestBuildLoop_ProtectedWriteTargets(t *testing.T) {
 			},
 			file: "AGENTS.md", wantRejected: true,
 		},
+		{name: "loaded guidance rejects a case variant", configure: guidance("AGENTS.md"), tool: "write_file", args: writeArgs("agents.md"), file: "AGENTS.md", wantRejected: true},
 		{name: "loaded guidance leaves nested copies writable", configure: guidance("AGENTS.md"), tool: "write_file", args: writeArgs("docs/AGENTS.md"), file: "docs/AGENTS.md"},
 		{name: "missing advisory guidance is not protected", configure: guidance("GUIDE.md"), tool: "write_file", args: writeArgs("GUIDE.md"), file: "GUIDE.md"},
 		{name: "operator path rejects plain form", configure: operator("docs/AGENTS.md"), tool: "write_file", args: writeArgs("docs/AGENTS.md"), file: "docs/AGENTS.md", wantRejected: true},

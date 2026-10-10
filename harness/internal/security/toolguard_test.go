@@ -91,6 +91,10 @@ func TestGuardToolCall_ProtectedWriteTargetsMatchAsListed(t *testing.T) {
 		{"docs/guide/intro.md", true},
 		{"docsite/index.md", false},
 		{"README.md", false},
+		{"agents.md", true},
+		{"./Agents.MD", true},
+		{"DOCS/guide.md", true},
+		{"Docs", true},
 	} {
 		input := writeInput(t, "path", tc.path)
 		got := hasRule(GuardToolCall("write_file", true, input, protected), "protected_write_target")
@@ -148,6 +152,7 @@ func TestGuardToolCall_ProtectedWriteTargetsMatchResolvedForms(t *testing.T) {
 		{"/workspace/secrets/key.txt", true},
 		{"notes.md", true},
 		{"/workspace/README.md", false},
+		{"/workspace/agents.md", true},
 		{"/etc/AGENTS.md", false},
 		{"../AGENTS.md", false},
 	} {
