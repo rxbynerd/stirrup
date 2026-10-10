@@ -136,14 +136,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// for the next turn boundary. Sub-agents use NullTransport whose
 	// OnControl is a no-op.
 	l.ensureControlRouting()
-	l.setActiveRun(cancelRun)
-	defer l.setActiveRun(nil)
 	// A cancel or stream loss that arrived while no run was active ended
 	// the session; this run must not proceed to component work on its
 	// behalf.
-	if l.sessionCancelled.Load() {
-		cancelRun(l.sessionCancelCause())
+	if cause := l.beginRun(cancelRun); cause != nil {
+		cancelRun(cause)
 	}
+	defer l.setActiveRun(nil)
 
 	l.Trace.Start(config.RunID, config)
 	l.failure = runFailure{}

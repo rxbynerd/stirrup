@@ -177,7 +177,7 @@ type AgenticLoop struct {
 	controlOnce      sync.Once
 	controlMu        sync.Mutex
 	cancelActive     context.CancelCauseFunc
-	sessionCause     error // guarded by controlMu; set before sessionCancelled
+	sessionCause     error // guarded by controlMu, as are writes to sessionCancelled
 	sessionCancelled atomic.Bool
 	userInput        *userInputQueue
 	idleCancel       chan struct{}

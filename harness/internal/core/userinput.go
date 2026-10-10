@@ -176,9 +176,9 @@ func (l *AgenticLoop) cancelSession(cause error, dropReason string) {
 	if l.sessionCause == nil {
 		l.sessionCause = cause
 	}
+	l.sessionCancelled.Store(true)
 	cancel := l.cancelActive
 	l.controlMu.Unlock()
-	l.sessionCancelled.Store(true)
 	for _, in := range l.userInput.drain() {
 		l.rejectUserInput(in.RequestID, dropReason)
 	}
@@ -191,11 +191,17 @@ func (l *AgenticLoop) cancelSession(cause error, dropReason string) {
 	}
 }
 
-// sessionCancelCause is the cause a run starting on a cancelled session
-// is cancelled with.
-func (l *AgenticLoop) sessionCancelCause() error {
+// beginRun records cancel as the active run's and returns the cause the
+// run must be cancelled with when the session already ended, nil
+// otherwise. It shares controlMu with cancelSession, so a concurrent
+// cancel either finds the run registered or is found by it.
+func (l *AgenticLoop) beginRun(cancel context.CancelCauseFunc) error {
 	l.controlMu.Lock()
 	defer l.controlMu.Unlock()
+	l.cancelActive = cancel
+	if !l.sessionCancelled.Load() {
+		return nil
+	}
 	if l.sessionCause == nil {
 		return ErrCancelledByControlPlane
 	}
