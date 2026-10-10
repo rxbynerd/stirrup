@@ -70,9 +70,11 @@ type pendingCall struct {
 // tolerated for callers with no resolved selection.
 //
 // Returns toolResults and toolRecords indexed by original call order
-// (truncated together when the stall detector trips), and a non-empty
-// stallOutcome when it did — the caller must append toolResults to the
-// message history and return immediately.
+// (truncated together when the stall detector ends the run), and a
+// non-empty stallOutcome when it did — the caller must append
+// toolResults to the message history and return immediately. A stall
+// nudge does not truncate: every call's result is returned, and the
+// caller collects the nudge with stall.takeNudge.
 func (l *AgenticLoop) planAndDispatch(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -293,7 +295,7 @@ func (l *AgenticLoop) planAndDispatch(
 			l.logEmitFailure("tool_result", err)
 		}
 
-		if outcome := stall.recordToolCall(p.call.Name, stallInput(p.call), p.success); outcome != "" {
+		if outcome := stall.recordToolCall(p.call.Name, stallInput(p.call), p.output, p.success); outcome != "" {
 			l.Metrics.Stalls.Add(ctx, 1,
 				l.metricAttrs(attribute.String("run.mode", config.Mode)),
 			)

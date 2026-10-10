@@ -185,7 +185,7 @@ func TestRun_StalledCommitsLastToolTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	assertCommittedOnRunBranch(t, repo, base, probeFile(maxRepeatedToolCalls), "stalled", rt)
+	assertCommittedOnRunBranch(t, repo, base, probeFile(2*stallRepeats), "stalled", rt)
 }
 
 func TestRun_ToolFailuresCommitsLastToolTurn(t *testing.T) {

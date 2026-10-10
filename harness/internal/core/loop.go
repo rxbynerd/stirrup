@@ -1125,7 +1125,9 @@ func (l *AgenticLoop) runInnerLoop(
 			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
 		})
 		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
+		nudge, nudged := stall.takeNudge()
 		turnRecord.ToolCalls = toolRecords
+		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
 		// Escalation triggers only on the first assistant turn with
@@ -1134,6 +1136,9 @@ func (l *AgenticLoop) runInnerLoop(
 		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
 			return messages, stallOutcome, finalAssistantText, nil
+		}
+		if nudged {
+			messages = l.nudgeStalledRun(ctx, config, turn, nudge, messages)
 		}
 
 		// Prevents the next turn from sending an over-budget context.

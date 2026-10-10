@@ -775,11 +775,11 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 // stall_repeated_calls termination path (distinct from
 // stall_consecutive_failures, which the existing
 // TestToolFailureMetrics_StallTermination exercises). Three identical
-// successful calls trip stallDetector.recordToolCall via the
-// repeated-call heuristic; the stall co-emission block in
-// planAndDispatch must add exactly one stall_repeated_calls
-// observation to stirrup.harness.tool_failures, even though no
-// per-call dispatch failed.
+// successful calls first produce a nudge, which emits no stall
+// observation; three more after the nudge trip the stall, and the
+// co-emission block in planAndDispatch must add exactly one
+// stall_repeated_calls observation to stirrup.harness.tool_failures,
+// even though no per-call dispatch failed.
 func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
@@ -794,9 +794,26 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 		{ID: "tc_r1", Name: "trivial", Input: sameInput},
 		{ID: "tc_r2", Name: "trivial", Input: sameInput},
 	}
+	stall := &stallDetector{}
 	_, _, outcome := loop.planAndDispatch(
 		context.Background(), cfg,
-		calls, &stallDetector{},
+		calls, stall,
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("first batch: outcome %q, want a nudge instead of a stall", outcome)
+	}
+	if _, ok := stall.takeNudge(); !ok {
+		t.Fatal("first batch: no nudge")
+	}
+	for _, fp := range collectFailures(t, reader) {
+		if fp.category == observability.ToolFailureStallRepeated.String() {
+			t.Fatalf("stall_repeated_calls observed before any termination: %+v", fp)
+		}
+	}
+	_, _, outcome = loop.planAndDispatch(
+		context.Background(), cfg,
+		calls, stall,
 		"anthropic", "claude-sonnet-4-6",
 	)
 	if outcome != "stalled" {
