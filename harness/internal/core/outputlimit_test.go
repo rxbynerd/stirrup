@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -179,8 +180,8 @@ func TestLoop_OutputLimitRecovery_ContinuesTruncatedText(t *testing.T) {
 	if runTrace.Turns != 2 {
 		t.Errorf("Turns = %d, want 2", runTrace.Turns)
 	}
-	if runTrace.FinalAssistantText != "rest of the answer" {
-		t.Errorf("FinalAssistantText = %q, want the continuation", runTrace.FinalAssistantText)
+	if runTrace.FinalAssistantText != "Partial answerrest of the answer" {
+		t.Errorf("FinalAssistantText = %q, want the cut-off text joined with its continuation", runTrace.FinalAssistantText)
 	}
 
 	calls := h.provider.params()
@@ -205,6 +206,81 @@ func TestLoop_OutputLimitRecovery_ContinuesTruncatedText(t *testing.T) {
 	warnings := h.warnings()
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "recovery 1 of 2") {
 		t.Errorf("warnings = %q, want one naming recovery 1 of 2", warnings)
+	}
+}
+
+func TestLoop_OutputLimitRecovery_JoinsEveryContinuationOfTheAnswer(t *testing.T) {
+	h := newOutputLimitHarness(
+		[]types.StreamEvent{{Type: "text_delta", Text: "one "}, stopWith("max_tokens")},
+		[]types.StreamEvent{{Type: "text_delta", Text: "two "}, stopWith("max_tokens")},
+		[]types.StreamEvent{{Type: "text_delta", Text: "three"}, stopWith("end_turn")},
+	)
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "one two three" {
+		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "one two three")
+	}
+}
+
+// postTurnDenyGuard allows every phase but PhasePostTurn and records the
+// content it denied.
+type postTurnDenyGuard struct {
+	mu     sync.Mutex
+	denied []string
+}
+
+func (g *postTurnDenyGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	if in.Phase != guard.PhasePostTurn {
+		return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "post-turn-deny"}, nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.denied = append(g.denied, in.Content)
+	return &guard.Decision{Verdict: guard.VerdictDeny, GuardID: "post-turn-deny"}, nil
+}
+
+func TestLoop_OutputLimitRecovery_PostTurnGuardChecksTheJoinedAnswer(t *testing.T) {
+	h := newOutputLimitHarness(
+		[]types.StreamEvent{{Type: "text_delta", Text: "Checking first."}, {Type: "tool_call", ID: "tc_0", Name: "test_tool", Input: map[string]any{}}, stopWith("tool_use")},
+		[]types.StreamEvent{{Type: "text_delta", Text: "first half "}, stopWith("max_tokens")},
+		[]types.StreamEvent{{Type: "text_delta", Text: "second half"}, stopWith("end_turn")},
+	)
+	g := &postTurnDenyGuard{}
+	h.loop.GuardRail = g
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "guardrail_blocked" {
+		t.Fatalf("Outcome = %q, want guardrail_blocked", runTrace.Outcome)
+	}
+	if fmt.Sprint(g.denied) != "[first half second half]" {
+		t.Errorf("post-turn guard saw %q, want the joined answer", g.denied)
+	}
+	if runTrace.FinalAssistantText != "Checking first." {
+		t.Errorf("FinalAssistantText = %q, want the text from before the denied answer began", runTrace.FinalAssistantText)
+	}
+}
+
+func TestLoop_OutputLimitRecovery_ToolCallPreambleIsNotJoined(t *testing.T) {
+	h := newOutputLimitHarness(
+		[]types.StreamEvent{{Type: "text_delta", Text: "Writing it now."}, writeFileCall("tc_big", "big.txt"), stopWith("max_tokens")},
+		[]types.StreamEvent{{Type: "text_delta", Text: "Done."}, stopWith("end_turn")},
+	)
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.FinalAssistantText != "Done." {
+		t.Errorf("FinalAssistantText = %q, want only the final turn's text", runTrace.FinalAssistantText)
 	}
 }
 

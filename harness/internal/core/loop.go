@@ -685,6 +685,11 @@ func (l *AgenticLoop) runInnerLoop(
 	// finalAssistantText holds the last non-empty assistant text seen across
 	// all turns. Threaded onto RunTrace.FinalAssistantText at loop completion.
 	var finalAssistantText string
+	// continuedText is the answer a model was told to continue after an
+	// output-limit stop; the next turn's text extends it.
+	// preContinuationText is finalAssistantText from before that answer
+	// began, returned if the post-turn guard denies the joined answer.
+	var continuedText, preContinuationText string
 	stall := &stallDetector{}
 
 	// Tool-choice escalation state: priorToolCalls tracks whether the
@@ -988,13 +993,22 @@ func (l *AgenticLoop) runInnerLoop(
 		// snapshot the guard must return on deny — see docs/guardrails.md.
 		finalText := lastAssistantText(sr.Blocks)
 		priorFinalText := finalAssistantText
+		if continuedText != "" {
+			finalText = continuedText + finalText
+			priorFinalText = preContinuationText
+			continuedText = ""
+		}
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
 
 		if outputLimitRecovery {
 			l.Trace.RecordTurnRecord(turnRecord)
-			messages = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			var continues bool
+			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			if continues {
+				continuedText, preContinuationText = finalText, priorFinalText
+			}
 			continue
 		}
 
