@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -31,12 +32,27 @@ type GRPCTransport struct {
 	done      chan struct{}            // closed when the read loop exits
 	startOnce sync.Once                // ensures the read goroutine is started exactly once
 	Security  *security.SecurityLogger // optional; emits SecretRedactedInOutput when scrubbing fires
+
+	// localClose is set before Close half-closes the stream, so the
+	// stream end that follows is not reported as a loss.
+	localClose atomic.Bool
+	// streamCtxErr reports whether the context the stream was opened
+	// with has ended, which is a local cancellation rather than a loss.
+	streamCtxErr func() error
+	endMu        sync.Mutex
+	endErr       error // guarded by endMu; see Err
 }
+
+var _ Liveness = (*GRPCTransport)(nil)
 
 // ErrTransportClosed is returned by Emit once Close has half-closed the
 // stream. Emitters that outlive the run (the heartbeat, say) can use it
 // to distinguish an orderly shutdown from a transport failure.
 var ErrTransportClosed = errors.New("transport closed")
+
+// ErrPeerEndedStream is reported by Err when the control plane ended the
+// RPC while the harness was still using it.
+var ErrPeerEndedStream = errors.New("control plane ended the stream")
 
 // GRPCTransportOption configures a GRPCTransport.
 type GRPCTransportOption func(*grpcTransportConfig)
@@ -95,9 +111,10 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 	}
 
 	return &GRPCTransport{
-		conn:   conn,
-		stream: stream,
-		done:   make(chan struct{}),
+		conn:         conn,
+		stream:       stream,
+		done:         make(chan struct{}),
+		streamCtxErr: ctx.Err,
 	}, nil
 }
 
@@ -171,11 +188,7 @@ func (g *GRPCTransport) startReadLoop() {
 			for {
 				pe, err := g.stream.Recv()
 				if err != nil {
-					if err == io.EOF {
-						return
-					}
-					// Stream error — stop reading. The caller can detect
-					// this via the done channel and inspect the connection.
+					g.recordStreamEnd(err)
 					return
 				}
 				ev := controlEventFromProto(pe)
@@ -217,6 +230,7 @@ var streamEndGrace = 2 * time.Second
 // HTTP/2 flow control until the grace expires; both discard whatever was
 // still queued.
 func (g *GRPCTransport) Close() error {
+	g.localClose.Store(true)
 	g.mu.Lock()
 	g.closed = true
 	// grpc-go's CloseSend cannot fail, but the field is an interface:
@@ -260,7 +274,31 @@ func (g *GRPCTransport) awaitStreamEnd() {
 }
 
 // Done returns a channel that is closed when the read loop exits, either
-// due to stream EOF, an error, or Close being called.
+// due to stream EOF, an error, or Close being called. The read loop runs
+// once OnControl or Close has been called.
 func (g *GRPCTransport) Done() <-chan struct{} {
 	return g.done
+}
+
+// Err reports why the stream ended: ErrPeerEndedStream when the control
+// plane ended the RPC, the receive error when the connection failed, and
+// nil while the stream is live or when it ended because of Close or the
+// cancellation of the context it was opened with.
+func (g *GRPCTransport) Err() error {
+	g.endMu.Lock()
+	defer g.endMu.Unlock()
+	return g.endErr
+}
+
+func (g *GRPCTransport) recordStreamEnd(recvErr error) {
+	if g.localClose.Load() || g.streamCtxErr() != nil {
+		return
+	}
+	err := recvErr
+	if errors.Is(recvErr, io.EOF) {
+		err = ErrPeerEndedStream
+	}
+	g.endMu.Lock()
+	g.endErr = err
+	g.endMu.Unlock()
 }
