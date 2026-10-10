@@ -62,6 +62,16 @@ type CommandOutputFinalizer interface {
 	Finalize(ctx context.Context) (string, error)
 }
 
+// WorkspaceHandoff delivers a run's workspace once the run has ended.
+// The entry points inject it, keeping destination resolution and the
+// exporter out of the loop.
+type WorkspaceHandoff interface {
+	// Handoff exports the workspace of the run config describes, reading
+	// it through exec. A nil receipt with a nil error means the run has
+	// no export destination.
+	Handoff(ctx context.Context, config *types.RunConfig, exec executor.Executor) (*types.ExportReceipt, error)
+}
+
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
@@ -98,11 +108,15 @@ type AgenticLoop struct {
 	// process abandons post-run work (the CLI entry points cancel it on a
 	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent
 	// of Run()'s ctx, which carries the run's own deadline and cancel.
-	// Git finalise, postRun hooks and trace finish race their bounded
-	// budgets against Shutdown so they survive the end of the run while
-	// still observing a forced shutdown promptly. See
+	// Git finalise, postRun hooks, the workspace handoff and trace finish
+	// race their bounded budgets against Shutdown so they survive the end
+	// of the run while still observing a forced shutdown promptly. See
 	// docs/architecture.md. Nil-safe.
-	Shutdown     context.Context
+	Shutdown context.Context
+	// Handoff, when non-nil, exports the workspace at the end of every run
+	// whose executor has one, before "done"; a failed required export turns
+	// a successful run into "handoff_failed".
+	Handoff      WorkspaceHandoff
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
@@ -143,6 +157,10 @@ type AgenticLoop struct {
 	// never cleared mid-run; while set, thinking blocks are stripped from
 	// every request.
 	historyRewritten bool
+
+	// failure is the reason behind the current run's failure outcome; see
+	// noteFailure. Reset at run start.
+	failure runFailure
 
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so

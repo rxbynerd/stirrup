@@ -9,10 +9,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// maxGitHandoffErrorBytes bounds the git failure text carried on the
-// trace and RunResult.
-const maxGitHandoffErrorBytes = 1024
-
 var errDirtyAfterFinalCheckpoint = errors.New("working tree has uncommitted changes after the final checkpoint")
 
 // finaliseGit makes the git strategy's final checkpoint on a detached
@@ -38,7 +34,7 @@ func (l *AgenticLoop) finaliseGit(ctx context.Context, outcome string) string {
 	}
 	if err != nil {
 		scrubbed := recordSpanError(span, err)
-		handoff.Error, _ = types.CapFinalAssistantText(scrubbed, maxGitHandoffErrorBytes)
+		handoff.Error = capFailureText(scrubbed)
 		l.Logger.Warn("git finalise failed", "error", scrubbed)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
@@ -49,6 +45,7 @@ func (l *AgenticLoop) finaliseGit(ctx context.Context, outcome string) string {
 		recorder.RecordGitHandoff(*handoff)
 	}
 	if err != nil && outcome == "success" {
+		l.noteFailure("handoff_failed", "git finalise: "+handoff.Error)
 		return "handoff_failed"
 	}
 	return outcome

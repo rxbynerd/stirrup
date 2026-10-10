@@ -228,7 +228,7 @@ func TestFinishWithOutcome_FinishesTraceOnDetachedContext(t *testing.T) {
 
 	start := time.Now()
 	primary := errors.New("preRun hook failed")
-	runTrace, err := loop.finishWithOutcome(ctx, "setup_failed", primary)
+	runTrace, err := loop.finishWithOutcome(ctx, &types.RunConfig{}, "setup_failed", primary, func() {})
 	if !errors.Is(err, primary) {
 		t.Errorf("finishWithOutcome error = %v, want the primary error", err)
 	}

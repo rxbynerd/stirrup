@@ -187,7 +187,7 @@ func TestFinishWithOutcomeFinalizesCommandOutput(t *testing.T) {
 		Transport:         transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	runTrace, _ := loop.finishWithOutcome(context.Background(), "setup_failed", errors.New("preRun hook failed"))
+	runTrace, _ := loop.finishWithOutcome(context.Background(), &types.RunConfig{}, "setup_failed", errors.New("preRun hook failed"), func() {})
 	if runTrace == nil || runTrace.Outcome != "setup_failed" {
 		t.Fatalf("trace=%+v, want the primary setup_failed outcome preserved", runTrace)
 	}

@@ -438,7 +438,7 @@ func TestRun_GitHandoffErrorIsScrubbedAndCapped(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
 	rec := &recordingTransport{}
 	loop.Transport = rec
-	long := "commit hook printed " + spanProbeKey + " " + strings.Repeat("x", 4*maxGitHandoffErrorBytes)
+	long := "commit hook printed " + spanProbeKey + " " + strings.Repeat("x", 4*maxFailureTextBytes)
 	loop.Git = &fakeFinaliseGit{handoff: &types.GitHandoff{}, err: errors.New(long)}
 	rt, err := loop.Run(context.Background(), buildTestConfig())
 	if err != nil {
@@ -450,8 +450,8 @@ func TestRun_GitHandoffErrorIsScrubbedAndCapped(t *testing.T) {
 	if strings.Contains(rt.Git.Error, spanProbeKey) {
 		t.Error("RunTrace.Git.Error carries the unscrubbed key")
 	}
-	if len(rt.Git.Error) > maxGitHandoffErrorBytes+len("... [truncated by harness]") {
-		t.Errorf("RunTrace.Git.Error is %d bytes, want it capped near %d", len(rt.Git.Error), maxGitHandoffErrorBytes)
+	if len(rt.Git.Error) > maxFailureTextBytes+len("... [truncated by harness]") {
+		t.Errorf("RunTrace.Git.Error is %d bytes, want it capped near %d", len(rt.Git.Error), maxFailureTextBytes)
 	}
 	for _, ev := range rec.events {
 		if strings.Contains(ev.Message, spanProbeKey) {

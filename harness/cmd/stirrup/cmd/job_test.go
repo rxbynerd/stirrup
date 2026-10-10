@@ -520,11 +520,16 @@ func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
 	if done.StopReason != "setup_failed" {
 		t.Errorf("done stop_reason = %q, want setup_failed", done.StopReason)
 	}
-	// The job path emits "done" before trace finalisation, so its trace
-	// field is unset (#453). Integrators code against that, so pin it
-	// rather than let it change silently.
-	if done.Trace != nil {
-		t.Errorf("done.trace = %v, want unset on the job path", done.Trace)
+	// "done" follows trace finalisation, so it carries the run summary
+	// with the failure reason.
+	if done.Trace == nil {
+		t.Fatal("done.trace is unset, want the run summary")
+	}
+	if done.Trace.Outcome != "setup_failed" || done.Trace.RunId != "job-hooks-fatal-test" {
+		t.Errorf("done.trace outcome/run_id = %q/%q, want setup_failed/job-hooks-fatal-test", done.Trace.Outcome, done.Trace.RunId)
+	}
+	if !strings.HasPrefix(done.Trace.Error, "pre-run hooks: ") {
+		t.Errorf("done.trace.error = %q, want the pre-run hook failure", done.Trace.Error)
 	}
 
 	// A run that started emits its RunResult even though loop.Run

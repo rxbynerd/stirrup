@@ -145,6 +145,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	l.Trace.Start(config.RunID, config)
+	l.failure = runFailure{}
 	l.resetCommandOutput(config.RunID)
 	// Sub-agents share the parent's loggers and run concurrently with
 	// it, so only a top-level run re-attributes them.
@@ -235,7 +236,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			if runCtx.Err() != nil {
 				outcome = classifyCtxOutcome(context.Cause(runCtx))
 			}
-			return l.finishWithOutcome(runCtx, outcome, fmt.Errorf("pre-run hooks: %w", preErr))
+			return l.finishWithOutcome(runCtx, config, outcome, fmt.Errorf("pre-run hooks: %w", preErr), stopHeartbeat)
 		}
 	}
 
@@ -250,7 +251,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		DynamicContext: dynamicContext,
 	})
 	if err != nil {
-		return l.finishWithError(runCtx, fmt.Errorf("build system prompt: %w", err))
+		return l.finishWithError(runCtx, config, fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
 	}
 
 	// The otel emitter's opt-in gen_ai.system_instructions capture; a
@@ -269,7 +270,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
 		recordSpanError(gitSetupSpan, err)
 		gitSetupSpan.End()
-		return l.finishWithError(runCtx, fmt.Errorf("git setup: %w", err))
+		return l.finishWithError(runCtx, config, fmt.Errorf("git setup: %w", err), stopHeartbeat)
 	}
 	gitSetupSpan.End()
 
@@ -357,9 +358,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			Messages: messages,
 		})
 		if verifyErr != nil {
-			recordSpanError(verifySpan, verifyErr)
+			scrubbed := recordSpanError(verifySpan, verifyErr)
 			verifySpan.End()
 			outcome = "verification_error"
+			l.noteFailure(outcome, "verifier: "+scrubbed)
 			break
 		}
 		verifySpan.SetAttributes(attribute.Bool("verifier.passed", vResult.Passed))
@@ -405,7 +407,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// Post-run work below runs on detached contexts (see
 	// detachedContext) so a run that ended by deadline or cancellation
-	// still commits and records its git state, hook results and trace.
+	// still commits and records its git state, hook results, workspace
+	// export and trace.
 	// The final checkpoint precedes postRun hooks, so hook edits are not
 	// committed.
 	outcome = l.finaliseGit(ctx, outcome)
@@ -417,17 +420,20 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)
+		var scrubbedPostErr string
 		if postErr != nil {
-			recordSpanError(postHookSpan, postErr)
+			scrubbedPostErr = recordSpanError(postHookSpan, postErr)
 		}
 		postHookSpan.End()
 		postCancel()
 		if postErr != nil && outcome == "success" {
 			outcome = "hook_failed"
+			l.noteFailure(outcome, "post-run hooks: "+scrubbedPostErr)
 		}
 	}
 
 	outcome = l.finalizeCommandOutput(ctx, outcome)
+	outcome = l.handoffWorkspace(ctx, config, outcome)
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -437,19 +443,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			attribute.String("run.outcome", outcome),
 		),
 	)
-
-	// "done" is the control plane's cue to send its next control event;
-	// from here the run is no longer cancellable, so a cancel must route
-	// as idle rather than to this run's context.
-	l.setActiveRun(nil)
-	if err := l.Transport.Emit(types.HarnessEvent{
-		Type:       "done",
-		StopReason: outcome,
-	}); err != nil {
-		l.Logger.Warn("transport emit failed", "event", "done", "error", err)
-	}
-
-	stopHeartbeat()
 
 	// PhasePostTurn is a sensitivity classifier, not a deterministic
 	// secret redactor, so this is the single scrub site for the field —
@@ -474,7 +467,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// A trace that was assembled but not persisted is still returned, so
 	// the entry points can emit its RunResult; the outcome is unchanged.
-	runTrace, traceErr := l.finishTrace(ctx, outcome)
+	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)
 	if traceErr != nil {
 		return runTrace, fmt.Errorf("finish trace: %w", traceErr)
 	}
@@ -725,11 +718,12 @@ func (l *AgenticLoop) runInnerLoop(
 			ReserveForResponse: responseReserve,
 		})
 		if err != nil {
-			recordSpanError(contextSpan, err)
+			scrubbed := recordSpanError(contextSpan, err)
 			contextSpan.End()
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", "context strategy: "+scrubbed)
 			return messages, "error", finalAssistantText, nil
 		}
 		compaction := l.Context.LastCompaction()
@@ -780,6 +774,7 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:       "",
 					Model:      selection.Model,
 				})
+				l.noteFailure("error", fmt.Sprintf("model router selected unknown provider %q", selection.Provider))
 				return messages, "error", finalAssistantText, nil
 			}
 			selectedProvider = prov
@@ -793,6 +788,7 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:       "",
 				Model:      selection.Model,
 			})
+			l.noteFailure("error", "no provider is configured")
 			return messages, "error", finalAssistantText, nil
 		}
 		providerAttrs := l.metricAttrs(
@@ -879,6 +875,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
 			return messages, "error", finalAssistantText, nil
 		}
 
@@ -926,6 +923,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
 			return messages, "error", finalAssistantText, nil
 		}
 		// Input is the provider's figure when it reports one; otherwise
@@ -1092,6 +1090,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
 				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
+				l.noteFailure("error", "provider returned an empty stop reason")
 				return messages, "error", finalAssistantText, nil
 			}
 			if sr.StopReason == "refusal" {
@@ -1116,6 +1115,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// Provider declared tool_use but produced no tool blocks —
 			// degenerate but observable.
 			l.Trace.RecordTurnRecord(turnRecord)
+			l.noteFailure("error", "provider reported a tool_use stop without any tool calls")
 			return messages, "error", finalAssistantText, nil
 		}
 
@@ -1918,15 +1918,18 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 	return time.Duration(sum)*time.Second + 30*time.Second
 }
 
-// finishWithError records an "error" outcome and finishes the trace.
-func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.RunTrace, error) {
-	return l.finishWithOutcome(ctx, "error", err)
+// finishWithError records an "error" outcome and finishes the run.
+func (l *AgenticLoop) finishWithError(ctx context.Context, config *types.RunConfig, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	return l.finishWithOutcome(ctx, config, "error", err, stopHeartbeat)
 }
 
-// finishWithOutcome generalises finishWithError to a caller-supplied
-// outcome (e.g. "setup_failed" from a fatal preRun hook failure) and
-// finishes the trace.
-func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
+// finishWithOutcome ends a run that failed before its first turn (e.g.
+// "setup_failed" from a fatal preRun hook failure) with err as its
+// reason. The workspace handoff still runs, so partial setup work is
+// recoverable; the git final checkpoint does not, since Git.Setup has not
+// completed.
+func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
@@ -1934,15 +1937,8 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 	}); emitErr != nil {
 		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
 	}
-	// Always emit "done" (not just "error") so control planes relying on
-	// it as the terminal signal see this early-return path too.
-	if emitErr := l.Transport.Emit(types.HarnessEvent{
-		Type:       "done",
-		StopReason: outcome,
-	}); emitErr != nil {
-		l.Logger.Warn("transport emit failed", "event", "done", "error", emitErr)
-	}
-	runTrace, traceErr := l.finishTrace(ctx, outcome)
+	outcome = l.handoffWorkspace(ctx, config, outcome)
+	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)
 	if traceErr != nil {
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
@@ -2008,9 +2004,11 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 		return outcome
 	}
 	if captureFailed {
+		l.noteFailure("command_output_capture_failed", "command output capture: "+l.CommandOutput.FatalError().Error())
 		return "command_output_capture_failed"
 	}
 	if err != nil {
+		l.noteFailure("command_output_archive_failed", "command output archive: "+err.Error())
 		return "command_output_archive_failed"
 	}
 	return outcome
