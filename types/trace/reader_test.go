@@ -268,6 +268,9 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 		if tr.OutputLimitRecovery {
 			ev["outputLimitRecovery"] = true
 		}
+		if tr.StallNudge {
+			ev["stallNudge"] = true
+		}
 		buf.Write(mustMarshal(t, ev))
 		buf.WriteByte('\n')
 	}
@@ -418,6 +421,29 @@ func TestReadRecording_PreservesOutputLimitRecovery(t *testing.T) {
 	if !rec.Turns[0].OutputLimitRecovery || rec.Turns[1].OutputLimitRecovery {
 		t.Errorf("OutputLimitRecovery = %v, %v; want true, false",
 			rec.Turns[0].OutputLimitRecovery, rec.Turns[1].OutputLimitRecovery)
+	}
+}
+
+// TestReadRecording_PreservesStallNudge pins that the per-turn stall
+// nudge flag survives the turn_record round trip.
+func TestReadRecording_PreservesStallNudge(t *testing.T) {
+	turns := []types.TurnRecord{
+		{Turn: 0},
+		{Turn: 1, StallNudge: true},
+	}
+	body := streamingTrace(t, "run-nudge", types.RunConfig{RunID: "run-nudge"}, turns,
+		types.RunTrace{ID: "run-nudge", Turns: 2, Outcome: "success"})
+
+	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if len(rec.Turns) != 2 {
+		t.Fatalf("Turns: got %d, want 2", len(rec.Turns))
+	}
+	if rec.Turns[0].StallNudge || !rec.Turns[1].StallNudge {
+		t.Errorf("StallNudge = %v, %v; want false, true",
+			rec.Turns[0].StallNudge, rec.Turns[1].StallNudge)
 	}
 }
 

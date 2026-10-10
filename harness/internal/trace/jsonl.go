@@ -200,6 +200,7 @@ func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		ToolCalls:           scrubbed.ToolCalls,
 		ResponseModel:       scrubbed.ResponseModel,
 		OutputLimitRecovery: scrubbed.OutputLimitRecovery,
+		StallNudge:          scrubbed.StallNudge,
 	}
 	_ = e.writeLineLocked(ev)
 }
@@ -485,6 +486,7 @@ func scrubTurnRecord(t types.TurnRecord, redactionDisabled bool) types.TurnRecor
 		ParentRunID:         t.ParentRunID,
 		ResponseModel:       scrubOrPass(t.ResponseModel, redactionDisabled),
 		OutputLimitRecovery: t.OutputLimitRecovery,
+		StallNudge:          t.StallNudge,
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = scrubToolCallRecord(tc, redactionDisabled)

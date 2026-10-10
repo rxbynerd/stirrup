@@ -796,6 +796,34 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery(t *test
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge pins that a
+// turn followed by a stall nudge is marked on its turn_record line, and
+// that other turns omit the field.
+func TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	emitter.Start("run-nudge", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0})
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1, StallNudge: true})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	var flags []bool
+	for _, ev := range readEvents(t, buf.Bytes()) {
+		if ev.Kind == EventKindTurnRecord {
+			flags = append(flags, ev.StallNudge)
+		}
+	}
+	if !reflect.DeepEqual(flags, []bool{false, true}) {
+		t.Errorf("turn_record stallNudge = %v, want [false true]", flags)
+	}
+	if n := strings.Count(buf.String(), `"stallNudge":true`); n != 1 {
+		t.Errorf("on-disk stallNudge:true count = %d, want 1", n)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.

@@ -428,6 +428,10 @@ type TurnRecord struct {
 	ResponseModel string `json:"responseModel,omitempty"`
 	// OutputLimitRecovery mirrors TurnTrace.OutputLimitRecovery.
 	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
+	// StallNudge is true when the turn's tool calls completed a repeated
+	// call pattern and the next request carries a synthetic instruction
+	// to change approach instead of the run ending as stalled.
+	StallNudge bool `json:"stallNudge,omitempty"`
 }
 
 // ModelInput records what the model saw on a given turn. Request is nil
