@@ -94,10 +94,25 @@ func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
 // fakeExporter is a workspaceexport.Exporter that returns a fixed error,
 // avoiding a real GCS endpoint in the exportWorkspace tests.
 type fakeExporter struct {
-	err error
+	err    error
+	status string
 }
 
-func (f fakeExporter) Export(_ context.Context, _, _ string) error { return f.err }
+func (f fakeExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
+	return fakeExportResult(dest, f.status, f.err)
+}
+
+// fakeExportResult is the receipt a fake exporter returns for dest: failed
+// with err, otherwise status, which defaults to uploaded.
+func fakeExportResult(dest, status string, err error) (types.ExportReceipt, error) {
+	if err != nil {
+		return types.ExportReceipt{URI: dest, Status: types.ExportStatusFailed}, err
+	}
+	if status == "" {
+		status = types.ExportStatusUploaded
+	}
+	return types.ExportReceipt{URI: dest, Status: status}, nil
+}
 
 // TestBuildRunResult_NilTrace pins that a nil RunTrace surfaces the
 // "internal-error" sentinel rather than a structurally valid but
@@ -528,7 +543,7 @@ func TestWorkspaceHandoff_SuccessfulExport(t *testing.T) {
 }
 
 func TestWorkspaceHandoff_EmptyWorkspaceIsAnEmptySuccess(t *testing.T) {
-	installFakeExporter(t, fakeExporter{err: workspaceexport.ErrEmptyWorkspace}, nil)
+	installFakeExporter(t, fakeExporter{status: types.ExportStatusEmpty}, nil)
 	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 

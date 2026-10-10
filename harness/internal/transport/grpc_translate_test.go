@@ -1898,6 +1898,7 @@ func TestRunTraceToProto_HandoffSummaryRoundTrip(t *testing.T) {
 		},
 		WorkspaceExport: &types.ExportReceipt{
 			URI: "gs://bucket/ws.tar.gz", Status: types.ExportStatusFailed, Required: true, Error: "upload refused",
+			Bytes: 2048, SHA256: "0123abcd", Files: 7,
 		},
 		Error: "workspace export: upload refused",
 	}
@@ -1914,7 +1915,8 @@ func TestRunTraceToProto_HandoffSummaryRoundTrip(t *testing.T) {
 		t.Errorf("git = %v, want every GitHandoff field carried", g)
 	}
 	r := decoded.GetWorkspaceExport()
-	if r.GetUri() != "gs://bucket/ws.tar.gz" || r.GetStatus() != "failed" || !r.GetRequired() || r.GetError() != "upload refused" {
+	if r.GetUri() != "gs://bucket/ws.tar.gz" || r.GetStatus() != "failed" || !r.GetRequired() || r.GetError() != "upload refused" ||
+		r.GetBytes() != 2048 || r.GetSha256() != "0123abcd" || r.GetFiles() != 7 {
 		t.Errorf("workspace_export = %v, want every ExportReceipt field carried", r)
 	}
 	if decoded.GetError() != "workspace export: upload refused" {

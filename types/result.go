@@ -99,34 +99,54 @@ type RunResult struct {
 	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
 }
 
-// Export receipt statuses.
-const (
-	ExportStatusUploaded = "uploaded"
-	ExportStatusEmpty    = "empty"
-	ExportStatusFailed   = "failed"
-)
-
-// ExportReceipt reports the end-of-run workspace export of one run.
-type ExportReceipt struct {
-	// URI is the destination the workspace archive was written to.
-	URI string `json:"uri"`
-	// Status is ExportStatusUploaded when the archive was uploaded,
-	// ExportStatusEmpty when the workspace had no files and nothing was
-	// uploaded, and ExportStatusFailed otherwise. An empty export counts
-	// as a success.
-	Status string `json:"status"`
-	// Required reports whether a failed export fails the run; see
-	// ExecutorConfig.WorkspaceExportRequired.
-	Required bool `json:"required"`
-	// Error is the scrubbed, length-capped export failure. Empty unless
-	// Status is ExportStatusFailed.
-	Error string `json:"error,omitempty"`
-}
-
 // VerifierResult is the verifier outcome carried on RunResult. It
 // mirrors VerificationResult but is intentionally a distinct, smaller
 // type, independent of the internal trace's evolving fields.
 type VerifierResult struct {
 	Passed   bool   `json:"passed"`
 	Feedback string `json:"feedback,omitempty"`
+}
+
+// Workspace export statuses carried on ExportReceipt.Status.
+const (
+	// ExportStatusUploaded means a non-empty archive reached the destination.
+	ExportStatusUploaded = "uploaded"
+	// ExportStatusEmpty means the workspace had no files; an empty archive
+	// still reached the destination.
+	ExportStatusEmpty = "empty"
+	// ExportStatusFailed means no archive reached the destination.
+	ExportStatusFailed = "failed"
+)
+
+// ExportReceipt describes one workspace export attempt.
+type ExportReceipt struct {
+	// URI is the destination object URI.
+	URI string `json:"uri"`
+
+	// Status is one of the ExportStatus* constants.
+	Status string `json:"status"`
+
+	// Bytes is the size of the uploaded gzipped tarball.
+	Bytes int64 `json:"bytes,omitempty"`
+
+	// SHA256 is the lowercase hex SHA-256 of the uploaded gzipped tarball.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Files counts the archive's non-directory entries (regular files,
+	// symlinks and hard links).
+	Files int `json:"files,omitempty"`
+
+	// Required reports whether a failed export fails the run; see
+	// ExecutorConfig.WorkspaceExportRequired.
+	Required bool `json:"required"`
+
+	// Error is the scrubbed, length-capped export failure. Empty unless
+	// Status is ExportStatusFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// Delivered reports whether an archive, possibly empty, reached the
+// destination. A required export fails whenever this is false.
+func (r ExportReceipt) Delivered() bool {
+	return r.Status == ExportStatusUploaded || r.Status == ExportStatusEmpty
 }

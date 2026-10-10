@@ -110,6 +110,9 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Status:   r.Status,
 			Required: r.Required,
 			Error:    r.Error,
+			Bytes:    r.Bytes,
+			Sha256:   r.SHA256,
+			Files:    saturateInt32(r.Files),
 		}
 	}
 	pt.Error = t.Error

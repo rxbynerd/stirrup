@@ -923,8 +923,9 @@ type ExecutorConfig struct {
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
 	// executor's workspace at the end of every run, before "done", and
 	// upload it to the named URI. Currently only "gs://bucket/path" is
-	// accepted. A workspace with no files uploads nothing and reports
-	// export status "empty"; a missing workspace is an export failure.
+	// accepted. A workspace with no files uploads an empty archive and
+	// reports export status "empty"; a missing workspace is an export
+	// failure.
 	// Future S3 / Azure Blob support will broaden the scheme set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 

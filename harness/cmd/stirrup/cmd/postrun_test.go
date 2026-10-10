@@ -20,11 +20,11 @@ type recordingExporter struct {
 	err   error
 }
 
-func (r *recordingExporter) Export(_ context.Context, _, dest string) error {
+func (r *recordingExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dests = append(r.dests, dest)
-	return r.err
+	return fakeExportResult(dest, "", r.err)
 }
 
 func (r *recordingExporter) destinations() []string {

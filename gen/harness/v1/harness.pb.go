@@ -2423,17 +2423,25 @@ func (x *GitHandoff) GetError() string {
 // workspace export.
 type ExportReceipt struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The destination the workspace archive was written to.
+	// The destination object URI.
 	Uri string `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
-	// "uploaded" when the archive was uploaded, "empty" when the workspace
-	// had no files and nothing was uploaded (counts as a success), "failed"
-	// otherwise.
+	// "uploaded" when a non-empty archive reached the destination, "empty"
+	// when the workspace had no files and an empty archive still reached
+	// the destination (counts as a success), "failed" when no archive
+	// reached the destination.
 	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// Whether a failed export fails the run (executor.workspace_export_required).
 	Required bool `protobuf:"varint,3,opt,name=required,proto3" json:"required,omitempty"`
 	// Scrubbed, length-capped export failure. Empty unless status is
 	// "failed".
-	Error         string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	// Size of the uploaded gzipped tarball.
+	Bytes int64 `protobuf:"varint,5,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	// Lowercase hex SHA-256 of the uploaded gzipped tarball.
+	Sha256 string `protobuf:"bytes,6,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// The archive's non-directory entries (regular files, symlinks and
+	// hard links).
+	Files         int32 `protobuf:"varint,7,opt,name=files,proto3" json:"files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2494,6 +2502,27 @@ func (x *ExportReceipt) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *ExportReceipt) GetBytes() int64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+func (x *ExportReceipt) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *ExportReceipt) GetFiles() int32 {
+	if x != nil {
+		return x.Files
+	}
+	return 0
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured
@@ -3839,8 +3868,8 @@ type ExecutorConfig struct {
 	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
 	// today; the bucket path must be non-empty. Rejected for the "api" and
 	// "none" executors, neither of which has a workspace. A workspace with
-	// no files uploads nothing and reports export status "empty"; a missing
-	// workspace is an export failure.
+	// no files uploads an empty archive and reports export status "empty";
+	// a missing workspace is an export failure.
 	WorkspaceExportTo string `protobuf:"bytes,15,opt,name=workspace_export_to,json=workspaceExportTo,proto3" json:"workspace_export_to,omitempty"`
 	// Optional. Requests a control-plane-issued sandbox identity token and
 	// injects it into the sandbox environment. Requires the gRPC transport
@@ -5353,12 +5382,15 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x03sha\x18\x02 \x01(\tR\x03sha\x12\x19\n" +
 	"\bbase_sha\x18\x03 \x01(\tR\abaseSha\x12\x14\n" +
 	"\x05dirty\x18\x04 \x01(\bR\x05dirty\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"k\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"\xaf\x01\n" +
 	"\rExportReceipt\x12\x10\n" +
 	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x14\n" +
-	"\x05error\x18\x04 \x01(\tR\x05error\"_\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\x12\x14\n" +
+	"\x05bytes\x18\x05 \x01(\x03R\x05bytes\x12\x16\n" +
+	"\x06sha256\x18\x06 \x01(\tR\x06sha256\x12\x14\n" +
+	"\x05files\x18\a \x01(\x05R\x05files\"_\n" +
 	"\vStopDetails\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bcategory\x18\x02 \x01(\tR\bcategory\x12 \n" +

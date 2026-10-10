@@ -1089,12 +1089,13 @@ message GitHandoff {
 // ExportReceipt mirrors types.ExportReceipt: the result of one run's
 // workspace export.
 message ExportReceipt {
-  // The destination the workspace archive was written to.
+  // The destination object URI.
   string uri = 1;
 
-  // "uploaded" when the archive was uploaded, "empty" when the workspace
-  // had no files and nothing was uploaded (counts as a success), "failed"
-  // otherwise.
+  // "uploaded" when a non-empty archive reached the destination, "empty"
+  // when the workspace had no files and an empty archive still reached
+  // the destination (counts as a success), "failed" when no archive
+  // reached the destination.
   string status = 2;
 
   // Whether a failed export fails the run (executor.workspace_export_required).
@@ -1103,6 +1104,16 @@ message ExportReceipt {
   // Scrubbed, length-capped export failure. Empty unless status is
   // "failed".
   string error = 4;
+
+  // Size of the uploaded gzipped tarball.
+  int64 bytes = 5;
+
+  // Lowercase hex SHA-256 of the uploaded gzipped tarball.
+  string sha256 = 6;
+
+  // The archive's non-directory entries (regular files, symlinks and
+  // hard links).
+  int32 files = 7;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured
@@ -1707,8 +1718,8 @@ message ExecutorConfig {
   // run's "done" event. Only the "gs://bucket/path" scheme is accepted
   // today; the bucket path must be non-empty. Rejected for the "api" and
   // "none" executors, neither of which has a workspace. A workspace with
-  // no files uploads nothing and reports export status "empty"; a missing
-  // workspace is an export failure.
+  // no files uploads an empty archive and reports export status "empty";
+  // a missing workspace is an export failure.
   string workspace_export_to = 15;
 
   // Optional. Requests a control-plane-issued sandbox identity token and

@@ -5,7 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"errors"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // staticBearerSource yields a fixed bearer token.
@@ -89,12 +91,23 @@ func TestGCSExporter_Success(t *testing.T) {
 		t.Fatalf("NewGCSExporter: %v", err)
 	}
 
-	err = exp.Export(context.Background(), dir, "gs://my-bucket/runs/run-1/workspace.tar.gz")
+	receipt, err := exp.Export(context.Background(), dir, "gs://my-bucket/runs/run-1/workspace.tar.gz")
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
 	got := srv.last()
+	sum := sha256.Sum256(got.Body)
+	want := types.ExportReceipt{
+		URI:    "gs://my-bucket/runs/run-1/workspace.tar.gz",
+		Status: types.ExportStatusUploaded,
+		Bytes:  int64(len(got.Body)),
+		SHA256: hex.EncodeToString(sum[:]),
+		Files:  2,
+	}
+	if receipt != want {
+		t.Errorf("receipt = %+v, want %+v", receipt, want)
+	}
 	if !strings.Contains(got.URL, "/upload/storage/v1/b/my-bucket/o") {
 		t.Errorf("URL missing upload path: %q", got.URL)
 	}
@@ -142,16 +155,19 @@ func TestGCSExporter_ServerError(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
+	receipt, err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
 	if err == nil {
 		t.Fatal("want error from 503, got nil")
+	}
+	if receipt.Status != types.ExportStatusFailed || receipt.Delivered() {
+		t.Errorf("receipt = %+v, want a failed, undelivered receipt", receipt)
 	}
 	if !strings.Contains(err.Error(), "HTTP 503") {
 		t.Errorf("error should mention HTTP 503, got %v", err)
 	}
 }
 
-func TestGCSExporter_EmptyDirectoryReportsEmptyWithoutUpload(t *testing.T) {
+func TestGCSExporter_EmptyDirectoryUploadsEmptyArchive(t *testing.T) {
 	dir := t.TempDir()
 
 	srv := &captureUploadServer{}
@@ -163,11 +179,15 @@ func TestGCSExporter_EmptyDirectoryReportsEmptyWithoutUpload(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	if err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz"); !errors.Is(err, ErrEmptyWorkspace) {
-		t.Fatalf("Export on empty dir = %v, want ErrEmptyWorkspace", err)
+	receipt, err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
+	if err != nil {
+		t.Fatalf("Export on empty dir: %v", err)
 	}
-	if len(srv.requests) != 0 {
-		t.Errorf("empty dir should produce no upload, got %d requests", len(srv.requests))
+	if receipt.Status != types.ExportStatusEmpty || !receipt.Delivered() || receipt.Files != 0 {
+		t.Errorf("receipt = %+v, want a delivered empty receipt", receipt)
+	}
+	if len(srv.requests) != 1 {
+		t.Errorf("empty dir should upload one empty archive, got %d requests", len(srv.requests))
 	}
 }
 
@@ -181,9 +201,12 @@ func TestGCSExporter_MissingDirectoryIsAnError(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	err := exp.Export(context.Background(), "/does/not/exist", "gs://b/o.tar.gz")
-	if err == nil || errors.Is(err, ErrEmptyWorkspace) || !strings.Contains(err.Error(), "/does/not/exist") {
+	receipt, err := exp.Export(context.Background(), "/does/not/exist", "gs://b/o.tar.gz")
+	if err == nil || !strings.Contains(err.Error(), "/does/not/exist") {
 		t.Errorf("missing dir: Export = %v, want an error naming the workspace", err)
+	}
+	if receipt.Status != types.ExportStatusFailed {
+		t.Errorf("missing dir: receipt status = %q, want failed", receipt.Status)
 	}
 	if len(srv.requests) != 0 {
 		t.Errorf("missing dir should produce no upload, got %d requests", len(srv.requests))
@@ -216,7 +239,7 @@ func TestGCSExporter_RefuseSymlinkEscape(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	err := exp.Export(context.Background(), workspace, "gs://b/o.tar.gz")
+	_, err := exp.Export(context.Background(), workspace, "gs://b/o.tar.gz")
 	if err == nil {
 		t.Fatal("Export should refuse a symlink escape, got nil")
 	}
@@ -246,7 +269,7 @@ func TestGCSExporter_InternalSymlinkOK(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	if err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz"); err != nil {
+	if _, err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz"); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 
@@ -292,7 +315,7 @@ func TestGCSExporter_RefusesDanglingSymlink(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
+	_, err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
 	if err == nil {
 		t.Fatal("Export should refuse a dangling symlink, got nil")
 	}
@@ -321,7 +344,7 @@ func TestGCSExporter_RefusesNonGCSURI(t *testing.T) {
 	}
 	for _, uri := range cases {
 		t.Run(uri, func(t *testing.T) {
-			err := exp.Export(context.Background(), dir, uri)
+			_, err := exp.Export(context.Background(), dir, uri)
 			if err == nil {
 				t.Fatalf("expected error for URI %q", uri)
 			}

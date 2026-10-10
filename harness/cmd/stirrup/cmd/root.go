@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -289,13 +288,13 @@ var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 	})
 }
 
-// exportWorkspace tars + gzips the executor's workspace dir and
-// uploads it to dest.
-func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string) error {
+// exportWorkspace tars + gzips the executor's workspace dir, uploads it
+// to dest and returns the exporter's receipt.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string) (types.ExportReceipt, error) {
 	// v1 supports only the GCS exporter.
 	exp, err := newWorkspaceExporter()
 	if err != nil {
-		return fmt.Errorf("build workspace exporter: %w", err)
+		return types.ExportReceipt{URI: dest, Status: types.ExportStatusFailed}, fmt.Errorf("build workspace exporter: %w", err)
 	}
 
 	workspaceDir := cfg.Executor.Workspace
@@ -305,10 +304,11 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string) err
 		workspaceDir = wd
 	}
 
-	if err := exp.Export(ctx, workspaceDir, dest); err != nil {
-		return fmt.Errorf("export workspace to %s: %w", dest, err)
+	receipt, err := exp.Export(ctx, workspaceDir, dest)
+	if err != nil {
+		return receipt, fmt.Errorf("export workspace to %s: %w", dest, err)
 	}
-	return nil
+	return receipt, nil
 }
 
 // workspaceHandoff is the core.WorkspaceHandoff `stirrup harness` and
@@ -329,16 +329,8 @@ func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, _ e
 	if dest == "" {
 		return nil, nil
 	}
-	receipt := &types.ExportReceipt{URI: dest}
-	switch err := exportWorkspace(ctx, cfg, dest); {
-	case errors.Is(err, workspaceexport.ErrEmptyWorkspace):
-		receipt.Status = types.ExportStatusEmpty
-	case err != nil:
-		return receipt, err
-	default:
-		receipt.Status = types.ExportStatusUploaded
-	}
-	return receipt, nil
+	receipt, err := exportWorkspace(ctx, cfg, dest)
+	return &receipt, err
 }
 
 // followUpExportURI derives a follow-up run's workspace export
@@ -394,7 +386,7 @@ func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrac
 	if p.firstFollowUpErr != nil || rt == nil {
 		return
 	}
-	if r := rt.WorkspaceExport; r != nil && r.Required && r.Status == types.ExportStatusFailed {
+	if r := rt.WorkspaceExport; r != nil && r.Required && !r.Delivered() {
 		p.firstFollowUpErr = fmt.Errorf("export workspace to %s: %s", r.URI, r.Error)
 	}
 }

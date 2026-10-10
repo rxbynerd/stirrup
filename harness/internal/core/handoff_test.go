@@ -20,6 +20,7 @@ type fakeHandoff struct {
 	ctx       ctxObservation
 	runID     string
 	err       error
+	status    string
 	noExport  bool
 	onHandoff func(ctx context.Context)
 }
@@ -37,6 +38,9 @@ func (h *fakeHandoff) Handoff(ctx context.Context, config *types.RunConfig, _ ex
 		return nil, nil
 	}
 	receipt := &types.ExportReceipt{URI: config.Executor.WorkspaceExportTo, Status: types.ExportStatusUploaded}
+	if h.status != "" {
+		receipt.Status = h.status
+	}
 	return receipt, h.err
 }
 
@@ -151,6 +155,27 @@ func TestRun_ExportErrorIsScrubbedAndCapped(t *testing.T) {
 		}
 		if text == "" || len(text) > maxLen {
 			t.Errorf("%s is %d bytes, want non-empty and capped near %d", name, len(text), maxFailureTextBytes)
+		}
+	}
+}
+
+func TestRun_EmptyRequiredExportIsDeliveredSuccess(t *testing.T) {
+	loop := buildTestLoop(endTurnProvider())
+	tr := &cancellableTransport{}
+	loop.Transport = tr
+	loop.Handoff = &fakeHandoff{status: types.ExportStatusEmpty}
+
+	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("Outcome = %q, want success for an empty archive that reached the destination", runTrace.Outcome)
+	}
+	done := doneEvent(t, tr.Events())
+	for name, r := range map[string]*types.ExportReceipt{"RunTrace": runTrace.WorkspaceExport, "done trace": done.Trace.WorkspaceExport} {
+		if r == nil || r.Status != types.ExportStatusEmpty || !r.Delivered() || !r.Required || r.Error != "" {
+			t.Errorf("%s WorkspaceExport = %+v, want a required, delivered empty receipt with no error", name, r)
 		}
 	}
 }

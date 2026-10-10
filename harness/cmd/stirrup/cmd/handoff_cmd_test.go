@@ -24,10 +24,10 @@ type slowExporter struct {
 	completed atomic.Int32
 }
 
-func (e *slowExporter) Export(context.Context, string, string) error {
+func (e *slowExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
 	time.Sleep(50 * time.Millisecond)
 	e.completed.Add(1)
-	return e.err
+	return fakeExportResult(dest, "", e.err)
 }
 
 func installSlowExporter(t *testing.T, exp *slowExporter) {
