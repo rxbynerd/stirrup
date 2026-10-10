@@ -218,6 +218,9 @@ func ingestStreamingTrace(ctx context.Context, store *lakehouse.FileStore, r *tr
 		fmt.Fprintln(os.Stderr, "ingest: streaming trace missing runId; skipping")
 		return 0, 0, 0, nil
 	}
+	if rec.SkippedLines > 0 {
+		fmt.Fprintf(os.Stderr, "ingest: %s is a partial recording: skipped %d line(s) over %d bytes\n", rec.RunID, rec.SkippedLines, tracereader.MaxLineBytes)
+	}
 	completed := rec.FinalOutcome.ID != ""
 	if !completed {
 		if skipPartial {

@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 // writeTraceFile writes lines to a JSONL trace file under dir and returns
@@ -254,5 +257,55 @@ func TestDetectFormat(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("detectFormat(%s) = %v, want %v", filepath.Base(tc.path), got, tc.want)
 		}
+	}
+}
+
+// TestIngestFile_ReportsSkippedLines pins that ingest tells the operator
+// when oversized lines were dropped, and still stores the recording read
+// around them.
+func TestIngestFile_ReportsSkippedLines(t *testing.T) {
+	dir := t.TempDir()
+	oversized := mustMarshal(t, map[string]any{
+		"kind":        "turn_record",
+		"turn":        1,
+		"modelOutput": []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", tracereader.MaxLineBytes+8)}},
+	})
+	tracePath := writeTraceFile(t, dir, "big.jsonl", []string{
+		mustMarshal(t, map[string]any{
+			"kind":      "run_started",
+			"runId":     "big-run",
+			"startedAt": time.Now(),
+			"config":    types.RunConfig{RunID: "big-run"},
+		}),
+		oversized,
+		mustMarshal(t, map[string]any{"kind": "turn_record", "turn": 2}),
+	})
+
+	store, err := lakehouse.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = pw
+	traces, recordings, _, ingestErr := ingestFile(context.Background(), store, tracePath, false)
+	os.Stderr = origStderr
+	_ = pw.Close()
+	stderr, _ := io.ReadAll(pr)
+	_ = pr.Close()
+
+	if ingestErr != nil {
+		t.Fatalf("ingestFile: %v", ingestErr)
+	}
+	if traces != 1 || recordings != 1 {
+		t.Errorf("counts: traces=%d recordings=%d; want 1/1", traces, recordings)
+	}
+	if !strings.Contains(string(stderr), "big-run is a partial recording: skipped 1 line(s)") {
+		t.Errorf("stderr = %q, want a partial-recording report naming the run and count", stderr)
 	}
 }
