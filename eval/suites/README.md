@@ -49,7 +49,11 @@ baseline in `../baselines/`:
   re-runs the same baselined suites against stronger models
   (Claude Sonnet 5 and Claude Opus 4.8) on every release tag. The
   sweep is non-blocking-but-visible: a blocking comparison turns the
-  matrix cell red without holding the release.
+  matrix cell red without holding the release. Every suite is
+  compared before the cell fails, each cell publishes a per-suite
+  table (pass rate, healthy pass rate, sample size) to the job
+  summary, and `provider-quirks-*` suites are skipped because the
+  sweep's `--model` would override their pin.
 
 Suites without a baseline are never executed in CI — they are
 opt-in local runs (see the per-suite notes below).
