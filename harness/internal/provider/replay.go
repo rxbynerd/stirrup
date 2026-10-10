@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync/atomic"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -20,28 +21,27 @@ type ReplayProvider struct {
 }
 
 // NewReplayProvider creates a ReplayProvider from a sequence of recorded
-// turns. It replays a single run: the first turn without a ParentRunID
-// (or, failing that, the first turn) selects the run, and turns tagged
-// with any other RunID are dropped so a sub-agent's output is never
-// served to the parent's requests.
+// turns. Turns of every top-level run (empty ParentRunID) replay in
+// order, so a recording spanning follow-up runs replays whole; a
+// sub-agent's turns are dropped so its output is never served to the
+// parent's requests. A sequence holding only sub-agent turns replays the
+// first turn's run.
 func NewReplayProvider(turns []types.TurnRecord) *ReplayProvider {
-	return &ReplayProvider{turns: singleRunTurns(turns)}
+	return &ReplayProvider{turns: replayableTurns(turns)}
 }
 
-func singleRunTurns(turns []types.TurnRecord) []types.TurnRecord {
+func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
 	if len(turns) == 0 {
 		return turns
 	}
-	runID := turns[0].RunID
-	for _, turn := range turns {
-		if turn.ParentRunID == "" {
-			runID = turn.RunID
-			break
-		}
+	keep := func(turn types.TurnRecord) bool { return turn.ParentRunID == "" }
+	if !slices.ContainsFunc(turns, keep) {
+		runID := turns[0].RunID
+		keep = func(turn types.TurnRecord) bool { return turn.RunID == runID }
 	}
 	kept := make([]types.TurnRecord, 0, len(turns))
 	for _, turn := range turns {
-		if turn.RunID == runID {
+		if keep(turn) {
 			kept = append(kept, turn)
 		}
 	}

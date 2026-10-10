@@ -60,6 +60,19 @@ func TestReplayProvider_ReplaysOneSubRunsTurns(t *testing.T) {
 	}
 }
 
+func TestReplayProvider_ReplaysEveryTopLevelRun(t *testing.T) {
+	turns := []types.TurnRecord{
+		textTurn("run-a", "", "a0"),
+		textTurn("run-a/sub-1", "run-a", "child"),
+		textTurn("run-a", "", "a1"),
+		textTurn("run-b", "", "b0"),
+	}
+	got := replayTexts(t, NewReplayProvider(turns))
+	if want := []string{"a0", "a1", "b0"}; !slices.Equal(got, want) {
+		t.Errorf("replayed %v, want %v", got, want)
+	}
+}
+
 func TestReplayProvider_UntaggedTurnsReplayInOrder(t *testing.T) {
 	turns := []types.TurnRecord{
 		textTurn("", "", "first"),
