@@ -217,13 +217,14 @@ func (a providerAttempt) overflowed() bool {
 // as an "error" turn before it returns, unless it is a context overflow
 // and retryOverflow says the caller retries it; a successful one is
 // returned for the caller to record. requestTokens is the request's
-// estimate. Usage reported by failed attempts is charged to tokenTracker.
+// estimate. Usage reported by failed attempts is charged to tokenTracker and ledger.
 // ctx carries the request's chat span, which each attempt's
 // provider.stream span nests under.
 func (l *AgenticLoop) requestProvider(
 	ctx context.Context,
 	config *types.RunConfig,
 	tokenTracker *TokenTracker,
+	ledger *TokenLedger,
 	turn int,
 	selection router.ModelSelection,
 	selectedProvider provider.ProviderAdapter,
@@ -288,6 +289,7 @@ func (l *AgenticLoop) requestProvider(
 		providerSpan.End()
 		if retryOverflow && overflow {
 			tokenTracker.RecordTurn(discarded)
+			ledger.Charge(discarded)
 			return providerAttempt{tokens: discarded, duration: time.Since(start), retries: retrier.retries, err: err, errText: scrubbedErr, errorType: errorType}
 		}
 		l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
@@ -357,6 +359,7 @@ func (l *AgenticLoop) requestProvider(
 			})
 		}
 		tokenTracker.RecordTurn(discarded)
+		ledger.Charge(discarded)
 		duration := time.Since(start)
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		summary := types.TurnTrace{
@@ -442,14 +445,15 @@ func (l *AgenticLoop) completeAttempt(
 	}
 }
 
-// recordAttemptUsage charges a completed request's tokens to the run and
-// records its turn summary, metrics and log line, and returns the
-// summary. toolCalls is the number of tool calls the turn dispatches; a
+// recordAttemptUsage charges a completed request's tokens to the loop and
+// the run ledger, records its turn summary, metrics and log line, and
+// returns the summary. toolCalls is the number of tool calls the turn dispatches; a
 // discarded response passes zero.
 func (l *AgenticLoop) recordAttemptUsage(
 	ctx context.Context,
 	config *types.RunConfig,
 	tokenTracker *TokenTracker,
+	ledger *TokenLedger,
 	turn int,
 	selection router.ModelSelection,
 	selectedProvider provider.ProviderAdapter,
@@ -460,6 +464,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 ) types.TurnTrace {
 	sr, tokens := attempt.result, attempt.tokens
 	tokenTracker.RecordTurn(tokens)
+	ledger.Charge(tokens)
 
 	turnMode, turnBatchID := turnModeInfo(selectedProvider)
 	summary := types.TurnTrace{

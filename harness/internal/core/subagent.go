@@ -47,6 +47,9 @@ type SubAgentResult struct {
 	Outcome string `json:"outcome"`
 	Output  string `json:"output"`
 	Turns   int    `json:"turns"`
+	// TokenBudget is the token budget the sub-agent was admitted with;
+	// nil when the run has no token budget.
+	TokenBudget *int `json:"tokenBudget,omitempty"`
 }
 
 // SpawnSubAgent creates and runs a sub-agent that reuses the parent loop's
@@ -60,7 +63,9 @@ type SubAgentResult struct {
 // spawn_agent tool, preventing infinite recursion. A read-only child mode
 // also removes every workspace-mutating tool and denies them in front of
 // the inherited permission chain; a read-only parent cannot spawn an
-// execution child.
+// execution child. The child charges the parent run's token ledger, is
+// admitted with the run's remaining token budget as its own, and a run
+// admits at most maxSpawnsPerRun sub-agents.
 func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types.RunConfig, subConfig SubAgentConfig) (*SubAgentResult, error) {
 	run, err := prepareSubAgent(ctx, parent, parentConfig, subConfig)
 	if err != nil {
@@ -75,8 +80,9 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 
 	if err != nil {
 		return &SubAgentResult{
-			Outcome: "error",
-			Output:  err.Error(),
+			Outcome:     "error",
+			Output:      err.Error(),
+			TokenBudget: run.config.MaxTokenBudget,
 		}, nil
 	}
 
@@ -86,9 +92,10 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}
 
 	return &SubAgentResult{
-		Outcome: runTrace.Outcome,
-		Output:  output,
-		Turns:   runTrace.Turns,
+		Outcome:     runTrace.Outcome,
+		Output:      output,
+		Turns:       runTrace.Turns,
+		TokenBudget: run.config.MaxTokenBudget,
 	}, nil
 }
 
@@ -145,6 +152,17 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 		return nil, fmt.Errorf("cannot spawn a %q sub-agent: no read-only built-in tools remain once workspace-mutating tools are removed", mode)
 	}
 
+	// Admission is the last refusal, so only spawns that go on to run
+	// count toward the per-run cap.
+	tokenBudget := parentConfig.MaxTokenBudget
+	if ledger := parent.activeLedger(); ledger != nil {
+		admitted, err := ledger.AdmitSpawn()
+		if err != nil {
+			return nil, err
+		}
+		tokenBudget = admitted
+	}
+
 	// Re-wrap under the parent's profile so the sub-agent sees the same
 	// aliases as the parent.
 	var childTools tool.ToolRegistry = childRegistry
@@ -178,6 +196,7 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	childConfig.Prompt = subConfig.Prompt
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
+	childConfig.MaxTokenBudget = tokenBudget
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
 	childConfig.OutputSchema = nil
 	childConfig.Tools.BuiltIn = builtIns
@@ -251,6 +270,9 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 		// Shared (not copied): the latch is run-scoped, so sensitive
 		// content observed by either side must tighten the whole run.
 		RuleOfTwo: parent.RuleOfTwo,
+		// Shared so the child's turns and auxiliary calls charge the
+		// parent run's ledger.
+		ledger: parent.ledger,
 		// Tags child-emitted metrics so dashboards can decompose a run
 		// into parent vs sub-agent contributions.
 		MetricAttrs: []attribute.KeyValue{

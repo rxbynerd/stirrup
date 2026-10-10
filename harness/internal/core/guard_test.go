@@ -654,7 +654,7 @@ func TestGuardCheck_OnlyKnownVerdictsAllow(t *testing.T) {
 // buildGuardRail rather than BuildLoop because the latter needs full
 // secret resolution and provider construction.
 func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
-	g, err := buildGuardRail(nil, nil, nil)
+	g, err := buildGuardRail(nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail(nil): %v", err)
 	}
@@ -662,7 +662,7 @@ func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 		t.Errorf("expected Noop, got %T", g)
 	}
 
-	g, err = buildGuardRail(&types.GuardRailConfig{Type: "none"}, nil, nil)
+	g, err = buildGuardRail(&types.GuardRailConfig{Type: "none"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail(none): %v", err)
 	}
@@ -680,7 +680,7 @@ func TestBuildGuardRail_GraniteGuardianBuildsAdapter(t *testing.T) {
 		Type:     "granite-guardian",
 		Endpoint: "http://localhost:9999",
 	}
-	g, err := buildGuardRail(cfg, nil, nil)
+	g, err := buildGuardRail(cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
 		Endpoint: "http://localhost:9999",
 		Phases:   []string{"post_turn"},
 	}
-	g, err := buildGuardRail(cfg, nil, nil)
+	g, err := buildGuardRail(cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
 // validation is the canonical gate, but defence-in-depth at the
 // constructor catches any bypass.
 func TestBuildGuardRail_UnknownTypeIsError(t *testing.T) {
-	_, err := buildGuardRail(&types.GuardRailConfig{Type: "future-thing"}, nil, nil)
+	_, err := buildGuardRail(&types.GuardRailConfig{Type: "future-thing"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown type, got nil")
 	}
@@ -751,7 +751,7 @@ func TestBuildGuardRail_CloudJudge(t *testing.T) {
 		Model:     "claude-haiku-4-5-20251001",
 		TimeoutMs: 1500,
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestBuildGuardRail_CloudJudge(t *testing.T) {
 // build error rather than producing a nil-deref guardrail at runtime.
 func TestBuildGuardRail_CloudJudge_NilProviderIsError(t *testing.T) {
 	cfg := &types.GuardRailConfig{Type: "cloud-judge"}
-	_, err := buildGuardRail(cfg, nil, nil)
+	_, err := buildGuardRail(cfg, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error when default provider is nil")
 	}
@@ -786,7 +786,7 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 			{Type: "cloud-judge", Model: "claude-haiku-4-5-20251001"},
 		},
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 			{Type: "granite-guardian", Endpoint: "http://classifier.local:9999"},
 		},
 	}
-	g, err := buildGuardRail(cfg, nil, stubProvider{})
+	g, err := buildGuardRail(cfg, nil, stubProvider{}, nil)
 	if err != nil {
 		t.Fatalf("buildGuardRail: %v", err)
 	}

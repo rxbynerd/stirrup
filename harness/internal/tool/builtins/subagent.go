@@ -49,6 +49,7 @@ func SpawnAgentTool(spawner SubAgentSpawner) *tool.Tool {
 			"Use this for work that benefits from a clean context (broad exploration, parallel-feel investigation, a bounded refactor) or that would otherwise pollute the parent conversation. " +
 			"Do not use for trivial one-tool-call tasks — the spawn overhead outweighs the benefit. The prompt must be specific and self-contained because the sub-agent cannot see the parent's history. " +
 			"mode defaults to the parent's mode; max_turns bounds the sub-agent at 1-20 turns (default 10). " +
+			"The sub-agent's tokens count toward the run's token budget, and its own budget is whatever the run has left. A run can spawn at most 8 sub-agents, and spawning is refused once the run's token budget is spent. " +
 			"Example: {\"prompt\": \"Find every call site of harness.RunConfig.Redact and list them as path:line.\", \"mode\": \"research\", \"max_turns\": 8}",
 		InputExamples: []json.RawMessage{json.RawMessage(`{"prompt": "Find every call site of harness.RunConfig.Redact and list them as path:line.", "mode": "research", "max_turns": 8}`)},
 		InputSchema:   spawnAgentSchema,
