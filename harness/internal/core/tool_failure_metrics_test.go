@@ -278,6 +278,16 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 			wantCategory: observability.ToolFailureUnknownTool,
 		},
 		{
+			name:  "invalid_arguments",
+			tools: []*tool.Tool{trivialTool()},
+			call: types.ToolCall{
+				ID: "tc_bad_args", Name: "trivial", Input: json.RawMessage(`{}`),
+				InvalidInput: &types.InvalidToolInput{Raw: `{"a":`, Error: "unexpected end of JSON input"},
+			},
+			wantTool:     "trivial",
+			wantCategory: observability.ToolFailureInvalidArguments,
+		},
+		{
 			name:         "schema_validation_failed",
 			tools:        []*tool.Tool{schemaTool()},
 			call:         types.ToolCall{ID: "tc2", Name: "needs_path", Input: json.RawMessage(`{}`)},
@@ -581,6 +591,7 @@ func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
 func TestToolFailureCategory_EnumIsValid(t *testing.T) {
 	known := []observability.ToolFailureCategory{
 		observability.ToolFailureUnknownTool,
+		observability.ToolFailureInvalidArguments,
 		observability.ToolFailureSchemaValidation,
 		observability.ToolFailureSecurityGuard,
 		observability.ToolFailurePermissionDenied,

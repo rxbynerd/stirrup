@@ -352,9 +352,10 @@ Honoured by every adapter. `anthropic`, `gemini`, and
 `openai-responses` share the same `DoWithRetry` integration as
 `openai-compatible`: the resolved `RetryPolicy` governs only the
 pre-stream request/response exchange (connection errors, or a
-429/5xx on the initial response), never a failure after the stream
-has started yielding events. `bedrock` has no raw `*http.Client`
-seam — `ConverseStream` goes through the AWS SDK's own transport —
+429/5xx/529 on the initial response). A retryable failure after the
+stream has started is retried by the agentic loop as a whole model
+turn, reusing these settings and capped at two retries per turn.
+`bedrock` has no raw `*http.Client` seam — `ConverseStream` goes through the AWS SDK's own transport —
 so `maxAttempts` and `maxDelayMs` are mapped onto the SDK's Standard
 retryer instead; `initialDelayMs` and `wallClockBudgetMs` have no
 SDK-native equivalent and are not applied to `bedrock`.

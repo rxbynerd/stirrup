@@ -493,6 +493,9 @@ func assertIdleFailure(t *testing.T, events []types.StreamEvent, elapsed, idle t
 	if !errors.Is(events[0].Error, errStreamIdle) {
 		t.Errorf("error = %v, want errStreamIdle", events[0].Error)
 	}
+	if !types.IsRetryable(events[0].Error) {
+		t.Errorf("error = %v, want it marked retryable for the loop's turn retry", events[0].Error)
+	}
 	if want := fmt.Sprintf("stream idle for %vs", idle.Seconds()); !strings.Contains(events[0].Error.Error(), want) {
 		t.Errorf("error = %q, want it to contain %q", events[0].Error, want)
 	}
@@ -570,7 +573,7 @@ func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 					t.Error("server never observed the client closing the stalled stream")
 				}
 				if n := hits.Load(); n != 1 {
-					t.Errorf("server saw %d requests, want 1: a mid-stream idle failure must not be retried", n)
+					t.Errorf("server saw %d requests, want 1: the adapter must not replay a mid-stream idle failure", n)
 				}
 			})
 		}

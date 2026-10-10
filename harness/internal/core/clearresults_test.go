@@ -211,7 +211,7 @@ func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
 			types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: id, Content: strings.Repeat("x", 2000)}}},
 		)
 	}
-	budget := contextpkg.TokenBudget{MaxTokens: 4000, CurrentTokens: estimateCurrentTokens(history), ReserveForResponse: 1000}
+	budget := contextpkg.TokenBudget{MaxTokens: 4000, CurrentTokens: estimateCurrentTokens(history, true), ReserveForResponse: 1000}
 	prepare := func(cfg types.ContextStrategyConfig) ([]types.Message, *contextpkg.CompactionEvent) {
 		cs := buildContextStrategy(cfg, nil, "", 0, nil, nil)
 		out, err := cs.Prepare(context.Background(), history, budget)
@@ -312,7 +312,7 @@ func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
 		)
 	}
 	const reserve = 500
-	current := estimateCurrentTokens(messages)
+	current := estimateCurrentTokens(messages, true)
 	trigger := current - 300
 	out, err := loop.Context.Prepare(context.Background(), messages, contextpkg.TokenBudget{
 		MaxTokens: reserve + trigger*100/90 + 1, CurrentTokens: current, ReserveForResponse: reserve,

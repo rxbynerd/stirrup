@@ -432,10 +432,9 @@ func anthropicToolUseInput(b types.ContentBlock) json.RawMessage {
 // the key is omitted (text/tool_use blocks never carry tool-result content).
 // For tool_result blocks it returns the JSON-string form by default; when the
 // resolved capability accepts the content-block array shape and the block
-// carries a structured envelope, it returns the array form — the canonical
-// text part plus a text part holding the structured JSON — so the model
-// receives both renderings and the text fallback survives even if a consumer
-// reads only the first part.
+// has a wire envelope (types.ToolResultWireEnvelope), it returns the array
+// form — the canonical text part plus a text part holding that envelope — so
+// the text fallback survives even if a consumer reads only the first part.
 //
 // A marshalling failure falls back to the plain string content: structured
 // serialisation is purely additive and must never drop the canonical text.
@@ -446,17 +445,15 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 	// The array form requires a non-empty canonical text: an empty first part
 	// ({"type":"text","text":""}) is meaningless, so an empty Content falls
 	// through to the nil-return below regardless of the structured payload.
-	// A structured envelope byte-identical to the canonical text would put
-	// the same bytes on the wire twice, so those collapse to the single
-	// string form below.
-	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" &&
-		string(b.Structured) != b.Content {
-		parts := []anthropicToolResultPart{
-			{Type: "text", Text: b.Content},
-			{Type: "text", Text: string(b.Structured)},
-		}
-		if raw, err := json.Marshal(parts); err == nil {
-			return raw
+	if cap.Supported && cap.ContentBlockArray && b.Content != "" {
+		if envelope := types.ToolResultWireEnvelope(b); len(envelope) > 0 {
+			parts := []anthropicToolResultPart{
+				{Type: "text", Text: b.Content},
+				{Type: "text", Text: string(envelope)},
+			}
+			if raw, err := json.Marshal(parts); err == nil {
+				return raw
+			}
 		}
 	}
 
@@ -631,10 +628,14 @@ type sseError struct {
 
 // anthropicStreamError builds the error for an SSE "error" event, keeping
 // the provider's error type so it survives into logs and the run trace.
+// overloaded_error and api_error are server-side faults, so they are
+// marked retryable for the loop's turn retry.
 func anthropicStreamError(data string) error {
 	var se sseError
 	_ = json.Unmarshal([]byte(data), &se)
 	switch {
+	case se.Error.Type == "overloaded_error", se.Error.Type == "api_error":
+		return types.MarkRetryable(fmt.Errorf("anthropic API stream error (%s): %s", se.Error.Type, se.Error.Message))
 	case se.Error.Type != "":
 		return fmt.Errorf("anthropic API stream error (%s): %s", se.Error.Type, se.Error.Message)
 	case se.Error.Message != "":
@@ -780,10 +781,9 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
 	// DoWithRetry retries only this pre-stream call (connection errors, or a
-	// 429/5xx on the initial response). It is never invoked again once the
-	// channel below is returned, so a failure after streaming has begun is
-	// never replayed — the same boundary the openai-compatible adapter
-	// relies on.
+	// 429/5xx on the initial response). A failure after streaming has begun
+	// is never replayed here; it is classified for the agentic loop, which
+	// retries the whole turn.
 	resp, err := DoWithRetry(ctx, a.httpClient, req, RetryOptions{
 		Policy:       a.RetryPolicy,
 		Logger:       a.Logger,
@@ -796,7 +796,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		// a.baseURL is operator-configurable and may carry a credential in
 		// its query string; unwrap the *url.Error so its embedded URL (which
 		// Go does not query-redact) never reaches a log or caller (CWE-532).
-		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", security.UnwrapURLError(err)))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, a.streamIdleTimeout)
 
@@ -820,9 +820,9 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 			if anthropicContextOverflow(resp.StatusCode, body) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, body)
 		}
-		return nil, fmt.Errorf("anthropic API returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("anthropic API returned status %d", resp.StatusCode), resp.StatusCode, nil)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
@@ -1014,20 +1014,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			switch blockType {
 			case "tool_use":
-				var input map[string]any
-				raw := bs.jsonBuf.String()
-				if raw != "" {
-					if err := json.Unmarshal([]byte(raw), &input); err != nil {
-						emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)})
-						return
-					}
-				}
-				emitEvent(types.StreamEvent{
-					Type:  "tool_call",
-					ID:    bs.id,
-					Name:  bs.name,
-					Input: input,
-				})
+				emitEvent(toolCallEvent(bs.id, bs.name, bs.jsonBuf.String()))
 			case "thinking":
 				emitEvent(types.StreamEvent{
 					Type:             "thinking",
@@ -1072,6 +1059,6 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 	}
 }

@@ -104,6 +104,10 @@ type AgenticLoop struct {
 	// window; nil means no registry, so only contextStrategy.maxTokens
 	// and the default window apply.
 	ContextWindows capabilityResolver
+	// StructuredResults reports whether the provider a turn is routed to
+	// sends the structured tool-result envelope, so the context estimate
+	// counts what goes on the wire. Nil counts it for every provider.
+	StructuredResults StructuredResultSupport
 	// Hooks runs the run's configured lifecycle hooks; optional, like
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
@@ -362,8 +366,8 @@ type structuredOutput struct {
 
 // preflightToolCall runs the deterministic, model-free checks every tool
 // call must pass before the PhasePreTool guard and dispatch: unknown-tool
-// rejection, prototype-pollution strip, JSON-schema validation, and the
-// tool-input tripwires. t is call's resolved tool, nil when unknown.
+// rejection, malformed-arguments rejection, prototype-pollution strip,
+// JSON-schema validation, and the tool-input tripwires. t is call's resolved tool, nil when unknown.
 //
 // On success it returns the cleaned input (the form both the guard and the
 // handler see) and an empty category. On rejection it returns the
@@ -377,6 +381,10 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 			return nil, msg, observability.ToolFailureUnknownTool
 		}
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
+	}
+
+	if call.InvalidInput != nil {
+		return nil, invalidArgsMessage(call.Name, call.InvalidInput), observability.ToolFailureInvalidArguments
 	}
 
 	// Strip prototype-pollution keys before validation so we can both notify
@@ -614,15 +622,18 @@ func appendToolResults(messages []types.Message, results []types.ToolResult) []t
 	})
 }
 
-// collectToolCalls extracts tool calls from the model's streamed content blocks.
-func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
+// collectToolCalls extracts tool calls from the model's streamed content
+// blocks. invalid maps a tool_use block's index in blocks to the marker for
+// arguments that were not a JSON object.
+func collectToolCalls(blocks []types.ContentBlock, invalid map[int]*types.InvalidToolInput) []types.ToolCall {
 	var calls []types.ToolCall
-	for _, b := range blocks {
+	for i, b := range blocks {
 		if b.Type == "tool_use" {
 			calls = append(calls, types.ToolCall{
-				ID:    b.ID,
-				Name:  b.Name,
-				Input: b.Input,
+				ID:           b.ID,
+				Name:         b.Name,
+				Input:        b.Input,
+				InvalidInput: invalid[i],
 			})
 		}
 	}
@@ -634,16 +645,21 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 // the provider reported no input figure. ReplayFields is provider-opaque
 // round-trip state from the message_complete event, plumbed through to
 // the persisted assistant Message without being inspected or logged.
+// InvalidToolInputs is keyed by index into Blocks; the raw arguments it
+// holds stay out of Blocks so history only ever carries valid JSON input.
 type streamResult struct {
-	Blocks       []types.ContentBlock
-	StopReason   string
-	StopDetails  *types.StopDetails
-	Usage        types.TokenUsage
-	ReplayFields map[string]json.RawMessage
+	Blocks            []types.ContentBlock
+	StopReason        string
+	StopDetails       *types.StopDetails
+	Usage             types.TokenUsage
+	ReplayFields      map[string]json.RawMessage
+	InvalidToolInputs map[int]*types.InvalidToolInput
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
-// accumulated content blocks, final stop reason, and token usage.
+// accumulated content blocks, final stop reason, and token usage. On
+// error the result is partial and only its Usage is meaningful: the
+// usage the provider reported before the failure.
 func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
@@ -652,7 +668,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	for event := range ch {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return result, ctx.Err()
 		default:
 		}
 
@@ -684,6 +700,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			// turn is replayed.
 			inputBytes, _ := json.Marshal(event.Input)
 			normalizedInput := types.NormalizeToolInput(inputBytes)
+			if event.InvalidInput != nil {
+				if result.InvalidToolInputs == nil {
+					result.InvalidToolInputs = make(map[int]*types.InvalidToolInput)
+				}
+				result.InvalidToolInputs[len(result.Blocks)] = event.InvalidInput
+			}
 			// ThoughtSignature is provider-opaque state the harness must
 			// echo back unchanged on the next request so the model can
 			// resume its prior reasoning. Adapters that do not emit it
@@ -707,6 +729,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Input: bytes.Clone(normalizedInput),
 			}); err != nil {
 				emitFailed("tool_call", err)
+			}
+			if event.InvalidInput != nil {
+				warning := invalidArgsWarning(event.ID, event.Name, event.InvalidInput)
+				if err := tp.Emit(types.HarnessEvent{Type: "warning", Message: warning}); err != nil {
+					emitFailed("warning", err)
+				}
 			}
 
 		case "thinking", "redacted_thinking":
@@ -741,7 +769,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 
 		case "error":
 			if event.Error != nil {
-				return nil, event.Error
+				return result, event.Error
 			}
 		}
 	}
@@ -769,10 +797,37 @@ func (l *AgenticLoop) Close() error {
 	return nil
 }
 
+// StructuredResultSupport reports whether the adapter for a router-selected
+// provider key and model sends tool results' structured envelope on the
+// wire. An empty provider key names the run's primary provider.
+type StructuredResultSupport func(provider, model string) bool
+
+// sendsStructuredResults resolves StructuredResults for one turn's routing
+// selection.
+func (l *AgenticLoop) sendsStructuredResults(provider, model string) bool {
+	if l.StructuredResults == nil {
+		return true
+	}
+	return l.StructuredResults(provider, model)
+}
+
 // estimateCurrentTokens returns the estimated tokens of the message
-// history, using the estimate the context strategies apply to it.
-func estimateCurrentTokens(messages []types.Message) int {
-	return max(contextpkg.EstimateHistoryTokens(messages), 1)
+// history, using the estimate the context strategies apply to it. That
+// estimate counts each tool result's wire envelope
+// (types.ToolResultWireEnvelope); when structuredResults is false the
+// adapter sends no envelope, so it is not counted.
+func estimateCurrentTokens(messages []types.Message, structuredResults bool) int {
+	total := contextpkg.EstimateHistoryTokens(messages)
+	if !structuredResults {
+		for _, msg := range messages {
+			for _, block := range msg.Content {
+				if block.Type == "tool_result" {
+					total -= len(types.ToolResultWireEnvelope(block)) / tokenEstimationDivisor
+				}
+			}
+		}
+	}
+	return max(total, 1)
 }
 
 // estimateSystemPromptTokens estimates the token count for the system prompt.

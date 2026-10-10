@@ -71,7 +71,7 @@ func fitToolCallTurn(id, name string) []types.StreamEvent {
 }
 
 func requestTokens(params types.StreamParams) int {
-	return estimateCurrentTokens(params.Messages) +
+	return estimateCurrentTokens(params.Messages, true) +
 		estimateSystemPromptTokens(params.System) +
 		estimateToolDefinitionTokens(params.Tools)
 }

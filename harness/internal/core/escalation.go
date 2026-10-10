@@ -71,7 +71,7 @@ type EscalationDecision struct {
 	// Kind selects the recovery action; EscalationNone means no retry.
 	Kind EscalationKind
 
-	// PromptMessage is appended before the retry when Kind == EscalationPrompt; empty for the native path.
+	// PromptMessage, when non-empty, is appended as a synthetic user message before the retry. The native path sets it only for a provider that rejects a history ending on an assistant message.
 	PromptMessage string
 
 	// Reason is a short, non-model-derived explanation attached to the trace span; it is NOT a metric label.

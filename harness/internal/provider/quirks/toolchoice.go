@@ -29,4 +29,10 @@ type ToolChoiceCapability struct {
 	// (Anthropic {"type":"tool"}, OpenAI {"type":"function"}, Gemini ANY
 	// with allowedFunctionNames).
 	NamedTool bool `json:"namedTool"`
+
+	// RejectsTrailingAssistant reports that the provider rejects a
+	// request whose history ends on an assistant message (Anthropic
+	// reads it as a prefill), so a forced-tool retry after a no-tool
+	// answer must end on a user message.
+	RejectsTrailingAssistant bool `json:"rejectsTrailingAssistant"`
 }

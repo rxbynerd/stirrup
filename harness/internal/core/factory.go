@@ -623,6 +623,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// Compat profiles add no context windows, so the default registry
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
+	loop.StructuredResults = buildStructuredResultSupport(config, quirks.DefaultRegistry())
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
 	// first turn instead of being dropped.
@@ -695,6 +696,29 @@ func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) Escalatio
 		return nil
 	}
 	return newDefaultEscalationPolicy(maxRetries, quirks.DefaultRegistry())
+}
+
+// buildStructuredResultSupport resolves the StructuredToolResults capability
+// against the registry the Anthropic and Gemini adapters use, mapping a
+// router provider key to its declared provider type. It reports support only
+// for a wire shape an adapter sends, matching the adapters' own gates.
+func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolver) StructuredResultSupport {
+	providerTypes := make(map[string]string, len(config.Providers)+1)
+	providerTypes[config.Provider.Type] = config.Provider.Type
+	for name, cfg := range config.Providers {
+		providerTypes[name] = cfg.Type
+	}
+	return func(key, model string) bool {
+		providerType := config.Provider.Type
+		if key != "" {
+			providerType = key
+			if declared, ok := providerTypes[key]; ok {
+				providerType = declared
+			}
+		}
+		c := caps.Resolve(providerType, model).StructuredToolResults
+		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
+	}
 }
 
 func buildProviders(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {

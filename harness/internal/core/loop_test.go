@@ -822,7 +822,7 @@ func TestCollectToolCalls(t *testing.T) {
 		{Type: "tool_use", ID: "tc_2", Name: "write_file", Input: json.RawMessage(`{"path":"out.go","content":"..."}`)},
 	}
 
-	calls := collectToolCalls(blocks)
+	calls := collectToolCalls(blocks, nil)
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 tool calls, got %d", len(calls))
 	}
@@ -893,19 +893,23 @@ func (m *infiniteToolCallProvider) Stream(_ context.Context, _ types.StreamParam
 
 // errorProvider is a provider whose Stream() always returns an error.
 type errorProvider struct {
-	err error
+	err   error
+	calls int
 }
 
 func (m *errorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.calls++
 	return nil, m.err
 }
 
 // streamErrorProvider sends an error event on the channel.
 type streamErrorProvider struct {
-	err error
+	err   error
+	calls int
 }
 
 func (m *streamErrorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.calls++
 	ch := make(chan types.StreamEvent, 1)
 	ch <- types.StreamEvent{Type: "error", Error: m.err}
 	close(ch)
@@ -1224,12 +1228,19 @@ func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
 
 // --- P1: Reliability-critical tests ---
 
+// terminalProviderError is a provider error that explicitly reports
+// itself as not retryable.
+type terminalProviderError struct{ msg string }
+
+func (e terminalProviderError) Error() string   { return e.msg }
+func (e terminalProviderError) Retryable() bool { return false }
+
 func TestLoop_ProviderStreamError(t *testing.T) {
-	prov := &errorProvider{err: errors.New("connection refused")}
+	prov := &errorProvider{err: terminalProviderError{"anthropic API returned status 401: invalid x-api-key"}}
 
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
-	config := buildTestConfig()
+	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
@@ -1241,14 +1252,17 @@ func TestLoop_ProviderStreamError(t *testing.T) {
 	if runTrace.Outcome != "error" {
 		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
 	}
+	if prov.calls != 1 {
+		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
+	}
 }
 
 func TestLoop_StreamEventError(t *testing.T) {
-	prov := &streamErrorProvider{err: errors.New("server returned 500")}
+	prov := &streamErrorProvider{err: terminalProviderError{"anthropic API stream error (invalid_request_error): prompt is too long"}}
 
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
-	config := buildTestConfig()
+	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
@@ -1259,6 +1273,9 @@ func TestLoop_StreamEventError(t *testing.T) {
 	}
 	if runTrace.Outcome != "error" {
 		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+	if prov.calls != 1 {
+		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
 	}
 }
 
@@ -1439,7 +1456,7 @@ func TestLoop_PromptBuildError(t *testing.T) {
 
 func TestEstimateCurrentTokens(t *testing.T) {
 	// Empty messages should return 1 (minimum).
-	if got := estimateCurrentTokens(nil); got != 1 {
+	if got := estimateCurrentTokens(nil, true); got != 1 {
 		t.Errorf("empty messages: want 1, got %d", got)
 	}
 
@@ -1448,7 +1465,7 @@ func TestEstimateCurrentTokens(t *testing.T) {
 		Role:    "user",
 		Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40)}},
 	}}
-	got := estimateCurrentTokens(msgs)
+	got := estimateCurrentTokens(msgs, true)
 	// 4 (message overhead) + 3 (block overhead) + 10 (40/4 chars) = 17
 	if got != 17 {
 		t.Errorf("single text message: want 17, got %d", got)
@@ -1464,7 +1481,7 @@ func TestEstimateCurrentTokens(t *testing.T) {
 			Input: json.RawMessage(`{"path":"/foo"}`), // 15 chars → 3 tokens
 		}},
 	}}
-	got = estimateCurrentTokens(toolMsg)
+	got = estimateCurrentTokens(toolMsg, true)
 	// 4 (msg) + 3 (block) + 4 (ID) + 2 (Name) + 3 (Input) = 16
 	if got != 16 {
 		t.Errorf("tool_use message: want 16, got %d", got)
@@ -1484,7 +1501,7 @@ func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
 		},
 	}
 	// 4 (msg) + 3 (block) + (40960 + 7) / 4 = 10248
-	if got := estimateCurrentTokens([]types.Message{msg}); got != 10248 {
+	if got := estimateCurrentTokens([]types.Message{msg}, true); got != 10248 {
 		t.Errorf("message with 40 KB replay state: want 10248, got %d", got)
 	}
 }
@@ -1533,7 +1550,7 @@ func TestEstimateTokens_OverheadSignificance(t *testing.T) {
 			Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
 		}
 	}
-	got := estimateCurrentTokens(msgs)
+	got := estimateCurrentTokens(msgs, true)
 	// Each message: 4 (msg overhead) + 3 (block overhead) + 0 ("ok" is 2 chars → 0 at /4) = 7
 	// 20 * 7 = 140
 	if got != 140 {

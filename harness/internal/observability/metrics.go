@@ -334,7 +334,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 
 	m.ProviderRetryOutcomes, err = meter.Int64Counter("stirrup.harness.provider_retry_outcomes",
 		metric.WithUnit("{outcome}"),
-		metric.WithDescription("Outcome of each DoWithRetry invocation"),
+		metric.WithDescription("Outcome of each pre-stream DoWithRetry invocation (scope=request) and each model turn that hit a retryable failure (scope=turn)"),
 	)
 	if err != nil {
 		return nil, err

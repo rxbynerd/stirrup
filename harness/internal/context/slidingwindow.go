@@ -106,13 +106,14 @@ func estimateTokens(msg types.Message) int {
 }
 
 // estimateBlockTokens returns the estimated tokens of one content block,
-// including its structured envelope, which is sent alongside a tool
-// result's text. A thinking block's signature is not counted.
+// including the wire view of its structured envelope, which is sent
+// alongside a tool result's text. A thinking block's signature is not
+// counted.
 func estimateBlockTokens(block types.ContentBlock) int {
 	total := blockOverheadTokens
 	for _, field := range []int{
 		len(block.Text), len(block.Content), len(block.Input), len(block.ID),
-		len(block.Name), len(block.ToolUseID), len(block.Structured),
+		len(block.Name), len(block.ToolUseID), len(types.ToolResultWireEnvelope(block)),
 	} {
 		total += field / charsPerToken
 	}

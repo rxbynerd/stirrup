@@ -193,16 +193,17 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "*",
-			Description:  "Anthropic: native tool_choice (auto/any/tool); no native none",
+			Description:  "Anthropic: native tool_choice (auto/any/tool); no native none; a trailing assistant message is a prefill (documented 400 on Sonnet 4.6+, Opus 4.6+)",
 			LastVerified: Date("2026-05-24"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ToolChoice = ToolChoiceCapability{
-					Supported: true,
-					Auto:      true,
-					Required:  true,
-					None:      false,
-					NamedTool: true,
+					Supported:                true,
+					Auto:                     true,
+					Required:                 true,
+					None:                     false,
+					NamedTool:                true,
+					RejectsTrailingAssistant: true,
 				}
 			},
 		},

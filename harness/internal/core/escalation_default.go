@@ -86,11 +86,15 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 
 	// The turn is a likely missed-tool failure. Choose native required
 	// tool choice when the provider supports it, else the prompt fallback.
-	if p.supportsNativeRequired(in.Provider, in.Model) {
-		return EscalationDecision{
+	if tc := p.toolChoice(in.Provider, in.Model); tc.Supported && tc.Required {
+		decision := EscalationDecision{
 			Kind:   EscalationNative,
 			Reason: fmt.Sprintf("mode %q expects a tool call before answering and none was made; retrying with provider-native required tool choice", in.Mode),
 		}
+		if tc.RejectsTrailingAssistant {
+			decision.PromptMessage = fmt.Sprintf("Call a tool now: %s.", req.description)
+		}
+		return decision
 	}
 	return EscalationDecision{
 		Kind:          EscalationPrompt,
@@ -99,12 +103,11 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	}
 }
 
-// supportsNativeRequired reports whether the resolved (provider, model)
-// pair can force at least one tool call natively.
-func (p *defaultEscalationPolicy) supportsNativeRequired(providerType, model string) bool {
+// toolChoice resolves the (provider, model) tool-choice capability; an
+// unresolvable pair reports no support.
+func (p *defaultEscalationPolicy) toolChoice(providerType, model string) quirks.ToolChoiceCapability {
 	if p.caps == nil || providerType == "" {
-		return false
+		return quirks.ToolChoiceCapability{}
 	}
-	tc := p.caps.Resolve(providerType, model).ToolChoice
-	return tc.Supported && tc.Required
+	return p.caps.Resolve(providerType, model).ToolChoice
 }

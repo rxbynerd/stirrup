@@ -215,7 +215,8 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	// DoWithRetry only covers the pre-stream call; a failure after
-	// streaming has begun is never replayed.
+	// streaming has begun is classified for the agentic loop, which
+	// retries the whole turn.
 	resp, err := DoWithRetry(ctx, g.httpClient, req, RetryOptions{
 		Policy:       g.RetryPolicy,
 		Logger:       g.Logger,
@@ -225,7 +226,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	})
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("execute request: %w", err)
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", err))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, g.streamIdleTimeout)
 
@@ -256,9 +257,9 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 			if geminiContextOverflow(resp.StatusCode, bodyBytes) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, bodyBytes)
 		}
-		return nil, fmt.Errorf("vertex AI returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("vertex AI returned status %d", resp.StatusCode), resp.StatusCode, nil)
 	}
 
 	streamN := g.streamCounter.Add(1)
@@ -397,25 +398,11 @@ func (g *GeminiAdapter) consumeSSE(
 	// double-emit. thoughtSignature is the part-level Gemini 3.x
 	// reasoning blob, propagated so the loop can round-trip it back to
 	// Vertex; empty for 2.x responses.
-	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) bool {
-		var input map[string]any
-		argsBytes := fullArgs
-		if len(argsBytes) == 0 {
-			argsBytes = []byte("{}")
-		}
-		if err := json.Unmarshal(argsBytes, &input); err != nil {
-			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)})
-			return false
-		}
-		emitEvent(types.StreamEvent{
-			Type:             "tool_call",
-			ID:               fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
-			Name:             name,
-			Input:            input,
-			ThoughtSignature: thoughtSignature,
-		})
+	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) {
+		ev := toolCallEvent(fmt.Sprintf("gemini-%d-%d", streamN, idForSeq), name, string(fullArgs))
+		ev.ThoughtSignature = thoughtSignature
+		emitEvent(ev)
 		delete(toolBufs, name)
-		return true
 	}
 
 	for scanner.Scan() {
@@ -555,9 +542,7 @@ func (g *GeminiAdapter) consumeSSE(
 						// defensively in case the flag is re-enabled.
 						if !fc.WillContinue {
 							// Emit, then advance the ID-synthesis counter.
-							if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
-								return
-							}
+							emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature)
 							nextPartIdx++
 						}
 					}
@@ -569,9 +554,7 @@ func (g *GeminiAdapter) consumeSSE(
 				// sets finishReason without closing a willContinue buffer
 				// would otherwise leave the call invisible to the loop.
 				for _, buf := range toolBufs {
-					if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
-						return
-					}
+					emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature)
 					nextPartIdx++
 				}
 
@@ -612,6 +595,6 @@ func (g *GeminiAdapter) consumeSSE(
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 	}
 }

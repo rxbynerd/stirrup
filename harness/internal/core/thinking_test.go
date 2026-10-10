@@ -91,7 +91,7 @@ func TestThinkingBlocksSkippedByTextAndToolCallReaders(t *testing.T) {
 	if got := lastAssistantText(blocks); got != "answer" {
 		t.Errorf("lastAssistantText = %q, want %q", got, "answer")
 	}
-	calls := collectToolCalls(blocks)
+	calls := collectToolCalls(blocks, nil)
 	if len(calls) != 1 || calls[0].ID != "tc_1" {
 		t.Errorf("collectToolCalls = %+v, want only tc_1", calls)
 	}
@@ -111,7 +111,7 @@ func TestEstimateCurrentTokens_CountsThinkingTextNotSignature(t *testing.T) {
 		},
 	}}
 	// 4 (msg) + 3 + 10 (thinking block and its text) + 3 (redacted block)
-	if got := estimateCurrentTokens(thinking); got != 20 {
+	if got := estimateCurrentTokens(thinking, true); got != 20 {
 		t.Errorf("thinking blocks: got %d, want 20", got)
 	}
 
@@ -120,7 +120,7 @@ func TestEstimateCurrentTokens_CountsThinkingTextNotSignature(t *testing.T) {
 		Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40), ThoughtSignature: sig}},
 	}}
 	// 4 (msg) + 3 (block) + 10 (text); the signature is not counted.
-	if got := estimateCurrentTokens(gemini); got != 17 {
+	if got := estimateCurrentTokens(gemini, true); got != 17 {
 		t.Errorf("text block with signature: got %d, want 17", got)
 	}
 }

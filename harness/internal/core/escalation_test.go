@@ -47,12 +47,14 @@ type sequencedProvider struct {
 	scripts     [][]types.StreamEvent
 	call        int
 	toolChoices []types.ToolChoiceMode
+	histories   [][]types.Message
 }
 
 func (p *sequencedProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.toolChoices = append(p.toolChoices, params.ToolChoice)
+	p.histories = append(p.histories, append([]types.Message(nil), params.Messages...))
 	idx := p.call
 	if idx >= len(p.scripts) {
 		idx = len(p.scripts) - 1
@@ -80,6 +82,16 @@ func (p *sequencedProvider) choiceAt(i int) types.ToolChoiceMode {
 		return types.ToolChoiceAuto
 	}
 	return p.toolChoices[i]
+}
+
+// historyAt returns the messages sent on call i.
+func (p *sequencedProvider) historyAt(i int) []types.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if i >= len(p.histories) {
+		return nil
+	}
+	return p.histories[i]
 }
 
 // noToolAnswer is the first-turn missed-tool stream: a final text answer
@@ -563,5 +575,84 @@ func TestEscalation_RecoveryStopsAfterToolCall(t *testing.T) {
 	// final no-tool answer accepted (PriorToolCalls > 0 blocks escalation).
 	if n := countNoToolWhenRequired(t, reader); n != 1 {
 		t.Errorf("no_tool_when_required count = %d, want 1 (recovery stops once a tool is called)", n)
+	}
+}
+
+// TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected
+// pins that the native decision carries a user message only for a
+// provider that rejects a history ending on an assistant message.
+func TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected(t *testing.T) {
+	in := EscalationInput{
+		Mode:           "execution",
+		Provider:       "anthropic",
+		Model:          "claude-sonnet-4-6",
+		StopReason:     "end_turn",
+		ToolsAvailable: true,
+	}
+	rejecting := fakeCapabilityResolver{cap: quirks.ToolChoiceCapability{Supported: true, Required: true, RejectsTrailingAssistant: true}}
+	got := newDefaultEscalationPolicy(1, rejecting).Decide(in)
+	if got.Kind != EscalationNative {
+		t.Fatalf("Decide kind = %v, want native", got.Kind)
+	}
+	if got.PromptMessage == "" {
+		t.Error("native escalation for a provider rejecting a trailing assistant message must carry a PromptMessage")
+	}
+	if got := newDefaultEscalationPolicy(1, nativeCaps).Decide(in); got.PromptMessage != "" {
+		t.Errorf("native escalation PromptMessage = %q, want empty for a provider accepting a trailing assistant message", got.PromptMessage)
+	}
+}
+
+// TestEscalation_RetryHistoryShapeByProvider drives the loop with the
+// built-in quirks registry and asserts the history each forced retry
+// sends: Anthropic's native retry ends on a synthetic user message, other
+// native providers end on the no-tool assistant answer, and auto-only
+// Anthropic models keep the single prompt-strategy message.
+func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
+	cases := []struct {
+		name         string
+		provider     string
+		model        string
+		wantChoice   types.ToolChoiceMode
+		wantLastRole string
+	}{
+		{"anthropic native ends on a user turn", "anthropic", "claude-sonnet-4-6", types.ToolChoiceRequired, "user"},
+		{"anthropic native keeps the user turn where a prefill is accepted", "anthropic", "claude-haiku-4-5", types.ToolChoiceRequired, "user"},
+		{"openai-compatible native unchanged", "openai-compatible", "gpt-4o", types.ToolChoiceRequired, "assistant"},
+		{"gemini native unchanged", "gemini", "gemini-2.5-pro", types.ToolChoiceRequired, "assistant"},
+		{"anthropic auto-only takes the prompt strategy", "anthropic", "claude-sonnet-5-5", types.ToolChoiceAuto, "user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &sequencedProvider{scripts: [][]types.StreamEvent{
+				noToolAnswer(),
+				toolCallTurn(),
+				{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
+			}}
+			loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, quirks.DefaultRegistry()))
+			loop.Router = router.NewStaticRouter(tc.provider, tc.model)
+
+			if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := prov.choiceAt(1); got != tc.wantChoice {
+				t.Errorf("retry call ToolChoice = %v, want %v", got, tc.wantChoice)
+			}
+			history := prov.historyAt(1)
+			if len(history) < 2 {
+				t.Fatalf("retry history has %d messages, want at least the prompt and the no-tool answer", len(history))
+			}
+			last := history[len(history)-1]
+			if last.Role != tc.wantLastRole {
+				t.Fatalf("retry history ends on %q, want %q", last.Role, tc.wantLastRole)
+			}
+			if last.Role == "user" {
+				if !last.Synthetic {
+					t.Error("trailing user message is not marked synthetic")
+				}
+				if prev := history[len(history)-2]; prev.Role != "assistant" {
+					t.Errorf("message before the synthetic user turn has role %q, want the assistant's no-tool answer", prev.Role)
+				}
+			}
+		})
 	}
 }

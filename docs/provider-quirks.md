@@ -1062,3 +1062,65 @@ concerns are tracked separately:
     as unsupported until the rule is updated, which fails closed with
     a message naming the model and the accepted set. The 180-day
     staleness window flags both rules for re-verification.
+
+11. **Native tool-choice escalation and a history that ends on an
+    assistant message.** When the escalation policy picks the native
+    strategy, the loop appends the model's no-tool reply and retries
+    with required tool choice (`core/loop.go::applyEscalation`). With
+    nothing after that reply, the next request ends on an assistant
+    turn, which Anthropic treats as a prefill. The native strategy is
+    chosen for every Anthropic model whose `ToolChoice` capability
+    advertises `Required`, which is every model except Sonnet 5.5,
+    Opus 5.5, Fable 5.1 and Mythos 5.1
+    (`applyAnthropicAutoToolChoiceOnly` routes those to the prompt
+    strategy). The base Anthropic rule therefore sets
+    `ToolChoice.RejectsTrailingAssistant`, and for a provider with
+    that flag the policy adds a short synthetic user message on the
+    native path, so the retry ends on a user turn. The Anthropic
+    adapter sends no `thinking` parameter, so a thinking-enabled
+    variant is not reachable from a stirrup request; the only
+    reachable controls are `tool_choice` and `output_config.effort`.
+
+    Probed 2026-10-10 against the Messages API
+    (`anthropic-version: 2023-06-01`, non-streaming, `max_tokens`
+    128, one `read_file` tool, no `thinking` parameter). The
+    trailing-assistant history is `user`, `assistant` (plain text, no
+    tool use). The fixed history appends the synthetic user message
+    the quirk adds.
+
+    | Provider | Model | `tool_choice` | History | Status | Result |
+    |---|---|---|---|---|---|
+    | `anthropic` | `claude-haiku-4-5` | `any` | user only (control) | probed | 200, `tool_use` |
+    | `anthropic` | `claude-haiku-4-5` | `any` | trailing assistant | probed | 200, `tool_use`: the prefill is accepted |
+    | `anthropic` | `claude-haiku-4-5` | `any` | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | `claude-haiku-4-5` | `tool` (named) | trailing assistant | probed | 200, `tool_use` |
+    | `anthropic` | `claude-haiku-4-5` | `tool` (named) | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | `claude-sonnet-4-6` | `any` | user only (control) | probed | 200, `tool_use` |
+    | `anthropic` | `claude-sonnet-4-6` | `any` | trailing assistant | probed | 400 `invalid_request_error`: "This model does not support assistant message prefill. The conversation must end with a user message." |
+    | `anthropic` | `claude-sonnet-4-6` | `any` | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | trailing assistant | probed | 400 `invalid_request_error`, same message |
+    | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | Opus 4.6 / 4.7 / 4.8, Sonnet 5, Opus 5 | any | trailing assistant | documentation only | Anthropic's API documentation states that a trailing assistant message returns 400 on these models; Sonnet 4.6, probed above, matches the documentation |
+    | `anthropic` | `claude-haiku-4-5`, `claude-sonnet-4-6` | thinking on / adaptive thinking | any | unprobed | not reachable from a stirrup request |
+    | `openai-compatible`, `openai-responses` | default model | any | any | unprobed | `OPENAI_API_KEY` was not present in the session; neither a rejection nor an acceptance has been established |
+    | `gemini` | any | any | any | unprobed | not attempted |
+
+    A trailing assistant message is rejected on Sonnet 4.6 for both
+    `any` and a named `tool` choice, and accepted on Haiku 4.5, so
+    the rejection is a per-model property rather than an effect of
+    the tool choice. The flag stays on the base Anthropic rule: the
+    synthetic user turn is accepted on both probed models, so it is
+    harmless where a prefill would be allowed, and the Opus and
+    Sonnet 5 rows rest on documentation that the Sonnet 4.6 result
+    corroborates. Narrowing the flag to named models would trade that
+    margin for one fewer short message on Haiku-class models.
+    `openai-compatible` and `gemini` do not set the flag and still
+    retry with a history that ends on the assistant answer.
+    `openai-responses` resolves no native tool-choice capability, so
+    it takes the prompt strategy and cannot reach this path. Probe
+    procedure for the remaining rows: send a Messages-style request
+    with one tool, a history of `user`, `assistant` (plain text, no
+    tool use), a required tool choice, and a small output cap; record
+    the HTTP status and the error body (never the request headers).
+    If an OpenAI-compatible or Gemini row returns 400, set the flag on
+    that provider's base tool-choice rule.

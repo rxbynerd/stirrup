@@ -875,3 +875,16 @@ func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
 	emitter, _ := newTestOTelEmitter()
 	emitter.RecordPromptResolution("claude-fable-5", "frontier")
 }
+
+func TestOTelTraceEmitter_TurnRetriesAttribute(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-retries-1", &types.RunConfig{RunID: "run-retries-1", Provider: types.ProviderConfig{Type: "anthropic"}})
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "tool_use"})
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", Retries: 2})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	spans := exporter.GetSpans()
+	assertAttributesAbsent(t, findSpanByName(t, spans, "turn[0]"), "turn.retries")
+	assertIntAttribute(t, findSpanByName(t, spans, "turn[1]"), "turn.retries", 2)
+}

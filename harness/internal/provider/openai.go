@@ -1104,7 +1104,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		// DoWithRetry surfaces the raw transport *url.Error, whose embedded
 		// URL (o.baseURL + o.queryParams) may carry a gateway credential Go
 		// does not query-redact; unwrap before wrapping (CWE-532).
-		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", security.UnwrapURLError(err)))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
@@ -1124,15 +1124,16 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		o.recordLatency(ctx, start, metricAttrs)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var errResp openaiErrorResponse
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
 			err := fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
 			if openAIContextOverflow(resp.StatusCode, string(errResp.Error.Code), errResp.Error.Message) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, body)
 		}
-		return nil, fmt.Errorf("openai API returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("openai API returned status %d", resp.StatusCode), resp.StatusCode, body)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
@@ -1366,7 +1367,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 		return
 	}
 	// Stream ended without a [DONE] terminator (some servers just close
@@ -1440,20 +1441,7 @@ func (o *OpenAICompatibleAdapter) flushToolCallsVia(toolCalls map[int]*openaiToo
 		if !ok {
 			continue
 		}
-		var input map[string]any
-		raw := state.argsBuf.String()
-		if raw != "" {
-			if err := json.Unmarshal([]byte(raw), &input); err != nil {
-				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)})
-				return
-			}
-		}
-		emit(types.StreamEvent{
-			Type:  "tool_call",
-			ID:    state.id,
-			Name:  state.name,
-			Input: input,
-		})
+		emit(toolCallEvent(state.id, state.name, state.argsBuf.String()))
 	}
 
 	for k := range toolCalls {

@@ -331,6 +331,11 @@ type TurnTrace struct {
 	// StopDetails is the provider-reported detail qualifying StopReason;
 	// nil when the provider reported none.
 	StopDetails *StopDetails `json:"stopDetails,omitempty"`
+	// Retries counts the attempts at this turn that failed with a
+	// retryable provider error and were discarded before the attempt
+	// this record describes. Tokens includes any usage the provider
+	// reported for those attempts.
+	Retries int `json:"retries,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.

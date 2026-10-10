@@ -689,6 +689,17 @@ func responsesErrorText(message string, code responsesErrorCode) string {
 	}
 }
 
+// responsesStreamError builds the error for a mid-stream failure event.
+// server_error is a server-side fault, so it is marked retryable for the
+// loop's turn retry; every other code (policy stops, quota, invalid
+// prompts) is terminal.
+func responsesStreamError(msg string, code responsesErrorCode) error {
+	if code == "server_error" {
+		return types.MarkRetryable(errors.New(msg))
+	}
+	return errors.New(msg)
+}
+
 // responsesCallState tracks an in-flight function call assembled across
 // multiple SSE events. function_call_arguments.delta carries text fragments
 // keyed by item_id (or output_index when item_id is absent on partner
@@ -1370,10 +1381,9 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
 
 	// DoWithRetry retries only this pre-stream call (connection errors, or a
-	// 429/5xx on the initial response). It is never invoked again once the
-	// channel below is returned, so a failure after streaming has begun is
-	// never replayed — the same boundary the openai-compatible adapter
-	// relies on.
+	// 429/5xx on the initial response). A failure after streaming has begun
+	// is never replayed here; it is classified for the agentic loop, which
+	// retries the whole turn.
 	resp, err := DoWithRetry(ctx, o.httpClient, req, RetryOptions{
 		Policy:       o.RetryPolicy,
 		Logger:       o.Logger,
@@ -1386,7 +1396,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		// The composed URL carries o.baseURL and o.queryParams, either of
 		// which may hold a credential (e.g. a gateway api_key query param);
 		// unwrap the *url.Error so its embedded URL never leaks (CWE-532).
-		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", security.UnwrapURLError(err)))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, o.streamIdleTimeout)
 
@@ -1404,15 +1414,16 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		o.recordLatency(ctx, start, metricAttrs)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var errResp responsesErrorResponse
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && (errResp.Error.Message != "" || errResp.Error.Code != "") {
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&errResp); err == nil && (errResp.Error.Message != "" || errResp.Error.Code != "") {
 			err := fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, responsesErrorText(errResp.Error.Message, errResp.Error.Code))
 			if resp.StatusCode == http.StatusBadRequest && responsesContextOverflow(errResp.Error.Code, errResp.Error.Message) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, body)
 		}
-		return nil, fmt.Errorf("openai responses API returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("openai responses API returned status %d", resp.StatusCode), resp.StatusCode, body)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
@@ -1562,7 +1573,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 		return
 	}
 
@@ -1819,6 +1830,7 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API: response failed"
 		overflow := false
+		var code responsesErrorCode
 		if e := payload.Response.Error; e != nil && (e.Message != "" || e.Code != "") {
 			message := e.Message
 			if message == "" {
@@ -1826,8 +1838,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			}
 			msg = "openai responses API: " + responsesErrorText(message, e.Code)
 			overflow = responsesContextOverflow(e.Code, e.Message)
+			code = e.Code
 		}
-		err := errors.New(msg)
+		err := responsesStreamError(msg, code)
 		if overflow {
 			err = types.MarkContextOverflow(err)
 		}
@@ -1845,7 +1858,7 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		if payload.Message != "" || payload.Code != "" {
 			msg += ": " + responsesErrorText(payload.Message, payload.Code)
 		}
-		err := errors.New(msg)
+		err := responsesStreamError(msg, payload.Code)
 		if responsesContextOverflow(payload.Code, payload.Message) {
 			err = types.MarkContextOverflow(err)
 		}
@@ -1878,29 +1891,15 @@ func callKey(itemID string, outputIndex int) string {
 }
 
 // flushOneCall emits a tool_call event for the supplied call state, parsing
-// its accumulated arguments JSON. Returns false on a fatal parse error or
-// when the consumer has gone away (caller should stop reading the stream).
-// Marks the call as emitted so a duplicate .done event does not fire it
-// twice.
+// its accumulated arguments JSON. Returns false when the consumer has gone
+// away (caller should stop reading the stream). Marks the call as emitted
+// so a duplicate .done event does not fire it twice.
 func flushOneCall(st *responsesCallState, emit func(types.StreamEvent) bool) bool {
 	if st.emitted {
 		return true
 	}
 	st.emitted = true
-	var input map[string]any
-	raw := st.argsBuf.String()
-	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &input); err != nil {
-			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)})
-			return false
-		}
-	}
-	return emit(types.StreamEvent{
-		Type:  "tool_call",
-		ID:    st.callID,
-		Name:  st.name,
-		Input: input,
-	})
+	return emit(toolCallEvent(st.callID, st.name, st.argsBuf.String()))
 }
 
 // flushPendingCalls emits any tool calls that were left in flight when the

@@ -455,7 +455,7 @@ func TestOpenAIResponsesAdapter_ErrorEvent(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponsesAdapter_MalformedToolArguments(t *testing.T) {
+func TestOpenAIResponsesAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_bad","name":"read_file"}}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_1","output_index":0,"delta":"{NOT VALID"}`),
@@ -477,21 +477,7 @@ func TestOpenAIResponsesAdapter_MalformedToolArguments(t *testing.T) {
 		t.Fatalf("Stream() error: %v", err)
 	}
 	events := collectEvents(t, ch)
-
-	foundError := false
-	for _, ev := range events {
-		if ev.Type == "error" {
-			foundError = true
-			if ev.Error == nil {
-				t.Error("error event has nil Error field")
-			} else if !strings.Contains(ev.Error.Error(), "tool arguments JSON") {
-				t.Errorf("expected tool arguments JSON error, got: %v", ev.Error)
-			}
-		}
-	}
-	if !foundError {
-		t.Error("expected an error event for malformed tool arguments JSON")
-	}
+	requireMarkedToolCall(t, events, "call_bad", "read_file", `{NOT VALID`)
 }
 
 func TestOpenAIResponsesAdapter_ToolArgumentsExceedSizeLimit(t *testing.T) {

@@ -734,7 +734,8 @@ func (l *AgenticLoop) runInnerLoop(
 		// Token estimate includes system prompt and tool definitions —
 		// these consume context but aren't in the message history.
 		toolDefs := l.Tools.List()
-		currentTokens := estimateCurrentTokens(messages) +
+		structuredResults := l.sendsStructuredResults(selection.Provider, selection.Model)
+		currentTokens := estimateCurrentTokens(messages, structuredResults) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
 		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
@@ -768,6 +769,7 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 		}
 		budget := newTurnBudget(window, responseReserve, calibration, currentTokens)
+		budget.structuredResults = structuredResults
 		preparedMessages, requestTokens, prepOutcome := l.prepareRequest(ctx, messages, systemPrompt, toolDefs, budget, 0)
 		if prepOutcome != "" {
 			return messages, prepOutcome, finalAssistantText, nil
@@ -839,7 +841,7 @@ func (l *AgenticLoop) runInnerLoop(
 		var attempt providerAttempt
 		rejected := 0
 		for {
-			attempt = l.requestProvider(ctx, config, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
+			attempt = l.requestProvider(ctx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
@@ -906,7 +908,7 @@ func (l *AgenticLoop) runInnerLoop(
 			finalAssistantText = finalText
 		}
 
-		toolCalls := collectToolCalls(sr.Blocks)
+		toolCalls := collectToolCalls(sr.Blocks, sr.InvalidToolInputs)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on
@@ -1047,10 +1049,10 @@ func (l *AgenticLoop) runInnerLoop(
 // applyEscalation performs the recovery EscalationPolicy chose for a
 // suspected missed-tool turn, returning the (possibly extended)
 // message history. EscalationNative forces ToolChoiceRequired on the
-// next turn (only honoured if the provider supports it); EscalationPrompt
-// appends a user message nudging the model. Both emit a
-// stirrup.harness.tool_failures observation and an escalation span for
-// operator auditing.
+// next turn (only honoured if the provider supports it). A non-empty
+// PromptMessage is appended as a synthetic user message for either
+// kind. Both emit a stirrup.harness.tool_failures observation and an
+// escalation span for operator auditing.
 func (l *AgenticLoop) applyEscalation(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -1059,19 +1061,17 @@ func (l *AgenticLoop) applyEscalation(
 	messages []types.Message,
 	pendingToolChoice *types.ToolChoiceMode,
 ) []types.Message {
-	switch decision.Kind {
-	case EscalationNative:
+	if decision.Kind == EscalationNative {
 		*pendingToolChoice = types.ToolChoiceRequired
-	case EscalationPrompt:
-		if decision.PromptMessage != "" {
-			messages = append(messages, types.Message{
-				Role:      "user",
-				Synthetic: true,
-				Content: []types.ContentBlock{
-					{Type: "text", Text: decision.PromptMessage},
-				},
-			})
-		}
+	}
+	if decision.PromptMessage != "" {
+		messages = append(messages, types.Message{
+			Role:      "user",
+			Synthetic: true,
+			Content: []types.ContentBlock{
+				{Type: "text", Text: decision.PromptMessage},
+			},
+		})
 	}
 
 	// tool.name is the bounded empty-sentinel — no tool was involved,

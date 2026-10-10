@@ -154,12 +154,16 @@ func overflowExhaustedError(rejected, retried int) error {
 type providerAttempt struct {
 	// result is nil when err is set.
 	result *streamResult
-	// tokens is the turn's usage; Input falls back to the request
-	// estimate when the provider reported none.
+	// tokens is the turn's usage, including usage discarded by retried
+	// attempts; Input falls back to the request estimate when the
+	// provider reported none.
 	tokens        types.TokenUsage
 	inputReported bool
 	duration      time.Duration
-	err           error
+	// retries is the number of times the turn was re-issued after a
+	// retryable provider failure.
+	retries int
+	err     error
 	// errText is err scrubbed of secrets, safe for the run's failure text.
 	errText string
 }
@@ -174,14 +178,19 @@ func (a providerAttempt) overflowed() bool {
 	return a.result.StopReason == types.StopReasonContextWindowExceeded
 }
 
-// requestProvider sends one request and consumes its stream. A failed
-// request is logged, emitted, counted and recorded as an "error" turn
-// before it returns, unless it is a context overflow and retryOverflow
-// says the caller retries it; a successful one is returned for the caller
-// to record. requestTokens is the request's estimate.
+// requestProvider sends one request and consumes its stream, re-issuing
+// it after a retryable provider failure within the turn retry policy.
+// Tools run only after a stream completes and a failed attempt appends
+// nothing to history, so a re-issued request cannot repeat a workspace
+// side effect. A failed request is logged, emitted, counted and recorded
+// as an "error" turn before it returns, unless it is a context overflow
+// and retryOverflow says the caller retries it; a successful one is
+// returned for the caller to record. requestTokens is the request's
+// estimate. Usage reported by failed attempts is charged to tokenTracker.
 func (l *AgenticLoop) requestProvider(
 	ctx context.Context,
 	config *types.RunConfig,
+	tokenTracker *TokenTracker,
 	turn int,
 	selection router.ModelSelection,
 	selectedProvider provider.ProviderAdapter,
@@ -191,35 +200,47 @@ func (l *AgenticLoop) requestProvider(
 	retryOverflow bool,
 ) providerAttempt {
 	start := time.Now()
-	l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
-	spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
-		oteltrace.WithAttributes(
-			attribute.String("provider.type", selection.Provider),
-			attribute.String("provider.model", selection.Model),
-			attribute.Int("turn.number", turn),
-		),
-	)
+	// A batch turn is not retried: a retry would submit and wait out a
+	// fresh batch.
+	retrier := &turnRetrier{}
+	if _, isBatch := selectedProvider.(batchModeAdapter); !isBatch {
+		retrier.policy = turnRetryPolicyFor(config, selection.Provider)
+	}
+	var discarded types.TokenUsage
 
-	// category distinguishes a rejected request from a fault after the
-	// stream opened.
-	fail := func(err error, category observability.ToolFailureCategory) providerAttempt {
+	for attemptNo := 1; ; attemptNo++ {
+		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
+		spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
+			oteltrace.WithAttributes(
+				attribute.String("provider.type", selection.Provider),
+				attribute.String("provider.model", selection.Model),
+				attribute.Int("turn.number", turn),
+				attribute.Int("turn.attempt", attemptNo),
+			),
+		)
+
+		// category distinguishes a rejected request from a fault after
+		// the stream opened.
+		category := observability.ToolFailureProviderRequest
+		var sr *streamResult
+		ch, err := selectedProvider.Stream(spanCtx, params)
+		if err == nil {
+			category = observability.ToolFailureProviderStream
+			sr, err = streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
+		}
+		if err == nil {
+			return l.completeAttempt(ctx, providerSpan, sr, discarded, retrier, selection, requestTokens, start)
+		}
+
+		// A failed stream's result is partial; only its usage is kept.
+		if sr != nil {
+			discarded.Add(sr.Usage)
+		}
 		scrubbedErr := recordSpanError(providerSpan, err)
 		providerSpan.End()
 		if retryOverflow && ctx.Err() == nil && types.IsContextOverflow(err) {
-			return providerAttempt{duration: time.Since(start), err: err}
-		}
-		// Skipped when ctx is already cancelled: the cancel/timeout
-		// path reports instead.
-		if ctx.Err() == nil {
-			l.Logger.Error("provider stream failed",
-				"provider", selection.Provider,
-				"model", selection.Model,
-				"error", scrubbedErr,
-			)
-			_ = l.Transport.Emit(types.HarnessEvent{
-				Type:    "warning",
-				Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
-			})
+			tokenTracker.RecordTurn(discarded)
+			return providerAttempt{tokens: discarded, duration: time.Since(start), retries: retrier.retries, err: err}
 		}
 		l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 		// Co-emit into tool-failure metrics only when tools were
@@ -234,26 +255,91 @@ func (l *AgenticLoop) requestProvider(
 				attribute.String("run.mode", config.Mode),
 			))
 		}
+
+		var retryOutcome string
+		switch {
+		case ctx.Err() != nil:
+			if retrier.engaged {
+				retryOutcome = turnRetryOutcomeContextDone
+			}
+		case types.IsRetryable(err):
+			delay, outcome, retry := retrier.next(time.Now())
+			retryOutcome = outcome
+			if retry {
+				l.Logger.Warn("provider turn retry",
+					"provider", selection.Provider,
+					"model", selection.Model,
+					"turn", turn,
+					"attempt", attemptNo,
+					"delay_ms", delay.Milliseconds(),
+					"error", scrubbedErr,
+				)
+				_ = l.Transport.Emit(types.HarnessEvent{
+					Type: "warning",
+					Message: fmt.Sprintf(
+						"provider %s (%s): turn %d attempt %d failed with a retryable error; its streamed output is discarded and the turn is retried in %s (attempt %d of %d): %s",
+						selection.Provider, selection.Model, turn, attemptNo, delay.Round(time.Millisecond), attemptNo+1, retrier.maxAttempts(), scrubbedErr,
+					),
+				})
+				if sleepCtx(ctx, delay) {
+					continue
+				}
+				retryOutcome = turnRetryOutcomeContextDone
+			}
+		default:
+			if retrier.engaged {
+				retryOutcome = turnRetryOutcomeNonRetryable
+			}
+		}
+		if retryOutcome != "" {
+			l.recordTurnRetryOutcome(ctx, selection.Provider, selection.Model, retryOutcome)
+		}
+
+		// Skipped when ctx is already cancelled: the cancel/timeout
+		// path reports instead.
+		if ctx.Err() == nil {
+			l.Logger.Error("provider stream failed",
+				"provider", selection.Provider,
+				"model", selection.Model,
+				"error", scrubbedErr,
+			)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type:    "warning",
+				Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
+			})
+		}
+		tokenTracker.RecordTurn(discarded)
 		duration := time.Since(start)
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		l.Trace.RecordTurn(types.TurnTrace{
 			Turn:       turn,
+			Tokens:     discarded,
 			StopReason: "error",
 			DurationMs: duration.Milliseconds(),
 			Mode:       turnMode,
 			BatchID:    turnBatchID,
 			Model:      selection.Model,
+			Retries:    retrier.retries,
 		})
-		return providerAttempt{duration: duration, err: err, errText: scrubbedErr}
+		return providerAttempt{tokens: discarded, duration: duration, retries: retrier.retries, err: err, errText: scrubbedErr}
 	}
+}
 
-	ch, err := selectedProvider.Stream(spanCtx, params)
-	if err != nil {
-		return fail(err, observability.ToolFailureProviderRequest)
-	}
-	sr, err := streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
-	if err != nil {
-		return fail(err, observability.ToolFailureProviderStream)
+// completeAttempt ends a successful attempt's span and builds its
+// outcome. discarded is the usage of the turn's failed attempts, charged
+// with the successful one.
+func (l *AgenticLoop) completeAttempt(
+	ctx context.Context,
+	providerSpan oteltrace.Span,
+	sr *streamResult,
+	discarded types.TokenUsage,
+	retrier *turnRetrier,
+	selection router.ModelSelection,
+	requestTokens int,
+	start time.Time,
+) providerAttempt {
+	if retrier.engaged {
+		l.recordTurnRetryOutcome(ctx, selection.Provider, selection.Model, turnRetryOutcomeSucceeded)
 	}
 
 	// Input is the provider's figure when it reports one; otherwise it
@@ -282,11 +368,13 @@ func (l *AgenticLoop) requestProvider(
 		}
 	}
 	providerSpan.End()
+	tokens.Add(discarded)
 	return providerAttempt{
 		result:        sr,
 		tokens:        tokens,
 		inputReported: inputReported,
 		duration:      time.Since(start),
+		retries:       retrier.retries,
 	}
 }
 
@@ -315,6 +403,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 		Mode:          turnMode,
 		BatchID:       turnBatchID,
 		Model:         model,
+		Retries:       attempt.retries,
 	})
 
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))

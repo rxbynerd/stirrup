@@ -14,6 +14,7 @@ import "testing"
 func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 	known := []ToolFailureCategory{
 		ToolFailureUnknownTool,
+		ToolFailureInvalidArguments,
 		ToolFailureSchemaValidation,
 		ToolFailureSecurityGuard,
 		ToolFailurePermissionDenied,

@@ -126,6 +126,10 @@ type turnBudget struct {
 	// check. Its room after the response reserve is in estimated tokens:
 	// the window's room divided by ratio.
 	prepare contextpkg.TokenBudget
+	// structuredResults reports whether the provider the request is
+	// routed to sends tool results' structured envelope, which the
+	// request's estimate counts.
+	structuredResults bool
 }
 
 // newTurnBudget builds the budget for a request whose full history,
