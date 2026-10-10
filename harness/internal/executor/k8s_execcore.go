@@ -408,11 +408,15 @@ func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io
 	})
 }
 
-// newRemoteExecutor builds a remotecommand.Executor that negotiates
+// newRemoteExecutor builds the pods/exec streamer; tests replace it to run
+// podExecCore without an API server.
+var newRemoteExecutor = newFallbackRemoteExecutor
+
+// newFallbackRemoteExecutor builds a remotecommand.Executor that negotiates
 // WebSocket first, falling back to SPDY only on a genuine upgrade/proxy
 // failure. See docs/executors/k8s.md. The WebSocket executor issues an
 // HTTP GET upgrade; the SPDY executor uses POST.
-func newRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
+func newFallbackRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
 	spdyExec, err := remotecommand.NewSPDYExecutor(config, "POST", u)
 	if err != nil {
 		return nil, err
