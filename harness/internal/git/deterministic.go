@@ -12,8 +12,9 @@ import (
 
 // DeterministicGitStrategy is a GitStrategy that creates a branch per task,
 // stages and commits all changes on checkpoint and again on finalise, and
-// reports the final branch, SHA and base SHA. All git commands run against
-// the configured workspace with the harness identity.
+// reports the final branch, SHA and base SHA. All git commands run on the
+// host against the configured workspace with HardeningFlags and the harness
+// identity.
 type DeterministicGitStrategy struct {
 	workspace string
 	branch    string
@@ -58,7 +59,7 @@ func (d *DeterministicGitStrategy) Checkpoint(ctx context.Context, message strin
 		return nil
 	}
 
-	if err := d.git(ctx, "commit", "-m", message); err != nil {
+	if err := d.git(ctx, "commit", "--no-verify", "-m", message); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
@@ -101,7 +102,7 @@ func (d *DeterministicGitStrategy) Finalise(ctx context.Context, outcome string)
 }
 
 func (d *DeterministicGitStrategy) git(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", withIdentity(args)...)
+	cmd := exec.CommandContext(ctx, "git", harnessArgs(args)...)
 	cmd.Dir = d.workspace
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -112,7 +113,7 @@ func (d *DeterministicGitStrategy) git(ctx context.Context, args ...string) erro
 
 // gitOutput runs a git command and returns its trimmed stdout.
 func (d *DeterministicGitStrategy) gitOutput(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", withIdentity(args)...)
+	cmd := exec.CommandContext(ctx, "git", harnessArgs(args)...)
 	cmd.Dir = d.workspace
 	output, err := cmd.Output()
 	if err != nil {
@@ -124,6 +125,8 @@ func (d *DeterministicGitStrategy) gitOutput(ctx context.Context, args ...string
 	return strings.TrimSpace(string(output)), nil
 }
 
-func withIdentity(args []string) []string {
-	return append(IdentityFlags(), args...)
+func harnessArgs(args []string) []string {
+	out := append([]string{}, HardeningFlags...)
+	out = append(out, IdentityFlags()...)
+	return append(out, args...)
 }

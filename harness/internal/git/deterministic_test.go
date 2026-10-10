@@ -385,6 +385,45 @@ func TestFinalise_AfterFailedSetup_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestFinalise_DoesNotRunPlantedHooksOrFsmonitor(t *testing.T) {
+	repo := initTestRepo(t)
+	ctx := context.Background()
+	gs := NewDeterministicGitStrategy()
+	if err := gs.Setup(ctx, repo, "task-hardened"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	markers := t.TempDir()
+	hookMarker := filepath.Join(markers, "pre-commit-ran")
+	fsmonitorMarker := filepath.Join(markers, "fsmonitor-ran")
+	writeScript := func(path, marker string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0o755); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	writeScript(filepath.Join(repo, ".git", "hooks", "pre-commit"), hookMarker)
+	fsmonitor := filepath.Join(repo, ".git", "fsmonitor-hook")
+	writeScript(fsmonitor, fsmonitorMarker)
+	runGit(t, repo, "config", "core.fsmonitor", fsmonitor)
+
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	handoff, err := gs.Finalise(ctx, "rule_of_two_violation")
+	if err != nil {
+		t.Fatalf("Finalise: %v", err)
+	}
+	if handoff.Dirty {
+		t.Error("Dirty = true, want the final checkpoint committed")
+	}
+	for _, marker := range []string{hookMarker, fsmonitorMarker} {
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("%s exists: a repository-planted program ran during Finalise", filepath.Base(marker))
+		}
+	}
+}
+
 // isolateGitConfig hides the user's and the system's git configuration, and
 // any identity in the environment, from git commands the test runs.
 func isolateGitConfig(t *testing.T) {
