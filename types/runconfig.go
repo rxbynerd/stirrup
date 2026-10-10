@@ -5669,14 +5669,15 @@ func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 }
 
 // validateGitStrategyExecutorCompat rejects gitStrategy.type="deterministic"
-// paired with executor.type="none". Deterministic git strategy commits into
-// the executor's workspace to produce stable, reproducible diffs; the none
-// executor provides no workspace at all (see validateNoneExecutor), so the
-// combination can never do anything useful and is rejected at config-load
-// time rather than failing confusingly mid-run.
+// paired with an executor that cannot run commands (api, none). The
+// deterministic strategy runs every git command inside the executor's
+// sandbox through its exec capability, so without it the strategy can never
+// do anything useful and is rejected at config-load time rather than failing
+// confusingly mid-run. ExecutorCanExec is the same discriminator the
+// lifecycle-hook check uses.
 func validateGitStrategyExecutorCompat(gitStrategyType, executorType string, errs *[]string) {
-	if gitStrategyType == "deterministic" && executorType == "none" {
-		*errs = append(*errs, `gitStrategy.type="deterministic" is not valid with executor.type="none" (deterministic git requires a workspace the none executor does not provide)`)
+	if gitStrategyType == "deterministic" && !ExecutorCanExec(executorType) {
+		*errs = append(*errs, fmt.Sprintf(`gitStrategy.type="deterministic" is not valid with executor.type=%q (deterministic git runs inside the executor and requires command execution, which this executor does not provide)`, executorType))
 	}
 }
 

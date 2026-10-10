@@ -8319,6 +8319,43 @@ func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor pins
+// that the deterministic strategy, which runs git inside the executor, is
+// accepted exactly for the executors that can run commands.
+func TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor(t *testing.T) {
+	cases := []struct {
+		name   string
+		exec   ExecutorConfig
+		reject bool
+	}{
+		{"unset", ExecutorConfig{}, false},
+		{"local", ExecutorConfig{Type: "local"}, false},
+		{"container", ExecutorConfig{Type: "container", Image: "img", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"k8s", ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"k8s-sandbox", ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"api", ExecutorConfig{Type: "api"}, true},
+		{"none", ExecutorConfig{Type: "none"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = tc.exec
+			c.GitStrategy = GitStrategyConfig{Type: "deterministic"}
+			err := ValidateRunConfig(c)
+			want := fmt.Sprintf(`gitStrategy.type="deterministic" is not valid with executor.type=%q`, tc.exec.Type)
+			if tc.reject {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %q, got: %v", want, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected deterministic git to validate with executor.type=%q, got: %v", tc.exec.Type, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_NoneExecutorAllowsNoneGitStrategy(t *testing.T) {
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "none"}
