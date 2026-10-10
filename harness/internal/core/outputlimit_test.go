@@ -466,3 +466,23 @@ func TestLoop_OutputLimitRecovery_BoundResetsPerRun(t *testing.T) {
 		}
 	}
 }
+
+func TestLoop_OutputLimitRecovery_VerificationRetriesShareTheBound(t *testing.T) {
+	truncated := []types.StreamEvent{{Type: "text_delta", Text: "Partial"}, stopWith("max_tokens")}
+	h := newOutputLimitHarness(truncated, scriptEndTurn, truncated, truncated)
+	h.loop.Verifier = &scriptedVerifier{passes: []bool{false, true}}
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "max_tokens" {
+		t.Errorf("Outcome = %q, want max_tokens on the second truncation after the verifier feedback", runTrace.Outcome)
+	}
+	if n := len(h.provider.params()); n != 4 {
+		t.Errorf("provider calls = %d, want 4", n)
+	}
+	if n := len(h.warnings()); n != maxOutputLimitRecoveries {
+		t.Errorf("recovery warnings = %d, want %d across the whole run", n, maxOutputLimitRecoveries)
+	}
+}
