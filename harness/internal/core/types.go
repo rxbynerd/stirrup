@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -407,8 +406,7 @@ func (l *AgenticLoop) executeToolCall(ctx context.Context, t *tool.Tool, call ty
 		)
 		result, err := l.Permissions.Check(ctx, t.Definition(), input)
 		if err != nil {
-			permSpan.RecordError(err)
-			permSpan.SetStatus(codes.Error, err.Error())
+			recordSpanError(permSpan, err)
 			permSpan.End()
 			return "Permission check error: " + err.Error(), false, observability.ToolFailurePermissionError, structuredOutput{}
 		}

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -227,8 +226,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		preResults, preErr := l.Hooks.RunPre(runCtx)
 		l.recordHookExecutions(preResults)
 		if preErr != nil {
-			preHookSpan.RecordError(preErr)
-			preHookSpan.SetStatus(codes.Error, preErr.Error())
+			recordSpanError(preHookSpan, preErr)
 		}
 		preHookSpan.End()
 		if preErr != nil {
@@ -269,8 +267,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
-		gitSetupSpan.RecordError(err)
-		gitSetupSpan.SetStatus(codes.Error, err.Error())
+		recordSpanError(gitSetupSpan, err)
 		gitSetupSpan.End()
 		return l.finishWithError(runCtx, fmt.Errorf("git setup: %w", err))
 	}
@@ -360,8 +357,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			Messages: messages,
 		})
 		if verifyErr != nil {
-			verifySpan.RecordError(verifyErr)
-			verifySpan.SetStatus(codes.Error, verifyErr.Error())
+			recordSpanError(verifySpan, verifyErr)
 			verifySpan.End()
 			outcome = "verification_error"
 			break
@@ -413,7 +409,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	finaliseCtx, finaliseCancel := l.detachedContext(ctx, gitFinaliseBudget)
 	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
 	if _, err := l.Git.Finalise(finaliseCtx); err != nil {
-		finaliseSpan.RecordError(err)
+		recordSpanException(finaliseSpan, err)
 		l.Logger.Warn("git finalise failed", "error", err)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
@@ -431,8 +427,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)
 		if postErr != nil {
-			postHookSpan.RecordError(postErr)
-			postHookSpan.SetStatus(codes.Error, postErr.Error())
+			recordSpanError(postHookSpan, postErr)
 		}
 		postHookSpan.End()
 		postCancel()
@@ -739,8 +734,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ReserveForResponse: responseReserve,
 		})
 		if err != nil {
-			contextSpan.RecordError(err)
-			contextSpan.SetStatus(codes.Error, err.Error())
+			recordSpanError(contextSpan, err)
 			contextSpan.End()
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
@@ -850,11 +844,7 @@ func (l *AgenticLoop) runInnerLoop(
 			CacheKey:        cacheKey,
 		})
 		if err != nil {
-			// ScrubHandler doesn't cover OTel spans; scrub explicitly
-			// before it reaches the span event and status. See docs/security.md.
-			scrubbedErr := security.Scrub(err.Error())
-			providerSpan.RecordError(errors.New(scrubbedErr))
-			providerSpan.SetStatus(codes.Error, scrubbedErr)
+			scrubbedErr := recordSpanError(providerSpan, err)
 			providerSpan.End()
 			// Surfaces the failure outside OTel too (log + transport
 			// warning); skipped when ctx is already cancelled — the
@@ -905,10 +895,7 @@ func (l *AgenticLoop) runInnerLoop(
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
-			// Same rationale as the Stream() scrub above; see docs/security.md.
-			scrubbedErr := security.Scrub(streamErr.Error())
-			providerSpan.RecordError(errors.New(scrubbedErr))
-			providerSpan.SetStatus(codes.Error, scrubbedErr)
+			scrubbedErr := recordSpanError(providerSpan, streamErr)
 			providerSpan.End()
 			// Same as the Stream() log+emit above.
 			if ctx.Err() == nil {
@@ -1168,7 +1155,7 @@ func (l *AgenticLoop) runInnerLoop(
 
 		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
-			checkpointSpan.RecordError(err)
+			recordSpanException(checkpointSpan, err)
 			l.Logger.Warn("git checkpoint failed", "error", err)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:    "warning",
@@ -1428,11 +1415,7 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		err = guardContractError(decision)
 	}
 	if err != nil {
-		// Scrub once, reuse for span/log/security-event — see
-		// docs/security.md.
-		scrubbed := security.Scrub(err.Error())
-		span.RecordError(err)
-		span.SetStatus(codes.Error, scrubbed)
+		scrubbed := recordSpanError(span, err)
 		span.End()
 		guardID := guardIDFromDecision(decision)
 		if l.Metrics != nil {
