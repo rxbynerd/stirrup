@@ -23,12 +23,15 @@ const (
 //
 // The key reference is defaulted only when no credential block supplies
 // authentication, and an explicit --api-key-ref (including an empty
-// one) is never replaced. The model is defaulted only for the anthropic
-// provider; every other provider has no safe default, so a static
-// router without a model is an error that names the provider and the
-// flag. Non-static routers carry their own model fields and are left
-// to ValidateRunConfig.
-func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig) error {
+// one) is never replaced. An openai-* provider that a file or stdin
+// document points at a baseUrl is a keyless gateway or local server
+// unless the document names a key, so it gets no default reference.
+//
+// The model is defaulted only for the anthropic provider; every other
+// provider has no safe default, so a static router without a model is
+// an error that names the provider and the flag. Non-static routers
+// carry their own model fields and are left to ValidateRunConfig.
+func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig, fromDocument bool) error {
 	provider := cfg.Provider.Type
 	if provider == "" {
 		provider = "anthropic"
@@ -39,7 +42,9 @@ func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig) error {
 		case "anthropic":
 			cfg.Provider.APIKeyRef = defaultAnthropicKeyRef
 		case "openai-compatible", "openai-responses":
-			cfg.Provider.APIKeyRef = defaultOpenAIKeyRef
+			if !fromDocument || cfg.Provider.BaseURL == "" {
+				cfg.Provider.APIKeyRef = defaultOpenAIKeyRef
+			}
 		}
 	}
 

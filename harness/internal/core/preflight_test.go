@@ -798,3 +798,27 @@ permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fe
 		t.Errorf("permission-policy step detail = %q, want it to mark the finding as a warning", detail)
 	}
 }
+
+func TestCredentialsHint(t *testing.T) {
+	const anthropicRef = "secret://ANTHROPIC_API_KEY"
+	tests := []struct {
+		name         string
+		providerType string
+		apiKeyRef    string
+		wantMismatch bool
+	}{
+		{"anthropic provider with the Anthropic ref", "anthropic", anthropicRef, false},
+		{"empty provider type with the Anthropic ref", "", anthropicRef, false},
+		{"non-anthropic provider with the Anthropic ref", "openai-responses", anthropicRef, true},
+		{"non-anthropic provider with its own ref", "openai-responses", "secret://OPENAI_API_KEY", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &types.RunConfig{Provider: types.ProviderConfig{Type: tc.providerType, APIKeyRef: tc.apiKeyRef}}
+			hint := credentialsHint(cfg)
+			if got := strings.Contains(hint, "--api-key-ref"); got != tc.wantMismatch {
+				t.Errorf("credentialsHint = %q; mentions --api-key-ref = %v, want %v", hint, got, tc.wantMismatch)
+			}
+		})
+	}
+}

@@ -109,13 +109,84 @@ func TestProviderDefaults_FileProviderDrivesDefaults(t *testing.T) {
 }
 
 func TestProviderDefaults_EmptyKeyFlagOptsOutOnFileBase(t *testing.T) {
-	base := `{"provider":{"type":"openai-compatible","baseUrl":"http://localhost:1234/v1"},"modelRouter":{"type":"static","model":"qwen"}}`
+	base := `{"provider":{"type":"openai-responses"},"modelRouter":{"type":"static","model":"gpt-5.4-nano"}}`
 	cfg, err := resolveProviderDefaults(t, base, "--api-key-ref=")
 	if err != nil {
 		t.Fatalf("BuildRunConfig: %v", err)
 	}
 	if cfg.Provider.APIKeyRef != "" {
 		t.Errorf("Provider.APIKeyRef = %q, want empty", cfg.Provider.APIKeyRef)
+	}
+}
+
+func TestProviderDefaults_KeylessDocumentGatewayGetsNoKeyDefault(t *testing.T) {
+	for _, providerType := range []string{"openai-compatible", "openai-responses"} {
+		t.Run(providerType, func(t *testing.T) {
+			base := `{"provider":{"type":"` + providerType + `","baseUrl":"http://localhost:1234/v1"},"modelRouter":{"type":"static","model":"qwen"}}`
+			cfg, err := resolveProviderDefaults(t, base)
+			if err != nil {
+				t.Fatalf("BuildRunConfig: %v", err)
+			}
+			if cfg.Provider.APIKeyRef != "" {
+				t.Errorf("Provider.APIKeyRef = %q, want empty for a keyless gateway document", cfg.Provider.APIKeyRef)
+			}
+		})
+	}
+}
+
+func TestProviderDefaults_DocumentKeyDefaultKeptWithoutGateway(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		args []string
+		want string
+	}{
+		{
+			"openai document without baseUrl",
+			`{"provider":{"type":"openai-compatible"},"modelRouter":{"type":"static","model":"qwen"}}`,
+			nil,
+			"secret://OPENAI_API_KEY",
+		},
+		{
+			"anthropic document with baseUrl",
+			`{"provider":{"type":"anthropic","baseUrl":"https://gateway.example.com"},"modelRouter":{"type":"static","model":"claude-sonnet-4-6"}}`,
+			nil,
+			"secret://ANTHROPIC_API_KEY",
+		},
+		{
+			"openai document with baseUrl keeps its own key",
+			`{"provider":{"type":"openai-compatible","baseUrl":"http://localhost:1234/v1","apiKeyRef":"secret://GATEWAY_KEY"},"modelRouter":{"type":"static","model":"qwen"}}`,
+			nil,
+			"secret://GATEWAY_KEY",
+		},
+		{
+			"explicit key flag over a gateway document",
+			`{"provider":{"type":"openai-compatible","baseUrl":"http://localhost:1234/v1"},"modelRouter":{"type":"static","model":"qwen"}}`,
+			[]string{"--api-key-ref", "secret://FLAG_KEY"},
+			"secret://FLAG_KEY",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := resolveProviderDefaults(t, tc.base, tc.args...)
+			if err != nil {
+				t.Fatalf("BuildRunConfig: %v", err)
+			}
+			if cfg.Provider.APIKeyRef != tc.want {
+				t.Errorf("Provider.APIKeyRef = %q, want %q", cfg.Provider.APIKeyRef, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderDefaults_FlagBuiltGatewayKeepsKeyDefault(t *testing.T) {
+	cfg, err := resolveProviderDefaults(t, "",
+		"--provider", "openai-compatible", "--model", "qwen", "--base-url", "http://localhost:1234/v1")
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.Provider.APIKeyRef != "secret://OPENAI_API_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want secret://OPENAI_API_KEY for a flag-built config", cfg.Provider.APIKeyRef)
 	}
 }
 
