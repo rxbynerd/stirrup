@@ -119,11 +119,22 @@ func renderRunTrace(out io.Writer, t *types.RunTrace, color bool) error {
 		b.WriteString(colorize(color, ansiBold, "  verification:"))
 		b.WriteByte('\n')
 		for i, vr := range t.VerificationResults {
+			attempt := vr.Attempt
+			if attempt == 0 {
+				attempt = i + 1
+			}
 			passed := colorize(color, ansiRed, "FAIL")
 			if vr.Passed {
 				passed = colorize(color, ansiGreen, "PASS")
 			}
-			fmt.Fprintf(&b, "    %3d. %s  %s\n", i+1, passed, vr.Feedback)
+			fmt.Fprintf(&b, "    %3d. %s", attempt, passed)
+			if vr.Error != "" {
+				b.WriteString("  " + colorize(color, ansiRed, "err="+vr.Error))
+			}
+			if vr.Feedback != "" {
+				b.WriteString("  " + strings.ReplaceAll(strings.TrimRight(vr.Feedback, "\n"), "\n", "\n          "))
+			}
+			b.WriteByte('\n')
 		}
 	}
 

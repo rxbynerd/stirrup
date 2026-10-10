@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
@@ -53,6 +54,77 @@ func sampleTraces() []types.RunTrace {
 		VerificationResults: []types.VerificationResult{{Passed: true, Feedback: "all green"}},
 		Outcome:             "success",
 	}}
+}
+
+// writeEmitterTrace writes a trace file through the production JSONL
+// emitter: a run_started event followed by run_finished, with the
+// verifier attempts recorded the way the loop records them.
+func writeEmitterTrace(t *testing.T, outcome string, results []types.VerificationResult) string {
+	t.Helper()
+	var buf bytes.Buffer
+	emitter := trace.NewJSONLTraceEmitter(&buf, false)
+	emitter.Start("run-verify", &types.RunConfig{RunID: "run-verify"})
+	for _, r := range results {
+		emitter.RecordVerification(r)
+	}
+	if _, err := emitter.Finish(context.Background(), outcome); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func emitterVerificationAttempts() []types.VerificationResult {
+	return []types.VerificationResult{
+		{Attempt: 1, Feedback: "Test command \"go test ./...\" failed (exit code 1):\n--- FAIL: TestAdd"},
+		{Attempt: 2, Error: "test-runner verifier: exec failed: connection refused"},
+	}
+}
+
+func TestTraceShow_RendersEmitterVerificationAttempts(t *testing.T) {
+	path := writeEmitterTrace(t, "verification_error", emitterVerificationAttempts())
+
+	var out bytes.Buffer
+	if err := runTraceShowWith(path, &out, colorNever); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	s := out.String()
+	for _, w := range []string{
+		"verification:",
+		"  1. FAIL  Test command \"go test ./...\" failed (exit code 1):\n          --- FAIL: TestAdd",
+		"  2. FAIL  err=test-runner verifier: exec failed: connection refused",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("show output missing %q\n--- output ---\n%s", w, s)
+		}
+	}
+}
+
+func TestTraceStats_CountsEmitterVerificationAttempts(t *testing.T) {
+	path := writeEmitterTrace(t, "verification_error", emitterVerificationAttempts())
+
+	var text bytes.Buffer
+	if err := runTraceStatsWith(path, &text, "text", 10); err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if want := "verifications:    2 run (passed: 0, failed: 2, verifier errors: 1)"; !strings.Contains(text.String(), want) {
+		t.Errorf("stats text missing %q\n--- output ---\n%s", want, text.String())
+	}
+
+	var js bytes.Buffer
+	if err := runTraceStatsWith(path, &js, "json", 10); err != nil {
+		t.Fatalf("stats json: %v", err)
+	}
+	var stats TraceStats
+	if err := json.Unmarshal(js.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal stats: %v", err)
+	}
+	if stats.VerificationsRun != 2 || stats.VerificationsFailed != 2 || stats.VerificationErrors != 1 {
+		t.Errorf("stats = run %d failed %d errors %d, want 2/2/1", stats.VerificationsRun, stats.VerificationsFailed, stats.VerificationErrors)
+	}
 }
 
 func TestTraceShow_PrintsRecords(t *testing.T) {

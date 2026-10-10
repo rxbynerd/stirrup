@@ -109,6 +109,7 @@ type TraceStats struct {
 	VerificationsRun    int                `json:"verificationsRun,omitempty"`
 	VerificationsPassed int                `json:"verificationsPassed,omitempty"`
 	VerificationsFailed int                `json:"verificationsFailed,omitempty"`
+	VerificationErrors  int                `json:"verificationErrors,omitempty"`
 	Outcomes            map[string]int     `json:"outcomes,omitempty"`
 	LongestToolCallMs   int64              `json:"longestToolCallMs"`
 	TotalWallClockMs    int64              `json:"totalWallClockMs"`
@@ -182,6 +183,9 @@ func (s *TraceStats) absorb(t *types.RunTrace) {
 		} else {
 			s.VerificationsFailed++
 		}
+		if v.Error != "" {
+			s.VerificationErrors++
+		}
 	}
 
 	if t.Outcome != "" {
@@ -244,8 +248,12 @@ func writeStatsText(out io.Writer, s *TraceStats, top int) error {
 		fmt.Fprintf(&b, "  sub-agent calls:  %d (of total tool calls)\n", s.SubAgentToolCalls)
 	}
 	if s.VerificationsRun > 0 {
-		fmt.Fprintf(&b, "  verifications:    %d run (passed: %d, failed: %d)\n",
+		fmt.Fprintf(&b, "  verifications:    %d run (passed: %d, failed: %d",
 			s.VerificationsRun, s.VerificationsPassed, s.VerificationsFailed)
+		if s.VerificationErrors > 0 {
+			fmt.Fprintf(&b, ", verifier errors: %d", s.VerificationErrors)
+		}
+		b.WriteString(")\n")
 	}
 	fmt.Fprintf(&b, "  longest call ms:  %d\n", s.LongestToolCallMs)
 	if s.TotalWallClockMs > 0 {
