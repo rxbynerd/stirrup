@@ -252,7 +252,11 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 			// but any instrumentation between here and there would
 			// otherwise see unscrubbed Vertex diagnostics.
 			safeBody := security.Scrub(string(bodyBytes))
-			return nil, fmt.Errorf("vertex AI returned status %d: %s", resp.StatusCode, safeBody)
+			err := fmt.Errorf("vertex AI returned status %d: %s", resp.StatusCode, safeBody)
+			if geminiContextOverflow(resp.StatusCode, bodyBytes) {
+				err = types.MarkContextOverflow(err)
+			}
+			return nil, err
 		}
 		return nil, fmt.Errorf("vertex AI returned status %d", resp.StatusCode)
 	}

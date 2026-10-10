@@ -816,7 +816,11 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		_ = resp.Body.Close()
 		a.recordLatency(ctx, start, metricAttrs)
 		if len(body) > 0 {
-			return nil, fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, body)
+			err := fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, body)
+			if anthropicContextOverflow(resp.StatusCode, body) {
+				err = types.MarkContextOverflow(err)
+			}
+			return nil, err
 		}
 		return nil, fmt.Errorf("anthropic API returned status %d", resp.StatusCode)
 	}

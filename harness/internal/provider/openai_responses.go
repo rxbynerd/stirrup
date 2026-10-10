@@ -1406,7 +1406,11 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		o.recordLatency(ctx, start, metricAttrs)
 		var errResp responsesErrorResponse
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && (errResp.Error.Message != "" || errResp.Error.Code != "") {
-			return nil, fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, responsesErrorText(errResp.Error.Message, errResp.Error.Code))
+			err := fmt.Errorf("openai responses API returned status %d: %s", resp.StatusCode, responsesErrorText(errResp.Error.Message, errResp.Error.Code))
+			if resp.StatusCode == http.StatusBadRequest && responsesContextOverflow(errResp.Error.Code, errResp.Error.Message) {
+				err = types.MarkContextOverflow(err)
+			}
+			return nil, err
 		}
 		return nil, fmt.Errorf("openai responses API returned status %d", resp.StatusCode)
 	}
@@ -1814,14 +1818,20 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		}
 		_ = json.Unmarshal([]byte(data), &payload)
 		msg := "openai responses API: response failed"
+		overflow := false
 		if e := payload.Response.Error; e != nil && (e.Message != "" || e.Code != "") {
 			message := e.Message
 			if message == "" {
 				message = "response failed"
 			}
 			msg = "openai responses API: " + responsesErrorText(message, e.Code)
+			overflow = responsesContextOverflow(e.Code, e.Message)
 		}
-		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
+		err := errors.New(msg)
+		if overflow {
+			err = types.MarkContextOverflow(err)
+		}
+		emit(types.StreamEvent{Type: "error", Error: err})
 		return false
 
 	case "error":
@@ -1835,7 +1845,11 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		if payload.Message != "" || payload.Code != "" {
 			msg += ": " + responsesErrorText(payload.Message, payload.Code)
 		}
-		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
+		err := errors.New(msg)
+		if responsesContextOverflow(payload.Code, payload.Message) {
+			err = types.MarkContextOverflow(err)
+		}
+		emit(types.StreamEvent{Type: "error", Error: err})
 		return false
 
 	default:

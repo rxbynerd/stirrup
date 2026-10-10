@@ -708,8 +708,9 @@ func (u openaiUsage) applyTo(ev *types.StreamEvent) {
 // openaiErrorResponse is the error format returned by the OpenAI API.
 type openaiErrorResponse struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
+		Message string             `json:"message"`
+		Type    string             `json:"type"`
+		Code    responsesErrorCode `json:"code"`
 	} `json:"error"`
 }
 
@@ -1125,7 +1126,11 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		o.recordLatency(ctx, start, metricAttrs)
 		var errResp openaiErrorResponse
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
-			return nil, fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
+			err := fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
+			if openAIContextOverflow(resp.StatusCode, string(errResp.Error.Code), errResp.Error.Message) {
+				err = types.MarkContextOverflow(err)
+			}
+			return nil, err
 		}
 		return nil, fmt.Errorf("openai API returned status %d", resp.StatusCode)
 	}

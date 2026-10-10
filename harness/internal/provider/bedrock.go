@@ -166,7 +166,11 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 			span.AddEvent("bedrock_error")
 		}
 		b.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("bedrock ConverseStream: %w", err)
+		err = fmt.Errorf("bedrock ConverseStream: %w", err)
+		if bedrockContextOverflow(err) {
+			err = types.MarkContextOverflow(err)
+		}
+		return nil, err
 	}
 
 	ch := make(chan types.StreamEvent, 64)
@@ -292,7 +296,11 @@ func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader,
 	}
 
 	if err := stream.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)})
+		err = fmt.Errorf("bedrock stream: %w", err)
+		if bedrockContextOverflow(err) {
+			err = types.MarkContextOverflow(err)
+		}
+		emitEvent(types.StreamEvent{Type: "error", Error: err})
 	}
 }
 
