@@ -303,21 +303,21 @@ func TestBuildPromptBuilder_OverrideWinsOverTemplate(t *testing.T) {
 }
 
 func TestBuildContextStrategy_SlidingWindow(t *testing.T) {
-	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "sliding-window"}, nil, "", 0, nil)
+	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "sliding-window"}, nil, "", 0, nil, nil)
 	if _, ok := cs.(*contextpkg.SlidingWindowStrategy); !ok {
 		t.Fatalf("expected SlidingWindowStrategy, got %T", cs)
 	}
 }
 
 func TestBuildContextStrategy_Empty(t *testing.T) {
-	cs := buildContextStrategy(types.ContextStrategyConfig{}, nil, "", 0, nil)
+	cs := buildContextStrategy(types.ContextStrategyConfig{}, nil, "", 0, nil, nil)
 	if _, ok := cs.(*contextpkg.SlidingWindowStrategy); !ok {
 		t.Fatalf("expected SlidingWindowStrategy for empty type, got %T", cs)
 	}
 }
 
 func TestBuildContextStrategy_Summarise(t *testing.T) {
-	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "summarise"}, nil, "model", 0, nil)
+	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "summarise"}, nil, "model", 0, nil, nil)
 	if _, ok := cs.(*contextpkg.SummariseStrategy); !ok {
 		t.Fatalf("expected SummariseStrategy, got %T", cs)
 	}
@@ -325,14 +325,14 @@ func TestBuildContextStrategy_Summarise(t *testing.T) {
 
 func TestBuildContextStrategy_OffloadToFile(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
-	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "offload-to-file"}, nil, "", 0, exec)
+	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "offload-to-file"}, nil, "", 0, exec, nil)
 	if _, ok := cs.(*contextpkg.OffloadToFileStrategy); !ok {
 		t.Fatalf("expected OffloadToFileStrategy, got %T", cs)
 	}
 }
 
 func TestBuildContextStrategy_UnknownFallsBack(t *testing.T) {
-	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "nonexistent"}, nil, "", 0, nil)
+	cs := buildContextStrategy(types.ContextStrategyConfig{Type: "nonexistent"}, nil, "", 0, nil, nil)
 	if _, ok := cs.(*contextpkg.SlidingWindowStrategy); !ok {
 		t.Fatalf("expected SlidingWindowStrategy for unknown type, got %T", cs)
 	}

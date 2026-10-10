@@ -338,7 +338,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// "summarise" strategy needs the default provider adapter.
 	summaryWindow := effectiveContextWindow(config.ContextStrategy.MaxTokens,
 		quirks.DefaultRegistry().Resolve(config.Provider.Type, config.ModelRouter.Model).ContextWindow)
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, summaryWindow, exec)
+	// presenter is assigned once every tool is registered, before the run
+	// starts; tool_use blocks carry the presented name.
+	var presenter *tool.Presenter
+	internalToolName := func(name string) string {
+		if presenter == nil {
+			return name
+		}
+		return presenter.InternalName(name)
+	}
+	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
 
 	// 9. Verifier. Construction is deferred to step 13, once metrics
 	// exists — buildVerifier wraps in a metric-recorder when metrics is
@@ -664,13 +673,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		cleanup()
 		return nil, fmt.Errorf("tools.profile %q has no presentation table", config.Tools.Profile)
 	}
-	presenter, err := tool.NewPresenter(registry, profile)
+	presenter, err = tool.NewPresenter(registry, profile)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build tool profile presenter: %w", err)
 	}
 	loop.Tools = presenter
 	loop.ToolProfile = profile
+	warnUnknownExcludedTools(config.ContextStrategy.ExcludeTools, presenter, logger)
 
 	return loop, nil
 }
@@ -936,16 +946,45 @@ func wrapContextStrategy(cs contextpkg.ContextStrategy, cfg types.ContextStrateg
 	return contextpkg.NewMetricRecorder(cs, metrics, name)
 }
 
-func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, window int, exec executor.Executor) contextpkg.ContextStrategy {
+// buildContextStrategy constructs the configured strategy. internalToolName
+// maps a presented tool name to its internal ID, so that clear-tool-results
+// matches excludeTools against aliased tools.
+func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, window int, exec executor.Executor, internalToolName func(string) string) contextpkg.ContextStrategy {
 	switch cfg.Type {
 	case "summarise":
 		return contextpkg.NewSummariseStrategy(prov, model, window)
 	case "offload-to-file":
 		return contextpkg.NewOffloadToFileStrategy(exec)
+	case "clear-tool-results":
+		keep := contextpkg.DefaultClearKeep
+		if cfg.Keep != nil {
+			keep = *cfg.Keep
+		}
+		clearAtLeast := 0
+		if cfg.ClearAtLeast != nil {
+			clearAtLeast = *cfg.ClearAtLeast
+		}
+		return contextpkg.NewClearToolResultsStrategy(contextpkg.ClearToolResultsConfig{
+			Keep:         keep,
+			ClearAtLeast: clearAtLeast,
+			ExcludeTools: cfg.ExcludeTools,
+			InternalName: internalToolName,
+		})
 	case "sliding-window", "":
 		return contextpkg.NewSlidingWindowStrategy()
 	default:
 		return contextpkg.NewSlidingWindowStrategy()
+	}
+}
+
+// warnUnknownExcludedTools logs each contextStrategy.excludeTools name that
+// matches no tool in the run, by internal or presented name. Such a name
+// excludes nothing, which is usually a typo.
+func warnUnknownExcludedTools(names []string, tools tool.ToolRegistry, logger *slog.Logger) {
+	for _, name := range names {
+		if tools.Resolve(name) == nil {
+			logger.Warn("contextStrategy.excludeTools names a tool this run does not have; it excludes nothing", "tool", name)
+		}
 	}
 }
 

@@ -92,16 +92,21 @@ func (l *AgenticLoop) prepareRequest(
 			attribute.String("context.strategy", compaction.Strategy),
 			attribute.Int("context.tokens.after", compaction.TokensAfter),
 		)
-		l.Metrics.ContextCompactions.Add(ctx, 1,
-			l.metricAttrs(attribute.String("context.strategy", compaction.Strategy)),
-		)
-		l.Logger.Info("context compacted",
+		logAttrs := []any{
 			"strategy", compaction.Strategy,
 			"messages.before", compaction.MessagesBefore,
 			"messages.after", compaction.MessagesAfter,
 			"tokens.before", compaction.TokensBefore,
 			"tokens.after", compaction.TokensAfter,
+		}
+		if compaction.ToolResultsCleared > 0 {
+			contextSpan.SetAttributes(attribute.Int("context.tool_results.cleared", compaction.ToolResultsCleared))
+			logAttrs = append(logAttrs, "toolResults.cleared", compaction.ToolResultsCleared)
+		}
+		l.Metrics.ContextCompactions.Add(ctx, 1,
+			l.metricAttrs(attribute.String("context.strategy", compaction.Strategy)),
 		)
+		l.Logger.Info("context compacted", logAttrs...)
 	}
 	return preparedMessages, tokens, ""
 }
