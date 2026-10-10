@@ -78,7 +78,7 @@ func (d *DeterministicGitStrategy) Setup(ctx context.Context, _ string, taskID s
 	if !ValidBranchName(branch) {
 		return fmt.Errorf("task id %q does not form a valid branch name", taskID)
 	}
-	root, err := d.workspaceRoot(ctx)
+	root, err := WorkspaceRoot(ctx, d.exec)
 	if err != nil {
 		return err
 	}
@@ -205,24 +205,6 @@ func (d *DeterministicGitStrategy) checkExecutor() error {
 		return errors.New("deterministic git strategy requires an executor that can run commands")
 	}
 	return nil
-}
-
-// workspaceRoot resolves the executor's working directory to its physical
-// path inside the sandbox, the same form `git rev-parse --show-toplevel`
-// reports.
-func (d *DeterministicGitStrategy) workspaceRoot(ctx context.Context) (string, error) {
-	res, err := d.exec.Exec(ctx, "pwd -P", commandTimeout)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
-	}
-	if res == nil || res.ExitCode != 0 {
-		return "", fmt.Errorf("resolve workspace root: %s", execFailure(res))
-	}
-	root := strings.TrimSuffix(res.Stdout, "\n")
-	if root == "" || !strings.HasPrefix(root, "/") || strings.ContainsAny(root, "\n\r\x00") {
-		return "", fmt.Errorf("resolve workspace root: pwd returned %q, not an absolute path", truncate(root))
-	}
-	return root, nil
 }
 
 // refuseUnresolvableGitEntry fails when git reports no repository although
