@@ -2,13 +2,11 @@
 // managing version control during harness runs.
 package git
 
-import "context"
+import (
+	"context"
 
-// GitResult holds the version control state after a run completes.
-type GitResult struct {
-	Branch string `json:"branch"`
-	SHA    string `json:"sha"`
-}
+	"github.com/rxbynerd/stirrup/types"
+)
 
 // GitStrategy manages git operations during a harness run: creating
 // branches, checkpointing work, and finalising the result.
@@ -19,6 +17,10 @@ type GitStrategy interface {
 	// Checkpoint commits the current workspace state with the given message.
 	Checkpoint(ctx context.Context, message string) error
 
-	// Finalise completes the git workflow and returns the final branch/SHA.
-	Finalise(ctx context.Context) (*GitResult, error)
+	// Finalise commits any outstanding work with a message naming the
+	// run's outcome and reports the resulting git state. It returns a nil
+	// handoff when the strategy does not manage git. A strategy that does
+	// returns a non-nil handoff even alongside an error, filled in as far
+	// as the failure allowed.
+	Finalise(ctx context.Context, outcome string) (*types.GitHandoff, error)
 }

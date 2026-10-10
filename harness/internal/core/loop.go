@@ -405,19 +405,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// Post-run work below runs on detached contexts (see
 	// detachedContext) so a run that ended by deadline or cancellation
-	// still records its git state, hook results and trace.
-	finaliseCtx, finaliseCancel := l.detachedContext(ctx, gitFinaliseBudget)
-	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
-	if _, err := l.Git.Finalise(finaliseCtx); err != nil {
-		recordSpanException(finaliseSpan, err)
-		l.Logger.Warn("git finalise failed", "error", err)
-		_ = l.Transport.Emit(types.HarnessEvent{
-			Type:    "warning",
-			Message: fmt.Sprintf("git finalise: %v", err),
-		})
-	}
-	finaliseSpan.End()
-	finaliseCancel()
+	// still commits and records its git state, hook results and trace.
+	// The final checkpoint precedes postRun hooks, so hook edits are not
+	// committed.
+	outcome = l.finaliseGit(ctx, outcome)
 
 	// See docs/configuration.md#lifecycle-hooks and
 	// docs/cloud-run-jobs.md for the outcome-override and SIGTERM detail.

@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
-	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
@@ -35,8 +34,8 @@ type spanProbeGit struct {
 
 func (g *spanProbeGit) Setup(context.Context, string, string) error { return g.setupErr }
 func (g *spanProbeGit) Checkpoint(context.Context, string) error    { return g.checkpointErr }
-func (g *spanProbeGit) Finalise(context.Context) (*git.GitResult, error) {
-	return &git.GitResult{}, g.finaliseErr
+func (g *spanProbeGit) Finalise(context.Context, string) (*types.GitHandoff, error) {
+	return &types.GitHandoff{}, g.finaliseErr
 }
 
 type spanProbeVerifier struct{}
@@ -141,7 +140,7 @@ func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
 			},
 		},
 		{
-			name: "git finalise", span: "git.finalise",
+			name: "git finalise", span: "git.finalise", wantStatus: true,
 			setup: func(l *AgenticLoop, _ *types.RunConfig) {
 				l.Git = &spanProbeGit{finaliseErr: errSpanProbe}
 			},

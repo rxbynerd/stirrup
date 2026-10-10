@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -29,7 +28,8 @@ func observe(ctx context.Context) ctxObservation {
 }
 
 // ctxProbeGit is a GitStrategy whose Finalise records its context and
-// optionally runs onFinalise before returning.
+// optionally runs onFinalise before returning. It reports no git state,
+// so it never changes the run's outcome.
 type ctxProbeGit struct {
 	mu         sync.Mutex
 	finalise   ctxObservation
@@ -39,14 +39,14 @@ type ctxProbeGit struct {
 func (g *ctxProbeGit) Setup(context.Context, string, string) error { return nil }
 func (g *ctxProbeGit) Checkpoint(context.Context, string) error    { return nil }
 
-func (g *ctxProbeGit) Finalise(ctx context.Context) (*git.GitResult, error) {
+func (g *ctxProbeGit) Finalise(ctx context.Context, _ string) (*types.GitHandoff, error) {
 	if g.onFinalise != nil {
 		g.onFinalise(ctx)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.finalise = observe(ctx)
-	return &git.GitResult{}, ctx.Err()
+	return nil, nil
 }
 
 func (g *ctxProbeGit) observed() ctxObservation {
