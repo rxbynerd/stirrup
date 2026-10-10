@@ -118,7 +118,7 @@ func (l *AgenticLoop) reportContextExhausted(err error) {
 func (l *AgenticLoop) reportOverflowRetry(turn int, selection router.ModelSelection, attempt providerAttempt, rejected int) {
 	cause := "the provider rejected the request"
 	if attempt.err == nil {
-		cause = "the response filled the window"
+		cause = "the response filled the window, and its streamed output is discarded"
 	}
 	target := rejected * overflowCompactionPercent / 100
 	l.Logger.Warn("context window exceeded; compacting and retrying the turn",

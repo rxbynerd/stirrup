@@ -197,6 +197,13 @@ func TestLoop_ContextOverflowRecoversWithOneForcedCompaction(t *testing.T) {
 			if !strings.Contains(events.String(), "retrying the turn once") {
 				t.Errorf("no warning event announces the retry:\n%s", events.String())
 			}
+			if kind == "context window stop" {
+				out := events.String()
+				partial, warning := strings.Index(out, "TRUNCATED-PARTIAL"), strings.Index(out, "streamed output is discarded")
+				if partial < 0 || warning < partial {
+					t.Errorf("no warning after the discarded output says it was discarded:\n%s", out)
+				}
+			}
 		})
 	}
 }
