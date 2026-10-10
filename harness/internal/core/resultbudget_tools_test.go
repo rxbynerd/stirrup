@@ -227,6 +227,13 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 		dispatch(t, "tc_read", "read_command_output", map[string]any{"ref": spilled.StdoutRef, "limit": commandoutput.ReadMaxBytes})
 	})
 
+	t.Run("read_file single long line", func(t *testing.T) {
+		result := dispatch(t, "tc_minified", "read_file", map[string]any{"path": "bundle.min.js"})
+		if !strings.Contains(result.Content, " [line truncated: ") || !strings.Contains(result.Content, " of 3145728 bytes shown]") {
+			t.Fatalf("expected a per-line marker naming the 3 MiB line, got %d bytes", len(result.Content))
+		}
+	})
+
 	t.Run("run_command without capture", func(t *testing.T) {
 		loop.Tools = buildToolRegistry(localExec, edit.NewMultiStrategy(0.8), types.ToolsConfig{}, nil)
 		t.Cleanup(func() { loop.Tools = registry })
