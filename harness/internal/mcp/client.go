@@ -279,6 +279,42 @@ func (c *Client) filterAllowedTools(config types.MCPServerConfig, tools []mcpToo
 	return kept
 }
 
+// MissingToolsError reports allowlisted tool names that a reachable server
+// did not advertise in tools/list. Connect registers the advertised
+// allowlisted tools before returning it, so a caller that tolerates the
+// error keeps a partial tool set.
+type MissingToolsError struct {
+	Server string
+	Tools  []string
+}
+
+func (e *MissingToolsError) Error() string {
+	return fmt.Sprintf("mcp: server %q does not advertise allowed tool(s): %s", e.Server, strings.Join(e.Tools, ", "))
+}
+
+// missingAllowedTools returns the AllowedTools entries absent from the
+// advertised tool list, in allowlist order. It returns nil when there is no
+// allowlist or every entry is advertised.
+func missingAllowedTools(config types.MCPServerConfig, advertised []mcpTool) []string {
+	if len(config.AllowedTools) == 0 {
+		return nil
+	}
+	present := make(map[string]bool, len(advertised))
+	for _, mt := range advertised {
+		present[mt.Name] = true
+	}
+	var missing []string
+	seen := make(map[string]bool, len(config.AllowedTools))
+	for _, name := range config.AllowedTools {
+		if present[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		missing = append(missing, name)
+	}
+	return missing
+}
+
 // serverSession holds per-server connection state.
 type serverSession struct {
 	name string // operator-supplied logical name, for log attribution
@@ -317,7 +353,9 @@ func NewClient(registry *tool.Registry, httpClient *http.Client) *Client {
 
 // Connect connects to a single MCP server: resolves auth credentials,
 // discovers tools via tools/list, and registers each tool into the registry.
-// The server name from config is used to prefix tool names.
+// The server name from config is used to prefix tool names. When the
+// server is reachable but does not advertise every AllowedTools entry, the
+// advertised ones are registered and a *MissingToolsError is returned.
 func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
 	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
@@ -332,6 +370,7 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	if err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
+	missing := missingAllowedTools(config, tools)
 
 	// Allowlist filtering happens before the count cap so a hostile server
 	// cannot fill the cap with disallowed tools and starve legitimate ones.
@@ -352,19 +391,27 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 		c.registerMCPTool(config.Name, sess, mt)
 	}
 
+	if len(missing) > 0 {
+		return &MissingToolsError{Server: config.Name, Tools: missing}
+	}
 	return nil
 }
 
 // Probe performs a read-only reachability and auth handshake against a
 // single MCP server for a dry-run preflight: the same tools/list request as
 // Connect, but it does NOT register the discovered tools into the registry.
+// It returns a *MissingToolsError under the same condition as Connect.
 func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
 	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
 		return err
 	}
-	if _, err := c.listTools(ctx, sess); err != nil {
+	tools, err := c.listTools(ctx, sess)
+	if err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
+	}
+	if missing := missingAllowedTools(config, tools); len(missing) > 0 {
+		return &MissingToolsError{Server: config.Name, Tools: missing}
 	}
 	return nil
 }

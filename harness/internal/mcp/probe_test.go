@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,5 +66,39 @@ func TestProbe_ServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "down") {
 		t.Errorf("error should name the server, got: %v", err)
+	}
+}
+
+func TestProbe_AllowlistedToolNotAdvertised(t *testing.T) {
+	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
+	client := NewClient(tool.NewRegistry(), srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Probe(context.Background(), types.MCPServerConfig{
+		Name:         "docs",
+		URI:          srv.URL,
+		AllowedTools: []string{"search", "fetch"},
+	}, secrets)
+
+	var missing *MissingToolsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("Probe error = %v, want *MissingToolsError", err)
+	}
+	if len(missing.Tools) != 1 || missing.Tools[0] != "fetch" {
+		t.Errorf("Tools = %v, want [fetch]", missing.Tools)
+	}
+}
+
+func TestProbe_AllowlistFullyAdvertised(t *testing.T) {
+	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
+	client := NewClient(tool.NewRegistry(), srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	if err := client.Probe(context.Background(), types.MCPServerConfig{
+		Name:         "docs",
+		URI:          srv.URL,
+		AllowedTools: []string{"search"},
+	}, secrets); err != nil {
+		t.Fatalf("Probe: %v", err)
 	}
 }

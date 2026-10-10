@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1260,5 +1261,65 @@ func TestDisplaySafeURI(t *testing.T) {
 			}
 			assertNoSecret(t, "displaySafeURI", got)
 		})
+	}
+}
+
+func TestConnect_AllowlistedToolNotAdvertised(t *testing.T) {
+	tools := []mcpTool{
+		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name:         "docs",
+		URI:          srv.URL,
+		AllowedTools: []string{"search", "fetch", "fetch", "lookup"},
+	}, secrets)
+
+	var missing *MissingToolsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("Connect error = %v, want *MissingToolsError", err)
+	}
+	if missing.Server != "docs" {
+		t.Errorf("Server = %q, want docs", missing.Server)
+	}
+	if got, want := strings.Join(missing.Tools, ","), "fetch,lookup"; got != want {
+		t.Errorf("Tools = %q, want %q (allowlist order, deduplicated)", got, want)
+	}
+	if !strings.Contains(err.Error(), `"docs"`) || !strings.Contains(err.Error(), "fetch, lookup") {
+		t.Errorf("error should name the server and missing tools, got: %v", err)
+	}
+	if registry.Resolve("mcp_docs_search") == nil {
+		t.Errorf("advertised allowlisted tool should still be registered; registry: %v", registry.List())
+	}
+	if len(registry.List()) != 1 {
+		t.Errorf("registry has %d tools, want only the advertised allowlisted one", len(registry.List()))
+	}
+}
+
+func TestConnect_AllowlistFullyAdvertisedReportsNothing(t *testing.T) {
+	tools := []mcpTool{
+		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name:         "docs",
+		URI:          srv.URL,
+		AllowedTools: []string{"search"},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if len(registry.List()) != 1 {
+		t.Errorf("registry has %d tools, want 1", len(registry.List()))
 	}
 }
