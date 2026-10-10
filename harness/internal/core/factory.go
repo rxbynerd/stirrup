@@ -28,6 +28,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/postedit"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
@@ -205,6 +206,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build code scanner: %w", err)
 	}
 	registry := buildToolRegistry(exec, es, config.Tools, commandOutputStore)
+	postEditChecker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, config.Tools.PostEdit)
 
 	// exporters and resourceOpts are shared by the log, trace, and metric
 	// exporters below so all three signals carry a consistent resource
@@ -334,6 +336,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	te := components.traceEmitter
 	if recorder, ok := te.(trace.CommandOutputRecorder); ok && commandOutputStore != nil {
 		commandOutputStore.SetRecorder(recorder)
+	}
+	if recorder, ok := te.(trace.PostEditCheckRecorder); ok && postEditChecker != nil {
+		postEditChecker.SetRecorder(recorder)
 	}
 	if closer, ok := te.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
@@ -1361,6 +1366,24 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 			return fmt.Sprintf("Successfully edited %s", result.Path), nil
 		},
 	}
+}
+
+// attachPostEditChecks wraps the registered edit tool's handler so the
+// configured tools.postEdit checks run after every successful edit. The
+// one edit tool serves write_file, edit_file, search_replace and
+// apply_diff, so every workspace-writing edit path is covered. Returns
+// nil when no checks are configured or no edit tool is registered.
+func attachPostEditChecks(registry *tool.Registry, editToolName string, exec executor.Executor, checks []types.PostEditCheckConfig) *postedit.Checker {
+	checker := postedit.New(checks, exec, nil)
+	if checker == nil {
+		return nil
+	}
+	t := registry.Resolve(editToolName)
+	if t == nil || t.Handler == nil {
+		return nil
+	}
+	t.Handler = checker.Wrap(t.Name, t.Handler)
+	return checker
 }
 
 // defaultRuleOfTwoGuardCriteria is the guard-criteria set used when
