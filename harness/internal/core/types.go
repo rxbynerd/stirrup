@@ -116,6 +116,10 @@ type AgenticLoop struct {
 	// Guidance loads the run's repositoryGuidance files after the pre-run
 	// hooks; nil loads none. A load error ends the run as setup_failed.
 	Guidance prompt.GuidanceLoader
+	// ProtectedWriteTargets lists workspace paths write tools may not
+	// target, in tools.protectedWriteTargets syntax. Run adds every
+	// guidance file it loaded to this set.
+	ProtectedWriteTargets []string
 	// Shutdown, when non-nil, is a process-lifetime context done when the
 	// process abandons post-run work (the CLI entry points cancel it on a
 	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent
@@ -165,6 +169,10 @@ type AgenticLoop struct {
 	// before the first turn. Sub-agents render this snapshot instead of
 	// re-reading files the parent run may since have edited.
 	repositoryGuidance []prompt.GuidanceDocument
+
+	// writeProtection is the security guard's protected-write set for
+	// the current run, built once repository guidance has loaded.
+	writeProtection security.ProtectedWriteTargets
 
 	// lastContextTokens holds the most recent absolute context-window token
 	// estimate, published after each Context.Prepare and read from the
@@ -449,7 +457,7 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 	// model-facing alias (call.Name): a rule written against the internal
 	// name must fire under any toolset profile. It scans the raw
 	// input so a tripwire hidden under a stripped key still fires.
-	if findings := security.GuardToolCall(t.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
+	if findings := security.GuardToolCall(t.Name, t.WorkspaceMutating, call.Input, l.writeProtection); len(findings) > 0 {
 		if l.Security != nil {
 			l.Security.ToolCallGuardTriggered(call.Name, findings)
 		}

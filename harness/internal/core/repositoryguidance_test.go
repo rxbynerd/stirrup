@@ -319,6 +319,10 @@ type remoteGuidanceExecutor struct {
 	reads []string
 }
 
+func (r *remoteGuidanceExecutor) ResolvePath(path string) (string, error) {
+	return path, nil
+}
+
 func (r *remoteGuidanceExecutor) ReadFile(_ context.Context, path string) (string, error) {
 	r.reads = append(r.reads, path)
 	content, ok := r.files[path]

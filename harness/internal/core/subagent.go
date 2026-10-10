@@ -175,6 +175,9 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 
 	childLoop.StructuredResults = parent.StructuredResults
 	childLoop.ContextWindows = parent.ContextWindows
+	// Copied so a sub-agent cannot write a path the parent run protects;
+	// the child's Run adds the inherited guidance snapshot's files.
+	childLoop.ProtectedWriteTargets = parent.ProtectedWriteTargets
 
 	start := time.Now()
 	runTrace, err := childLoop.Run(ctx, &childConfig)

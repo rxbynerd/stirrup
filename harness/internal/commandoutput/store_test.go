@@ -160,7 +160,7 @@ func TestStoreReferencePassesToolGuard(t *testing.T) {
 	}
 	ref := captured.Record.Stdout.Reference
 	input, _ := json.Marshal(map[string]any{"ref": ref, "offset": 0, "limit": 32768})
-	if findings := security.GuardToolCall("read_command_output", false, input); len(findings) != 0 {
+	if findings := security.GuardToolCall("read_command_output", false, input, security.ProtectedWriteTargets{}); len(findings) != 0 {
 		t.Fatalf("reference %q must pass the tool guard, got findings %+v", ref, findings)
 	}
 }

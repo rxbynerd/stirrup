@@ -283,6 +283,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			turnZeroAbort = true
 		}
 	}
+	l.writeProtection = l.buildWriteProtection()
 
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{

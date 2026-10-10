@@ -637,6 +637,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
 	loop.StructuredResults = buildStructuredResultSupport(config, quirks.DefaultRegistry())
+	loop.ProtectedWriteTargets = config.Tools.ProtectedWriteTargets
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
 	// first turn instead of being dropped.

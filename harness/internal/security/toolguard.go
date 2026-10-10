@@ -23,14 +23,6 @@ var (
 	}
 )
 
-var protectedWriteTargets = []string{
-	"AGENTS.md",
-	"CLAUDE.md",
-	".codex",
-	".agents",
-	"harness/internal/prompt/systemprompts",
-}
-
 var credentialPathMatchers = []func(string) bool{
 	func(p string) bool { return path.Base(p) == ".env" },
 	func(p string) bool { return hasPathSegment(p, ".ssh") },
@@ -49,7 +41,8 @@ var credentialPathMatchers = []func(string) bool{
 
 // GuardToolCall inspects tool input for prompt-injection tripwires before
 // dispatch. This is defense-in-depth and not a sandbox or permission boundary.
-func GuardToolCall(toolName string, sideEffects bool, input json.RawMessage) []ToolGuardFinding {
+// protected lists the run's workspace paths that write tools may not target.
+func GuardToolCall(toolName string, sideEffects bool, input json.RawMessage, protected ProtectedWriteTargets) []ToolGuardFinding {
 	var decoded any
 	if err := json.Unmarshal(input, &decoded); err != nil {
 		return nil
@@ -75,11 +68,11 @@ func GuardToolCall(toolName string, sideEffects bool, input json.RawMessage) []T
 				Reason: "input references a credential path",
 			})
 		}
-		if isWriteTool(toolName, sideEffects) && looksPathLike(lowerField) && targetsHarnessConfig(value) {
+		if isWriteTool(toolName, sideEffects) && looksPathLike(lowerField) && protected.Matches(value) {
 			findings = append(findings, ToolGuardFinding{
 				Rule:   "protected_write_target",
 				Field:  field,
-				Reason: "write targets harness configuration",
+				Reason: "write targets a protected path",
 			})
 		}
 		if base64TokenPattern.MatchString(value) {
@@ -157,7 +150,7 @@ func looksPathLike(field string) bool {
 
 func isWriteTool(toolName string, sideEffects bool) bool {
 	switch toolName {
-	case "write_file", "search_replace", "apply_diff":
+	case "write_file", "edit_file", "search_replace", "apply_diff":
 		return true
 	default:
 		return sideEffects && strings.Contains(toolName, "write")
@@ -184,16 +177,6 @@ func containsCredentialPath(value string) bool {
 			if match(normalizedToken) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func targetsHarnessConfig(value string) bool {
-	normalized := normalizeGuardPath(value)
-	for _, target := range protectedWriteTargets {
-		if normalized == target || strings.HasPrefix(normalized, target+"/") {
-			return true
 		}
 	}
 	return false
