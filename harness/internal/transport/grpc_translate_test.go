@@ -1981,3 +1981,108 @@ func TestRunConfigFromProto_WorkspaceExportRequiredTriState(t *testing.T) {
 		})
 	}
 }
+
+// TestRunConfigFromProto_OutputSchemaRoundTrip pins the wire mapping of
+// output_schema through a real marshal/unmarshal cycle, and that a
+// translated schema passes validation.
+func TestRunConfigFromProto_OutputSchemaRoundTrip(t *testing.T) {
+	schema, err := structpb.NewStruct(map[string]any{
+		"type":     "object",
+		"required": []any{"title"},
+		"properties": map[string]any{
+			"title": map[string]any{"type": "string", "maxLength": 72},
+			"label": map[string]any{"$ref": "#/$defs/label"},
+		},
+		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
+	})
+	if err != nil {
+		t.Fatalf("NewStruct: %v", err)
+	}
+	timeout := int32(60)
+	raw, err := proto.Marshal(&pb.RunConfig{
+		RunId:            "run-structured",
+		Mode:             "planning",
+		Prompt:           "triage",
+		MaxTurns:         5,
+		Timeout:          &timeout,
+		Provider:         &pb.ProviderConfig{Type: "anthropic", ApiKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: &pb.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            &pb.ToolsConfig{BuiltIn: []string{"read_file"}},
+		OutputSchema:     schema,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rc := runConfigFromProto(&decoded)
+
+	var got map[string]any
+	if err := json.Unmarshal(rc.OutputSchema, &got); err != nil {
+		t.Fatalf("OutputSchema is not JSON: %v (%s)", err, rc.OutputSchema)
+	}
+	want := map[string]any{
+		"type":     "object",
+		"required": []any{"title"},
+		"properties": map[string]any{
+			"title": map[string]any{"type": "string", "maxLength": float64(72)},
+			"label": map[string]any{"$ref": "#/$defs/label"},
+		},
+		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("OutputSchema = %v, want %v", got, want)
+	}
+	if !strings.Contains(string(rc.OutputSchema), `"maxLength":72`) {
+		t.Errorf("integer keyword rendered as %s, want an integral JSON number", rc.OutputSchema)
+	}
+	if err := types.ValidateRunConfig(&rc); err != nil {
+		t.Errorf("translated schema rejected by validation: %v", err)
+	}
+}
+
+func TestRunConfigFromProto_OutputSchemaAbsentStaysNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{RunId: "run-free-text"})
+	if rc.OutputSchema != nil {
+		t.Errorf("OutputSchema = %s, want nil when the field is unset", rc.OutputSchema)
+	}
+}
+
+func TestRunConfigFromProto_UnrenderableOutputSchemaIsRejected(t *testing.T) {
+	schema := &structpb.Struct{Fields: map[string]*structpb.Value{
+		"maximum": structpb.NewNumberValue(math.NaN()),
+	}}
+	rc := runConfigFromProto(&pb.RunConfig{OutputSchema: schema})
+	if string(rc.OutputSchema) != "null" {
+		t.Fatalf("OutputSchema = %s, want JSON null for a schema protojson cannot render", rc.OutputSchema)
+	}
+	c := types.RunConfig{OutputSchema: rc.OutputSchema}
+	err := types.ValidateRunConfig(&c)
+	if err == nil || !strings.Contains(err.Error(), "outputSchema must be a JSON Schema object") {
+		t.Errorf("ValidateRunConfig error = %v, want the outputSchema rejected", err)
+	}
+}
+
+func TestRunTraceToProto_StructuredOutputRoundTrip(t *testing.T) {
+	doc := `{"title":"Fix the flaky test","labels":["bug"],"risk":0.25}`
+	raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{
+		Outcome:          "success",
+		StructuredOutput: json.RawMessage(doc),
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.GetStructuredOutput() != doc {
+		t.Errorf("structured_output = %q, want %q", decoded.GetStructuredOutput(), doc)
+	}
+
+	if bare := runTraceToProto(&types.RunTrace{Outcome: "success"}); bare.StructuredOutput != "" {
+		t.Errorf("structured_output = %q, want empty without a structured answer", bare.StructuredOutput)
+	}
+}

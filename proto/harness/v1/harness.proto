@@ -607,6 +607,15 @@ message RunConfig {
   // existed.
   ToolChoiceEscalationConfig tool_choice_escalation = 35;
 
+  // Optional. A self-contained JSON Schema (Draft 2020-12) object the
+  // run's final answer must satisfy. The model is told to end with a
+  // single JSON document; an answer that fails validation gets bounded
+  // corrective attempts, after which the run ends with outcome
+  // "structured_output_failed". The validated document is returned in
+  // RunTrace.structured_output on "done". References must be local
+  // ("#..."). Absent leaves the final answer as free text.
+  google.protobuf.Struct output_schema = 57;
+
   // RunConfig.transport is intentionally NOT mirrored. The transport is
   // a property of how the harness was launched, not of the work being
   // assigned: a config that arrives in a TaskAssignment arrived over
@@ -1021,13 +1030,15 @@ message RunTrace {
   //         "tool_failures", "cancelled", "timeout", "max_tokens",
   //         "setup_failed", "hook_failed", "handoff_failed",
   //         "control_stream_lost", "guardrail_blocked", "rule_of_two_violation",
-  //         "command_output_capture_failed",
+  //         "structured_output_failed", "command_output_capture_failed",
   //         "command_output_archive_failed".
   // "handoff_failed" reports a failed final git checkpoint or a failed
   // required workspace export; like "hook_failed" and the command_output
   // outcomes it only replaces "success", never an earlier failure.
   // "control_stream_lost" reports a run cancelled because its control
   // stream ended while it was active.
+  // "structured_output_failed" reports a final answer that still did not
+  // satisfy RunConfig.output_schema after the corrective attempts.
   // Provider stop reasons pass through verbatim, including:
   //   "refusal"                       — the model declined to respond;
   //                                     see stop_details.
@@ -1064,6 +1075,11 @@ message RunTrace {
   // earliest failure. Also set on a successful run whose trace upload
   // failed. Empty otherwise.
   string error = 22;
+
+  // The final answer as compact JSON text, set when RunConfig.output_schema
+  // was configured and the answer satisfied it. The document is scrubbed
+  // of secrets and never truncated. Empty otherwise.
+  string structured_output = 36;
 }
 
 // GitHandoff mirrors types.GitHandoff: the git state a deterministic-git

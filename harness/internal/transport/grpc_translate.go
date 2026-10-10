@@ -116,6 +116,7 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 		}
 	}
 	pt.Error = t.Error
+	pt.StructuredOutput = string(t.StructuredOutput)
 	return pt
 }
 
@@ -322,6 +323,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
 	rc.SessionName = pc.GetSessionName()
+	rc.OutputSchema = outputSchemaFromProto(pc.OutputSchema)
 
 	// Transport has no proto mirror: a RunConfig decoded here arrived over
 	// the gRPC control stream by construction, so the transport is a fact
@@ -651,6 +653,19 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 		})
 	}
 	return tc
+}
+
+// outputSchemaFromProto renders the wire schema as JSON. A Struct that
+// cannot be rendered becomes JSON null, which ValidateRunConfig rejects,
+// so a schema the control plane sent is never silently dropped.
+func outputSchemaFromProto(s *structpb.Struct) json.RawMessage {
+	if s == nil {
+		return nil
+	}
+	if raw := structToJSON(s); raw != nil {
+		return raw
+	}
+	return json.RawMessage("null")
 }
 
 // structToJSON renders a Struct as its JSON object form, or nil when the
