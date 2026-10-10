@@ -541,8 +541,9 @@ exposure and the loop can apply tighter handling rules.
 
 The agentic loop terminates after:
 
-- **3 consecutive identical tool calls** (same name + same canonical
-  input) — `stop_reason: "stalled"`.
+- **A repeated tool-call pattern after one nudge** (3 identical calls,
+  or a cycle of 2 to 4 calls repeated 3 times, with the same canonical
+  input and results) — `stop_reason: "stalled"`.
 - **5 consecutive tool failures** — `stop_reason: "tool_failures"`.
 
 This bounds the damage of a model that has lost the plot — without

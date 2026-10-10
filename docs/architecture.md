@@ -770,10 +770,11 @@ schema path or error fragment).
 ## Stall detection
 
 The `stallDetector` (`harness/internal/core/stall.go`) tracks
-consecutive identical tool calls and consecutive failures. The loop
-terminates with `stop_reason: "stalled"` after 3 repeated identical
-calls (same name + same input) or `"tool_failures"` after 5
-consecutive failures.
+repeated tool-call patterns and consecutive failures. A pattern (3
+identical calls, or a cycle of 2 to 4 calls repeated 3 times, with
+the same results) first gets one synthetic nudge; a repetition after
+it terminates with `stop_reason: "stalled"`. The loop terminates with
+`"tool_failures"` after 5 consecutive failures.
 
 ## Heartbeat and health probes
 
