@@ -171,8 +171,9 @@ func (a providerAttempt) overflowed() bool {
 
 // requestProvider sends one request and consumes its stream. A failed
 // request is logged, emitted, counted and recorded as an "error" turn
-// before it returns; a successful one is returned for the caller to
-// record. requestTokens is the request's estimate.
+// before it returns, unless it is a context overflow and retryOverflow
+// says the caller retries it; a successful one is returned for the caller
+// to record. requestTokens is the request's estimate.
 func (l *AgenticLoop) requestProvider(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -182,6 +183,7 @@ func (l *AgenticLoop) requestProvider(
 	providerAttrs metric.MeasurementOption,
 	params types.StreamParams,
 	requestTokens int,
+	retryOverflow bool,
 ) providerAttempt {
 	start := time.Now()
 	l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
@@ -198,6 +200,9 @@ func (l *AgenticLoop) requestProvider(
 	fail := func(err error, category observability.ToolFailureCategory) providerAttempt {
 		scrubbedErr := recordSpanError(providerSpan, err)
 		providerSpan.End()
+		if retryOverflow && ctx.Err() == nil && types.IsContextOverflow(err) {
+			return providerAttempt{duration: time.Since(start), err: err}
+		}
 		// Skipped when ctx is already cancelled: the cancel/timeout
 		// path reports instead.
 		if ctx.Err() == nil {

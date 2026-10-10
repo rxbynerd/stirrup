@@ -839,7 +839,7 @@ func (l *AgenticLoop) runInnerLoop(
 		var attempt providerAttempt
 		rejected := 0
 		for {
-			attempt = l.requestProvider(ctx, config, turn, selection, selectedProvider, providerAttrs, params, requestTokens)
+			attempt = l.requestProvider(ctx, config, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}

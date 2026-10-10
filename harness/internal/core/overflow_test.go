@@ -15,7 +15,11 @@ import (
 	"sync"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -477,5 +481,63 @@ func TestBuildLoop_SummariseUsesTheConfiguredWindow(t *testing.T) {
 		if got, ok := maxTokens.(float64); !ok || int(got) != window/4 {
 			t.Errorf("summary call %d caps the response at %v tokens, want %d", i+1, maxTokens, window/4)
 		}
+	}
+}
+
+// TestLoop_RecoveredOverflowIsNotAProviderFailure pins that a rejected
+// request the loop recovers from with a forced compaction is reported
+// once, as the retry warning, and is neither counted as a provider error
+// or tool failure nor recorded as an error turn.
+func TestLoop_RecoveredOverflowIsNotAProviderFailure(t *testing.T) {
+	for _, kind := range []string{"rejected request", "stream error event"} {
+		t.Run(kind, func(t *testing.T) {
+			loop, _, _, events := buildOverflowLoop(t, overflowStepsByKind()[kind])
+			reader := sdkmetric.NewManualReader()
+			metrics, err := observability.NewMetricsForTesting(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+			if err != nil {
+				t.Fatalf("NewMetricsForTesting: %v", err)
+			}
+			loop.Metrics = metrics
+			recorder := &recordingTraceEmitter{}
+			loop.Trace = recorder
+
+			if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			var rm metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &rm); err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name != "stirrup.harness.provider_errors" && m.Name != "stirrup.harness.tool_failures" {
+						continue
+					}
+					for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+						if dp.Value != 0 {
+							t.Errorf("%s = %d, want 0", m.Name, dp.Value)
+						}
+					}
+				}
+			}
+
+			turns, _ := recorder.snapshot()
+			seen := map[int]bool{}
+			for _, turn := range turns {
+				if turn.StopReason == "error" || seen[turn.Turn] {
+					t.Errorf("turn %d recorded more than once or as an error: %+v", turn.Turn, turns)
+				}
+				seen[turn.Turn] = true
+			}
+
+			out := events.String()
+			if strings.Contains(out, "provider anthropic (claude-sonnet-4-6): ") {
+				t.Errorf("the recovered rejection was emitted as a provider failure:\n%s", out)
+			}
+			if n := strings.Count(out, "retrying the turn once"); n != 1 {
+				t.Errorf("%d retry warnings, want 1:\n%s", n, out)
+			}
+		})
 	}
 }
