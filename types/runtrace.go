@@ -427,6 +427,9 @@ type RunRecording struct {
 	Turns          []TurnRecord          `json:"turns"`
 	FinalOutcome   RunTrace              `json:"finalOutcome"`
 	CommandOutputs []CommandOutputRecord `json:"commandOutputs,omitempty"`
+	// SkippedLines counts trace lines the reader dropped for exceeding
+	// its per-line cap. A non-zero value marks the recording as partial.
+	SkippedLines int `json:"skippedLines,omitempty"`
 }
 
 // BudgetCheck holds the result of a token budget check.

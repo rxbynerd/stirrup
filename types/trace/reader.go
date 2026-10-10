@@ -5,6 +5,7 @@ package trace
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -41,6 +42,13 @@ type Reader struct {
 	closer  io.Closer
 	scanner *bufio.Scanner
 	logger  *slog.Logger
+
+	// skipped counts lines longer than MaxLineBytes that the scanner
+	// discarded; discarding is true while the tail of such a line is
+	// still being dropped. Both live on the Reader so they survive
+	// resetScanner.
+	skipped    int
+	discarding bool
 }
 
 // ReaderOption customises a Reader.
@@ -62,15 +70,20 @@ func WithLogger(l *slog.Logger) ReaderOption {
 // Close on the returned Reader does NOT close r.
 func NewReader(r io.Reader, opts ...ReaderOption) *Reader {
 	reader := &Reader{
-		src:     r,
-		logger:  slog.Default(),
-		scanner: bufio.NewScanner(r),
+		src:    r,
+		logger: slog.Default(),
 	}
-	reader.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
+	reader.resetScanner()
 	for _, opt := range opts {
 		opt(reader)
 	}
 	return reader
+}
+
+// SkippedLines reports how many lines longer than MaxLineBytes the
+// reader has discarded so far.
+func (r *Reader) SkippedLines() int {
+	return r.skipped
 }
 
 // Open opens path for reading and returns a Reader that owns the file.
@@ -104,6 +117,35 @@ func (r *Reader) Close() error {
 func (r *Reader) resetScanner() {
 	r.scanner = bufio.NewScanner(r.src)
 	r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
+	r.scanner.Split(r.splitLines)
+}
+
+// splitLines is bufio.ScanLines that drops lines longer than
+// MaxLineBytes instead of failing the scan. Once the buffer holds
+// MaxLineBytes without a newline, the buffered bytes are discarded and
+// every following byte up to and including the next newline is dropped
+// as well, so the scanner resumes on the next line boundary.
+func (r *Reader) splitLines(data []byte, atEOF bool) (int, []byte, error) {
+	if r.discarding {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			r.discarding = false
+			return i + 1, nil, nil
+		}
+		return len(data), nil, nil
+	}
+	advance, token, err := bufio.ScanLines(data, atEOF)
+	if token != nil || advance > 0 || err != nil {
+		return advance, token, err
+	}
+	if len(data) >= MaxLineBytes {
+		r.skipped++
+		r.discarding = true
+		r.logger.Debug("trace.Reader: skip oversized line",
+			"cap", MaxLineBytes,
+		)
+		return len(data), nil, nil
+	}
+	return 0, nil, nil
 }
 
 // Next returns the next RunTrace record in the stream. Both wire
@@ -111,8 +153,8 @@ func (r *Reader) resetScanner() {
 // it yields only run_finished events, skipping the rest.
 //
 // Malformed lines and lines exceeding MaxLineBytes are skipped with a
-// slog.Debug log. Returns io.EOF when exhausted; other scanner errors
-// are surfaced verbatim.
+// slog.Debug log; SkippedLines reports the oversized count. Returns
+// io.EOF when exhausted; other scanner errors are surfaced verbatim.
 func (r *Reader) Next() (*types.RunTrace, error) {
 	for r.scanner.Scan() {
 		line := r.scanner.Bytes()
@@ -133,14 +175,6 @@ func (r *Reader) Next() (*types.RunTrace, error) {
 		return trace, nil
 	}
 	if err := r.scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			r.logger.Debug("trace.Reader: skip oversized line",
-				"cap", MaxLineBytes,
-			)
-			r.scanner = bufio.NewScanner(r.src)
-			r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
-			return r.Next()
-		}
 		return nil, fmt.Errorf("reading trace file: %w", err)
 	}
 	return nil, io.EOF
@@ -222,6 +256,10 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 // FinalOutcome.ID == "". A legacy single-blob trace is treated as a
 // recording with no transcript turns.
 //
+// Lines longer than MaxLineBytes are dropped without discarding the
+// records around them; RunRecording.SkippedLines reports how many, and
+// a non-zero count means the recording is incomplete.
+//
 // The reader is consumed end-to-end; the caller does not call Next
 // afterwards.
 func (r *Reader) ReadRecording() (*types.RunRecording, error) {
@@ -295,15 +333,15 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			// unknown kind: skip.
 		}
 	}
+	recording.SkippedLines = r.skipped
+	if r.skipped > 0 {
+		r.logger.Warn("trace.Reader: recording is partial; oversized lines were skipped",
+			"skippedLines", r.skipped,
+			"cap", MaxLineBytes,
+			"runId", recording.RunID,
+		)
+	}
 	if err := r.scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			r.logger.Debug("trace.Reader: skip oversized line",
-				"cap", MaxLineBytes,
-			)
-			r.scanner = bufio.NewScanner(r.src)
-			r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
-			return r.ReadRecording()
-		}
 		return recording, fmt.Errorf("reading trace file: %w", err)
 	}
 	synthesizeLegacyCommandOutputs(recording)

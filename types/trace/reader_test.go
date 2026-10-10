@@ -446,3 +446,199 @@ func TestReadRecording_LegacyFormat(t *testing.T) {
 		t.Errorf("FinalOutcome.ID: got %q, want run-legacy", rec.FinalOutcome.ID)
 	}
 }
+
+// oversizedEvent returns a turn_record line longer than MaxLineBytes.
+func oversizedEvent(t *testing.T, turn int) []byte {
+	t.Helper()
+	return mustMarshal(t, map[string]any{
+		"kind": "turn_record",
+		"turn": turn,
+		"modelOutput": []types.ContentBlock{
+			{Type: "text", Text: strings.Repeat("x", MaxLineBytes+8)},
+		},
+	})
+}
+
+func turnEvent(t *testing.T, turn int) []byte {
+	t.Helper()
+	return mustMarshal(t, map[string]any{"kind": "turn_record", "turn": turn})
+}
+
+func joinLines(trailingNewline bool, lines ...[]byte) []byte {
+	out := bytes.Join(lines, []byte("\n"))
+	if trailingNewline {
+		out = append(out, '\n')
+	}
+	return out
+}
+
+// TestReadRecording_OversizedLineKeepsRecording pins that an oversized
+// line is dropped without discarding the records read before or after
+// it, and that the drop is counted.
+func TestReadRecording_OversizedLineKeepsRecording(t *testing.T) {
+	started := mustMarshal(t, map[string]any{
+		"kind":   "run_started",
+		"runId":  "run-big",
+		"config": types.RunConfig{RunID: "run-big", Mode: "execution"},
+	})
+	finished := mustMarshal(t, map[string]any{
+		"kind":  "run_finished",
+		"trace": types.RunTrace{ID: "run-big", Outcome: "success"},
+	})
+
+	tests := []struct {
+		name      string
+		input     []byte
+		wantTurns []int
+		wantSkips int
+		wantDone  bool
+	}{
+		{
+			name: "oversized line between turns",
+			input: joinLines(true, started, turnEvent(t, 0), oversizedEvent(t, 1),
+				turnEvent(t, 2), finished),
+			wantTurns: []int{0, 2},
+			wantSkips: 1,
+			wantDone:  true,
+		},
+		{
+			name: "two oversized lines separated by a valid line",
+			input: joinLines(true, started, oversizedEvent(t, 0), turnEvent(t, 1),
+				oversizedEvent(t, 2), turnEvent(t, 3), finished),
+			wantTurns: []int{1, 3},
+			wantSkips: 2,
+			wantDone:  true,
+		},
+		{
+			name:      "oversized last line with trailing newline",
+			input:     joinLines(true, started, turnEvent(t, 0), oversizedEvent(t, 1)),
+			wantTurns: []int{0},
+			wantSkips: 1,
+		},
+		{
+			name:      "oversized last line without trailing newline",
+			input:     joinLines(false, started, turnEvent(t, 0), oversizedEvent(t, 1)),
+			wantTurns: []int{0},
+			wantSkips: 1,
+		},
+		{
+			name:      "no oversized line",
+			input:     joinLines(true, started, turnEvent(t, 0), turnEvent(t, 1), finished),
+			wantTurns: []int{0, 1},
+			wantDone:  true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewReader(bytes.NewReader(tc.input), WithLogger(discardLogger()))
+			rec, err := r.ReadRecording()
+			if err != nil {
+				t.Fatalf("ReadRecording: %v", err)
+			}
+			if rec.RunID != "run-big" || rec.Config.Mode != "execution" {
+				t.Errorf("run_started lost: RunID=%q Mode=%q", rec.RunID, rec.Config.Mode)
+			}
+			var gotTurns []int
+			for _, tr := range rec.Turns {
+				gotTurns = append(gotTurns, tr.Turn)
+			}
+			if len(gotTurns) != len(tc.wantTurns) {
+				t.Fatalf("turns: got %v, want %v", gotTurns, tc.wantTurns)
+			}
+			for i := range gotTurns {
+				if gotTurns[i] != tc.wantTurns[i] {
+					t.Fatalf("turns: got %v, want %v", gotTurns, tc.wantTurns)
+				}
+			}
+			if rec.SkippedLines != tc.wantSkips {
+				t.Errorf("SkippedLines: got %d, want %d", rec.SkippedLines, tc.wantSkips)
+			}
+			if r.SkippedLines() != tc.wantSkips {
+				t.Errorf("Reader.SkippedLines: got %d, want %d", r.SkippedLines(), tc.wantSkips)
+			}
+			if done := rec.FinalOutcome.ID != ""; done != tc.wantDone {
+				t.Errorf("run_finished seen: got %v, want %v", done, tc.wantDone)
+			}
+		})
+	}
+}
+
+// TestReadRecording_OversizedLineWarns pins that a non-zero skipped
+// count is logged at warn level with the count.
+func TestReadRecording_OversizedLineWarns(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	input := joinLines(true, turnEvent(t, 0), oversizedEvent(t, 1))
+
+	r := NewReader(bytes.NewReader(input), WithLogger(logger))
+	if _, err := r.ReadRecording(); err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "skippedLines=1") {
+		t.Errorf("warn log = %q, want a WARN line with skippedLines=1", out)
+	}
+}
+
+// TestReadRecording_NoSkipNoWarn pins that a clean file neither warns
+// nor sets SkippedLines, which stays out of the serialised recording.
+func TestReadRecording_NoSkipNoWarn(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	r := NewReader(bytes.NewReader(joinLines(true, turnEvent(t, 0))), WithLogger(logger))
+	rec, err := r.ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("unexpected log output: %q", logs.String())
+	}
+	if rec.SkippedLines != 0 {
+		t.Errorf("SkippedLines: got %d, want 0", rec.SkippedLines)
+	}
+	if strings.Contains(string(mustMarshal(t, rec)), "skippedLines") {
+		t.Error("skippedLines serialised for a complete recording")
+	}
+}
+
+// TestReader_OversizedTailIsNotReadAsRecord pins that the bytes of an
+// oversized line past the cap are discarded rather than parsed as a
+// record: the tail here is itself a valid run_finished line.
+func TestReader_OversizedTailIsNotReadAsRecord(t *testing.T) {
+	tail := mustMarshal(t, types.RunTrace{ID: "tail-fragment"})
+	var line bytes.Buffer
+	line.Write(bytes.Repeat([]byte(" "), MaxLineBytes+16))
+	line.Write(tail)
+	good := mustMarshal(t, types.RunTrace{ID: "after"})
+
+	r := NewReader(bytes.NewReader(joinLines(true, line.Bytes(), good)), WithLogger(discardLogger()))
+	got, err := r.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "after" {
+		t.Fatalf("got %+v, want only the record after the oversized line", got)
+	}
+	if r.SkippedLines() != 1 {
+		t.Errorf("SkippedLines: got %d, want 1", r.SkippedLines())
+	}
+}
+
+// TestReader_LineAtCapIsKept pins the boundary: a line of
+// MaxLineBytes-1 bytes plus its newline is read, not skipped.
+func TestReader_LineAtCapIsKept(t *testing.T) {
+	base := mustMarshal(t, types.RunTrace{ID: "edge"})
+	pad := bytes.Repeat([]byte(" "), MaxLineBytes-1-len(base))
+	line := append(append([]byte{}, base...), pad...)
+	if len(line) != MaxLineBytes-1 {
+		t.Fatalf("test line length %d", len(line))
+	}
+	r := NewReader(bytes.NewReader(joinLines(true, line)), WithLogger(discardLogger()))
+	got, err := r.All()
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "edge" || r.SkippedLines() != 0 {
+		t.Fatalf("got %+v skipped=%d, want the edge record and no skips", got, r.SkippedLines())
+	}
+}
