@@ -2033,6 +2033,40 @@ func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_ProtectedWriteTargetsPreserved pins
+// ToolsConfig.protected_write_targets across a wire round-trip and checks
+// the translated slice does not alias the proto message.
+func TestRunConfigFromProto_ProtectedWriteTargetsPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			ProtectedWriteTargets: []string{"AGENTS.md", "config/policies/"},
+		},
+	}
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+	want := []string{"AGENTS.md", "config/policies/"}
+	if !reflect.DeepEqual(rc.Tools.ProtectedWriteTargets, want) {
+		t.Fatalf("ProtectedWriteTargets: got %v, want %v", rc.Tools.ProtectedWriteTargets, want)
+	}
+
+	decoded.Tools.ProtectedWriteTargets[0] = "mutated"
+	if rc.Tools.ProtectedWriteTargets[0] != "AGENTS.md" {
+		t.Errorf("translated ProtectedWriteTargets aliases the proto's backing data: got %q", rc.Tools.ProtectedWriteTargets[0])
+	}
+
+	if empty := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}}); empty.Tools.ProtectedWriteTargets != nil {
+		t.Errorf("unset protected_write_targets should map to nil, got %v", empty.Tools.ProtectedWriteTargets)
+	}
+}
+
 // TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
 // field's translation: the budget is not enforced, but dropping it here
 // would swallow the value before ValidateRunConfig can warn that the cap

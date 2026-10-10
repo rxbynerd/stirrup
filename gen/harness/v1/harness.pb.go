@@ -5423,8 +5423,16 @@ type ToolsConfig struct {
 	// run_command and read_command_output bound their own output and are
 	// exempt. 0 selects 102400 (100 KiB); otherwise 1024..1048576.
 	MaxResultBytes int32 `protobuf:"varint,7,opt,name=max_result_bytes,json=maxResultBytes,proto3" json:"max_result_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Optional. Workspace-relative paths that write tools (write_file,
+	// edit_file, search_replace, apply_diff, and workspace-mutating tools
+	// whose name contains "write") may not target. An entry ending in "/"
+	// protects that directory and everything beneath it; any other entry
+	// protects exactly that path. Entries must be relative, without ".."
+	// segments or glob characters; at most 64. Files loaded through
+	// repository_guidance are protected in addition. Empty by default.
+	ProtectedWriteTargets []string `protobuf:"bytes,8,rep,name=protected_write_targets,json=protectedWriteTargets,proto3" json:"protected_write_targets,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *ToolsConfig) Reset() {
@@ -5490,6 +5498,13 @@ func (x *ToolsConfig) GetMaxResultBytes() int32 {
 		return x.MaxResultBytes
 	}
 	return 0
+}
+
+func (x *ToolsConfig) GetProtectedWriteTargets() []string {
+	if x != nil {
+		return x.ProtectedWriteTargets
+	}
+	return nil
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte
@@ -6202,14 +6217,15 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
 	"\x14PlatformOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf1\x02\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
 	"mcpServers\x12O\n" +
 	"\rcontrol_plane\x18\x03 \x03(\v2*.stirrup.harness.v1.ControlPlaneToolConfigR\fcontrolPlane\x12N\n" +
 	"\x0ecommand_output\x18\x06 \x01(\v2'.stirrup.harness.v1.CommandOutputConfigR\rcommandOutput\x12(\n" +
-	"\x10max_result_bytes\x18\a \x01(\x05R\x0emaxResultBytes\"\xa8\x02\n" +
+	"\x10max_result_bytes\x18\a \x01(\x05R\x0emaxResultBytes\x126\n" +
+	"\x17protected_write_targets\x18\b \x03(\tR\x15protectedWriteTargets\"\xa8\x02\n" +
 	"\x13CommandOutputConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12'\n" +
 	"\x0ffailure_posture\x18\x02 \x01(\tR\x0efailurePosture\x12(\n" +

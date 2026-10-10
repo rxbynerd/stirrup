@@ -694,6 +694,9 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 		BuiltIn:        pc.BuiltIn,
 		MaxResultBytes: int(pc.MaxResultBytes),
 	}
+	if targets := pc.GetProtectedWriteTargets(); len(targets) > 0 {
+		tc.ProtectedWriteTargets = append([]string(nil), targets...)
+	}
 	for _, srv := range pc.McpServers {
 		tc.MCPServers = append(tc.MCPServers, types.MCPServerConfig{
 			Name:            srv.Name,
