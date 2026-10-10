@@ -600,6 +600,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, sandboxRefresher)
 	}
 
+	var guidance prompt.GuidanceLoader
+	if config.RepositoryGuidance != nil {
+		guidance = prompt.NewRepositoryGuidanceLoader(*config.RepositoryGuidance, exec)
+	}
+
 	loop := &AgenticLoop{
 		Provider:             prov,
 		Providers:            providers,
@@ -616,6 +621,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		RuleOfTwo:            rot,
 		Escalation:           escalation,
 		Hooks:                hooksRunner,
+		Guidance:             guidance,
 		Transport:            tp,
 		Trace:                te,
 		DegradedCapabilities: degradedCapabilities,

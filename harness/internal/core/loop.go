@@ -255,9 +255,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	// Runs before Prompt.Build and Git.Setup: the deterministic git strategy
-	// commits into whatever repository the workspace holds, so a clone hook
-	// must run first. A nil Hooks is a no-op. See
+	// Runs before Prompt.Build and Git.Setup: guidance is read from,
+	// and the deterministic git strategy assumes, a checkout a clone hook
+	// may create. A nil Hooks is a no-op. See
 	// docs/configuration.md#lifecycle-hooks.
 	if l.Hooks != nil {
 		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
@@ -272,17 +272,25 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	// Built after the pre-run hooks so a clone hook can populate the
-	// workspace the builder reads.
+	l.repositoryGuidance = nil
+	if l.Guidance != nil {
+		docs, err := l.Guidance.Load(runCtx)
+		if err != nil {
+			return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "setup_failed"), fmt.Errorf("repository guidance: %w", err), stopHeartbeat)
+		}
+		l.repositoryGuidance = docs
+	}
+
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
-		Mode:           config.Mode,
-		Workspace:      config.Executor.Workspace,
-		Executor:       l.Executor,
-		MaxTurns:       config.MaxTurns,
-		Model:          promptModel,
-		DynamicContext: dynamicContext,
-		OutputSchema:   config.OutputSchema,
+		Mode:               config.Mode,
+		Workspace:          config.Executor.Workspace,
+		Executor:           l.Executor,
+		MaxTurns:           config.MaxTurns,
+		Model:              promptModel,
+		DynamicContext:     dynamicContext,
+		OutputSchema:       config.OutputSchema,
+		RepositoryGuidance: l.repositoryGuidance,
 	})
 	if err != nil {
 		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
@@ -298,6 +306,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// this is recorded regardless of content-capture settings.
 	if recorder, ok := l.Trace.(trace.PromptResolutionRecorder); ok {
 		recorder.RecordPromptResolution(promptModel, prompt.TierFor(promptModel))
+	}
+
+	if recorder, ok := l.Trace.(trace.RepositoryGuidanceRecorder); ok && len(l.repositoryGuidance) > 0 {
+		records := make([]types.RepositoryGuidanceRecord, len(l.repositoryGuidance))
+		for i, d := range l.repositoryGuidance {
+			records[i] = d.RepositoryGuidanceRecord
+		}
+		recorder.RecordRepositoryGuidance(records)
 	}
 
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")

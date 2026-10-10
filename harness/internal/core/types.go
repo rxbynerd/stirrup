@@ -113,6 +113,9 @@ type AgenticLoop struct {
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
 	Hooks hook.Runner
+	// Guidance loads the run's repositoryGuidance files after the pre-run
+	// hooks; nil loads none. A load error ends the run as setup_failed.
+	Guidance prompt.GuidanceLoader
 	// Shutdown, when non-nil, is a process-lifetime context done when the
 	// process abandons post-run work (the CLI entry points cancel it on a
 	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent
@@ -157,6 +160,11 @@ type AgenticLoop struct {
 	MetricAttrs  []attribute.KeyValue
 	emitReady    bool
 	ownedClosers []io.Closer
+
+	// repositoryGuidance is the guidance the current run loaded, set
+	// before the first turn. Sub-agents render this snapshot instead of
+	// re-reading files the parent run may since have edited.
+	repositoryGuidance []prompt.GuidanceDocument
 
 	// lastContextTokens holds the most recent absolute context-window token
 	// estimate, published after each Context.Prepare and read from the

@@ -14,6 +14,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -128,6 +129,11 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// TraceEmitter, tagged with the child's and parent's runIDs.
 	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID, ctx)
 
+	var childGuidance prompt.GuidanceLoader
+	if len(parent.repositoryGuidance) > 0 {
+		childGuidance = guidanceSnapshot(parent.repositoryGuidance)
+	}
+
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
 		Providers:   parent.Providers,
@@ -144,6 +150,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		// A sub-agent never runs lifecycle hooks, regardless of the
 		// parent's RunConfig.
 		Hooks:             hook.NewNoop(),
+		Guidance:          childGuidance,
 		Transport:         captureTp,
 		Trace:             childTrace,
 		Tracer:            tracer,
@@ -339,4 +346,12 @@ func (t *captureTransport) lastText() string {
 		return ""
 	}
 	return strings.Join(t.segments, "")
+}
+
+// guidanceSnapshot replays guidance a parent run already loaded and
+// verified, so a sub-agent's prompt matches the parent's.
+type guidanceSnapshot []prompt.GuidanceDocument
+
+func (s guidanceSnapshot) Load(context.Context) ([]prompt.GuidanceDocument, error) {
+	return s, nil
 }
