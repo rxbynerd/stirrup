@@ -371,19 +371,25 @@ func followUpExportURI(base, runID string) string {
 type postRunPolicy struct {
 	// emit publishes the run's RunResult (and any stderr summary).
 	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)
-	// firstFollowUpErr is the first required-export failure among the
-	// follow-up runs, surfaced as the process's exit status once the
-	// follow-up window closes. A follow-up's own run error is not
-	// recorded: it is already on that run's "done" and RunResult, and
-	// the exit status reports the assigned task (the primary run).
+	// firstFollowUpErr is the first required-export failure or control
+	// stream loss among the follow-up runs, surfaced as the process's
+	// exit status once the follow-up window closes. A follow-up's other
+	// run errors are not recorded: they are already on that run's "done"
+	// and RunResult, and the exit status reports the assigned task (the
+	// primary run).
 	firstFollowUpErr error
 }
 
 // finaliseFollowUp applies the policy to one completed follow-up run
-// and records the first required-export failure for followUpErr.
+// and records the first required-export failure or control stream loss
+// for followUpErr.
 func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrace, runErr error) {
 	_ = p.finalise(cfg, rt, runErr)
 	if p.firstFollowUpErr != nil || rt == nil {
+		return
+	}
+	if rt.Outcome == "control_stream_lost" {
+		p.firstFollowUpErr = fmt.Errorf("follow-up run %s: %s", cfg.RunID, rt.Error)
 		return
 	}
 	if r := rt.WorkspaceExport; r != nil && r.Required && !r.Delivered() {
@@ -391,8 +397,8 @@ func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrac
 	}
 }
 
-// followUpErr reports the first required-export failure among the
-// follow-up runs, nil when none failed or export was not required.
+// followUpErr reports the first required-export failure or control
+// stream loss among the follow-up runs, nil when there was none.
 func (p *postRunPolicy) followUpErr() error {
 	return p.firstFollowUpErr
 }

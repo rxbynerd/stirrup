@@ -57,7 +57,8 @@ func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
 
 // fakeControlPlane implements just enough of HarnessServiceServer to drive
 // runJob through the assignment wait and into a task_assignment carrying
-// the given RunConfig.
+// the given RunConfig. It then keeps the stream open until the harness
+// half-closes it, as a control plane does while the task runs.
 type fakeControlPlane struct {
 	pb.UnimplementedHarnessServiceServer
 	readyRecv chan struct{}
@@ -80,7 +81,14 @@ func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error
 		<-s.sendTask
 	}
 
-	return stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task})
+	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
+		return err
+	}
+	for {
+		if _, err := stream.Recv(); err != nil {
+			return nil
+		}
+	}
 }
 
 // startControlPlane serves srv over a real TCP listener (runJob only
@@ -293,7 +301,7 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 	tp := &recordingTransport{}
 
-	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"))
+	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), "error")
 
 	if len(tp.events) != 2 {
 		t.Fatalf("emitted %d events (%v), want exactly error then done", len(tp.events), tp.events)
@@ -319,7 +327,7 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 	tp := &recordingTransport{emitErr: errors.New("stream closed")}
 
-	emitTerminalFailure(tp, errors.New("building harness: boom"))
+	emitTerminalFailure(tp, errors.New("building harness: boom"), "error")
 
 	if len(tp.events) != 2 {
 		t.Fatalf("emitted %d events (%v), want both attempted despite emit failure", len(tp.events), tp.events)
@@ -332,7 +340,7 @@ func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 // TestEmitTerminalFailure_NilTransport confirms the helper is safe when
 // no transport was established, so the caller never has to guard it.
 func TestEmitTerminalFailure_NilTransport(t *testing.T) {
-	emitTerminalFailure(nil, errors.New("boom"))
+	emitTerminalFailure(nil, errors.New("boom"), "error")
 }
 
 // recordingControlPlane is the minimal correct control plane from

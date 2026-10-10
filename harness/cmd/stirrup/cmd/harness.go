@@ -1703,6 +1703,8 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
+	stopStreamWatch := watchControlStream(loop.Transport, loop.ControlStreamLost)
+	defer stopStreamWatch()
 
 	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
