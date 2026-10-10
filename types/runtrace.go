@@ -80,16 +80,14 @@ func saturatingAdd(a, b int) int {
 // aggregates must filter on RunID/ParentRunID or sub-agent activity is
 // double-counted.
 type RunTrace struct {
-	ID                string            `json:"id"`
-	Config            RunConfig         `json:"config"`
-	StartedAt         time.Time         `json:"startedAt"`
-	CompletedAt       time.Time         `json:"completedAt"`
-	Turns             int               `json:"turns"`
-	TokenUsage        TokenUsage        `json:"tokenUsage"`
-	ToolCalls         []ToolCallSummary `json:"toolCalls"`
-	PermissionDenials int               `json:"permissionDenials,omitempty"`
-	// VerificationResults holds one entry per verifier attempt, in order.
-	// Empty when the run's verifier is "none" or no attempt ran.
+	ID                  string               `json:"id"`
+	Config              RunConfig            `json:"config"`
+	StartedAt           time.Time            `json:"startedAt"`
+	CompletedAt         time.Time            `json:"completedAt"`
+	Turns               int                  `json:"turns"`
+	TokenUsage          TokenUsage           `json:"tokenUsage"`
+	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
+	PermissionDenials   int                  `json:"permissionDenials,omitempty"`
 	VerificationResults []VerificationResult `json:"verificationResults"`
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
@@ -306,9 +304,11 @@ type ToolCallSummary struct {
 
 // VerificationResult holds the outcome of a verification check.
 //
-// On RunTrace.VerificationResults, Attempt is the 1-based attempt number
-// and Error is set, with Passed false, when the verifier itself failed
-// to produce a verdict. Recorded strings are scrubbed and capped.
+// RunTrace.VerificationResults holds one per verifier attempt, in order,
+// and is empty when the run's verifier is "none". There, Attempt is the
+// 1-based attempt number and Error is set, with Passed false, when the
+// verifier failed to produce a verdict. Recorded strings are scrubbed
+// and capped.
 type VerificationResult struct {
 	Attempt  int            `json:"attempt,omitempty"`
 	Passed   bool           `json:"passed"`
