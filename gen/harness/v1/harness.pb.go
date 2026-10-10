@@ -5809,9 +5809,11 @@ type PostEditCheck struct {
 	// file's base name; a glob containing "/" matches the cleaned
 	// workspace-relative path. Max 256 bytes.
 	Glob string `protobuf:"bytes,1,opt,name=glob,proto3" json:"glob,omitempty"`
-	// Required. Shell command executed via "sh -c". Each "{path}" is
-	// replaced by the edited path in POSIX single quotes. Must not contain
-	// a "secret://" reference. Max 16 KB.
+	// Required. Shell command executed via "sh -c"; only a non-zero exit
+	// reports a problem. Each "{path}" expands to a reference to the
+	// exported STIRRUP_EDITED_PATH variable, one word whether bare or
+	// double-quoted; "'{path}'" is rejected. Must not contain a
+	// "secret://" reference. Max 16 KB.
 	Command string `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
 	// Optional. Timeout in seconds for one execution. Zero resolves to
 	// 60 s; max 600. A timeout adds a warning to the tool result and does
