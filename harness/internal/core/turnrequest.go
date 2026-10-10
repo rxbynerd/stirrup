@@ -200,7 +200,12 @@ func (l *AgenticLoop) requestProvider(
 	retryOverflow bool,
 ) providerAttempt {
 	start := time.Now()
-	retrier := &turnRetrier{policy: turnRetryPolicyFor(config, selection.Provider)}
+	// A batch turn is not retried: a retry would submit and wait out a
+	// fresh batch.
+	retrier := &turnRetrier{}
+	if _, isBatch := selectedProvider.(batchModeAdapter); !isBatch {
+		retrier.policy = turnRetryPolicyFor(config, selection.Provider)
+	}
 	var discarded types.TokenUsage
 
 	for attemptNo := 1; ; attemptNo++ {

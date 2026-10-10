@@ -592,3 +592,27 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 		})
 	}
 }
+
+// batchTurnProvider reports itself as a batch adapter and fails every
+// turn with a retryable error.
+type batchTurnProvider struct {
+	scriptedTurnProvider
+}
+
+func (p *batchTurnProvider) LastBatchID() string { return "msgbatch_test" }
+
+func TestLoop_TurnRetry_SkipsBatchTurns(t *testing.T) {
+	prov := &batchTurnProvider{scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}}
+	h := newRetryHarness(t, prov)
+
+	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "error" {
+		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
+	}
+	if n := prov.callCount(); n != 1 {
+		t.Errorf("Stream calls = %d, want 1: a batch turn must not be resubmitted", n)
+	}
+}
