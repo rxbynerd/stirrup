@@ -676,9 +676,6 @@ func (e *JSONLTraceEmitter) redactConfig(config *types.RunConfig) types.RunConfi
 	return redacted
 }
 
-// scrubOrPass returns security.Scrub(s), or s verbatim under the --debug
-// bypass. Centralised so every scrub call site here and in otel.go reads
-// identically rather than hand-rolling the conditional.
 // scrubPostEditCheck re-scrubs the model- and operator-derived strings of
 // a post-edit check record so the persisted trace does not depend on the
 // checker having scrubbed them.
@@ -689,6 +686,9 @@ func scrubPostEditCheck(r types.PostEditCheckRecord, redactionDisabled bool) typ
 	return r
 }
 
+// scrubOrPass returns security.Scrub(s), or s verbatim under the --debug
+// bypass. Centralised so every scrub call site here and in otel.go reads
+// identically rather than hand-rolling the conditional.
 func scrubOrPass(s string, redactionDisabled bool) string {
 	if redactionDisabled {
 		return s

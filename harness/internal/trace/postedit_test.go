@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/codes"
 
@@ -112,7 +113,7 @@ func TestOTelTraceEmitter_RecordPostEditCheck_EmitsSpanAndAggregates(t *testing.
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-otel-post-edit", &types.RunConfig{RunID: "run-otel-post-edit"})
 
-	emitter.RecordPostEditCheck(types.PostEditCheckRecord{Tool: "edit_file", Path: "a.go", Command: "go vet", ExitCode: 2, DurationMs: 9})
+	emitter.RecordPostEditCheck(types.PostEditCheckRecord{Tool: "edit_file", Path: "a.go", Command: "go vet", ExitCode: 2, DurationMs: 900})
 	emitter.RecordPostEditCheck(types.PostEditCheckRecord{Tool: "edit_file", Path: "b.go", Command: "go vet"})
 
 	trace, err := emitter.Finish(context.Background(), "success")
@@ -135,6 +136,9 @@ func TestOTelTraceEmitter_RecordPostEditCheck_EmitsSpanAndAggregates(t *testing.
 		}
 		if attrs["post_edit_check.command"] != "go vet" {
 			t.Errorf("span attributes = %v", attrs)
+		}
+		if want := time.Duration(attrs["post_edit_check.duration_ms"].(int64)) * time.Millisecond; s.EndTime.Sub(s.StartTime) != want {
+			t.Errorf("span lasts %s, want the check duration %s", s.EndTime.Sub(s.StartTime), want)
 		}
 		failed := attrs["post_edit_check.exit_code"] != int64(0)
 		if failed != (s.Status.Code == codes.Error) {

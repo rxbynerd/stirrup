@@ -524,7 +524,11 @@ func (e *OTelTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord)
 		attribute.Int64("post_edit_check.duration_ms", scrubbed.DurationMs),
 		attribute.Bool("post_edit_check.timed_out", scrubbed.TimedOut),
 	}
-	_, span := e.tracer.Start(e.rootCtx, "post_edit_check", oteltrace.WithAttributes(attrs...))
+	end := time.Now()
+	_, span := e.tracer.Start(e.rootCtx, "post_edit_check",
+		oteltrace.WithAttributes(attrs...),
+		oteltrace.WithTimestamp(end.Add(-time.Duration(scrubbed.DurationMs)*time.Millisecond)),
+	)
 	if scrubbed.Failed() {
 		status := fmt.Sprintf("exit code %d", scrubbed.ExitCode)
 		if scrubbed.Error != "" {
@@ -532,7 +536,7 @@ func (e *OTelTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord)
 		}
 		span.SetStatus(codes.Error, status)
 	}
-	span.End()
+	span.End(oteltrace.WithTimestamp(end))
 }
 
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
