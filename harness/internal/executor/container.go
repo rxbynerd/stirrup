@@ -514,14 +514,15 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 }
 
 // ListDirectory lists entries in a directory inside the container by running
-// ls -1a via exec. This is simpler than parsing tar directory listings.
+// ls -1Ap via exec, so directories carry the trailing-slash marker. This is
+// simpler than parsing tar directory listings.
 func (e *ContainerExecutor) ListDirectory(ctx context.Context, dirPath string) ([]string, error) {
 	resolved, err := e.ResolvePath(dirPath)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := e.execInContainer(ctx, []string{"ls", "-1a", resolved}, e.workspace, defaultTimeout)
+	result, err := e.execInContainer(ctx, []string{"ls", "-1Ap", "--", resolved}, e.workspace, defaultTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("list directory: %w", err)
 	}

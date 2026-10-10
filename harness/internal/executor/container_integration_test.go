@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -181,6 +182,27 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	got, err := exec.ReadFile(ctx, "alias")
 	if err != nil || got != "inside" {
 		t.Errorf("ReadFile(alias) = (%q, %v), want an in-workspace symlink to read its target", got, err)
+	}
+}
+
+// TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine pins the
+// cross-executor listing contract against a real engine: directories carry
+// a trailing slash, files do not, and "." and ".." are absent.
+func TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := liveContainerExecutor(t, ctx, false)
+
+	res, err := exec.Exec(ctx, "mkdir -p sub && echo hi > top.txt && echo nested > sub/nested.txt", 30*time.Second)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("seed workspace: err %v, result %+v", err, res)
+	}
+	entries, err := exec.ListDirectory(ctx, ".")
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+	if !slices.Equal(entries, []string{"sub/", "top.txt"}) {
+		t.Errorf("ListDirectory(.) = %q, want [sub/ top.txt]", entries)
 	}
 }
 
