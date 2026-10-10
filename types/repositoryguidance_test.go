@@ -89,3 +89,26 @@ func manyGuidanceFiles(n int) []string {
 	}
 	return out
 }
+
+// Guidance comes from workspace files the agent can already read, so it
+// adds no Rule-of-Two leg in either tier.
+func TestRepositoryGuidance_DoesNotChangeRuleOfTwoLegs(t *testing.T) {
+	base := validConfig()
+	base.Tools.BuiltIn = []string{"read_file", "run_command"}
+	wantU, wantS, wantE := RuleOfTwoState(base)
+
+	for name, cfg := range map[string]*RepositoryGuidanceConfig{
+		"advisory": {Files: []string{"AGENTS.md"}},
+		"pinned":   {Files: []string{"AGENTS.md"}, PinnedSHA256: map[string]string{"AGENTS.md": testGuidanceDigest}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.Tools.BuiltIn = []string{"read_file", "run_command"}
+			c.RepositoryGuidance = cfg
+			u, s, e := RuleOfTwoState(c)
+			if u != wantU || s != wantS || e != wantE {
+				t.Errorf("RuleOfTwoState = (%v, %v, %v), want (%v, %v, %v) as without guidance", u, s, e, wantU, wantS, wantE)
+			}
+		})
+	}
+}
