@@ -69,6 +69,18 @@ type fakeControlPlane struct {
 	// the readiness marker before the test observes it set, racing the
 	// marker-scoped-to-assignment-wait assertion.
 	sendTask chan struct{}
+
+	// recordEvents, when true, keeps the stream open after the assignment
+	// and appends every HarnessEvent the harness sends to received.
+	recordEvents bool
+	mu           sync.Mutex
+	received     []*pb.HarnessEvent
+}
+
+func (s *fakeControlPlane) receivedEvents() []*pb.HarnessEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pb.HarnessEvent(nil), s.received...)
 }
 
 func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
@@ -85,9 +97,16 @@ func (s *fakeControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error
 		return err
 	}
 	for {
-		if _, err := stream.Recv(); err != nil {
+		ev, err := stream.Recv()
+		if err != nil {
 			return nil
 		}
+		if !s.recordEvents {
+			continue
+		}
+		s.mu.Lock()
+		s.received = append(s.received, ev)
+		s.mu.Unlock()
 	}
 }
 
@@ -592,4 +611,83 @@ func TestJobSessionBudget(t *testing.T) {
 			t.Errorf("budget = %v, want %v", got, run)
 		}
 	})
+}
+
+// TestRunJob_RequiredMCPServerUnreachableSendsErrorThenDone drives the job
+// path with a task whose only MCP server is required and unreachable, and
+// asserts the control plane receives an "error" naming the server followed
+// by "done" with stop_reason "error".
+func TestRunJob_RequiredMCPServerUnreachableSendsErrorThenDone(t *testing.T) {
+	useTempMarkerPaths(t)
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+
+	timeout := int32(30)
+	enforce := false
+	srv := &fakeControlPlane{
+		readyRecv:    make(chan struct{}),
+		recordEvents: true,
+		task: &pb.RunConfig{
+			RunId:            "job-test-required-mcp",
+			Mode:             "execution",
+			Prompt:           "Say hello.",
+			Provider:         &pb.ProviderConfig{Type: "openai-compatible", ApiKeyRef: "secret://TEST_OPENAI_KEY", BaseUrl: "http://127.0.0.1:1"},
+			ModelRouter:      &pb.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o-mini"},
+			PromptBuilder:    &pb.PromptBuilderConfig{Type: "default"},
+			ContextStrategy:  &pb.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+			Executor:         &pb.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+			EditStrategy:     &pb.EditStrategyConfig{Type: "whole-file"},
+			Verifier:         &pb.VerifierConfig{Type: "none"},
+			PermissionPolicy: &pb.PermissionPolicyConfig{Type: "allow-all"},
+			GitStrategy:      &pb.GitStrategyConfig{Type: "none"},
+			TraceEmitter:     &pb.TraceEmitterConfig{Type: "jsonl"},
+			RuleOfTwo:        &pb.RuleOfTwoConfig{Enforce: &enforce},
+			Tools:            &pb.ToolsConfig{McpServers: []*pb.MCPServerConfig{{Name: "docs", Uri: deadURL}}},
+			MaxTurns:         1,
+			Timeout:          &timeout,
+		},
+	}
+	startControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), `required MCP server "docs"`) {
+			t.Fatalf("runJob() error = %v, want a required-MCP-server failure naming docs", err)
+		}
+	case <-time.After(terminalWaitBudget):
+		t.Fatal("runJob did not return after the unreachable required MCP server")
+	}
+
+	deadline := time.Now().Add(eventWaitBudget)
+	for {
+		var errMsg, doneReason string
+		var sawError, sawDone bool
+		for _, ev := range srv.receivedEvents() {
+			switch ev.Type {
+			case "error":
+				sawError, errMsg = true, ev.Message
+			case "done":
+				sawDone, doneReason = true, ev.StopReason
+			}
+		}
+		if sawError && sawDone {
+			if !strings.Contains(errMsg, `required MCP server "docs"`) {
+				t.Errorf("error event message = %q, want the server named", errMsg)
+			}
+			if doneReason != "error" {
+				t.Errorf("done stop_reason = %q, want error", doneReason)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("control plane did not receive error and done; got %v", srv.receivedEvents())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

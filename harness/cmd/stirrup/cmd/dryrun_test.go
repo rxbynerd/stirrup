@@ -242,12 +242,16 @@ func TestWritePreflightText(t *testing.T) {
 		Steps: []core.PreflightStep{
 			{Name: "credentials", Status: core.PreflightFail, Detail: "no key", Hint: "set the env var"},
 			{Name: "mcp", Status: core.PreflightSkip, Detail: "none configured"},
+			{Name: "mcp:docs", Status: core.PreflightWarn, Detail: "optional server down"},
 		},
 		OK: false,
 	}
 	var buf bytes.Buffer
 	writePreflightText(&buf, report)
 	out := buf.String()
+	if !strings.Contains(out, "WARN") || !strings.Contains(out, "optional server down") {
+		t.Errorf("text output should render the warned step, got:\n%s", out)
+	}
 	if !strings.Contains(out, "FAIL") || !strings.Contains(out, "credentials") {
 		t.Errorf("text output should flag the failing step, got:\n%s", out)
 	}

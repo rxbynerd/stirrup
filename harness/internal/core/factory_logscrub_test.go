@@ -46,7 +46,7 @@ func TestBuildLoop_MCPUnavailableWarningIsScrubbed(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 		RuleOfTwo:        disableRuleOfTwo(),
-		Tools:            types.ToolsConfig{MCPServers: []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}},
+		Tools:            types.ToolsConfig{MCPServers: []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: true}}},
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -76,7 +76,7 @@ func TestBuildLoop_MCPUnavailableWarningIsScrubbed(t *testing.T) {
 	if buildErr != nil {
 		t.Fatalf("BuildLoopWithTransport: %v", buildErr)
 	}
-	if !strings.Contains(stderr, "MCP server unavailable") {
+	if !strings.Contains(stderr, "optional MCP server degraded") {
 		t.Fatalf("expected the MCP unavailable warning on stderr, got: %s", stderr)
 	}
 	if strings.Contains(stderr, echoedKey) {

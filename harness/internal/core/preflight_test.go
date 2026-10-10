@@ -327,6 +327,72 @@ func TestPreflight_MCP_Fail(t *testing.T) {
 	}
 }
 
+func TestPreflight_MCP_OptionalUnreachableWarns(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpProbeServer(t, true)
+	defer mcpSrv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: true}}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !report.OK {
+		t.Fatalf("an unreachable optional MCP server must not fail the report; steps: %+v", report.Steps)
+	}
+	if st, _ := stepStatus(report, "mcp:docs"); st != PreflightWarn {
+		t.Errorf("mcp step = %v, want warn", st)
+	}
+}
+
+func TestPreflight_MCP_MissingAllowedTool(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpToolsServer(t, "search")
+
+	for _, tc := range []struct {
+		name     string
+		optional bool
+		wantOK   bool
+		want     PreflightStatus
+	}{
+		{"required", false, false, PreflightFail},
+		{"optional", true, true, PreflightWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := preflightTestConfig(t, srv.URL+"/v1")
+			cfg.Tools.MCPServers = []types.MCPServerConfig{{
+				Name:         "docs",
+				URI:          mcpSrv.URL,
+				AllowedTools: []string{"search", "fetch"},
+				Optional:     tc.optional,
+			}}
+
+			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+			if err != nil {
+				t.Fatalf("Preflight: %v", err)
+			}
+			if report.OK != tc.wantOK {
+				t.Errorf("report.OK = %v, want %v", report.OK, tc.wantOK)
+			}
+			st, _ := stepStatus(report, "mcp:docs")
+			if st != tc.want {
+				t.Errorf("mcp step = %v, want %v", st, tc.want)
+			}
+			for _, step := range report.Steps {
+				if step.Name == "mcp:docs" && !strings.Contains(step.Detail, "fetch") {
+					t.Errorf("step detail should name the missing tool, got %q", step.Detail)
+				}
+			}
+		})
+	}
+}
+
 func TestPreflight_Egress_Skip(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)

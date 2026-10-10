@@ -278,24 +278,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		sandboxRefresher = refresher
 	}
 
-	// 5. MCP tool discovery. Connection failures are non-fatal: the
-	// server's tools are skipped so the harness still runs with its
-	// built-in tools. mcpClient is retained so Metrics can be
-	// field-injected once the run's metrics instance exists below.
-	var mcpClient *mcp.Client
-	if len(config.Tools.MCPServers) > 0 {
-		mcpClient = mcp.NewClient(registry, nil)
-		// Metrics is field-injected later, once the run's metrics instance exists.
-		mcpClient.Logger = logger
-		ownedClosers = append(ownedClosers, mcpClient)
-		for _, srv := range config.Tools.MCPServers {
-			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
-				logger.Warn("MCP server unavailable, skipping its tools", "server", srv.Name, "error", err)
-			}
-		}
-	}
-
-	// 6. Transport — use the injected one if provided, otherwise build
+	// 5. Transport — use the injected one if provided, otherwise build
 	// from config; built before buildComponents because the ask-upstream
 	// permission policy needs it.
 	if tp == nil {
@@ -314,6 +297,24 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	case *transport.GRPCTransport:
 		t.Security = secLogger
+	}
+
+	// 6. MCP tool discovery, after the transport so an optional server's
+	// failure can be announced as a warning event. A required server's
+	// failure aborts construction; see connectMCPServers. mcpClient is
+	// retained so Metrics can be field-injected once the run's metrics
+	// instance exists below.
+	var mcpClient *mcp.Client
+	var degradedCapabilities []types.DegradedCapability
+	if len(config.Tools.MCPServers) > 0 {
+		mcpClient = mcp.NewClient(registry, nil)
+		mcpClient.Logger = logger
+		ownedClosers = append(ownedClosers, mcpClient)
+		degradedCapabilities, err = connectMCPServers(ctx, mcpClient, config.Tools.MCPServers, secrets, tp, logger)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
 	}
 
 	// 7. Probe-eligible components (providers, permission policy, trace
@@ -599,30 +600,31 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	loop := &AgenticLoop{
-		Provider:     prov,
-		Providers:    providers,
-		Router:       rtr,
-		Prompt:       pb,
-		Context:      cs,
-		Tools:        registry,
-		Executor:     exec,
-		Edit:         es,
-		Verifier:     v,
-		Permissions:  pp,
-		Git:          gs,
-		GuardRail:    gr,
-		RuleOfTwo:    rot,
-		Escalation:   escalation,
-		Hooks:        hooksRunner,
-		Transport:    tp,
-		Trace:        te,
-		Tracer:       tracer,
-		Metrics:      metrics,
-		Security:     secLogger,
-		Logger:       logger,
-		LogScope:     logScope,
-		emitReady:    emitReady,
-		ownedClosers: ownedClosers,
+		Provider:             prov,
+		Providers:            providers,
+		Router:               rtr,
+		Prompt:               pb,
+		Context:              cs,
+		Tools:                registry,
+		Executor:             exec,
+		Edit:                 es,
+		Verifier:             v,
+		Permissions:          pp,
+		Git:                  gs,
+		GuardRail:            gr,
+		RuleOfTwo:            rot,
+		Escalation:           escalation,
+		Hooks:                hooksRunner,
+		Transport:            tp,
+		Trace:                te,
+		DegradedCapabilities: degradedCapabilities,
+		Tracer:               tracer,
+		Metrics:              metrics,
+		Security:             secLogger,
+		Logger:               logger,
+		LogScope:             logScope,
+		emitReady:            emitReady,
+		ownedClosers:         ownedClosers,
 	}
 	// Compat profiles add no context windows, so the default registry
 	// serves every provider.

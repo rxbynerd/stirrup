@@ -45,6 +45,10 @@ const (
 	PreflightSkip PreflightStatus = "skip"
 	// PreflightFail marks a step whose construction or probe failed.
 	PreflightFail PreflightStatus = "fail"
+	// PreflightWarn marks a probe that failed on a component the run can
+	// proceed without, such as an optional MCP server. It does not fail
+	// the report.
+	PreflightWarn PreflightStatus = "warn"
 )
 
 // PreflightStep is one line of the preflight report.
@@ -60,7 +64,7 @@ type PreflightStep struct {
 
 // PreflightReport is the structured result of a dry-run. It is
 // JSON-serialisable for --output=json. OK is true when no step failed
-// (skips do not fail the run).
+// (skips and warnings do not fail the run).
 type PreflightReport struct {
 	Steps []PreflightStep `json:"steps"`
 	OK    bool            `json:"ok"`
@@ -118,6 +122,9 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	skip := func(name, detail string) { add(PreflightStep{Name: name, Status: PreflightSkip, Detail: detail}) }
 	fail := func(name string, err error, hint string) {
 		add(PreflightStep{Name: name, Status: PreflightFail, Detail: err.Error(), Hint: hint})
+	}
+	warn := func(name string, err error) {
+		add(PreflightStep{Name: name, Status: PreflightWarn, Detail: err.Error()})
 	}
 
 	err := types.ValidateRunConfig(config)
@@ -201,7 +208,7 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		runProbeStep(ctx, config, step, opts, ok, skip, fail)
 	}
 
-	preflightMCP(ctx, config, secrets, opts, ok, skip, fail)
+	preflightMCP(ctx, config, secrets, opts, ok, skip, warn, fail)
 
 	preflightEgress(ctx, config, opts, ok, skip, fail)
 	// No dedicated --no-probe gate: the probe is a read-only
@@ -455,9 +462,9 @@ func providerProbeDetail(providerType string) string {
 }
 
 // preflightMCP probes every configured MCP server. Gated by
-// --no-probe-mcp. A configured server that does not answer the
-// tools/list handshake fails the dry-run; an operator who expects a
-// server to be down can suppress the probe with --no-probe-mcp.
+// --no-probe-mcp. A required server that does not answer the tools/list
+// handshake, or does not advertise every allowlisted tool, fails the
+// dry-run; the same failure on an optional server is a warning.
 func preflightMCP(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -465,6 +472,7 @@ func preflightMCP(
 	opts PreflightOptions,
 	ok func(string, string),
 	skip func(string, string),
+	warn func(string, error),
 	fail func(string, error, string),
 ) {
 	if len(config.Tools.MCPServers) == 0 {
@@ -479,7 +487,11 @@ func preflightMCP(
 			continue
 		}
 		if err := client.Probe(ctx, srv, secrets); err != nil {
-			fail(step, err, "check the MCP server URI is reachable and the auth ref resolves (or pass --no-probe-mcp)")
+			if srv.Optional {
+				warn(step, err)
+				continue
+			}
+			fail(step, err, "check the MCP server URI is reachable, the auth ref resolves and allowedTools are all advertised, or mark the server optional (or pass --no-probe-mcp)")
 			continue
 		}
 		ok(step, "initialize/tools/list handshake succeeded")

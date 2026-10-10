@@ -1409,7 +1409,7 @@ func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
 
 // runDryRun executes the preflight, renders the report, optionally
 // writes the captured RunConfig, and maps the aggregate to an exit
-// code (nil for all steps ok/skip, else a plain error). The config
+// code (nil when no step failed, else a plain error). The config
 // write happens only after a successfully-produced report, so a
 // dry-run that surfaces a misconfiguration still captures the config.
 //
@@ -1498,7 +1498,7 @@ func writePreflightText(w io.Writer, report *core.PreflightReport) {
 		}
 	}
 	if report.OK {
-		b.WriteString("Result: OK (all steps ok or skipped)\n")
+		b.WriteString("Result: OK (no step failed)\n")
 	} else {
 		fmt.Fprintf(&b, "Result: FAIL (%d of %d step(s) did not pass)\n", failedStepCount(report), len(report.Steps))
 	}
