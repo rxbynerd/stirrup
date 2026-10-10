@@ -221,3 +221,31 @@ func TestBuildStructuredResultSupport(t *testing.T) {
 		}
 	}
 }
+
+type structuredCapsResolver quirks.StructuredToolResultCapability
+
+func (r structuredCapsResolver) Resolve(_, _ string) quirks.ProviderQuirks {
+	return quirks.ProviderQuirks{StructuredToolResults: quirks.StructuredToolResultCapability(r)}
+}
+
+func TestBuildStructuredResultSupport_RequiresAWireShape(t *testing.T) {
+	config := &types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}
+	tests := []struct {
+		name string
+		caps quirks.StructuredToolResultCapability
+		want bool
+	}{
+		{"supported without a shape", quirks.StructuredToolResultCapability{Supported: true}, false},
+		{"content-block array", quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}, true},
+		{"object response", quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true}, true},
+		{"shape without the master switch", quirks.StructuredToolResultCapability{ContentBlockArray: true}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			support := buildStructuredResultSupport(config, structuredCapsResolver(tt.caps))
+			if got := support("", "m"); got != tt.want {
+				t.Errorf("support = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

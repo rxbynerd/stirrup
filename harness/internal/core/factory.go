@@ -700,7 +700,8 @@ func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) Escalatio
 
 // buildStructuredResultSupport resolves the StructuredToolResults capability
 // against the registry the Anthropic and Gemini adapters use, mapping a
-// router provider key to its declared provider type.
+// router provider key to its declared provider type. It reports support only
+// for a wire shape an adapter sends, matching the adapters' own gates.
 func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolver) StructuredResultSupport {
 	providerTypes := make(map[string]string, len(config.Providers)+1)
 	providerTypes[config.Provider.Type] = config.Provider.Type
@@ -715,7 +716,8 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 				providerType = declared
 			}
 		}
-		return caps.Resolve(providerType, model).StructuredToolResults.Supported
+		c := caps.Resolve(providerType, model).StructuredToolResults
+		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
 	}
 }
 
