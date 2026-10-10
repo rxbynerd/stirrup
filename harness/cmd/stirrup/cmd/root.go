@@ -17,6 +17,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
@@ -34,12 +35,23 @@ var rootCmd = &cobra.Command{
 	// NoArgs so a mistyped subcommand errors via Cobra's unknown-command
 	// path rather than silently printing the orientation hint.
 	Args: cobra.NoArgs,
+	// Every subcommand inherits this hook, so the process-default slog
+	// logger is scrubbed before any code path can use it.
+	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		slog.SetDefault(newScrubbedTextLogger(cmd.ErrOrStderr(), slog.LevelInfo))
+	},
 	// Run (not RunE) so a bare invocation prints the short orientation
 	// hint and exits 0; RunE would make Cobra append its full usage
 	// block on error instead.
 	Run: func(cmd *cobra.Command, _ []string) {
 		printRootUsageHint(cmd.OutOrStdout())
 	},
+}
+
+// newScrubbedTextLogger returns a text-format logger writing to w whose
+// messages and attribute values pass through the secret scrubber.
+func newScrubbedTextLogger(w io.Writer, level slog.Level) *slog.Logger {
+	return slog.New(observability.NewScrubHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
 }
 
 // Execute runs the root command. Called from main().
