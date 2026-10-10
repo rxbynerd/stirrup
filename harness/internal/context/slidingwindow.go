@@ -75,22 +75,46 @@ func (s *SlidingWindowStrategy) LastCompaction() *CompactionEvent {
 	return s.lastCompaction
 }
 
-// estimateTokens returns a rough token estimate for a message: total
-// characters across all content blocks and replay state divided by 4.
+const (
+	charsPerToken         = 4
+	messageOverheadTokens = 4
+	blockOverheadTokens   = 3
+)
+
+// EstimateHistoryTokens returns the estimated size, in tokens, of messages
+// as sent to a provider. The agentic loop builds TokenBudget.CurrentTokens
+// from it, so a strategy that subtracts its own estimate of the history
+// from CurrentTokens is left with the system prompt and tool definitions.
+func EstimateHistoryTokens(messages []types.Message) int {
+	return estimateHistory(messages)
+}
+
+// estimateTokens returns a token estimate for a message at charsPerToken
+// characters per token, counting each field separately, plus the
+// structural overhead of the message and each of its blocks.
 func estimateTokens(msg types.Message) int {
-	chars := 0
+	total := messageOverheadTokens
 	for _, block := range msg.Content {
-		chars += len(block.Text)
-		chars += len(block.Content)
-		chars += len(block.Input)
+		total += estimateBlockTokens(block)
 	}
 	// Replay state is resent with the message, so it counts too.
+	replay := 0
 	for _, v := range msg.ReplayFields {
-		chars += len(v)
+		replay += len(v)
 	}
-	est := chars / 4
-	if est == 0 {
-		est = 1 // every message costs at least 1 token
+	return total + replay/charsPerToken
+}
+
+// estimateBlockTokens returns the estimated tokens of one content block,
+// including its structured envelope, which is sent alongside a tool
+// result's text. A thinking block's signature is not counted.
+func estimateBlockTokens(block types.ContentBlock) int {
+	total := blockOverheadTokens
+	for _, field := range []int{
+		len(block.Text), len(block.Content), len(block.Input), len(block.ID),
+		len(block.Name), len(block.ToolUseID), len(block.Structured),
+	} {
+		total += field / charsPerToken
 	}
-	return est
+	return total
 }

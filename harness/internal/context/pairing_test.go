@@ -79,7 +79,7 @@ func hasBlock(msg types.Message, blockType, id string) bool {
 // user message (optionally carrying queued operator input after the
 // results), or a text answer followed by verifier feedback, an escalation
 // nudge, or operator input. Assistant turns may carry thinking blocks and
-// replay state.
+// replay state, and tool results may carry a structured envelope.
 func generateHistory(r *rand.Rand, exchanges int) []types.Message {
 	text := func(prefix string, maxLen int) string {
 		return prefix + strings.Repeat(".", r.IntN(maxLen))
@@ -118,9 +118,14 @@ func generateHistory(r *rand.Rand, exchanges int) []types.Message {
 				if r.IntN(5) == 0 {
 					size = 3000
 				}
-				user.Content = append(user.Content, types.ContentBlock{
+				result := types.ContentBlock{
 					Type: "tool_result", ToolUseID: id, Content: text("result ", size), IsError: r.IntN(8) == 0,
-				})
+				}
+				if r.IntN(3) == 0 {
+					result.Structured = json.RawMessage(`{"content":"` + strings.Repeat("s", size) + `"}`)
+					result.Kind = "file_read"
+				}
+				user.Content = append(user.Content, result)
 			}
 			if r.IntN(7) == 0 {
 				user.Content = append(user.Content, types.ContentBlock{Type: "text", Text: "operator input"})
@@ -200,7 +205,7 @@ func compactionStrategies() map[string]func() ContextStrategy {
 
 // parallelCallHistory is a task, an assistant turn with two parallel tool
 // calls, their results in one user message, then extra+1 single-call
-// exchanges. Every message estimates at 100 tokens.
+// exchanges. Every message estimates at about 110 tokens.
 func parallelCallHistory(extra int) []types.Message {
 	pad := func(s string, n int) string { return s + strings.Repeat(".", n-len(s)) }
 	call := func(id string, n int) types.ContentBlock {

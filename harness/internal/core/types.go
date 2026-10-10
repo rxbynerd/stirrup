@@ -765,43 +765,10 @@ func (l *AgenticLoop) Close() error {
 	return nil
 }
 
-// estimateCurrentTokens provides a calibrated token count for the message
-// history. It accounts for per-message structural overhead, per-block
-// overhead, and metadata fields (IDs, names) in addition to content.
+// estimateCurrentTokens returns the estimated tokens of the message
+// history, using the estimate the context strategies apply to it.
 func estimateCurrentTokens(messages []types.Message) int {
-	total := 0
-	for _, msg := range messages {
-		total += messageOverheadTokens
-		for _, block := range msg.Content {
-			total += blockOverheadTokens
-			total += len(block.Text) / tokenEstimationDivisor
-			total += len(block.Content) / tokenEstimationDivisor
-			total += len(block.Input) / tokenEstimationDivisor
-			total += len(block.ID) / tokenEstimationDivisor
-			total += len(block.Name) / tokenEstimationDivisor
-			total += len(block.ToolUseID) / tokenEstimationDivisor
-			// The structured envelope rides on tool_result blocks and can be
-			// large (e.g. a Gemini object-response result); counting it
-			// avoids under-shooting the budget and overflowing mid-run.
-			total += len(block.Structured) / tokenEstimationDivisor
-		}
-		// Replay state (encrypted reasoning, reasoning_content) is resent
-		// with the message, so it counts toward the context.
-		total += replayFieldsLen(msg) / tokenEstimationDivisor
-	}
-	if total == 0 {
-		total = 1
-	}
-	return total
-}
-
-// replayFieldsLen returns the total byte length of msg's replay state.
-func replayFieldsLen(msg types.Message) int {
-	n := 0
-	for _, v := range msg.ReplayFields {
-		n += len(v)
-	}
-	return n
+	return max(contextpkg.EstimateHistoryTokens(messages), 1)
 }
 
 // estimateSystemPromptTokens estimates the token count for the system prompt.

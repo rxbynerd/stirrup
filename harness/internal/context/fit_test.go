@@ -320,10 +320,10 @@ func TestCompaction_PreparedHistoryFitsFitLimit(t *testing.T) {
 // request that fits the room after the response reserve but not FitLimit.
 func TestCompaction_TriggersAtFitLimit(t *testing.T) {
 	msgs := parallelCallHistory(3)
-	budget := TokenBudget{MaxTokens: 1300, CurrentTokens: 1100, ReserveForResponse: 100}
-	if historyTokens(msgs) != budget.CurrentTokens || budget.CurrentTokens <= FitLimit(budget) ||
-		budget.CurrentTokens > budget.MaxTokens-budget.ReserveForResponse {
-		t.Fatalf("history of %d tokens does not sit between FitLimit %d and the room", historyTokens(msgs), FitLimit(budget))
+	current := historyTokens(msgs)
+	budget := TokenBudget{MaxTokens: 100 + current, CurrentTokens: current, ReserveForResponse: 100}
+	if current <= FitLimit(budget) {
+		t.Fatalf("history of %d tokens fits FitLimit %d", current, FitLimit(budget))
 	}
 	for name, newStrategy := range compactionStrategies() {
 		s := newStrategy()

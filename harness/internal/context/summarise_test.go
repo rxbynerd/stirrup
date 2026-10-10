@@ -375,8 +375,8 @@ func TestSummarise_FallbackKeepsParallelResultsPaired(t *testing.T) {
 	s := NewSummariseStrategy(&errorStreamProvider{}, "test-model", 0)
 
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
-		MaxTokens:          1120,
-		CurrentTokens:      1100,
+		MaxTokens:          1200,
+		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
 	if err != nil {
@@ -425,7 +425,7 @@ func TestSummarise_OneCallPerAgingInterval(t *testing.T) {
 	s := NewSummariseStrategy(mock, "test-model", 0)
 
 	msgs := paddedMessages(25)
-	if _, err := s.Prepare(context.Background(), msgs, historyBudget(msgs, 3000, 1000)); err != nil {
+	if _, err := s.Prepare(context.Background(), msgs, historyBudget(msgs, 3500, 1000)); err != nil {
 		t.Fatalf("Prepare() error: %v", err)
 	}
 	if mock.callCount != 1 {
@@ -437,7 +437,7 @@ func TestSummarise_OneCallPerAgingInterval(t *testing.T) {
 		mock.summary = fmt.Sprintf("summary-%d", turn)
 		prevCalls := mock.callCount
 		msgs = appendExchange(msgs)
-		result, err := s.Prepare(context.Background(), msgs, historyBudget(msgs, 3000, 1000))
+		result, err := s.Prepare(context.Background(), msgs, historyBudget(msgs, 3500, 1000))
 		if err != nil {
 			t.Fatalf("turn %d: Prepare() error: %v", turn, err)
 		}
@@ -886,6 +886,55 @@ func TestSummarise_RollingSummaryOverGrowingHistory(t *testing.T) {
 		}
 		if calls >= len(full)/2 {
 			t.Fatalf("seed %d: %d summary calls over %d turns", seed, calls, len(full)/2)
+		}
+	}
+}
+
+// TestSummarise_StructuredResultsOneCallPerAgingInterval pins over a long
+// history of tool results carrying structured envelopes that the summary
+// is extended once per summaryAgingInterval exchanges and that the
+// overhead the strategy infers from CurrentTokens stays the system prompt
+// and tool definitions, however much history has been summarised.
+func TestSummarise_StructuredResultsOneCallPerAgingInterval(t *testing.T) {
+	const overhead = 3000
+	mock := &mockSummaryProvider{summary: "earlier work"}
+	s := NewSummariseStrategy(mock, "test-model", 0)
+
+	var callTurns []int
+	for exchanges := 1; exchanges <= 120; exchanges++ {
+		msgs := structuredToolHistory(exchanges)
+		prevCalls := mock.callCount
+		result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+			MaxTokens:          20_000,
+			CurrentTokens:      overhead + EstimateHistoryTokens(msgs),
+			ReserveForResponse: 4000,
+		})
+		if err != nil {
+			t.Fatalf("exchange %d: Prepare() error: %v", exchanges, err)
+		}
+		if mock.callCount > prevCalls+1 {
+			t.Fatalf("exchange %d: %d summary calls in one Prepare", exchanges, mock.callCount-prevCalls)
+		}
+		if mock.callCount > prevCalls {
+			callTurns = append(callTurns, exchanges)
+		}
+		c := s.LastCompaction()
+		if c == nil {
+			continue
+		}
+		if got := c.TokensAfter - EstimateHistoryTokens(result); got != overhead {
+			t.Fatalf("exchange %d: compaction implies an overhead of %d tokens, want %d", exchanges, got, overhead)
+		}
+		if c.TokensAfter > FitLimit(TokenBudget{MaxTokens: 20_000, ReserveForResponse: 4000}) {
+			t.Fatalf("exchange %d: compacted request estimates at %d, over the fit limit", exchanges, c.TokensAfter)
+		}
+	}
+	if len(callTurns) < 15 {
+		t.Fatalf("only %d summary calls over 120 exchanges: %v", len(callTurns), callTurns)
+	}
+	for i := 1; i < len(callTurns); i++ {
+		if gap := callTurns[i] - callTurns[i-1]; gap != summaryAgingInterval {
+			t.Fatalf("summary calls at exchanges %v; gap %d, want %d", callTurns, gap, summaryAgingInterval)
 		}
 	}
 }

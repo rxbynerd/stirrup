@@ -77,9 +77,6 @@ const (
 	// messageOverheadTokens accounts for the JSON structure around each message.
 	messageOverheadTokens = 4
 
-	// blockOverheadTokens accounts for the JSON structure around each content block.
-	blockOverheadTokens = 3
-
 	// toolDefinitionOverheadTokens accounts for the JSON structure wrapping each tool definition.
 	toolDefinitionOverheadTokens = 10
 )
