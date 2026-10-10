@@ -164,6 +164,11 @@ type RunTrace struct {
 	// endpoint (granite-guardian). It is not part of TokenUsage and is not
 	// charged to maxTokenBudget.
 	ExternalGuardTokens TokenUsage `json:"externalGuardTokens,omitzero"`
+	// PostEditChecks carries every tools.postEdit check execution, in
+	// dispatch order. The diagnostics themselves are not recorded here;
+	// they reach the trace only inside the tool result they were appended
+	// to.
+	PostEditChecks []PostEditCheckRecord `json:"postEditChecks,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run
@@ -195,6 +200,32 @@ type DegradedCapability struct {
 	Name string `json:"name"`
 	// Error is the scrubbed, length-bounded reason it was unavailable.
 	Error string `json:"error"`
+}
+
+// PostEditCheckRecord is the bounded trace metadata for one
+// tools.postEdit check execution. Command is the configured template,
+// before path substitution. Error is set when the check did not produce
+// an exit code (timeout, rejected path, executor failure); as with
+// HookExecution, an ExitCode of 0 alone does not mean the check passed.
+type PostEditCheckRecord struct {
+	ToolUseID   string `json:"toolUseId,omitempty"`
+	Turn        int    `json:"turn,omitempty"`
+	Tool        string `json:"tool"`
+	Path        string `json:"path"`
+	Index       int    `json:"index"`
+	Command     string `json:"command"`
+	ExitCode    int    `json:"exitCode"`
+	DurationMs  int64  `json:"durationMs"`
+	TimedOut    bool   `json:"timedOut,omitempty"`
+	Error       string `json:"error,omitempty"`
+	OutputBytes int    `json:"outputBytes,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
+}
+
+// Failed reports whether the check reported a problem: a non-zero exit,
+// a timeout, or a failure to run.
+func (r PostEditCheckRecord) Failed() bool {
+	return r.Error != "" || r.ExitCode != 0
 }
 
 // CommandOutputStreamRecord describes one complete command stream without

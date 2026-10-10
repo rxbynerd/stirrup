@@ -1429,6 +1429,13 @@ type ToolsConfig struct {
 	// everything beneath it; any other entry protects exactly that path.
 	// Files loaded through RepositoryGuidance are protected in addition.
 	ProtectedWriteTargets []string `json:"protectedWriteTargets,omitempty"`
+
+	// PostEdit lists operator-authored checks run through the run's
+	// Executor after an edit tool succeeds on a matching path. A non-zero
+	// exit appends fenced, scrubbed diagnostics to that tool's result; the
+	// edit is never rolled back. Rejected in read-only modes and for
+	// executors that cannot exec.
+	PostEdit []PostEditCheckConfig `json:"postEdit,omitempty"`
 }
 
 // Bounds for ToolsConfig.MaxResultBytes. The minimum leaves room for the
@@ -1446,6 +1453,47 @@ func (c ToolsConfig) EffectiveMaxResultBytes() int {
 		return DefaultToolMaxResultBytes
 	}
 	return c.MaxResultBytes
+}
+
+// PostEditCheckConfig is one post-edit check. Every entry whose Glob
+// matches the edited path runs, in configuration order.
+type PostEditCheckConfig struct {
+	// Glob selects the edited paths the check runs for (path.Match
+	// syntax). A glob without "/" matches the file's base name; a glob
+	// containing "/" matches the cleaned workspace-relative path.
+	Glob string `json:"glob"`
+
+	// Command is executed via "sh -c" through the run's Executor. Each
+	// PostEditPathPlaceholder is replaced by the edited path, POSIX
+	// single-quoted. Like hook commands it is operator configuration and
+	// is not subject to the permission policy.
+	Command string `json:"command"`
+
+	// TimeoutSeconds bounds one execution. Zero resolves to
+	// DefaultPostEditTimeoutSeconds; the ceiling is
+	// MaxPostEditTimeoutSeconds.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+}
+
+const (
+	// PostEditPathPlaceholder is replaced by the quoted edited path in
+	// PostEditCheckConfig.Command.
+	PostEditPathPlaceholder = "{path}"
+
+	DefaultPostEditTimeoutSeconds = 60
+	MaxPostEditTimeoutSeconds     = 600
+
+	maxPostEditChecks    = 16
+	maxPostEditGlobBytes = 256
+)
+
+// EffectivePostEditTimeout resolves c.TimeoutSeconds to seconds,
+// substituting DefaultPostEditTimeoutSeconds for zero.
+func EffectivePostEditTimeout(c PostEditCheckConfig) int {
+	if c.TimeoutSeconds <= 0 {
+		return DefaultPostEditTimeoutSeconds
+	}
+	return c.TimeoutSeconds
 }
 
 // ControlPlaneToolConfig declares one tool whose result the control plane
@@ -2417,6 +2465,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateCommandOutputConfig(config.Tools, &errs)
 	validateToolMaxResultBytes(config.Tools.MaxResultBytes, &errs)
 	validateProtectedWriteTargets(config.Tools.ProtectedWriteTargets, &errs)
+	validatePostEditChecks(config, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	if config.TraceEmitter.Archive != nil {
@@ -2562,6 +2611,50 @@ func validateToolMaxResultBytes(value int, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf("tools.maxResultBytes must be at least %d (0 selects the default of %d)", MinToolMaxResultBytes, DefaultToolMaxResultBytes))
 	case value > MaxToolMaxResultBytes:
 		*errs = append(*errs, fmt.Sprintf("tools.maxResultBytes exceeds maximum of %d", MaxToolMaxResultBytes))
+	}
+}
+
+func validatePostEditChecks(config *RunConfig, errs *[]string) {
+	checks := config.Tools.PostEdit
+	if len(checks) == 0 {
+		return
+	}
+	if readOnlyModes[config.Mode] {
+		*errs = append(*errs, fmt.Sprintf("tools.postEdit is not allowed in read-only mode %q, which has no edit tools", config.Mode))
+	}
+	if !ExecutorCanExec(config.Executor.Type) {
+		*errs = append(*errs, fmt.Sprintf("tools.postEdit requires an exec-capable executor; executor.type %q cannot run commands", config.Executor.Type))
+	}
+	if len(checks) > maxPostEditChecks {
+		*errs = append(*errs, fmt.Sprintf("tools.postEdit must have <= %d entries, got %d", maxPostEditChecks, len(checks)))
+	}
+	for i, c := range checks {
+		field := fmt.Sprintf("tools.postEdit[%d]", i)
+		switch {
+		case strings.TrimSpace(c.Glob) == "":
+			*errs = append(*errs, field+".glob is required")
+		case len(c.Glob) > maxPostEditGlobBytes:
+			*errs = append(*errs, fmt.Sprintf("%s.glob must be <= %d bytes, got %d", field, maxPostEditGlobBytes, len(c.Glob)))
+		default:
+			if _, err := path.Match(c.Glob, ""); err != nil {
+				*errs = append(*errs, fmt.Sprintf("%s.glob %q is not a valid pattern: %v", field, c.Glob, err))
+			}
+		}
+		if strings.TrimSpace(c.Command) == "" {
+			*errs = append(*errs, field+".command is required")
+		} else if len(c.Command) > maxHookCommandBytes {
+			*errs = append(*errs, fmt.Sprintf("%s.command must be <= %d bytes, got %d", field, maxHookCommandBytes, len(c.Command)))
+		}
+		if strings.Contains(strings.ToLower(c.Command), "secret://") {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.command must not contain a \"secret://\" reference; it is recorded in the trace",
+				field))
+		}
+		if c.TimeoutSeconds < 0 || c.TimeoutSeconds > MaxPostEditTimeoutSeconds {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.timeoutSeconds must be 0 (use default) or between 1 and %d, got %d",
+				field, MaxPostEditTimeoutSeconds, c.TimeoutSeconds))
+		}
 	}
 }
 
