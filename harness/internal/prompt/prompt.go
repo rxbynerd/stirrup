@@ -2,7 +2,10 @@
 // constructing system prompts from mode templates and dynamic context.
 package prompt
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // PromptContext provides the information a prompt builder needs.
 type PromptContext struct {
@@ -15,6 +18,9 @@ type PromptContext struct {
 	// a prompt/model comparison run.
 	Model          string
 	DynamicContext map[string]string
+	// OutputSchema is RunConfig.OutputSchema: the JSON Schema the final
+	// answer must satisfy. Empty when the run returns free text.
+	OutputSchema json.RawMessage
 }
 
 // PromptBuilder constructs a system prompt from a PromptContext.

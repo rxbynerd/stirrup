@@ -92,15 +92,24 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
+	// "handoff_failed" | "control_stream_lost" | "structured_output_failed" |
 	// "command_output_capture_failed" | "command_output_archive_failed", or a
 	// provider stop reason passed through verbatim, such as "refusal" (the
 	// model declined to respond; see StopDetails) or
 	// "model_context_window_exceeded" (the response filled the model's
 	// context window and is truncated).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
-	// hook_failed and both command_output_* outcomes claim only an
-	// otherwise-successful run — the primary failure cause stays
-	// authoritative — and a capture failure outranks an archive failure.
+	// handoff_failed reports a deterministic-git final checkpoint that failed
+	// or left the working tree dirty (see Git), or a required workspace
+	// export that failed (see WorkspaceExport). handoff_failed, hook_failed
+	// and both command_output_* outcomes claim only an otherwise-successful
+	// run — the primary failure cause stays authoritative — and a capture
+	// failure outranks an archive failure. control_stream_lost reports a
+	// run cancelled because its gRPC control stream ended while it was
+	// active. structured_output_failed reports a final answer that still
+	// did not satisfy RunConfig.OutputSchema after the corrective attempts,
+	// or that satisfied it only before secrets were scrubbed from it; such
+	// a run never reaches the verifier.
 	Outcome string `json:"outcome"`
 	// StopDetails is the final model turn's provider-reported stop detail
 	// when the run ended on a non-tool stop reason, such as the category
@@ -111,12 +120,45 @@ type RunTrace struct {
 	// through to RunResult.FinalAssistantText. Omitted when the run produced
 	// no assistant turn (e.g. an early validation failure before any turn).
 	FinalAssistantText string `json:"finalAssistantText,omitempty"`
+	// StructuredOutput is the scrubbed, compact JSON document of a final
+	// answer that satisfied RunConfig.OutputSchema. Set only when the
+	// outcome is "success"; omitted otherwise, and when no schema was
+	// configured.
+	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
 	// HookResults carries every lifecycle hook execution recorded during the
 	// run, across both phases, in dispatch order. Empty when no hooks were
 	// configured. Populated by trace emitters implementing trace.HookRecorder
 	// (today, the JSONL emitter).
 	HookResults          []HookExecution `json:"hookResults,omitempty"`
 	CommandOutputArchive string          `json:"commandOutputArchive,omitempty"`
+	// Git is the git state the run handed off after its final checkpoint.
+	// Nil when the git strategy does not manage git (gitStrategy "none").
+	Git *GitHandoff `json:"git,omitempty"`
+	// WorkspaceExport is the receipt of the end-of-run workspace export.
+	// Nil when no export destination is configured.
+	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
+	// Error is the scrubbed, length-capped reason for a non-success
+	// Outcome: the run's earliest failure. It is also set on a successful
+	// run whose trace could not be persisted, in which case only the
+	// returned trace carries it. Empty otherwise.
+	Error string `json:"error,omitempty"`
+}
+
+// GitHandoff is the git state a deterministic-git run hands off: the run
+// branch, the commit holding the run's result, and the commit the branch
+// was created from, so a control plane can diff the two.
+type GitHandoff struct {
+	Branch string `json:"branch,omitempty"`
+	SHA    string `json:"sha,omitempty"`
+	// BaseSHA is HEAD when the run branch was created. Empty when the
+	// branch was created on a repository with no commits.
+	BaseSHA string `json:"baseSha,omitempty"`
+	// Dirty is true when `git status --porcelain` still reported changes
+	// (ignored files excluded) after the final checkpoint.
+	Dirty bool `json:"dirty,omitempty"`
+	// Error is the scrubbed, length-capped reason the final checkpoint
+	// failed or left the working tree dirty. Empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // CommandOutputStreamRecord describes one complete command stream without

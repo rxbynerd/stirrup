@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,11 +20,11 @@ type recordingExporter struct {
 	err   error
 }
 
-func (r *recordingExporter) Export(_ context.Context, _, dest string) error {
+func (r *recordingExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dests = append(r.dests, dest)
-	return r.err
+	return fakeExportResult(dest, "", r.err)
 }
 
 func (r *recordingExporter) destinations() []string {
@@ -64,10 +65,10 @@ func TestFollowUpExportURI(t *testing.T) {
 	}
 }
 
-// TestPostRunPolicy_FinaliseEmitsThenExports pins the per-run
-// contract: one emission and one export per completed run, with the
-// export going to the destination the caller selected for that run.
-func TestPostRunPolicy_FinaliseEmitsThenExports(t *testing.T) {
+// TestPostRunPolicy_FinaliseOnlyEmits pins the per-run contract: one
+// emission per completed run and no export, which the loop has already
+// performed before "done".
+func TestPostRunPolicy_FinaliseOnlyEmits(t *testing.T) {
 	rec := &recordingExporter{}
 	installRecordingExporter(t, rec)
 
@@ -78,54 +79,37 @@ func TestPostRunPolicy_FinaliseEmitsThenExports(t *testing.T) {
 		},
 	}
 	cfg := &types.RunConfig{}
-	cfg.Executor.Workspace = t.TempDir()
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 
-	if err := policy.finalise(cfg, finaliseTestTrace("primary"), nil, cfg.Executor.WorkspaceExportTo); err != nil {
+	if err := policy.finalise(cfg, finaliseTestTrace("primary"), nil); err != nil {
 		t.Fatalf("primary finalise: %v", err)
 	}
-	cfg.RunID = "run-2"
-	if err := policy.finalise(cfg, finaliseTestTrace("run-2"), nil, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID)); err != nil {
-		t.Fatalf("follow-up finalise: %v", err)
-	}
+	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), nil)
 
 	if want := []string{"primary", "run-2"}; !equalStrings(emitted, want) {
 		t.Errorf("emitted run IDs = %v, want %v", emitted, want)
 	}
-	want := []string{
-		"gs://bucket/runs/primary/workspace.tar.gz",
-		"gs://bucket/runs/primary/run-2/workspace.tar.gz",
-	}
-	if got := rec.destinations(); !equalStrings(got, want) {
-		t.Errorf("export destinations = %v, want %v", got, want)
+	if got := rec.destinations(); len(got) != 0 {
+		t.Errorf("finalise exported to %v, want no export outside the loop", got)
 	}
 }
 
-// TestPostRunPolicy_FinaliseFailedRunEmitsButSkipsExport pins that a
-// run error still reaches the result surface (the failure must be
-// observable) while the export — which has nothing meaningful to ship
-// for a run that never completed — is skipped, and the error propagates.
-func TestPostRunPolicy_FinaliseFailedRunEmitsButSkipsExport(t *testing.T) {
-	rec := &recordingExporter{}
-	installRecordingExporter(t, rec)
-
+// TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates pins that a run
+// error still reaches the result surface (the failure must be
+// observable) and propagates.
+func TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates(t *testing.T) {
 	emitted := 0
 	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
 	}
-	cfg := &types.RunConfig{}
-	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 
-	runErr := errors.New("git setup: boom")
-	err := policy.finalise(cfg, finaliseTestTrace("primary"), runErr, cfg.Executor.WorkspaceExportTo)
+	runErr := errors.New("finish trace: boom")
+	err := policy.finalise(&types.RunConfig{}, finaliseTestTrace("primary"), runErr)
 	if !errors.Is(err, runErr) {
 		t.Fatalf("finalise error = %v, want it to wrap the run error", err)
 	}
 	if emitted != 1 {
 		t.Errorf("emit called %d times, want 1", emitted)
-	}
-	if got := rec.destinations(); len(got) != 0 {
-		t.Errorf("export ran for a failed run: %v", got)
 	}
 }
 
@@ -138,35 +122,11 @@ func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
 	}
 	runErr := errors.New("finish trace: boom")
-	if err := policy.finalise(&types.RunConfig{}, nil, runErr, ""); !errors.Is(err, runErr) {
+	if err := policy.finalise(&types.RunConfig{}, nil, runErr); !errors.Is(err, runErr) {
 		t.Fatalf("finalise error = %v, want it to wrap the run error", err)
 	}
 	if emitted != 0 {
 		t.Errorf("emit called %d times for a nil trace, want 0", emitted)
-	}
-}
-
-// TestPostRunPolicy_FinaliseRequiredExportFailurePropagates pins that
-// the required/soft-fail export policy is the same for every run the
-// policy finalises.
-func TestPostRunPolicy_FinaliseRequiredExportFailurePropagates(t *testing.T) {
-	sentinel := errors.New("simulated GCS upload failure")
-	rec := &recordingExporter{err: sentinel}
-	installRecordingExporter(t, rec)
-
-	cfg := &types.RunConfig{}
-	cfg.Executor.Workspace = t.TempDir()
-	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
-	noop := func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}
-
-	required := &postRunPolicy{emit: noop, exportRequired: true}
-	if err := required.finalise(cfg, finaliseTestTrace("run-2"), nil, followUpExportURI(cfg.Executor.WorkspaceExportTo, "run-2")); !errors.Is(err, sentinel) {
-		t.Errorf("required: error = %v, want the export failure", err)
-	}
-
-	optional := &postRunPolicy{emit: noop, exportRequired: false}
-	if err := optional.finalise(cfg, finaliseTestTrace("run-3"), nil, followUpExportURI(cfg.Executor.WorkspaceExportTo, "run-3")); err != nil {
-		t.Errorf("optional: error = %v, want nil", err)
 	}
 }
 
@@ -183,32 +143,38 @@ func TestCLISessionBudget(t *testing.T) {
 }
 
 // TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures pins the
-// exit-status contract for follow-ups: a follow-up's own run error is
-// already on its done/RunResult and is not recorded, while the first
-// required-export failure is.
+// exit-status contract for follow-ups: a follow-up's own run error and an
+// optional export failure are already on its done/RunResult and are not
+// recorded, while the first required-export failure is.
 func TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures(t *testing.T) {
-	sentinel := errors.New("simulated GCS upload failure")
-	rec := &recordingExporter{err: sentinel}
-	installRecordingExporter(t, rec)
 	noop := func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}
+	withReceipt := func(id string, receipt types.ExportReceipt) *types.RunTrace {
+		rt := finaliseTestTrace(id)
+		rt.WorkspaceExport = &receipt
+		return rt
+	}
 	cfg := &types.RunConfig{RunID: "run-2"}
-	cfg.Executor.Workspace = t.TempDir()
-	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
+	failed := types.ExportReceipt{URI: "gs://bucket/runs/primary/run-3/workspace.tar.gz", Status: types.ExportStatusFailed, Error: "upload refused"}
 
-	policy := &postRunPolicy{emit: noop, exportRequired: true}
-	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), errors.New("git setup: boom"))
+	policy := &postRunPolicy{emit: noop}
+	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), errors.New("finish trace: boom"))
 	if err := policy.followUpErr(); err != nil {
 		t.Fatalf("a follow-up's run error was recorded as the exit status: %v", err)
 	}
-	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-3"), nil)
-	if err := policy.followUpErr(); !errors.Is(err, sentinel) {
-		t.Fatalf("required-export failure not recorded: %v", err)
+	policy.finaliseFollowUp(cfg, withReceipt("run-3", failed), nil)
+	if err := policy.followUpErr(); err != nil {
+		t.Fatalf("an optional export failure was recorded as the exit status: %v", err)
 	}
-
-	optional := &postRunPolicy{emit: noop}
-	optional.finaliseFollowUp(cfg, finaliseTestTrace("run-4"), nil)
-	if err := optional.followUpErr(); err != nil {
-		t.Fatalf("soft-fail export recorded as the exit status: %v", err)
+	required := failed
+	required.Required = true
+	policy.finaliseFollowUp(cfg, withReceipt("run-4", required), nil)
+	err := policy.followUpErr()
+	if err == nil || !strings.Contains(err.Error(), "upload refused") || !strings.Contains(err.Error(), required.URI) {
+		t.Fatalf("followUpErr() = %v, want the required export failure", err)
+	}
+	policy.finaliseFollowUp(cfg, withReceipt("run-5", types.ExportReceipt{URI: "gs://other", Status: types.ExportStatusFailed, Required: true, Error: "later"}), nil)
+	if got := policy.followUpErr(); got != err {
+		t.Errorf("followUpErr() = %v, want the first failure kept", got)
 	}
 }
 

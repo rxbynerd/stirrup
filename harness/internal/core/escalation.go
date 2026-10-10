@@ -58,7 +58,7 @@ type EscalationInput struct {
 	// PriorToolCalls gates escalation to the first assistant turn (== 0); a model that has already used tools is trusted.
 	PriorToolCalls int
 
-	// Turn is the zero-based turn index within the inner-loop run.
+	// Turn is the zero-based turn index within the run; verification repairs continue the numbering.
 	Turn int
 
 	// EscalationsSoFar is compared against the policy's cap so a retry cannot loop unboundedly.

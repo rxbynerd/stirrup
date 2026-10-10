@@ -11,8 +11,7 @@ import (
 // Both `stirrup harness` and `stirrup run-config` call this so the two
 // subcommands cannot drift on default values, help text, or supported
 // fields. Pure CLI-behaviour flags that do not round-trip through
-// RunConfig (--export-workspace-required, --output-runconfig) live on
-// the harness command directly; the run-config subcommand adds its own
+// RunConfig (--output-runconfig) live on the harness command directly; the run-config subcommand adds its own
 // --validate / --compact / --redact afterwards.
 func addRunConfigFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
@@ -56,6 +55,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("log-level", "info", "Log level: debug, info, warn, error")
 	f.String("prompt", "", "User prompt (can also be passed as a positional argument; falls back to --prompt-file then STIRRUP_PROMPT env var, then a prompt field in --config)")
 	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
+	f.String("output-schema", "", "Path to a JSON Schema (Draft 2020-12) file the run's final answer must satisfy (sets outputSchema). The model must end with one JSON document conforming to it; the validated document is returned as structuredOutput, and a run whose answer still fails after two corrective attempts ends with outcome structured_output_failed. References must be local (\"#...\"). An empty value clears a schema set by --config.")
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
 	f.String("executor", "local", "Executor: local, container, k8s, k8s-sandbox, api, none (none has no local filesystem or shell access — MCP-only / server-side-tool runs)")
@@ -92,7 +92,8 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
 	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
 
-	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
+	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at the end of every run, before its done event (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
+	f.Bool("export-workspace-required", true, "Whether a failed workspace export turns a successful run into outcome handoff_failed (non-zero exit). Defaults to true whenever --export-workspace-to is set; pass --export-workspace-required=false to only record the failure. Left unset, the --config value applies. Requires --export-workspace-to. Mirrors executor.workspaceExportRequired.")
 
 	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 
@@ -142,6 +143,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 
 	_ = cmd.MarkFlagFilename("config", "json")
 	_ = cmd.MarkFlagFilename("prompt-file")
+	_ = cmd.MarkFlagFilename("output-schema", "json")
 	_ = cmd.MarkFlagFilename("gcp-credentials-file", "json")
 	_ = cmd.MarkFlagFilename("permission-policy-file", "cedar")
 	_ = cmd.MarkFlagFilename("trace", "jsonl")

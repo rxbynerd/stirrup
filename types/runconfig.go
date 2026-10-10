@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -209,8 +210,19 @@ type RunConfig struct {
 
 	// Hooks configures operator-authored lifecycle hooks that run around
 	// the agentic session: PreRun before it starts, PostRun after it
-	// ends. Nil means no hooks. See docs/configuration.md#lifecycle-hooks.
+	// ends and after the final git checkpoint, so workspace edits made by
+	// PostRun hooks are never committed. Nil means no hooks. See
+	// docs/configuration.md#lifecycle-hooks.
 	Hooks *HooksConfig `json:"hooks,omitempty"`
+
+	// OutputSchema is a self-contained JSON Schema (Draft 2020-12) object
+	// the run's final answer must satisfy. When set, the final assistant
+	// message must be one JSON document conforming to it; the validated
+	// document is returned as RunTrace.StructuredOutput, and a run whose
+	// answer still fails after the corrective attempts ends with outcome
+	// "structured_output_failed". Applies to top-level runs only. Empty
+	// leaves the final answer as free text.
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels promoted to the OTel
@@ -919,12 +931,19 @@ type ExecutorConfig struct {
 	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
 
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
-	// executor's workspace at end-of-run and upload it to the named URI.
-	// Currently only "gs://bucket/path" is accepted. The "api" executor
-	// (read-only) and any run with an empty workspace skip the upload
-	// silently. Future S3 / Azure Blob support will broaden the scheme
-	// set.
+	// executor's workspace at the end of every run, before "done", and
+	// upload it to the named URI. Currently only "gs://bucket/path" is
+	// accepted. A workspace with no files uploads an empty archive and
+	// reports export status "empty"; a missing workspace is an export
+	// failure.
+	// Future S3 / Azure Blob support will broaden the scheme set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
+
+	// WorkspaceExportRequired selects whether a failed workspace export
+	// fails a successful run with outcome "handoff_failed". Nil defaults
+	// to true; see ExportRequired. Rejected when WorkspaceExportTo is
+	// empty.
+	WorkspaceExportRequired *bool `json:"workspaceExportRequired,omitempty"`
 
 	// SandboxIdentity requests a control-plane-issued token over the gRPC
 	// control stream and injects it into the sandbox environment. The token
@@ -1074,8 +1093,9 @@ func (rc *RunConfig) EffectiveToolChoiceEscalationMaxRetries() int {
 // HooksConfig configures operator-authored lifecycle hooks that run around
 // the agentic session: PreRun before GitStrategy.Setup (clone, provision a
 // runtime; a fatal failure aborts the run with outcome "setup_failed"),
-// PostRun after GitStrategy.Finalise (artifact submission, smoke tests).
-// Hook output is trace-only and never enters the model's context; hooks run
+// PostRun after GitStrategy.Finalise (artifact submission, smoke tests);
+// Finalise makes the final checkpoint commit, so workspace edits made by
+// PostRun hooks are not committed. Hook output is trace-only and never enters the model's context; hooks run
 // through the run's own Executor, sharing its sandbox and egress posture.
 // See docs/configuration.md#lifecycle-hooks.
 type HooksConfig struct {
@@ -2214,6 +2234,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateControlPlaneTools(config, &errs)
+	validateOutputSchema(config.OutputSchema, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCommandOutputConfig(config.Tools, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
@@ -3492,6 +3513,68 @@ func validateControlPlaneInputSchema(schema json.RawMessage, path string, errs *
 	if typ, _ := doc["type"].(string); typ != "object" {
 		*errs = append(*errs, path+` must declare "type": "object"`)
 	}
+}
+
+// maxOutputSchemaBytes bounds RunConfig.OutputSchema, which is rendered
+// into the system prompt of every turn.
+const maxOutputSchemaBytes = 64 << 10
+
+// validateOutputSchema requires OutputSchema, when set, to be a JSON object
+// of at most maxOutputSchemaBytes whose $ref and $dynamicRef values are all
+// local fragments ("#..."). Compiling the schema needs a JSON Schema
+// implementation this module does not depend on; the harness compiles it
+// when it builds the run.
+func validateOutputSchema(schema json.RawMessage, errs *[]string) {
+	if len(schema) == 0 {
+		return
+	}
+	if len(schema) > maxOutputSchemaBytes {
+		*errs = append(*errs, fmt.Sprintf("outputSchema is %d bytes, over the %d-byte limit", len(schema), maxOutputSchemaBytes))
+		return
+	}
+	var doc any
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		*errs = append(*errs, fmt.Sprintf("outputSchema is not valid JSON: %v", err))
+		return
+	}
+	obj, ok := doc.(map[string]any)
+	if !ok {
+		*errs = append(*errs, "outputSchema must be a JSON Schema object")
+		return
+	}
+	if ref, found := firstNonLocalSchemaRef(obj); found {
+		*errs = append(*errs, fmt.Sprintf("outputSchema must be self-contained: reference %q is not a local fragment (it must start with \"#\")", ref))
+	}
+}
+
+// firstNonLocalSchemaRef walks v in key order and returns the first string
+// $ref or $dynamicRef value that does not start with "#".
+func firstNonLocalSchemaRef(v any) (string, bool) {
+	switch node := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(node))
+		for k := range node {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if k == "$ref" || k == "$dynamicRef" {
+				if ref, ok := node[k].(string); ok && !strings.HasPrefix(ref, "#") {
+					return ref, true
+				}
+			}
+			if ref, found := firstNonLocalSchemaRef(node[k]); found {
+				return ref, true
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if ref, found := firstNonLocalSchemaRef(item); found {
+				return ref, true
+			}
+		}
+	}
+	return "", false
 }
 
 // validateMCPServers checks the structural trust-model fields on every
@@ -5144,6 +5227,19 @@ func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 	}
 }
 
+// ExportRequired reports whether a failed workspace export fails the
+// run: WorkspaceExportRequired when set, otherwise true whenever an
+// export destination is configured.
+func (e ExecutorConfig) ExportRequired() bool {
+	if e.WorkspaceExportTo == "" {
+		return false
+	}
+	if e.WorkspaceExportRequired != nil {
+		return *e.WorkspaceExportRequired
+	}
+	return true
+}
+
 // validateExecutorWorkspaceExportTo enforces the URI shape on the
 // optional Executor.WorkspaceExportTo field and the cross-field
 // constraint that the api and none executors (both read-only or
@@ -5151,6 +5247,9 @@ func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 // tarball.
 func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 	if cfg.WorkspaceExportTo == "" {
+		if cfg.WorkspaceExportRequired != nil {
+			*errs = append(*errs, "executor.workspaceExportRequired requires executor.workspaceExportTo")
+		}
 		return
 	}
 	// Neither the api executor (read-only, backed by a VCS API) nor the

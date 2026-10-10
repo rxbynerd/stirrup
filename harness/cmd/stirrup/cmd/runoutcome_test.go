@@ -30,6 +30,8 @@ func TestRunOutcomeError_EnumeratedOutcomes(t *testing.T) {
 		"max_tokens",
 		"setup_failed",
 		"hook_failed",
+		"handoff_failed",
+		"structured_output_failed",
 		"", // empty/unknown outcome must not be treated as success
 		"some_future_outcome_not_yet_invented",
 	}

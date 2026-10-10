@@ -145,17 +145,16 @@ type HarnessEvent struct {
 	ToolUseId string `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
 	// Tool execution result. Set on "tool_result" events.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
-	// Why the run ended. Set on "done" events.
-	// Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
-	//
-	//	"cancelled", "budget_exceeded", "error", "setup_failed",
-	//	"hook_failed". Provider stop reasons such as "refusal" and
-	//	"model_context_window_exceeded" pass through verbatim.
+	// Why the run ended. Set on "done" events to the run outcome, the same
+	// value as RunTrace.outcome; see that field for the values. A "done"
+	// sent for a task rejected before its run started carries "error".
 	StopReason string `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	// Human-readable message. Set on "error" and "warning" events.
 	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
-	// Execution metrics. Set on "done" events, except when the run failed
-	// before a trace was started.
+	// The run's summary. Set on "done" events. The harness sends "done" only
+	// after the final git checkpoint, the workspace export and the trace
+	// upload have finished, so the summary reports their results. Unset when
+	// the task was rejected before its run started.
 	Trace *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
 	// Unique request ID for correlation. Set on "permission_request" and
 	// "tool_result_request" events. The control plane must echo this back in
@@ -810,8 +809,16 @@ type RunConfig struct {
 	// that omits it behaves byte-for-byte as it did before the feature
 	// existed.
 	ToolChoiceEscalation *ToolChoiceEscalationConfig `protobuf:"bytes,35,opt,name=tool_choice_escalation,json=toolChoiceEscalation,proto3" json:"tool_choice_escalation,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Optional. A self-contained JSON Schema (Draft 2020-12) object the
+	// run's final answer must satisfy. The model is told to end with a
+	// single JSON document; an answer that fails validation gets bounded
+	// corrective attempts, after which the run ends with outcome
+	// "structured_output_failed". The validated document is returned in
+	// RunTrace.structured_output on "done". References must be local
+	// ("#..."). Absent leaves the final answer as free text.
+	OutputSchema  *structpb.Struct `protobuf:"bytes,57,opt,name=output_schema,json=outputSchema,proto3" json:"output_schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunConfig) Reset() {
@@ -1086,6 +1093,13 @@ func (x *RunConfig) GetResultSink() *ResultSinkConfig {
 func (x *RunConfig) GetToolChoiceEscalation() *ToolChoiceEscalationConfig {
 	if x != nil {
 		return x.ToolChoiceEscalation
+	}
+	return nil
+}
+
+func (x *RunConfig) GetOutputSchema() *structpb.Struct {
+	if x != nil {
+		return x.OutputSchema
 	}
 	return nil
 }
@@ -2150,16 +2164,25 @@ type RunTrace struct {
 	// reading it keep the same value. New consumers should read `outcome`.
 	StopReason string `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	// Canonical terminal status of the run, mirroring the Go-side
-	// types.RunTrace.Outcome. Unlike stop_reason (which on the loop's own
-	// events is one of 7 values and has no "success" concept), outcome is
-	// the authoritative field for downstream analytics: a wire-driven
-	// lakehouse writer can persist it directly without inferring it from
-	// stop_reason + verification_results + budget state.
+	// types.RunTrace.Outcome. It is the authoritative field for downstream
+	// analytics.
 	// Values: "success", "error", "max_turns", "verification_failed",
 	//
 	//	"verification_error", "budget_exceeded", "stalled",
-	//	"tool_failures", "cancelled", "timeout", "max_tokens".
+	//	"tool_failures", "cancelled", "timeout", "max_tokens",
+	//	"setup_failed", "hook_failed", "handoff_failed",
+	//	"control_stream_lost", "guardrail_blocked", "rule_of_two_violation",
+	//	"structured_output_failed", "command_output_capture_failed",
+	//	"command_output_archive_failed".
 	//
+	// "handoff_failed" reports a failed final git checkpoint or a failed
+	// required workspace export; like "hook_failed" and the command_output
+	// outcomes it only replaces "success", never an earlier failure.
+	// "control_stream_lost" reports a run cancelled because its control
+	// stream ended while it was active.
+	// "structured_output_failed" reports a final answer that still did not
+	// satisfy RunConfig.output_schema after the corrective attempts, or
+	// that satisfied it only before secrets were scrubbed from it.
 	// Provider stop reasons pass through verbatim, including:
 	//
 	//	"refusal"                       — the model declined to respond;
@@ -2180,9 +2203,24 @@ type RunTrace struct {
 	ReasoningTokens int32 `protobuf:"varint,11,opt,name=reasoning_tokens,json=reasoningTokens,proto3" json:"reasoning_tokens,omitempty"`
 	// The final model turn's provider-reported stop detail when the run
 	// ended on a non-tool stop reason. Absent otherwise.
-	StopDetails   *StopDetails `protobuf:"bytes,12,opt,name=stop_details,json=stopDetails,proto3" json:"stop_details,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	StopDetails *StopDetails `protobuf:"bytes,12,opt,name=stop_details,json=stopDetails,proto3" json:"stop_details,omitempty"`
+	// The git state the run handed off after its final checkpoint. Absent
+	// when the git strategy does not manage git ("none").
+	Git *GitHandoff `protobuf:"bytes,20,opt,name=git,proto3" json:"git,omitempty"`
+	// The receipt of the end-of-run workspace export. Absent when no export
+	// destination is configured.
+	WorkspaceExport *ExportReceipt `protobuf:"bytes,21,opt,name=workspace_export,json=workspaceExport,proto3" json:"workspace_export,omitempty"`
+	// Scrubbed, length-capped reason for a non-success outcome: the run's
+	// earliest failure. Also set on a successful run whose trace upload
+	// failed. Empty otherwise.
+	Error string `protobuf:"bytes,22,opt,name=error,proto3" json:"error,omitempty"`
+	// The final answer as compact JSON text, set when RunConfig.output_schema
+	// was configured, the answer satisfied it and the outcome is "success".
+	// The document is scrubbed of secrets and never truncated. Empty
+	// otherwise.
+	StructuredOutput string `protobuf:"bytes,36,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RunTrace) Reset() {
@@ -2299,6 +2337,226 @@ func (x *RunTrace) GetStopDetails() *StopDetails {
 	return nil
 }
 
+func (x *RunTrace) GetGit() *GitHandoff {
+	if x != nil {
+		return x.Git
+	}
+	return nil
+}
+
+func (x *RunTrace) GetWorkspaceExport() *ExportReceipt {
+	if x != nil {
+		return x.WorkspaceExport
+	}
+	return nil
+}
+
+func (x *RunTrace) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *RunTrace) GetStructuredOutput() string {
+	if x != nil {
+		return x.StructuredOutput
+	}
+	return ""
+}
+
+// GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
+// run hands off.
+type GitHandoff struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run branch.
+	Branch string `protobuf:"bytes,1,opt,name=branch,proto3" json:"branch,omitempty"`
+	// The commit holding the run's result.
+	Sha string `protobuf:"bytes,2,opt,name=sha,proto3" json:"sha,omitempty"`
+	// HEAD when the run branch was created. Empty when the branch was
+	// created on a repository with no commits.
+	BaseSha string `protobuf:"bytes,3,opt,name=base_sha,json=baseSha,proto3" json:"base_sha,omitempty"`
+	// True when the working tree still had changes after the final
+	// checkpoint (ignored files excluded).
+	Dirty bool `protobuf:"varint,4,opt,name=dirty,proto3" json:"dirty,omitempty"`
+	// Scrubbed, length-capped reason the final checkpoint failed or left
+	// the working tree dirty. Empty on success.
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GitHandoff) Reset() {
+	*x = GitHandoff{}
+	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GitHandoff) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GitHandoff) ProtoMessage() {}
+
+func (x *GitHandoff) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GitHandoff.ProtoReflect.Descriptor instead.
+func (*GitHandoff) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GitHandoff) GetBranch() string {
+	if x != nil {
+		return x.Branch
+	}
+	return ""
+}
+
+func (x *GitHandoff) GetSha() string {
+	if x != nil {
+		return x.Sha
+	}
+	return ""
+}
+
+func (x *GitHandoff) GetBaseSha() string {
+	if x != nil {
+		return x.BaseSha
+	}
+	return ""
+}
+
+func (x *GitHandoff) GetDirty() bool {
+	if x != nil {
+		return x.Dirty
+	}
+	return false
+}
+
+func (x *GitHandoff) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// ExportReceipt mirrors types.ExportReceipt: the result of one run's
+// workspace export.
+type ExportReceipt struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The destination object URI.
+	Uri string `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	// "uploaded" when a non-empty archive reached the destination, "empty"
+	// when the workspace had no files and an empty archive still reached
+	// the destination (counts as a success), "failed" when no archive
+	// reached the destination.
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// Whether a failed export fails the run (executor.workspace_export_required).
+	Required bool `protobuf:"varint,3,opt,name=required,proto3" json:"required,omitempty"`
+	// Scrubbed, length-capped export failure. Empty unless status is
+	// "failed".
+	Error string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	// Size of the uploaded gzipped tarball.
+	Bytes int64 `protobuf:"varint,5,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	// Lowercase hex SHA-256 of the uploaded gzipped tarball.
+	Sha256 string `protobuf:"bytes,6,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// The archive's non-directory entries (regular files, symlinks and
+	// hard links).
+	Files         int32 `protobuf:"varint,7,opt,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportReceipt) Reset() {
+	*x = ExportReceipt{}
+	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportReceipt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportReceipt) ProtoMessage() {}
+
+func (x *ExportReceipt) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportReceipt.ProtoReflect.Descriptor instead.
+func (*ExportReceipt) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ExportReceipt) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *ExportReceipt) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ExportReceipt) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *ExportReceipt) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ExportReceipt) GetBytes() int64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+func (x *ExportReceipt) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *ExportReceipt) GetFiles() int32 {
+	if x != nil {
+		return x.Files
+	}
+	return 0
+}
+
 // StopDetails mirrors types.StopDetails: a provider's structured
 // explanation of why a model response stopped. Anthropic reports it for
 // "refusal" stops.
@@ -2319,7 +2577,7 @@ type StopDetails struct {
 
 func (x *StopDetails) Reset() {
 	*x = StopDetails{}
-	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	mi := &file_harness_v1_harness_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2331,7 +2589,7 @@ func (x *StopDetails) String() string {
 func (*StopDetails) ProtoMessage() {}
 
 func (x *StopDetails) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	mi := &file_harness_v1_harness_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2344,7 +2602,7 @@ func (x *StopDetails) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopDetails.ProtoReflect.Descriptor instead.
 func (*StopDetails) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{17}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *StopDetails) GetType() string {
@@ -2459,7 +2717,7 @@ type ProviderConfig struct {
 
 func (x *ProviderConfig) Reset() {
 	*x = ProviderConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	mi := &file_harness_v1_harness_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2471,7 +2729,7 @@ func (x *ProviderConfig) String() string {
 func (*ProviderConfig) ProtoMessage() {}
 
 func (x *ProviderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	mi := &file_harness_v1_harness_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2484,7 +2742,7 @@ func (x *ProviderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderConfig.ProtoReflect.Descriptor instead.
 func (*ProviderConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{18}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ProviderConfig) GetType() string {
@@ -2635,7 +2893,7 @@ type BatchProviderConfig struct {
 
 func (x *BatchProviderConfig) Reset() {
 	*x = BatchProviderConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[19]
+	mi := &file_harness_v1_harness_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2647,7 +2905,7 @@ func (x *BatchProviderConfig) String() string {
 func (*BatchProviderConfig) ProtoMessage() {}
 
 func (x *BatchProviderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[19]
+	mi := &file_harness_v1_harness_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2660,7 +2918,7 @@ func (x *BatchProviderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchProviderConfig.ProtoReflect.Descriptor instead.
 func (*BatchProviderConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{19}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *BatchProviderConfig) GetEnabled() bool {
@@ -2869,7 +3127,7 @@ type CredentialConfig struct {
 
 func (x *CredentialConfig) Reset() {
 	*x = CredentialConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[20]
+	mi := &file_harness_v1_harness_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2881,7 +3139,7 @@ func (x *CredentialConfig) String() string {
 func (*CredentialConfig) ProtoMessage() {}
 
 func (x *CredentialConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[20]
+	mi := &file_harness_v1_harness_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2894,7 +3152,7 @@ func (x *CredentialConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialConfig.ProtoReflect.Descriptor instead.
 func (*CredentialConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{20}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CredentialConfig) GetType() string {
@@ -3061,7 +3319,7 @@ type TokenSourceConfig struct {
 
 func (x *TokenSourceConfig) Reset() {
 	*x = TokenSourceConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[21]
+	mi := &file_harness_v1_harness_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3073,7 +3331,7 @@ func (x *TokenSourceConfig) String() string {
 func (*TokenSourceConfig) ProtoMessage() {}
 
 func (x *TokenSourceConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[21]
+	mi := &file_harness_v1_harness_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3086,7 +3344,7 @@ func (x *TokenSourceConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenSourceConfig.ProtoReflect.Descriptor instead.
 func (*TokenSourceConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{21}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *TokenSourceConfig) GetType() string {
@@ -3154,7 +3412,7 @@ type GeminiSafetySetting struct {
 
 func (x *GeminiSafetySetting) Reset() {
 	*x = GeminiSafetySetting{}
-	mi := &file_harness_v1_harness_proto_msgTypes[22]
+	mi := &file_harness_v1_harness_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3166,7 +3424,7 @@ func (x *GeminiSafetySetting) String() string {
 func (*GeminiSafetySetting) ProtoMessage() {}
 
 func (x *GeminiSafetySetting) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[22]
+	mi := &file_harness_v1_harness_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3179,7 +3437,7 @@ func (x *GeminiSafetySetting) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeminiSafetySetting.ProtoReflect.Descriptor instead.
 func (*GeminiSafetySetting) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{22}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GeminiSafetySetting) GetCategory() string {
@@ -3221,7 +3479,7 @@ type ProviderRetryConfig struct {
 
 func (x *ProviderRetryConfig) Reset() {
 	*x = ProviderRetryConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[23]
+	mi := &file_harness_v1_harness_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3233,7 +3491,7 @@ func (x *ProviderRetryConfig) String() string {
 func (*ProviderRetryConfig) ProtoMessage() {}
 
 func (x *ProviderRetryConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[23]
+	mi := &file_harness_v1_harness_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3246,7 +3504,7 @@ func (x *ProviderRetryConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProviderRetryConfig.ProtoReflect.Descriptor instead.
 func (*ProviderRetryConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{23}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ProviderRetryConfig) GetMaxAttempts() int32 {
@@ -3320,7 +3578,7 @@ type ModelRouterConfig struct {
 
 func (x *ModelRouterConfig) Reset() {
 	*x = ModelRouterConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[24]
+	mi := &file_harness_v1_harness_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3332,7 +3590,7 @@ func (x *ModelRouterConfig) String() string {
 func (*ModelRouterConfig) ProtoMessage() {}
 
 func (x *ModelRouterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[24]
+	mi := &file_harness_v1_harness_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3345,7 +3603,7 @@ func (x *ModelRouterConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelRouterConfig.ProtoReflect.Descriptor instead.
 func (*ModelRouterConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{24}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ModelRouterConfig) GetType() string {
@@ -3455,7 +3713,7 @@ type PromptBuilderConfig struct {
 
 func (x *PromptBuilderConfig) Reset() {
 	*x = PromptBuilderConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[25]
+	mi := &file_harness_v1_harness_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3467,7 +3725,7 @@ func (x *PromptBuilderConfig) String() string {
 func (*PromptBuilderConfig) ProtoMessage() {}
 
 func (x *PromptBuilderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[25]
+	mi := &file_harness_v1_harness_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3480,7 +3738,7 @@ func (x *PromptBuilderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromptBuilderConfig.ProtoReflect.Descriptor instead.
 func (*PromptBuilderConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{25}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PromptBuilderConfig) GetType() string {
@@ -3526,7 +3784,7 @@ type ContextStrategyConfig struct {
 
 func (x *ContextStrategyConfig) Reset() {
 	*x = ContextStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[26]
+	mi := &file_harness_v1_harness_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3538,7 +3796,7 @@ func (x *ContextStrategyConfig) String() string {
 func (*ContextStrategyConfig) ProtoMessage() {}
 
 func (x *ContextStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[26]
+	mi := &file_harness_v1_harness_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3551,7 +3809,7 @@ func (x *ContextStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextStrategyConfig.ProtoReflect.Descriptor instead.
 func (*ContextStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{26}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ContextStrategyConfig) GetType() string {
@@ -3638,10 +3896,12 @@ type ExecutorConfig struct {
 	// Rejected for any other executor type.
 	RegistryAllowlist []string `protobuf:"bytes,14,rep,name=registry_allowlist,json=registryAllowlist,proto3" json:"registry_allowlist,omitempty"`
 	// Optional. Destination URI for a tarball of the executor's workspace,
-	// uploaded at end-of-run. Only the "gs://bucket/path" scheme is accepted
+	// uploaded at the end of every run, whatever its outcome, before the
+	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
 	// today; the bucket path must be non-empty. Rejected for the "api" and
-	// "none" executors, neither of which has a workspace. A run with an
-	// empty workspace skips the upload silently.
+	// "none" executors, neither of which has a workspace. A workspace with
+	// no files uploads an empty archive and reports export status "empty";
+	// a missing workspace is an export failure.
 	WorkspaceExportTo string `protobuf:"bytes,15,opt,name=workspace_export_to,json=workspaceExportTo,proto3" json:"workspace_export_to,omitempty"`
 	// Optional. Requests a control-plane-issued sandbox identity token and
 	// injects it into the sandbox environment. Requires the gRPC transport
@@ -3656,14 +3916,19 @@ type ExecutorConfig struct {
 	// identity token. Requires sandbox_identity — it is the only token
 	// source, so a git_proxy without it names a variable that would never be
 	// populated. Same transport and executor-type restrictions apply.
-	GitProxy      *GitProxyConfig `protobuf:"bytes,17,opt,name=git_proxy,json=gitProxy,proto3" json:"git_proxy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	GitProxy *GitProxyConfig `protobuf:"bytes,17,opt,name=git_proxy,json=gitProxy,proto3" json:"git_proxy,omitempty"`
+	// Optional. Whether a failed workspace export fails an otherwise
+	// successful run with outcome "handoff_failed". Unset defaults to true
+	// when workspace_export_to is set. Rejected when workspace_export_to is
+	// empty.
+	WorkspaceExportRequired *bool `protobuf:"varint,18,opt,name=workspace_export_required,json=workspaceExportRequired,proto3,oneof" json:"workspace_export_required,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *ExecutorConfig) Reset() {
 	*x = ExecutorConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[27]
+	mi := &file_harness_v1_harness_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3675,7 +3940,7 @@ func (x *ExecutorConfig) String() string {
 func (*ExecutorConfig) ProtoMessage() {}
 
 func (x *ExecutorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[27]
+	mi := &file_harness_v1_harness_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3688,7 +3953,7 @@ func (x *ExecutorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutorConfig.ProtoReflect.Descriptor instead.
 func (*ExecutorConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{27}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ExecutorConfig) GetType() string {
@@ -3810,6 +4075,13 @@ func (x *ExecutorConfig) GetGitProxy() *GitProxyConfig {
 	return nil
 }
 
+func (x *ExecutorConfig) GetWorkspaceExportRequired() bool {
+	if x != nil && x.WorkspaceExportRequired != nil {
+		return *x.WorkspaceExportRequired
+	}
+	return false
+}
+
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
 // credential for the sandbox. The harness sends a sandbox_token_request
 // after task assignment and before sandbox creation, blocks fail-closed
@@ -3840,7 +4112,7 @@ type SandboxIdentityConfig struct {
 
 func (x *SandboxIdentityConfig) Reset() {
 	*x = SandboxIdentityConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[28]
+	mi := &file_harness_v1_harness_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3852,7 +4124,7 @@ func (x *SandboxIdentityConfig) String() string {
 func (*SandboxIdentityConfig) ProtoMessage() {}
 
 func (x *SandboxIdentityConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[28]
+	mi := &file_harness_v1_harness_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3865,7 +4137,7 @@ func (x *SandboxIdentityConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxIdentityConfig.ProtoReflect.Descriptor instead.
 func (*SandboxIdentityConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{28}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SandboxIdentityConfig) GetSource() string {
@@ -3921,7 +4193,7 @@ type GitProxyConfig struct {
 
 func (x *GitProxyConfig) Reset() {
 	*x = GitProxyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[29]
+	mi := &file_harness_v1_harness_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3933,7 +4205,7 @@ func (x *GitProxyConfig) String() string {
 func (*GitProxyConfig) ProtoMessage() {}
 
 func (x *GitProxyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[29]
+	mi := &file_harness_v1_harness_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3946,7 +4218,7 @@ func (x *GitProxyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitProxyConfig.ProtoReflect.Descriptor instead.
 func (*GitProxyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{29}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GitProxyConfig) GetUrl() string {
@@ -3995,7 +4267,7 @@ type VcsBackendConfig struct {
 
 func (x *VcsBackendConfig) Reset() {
 	*x = VcsBackendConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[30]
+	mi := &file_harness_v1_harness_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4007,7 +4279,7 @@ func (x *VcsBackendConfig) String() string {
 func (*VcsBackendConfig) ProtoMessage() {}
 
 func (x *VcsBackendConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[30]
+	mi := &file_harness_v1_harness_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4020,7 +4292,7 @@ func (x *VcsBackendConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VcsBackendConfig.ProtoReflect.Descriptor instead.
 func (*VcsBackendConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{30}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *VcsBackendConfig) GetType() string {
@@ -4068,7 +4340,7 @@ type NetworkConfig struct {
 
 func (x *NetworkConfig) Reset() {
 	*x = NetworkConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[31]
+	mi := &file_harness_v1_harness_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4080,7 +4352,7 @@ func (x *NetworkConfig) String() string {
 func (*NetworkConfig) ProtoMessage() {}
 
 func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[31]
+	mi := &file_harness_v1_harness_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4093,7 +4365,7 @@ func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkConfig.ProtoReflect.Descriptor instead.
 func (*NetworkConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{31}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *NetworkConfig) GetMode() string {
@@ -4127,7 +4399,7 @@ type ResourceLimits struct {
 
 func (x *ResourceLimits) Reset() {
 	*x = ResourceLimits{}
-	mi := &file_harness_v1_harness_proto_msgTypes[32]
+	mi := &file_harness_v1_harness_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4139,7 +4411,7 @@ func (x *ResourceLimits) String() string {
 func (*ResourceLimits) ProtoMessage() {}
 
 func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[32]
+	mi := &file_harness_v1_harness_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4152,7 +4424,7 @@ func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceLimits.ProtoReflect.Descriptor instead.
 func (*ResourceLimits) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{32}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ResourceLimits) GetCpus() float64 {
@@ -4207,7 +4479,7 @@ type EditStrategyConfig struct {
 
 func (x *EditStrategyConfig) Reset() {
 	*x = EditStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[33]
+	mi := &file_harness_v1_harness_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4219,7 +4491,7 @@ func (x *EditStrategyConfig) String() string {
 func (*EditStrategyConfig) ProtoMessage() {}
 
 func (x *EditStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[33]
+	mi := &file_harness_v1_harness_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4232,7 +4504,7 @@ func (x *EditStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EditStrategyConfig.ProtoReflect.Descriptor instead.
 func (*EditStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{33}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *EditStrategyConfig) GetType() string {
@@ -4280,7 +4552,7 @@ type VerifierConfig struct {
 
 func (x *VerifierConfig) Reset() {
 	*x = VerifierConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[34]
+	mi := &file_harness_v1_harness_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4292,7 +4564,7 @@ func (x *VerifierConfig) String() string {
 func (*VerifierConfig) ProtoMessage() {}
 
 func (x *VerifierConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[34]
+	mi := &file_harness_v1_harness_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4305,7 +4577,7 @@ func (x *VerifierConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifierConfig.ProtoReflect.Descriptor instead.
 func (*VerifierConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{34}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *VerifierConfig) GetType() string {
@@ -4407,7 +4679,7 @@ type PermissionPolicyConfig struct {
 
 func (x *PermissionPolicyConfig) Reset() {
 	*x = PermissionPolicyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[35]
+	mi := &file_harness_v1_harness_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4419,7 +4691,7 @@ func (x *PermissionPolicyConfig) String() string {
 func (*PermissionPolicyConfig) ProtoMessage() {}
 
 func (x *PermissionPolicyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[35]
+	mi := &file_harness_v1_harness_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4432,7 +4704,7 @@ func (x *PermissionPolicyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermissionPolicyConfig.ProtoReflect.Descriptor instead.
 func (*PermissionPolicyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{35}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *PermissionPolicyConfig) GetType() string {
@@ -4479,7 +4751,7 @@ type GitStrategyConfig struct {
 
 func (x *GitStrategyConfig) Reset() {
 	*x = GitStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[36]
+	mi := &file_harness_v1_harness_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4491,7 +4763,7 @@ func (x *GitStrategyConfig) String() string {
 func (*GitStrategyConfig) ProtoMessage() {}
 
 func (x *GitStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[36]
+	mi := &file_harness_v1_harness_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4504,7 +4776,7 @@ func (x *GitStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitStrategyConfig.ProtoReflect.Descriptor instead.
 func (*GitStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{36}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *GitStrategyConfig) GetType() string {
@@ -4576,7 +4848,7 @@ type TraceEmitterConfig struct {
 
 func (x *TraceEmitterConfig) Reset() {
 	*x = TraceEmitterConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[37]
+	mi := &file_harness_v1_harness_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4588,7 +4860,7 @@ func (x *TraceEmitterConfig) String() string {
 func (*TraceEmitterConfig) ProtoMessage() {}
 
 func (x *TraceEmitterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[37]
+	mi := &file_harness_v1_harness_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4601,7 +4873,7 @@ func (x *TraceEmitterConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceEmitterConfig.ProtoReflect.Descriptor instead.
 func (*TraceEmitterConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{37}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *TraceEmitterConfig) GetType() string {
@@ -4717,7 +4989,7 @@ type ToolsConfig struct {
 
 func (x *ToolsConfig) Reset() {
 	*x = ToolsConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	mi := &file_harness_v1_harness_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4729,7 +5001,7 @@ func (x *ToolsConfig) String() string {
 func (*ToolsConfig) ProtoMessage() {}
 
 func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[38]
+	mi := &file_harness_v1_harness_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4742,7 +5014,7 @@ func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsConfig.ProtoReflect.Descriptor instead.
 func (*ToolsConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{38}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ToolsConfig) GetBuiltIn() []string {
@@ -4797,7 +5069,7 @@ type ControlPlaneToolConfig struct {
 
 func (x *ControlPlaneToolConfig) Reset() {
 	*x = ControlPlaneToolConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[39]
+	mi := &file_harness_v1_harness_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4809,7 +5081,7 @@ func (x *ControlPlaneToolConfig) String() string {
 func (*ControlPlaneToolConfig) ProtoMessage() {}
 
 func (x *ControlPlaneToolConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[39]
+	mi := &file_harness_v1_harness_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4822,7 +5094,7 @@ func (x *ControlPlaneToolConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlPlaneToolConfig.ProtoReflect.Descriptor instead.
 func (*ControlPlaneToolConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{39}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ControlPlaneToolConfig) GetName() string {
@@ -4888,7 +5160,7 @@ type MCPServerConfig struct {
 
 func (x *MCPServerConfig) Reset() {
 	*x = MCPServerConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[40]
+	mi := &file_harness_v1_harness_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4900,7 +5172,7 @@ func (x *MCPServerConfig) String() string {
 func (*MCPServerConfig) ProtoMessage() {}
 
 func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[40]
+	mi := &file_harness_v1_harness_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4913,7 +5185,7 @@ func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerConfig.ProtoReflect.Descriptor instead.
 func (*MCPServerConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{40}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *MCPServerConfig) GetName() string {
@@ -4990,7 +5262,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\x03H\x00R\texpiresAt\x88\x01\x01B\r\n" +
 	"\v_expires_at\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\x12\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xb8\x13\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -5029,7 +5301,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10reasoning_effort\x18! \x01(\tR\x0freasoningEffort\x12E\n" +
 	"\vresult_sink\x18\" \x01(\v2$.stirrup.harness.v1.ResultSinkConfigR\n" +
 	"resultSink\x12d\n" +
-	"\x16tool_choice_escalation\x18# \x01(\v2..stirrup.harness.v1.ToolChoiceEscalationConfigR\x14toolChoiceEscalation\x1aj\n" +
+	"\x16tool_choice_escalation\x18# \x01(\v2..stirrup.harness.v1.ToolChoiceEscalationConfigR\x14toolChoiceEscalation\x12<\n" +
+	"\routput_schema\x189 \x01(\v2\x17.google.protobuf.StructR\foutputSchema\x1aj\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12=\n" +
 	"\x05value\x18\x02 \x01(\v2'.stirrup.harness.v1.DynamicContextValueR\x05value:\x028\x01\x1a`\n" +
@@ -5116,7 +5389,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\venvironment\x18\x01 \x01(\tR\venvironment\x12+\n" +
 	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\x12E\n" +
 	"\vlogs_export\x18\x03 \x01(\v2$.stirrup.harness.v1.LogsExportConfigR\n" +
-	"logsExport\"\xbf\x03\n" +
+	"logsExport\"\x82\x05\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +
@@ -5132,7 +5405,26 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x12cache_write_tokens\x18\n" +
 	" \x01(\x05R\x10cacheWriteTokens\x12)\n" +
 	"\x10reasoning_tokens\x18\v \x01(\x05R\x0freasoningTokens\x12B\n" +
-	"\fstop_details\x18\f \x01(\v2\x1f.stirrup.harness.v1.StopDetailsR\vstopDetails\"_\n" +
+	"\fstop_details\x18\f \x01(\v2\x1f.stirrup.harness.v1.StopDetailsR\vstopDetails\x120\n" +
+	"\x03git\x18\x14 \x01(\v2\x1e.stirrup.harness.v1.GitHandoffR\x03git\x12L\n" +
+	"\x10workspace_export\x18\x15 \x01(\v2!.stirrup.harness.v1.ExportReceiptR\x0fworkspaceExport\x12\x14\n" +
+	"\x05error\x18\x16 \x01(\tR\x05error\x12+\n" +
+	"\x11structured_output\x18$ \x01(\tR\x10structuredOutput\"}\n" +
+	"\n" +
+	"GitHandoff\x12\x16\n" +
+	"\x06branch\x18\x01 \x01(\tR\x06branch\x12\x10\n" +
+	"\x03sha\x18\x02 \x01(\tR\x03sha\x12\x19\n" +
+	"\bbase_sha\x18\x03 \x01(\tR\abaseSha\x12\x14\n" +
+	"\x05dirty\x18\x04 \x01(\bR\x05dirty\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\"\xaf\x01\n" +
+	"\rExportReceipt\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1a\n" +
+	"\brequired\x18\x03 \x01(\bR\brequired\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\x12\x14\n" +
+	"\x05bytes\x18\x05 \x01(\x03R\x05bytes\x12\x16\n" +
+	"\x06sha256\x18\x06 \x01(\tR\x06sha256\x12\x14\n" +
+	"\x05files\x18\a \x01(\x05R\x05files\"_\n" +
 	"\vStopDetails\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bcategory\x18\x02 \x01(\tR\bcategory\x12 \n" +
@@ -5230,7 +5522,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x15ContextStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
-	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\x9a\a\n" +
+	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\xf9\a\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
 	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
@@ -5250,10 +5542,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x12registry_allowlist\x18\x0e \x03(\tR\x11registryAllowlist\x12.\n" +
 	"\x13workspace_export_to\x18\x0f \x01(\tR\x11workspaceExportTo\x12T\n" +
 	"\x10sandbox_identity\x18\x10 \x01(\v2).stirrup.harness.v1.SandboxIdentityConfigR\x0fsandboxIdentity\x12?\n" +
-	"\tgit_proxy\x18\x11 \x01(\v2\".stirrup.harness.v1.GitProxyConfigR\bgitProxy\x1aB\n" +
+	"\tgit_proxy\x18\x11 \x01(\v2\".stirrup.harness.v1.GitProxyConfigR\bgitProxy\x12?\n" +
+	"\x19workspace_export_required\x18\x12 \x01(\bH\x00R\x17workspaceExportRequired\x88\x01\x01\x1aB\n" +
 	"\x14K8sNodeSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"d\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x1c\n" +
+	"\x1a_workspace_export_required\"d\n" +
 	"\x15SandboxIdentityConfig\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x17\n" +
@@ -5342,7 +5636,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),               // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),               // 1: stirrup.harness.v1.ControlEvent
@@ -5361,58 +5655,60 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*GuardRailConfig)(nil),            // 14: stirrup.harness.v1.GuardRailConfig
 	(*ObservabilityConfig)(nil),        // 15: stirrup.harness.v1.ObservabilityConfig
 	(*RunTrace)(nil),                   // 16: stirrup.harness.v1.RunTrace
-	(*StopDetails)(nil),                // 17: stirrup.harness.v1.StopDetails
-	(*ProviderConfig)(nil),             // 18: stirrup.harness.v1.ProviderConfig
-	(*BatchProviderConfig)(nil),        // 19: stirrup.harness.v1.BatchProviderConfig
-	(*CredentialConfig)(nil),           // 20: stirrup.harness.v1.CredentialConfig
-	(*TokenSourceConfig)(nil),          // 21: stirrup.harness.v1.TokenSourceConfig
-	(*GeminiSafetySetting)(nil),        // 22: stirrup.harness.v1.GeminiSafetySetting
-	(*ProviderRetryConfig)(nil),        // 23: stirrup.harness.v1.ProviderRetryConfig
-	(*ModelRouterConfig)(nil),          // 24: stirrup.harness.v1.ModelRouterConfig
-	(*PromptBuilderConfig)(nil),        // 25: stirrup.harness.v1.PromptBuilderConfig
-	(*ContextStrategyConfig)(nil),      // 26: stirrup.harness.v1.ContextStrategyConfig
-	(*ExecutorConfig)(nil),             // 27: stirrup.harness.v1.ExecutorConfig
-	(*SandboxIdentityConfig)(nil),      // 28: stirrup.harness.v1.SandboxIdentityConfig
-	(*GitProxyConfig)(nil),             // 29: stirrup.harness.v1.GitProxyConfig
-	(*VcsBackendConfig)(nil),           // 30: stirrup.harness.v1.VcsBackendConfig
-	(*NetworkConfig)(nil),              // 31: stirrup.harness.v1.NetworkConfig
-	(*ResourceLimits)(nil),             // 32: stirrup.harness.v1.ResourceLimits
-	(*EditStrategyConfig)(nil),         // 33: stirrup.harness.v1.EditStrategyConfig
-	(*VerifierConfig)(nil),             // 34: stirrup.harness.v1.VerifierConfig
-	(*PermissionPolicyConfig)(nil),     // 35: stirrup.harness.v1.PermissionPolicyConfig
-	(*GitStrategyConfig)(nil),          // 36: stirrup.harness.v1.GitStrategyConfig
-	(*TraceEmitterConfig)(nil),         // 37: stirrup.harness.v1.TraceEmitterConfig
-	(*ToolsConfig)(nil),                // 38: stirrup.harness.v1.ToolsConfig
-	(*ControlPlaneToolConfig)(nil),     // 39: stirrup.harness.v1.ControlPlaneToolConfig
-	(*MCPServerConfig)(nil),            // 40: stirrup.harness.v1.MCPServerConfig
-	nil,                                // 41: stirrup.harness.v1.RunConfig.DynamicContextEntry
-	nil,                                // 42: stirrup.harness.v1.RunConfig.ProvidersEntry
-	nil,                                // 43: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	nil,                                // 44: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
-	nil,                                // 45: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	nil,                                // 46: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	nil,                                // 47: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
-	nil,                                // 48: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	(*structpb.Struct)(nil),            // 49: google.protobuf.Struct
+	(*GitHandoff)(nil),                 // 17: stirrup.harness.v1.GitHandoff
+	(*ExportReceipt)(nil),              // 18: stirrup.harness.v1.ExportReceipt
+	(*StopDetails)(nil),                // 19: stirrup.harness.v1.StopDetails
+	(*ProviderConfig)(nil),             // 20: stirrup.harness.v1.ProviderConfig
+	(*BatchProviderConfig)(nil),        // 21: stirrup.harness.v1.BatchProviderConfig
+	(*CredentialConfig)(nil),           // 22: stirrup.harness.v1.CredentialConfig
+	(*TokenSourceConfig)(nil),          // 23: stirrup.harness.v1.TokenSourceConfig
+	(*GeminiSafetySetting)(nil),        // 24: stirrup.harness.v1.GeminiSafetySetting
+	(*ProviderRetryConfig)(nil),        // 25: stirrup.harness.v1.ProviderRetryConfig
+	(*ModelRouterConfig)(nil),          // 26: stirrup.harness.v1.ModelRouterConfig
+	(*PromptBuilderConfig)(nil),        // 27: stirrup.harness.v1.PromptBuilderConfig
+	(*ContextStrategyConfig)(nil),      // 28: stirrup.harness.v1.ContextStrategyConfig
+	(*ExecutorConfig)(nil),             // 29: stirrup.harness.v1.ExecutorConfig
+	(*SandboxIdentityConfig)(nil),      // 30: stirrup.harness.v1.SandboxIdentityConfig
+	(*GitProxyConfig)(nil),             // 31: stirrup.harness.v1.GitProxyConfig
+	(*VcsBackendConfig)(nil),           // 32: stirrup.harness.v1.VcsBackendConfig
+	(*NetworkConfig)(nil),              // 33: stirrup.harness.v1.NetworkConfig
+	(*ResourceLimits)(nil),             // 34: stirrup.harness.v1.ResourceLimits
+	(*EditStrategyConfig)(nil),         // 35: stirrup.harness.v1.EditStrategyConfig
+	(*VerifierConfig)(nil),             // 36: stirrup.harness.v1.VerifierConfig
+	(*PermissionPolicyConfig)(nil),     // 37: stirrup.harness.v1.PermissionPolicyConfig
+	(*GitStrategyConfig)(nil),          // 38: stirrup.harness.v1.GitStrategyConfig
+	(*TraceEmitterConfig)(nil),         // 39: stirrup.harness.v1.TraceEmitterConfig
+	(*ToolsConfig)(nil),                // 40: stirrup.harness.v1.ToolsConfig
+	(*ControlPlaneToolConfig)(nil),     // 41: stirrup.harness.v1.ControlPlaneToolConfig
+	(*MCPServerConfig)(nil),            // 42: stirrup.harness.v1.MCPServerConfig
+	nil,                                // 43: stirrup.harness.v1.RunConfig.DynamicContextEntry
+	nil,                                // 44: stirrup.harness.v1.RunConfig.ProvidersEntry
+	nil,                                // 45: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	nil,                                // 46: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	nil,                                // 47: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	nil,                                // 48: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                                // 49: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	nil,                                // 50: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	(*structpb.Struct)(nil),            // 51: google.protobuf.Struct
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	16, // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
 	3,  // 1: stirrup.harness.v1.ControlEvent.task:type_name -> stirrup.harness.v1.RunConfig
 	2,  // 2: stirrup.harness.v1.ControlEvent.allowed:type_name -> stirrup.harness.v1.OptionalBool
 	2,  // 3: stirrup.harness.v1.ControlEvent.is_error:type_name -> stirrup.harness.v1.OptionalBool
-	41, // 4: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
-	18, // 5: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
-	42, // 6: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
-	24, // 7: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
-	25, // 8: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
-	26, // 9: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
-	27, // 10: stirrup.harness.v1.RunConfig.executor:type_name -> stirrup.harness.v1.ExecutorConfig
-	33, // 11: stirrup.harness.v1.RunConfig.edit_strategy:type_name -> stirrup.harness.v1.EditStrategyConfig
-	34, // 12: stirrup.harness.v1.RunConfig.verifier:type_name -> stirrup.harness.v1.VerifierConfig
-	35, // 13: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
-	36, // 14: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
-	37, // 15: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
-	38, // 16: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
+	43, // 4: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
+	20, // 5: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
+	44, // 6: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
+	26, // 7: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
+	27, // 8: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
+	28, // 9: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
+	29, // 10: stirrup.harness.v1.RunConfig.executor:type_name -> stirrup.harness.v1.ExecutorConfig
+	35, // 11: stirrup.harness.v1.RunConfig.edit_strategy:type_name -> stirrup.harness.v1.EditStrategyConfig
+	36, // 12: stirrup.harness.v1.RunConfig.verifier:type_name -> stirrup.harness.v1.VerifierConfig
+	37, // 13: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
+	38, // 14: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
+	39, // 15: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
+	40, // 16: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
 	11, // 17: stirrup.harness.v1.RunConfig.rule_of_two:type_name -> stirrup.harness.v1.RuleOfTwoConfig
 	13, // 18: stirrup.harness.v1.RunConfig.code_scanner:type_name -> stirrup.harness.v1.CodeScannerConfig
 	14, // 19: stirrup.harness.v1.RunConfig.guard_rail:type_name -> stirrup.harness.v1.GuardRailConfig
@@ -5421,41 +5717,44 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	9,  // 22: stirrup.harness.v1.RunConfig.hooks:type_name -> stirrup.harness.v1.HooksConfig
 	7,  // 23: stirrup.harness.v1.RunConfig.result_sink:type_name -> stirrup.harness.v1.ResultSinkConfig
 	6,  // 24: stirrup.harness.v1.RunConfig.tool_choice_escalation:type_name -> stirrup.harness.v1.ToolChoiceEscalationConfig
-	43, // 25: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	10, // 26: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
-	10, // 27: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
-	12, // 28: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
-	14, // 29: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
-	44, // 30: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
-	8,  // 31: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
-	17, // 32: stirrup.harness.v1.RunTrace.stop_details:type_name -> stirrup.harness.v1.StopDetails
-	20, // 33: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	45, // 34: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	22, // 35: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
-	23, // 36: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
-	19, // 37: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
-	21, // 38: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	46, // 39: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	30, // 40: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
-	31, // 41: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
-	32, // 42: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	47, // 43: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
-	28, // 44: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
-	29, // 45: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
-	34, // 46: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	48, // 47: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	40, // 48: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	39, // 49: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
-	49, // 50: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
-	4,  // 51: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	18, // 52: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 53: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 54: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	54, // [54:55] is the sub-list for method output_type
-	53, // [53:54] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	51, // 25: stirrup.harness.v1.RunConfig.output_schema:type_name -> google.protobuf.Struct
+	45, // 26: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	10, // 27: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
+	10, // 28: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
+	12, // 29: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
+	14, // 30: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
+	46, // 31: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	8,  // 32: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
+	19, // 33: stirrup.harness.v1.RunTrace.stop_details:type_name -> stirrup.harness.v1.StopDetails
+	17, // 34: stirrup.harness.v1.RunTrace.git:type_name -> stirrup.harness.v1.GitHandoff
+	18, // 35: stirrup.harness.v1.RunTrace.workspace_export:type_name -> stirrup.harness.v1.ExportReceipt
+	22, // 36: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
+	47, // 37: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	24, // 38: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
+	25, // 39: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
+	21, // 40: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
+	23, // 41: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
+	48, // 42: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	32, // 43: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
+	33, // 44: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
+	34, // 45: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
+	49, // 46: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	30, // 47: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
+	31, // 48: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
+	36, // 49: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	50, // 50: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	42, // 51: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	41, // 52: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	51, // 53: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	4,  // 54: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	20, // 55: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 56: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 57: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	57, // [57:58] is the sub-list for method output_type
+	56, // [56:57] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -5467,16 +5766,17 @@ func file_harness_v1_harness_proto_init() {
 	file_harness_v1_harness_proto_msgTypes[3].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[11].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[14].OneofWrappers = []any{}
-	file_harness_v1_harness_proto_msgTypes[18].OneofWrappers = []any{}
-	file_harness_v1_harness_proto_msgTypes[19].OneofWrappers = []any{}
-	file_harness_v1_harness_proto_msgTypes[33].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[20].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[21].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[29].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[35].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   49,
+			NumMessages:   51,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -98,6 +99,9 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	}
 
 	if err := types.ValidateRunConfig(cfg); err != nil {
+		return nil, validationError(fmt.Errorf("invalid config: %w", err))
+	}
+	if err := core.ValidateOutputSchema(cfg); err != nil {
 		return nil, validationError(fmt.Errorf("invalid config: %w", err))
 	}
 	return cfg, nil

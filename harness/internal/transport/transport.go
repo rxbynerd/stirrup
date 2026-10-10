@@ -19,3 +19,15 @@ type Transport interface {
 	// Close releases transport resources.
 	Close() error
 }
+
+// Liveness is implemented by transports whose connection to the control
+// plane can end independently of the harness.
+type Liveness interface {
+	// Done is closed once the transport stops receiving control events.
+	Done() <-chan struct{}
+
+	// Err reports why the connection ended: nil while it is live and
+	// after a local Close or cancellation of the transport's context;
+	// otherwise the cause of the loss.
+	Err() error
+}

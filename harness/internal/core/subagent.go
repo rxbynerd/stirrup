@@ -99,6 +99,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
+	childConfig.OutputSchema = nil
 	// Lifecycle hooks are parent-run-only: the child always gets hook.Noop
 	// (below), so clear the field here too, or a persisted child trace
 	// would claim hooks the sub-agent never ran.

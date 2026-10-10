@@ -136,12 +136,12 @@ filled the model's context window and is truncated).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 
-The proto also defines `done.trace`, but the job path currently emits
-`done` before trace finalisation and leaves that field unset (tracked in
-[issue #453](https://github.com/rxbynerd/stirrup/issues/453)). Obtain
-turn counts, token usage, duration, verifier details, and final
-assistant text from a configured `resultSink`, process stdout, or a
-trace emitter instead. `cost_usd` is not calculated by the harness.
+`done.trace` carries the run summary: the harness sends `done` only
+after the final git checkpoint, the workspace export and the trace
+upload have finished, so the summary includes their results and the
+run's `error`. Obtain verifier details and final assistant text from a
+configured `resultSink`, process stdout, or a trace emitter. `cost_usd`
+is not calculated by the harness.
 A refusal's category and explanation reach operators through the trace
 emitters (the JSONL and GCS `RunTrace`, and the `stop.category`
 attribute on the OTel `provider.stream` span) and the `provider refused
@@ -640,9 +640,8 @@ re-provisioning the sandbox.
   (`gs://bucket/runs/r1/workspace.tar.gz` →
   `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so successive
   tarballs never overwrite each other. The follow-up's run ID is the
-  `runId` on its `RunResult`. Export failures follow the same soft-fail
-  policy as the primary run (`--export-workspace-required` hardens both
-  on the CLI).
+  `runId` on its `RunResult`. Export failures follow the same
+  `executor.workspaceExportRequired` policy as the primary run.
 - A `cancel` ends the session wherever it lands: during a run it
   cancels that run and no grace window opens afterwards; during the
   grace window it closes the stream promptly without an extra `done`.
@@ -875,10 +874,10 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | Outcome in `stop_reason` | gRPC. The primary terminal signal for a control plane; its `trace` field is currently unset. |
+| `done` event | Outcome in `stop_reason`; run summary in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
 | `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
-| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Soft-fail by default; `--export-workspace-required` hardens it on the CLI. |
+| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
 For OTel specifically: `sessionName` labels the run in logs, traces,
 and root spans; `observability.environment` / `serviceNamespace`

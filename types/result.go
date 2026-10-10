@@ -2,7 +2,10 @@
 // adapters serialise at end-of-run.
 package types
 
-import "unicode/utf8"
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
 
 // DefaultMaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText
 // when a run does not set ResultSinkConfig.MaxFinalAssistantTextBytes.
@@ -72,12 +75,18 @@ type RunResult struct {
 	// truncated. The untruncated text remains on the trace.
 	FinalAssistantTextTruncated bool `json:"finalAssistantTextTruncated,omitempty"`
 
+	// StructuredOutput mirrors RunTrace.StructuredOutput: the final answer
+	// as a JSON document that satisfied RunConfig.OutputSchema. Never
+	// truncated; an answer over the size limit fails the run instead.
+	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
+
 	// VerifierVerdict is the optional verifier outcome, present only
 	// when a verifier ran.
 	VerifierVerdict *VerifierResult `json:"verifierVerdict,omitempty"`
 
-	// Error carries a short human-readable reason when Outcome is not
-	// "success". Omitted on success.
+	// Error mirrors RunTrace.Error: a short human-readable reason when
+	// Outcome is not "success", or the trace persistence failure of an
+	// otherwise-successful run. Omitted otherwise.
 	Error string `json:"error,omitempty"`
 
 	// HookFailures is the count of lifecycle hook executions whose
@@ -88,6 +97,14 @@ type RunResult struct {
 	// CommandOutputArchive is the local path or durable URI of the compressed
 	// command-output compliance archive, when command output was captured.
 	CommandOutputArchive string `json:"commandOutputArchive,omitempty"`
+
+	// Git mirrors RunTrace.Git: the branch, result SHA and base SHA of a
+	// deterministic-git run. Omitted when the git strategy is "none".
+	Git *GitHandoff `json:"git,omitempty"`
+
+	// WorkspaceExport mirrors RunTrace.WorkspaceExport. Omitted when no
+	// export destination is configured.
+	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It
@@ -96,4 +113,48 @@ type RunResult struct {
 type VerifierResult struct {
 	Passed   bool   `json:"passed"`
 	Feedback string `json:"feedback,omitempty"`
+}
+
+// Workspace export statuses carried on ExportReceipt.Status.
+const (
+	// ExportStatusUploaded means a non-empty archive reached the destination.
+	ExportStatusUploaded = "uploaded"
+	// ExportStatusEmpty means the workspace had no files; an empty archive
+	// still reached the destination.
+	ExportStatusEmpty = "empty"
+	// ExportStatusFailed means no archive reached the destination.
+	ExportStatusFailed = "failed"
+)
+
+// ExportReceipt describes one workspace export attempt.
+type ExportReceipt struct {
+	// URI is the destination object URI.
+	URI string `json:"uri"`
+
+	// Status is one of the ExportStatus* constants.
+	Status string `json:"status"`
+
+	// Bytes is the size of the uploaded gzipped tarball.
+	Bytes int64 `json:"bytes,omitempty"`
+
+	// SHA256 is the lowercase hex SHA-256 of the uploaded gzipped tarball.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Files counts the archive's non-directory entries (regular files,
+	// symlinks and hard links).
+	Files int `json:"files,omitempty"`
+
+	// Required reports whether a failed export fails the run; see
+	// ExecutorConfig.WorkspaceExportRequired.
+	Required bool `json:"required"`
+
+	// Error is the scrubbed, length-capped export failure. Empty unless
+	// Status is ExportStatusFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// Delivered reports whether an archive, possibly empty, reached the
+// destination. A required export fails whenever this is false.
+func (r ExportReceipt) Delivered() bool {
+	return r.Status == ExportStatusUploaded || r.Status == ExportStatusEmpty
 }

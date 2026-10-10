@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -162,5 +163,23 @@ func TestResolvedMaxFinalAssistantTextBytes(t *testing.T) {
 	override := &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 4096}
 	if got := override.ResolvedMaxFinalAssistantTextBytes(); got != 4096 {
 		t.Errorf("override: ResolvedMaxFinalAssistantTextBytes() = %d, want 4096", got)
+	}
+}
+
+func TestRunResult_StructuredOutputSerialisesAsJSONValue(t *testing.T) {
+	out, err := json.Marshal(RunResult{Outcome: "success"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "structuredOutput") {
+		t.Errorf("empty structuredOutput serialised: %s", out)
+	}
+
+	out, err = json.Marshal(RunResult{Outcome: "success", StructuredOutput: json.RawMessage(`{"title":"Fix it"}`)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"structuredOutput":{"title":"Fix it"}`) {
+		t.Errorf("structuredOutput is not an embedded JSON value: %s", out)
 	}
 }

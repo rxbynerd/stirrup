@@ -146,38 +146,66 @@ func (l *AgenticLoop) emitRejections() {
 
 func (l *AgenticLoop) emitWarning(ev types.HarnessEvent) {
 	if err := l.Transport.Emit(ev); err != nil {
-		l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+		l.logEmitFailure("warning", err)
 	}
 }
 
-// routeControl dispatches one control event. "cancel" ends the
-// session: queued input is rejected (cancel always wins over it), the
-// active run — if any — is cancelled, and the idle consumer is woken so
-// no further run starts; the cancellation is sticky for the loop's
-// lifetime. Every other control type has its own consumer
+// routeControl dispatches one control event. "cancel" ends the session
+// (see cancelSession). Every other control type has its own consumer
 // (permission, async tool, sandbox-token correlators) and is ignored
 // here. Runs on the transport's read goroutine: nothing here blocks or
 // emits.
 func (l *AgenticLoop) routeControl(event types.ControlEvent) {
 	switch event.Type {
 	case "cancel":
-		l.sessionCancelled.Store(true)
-		for _, in := range l.userInput.drain() {
-			l.rejectUserInput(in.RequestID, "discarded by cancel")
-		}
-		l.controlMu.Lock()
-		cancel := l.cancelActive
-		l.controlMu.Unlock()
-		if cancel != nil {
-			cancel(ErrCancelledByControlPlane)
-		}
-		select {
-		case l.idleCancel <- struct{}{}:
-		default:
-		}
+		l.cancelSession(ErrCancelledByControlPlane, "discarded by cancel")
 	case "user_response":
 		l.enqueueUserInput(event)
 	}
+}
+
+// cancelSession ends the session: queued input is rejected with
+// dropReason (cancellation always wins over it), the active run — if
+// any — is cancelled with cause, and the idle consumer is woken so no
+// further run starts. The cancellation is sticky for the loop's
+// lifetime and the first cause is kept for a run that starts later.
+// Never blocks or emits, so it is safe on the transport's read
+// goroutine. Requires ensureControlRouting.
+func (l *AgenticLoop) cancelSession(cause error, dropReason string) {
+	l.controlMu.Lock()
+	if l.sessionCause == nil {
+		l.sessionCause = cause
+	}
+	l.sessionCancelled.Store(true)
+	cancel := l.cancelActive
+	l.controlMu.Unlock()
+	for _, in := range l.userInput.drain() {
+		l.rejectUserInput(in.RequestID, dropReason)
+	}
+	if cancel != nil {
+		cancel(cause)
+	}
+	select {
+	case l.idleCancel <- struct{}{}:
+	default:
+	}
+}
+
+// beginRun records cancel as the active run's and returns the cause the
+// run must be cancelled with when the session already ended, nil
+// otherwise. It shares controlMu with cancelSession, so a concurrent
+// cancel either finds the run registered or is found by it.
+func (l *AgenticLoop) beginRun(cancel context.CancelCauseFunc) error {
+	l.controlMu.Lock()
+	defer l.controlMu.Unlock()
+	l.cancelActive = cancel
+	if !l.sessionCancelled.Load() {
+		return nil
+	}
+	if l.sessionCause == nil {
+		return ErrCancelledByControlPlane
+	}
+	return l.sessionCause
 }
 
 // setActiveRun records the cancel function of the run in flight so a

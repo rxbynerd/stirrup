@@ -231,9 +231,7 @@ final outcome is not the stop that produced them, for example when a
 cancellation observed after the refusal becomes the outcome. Operators
 read the details from the trace emitters (the JSONL and GCS
 `RunTrace`, and the OTel span attribute) and from the Warn log line.
-The gRPC `RunTrace.stop_details` field mirrors them, but `stirrup job`
-leaves `done.trace` unset
-([issue #453](https://github.com/rxbynerd/stirrup/issues/453)).
+The gRPC `RunTrace.stop_details` field on `done.trace` mirrors them.
 
 `model_context_window_exceeded` (the response filled the model's
 context window and is truncated) is also returned verbatim as the

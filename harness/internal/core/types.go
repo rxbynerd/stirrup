@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -63,6 +62,16 @@ type CommandOutputFinalizer interface {
 	Finalize(ctx context.Context) (string, error)
 }
 
+// WorkspaceHandoff delivers a run's workspace once the run has ended.
+// The entry points inject it, keeping destination resolution and the
+// exporter out of the loop.
+type WorkspaceHandoff interface {
+	// Handoff exports the workspace of the run config describes, reading
+	// it through exec. A nil receipt with a nil error means the run has
+	// no export destination.
+	Handoff(ctx context.Context, config *types.RunConfig, exec executor.Executor) (*types.ExportReceipt, error)
+}
+
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
@@ -96,13 +105,18 @@ type AgenticLoop struct {
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
 	Hooks hook.Runner
 	// Shutdown, when non-nil, is a process-lifetime context done when the
-	// harness receives a process-level shutdown signal (SIGTERM/SIGINT/pod
-	// deletion) — independent of Run()'s ctx, which carries the run's own
-	// deadline and control-plane cancel. The detached postRun hook phase
-	// races its bounded budget against Shutdown so it can survive a
-	// run-deadline/control-plane cancel while still observing a genuine
-	// process shutdown promptly. See docs/architecture.md. Nil-safe.
-	Shutdown     context.Context
+	// process abandons post-run work (the CLI entry points cancel it on a
+	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent
+	// of Run()'s ctx, which carries the run's own deadline and cancel.
+	// Git finalise, postRun hooks, the workspace handoff and trace finish
+	// race their bounded budgets against Shutdown so they survive the end
+	// of the run while still observing a forced shutdown promptly. See
+	// docs/architecture.md. Nil-safe.
+	Shutdown context.Context
+	// Handoff, when non-nil, exports the workspace at the end of every run
+	// whose executor has one, before "done"; a failed required export turns
+	// a successful run into "handoff_failed".
+	Handoff      WorkspaceHandoff
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
@@ -144,6 +158,10 @@ type AgenticLoop struct {
 	// every request.
 	historyRewritten bool
 
+	// failure is the reason behind the current run's failure outcome; see
+	// noteFailure. Reset at run start.
+	failure runFailure
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.
@@ -159,12 +177,18 @@ type AgenticLoop struct {
 	controlOnce      sync.Once
 	controlMu        sync.Mutex
 	cancelActive     context.CancelCauseFunc
+	sessionCause     error // guarded by controlMu, as are writes to sessionCancelled
 	sessionCancelled atomic.Bool
 	userInput        *userInputQueue
 	idleCancel       chan struct{}
 	rejections       chan types.HarnessEvent
 	controlStop      chan struct{}
 	controlStopOnce  sync.Once
+
+	// streamLost is set once the control stream has been lost; from then
+	// on lossEmitLogged keeps emit failures to a single warning.
+	streamLost     atomic.Bool
+	lossEmitLogged atomic.Bool
 
 	// asyncExtractorOverride, when non-nil, replaces extractAsyncToolResult
 	// on the async correlator. Test-only seam: the production extractor
@@ -406,8 +430,7 @@ func (l *AgenticLoop) executeToolCall(ctx context.Context, t *tool.Tool, call ty
 		)
 		result, err := l.Permissions.Check(ctx, t.Definition(), input)
 		if err != nil {
-			permSpan.RecordError(err)
-			permSpan.SetStatus(codes.Error, err.Error())
+			recordSpanError(permSpan, err)
 			permSpan.End()
 			return "Permission check error: " + err.Error(), false, observability.ToolFailurePermissionError, structuredOutput{}
 		}
@@ -617,7 +640,7 @@ type streamResult struct {
 
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, logger *slog.Logger) (*streamResult, error) {
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
@@ -640,7 +663,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Type: "text_delta",
 				Text: event.Text,
 			}); err != nil {
-				logger.Warn("transport emit failed", "event", "text_delta", "error", err)
+				emitFailed("text_delta", err)
 			}
 
 		case "tool_call":
@@ -679,7 +702,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Name:  event.Name,
 				Input: bytes.Clone(normalizedInput),
 			}); err != nil {
-				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
+				emitFailed("tool_call", err)
 			}
 
 		case "thinking", "redacted_thinking":

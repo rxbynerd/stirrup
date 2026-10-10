@@ -14,7 +14,8 @@ const (
 	EvalPassed EvalOutcome = "passed"
 
 	// EvalFailed indicates the loop terminated in an error class
-	// (`error`, `tool_failures`, `verification_failed`) or ran to
+	// (`error`, `tool_failures`, `verification_failed`,
+	// `structured_output_failed`) or ran to
 	// `success` but a verifier disagreed.
 	EvalFailed EvalOutcome = "failed"
 
@@ -33,10 +34,11 @@ func EvalOutcomeFor(t RunTrace) EvalOutcome {
 			return EvalFailed
 		}
 		return EvalPassed
-	case "verification_failed", "error", "tool_failures":
+	case "verification_failed", "error", "tool_failures", "structured_output_failed":
 		return EvalFailed
 	case "max_turns", "budget_exceeded", "timeout", "max_tokens", "stalled",
-		"cancelled", "verification_error", "setup_failed", "hook_failed":
+		"cancelled", "verification_error", "setup_failed", "hook_failed",
+		"handoff_failed", "control_stream_lost":
 		return EvalInconclusive
 	default:
 		// Conservative default: an unknown/future outcome must not be

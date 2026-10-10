@@ -63,22 +63,9 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 
 	inputVal = stripDangerousKeys(inputVal)
 
-	schemaVal, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
+	sch, err := compileJSONSchema(schema)
 	if err != nil {
-		return fmt.Errorf("invalid schema JSON: %w", err)
-	}
-
-	c := jsonschema.NewCompiler()
-	// Blocks external resource loading (file://, http://, $ref) — schemas
-	// must be self-contained.
-	c.UseLoader(noopLoader{})
-	if err := c.AddResource("schema.json", schemaVal); err != nil {
-		return fmt.Errorf("failed to add schema resource: %w", err)
-	}
-
-	sch, err := c.Compile("schema.json")
-	if err != nil {
-		return fmt.Errorf("failed to compile schema: %w", err)
+		return err
 	}
 
 	if err := sch.Validate(inputVal); err != nil {
@@ -86,6 +73,39 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 	}
 
 	return nil
+}
+
+// CompileJSONSchema reports whether schema is a self-contained JSON Schema
+// that compiles, without validating any instance against it.
+func CompileJSONSchema(schema json.RawMessage) error {
+	_, err := compileJSONSchema(schema)
+	return err
+}
+
+// schemaResourceURL is absolute so the compiler does not resolve it
+// against the working directory, whose path would otherwise appear in
+// validation errors returned to the model.
+const schemaResourceURL = "urn:stirrup:schema"
+
+func compileJSONSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
+	schemaVal, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
+	if err != nil {
+		return nil, fmt.Errorf("invalid schema JSON: %w", err)
+	}
+
+	c := jsonschema.NewCompiler()
+	// Blocks external resource loading (file://, http://, $ref) — schemas
+	// must be self-contained.
+	c.UseLoader(noopLoader{})
+	if err := c.AddResource(schemaResourceURL, schemaVal); err != nil {
+		return nil, fmt.Errorf("failed to add schema resource: %w", err)
+	}
+
+	sch, err := c.Compile(schemaResourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile schema: %w", err)
+	}
+	return sch, nil
 }
 
 // noopLoader blocks all external resource loading. Schemas must be

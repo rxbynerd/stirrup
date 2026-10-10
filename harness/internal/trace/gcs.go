@@ -77,12 +77,20 @@ type GCSTraceEmitter struct {
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
+	gitHandoff           *types.GitHandoff
+	workspaceExport      *types.ExportReceipt
+	runError             string
+	structuredOutput     json.RawMessage
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
+var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
+var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
+var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
+var _ StructuredOutputRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -167,6 +175,10 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.commandOutputArchive = ""
+	e.gitHandoff = nil
+	e.workspaceExport = nil
+	e.runError = ""
+	e.structuredOutput = nil
 }
 
 // RecordTurn appends a turn trace.
@@ -220,6 +232,38 @@ func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.commandOutputArchive = location
 }
 
+// RecordGitHandoff stores the run's git handoff for the RunTrace Finish
+// builds.
+func (e *GCSTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.gitHandoff = &handoff
+}
+
+// RecordWorkspaceExport stores the run's workspace export receipt for the
+// RunTrace Finish builds.
+func (e *GCSTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaceExport = &receipt
+}
+
+// RecordRunError stores the run's error text for the RunTrace Finish
+// builds.
+func (e *GCSTraceEmitter) RecordRunError(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runError = text
+}
+
+// RecordStructuredOutput stores the run's validated structured answer for
+// the RunTrace Finish builds.
+func (e *GCSTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.structuredOutput = append(json.RawMessage(nil), doc...)
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -241,6 +285,10 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	finalAssistantText := e.finalAssistantText
 	stopDetails := e.stopDetails
 	commandOutputArchive := e.commandOutputArchive
+	gitHandoff := e.gitHandoff
+	workspaceExport := e.workspaceExport
+	runError := e.runError
+	structuredOutput := e.structuredOutput
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -277,11 +325,15 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		StopDetails:          stopDetails,
 		FinalAssistantText:   finalAssistantText,
 		CommandOutputArchive: commandOutputArchive,
+		Git:                  gitHandoff,
+		WorkspaceExport:      workspaceExport,
+		Error:                runError,
+		StructuredOutput:     structuredOutput,
 	}
 
 	data, err := json.Marshal(trace)
 	if err != nil {
-		return nil, fmt.Errorf("marshal trace: %w", err)
+		return trace, fmt.Errorf("marshal trace: %w", err)
 	}
 	data = append(data, '\n')
 
@@ -294,7 +346,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		Bearer:          e.bearer,
 		EndpointBaseURL: e.endpointBaseURL,
 	}); err != nil {
-		return nil, fmt.Errorf("gcs trace emitter: upload trace: %w", err)
+		return trace, fmt.Errorf("gcs trace emitter: upload trace: %w", err)
 	}
 
 	return trace, nil

@@ -624,7 +624,6 @@ func newTestHarnessCommand() *cobra.Command {
 	f := cmd.Flags()
 	// Harness-only behaviour flags that do not round-trip through
 	// RunConfig. Mirrors the registration in harness.go init().
-	f.Bool("export-workspace-required", false, "")
 	f.String("output-runconfig", "", "")
 	f.StringP("output", "o", "text", "")
 	// Dry-run flags. Mirrors the registration in harness.go init() so

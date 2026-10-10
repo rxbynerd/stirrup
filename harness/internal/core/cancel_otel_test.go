@@ -269,3 +269,34 @@ func TestLoop_CancelAttribute_Signal(t *testing.T) {
 		t.Errorf("run.cancelled_by: got %q, want %q", got, "signal")
 	}
 }
+
+// TestLoop_CancelAttribute_ControlStream covers the
+// run.cancelled_by="control_stream" branch: a run cancelled because its
+// control stream ended.
+func TestLoop_CancelAttribute_ControlStream(t *testing.T) {
+	emitter, exporter := newInMemoryOTelEmitter(t)
+
+	tr := &cancellableTransport{}
+	loop := buildTestLoop(nil)
+	loop.Transport = tr
+	loop.Trace = emitter
+	loop.Provider = &fireAndCloseProvider{
+		onStream: func() { loop.ControlStreamLost(errors.New("EOF")) },
+	}
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if runTrace.Outcome != "control_stream_lost" {
+		t.Fatalf("prerequisite: expected outcome 'control_stream_lost', got %q", runTrace.Outcome)
+	}
+
+	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
+	if !ok {
+		t.Fatal("expected run.cancelled_by attribute on root span, none found")
+	}
+	if got != "control_stream" {
+		t.Errorf("run.cancelled_by: got %q, want %q", got, "control_stream")
+	}
+}

@@ -363,6 +363,8 @@ func TestClassifyCtxOutcome(t *testing.T) {
 	}{
 		{"control_plane", ErrCancelledByControlPlane, "cancelled"},
 		{"wrapped_control_plane", fmt.Errorf("wrap: %w", ErrCancelledByControlPlane), "cancelled"},
+		{"control_stream_lost", ErrControlStreamLost, "control_stream_lost"},
+		{"wrapped_control_stream_lost", fmt.Errorf("%w: %w", ErrControlStreamLost, errors.New("EOF")), "control_stream_lost"},
 		{"deadline", context.DeadlineExceeded, "timeout"},
 		{"caller_canceled_as_cause", context.Canceled, "cancelled"},
 		{"wrapped_caller_canceled", fmt.Errorf("wrap: %w", context.Canceled), "cancelled"},

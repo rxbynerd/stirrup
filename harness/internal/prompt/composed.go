@@ -235,6 +235,7 @@ func DefaultComposedFragments() []PromptFragment {
 		ModeTemplateFragment(),
 		WorkspacePathFragment(),
 		TurnBudgetFragment(),
+		OutputSchemaFragment(),
 		WorkspaceTreeFragment(),
 		GitStatusFragment(),
 		DynamicContextFragment(),

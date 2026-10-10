@@ -4,6 +4,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -36,7 +37,9 @@ type TraceEmitter interface {
 	RecordPermissionDenial()
 
 	// Finish finalises the trace, writes it to the backing store, and
-	// returns the completed RunTrace.
+	// returns the completed RunTrace. When writing fails after the trace
+	// was assembled, Finish returns the trace together with the error so
+	// the caller can still report the run.
 	Finish(ctx context.Context, outcome string) (*types.RunTrace, error)
 }
 
@@ -95,4 +98,32 @@ type CommandOutputRecorder interface {
 // run summary and, for OTel, bounded root-span attributes.
 type CommandOutputArchiveRecorder interface {
 	RecordCommandOutputArchive(location string)
+}
+
+// GitHandoffRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.Git just before Finish, for the same
+// reason as FinalAssistantTextRecorder.
+type GitHandoffRecorder interface {
+	RecordGitHandoff(handoff types.GitHandoff)
+}
+
+// WorkspaceExportRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.WorkspaceExport just before Finish, for
+// the same reason as FinalAssistantTextRecorder.
+type WorkspaceExportRecorder interface {
+	RecordWorkspaceExport(receipt types.ExportReceipt)
+}
+
+// RunErrorRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.Error just before Finish, for the same
+// reason as FinalAssistantTextRecorder.
+type RunErrorRecorder interface {
+	RecordRunError(text string)
+}
+
+// StructuredOutputRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.StructuredOutput just before Finish, for
+// the same reason as FinalAssistantTextRecorder.
+type StructuredOutputRecorder interface {
+	RecordStructuredOutput(doc json.RawMessage)
 }

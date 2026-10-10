@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -993,5 +994,26 @@ func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
 	}
 	if decoded["token"] != "[REDACTED]" {
 		t.Errorf("token field = %q, want [REDACTED]", decoded["token"])
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestJSONLTraceEmitter_FinishWriteFailureReturnsTrace(t *testing.T) {
+	emitter := NewJSONLTraceEmitter(failingWriter{}, false)
+	emitter.Start("run-w", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, Tokens: types.TokenUsage{Input: 10, Output: 5}})
+
+	tr, err := emitter.Finish(context.Background(), "timeout")
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("Finish error = %v, want the write failure", err)
+	}
+	if tr == nil {
+		t.Fatal("Finish: want the assembled trace alongside the write error, got nil")
+	}
+	if tr.ID != "run-w" || tr.Outcome != "timeout" || tr.Turns != 1 {
+		t.Errorf("trace = {ID:%q Outcome:%q Turns:%d}, want {run-w timeout 1}", tr.ID, tr.Outcome, tr.Turns)
 	}
 }

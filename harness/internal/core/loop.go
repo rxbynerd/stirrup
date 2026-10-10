@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -122,6 +121,9 @@ func providerCacheKey(runID string) string {
 //	  if retries exhausted → done (with failure)
 //	  else → feed verifier feedback back into the loop as a user message
 //	}
+//
+// A non-nil trace returned with a non-nil error means the run completed
+// but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
@@ -134,15 +136,16 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// for the next turn boundary. Sub-agents use NullTransport whose
 	// OnControl is a no-op.
 	l.ensureControlRouting()
-	l.setActiveRun(cancelRun)
-	defer l.setActiveRun(nil)
-	// A cancel that arrived while no run was active ended the session;
-	// this run must not proceed to component work on its behalf.
-	if l.sessionCancelled.Load() {
-		cancelRun(ErrCancelledByControlPlane)
+	// A cancel or stream loss that arrived while no run was active ended
+	// the session; this run must not proceed to component work on its
+	// behalf.
+	if cause := l.beginRun(cancelRun); cause != nil {
+		cancelRun(cause)
 	}
+	defer l.setActiveRun(nil)
 
 	l.Trace.Start(config.RunID, config)
+	l.failure = runFailure{}
 	l.resetCommandOutput(config.RunID)
 	// Sub-agents share the parent's loggers and run concurrently with
 	// it, so only a top-level run re-attributes them.
@@ -216,6 +219,24 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
+	// Runs before Prompt.Build and Git.Setup: the deterministic git strategy
+	// assumes an existing checkout, so a clone hook must create it first. A
+	// nil Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
+	if l.Hooks != nil {
+		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
+		preResults, preErr := l.Hooks.RunPre(runCtx)
+		l.recordHookExecutions(preResults)
+		if preErr != nil {
+			recordSpanError(preHookSpan, preErr)
+		}
+		preHookSpan.End()
+		if preErr != nil {
+			return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "setup_failed"), fmt.Errorf("pre-run hooks: %w", preErr), stopHeartbeat)
+		}
+	}
+
+	// Built after the pre-run hooks so a clone hook can populate the
+	// workspace the builder reads.
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
@@ -223,9 +244,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		MaxTurns:       config.MaxTurns,
 		Model:          promptModel,
 		DynamicContext: dynamicContext,
+		OutputSchema:   config.OutputSchema,
 	})
 	if err != nil {
-		return l.finishWithError(runCtx, fmt.Errorf("build system prompt: %w", err))
+		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
 	}
 
 	// The otel emitter's opt-in gen_ai.system_instructions capture; a
@@ -240,34 +262,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		recorder.RecordPromptResolution(promptModel, prompt.TierFor(promptModel))
 	}
 
-	// Runs before Git.Setup: the deterministic git strategy assumes an
-	// existing checkout, so a clone hook must create it first. A nil
-	// Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
-	if l.Hooks != nil {
-		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
-		preResults, preErr := l.Hooks.RunPre(runCtx)
-		l.recordHookExecutions(preResults)
-		if preErr != nil {
-			preHookSpan.RecordError(preErr)
-			preHookSpan.SetStatus(codes.Error, preErr.Error())
-		}
-		preHookSpan.End()
-		if preErr != nil {
-
-			outcome := "setup_failed"
-			if runCtx.Err() != nil {
-				outcome = classifyCtxOutcome(context.Cause(runCtx))
-			}
-			return l.finishWithOutcome(runCtx, outcome, fmt.Errorf("pre-run hooks: %w", preErr))
-		}
-	}
-
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
-		gitSetupSpan.RecordError(err)
-		gitSetupSpan.SetStatus(codes.Error, err.Error())
+		recordSpanError(gitSetupSpan, err)
 		gitSetupSpan.End()
-		return l.finishWithError(runCtx, fmt.Errorf("git setup: %w", err))
+		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("git setup: %w", err), stopHeartbeat)
 	}
 	gitSetupSpan.End()
 
@@ -280,7 +279,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type: "ready",
 		}); err != nil {
-			l.Logger.Warn("transport emit failed", "event", "ready", "error", err)
+			l.logEmitFailure("ready", err)
 		}
 	}
 
@@ -325,6 +324,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// only the invocation that ended the run contributes to RunTrace.
 	var finalStopDetails *types.StopDetails
 	var finalInnerOutcome string
+	nextTurn := 0
+	// structuredOutput is the validated document of the answer that ended
+	// the latest inner loop; structuredCorrections counts the corrective
+	// attempts the run has spent.
+	var structuredOutput json.RawMessage
+	structuredCorrections := 0
 	if turnZeroAbort {
 		outcome = "rule_of_two_violation"
 	}
@@ -332,7 +337,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
 
 		var innerOutcome, innerFinalText string
-		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		structuredOutput = nil
+		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker, &nextTurn)
 		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
 			finalAssistantText = innerFinalText
@@ -341,6 +347,31 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if innerOutcome != "success" {
 			outcome = innerOutcome
 			break
+		}
+
+		// An answer that fails the output schema never reaches the
+		// verifier: it is corrected, or the run fails.
+		if len(config.OutputSchema) > 0 {
+			doc, err := checkStructuredOutput(finalAnswerText(messages), config.OutputSchema, structuredOutputLimit(config))
+			if err != nil {
+				violation := structuredOutputViolation(err)
+				if errors.Is(err, errStructuredOutputRedacted) || structuredCorrections >= maxStructuredOutputCorrections {
+					outcome = "structured_output_failed"
+					l.noteFailure(outcome, "structured output: "+violation)
+					break
+				}
+				if nextTurn >= config.MaxTurns {
+					outcome = "max_turns"
+					l.noteFailure(outcome, fmt.Sprintf("reached the turn limit (maxTurns %d) before the final answer satisfied the output schema: %s", config.MaxTurns, violation))
+					break
+				}
+				structuredCorrections++
+				l.Logger.Info("final answer failed the output schema; requesting a correction",
+					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
+				messages = append(messages, structuredOutputCorrection(violation))
+				continue
+			}
+			structuredOutput = doc
 		}
 
 		l.Metrics.VerificationAttempts.Add(runCtx, 1, l.metricAttrs())
@@ -355,10 +386,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			Messages: messages,
 		})
 		if verifyErr != nil {
-			verifySpan.RecordError(verifyErr)
-			verifySpan.SetStatus(codes.Error, verifyErr.Error())
+			scrubbed := recordSpanError(verifySpan, verifyErr)
 			verifySpan.End()
 			outcome = "verification_error"
+			l.noteFailure(outcome, "verifier: "+scrubbed)
 			break
 		}
 		verifySpan.SetAttributes(attribute.Bool("verifier.passed", vResult.Passed))
@@ -369,7 +400,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 
 		verificationAttempts++
-		if verificationAttempts > maxVerificationRetries {
+		if verificationAttempts > maxVerificationRetries || nextTurn >= config.MaxTurns {
 			outcome = "verification_failed"
 			break
 		}
@@ -400,52 +431,40 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		cause := context.Cause(runCtx)
 		outcome = classifyCtxOutcome(cause)
 		l.setRootCancelAttribute(cause)
+		if outcome == "control_stream_lost" {
+			l.noteFailure(outcome, cause.Error())
+		}
 	}
 
-	// Uses the parent ctx (not runCtx): if the run was cancelled,
-	// git.Finalise should still be able to persist whatever state exists.
-	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
-	if _, err := l.Git.Finalise(ctx); err != nil {
-		finaliseSpan.RecordError(err)
-		l.Logger.Warn("git finalise failed", "error", err)
-		_ = l.Transport.Emit(types.HarnessEvent{
-			Type:    "warning",
-			Message: fmt.Sprintf("git finalise: %v", err),
-		})
-	}
-	finaliseSpan.End()
+	// Post-run work below runs on detached contexts (see
+	// detachedContext) so a run that ended by deadline or cancellation
+	// still commits and records its git state, hook results, workspace
+	// export and trace.
+	// The final checkpoint precedes postRun hooks, so hook edits are not
+	// committed.
+	outcome = l.finaliseGit(ctx, outcome)
 
-	// Runs on a ctx detached from the run's own deadline/cancellation
-	// (context.WithoutCancel) so a long-running hook can still finish;
-	// l.Shutdown still races a genuine process shutdown against that
-	// budget. See docs/configuration.md#lifecycle-hooks and
+	// See docs/configuration.md#lifecycle-hooks and
 	// docs/cloud-run-jobs.md for the outcome-override and SIGTERM detail.
 	if l.Hooks != nil {
-		postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), postHookBudget(config.Hooks))
-		if l.Shutdown != nil {
-			go func() {
-				select {
-				case <-l.Shutdown.Done():
-					postCancel()
-				case <-postCtx.Done():
-				}
-			}()
-		}
+		postCtx, postCancel := l.detachedContext(ctx, postHookBudget(config.Hooks))
 		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)
+		var scrubbedPostErr string
 		if postErr != nil {
-			postHookSpan.RecordError(postErr)
-			postHookSpan.SetStatus(codes.Error, postErr.Error())
+			scrubbedPostErr = recordSpanError(postHookSpan, postErr)
 		}
 		postHookSpan.End()
 		postCancel()
 		if postErr != nil && outcome == "success" {
 			outcome = "hook_failed"
+			l.noteFailure(outcome, "post-run hooks: "+scrubbedPostErr)
 		}
 	}
 
 	outcome = l.finalizeCommandOutput(ctx, outcome)
+	outcome = l.handoffWorkspace(ctx, config, outcome)
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -455,19 +474,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			attribute.String("run.outcome", outcome),
 		),
 	)
-
-	// "done" is the control plane's cue to send its next control event;
-	// from here the run is no longer cancellable, so a cancel must route
-	// as idle rather than to this run's context.
-	l.setActiveRun(nil)
-	if err := l.Transport.Emit(types.HarnessEvent{
-		Type:       "done",
-		StopReason: outcome,
-	}); err != nil {
-		l.Logger.Warn("transport emit failed", "event", "done", "error", err)
-	}
-
-	stopHeartbeat()
 
 	// PhasePostTurn is a sensitivity classifier, not a deterministic
 	// secret redactor, so this is the single scrub site for the field —
@@ -480,6 +486,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
 	}
+	if recorder, ok := l.Trace.(trace.StructuredOutputRecorder); ok && outcome == "success" && structuredOutput != nil {
+		recorder.RecordStructuredOutput(structuredOutput)
+	}
 	// Stop details describe the provider stop that ended the inner loop;
 	// an outcome reclassified afterwards (verification, cancellation,
 	// hooks, command output) no longer reports that stop.
@@ -490,26 +499,63 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		recorder.RecordStopDetails(finalStopDetails)
 	}
 
-	// Uses the parent ctx: the trace exporter's ForceFlush should still
-	// have a usable deadline even if the run-scoped ctx is cancelled.
-	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
+	// A trace that was assembled but not persisted is still returned, so
+	// the entry points can emit its RunResult; the outcome is unchanged.
+	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)
 	if traceErr != nil {
-		return nil, fmt.Errorf("finish trace: %w", traceErr)
+		return runTrace, fmt.Errorf("finish trace: %w", traceErr)
 	}
 
 	return runTrace, nil
 }
 
+const (
+	gitFinaliseBudget = 30 * time.Second
+	// traceFinishBudget must exceed the GCS trace emitter's 60 s
+	// per-upload client timeout so one full upload attempt fits.
+	traceFinishBudget = 90 * time.Second
+)
+
+// detachedContext returns a context that keeps ctx's values but not its
+// deadline or cancellation, bounded by budget and cancelled as soon as
+// l.Shutdown is done. Post-run work uses it so a run that ended by
+// timeout or cancellation can still persist its result, while a process
+// shutdown still abandons that work promptly.
+func (l *AgenticLoop) detachedContext(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	if l.Shutdown == nil {
+		return detached, cancel
+	}
+	if l.Shutdown.Err() != nil {
+		cancel()
+		return detached, cancel
+	}
+	stop := context.AfterFunc(l.Shutdown, cancel)
+	return detached, func() {
+		stop()
+		cancel()
+	}
+}
+
+// finishTrace finishes the trace on a detached context.
+func (l *AgenticLoop) finishTrace(ctx context.Context, outcome string) (*types.RunTrace, error) {
+	finishCtx, cancel := l.detachedContext(ctx, traceFinishBudget)
+	defer cancel()
+	return l.Trace.Finish(finishCtx, outcome)
+}
+
 // classifyCtxOutcome maps a context cancellation cause onto the
 // outcome reported on "done" / RunTrace.Outcome: a nil cause or bare
 // context.Canceled is a user-initiated cancellation (SIGINT/SIGTERM,
-// or a caller's plain cancel()); ErrCancelledByControlPlane and
-// context.DeadlineExceeded map to their own outcomes; anything else
-// is "error".
+// or a caller's plain cancel()); ErrCancelledByControlPlane,
+// ErrControlStreamLost and context.DeadlineExceeded map to their own
+// outcomes; anything else is "error".
 func classifyCtxOutcome(cause error) string {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
 		return "cancelled"
+	case errors.Is(cause, ErrControlStreamLost):
+		return "control_stream_lost"
 	case errors.Is(cause, context.DeadlineExceeded):
 		return "timeout"
 	case cause == nil, errors.Is(cause, context.Canceled):
@@ -519,12 +565,23 @@ func classifyCtxOutcome(cause error) string {
 	}
 }
 
+// setupOutcome is the outcome of a run whose setup step failed: the
+// cancellation cause's outcome once runCtx has ended, since the failure
+// is then most likely the cancellation itself, and fallback otherwise.
+func setupOutcome(runCtx context.Context, fallback string) string {
+	if runCtx.Err() != nil {
+		return classifyCtxOutcome(context.Cause(runCtx))
+	}
+	return fallback
+}
+
 // setRootCancelAttribute tags the root "run" OTel span with the
 // cancellation reason, distinguishing plain/signal cancel from
 // control-plane cancel even though both map to outcome="cancelled".
 // Only applied when the run ended via ctx cancellation.
 //
 //	run.cancelled_by="control_plane" — ErrCancelledByControlPlane cause
+//	run.cancelled_by="control_stream" — ErrControlStreamLost cause
 //	run.cancelled_by="deadline"      — context.DeadlineExceeded cause
 //	run.cancelled_by="signal"        — nil cause or bare context.Canceled
 //	                                   (plain cancel(), SIGINT, etc.)
@@ -542,6 +599,8 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
 		reason = "control_plane"
+	case errors.Is(cause, ErrControlStreamLost):
+		reason = "control_stream"
 	case errors.Is(cause, context.DeadlineExceeded):
 		reason = "deadline"
 	case cause == nil, errors.Is(cause, context.Canceled):
@@ -555,6 +614,9 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
 // max turns is reached, budget is exceeded, or an error occurs.
+// nextTurn is the run-level turn counter: the loop starts at *nextTurn
+// and leaves it at the first unused turn number, so verification
+// repairs continue the numbering and share config.MaxTurns.
 // Returns the updated messages, the outcome, the last non-empty
 // assistant text observed across the turns (empty when no turn produced
 // any text), and the final turn's stop details when the model ended the
@@ -565,6 +627,7 @@ func (l *AgenticLoop) runInnerLoop(
 	systemPrompt string,
 	messages []types.Message,
 	tokenTracker *TokenTracker,
+	nextTurn *int,
 ) ([]types.Message, string, string, *types.StopDetails) {
 	var lastStopReason string
 	// finalAssistantText holds the last non-empty assistant text seen across
@@ -583,7 +646,9 @@ func (l *AgenticLoop) runInnerLoop(
 
 	cacheKey := providerCacheKey(config.RunID)
 
-	for turn := 0; turn < config.MaxTurns; turn++ {
+	for *nextTurn < config.MaxTurns {
+		turn := *nextTurn
+		*nextTurn = turn + 1
 		l.Logger.Info("turn started", "turn", turn)
 
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
@@ -708,12 +773,12 @@ func (l *AgenticLoop) runInnerLoop(
 			ReserveForResponse: responseReserve,
 		})
 		if err != nil {
-			contextSpan.RecordError(err)
-			contextSpan.SetStatus(codes.Error, err.Error())
+			scrubbed := recordSpanError(contextSpan, err)
 			contextSpan.End()
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", "context strategy: "+scrubbed)
 			return messages, "error", finalAssistantText, nil
 		}
 		compaction := l.Context.LastCompaction()
@@ -764,6 +829,7 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:       "",
 					Model:      selection.Model,
 				})
+				l.noteFailure("error", fmt.Sprintf("model router selected unknown provider %q", selection.Provider))
 				return messages, "error", finalAssistantText, nil
 			}
 			selectedProvider = prov
@@ -777,6 +843,7 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:       "",
 				Model:      selection.Model,
 			})
+			l.noteFailure("error", "no provider is configured")
 			return messages, "error", finalAssistantText, nil
 		}
 		providerAttrs := l.metricAttrs(
@@ -819,11 +886,7 @@ func (l *AgenticLoop) runInnerLoop(
 			CacheKey:        cacheKey,
 		})
 		if err != nil {
-			// ScrubHandler doesn't cover OTel spans; scrub explicitly
-			// before it reaches the span event and status. See docs/security.md.
-			scrubbedErr := security.Scrub(err.Error())
-			providerSpan.RecordError(errors.New(scrubbedErr))
-			providerSpan.SetStatus(codes.Error, scrubbedErr)
+			scrubbedErr := recordSpanError(providerSpan, err)
 			providerSpan.End()
 			// Surfaces the failure outside OTel too (log + transport
 			// warning); skipped when ctx is already cancelled — the
@@ -867,17 +930,15 @@ func (l *AgenticLoop) runInnerLoop(
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
 			return messages, "error", finalAssistantText, nil
 		}
 
-		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.Logger)
+		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
-			// Same rationale as the Stream() scrub above; see docs/security.md.
-			scrubbedErr := security.Scrub(streamErr.Error())
-			providerSpan.RecordError(errors.New(scrubbedErr))
-			providerSpan.SetStatus(codes.Error, scrubbedErr)
+			scrubbedErr := recordSpanError(providerSpan, streamErr)
 			providerSpan.End()
 			// Same as the Stream() log+emit above.
 			if ctx.Err() == nil {
@@ -917,6 +978,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
+			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
 			return messages, "error", finalAssistantText, nil
 		}
 		// Input is the provider's figure when it reports one; otherwise
@@ -1083,6 +1145,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
 				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
+				l.noteFailure("error", "provider returned an empty stop reason")
 				return messages, "error", finalAssistantText, nil
 			}
 			if sr.StopReason == "refusal" {
@@ -1107,6 +1170,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// Provider declared tool_use but produced no tool blocks —
 			// degenerate but observable.
 			l.Trace.RecordTurnRecord(turnRecord)
+			l.noteFailure("error", "provider reported a tool_use stop without any tool calls")
 			return messages, "error", finalAssistantText, nil
 		}
 
@@ -1137,7 +1201,7 @@ func (l *AgenticLoop) runInnerLoop(
 
 		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
-			checkpointSpan.RecordError(err)
+			recordSpanException(checkpointSpan, err)
 			l.Logger.Warn("git checkpoint failed", "error", err)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:    "warning",
@@ -1298,7 +1362,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 				opts.OnRunComplete(config, runTrace, err)
 			}
 			if err != nil {
-				// Transport already carries the error event from finishWithError.
+				// Transport already carries the error event from finishWithOutcome.
 				return
 			}
 			if loop.sessionCancelled.Load() {
@@ -1331,11 +1395,13 @@ func followUpRunContext(parent context.Context, timeout time.Duration) (context.
 
 // startHeartbeat launches a background goroutine that emits heartbeat events
 // at the given interval. Returns a cancel function that stops emission.
+// Only the first failed heartbeat is logged.
 func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration) context.CancelFunc {
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		failed := false
 		for {
 			// Non-blocking pre-check biases toward cancellation: exit
 			// before racing the ticker if ctx is already done.
@@ -1348,7 +1414,10 @@ func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = l.Transport.Emit(types.HarnessEvent{Type: "heartbeat"})
+				if err := l.Transport.Emit(types.HarnessEvent{Type: "heartbeat"}); err != nil && !failed {
+					failed = true
+					l.logEmitFailure("heartbeat", err)
+				}
 			}
 		}
 	}()
@@ -1397,11 +1466,7 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		err = guardContractError(decision)
 	}
 	if err != nil {
-		// Scrub once, reuse for span/log/security-event — see
-		// docs/security.md.
-		scrubbed := security.Scrub(err.Error())
-		span.RecordError(err)
-		span.SetStatus(codes.Error, scrubbed)
+		scrubbed := recordSpanError(span, err)
 		span.End()
 		guardID := guardIDFromDecision(decision)
 		if l.Metrics != nil {
@@ -1879,7 +1944,7 @@ func (l *AgenticLoop) recordHookExecutions(execs []types.HookExecution) {
 			Type:    "warning",
 			Message: formatHookWarning(exec),
 		}); err != nil {
-			l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+			l.logEmitFailure("warning", err)
 		}
 	}
 }
@@ -1913,31 +1978,22 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 	return time.Duration(sum)*time.Second + 30*time.Second
 }
 
-// finishWithError records an "error" outcome and finishes the trace.
-func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.RunTrace, error) {
-	return l.finishWithOutcome(ctx, "error", err)
-}
-
-// finishWithOutcome generalises finishWithError to a caller-supplied
-// outcome (e.g. "setup_failed" from a fatal preRun hook failure) and
-// finishes the trace.
-func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
+// finishWithOutcome ends a run that failed before its first turn (e.g.
+// "setup_failed" from a fatal preRun hook failure) with err as its
+// reason. The workspace handoff still runs, so partial setup work is
+// recoverable; the git final checkpoint does not, since Git.Setup has not
+// completed.
+func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),
 	}); emitErr != nil {
-		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
+		l.logEmitFailure("error", emitErr)
 	}
-	// Always emit "done" (not just "error") so control planes relying on
-	// it as the terminal signal see this early-return path too.
-	if emitErr := l.Transport.Emit(types.HarnessEvent{
-		Type:       "done",
-		StopReason: outcome,
-	}); emitErr != nil {
-		l.Logger.Warn("transport emit failed", "event", "done", "error", emitErr)
-	}
-	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
+	outcome = l.handoffWorkspace(ctx, config, outcome)
+	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)
 	if traceErr != nil {
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
@@ -2003,9 +2059,11 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 		return outcome
 	}
 	if captureFailed {
+		l.noteFailure("command_output_capture_failed", "command output capture: "+l.CommandOutput.FatalError().Error())
 		return "command_output_capture_failed"
 	}
 	if err != nil {
+		l.noteFailure("command_output_archive_failed", "command output archive: "+err.Error())
 		return "command_output_archive_failed"
 	}
 	return outcome

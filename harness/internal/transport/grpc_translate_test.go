@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1883,5 +1884,205 @@ func TestRunConfigFromProto_MaxCostBudgetStillTranslated(t *testing.T) {
 
 	if got := runConfigFromProto(&pb.RunConfig{}).MaxCostBudget; got != nil {
 		t.Errorf("unset max_cost_budget should map to nil, got %v", *got)
+	}
+}
+
+// TestRunTraceToProto_HandoffSummaryRoundTrip pins that the git handoff,
+// the export receipt and the run error reach the "done" trace summary.
+func TestRunTraceToProto_HandoffSummaryRoundTrip(t *testing.T) {
+	tr := &types.RunTrace{
+		ID:      "run-handoff",
+		Outcome: "handoff_failed",
+		Git: &types.GitHandoff{
+			Branch: "stirrup/run-handoff", SHA: "abc123", BaseSHA: "def456", Dirty: true, Error: "dirty tree",
+		},
+		WorkspaceExport: &types.ExportReceipt{
+			URI: "gs://bucket/ws.tar.gz", Status: types.ExportStatusFailed, Required: true, Error: "upload refused",
+			Bytes: 2048, SHA256: "0123abcd", Files: 7,
+		},
+		Error: "workspace export: upload refused",
+	}
+	raw, err := proto.Marshal(runTraceToProto(tr))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	g := decoded.GetGit()
+	if g.GetBranch() != "stirrup/run-handoff" || g.GetSha() != "abc123" || g.GetBaseSha() != "def456" || !g.GetDirty() || g.GetError() != "dirty tree" {
+		t.Errorf("git = %v, want every GitHandoff field carried", g)
+	}
+	r := decoded.GetWorkspaceExport()
+	if r.GetUri() != "gs://bucket/ws.tar.gz" || r.GetStatus() != "failed" || !r.GetRequired() || r.GetError() != "upload refused" ||
+		r.GetBytes() != 2048 || r.GetSha256() != "0123abcd" || r.GetFiles() != 7 {
+		t.Errorf("workspace_export = %v, want every ExportReceipt field carried", r)
+	}
+	if decoded.GetError() != "workspace export: upload refused" {
+		t.Errorf("error = %q, want the run error", decoded.GetError())
+	}
+
+	bare := runTraceToProto(&types.RunTrace{Outcome: "success"})
+	if bare.Git != nil || bare.WorkspaceExport != nil || bare.Error != "" {
+		t.Errorf("bare summary = %v, want git, workspace_export and error absent", bare)
+	}
+}
+
+// TestRunTraceToProto_SummaryStaysSmall bounds the "done" trace summary
+// with every string field at its cap: it carries no config or tool
+// bodies, so it stays far below the gRPC message limit.
+func TestRunTraceToProto_SummaryStaysSmall(t *testing.T) {
+	capped := strings.Repeat("x", 1024+64)
+	tr := &types.RunTrace{
+		ID:          strings.Repeat("r", 128),
+		Outcome:     "handoff_failed",
+		StopDetails: &types.StopDetails{Type: "refusal", Category: "other", Explanation: capped},
+		Git: &types.GitHandoff{
+			Branch: strings.Repeat("b", 256), SHA: strings.Repeat("a", 64), BaseSHA: strings.Repeat("c", 64), Error: capped,
+		},
+		WorkspaceExport: &types.ExportReceipt{URI: strings.Repeat("u", 1024), Status: "failed", Required: true, Error: capped},
+		Error:           capped,
+	}
+	if n := proto.Size(runTraceToProto(tr)); n > 16<<10 {
+		t.Errorf("summary size = %d bytes, want at most 16 KiB", n)
+	}
+}
+
+// TestRunConfigFromProto_WorkspaceExportRequiredTriState pins that an
+// unset workspace_export_required stays nil (so the destination default
+// applies) and that both explicit values survive the wire and translate.
+func TestRunConfigFromProto_WorkspaceExportRequiredTriState(t *testing.T) {
+	for name, in := range map[string]*bool{"unset": nil, "true": proto.Bool(true), "false": proto.Bool(false)} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := proto.Marshal(&pb.RunConfig{Executor: &pb.ExecutorConfig{
+				Type:                    "local",
+				WorkspaceExportTo:       "gs://bucket/ws.tar.gz",
+				WorkspaceExportRequired: in,
+			}})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded pb.RunConfig
+			if err := proto.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := runConfigFromProto(&decoded).Executor.WorkspaceExportRequired
+			switch {
+			case in == nil && got != nil:
+				t.Errorf("WorkspaceExportRequired = %v, want nil", *got)
+			case in != nil && (got == nil || *got != *in):
+				t.Errorf("WorkspaceExportRequired = %v, want %v", got, *in)
+			}
+			wantRequired := in == nil || *in
+			if req := runConfigFromProto(&decoded).Executor.ExportRequired(); req != wantRequired {
+				t.Errorf("ExportRequired() = %v, want %v", req, wantRequired)
+			}
+		})
+	}
+}
+
+// TestRunConfigFromProto_OutputSchemaRoundTrip pins the wire mapping of
+// output_schema through a real marshal/unmarshal cycle, and that a
+// translated schema passes validation.
+func TestRunConfigFromProto_OutputSchemaRoundTrip(t *testing.T) {
+	schema, err := structpb.NewStruct(map[string]any{
+		"type":     "object",
+		"required": []any{"title"},
+		"properties": map[string]any{
+			"title": map[string]any{"type": "string", "maxLength": 72},
+			"label": map[string]any{"$ref": "#/$defs/label"},
+		},
+		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
+	})
+	if err != nil {
+		t.Fatalf("NewStruct: %v", err)
+	}
+	timeout := int32(60)
+	raw, err := proto.Marshal(&pb.RunConfig{
+		RunId:            "run-structured",
+		Mode:             "planning",
+		Prompt:           "triage",
+		MaxTurns:         5,
+		Timeout:          &timeout,
+		Provider:         &pb.ProviderConfig{Type: "anthropic", ApiKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: &pb.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            &pb.ToolsConfig{BuiltIn: []string{"read_file"}},
+		OutputSchema:     schema,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rc := runConfigFromProto(&decoded)
+
+	var got map[string]any
+	if err := json.Unmarshal(rc.OutputSchema, &got); err != nil {
+		t.Fatalf("OutputSchema is not JSON: %v (%s)", err, rc.OutputSchema)
+	}
+	want := map[string]any{
+		"type":     "object",
+		"required": []any{"title"},
+		"properties": map[string]any{
+			"title": map[string]any{"type": "string", "maxLength": float64(72)},
+			"label": map[string]any{"$ref": "#/$defs/label"},
+		},
+		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("OutputSchema = %v, want %v", got, want)
+	}
+	if !strings.Contains(string(rc.OutputSchema), `"maxLength":72`) {
+		t.Errorf("integer keyword rendered as %s, want an integral JSON number", rc.OutputSchema)
+	}
+	if err := types.ValidateRunConfig(&rc); err != nil {
+		t.Errorf("translated schema rejected by validation: %v", err)
+	}
+}
+
+func TestRunConfigFromProto_OutputSchemaAbsentStaysNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{RunId: "run-free-text"})
+	if rc.OutputSchema != nil {
+		t.Errorf("OutputSchema = %s, want nil when the field is unset", rc.OutputSchema)
+	}
+}
+
+func TestRunConfigFromProto_UnrenderableOutputSchemaIsRejected(t *testing.T) {
+	schema := &structpb.Struct{Fields: map[string]*structpb.Value{
+		"maximum": structpb.NewNumberValue(math.NaN()),
+	}}
+	rc := runConfigFromProto(&pb.RunConfig{OutputSchema: schema})
+	if string(rc.OutputSchema) != "null" {
+		t.Fatalf("OutputSchema = %s, want JSON null for a schema protojson cannot render", rc.OutputSchema)
+	}
+	c := types.RunConfig{OutputSchema: rc.OutputSchema}
+	err := types.ValidateRunConfig(&c)
+	if err == nil || !strings.Contains(err.Error(), "outputSchema must be a JSON Schema object") {
+		t.Errorf("ValidateRunConfig error = %v, want the outputSchema rejected", err)
+	}
+}
+
+func TestRunTraceToProto_StructuredOutputRoundTrip(t *testing.T) {
+	doc := `{"title":"Fix the flaky test","labels":["bug"],"risk":0.25}`
+	raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{
+		Outcome:          "success",
+		StructuredOutput: json.RawMessage(doc),
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.GetStructuredOutput() != doc {
+		t.Errorf("structured_output = %q, want %q", decoded.GetStructuredOutput(), doc)
+	}
+
+	if bare := runTraceToProto(&types.RunTrace{Outcome: "success"}); bare.StructuredOutput != "" {
+		t.Errorf("structured_output = %q, want empty without a structured answer", bare.StructuredOutput)
 	}
 }

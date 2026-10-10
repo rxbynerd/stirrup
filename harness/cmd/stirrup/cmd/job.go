@@ -43,6 +43,10 @@ var (
 	readinessMarkerPath = health.ReadinessMarker
 )
 
+// buildJobLoop constructs the job's loop; tests replace it to land a
+// control stream loss during construction.
+var buildJobLoop = core.BuildLoopWithTransport
+
 func runJob(cmd *cobra.Command, args []string) error {
 	started := time.Now()
 
@@ -51,8 +55,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
-	// shutdownCtx carries only the process-level shutdown signal, independent
-	// of ctx below, so the detached postRun hook phase still observes it.
+	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
+	// post-run work keeps its bounded budget until a second signal
+	// cancels shutdownCtx, or until the shutdown watchdog armed on the
+	// first signal closes the loop ahead of the orchestrator's SIGKILL.
 	// See docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
@@ -60,10 +66,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// Timeout is applied later once the RunConfig (which carries it) arrives.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(func() {
-		shutdownCancel()
-		cancel()
-	})
+	setupSignalHandler(cancel, shutdownCancel)
 
 	tp, err := transport.NewGRPCTransport(ctx, addr)
 	if err != nil {
@@ -142,14 +145,28 @@ func runJob(cmd *cobra.Command, args []string) error {
 	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
 	defer runCancel()
 
-	loop, err := core.BuildLoopWithTransport(runCtx, config, tp)
+	// A control stream lost during construction aborts it, and the job
+	// fails rather than starting a run nobody is listening for.
+	buildCtx, cancelBuild := context.WithCancelCause(runCtx)
+	defer cancelBuild(nil)
+	stopBuildWatch := watchControlStream(tp, cancelBuild)
+	loop, err := buildJobLoop(buildCtx, config, tp)
+	stopBuildWatch()
+	if lossErr := controlStreamErr(tp); lossErr != nil {
+		if loop != nil {
+			_ = loop.Close()
+		}
+		lostErr := fmt.Errorf("building harness: %w: %w", core.ErrControlStreamLost, lossErr)
+		emitTerminalFailure(tp, lostErr, "control_stream_lost")
+		return lostErr
+	}
 	if err != nil {
 		// No loop exists to run its own error/done emission, so without
 		// this the control plane cannot tell a rejected config from a
 		// crashed pod or a dropped connection.
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
-		emitTerminalFailure(tp, buildErr)
+		emitTerminalFailure(tp, buildErr, "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
 		// emit_returned marks the handoff to the transport, not delivery;
@@ -165,23 +182,22 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
-	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
+	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	// The control plane decides the export URI via
-	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
-	// an exit-failing job doesn't lose the trace/resultSink before an
-	// operator can correlate it.
 	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			printRunSummary(rt)
 			emitRunResult(ctx, cfg, rt)
 		},
-		exportRequired: false,
 	}
 
+	stopStreamWatch := watchControlStream(loop.Transport, loop.ControlStreamLost)
+	defer stopStreamWatch()
+
 	runTrace, runErr := loop.Run(runCtx, config)
-	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
+	if err := policy.finalise(config, runTrace, runErr); err != nil {
 		return err
 	}
 
@@ -200,8 +216,8 @@ func runJob(cmd *cobra.Command, args []string) error {
 		RunTimeout:    runTimeout,
 		OnRunComplete: policy.finaliseFollowUp,
 	})
-	// Export is never required for a job, so this is nil today; the
-	// guard keeps the two entrypoints' exit-status policy identical.
+	// A required export that fails on a follow-up fails the process the
+	// same way it would for the primary run.
 	if err := policy.followUpErr(); err != nil {
 		return err
 	}
@@ -215,18 +231,18 @@ func runJob(cmd *cobra.Command, args []string) error {
 // agentic loop emits on its own fatal paths, for failures that occur
 // after a task assignment but before the loop exists to emit them.
 // "done" is the control plane's terminal signal, so it must follow
-// "error" even here.
+// "error" even here; stopReason is its stop_reason.
 //
 // Best-effort: emit failures are reported on stderr and never replace
 // the failure being signalled.
-func emitTerminalFailure(tp transport.Transport, cause error) {
+func emitTerminalFailure(tp transport.Transport, cause error, stopReason string) {
 	if tp == nil {
 		return
 	}
 	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error()}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to send error event: %v\n", err)
 	}
-	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
+	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: stopReason}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to send done event: %v\n", err)
 	}
 }

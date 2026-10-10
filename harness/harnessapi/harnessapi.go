@@ -35,6 +35,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp Tra
 }
 
 // Run executes the agentic loop to completion and returns the run trace.
+// A non-nil trace returned with a non-nil error means the run completed
+// but its trace could not be persisted.
 func (l *Loop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	return l.inner.Run(ctx, config)
 }

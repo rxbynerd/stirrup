@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 
@@ -25,7 +24,7 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 		ch <- ev
 	}
 	close(ch)
-	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+	result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}

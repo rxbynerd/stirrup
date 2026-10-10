@@ -32,37 +32,9 @@ const maxPromptFileBytes int64 = 10 * 1024 * 1024 // matches local.go maxFileSiz
 func readPromptFile(path string) (string, error) {
 	// Every failure here is an I/O error (exit 3); the prompt file is
 	// plain text, so none is a JSON parse failure.
-	clean := filepath.Clean(path)
-	info, err := os.Stat(clean)
+	data, err := readFlagFile("--prompt-file", path, maxPromptFileBytes)
 	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	if info.IsDir() {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: is a directory", path))
-	}
-	// Reject FIFOs/char devices/sockets: os.Stat reports Size()==0 for
-	// these, which would sail past the size cap below and could hang
-	// ReadAll forever (e.g. /dev/zero or an unwritten FIFO).
-	if !info.Mode().IsRegular() {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: not a regular file", path))
-	}
-	if info.Size() > maxPromptFileBytes {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes))
-	}
-	// Bounded read closes the TOCTOU window where the file grows
-	// between os.Stat and Open; +1 byte distinguishes "at the cap"
-	// from "over the cap" for an accurate error.
-	f, err := os.Open(clean)
-	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
-	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	if int64(len(data)) > maxPromptFileBytes {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes))
+		return "", err
 	}
 	// Trim only trailing CR/LF; leading whitespace (e.g. an
 	// intentionally-indented code block) round-trips unchanged.
@@ -71,6 +43,64 @@ func readPromptFile(path string) (string, error) {
 		return "", ioError(fmt.Errorf("--prompt-file %q is empty", path))
 	}
 	return trimmed, nil
+}
+
+// maxOutputSchemaFileBytes bounds the --output-schema read; the schema
+// itself is held to a smaller limit by ValidateRunConfig.
+const maxOutputSchemaFileBytes int64 = 1 << 20
+
+// readOutputSchemaFile loads an --output-schema JSON Schema file. A read
+// failure is an I/O error (exit 3) and malformed JSON a parse error
+// (exit 2), the same classes as --config.
+func readOutputSchemaFile(path string) (json.RawMessage, error) {
+	data, err := readFlagFile("--output-schema", path, maxOutputSchemaFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, data); err != nil {
+		return nil, parseError(fmt.Errorf("parsing --output-schema %q: %w", path, err))
+	}
+	return json.RawMessage(compact.Bytes()), nil
+}
+
+// readFlagFile reads the regular file a path-valued flag names, refusing
+// directories, devices and files over maxBytes. Every failure is an I/O
+// error (exit 3).
+func readFlagFile(flagName, path string, maxBytes int64) ([]byte, error) {
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	if info.IsDir() {
+		return nil, ioError(fmt.Errorf("reading %s %q: is a directory", flagName, path))
+	}
+	// Reject FIFOs/char devices/sockets: os.Stat reports Size()==0 for
+	// these, which would sail past the size cap below and could hang
+	// ReadAll forever (e.g. /dev/zero or an unwritten FIFO).
+	if !info.Mode().IsRegular() {
+		return nil, ioError(fmt.Errorf("reading %s %q: not a regular file", flagName, path))
+	}
+	if info.Size() > maxBytes {
+		return nil, ioError(fmt.Errorf("reading %s %q: %d bytes exceeds %d byte cap", flagName, path, info.Size(), maxBytes))
+	}
+	// Bounded read closes the TOCTOU window where the file grows
+	// between os.Stat and Open; +1 byte distinguishes "at the cap"
+	// from "over the cap" for an accurate error.
+	f, err := os.Open(clean)
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, ioError(fmt.Errorf("reading %s %q: exceeds %d byte cap", flagName, path, maxBytes))
+	}
+	return data, nil
 }
 
 // harnessCLIOptions captures every CLI-surfaced setting that influences the
@@ -221,11 +251,8 @@ type harnessCLIOptions struct {
 	ProviderRetryWallClockBudget time.Duration
 
 	// Workspace export. WorkspaceExportTo is a gs:// URI stored on
-	// RunConfig.Executor.WorkspaceExportTo. WorkspaceExportRequired is
-	// CLI-only (not persisted on RunConfig): it controls whether a
-	// failed export terminates the run non-zero.
-	WorkspaceExportTo       string
-	WorkspaceExportRequired bool
+	// RunConfig.Executor.WorkspaceExportTo.
+	WorkspaceExportTo string
 
 	// ToolDispatchMaxParallel sets the parallel async-tool dispatch
 	// fan-out. Zero defers to DefaultToolDispatchMaxParallel by leaving
@@ -644,13 +671,14 @@ full RunConfig; explicitly-set flags then override individual fields; flags
 left at their default value do NOT override the file. When --config is not
 provided, flags + defaults build the RunConfig directly.
 
-Workspace export (--export-workspace-to gs://...): at end-of-run the
-executor's workspace is tarred, gzipped, and uploaded to the named GCS
-URI. The flag overrides executor.workspaceExportTo from --config when
-explicitly set. Default error semantics: upload failures are logged and
-the run's exit code is unchanged. Pass --export-workspace-required to
-flip that — a failed upload then exits the run non-zero, suitable for
-Cloud Run jobs whose downstream automation depends on the artifact.
+Workspace export (--export-workspace-to gs://...): at the end of every
+run, before its "done" event, the executor's workspace is tarred,
+gzipped, and uploaded to the named GCS URI. The flag overrides
+executor.workspaceExportTo from --config when explicitly set. The export
+is required by default: a failed upload turns a successful run into
+outcome handoff_failed and exits non-zero. Pass
+--export-workspace-required=false (executor.workspaceExportRequired) to
+record the failure without failing the run.
 
 The default --mode is "planning" (read-only: no write_file / edit_file /
 run_command, deny-side-effects permission policy). Pass --mode execution
@@ -674,7 +702,6 @@ func init() {
 	addRunConfigFlags(harnessCmd)
 
 	f := harnessCmd.Flags()
-	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
 	f.Bool("dry-run", false, "Run every initialisation step short of the first agentic turn (validate, construct components, resolve credentials, probe provider/MCP/trace/egress reachability), print a per-step preflight report, then exit. No provider tokens are spent. Exit 0 when all steps pass, 1 when any probe fails, 4 for an invalid flag combination. Composes with --output-runconfig (both run) and --output=json (emits the report as JSON).")
 	f.Bool("no-probe-provider", false, "With --dry-run, skip the provider reachability probe (for cost-controlled environments that do not want any provider contact). Meaningless without --dry-run (exit 4).")
@@ -994,6 +1021,18 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.Executor.K8sNodeSelector = selector
 	}
+	if changed("output-schema") {
+		path, _ := f.GetString("output-schema")
+		if path == "" {
+			cfg.OutputSchema = nil
+		} else {
+			schema, err := readOutputSchemaFile(path)
+			if err != nil {
+				return err
+			}
+			cfg.OutputSchema = schema
+		}
+	}
 	if changed("permission-policy-file") {
 		path, _ := f.GetString("permission-policy-file")
 		cfg.PermissionPolicy.PolicyFile = path
@@ -1071,6 +1110,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 
 	if changed("export-workspace-to") {
 		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
+	}
+	if changed("export-workspace-required") {
+		required, _ := f.GetBool("export-workspace-required")
+		cfg.Executor.WorkspaceExportRequired = &required
 	}
 
 	// Explicit zero clears the field so the loop falls back to
@@ -1233,17 +1276,15 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return writeOutputRunConfig(outPath, cfg)
 	}
 
-	exportRequired, _ := f.GetBool("export-workspace-required")
 	// Safe to read raw: PreRunE already rejected an explicitly-set flag on
 	// a release binary, so both are false there by the time control
 	// reaches here.
 	debugRedactionDisabled, _ := f.GetBool("debug")
 	wireTrace, _ := f.GetBool("trace-wire")
 	return runWithConfig(cfg, runOptions{
-		exportWorkspaceRequired: exportRequired,
-		outputMode:              outputMode,
-		debugRedactionDisabled:  debugRedactionDisabled,
-		wireTrace:               wireTrace,
+		outputMode:             outputMode,
+		debugRedactionDisabled: debugRedactionDisabled,
+		wireTrace:              wireTrace,
 	})
 }
 
@@ -1335,7 +1376,7 @@ func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOpti
 	// than cmd.Context() which is nil outside Cobra's Execute path.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(cancel)
+	setupSignalHandler(cancel, nil)
 
 	report, err := preflightFn(ctx, cfg, opts)
 	if err != nil {
@@ -1654,10 +1695,9 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // binary before either can be true, and core.BuildLoop re-checks the
 // build tag at the point of effect. See docs/security.md#debug-builds.
 type runOptions struct {
-	exportWorkspaceRequired bool
-	outputMode              string
-	debugRedactionDisabled  bool
-	wireTrace               bool
+	outputMode             string
+	debugRedactionDisabled bool
+	wireTrace              bool
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1674,20 +1714,17 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		}
 	}
 
-	// shutdownCtx carries only the process-level shutdown signal,
-	// independent of ctx's run-deadline cancellation below: the
-	// detached postRun hook phase must survive ctx's own deadline but
-	// still observe a genuine shutdown — see AgenticLoop.Shutdown and
-	// docs/cloud-run-jobs.md.
+	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
+	// post-run work keeps its bounded budget until a second signal
+	// cancels shutdownCtx — see AgenticLoop.Shutdown. The shutdown
+	// watchdog arms on that second signal too: no orchestrator SIGKILL
+	// is known to follow the first.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(func() {
-		shutdownCancel()
-		cancel()
-	})
+	setupSignalHandler(cancel, shutdownCancel)
 
 	// The wall-clock budget covers component construction plus the
 	// primary run; follow-ups mint their own from the cancel-only ctx.
@@ -1705,18 +1742,20 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
+	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
+	stopStreamWatch := watchControlStream(loop.Transport, loop.ControlStreamLost)
+	defer stopStreamWatch()
 
 	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			emitRunOutput(ctx, cfg, rt, opts.outputMode)
 		},
-		exportRequired: opts.exportWorkspaceRequired,
 	}
 
 	runTrace, runErr := loop.Run(runCtx, config)
-	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
+	if err := policy.finalise(config, runTrace, runErr); err != nil {
 		return err
 	}
 

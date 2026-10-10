@@ -269,10 +269,9 @@ Salient points for stirrup:
   configuring `postRun` lifecycle hooks (issue #461) is a partial
   exception: those hooks deliberately run on a context detached from
   the run's own deadline/cancellation so an in-flight artifact upload
-  can survive it, but the harness still observes SIGTERM directly on
-  that detached context (`AgenticLoop.Shutdown`) and cuts a `postRun`
-  hook short promptly rather than letting it run for its full
-  configured budget (up to 1830s). A background watchdog additionally
+  can survive it; a second SIGTERM cancels that detached context
+  (`AgenticLoop.Shutdown`) and cuts a `postRun` hook short rather than
+  letting it run for its full configured budget (up to 1830s). A background watchdog additionally
   bounds executor teardown to 5 seconds after SIGTERM even if `Run()`
   has not yet returned, so the container is stopped and removed well
   inside the 10-second grace window regardless of what an in-flight
@@ -378,12 +377,10 @@ gcloud storage cp \
 tar -xzf workspace.tar.gz
 ```
 
-Upload failures are logged but do **not** change the run's exit code
-unless `--export-workspace-required` is set. The default is a soft
-failure because a partial GCS outage during the upload window is
-operationally less disruptive than masking the underlying run's
-success — flip the required flag on for eval / regression pipelines
-where the artefact is the deliverable.
+An upload failure turns a successful run into outcome `handoff_failed`
+and a non-zero exit unless `executor.workspaceExportRequired` (or
+`--export-workspace-required`) is `false`, which records the failure
+in `RunResult.workspaceExport` without failing the run.
 
 ### Trace JSONL from GCS
 

@@ -95,6 +95,28 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Explanation: d.Explanation,
 		}
 	}
+	if g := t.Git; g != nil {
+		pt.Git = &pb.GitHandoff{
+			Branch:  g.Branch,
+			Sha:     g.SHA,
+			BaseSha: g.BaseSHA,
+			Dirty:   g.Dirty,
+			Error:   g.Error,
+		}
+	}
+	if r := t.WorkspaceExport; r != nil {
+		pt.WorkspaceExport = &pb.ExportReceipt{
+			Uri:      r.URI,
+			Status:   r.Status,
+			Required: r.Required,
+			Error:    r.Error,
+			Bytes:    r.Bytes,
+			Sha256:   r.SHA256,
+			Files:    saturateInt32(r.Files),
+		}
+	}
+	pt.Error = t.Error
+	pt.StructuredOutput = string(t.StructuredOutput)
 	return pt
 }
 
@@ -301,6 +323,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
 	rc.SessionName = pc.GetSessionName()
+	rc.OutputSchema = outputSchemaFromProto(pc.OutputSchema)
 
 	// Transport has no proto mirror: a RunConfig decoded here arrived over
 	// the gRPC control stream by construction, so the transport is a fact
@@ -492,6 +515,10 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		WorkspaceExportTo: pc.WorkspaceExportTo,
 		RegistryAllowlist: append([]string(nil), pc.RegistryAllowlist...),
 	}
+	if pc.WorkspaceExportRequired != nil {
+		v := *pc.WorkspaceExportRequired
+		ec.WorkspaceExportRequired = &v
+	}
 	if pc.SandboxIdentity != nil {
 		ec.SandboxIdentity = &types.SandboxIdentityConfig{
 			Source:   pc.SandboxIdentity.GetSource(),
@@ -626,6 +653,19 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 		})
 	}
 	return tc
+}
+
+// outputSchemaFromProto renders the wire schema as JSON. A Struct that
+// cannot be rendered becomes JSON null, which ValidateRunConfig rejects,
+// so a schema the control plane sent is never silently dropped.
+func outputSchemaFromProto(s *structpb.Struct) json.RawMessage {
+	if s == nil {
+		return nil
+	}
+	if raw := structToJSON(s); raw != nil {
+		return raw
+	}
+	return json.RawMessage("null")
 }
 
 // structToJSON renders a Struct as its JSON object form, or nil when the

@@ -2,6 +2,8 @@ package security
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -579,4 +581,50 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestCompileJSONSchema(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  string
+		wantErr string
+	}{
+		{"valid", `{"type":"object","properties":{"a":{"$ref":"#/$defs/a"}},"$defs":{"a":{"type":"string"}}}`, ""},
+		{"invalid_json", `{"type":`, "invalid schema JSON"},
+		{"unknown_type_name", `{"type":"strng"}`, "failed to compile schema"},
+		{"wrong_keyword_type", `{"type":"object","required":"title"}`, "failed to compile schema"},
+		{"external_ref", `{"$ref":"https://example.com/schema.json"}`, "failed to compile schema"},
+		{"dangling_local_ref", `{"$ref":"#/$defs/missing"}`, "failed to compile schema"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CompileJSONSchema(json.RawMessage(tc.schema))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("CompileJSONSchema error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("CompileJSONSchema error = %v, want one containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateJSONSchema_ErrorOmitsWorkingDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	err = ValidateJSONSchema(json.RawMessage(`{}`), json.RawMessage(`{"type":"object","required":["title"]}`))
+	if err == nil {
+		t.Fatal("ValidateJSONSchema error = nil, want a missing-property violation")
+	}
+	if strings.Contains(err.Error(), wd) || strings.Contains(err.Error(), "file://") {
+		t.Errorf("validation error names a host path: %q", err)
+	}
+	if !strings.Contains(err.Error(), "missing property 'title'") {
+		t.Errorf("validation error = %q, want the violation", err)
+	}
 }

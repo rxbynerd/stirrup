@@ -13,8 +13,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
@@ -109,11 +111,6 @@ func withRunTimeout(parent context.Context, timeout time.Duration) (context.Cont
 // apparent hang.
 const postRunEmitTimeout = 10 * time.Second
 
-// postRunExportTimeout bounds the fresh context for exportWorkspace
-// after the loop returns. Larger than postRunEmitTimeout to leave room
-// for the GCS exporter's internal 5-minute upload ceiling plus setup.
-const postRunExportTimeout = 6 * time.Minute
-
 // printRunSummary writes a brief run summary to stderr. A nil RunTrace
 // (loop produced no trace at all) prints a "no trace" line instead of
 // dereferencing fields — the stderr counterpart to buildRunResult's
@@ -125,6 +122,9 @@ func printRunSummary(runTrace *types.RunTrace) {
 	}
 	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
 	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
+	if runTrace.Error != "" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", runTrace.Error)
+	}
 	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)
 	fmt.Fprintf(os.Stderr, "Tokens: %d in%s / %d out%s\n",
 		runTrace.TokenUsage.Input, inputTokenDetail(runTrace.TokenUsage.CacheRead, runTrace.TokenUsage.CacheWrite),
@@ -137,6 +137,9 @@ func printRunSummary(runTrace *types.RunTrace) {
 	}
 	if runTrace.CommandOutputArchive != "" {
 		fmt.Fprintf(os.Stderr, "Command output archive: %s\n", runTrace.CommandOutputArchive)
+	}
+	if r := runTrace.WorkspaceExport; r != nil {
+		fmt.Fprintf(os.Stderr, "Workspace export: %s (%s)\n", r.Status, r.URI)
 	}
 }
 
@@ -182,7 +185,11 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 		DurationMs:                  rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
 		FinalAssistantText:          finalText,
 		FinalAssistantTextTruncated: truncated,
+		StructuredOutput:            rt.StructuredOutput,
+		Error:                       rt.Error,
 		CommandOutputArchive:        rt.CommandOutputArchive,
+		Git:                         rt.Git,
+		WorkspaceExport:             rt.WorkspaceExport,
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
@@ -282,25 +289,13 @@ var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 	})
 }
 
-// exportWorkspace tars + gzips the executor's workspace dir and
-// uploads it to dest (the configured config.Executor.WorkspaceExportTo
-// for the primary run, a per-run derivative for follow-ups — see
-// followUpExportURI). No-op when dest is empty. exportRequired
-// controls error semantics: when true, an export failure is surfaced
-// to the caller; when false, it is logged and the caller's exit code
-// is unchanged.
-func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string, exportRequired bool) error {
-	if dest == "" {
-		return nil
-	}
+// exportWorkspace tars + gzips the executor's workspace dir, uploads it
+// to dest and returns the exporter's receipt.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string) (types.ExportReceipt, error) {
 	// v1 supports only the GCS exporter.
 	exp, err := newWorkspaceExporter()
 	if err != nil {
-		if exportRequired {
-			return fmt.Errorf("build workspace exporter: %w", err)
-		}
-		slog.Warn("build workspace exporter", "err", err)
-		return nil
+		return types.ExportReceipt{URI: dest, Status: types.ExportStatusFailed}, fmt.Errorf("build workspace exporter: %w", err)
 	}
 
 	workspaceDir := cfg.Executor.Workspace
@@ -310,14 +305,33 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string, exp
 		workspaceDir = wd
 	}
 
-	if err := exp.Export(ctx, workspaceDir, dest); err != nil {
-		if exportRequired {
-			return fmt.Errorf("export workspace to %s: %w", dest, err)
-		}
-		slog.Warn("export workspace failed", "dest", dest, "err", err)
-		return nil
+	receipt, err := exp.Export(ctx, workspaceDir, dest)
+	if err != nil {
+		return receipt, fmt.Errorf("export workspace to %s: %w", dest, err)
 	}
-	return nil
+	return receipt, nil
+}
+
+// workspaceHandoff is the core.WorkspaceHandoff `stirrup harness` and
+// `stirrup job` inject: it exports each run's workspace to the
+// configured destination, and each follow-up run to its own
+// followUpExportURI so successive runs never overwrite one another.
+type workspaceHandoff struct {
+	primaryRunID string
+}
+
+var _ core.WorkspaceHandoff = workspaceHandoff{}
+
+func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, _ executor.Executor) (*types.ExportReceipt, error) {
+	dest := cfg.Executor.WorkspaceExportTo
+	if cfg.RunID != h.primaryRunID {
+		dest = followUpExportURI(dest, cfg.RunID)
+	}
+	if dest == "" {
+		return nil, nil
+	}
+	receipt, err := exportWorkspace(ctx, cfg, dest)
+	return &receipt, err
 }
 
 // followUpExportURI derives a follow-up run's workspace export
@@ -353,49 +367,53 @@ func followUpExportURI(base, runID string) string {
 
 // postRunPolicy is the per-run finalisation `stirrup harness` and
 // `stirrup job` apply to the primary run and to every follow-up run
-// alike: emit the run's result, then export the workspace.
+// alike: emit the run's result. The workspace export has already run
+// inside the loop, before "done".
 type postRunPolicy struct {
 	// emit publishes the run's RunResult (and any stderr summary).
 	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)
-	// exportRequired selects the workspace export failure semantics;
-	// see exportWorkspace.
-	exportRequired bool
-	// firstFollowUpErr is the first required-export failure among the
-	// follow-up runs, surfaced as the process's exit status once the
-	// follow-up window closes. A follow-up's own run error is not
-	// recorded: it is already on that run's "done" and RunResult, and
-	// the exit status reports the assigned task (the primary run).
+	// firstFollowUpErr is the first required-export failure or control
+	// stream loss among the follow-up runs, surfaced as the process's
+	// exit status once the follow-up window closes. A follow-up's other
+	// run errors are not recorded: they are already on that run's "done"
+	// and RunResult, and the exit status reports the assigned task (the
+	// primary run).
 	firstFollowUpErr error
 }
 
-// finaliseFollowUp applies the policy to one completed follow-up run,
-// exporting to a run-scoped object path, and records the first
-// required-export failure for followUpErr.
+// finaliseFollowUp applies the policy to one completed follow-up run
+// and records the first required-export failure or control stream loss
+// for followUpErr.
 func (p *postRunPolicy) finaliseFollowUp(cfg *types.RunConfig, rt *types.RunTrace, runErr error) {
-	err := p.finalise(cfg, rt, runErr, followUpExportURI(cfg.Executor.WorkspaceExportTo, cfg.RunID))
-	if err != nil && runErr == nil && p.firstFollowUpErr == nil {
-		p.firstFollowUpErr = err
+	_ = p.finalise(cfg, rt, runErr)
+	if p.firstFollowUpErr != nil || rt == nil {
+		return
+	}
+	if rt.Outcome == "control_stream_lost" {
+		p.firstFollowUpErr = fmt.Errorf("follow-up run %s: %s", cfg.RunID, rt.Error)
+		return
+	}
+	if r := rt.WorkspaceExport; r != nil && r.Required && !r.Delivered() {
+		p.firstFollowUpErr = fmt.Errorf("export workspace to %s: %s", r.URI, r.Error)
 	}
 }
 
-// followUpErr reports the first required-export failure among the
-// follow-up runs, nil when none failed or export was not required.
+// followUpErr reports the first required-export failure or control
+// stream loss among the follow-up runs, nil when there was none.
 func (p *postRunPolicy) followUpErr() error {
 	return p.firstFollowUpErr
 }
 
-// finalise applies the policy to one completed run. Both steps get
-// fresh, bounded contexts: the run's own context may already be
-// cancelled by a SIGTERM or deadline, and a remote sink or GCS upload
-// would otherwise silently drop the result on every cancelled run.
-// exportTo is the run's export destination (empty disables export).
+// finalise applies the policy to one completed run. The emit gets a
+// fresh, bounded context: the run's own context may already be
+// cancelled by a SIGTERM or deadline, and a remote sink would otherwise
+// silently drop the result on every cancelled run.
 //
-// Returns runErr wrapped when non-nil — the result is still emitted so
-// the failure is observable, but a failed run has nothing to export —
-// or a required-export failure; nil otherwise. A nil trace means the
-// loop produced none at all; it has already emitted its terminal
-// "done", so nothing is emitted here to avoid a second one.
-func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error, exportTo string) error {
+// Returns runErr wrapped when non-nil (the result is still emitted so
+// the failure is observable); nil otherwise. A nil trace means the loop
+// produced none at all; it has already emitted its terminal "done", so
+// nothing is emitted here to avoid a second one.
+func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runErr error) error {
 	if rt == nil {
 		return fmt.Errorf("running harness: %w", runErr)
 	}
@@ -406,46 +424,56 @@ func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runEr
 	if runErr != nil {
 		return fmt.Errorf("running harness: %w", runErr)
 	}
-
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
-	defer exportCancel()
-	return exportWorkspace(exportCtx, cfg, exportTo, p.exportRequired)
+	return nil
 }
 
-// setupSignalHandler installs SIGINT/SIGTERM handlers that cancel the given context.
-func setupSignalHandler(cancel context.CancelFunc) {
-	sigCh := make(chan os.Signal, 1)
+// setupSignalHandler installs SIGINT/SIGTERM handlers; see handleSignals.
+// A variable so tests can deliver the signals without a real process
+// signal.
+var setupSignalHandler = func(interrupt, shutdown func()) {
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nReceived interrupt, shutting down...")
-		cancel()
-	}()
+	go handleSignals(sigCh, os.Stderr, interrupt, shutdown)
 }
 
-// shutdownCloseGrace bounds how long armShutdownWatchdog waits after a
-// process shutdown signal before proactively closing the loop, even if
-// Run() has not returned yet (e.g. a detached postRun lifecycle hook is
-// still winding down). Chosen comfortably under the shortest documented
-// orchestrator SIGKILL escalation (10s on Cloud Run and `docker stop`;
-// see docs/cloud-run-jobs.md) so the executor's sandbox has a real
-// chance to be torn down before the process is killed outright.
-const shutdownCloseGrace = 5 * time.Second
+// handleSignals calls interrupt on the first signal, which ends the run
+// while its bounded post-run work (git finalise, postRun hooks, trace
+// finish) continues, and shutdown, when non-nil, on a second signal to
+// abandon that work.
+func handleSignals(sigCh <-chan os.Signal, out io.Writer, interrupt, shutdown func()) {
+	<-sigCh
+	_, _ = fmt.Fprintln(out, "\nReceived interrupt, shutting down...")
+	interrupt()
+	if shutdown == nil {
+		return
+	}
+	<-sigCh
+	_, _ = fmt.Fprintln(out, "Received second interrupt, abandoning post-run work...")
+	shutdown()
+}
 
-// armShutdownWatchdog starts a background goroutine that proactively
-// closes loop after shutdownCtx is done, unless the returned stop
-// function is called first (Run() already returned; the caller's own
-// `defer loop.Close()` handles teardown). Guards against the
-// orchestrator's SIGKILL escalation firing before Run() returns, which
-// would otherwise skip the deferred Close() entirely and orphan the
-// executor's sandbox. Close() is safe to invoke more than once.
-func armShutdownWatchdog(shutdownCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
+// shutdownCloseGrace bounds how long armShutdownWatchdog waits after its
+// signal context is done before closing the loop, even if Run() has not
+// returned yet. It sits under Cloud Run's 10 s SIGTERM-to-SIGKILL
+// escalation (see docs/cloud-run-jobs.md) so the executor's sandbox is
+// torn down before the process is killed. A variable so tests can
+// shorten it.
+var shutdownCloseGrace = 5 * time.Second
+
+// armShutdownWatchdog starts a background goroutine that closes loop
+// grace after signalCtx is done, unless the returned stop function is
+// called first (Run() already returned; the caller's own
+// `defer loop.Close()` handles teardown). Closing tears down the
+// executor, transport and trace emitter, so any post-run work still
+// running is cut short; callers choose signalCtx accordingly. Close()
+// is safe to invoke more than once.
+func armShutdownWatchdog(signalCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
 	runDone := make(chan struct{})
 	go func() {
 		select {
 		case <-runDone:
 			return
-		case <-shutdownCtx.Done():
+		case <-signalCtx.Done():
 		}
 		select {
 		case <-runDone:
