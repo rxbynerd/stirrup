@@ -357,6 +357,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		hooks := hooksConfigFromProto(pc.Hooks)
 		rc.Hooks = &hooks
 	}
+	if pc.RepositoryGuidance != nil {
+		rc.RepositoryGuidance = repositoryGuidanceConfigFromProto(pc.RepositoryGuidance)
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
@@ -597,6 +600,24 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		}
 	}
 	return ec
+}
+
+// repositoryGuidanceConfigFromProto copies the proto-owned slice and map so
+// later mutations to the wire payload cannot reach internal config state.
+func repositoryGuidanceConfigFromProto(pc *pb.RepositoryGuidanceConfig) *types.RepositoryGuidanceConfig {
+	rg := &types.RepositoryGuidanceConfig{
+		MaxBytes: int(pc.GetMaxBytes()),
+	}
+	if files := pc.GetFiles(); len(files) > 0 {
+		rg.Files = append([]string(nil), files...)
+	}
+	if pins := pc.GetPinnedSha256(); len(pins) > 0 {
+		rg.PinnedSHA256 = make(map[string]string, len(pins))
+		for k, v := range pins {
+			rg.PinnedSHA256[k] = v
+		}
+	}
+	return rg
 }
 
 // hooksConfigFromProto translates a proto HooksConfig to the internal

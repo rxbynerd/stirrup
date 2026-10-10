@@ -229,6 +229,11 @@ type RunConfig struct {
 	// default) or Enabled false leaves the loop unchanged. See
 	// WindDownConfig.
 	WindDown *WindDownConfig `json:"windDown,omitempty"`
+	// RepositoryGuidance opts the run into loading operator-listed
+	// workspace files such as AGENTS.md into the system prompt after the
+	// pre-run hooks. Nil (the default) loads nothing and leaves the
+	// prompt unchanged. See RepositoryGuidanceConfig.
+	RepositoryGuidance *RepositoryGuidanceConfig `json:"repositoryGuidance,omitempty"`
 }
 
 // WindDownConfig configures the wind-down instruction. When enabled, the
@@ -2527,6 +2532,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
 	validateToolChoiceEscalationConfig(config.ToolChoiceEscalation, &errs)
 	validateHooksConfig(config, &errs)
+	validateRepositoryGuidanceConfig(config, &errs)
 	validateBatchConfig(config, &errs)
 
 	if len(errs) > 0 {
