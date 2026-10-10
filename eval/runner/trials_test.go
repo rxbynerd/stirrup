@@ -247,7 +247,7 @@ func TestRunSuite_SingleTrialResultShape(t *testing.T) {
 }
 
 func TestRunSuite_DryRunReportsPlannedTrials(t *testing.T) {
-	suite := types.EvalSuite{ID: "dry", Trials: 2, Tasks: []types.EvalTask{{ID: "a", Prompt: "p"}, {ID: "b", Prompt: "p"}}}
+	suite := types.EvalSuite{ID: "dry", Trials: 2, Tasks: []types.EvalTask{{ID: "a", Prompt: "p", Judge: markerJudge()}, {ID: "b", Prompt: "p", Judge: markerJudge()}}}
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true, Trials: 3})
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
@@ -263,7 +263,7 @@ func TestRunSuite_DryRunReportsPlannedTrials(t *testing.T) {
 }
 
 func TestRunSuite_RejectsTrialsAboveTheCap(t *testing.T) {
-	task := types.EvalTask{ID: "a", Prompt: "p"}
+	task := types.EvalTask{ID: "a", Prompt: "p", Judge: markerJudge()}
 	cases := []struct {
 		name  string
 		suite types.EvalSuite
@@ -288,7 +288,7 @@ func TestRunSuite_RejectsTrialsAboveTheCap(t *testing.T) {
 }
 
 func TestRunSuite_RejectsNegativeSuiteTrials(t *testing.T) {
-	suite := types.EvalSuite{ID: "neg", Trials: -1, Tasks: []types.EvalTask{{ID: "a", Prompt: "p"}}}
+	suite := types.EvalSuite{ID: "neg", Trials: -1, Tasks: []types.EvalTask{{ID: "a", Prompt: "p", Judge: markerJudge()}}}
 	if _, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true}); err == nil || !strings.Contains(err.Error(), "trials") {
 		t.Errorf("error = %v, want a trials validation error", err)
 	}
