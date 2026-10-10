@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -80,6 +81,40 @@ func TestEmitters_RecordWorkspaceExportAndRunErrorReachRunTrace(t *testing.T) {
 			}
 			if got.WorkspaceExport != nil || got.Error != "" {
 				t.Errorf("after restart WorkspaceExport = %+v, Error = %q, want both unset", got.WorkspaceExport, got.Error)
+			}
+		})
+	}
+}
+
+func TestEmitters_RecordStructuredOutputReachesRunTrace(t *testing.T) {
+	builders := stopDetailsEmitterBuilders(t)
+	for _, name := range []string{"jsonl", "otel", "gcs"} {
+		t.Run(name, func(t *testing.T) {
+			e := builders[name](t)
+			recorder, ok := e.(StructuredOutputRecorder)
+			if !ok {
+				t.Fatalf("%T does not implement StructuredOutputRecorder", e)
+			}
+
+			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
+			doc := json.RawMessage(`{"title":"Fix it"}`)
+			recorder.RecordStructuredOutput(doc)
+			doc[2] = 'X'
+			got, err := e.Finish(context.Background(), "success")
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if string(got.StructuredOutput) != `{"title":"Fix it"}` {
+				t.Errorf("StructuredOutput = %s, want the recorded document", got.StructuredOutput)
+			}
+
+			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
+			got, err = e.Finish(context.Background(), "success")
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if got.StructuredOutput != nil {
+				t.Errorf("after restart StructuredOutput = %s, want unset", got.StructuredOutput)
 			}
 		})
 	}

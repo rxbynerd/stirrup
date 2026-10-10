@@ -80,6 +80,7 @@ type GCSTraceEmitter struct {
 	gitHandoff           *types.GitHandoff
 	workspaceExport      *types.ExportReceipt
 	runError             string
+	structuredOutput     json.RawMessage
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
@@ -89,6 +90,7 @@ var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
 var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
 var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
+var _ StructuredOutputRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -176,6 +178,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.gitHandoff = nil
 	e.workspaceExport = nil
 	e.runError = ""
+	e.structuredOutput = nil
 }
 
 // RecordTurn appends a turn trace.
@@ -253,6 +256,14 @@ func (e *GCSTraceEmitter) RecordRunError(text string) {
 	e.runError = text
 }
 
+// RecordStructuredOutput stores the run's validated structured answer for
+// the RunTrace Finish builds.
+func (e *GCSTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.structuredOutput = append(json.RawMessage(nil), doc...)
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -277,6 +288,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	gitHandoff := e.gitHandoff
 	workspaceExport := e.workspaceExport
 	runError := e.runError
+	structuredOutput := e.structuredOutput
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -316,6 +328,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		Git:                  gitHandoff,
 		WorkspaceExport:      workspaceExport,
 		Error:                runError,
+		StructuredOutput:     structuredOutput,
 	}
 
 	data, err := json.Marshal(trace)

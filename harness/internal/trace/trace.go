@@ -4,6 +4,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -118,4 +119,11 @@ type WorkspaceExportRecorder interface {
 // reason as FinalAssistantTextRecorder.
 type RunErrorRecorder interface {
 	RecordRunError(text string)
+}
+
+// StructuredOutputRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.StructuredOutput just before Finish, for
+// the same reason as FinalAssistantTextRecorder.
+type StructuredOutputRecorder interface {
+	RecordStructuredOutput(doc json.RawMessage)
 }

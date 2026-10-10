@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -117,6 +118,7 @@ type OTelTraceEmitter struct {
 	gitHandoff           *types.GitHandoff
 	workspaceExport      *types.ExportReceipt
 	runError             string
+	structuredOutput     json.RawMessage
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -160,6 +162,7 @@ var (
 	_ GitHandoffRecorder           = (*OTelTraceEmitter)(nil)
 	_ WorkspaceExportRecorder      = (*OTelTraceEmitter)(nil)
 	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
+	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -354,6 +357,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.gitHandoff = nil
 	e.workspaceExport = nil
 	e.runError = ""
+	e.structuredOutput = nil
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -725,6 +729,14 @@ func (e *OTelTraceEmitter) RecordRunError(text string) {
 	e.runError = text
 }
 
+// RecordStructuredOutput stores the run's validated structured answer for
+// the RunTrace Finish builds.
+func (e *OTelTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.structuredOutput = append(json.RawMessage(nil), doc...)
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -923,6 +935,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		Git:                  e.gitHandoff,
 		WorkspaceExport:      e.workspaceExport,
 		Error:                e.runError,
+		StructuredOutput:     e.structuredOutput,
 	}
 
 	return trace, nil

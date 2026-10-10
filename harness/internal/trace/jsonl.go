@@ -54,6 +54,7 @@ type JSONLTraceEmitter struct {
 	gitHandoff           *types.GitHandoff
 	workspaceExport      *types.ExportReceipt
 	runError             string
+	structuredOutput     json.RawMessage
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
@@ -63,6 +64,7 @@ var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*JSONLTraceEmitter)(nil)
 var _ WorkspaceExportRecorder = (*JSONLTraceEmitter)(nil)
 var _ RunErrorRecorder = (*JSONLTraceEmitter)(nil)
+var _ StructuredOutputRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -117,6 +119,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.gitHandoff = nil
 	e.workspaceExport = nil
 	e.runError = ""
+	e.structuredOutput = nil
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -281,6 +284,14 @@ func (e *JSONLTraceEmitter) RecordRunError(text string) {
 	e.runError = text
 }
 
+// RecordStructuredOutput stores the run's validated structured answer for
+// the RunTrace Finish builds.
+func (e *JSONLTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.structuredOutput = append(json.RawMessage(nil), doc...)
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -326,6 +337,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		Git:                  e.gitHandoff,
 		WorkspaceExport:      e.workspaceExport,
 		Error:                e.runError,
+		StructuredOutput:     e.structuredOutput,
 	}
 
 	ev := Event{
