@@ -19,9 +19,33 @@ type ReplayProvider struct {
 	counter atomic.Int64
 }
 
-// NewReplayProvider creates a ReplayProvider from a sequence of recorded turns.
+// NewReplayProvider creates a ReplayProvider from a sequence of recorded
+// turns. It replays a single run: the first turn without a ParentRunID
+// (or, failing that, the first turn) selects the run, and turns tagged
+// with any other RunID are dropped so a sub-agent's output is never
+// served to the parent's requests.
 func NewReplayProvider(turns []types.TurnRecord) *ReplayProvider {
-	return &ReplayProvider{turns: turns}
+	return &ReplayProvider{turns: singleRunTurns(turns)}
+}
+
+func singleRunTurns(turns []types.TurnRecord) []types.TurnRecord {
+	if len(turns) == 0 {
+		return turns
+	}
+	runID := turns[0].RunID
+	for _, turn := range turns {
+		if turn.ParentRunID == "" {
+			runID = turn.RunID
+			break
+		}
+	}
+	kept := make([]types.TurnRecord, 0, len(turns))
+	for _, turn := range turns {
+		if turn.RunID == runID {
+			kept = append(kept, turn)
+		}
+	}
+	return kept
 }
 
 // Stream replays the next recorded turn's model output as a channel of
