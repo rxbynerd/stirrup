@@ -16,7 +16,9 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -399,5 +401,87 @@ func TestSpawnSubAgent_RendersParentGuidanceSnapshot(t *testing.T) {
 	}
 	if len(remote.reads) != 1 {
 		t.Errorf("guidance reads = %d, want 1 (the sub-agent must reuse the parent's snapshot)", len(remote.reads))
+	}
+}
+
+const sensitiveGuidance = "# Conventions\n\nDeploy with AWS_ACCESS_KEY_ID=" + fakeLiveAWSKey + " and keep this line.\n"
+
+func sensitiveGuidanceLoader() prompt.GuidanceLoader {
+	reader := &remoteGuidanceExecutor{files: map[string]string{"AGENTS.md": sensitiveGuidance}}
+	return prompt.NewRepositoryGuidanceLoader(types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}}, reader)
+}
+
+func TestLoop_RepositoryGuidance_SensitiveDataTripsRuleOfTwoGate(t *testing.T) {
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(nil, &secBuf)
+	loop.Provider = childRunCommandScript()
+	loop.Guidance = sensitiveGuidanceLoader()
+	monitor := ruleoftwo.NewPatternMonitor(true, "block-external", []string{"sensitive_data"}, false)
+	loop.RuleOfTwo = monitor
+	loop.Permissions = permission.NewRuleOfTwoGate(permission.NewAllowAll(), monitor, map[string]bool{"run_command": true}, nil, nil)
+	var ran atomic.Int32
+	registerStubRunCommand(t, loop, &ran)
+
+	config := buildTestConfig()
+	config.MaxTurns = 4
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !monitor.Tripped() {
+		t.Fatal("a latch-tier pattern in loaded guidance must trip the sensitive-data latch")
+	}
+	if ran.Load() != 0 {
+		t.Errorf("run_command executed %d times; the tripped gate must revoke external communication", ran.Load())
+	}
+	out := secBuf.String()
+	if !strings.Contains(out, `"source":"repository_guidance"`) {
+		t.Errorf("expected a sensitive_data_detected event sourced from repository_guidance, got: %s", out)
+	}
+	if !strings.Contains(out, permission.RuleOfTwoDeniedReason) {
+		t.Errorf("expected the Rule-of-Two denial reason, got: %s", out)
+	}
+}
+
+func TestLoop_RepositoryGuidance_SensitiveDataAbortsBeforeProviderCall(t *testing.T) {
+	prov := &countingProvider{}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Guidance = sensitiveGuidanceLoader()
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, false)
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "rule_of_two_violation" {
+		t.Errorf("outcome = %q, want rule_of_two_violation", runTrace.Outcome)
+	}
+	if prov.calls != 0 {
+		t.Errorf("provider was called %d times; a guidance-triggered abort must precede the first provider call", prov.calls)
+	}
+}
+
+func TestLoop_RepositoryGuidance_SensitiveDataIsRedactedFromPrompt(t *testing.T) {
+	prov := simpleSuccessProvider()
+	loop := buildTestLoop(prov)
+	loop.Guidance = sensitiveGuidanceLoader()
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Errorf("outcome = %q, want success (redact keeps the run alive)", runTrace.Outcome)
+	}
+	system := prov.lastParams.System
+	if strings.Contains(system, fakeLiveAWSKey) {
+		t.Errorf("key survived redaction in the system prompt:\n%s", system)
+	}
+	if !strings.Contains(system, ruleoftwo.RedactionPlaceholder) || !strings.Contains(system, "keep this line") {
+		t.Errorf("system prompt lacks the placeholder or the surrounding guidance:\n%s", system)
+	}
+	if loop.repositoryGuidance[0].RenderedBytes != len(loop.repositoryGuidance[0].Content) {
+		t.Errorf("renderedBytes = %d, want the redacted content length %d", loop.repositoryGuidance[0].RenderedBytes, len(loop.repositoryGuidance[0].Content))
 	}
 }
