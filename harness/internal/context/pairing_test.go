@@ -194,6 +194,12 @@ func compactionStrategies() map[string]func() ContextStrategy {
 		"summarise-stream-error-fallback": func() ContextStrategy {
 			return NewSummariseStrategy(&errorStreamProvider{}, "summary-model", 0)
 		},
+		"clear-tool-results": func() ContextStrategy {
+			return NewClearToolResultsStrategy(ClearToolResultsConfig{Keep: DefaultClearKeep})
+		},
+		"clear-tool-results-unbounded-batch": func() ContextStrategy {
+			return NewClearToolResultsStrategy(ClearToolResultsConfig{Keep: 0, ClearAtLeast: 1})
+		},
 		"offload-to-file": func() ContextStrategy { return NewOffloadToFileStrategy(newMockFileWriter()) },
 		"offload-to-file-write-failure": func() ContextStrategy {
 			fw := newMockFileWriter()
@@ -278,12 +284,14 @@ func TestCompaction_GeneratedHistoriesStayPaired(t *testing.T) {
 }
 
 // TestCompaction_GeneratedHistoriesKeepSuffix pins that the strategies
-// which drop messages keep an unchanged tail of the original history after
+// which only drop messages keep an unchanged tail of the original history after
 // the task, so provider replay state stays with its own message.
 func TestCompaction_GeneratedHistoriesKeepSuffix(t *testing.T) {
 	strategies := compactionStrategies()
 	delete(strategies, "offload-to-file")
 	delete(strategies, "offload-to-file-write-failure")
+	delete(strategies, "clear-tool-results")
+	delete(strategies, "clear-tool-results-unbounded-batch")
 	for seed := range uint64(60) {
 		r := rand.New(rand.NewPCG(seed, 1))
 		msgs := generateHistory(r, r.IntN(14))

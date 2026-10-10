@@ -18,11 +18,15 @@ type TokenBudget struct {
 // CompactionEvent records what happened during context compaction.
 // Nil means no compaction was needed (messages fit within budget).
 type CompactionEvent struct {
-	Strategy       string // "sliding-window", "summarise", "offload-to-file"
+	Strategy       string // "sliding-window", "summarise", "offload-to-file", "clear-tool-results"
 	MessagesBefore int
 	MessagesAfter  int
 	TokensBefore   int
 	TokensAfter    int
+
+	// ToolResultsCleared is the number of tool results whose content a
+	// clear-tool-results batch replaced with its placeholder.
+	ToolResultsCleared int
 
 	// Warnings describes degraded compaction, such as a failed summary
 	// call that fell back to the sliding window. The loop logs each one

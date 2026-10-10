@@ -45,7 +45,7 @@ func TruncateToolResults(messages []types.Message, excess int) ([]types.Message,
 	if excess <= 0 {
 		return messages, 0
 	}
-	t := &resultTruncator{messages: messages, need: excess * 4}
+	t := &resultTruncator{historyView: historyView{messages: messages}, need: excess * 4}
 	for _, minSize := range []int{2*truncationKeepChars + 1, 0} {
 		t.pass(minSize)
 	}
@@ -56,11 +56,9 @@ func TruncateToolResults(messages []types.Message, excess int) ([]types.Message,
 }
 
 type resultTruncator struct {
-	messages []types.Message
-	view     []types.Message
-	copied   map[int]bool
-	cut      int
-	need     int
+	historyView
+	cut  int
+	need int
 }
 
 // pass cuts tool results of at least minSize bytes, oldest first, until
@@ -93,26 +91,42 @@ func (t *resultTruncator) pass(minSize int) {
 	}
 }
 
-func (t *resultTruncator) current(i int) types.Message {
-	if t.view != nil {
-		return t.view[i]
+// historyView is a view of a history whose messages are copied on first
+// write, so the history and its content slices are never modified.
+type historyView struct {
+	messages []types.Message
+	view     []types.Message
+	copied   map[int]bool
+}
+
+func (v *historyView) current(i int) types.Message {
+	if v.view != nil {
+		return v.view[i]
 	}
-	return t.messages[i]
+	return v.messages[i]
 }
 
 // writable returns message i's content in the view, copying the view and
 // the message's content slice on first write.
-func (t *resultTruncator) writable(i int) []types.ContentBlock {
-	if t.view == nil {
-		t.view = make([]types.Message, len(t.messages))
-		copy(t.view, t.messages)
-		t.copied = map[int]bool{}
+func (v *historyView) writable(i int) []types.ContentBlock {
+	if v.view == nil {
+		v.view = make([]types.Message, len(v.messages))
+		copy(v.view, v.messages)
+		v.copied = map[int]bool{}
 	}
-	if !t.copied[i] {
-		t.view[i].Content = slices.Clone(t.messages[i].Content)
-		t.copied[i] = true
+	if !v.copied[i] {
+		v.view[i].Content = slices.Clone(v.messages[i].Content)
+		v.copied[i] = true
 	}
-	return t.view[i].Content
+	return v.view[i].Content
+}
+
+// result returns the view, or the history when nothing was written.
+func (v *historyView) result() []types.Message {
+	if v.view == nil {
+		return v.messages
+	}
+	return v.view
 }
 
 // truncateHeadTail keeps up to keep bytes at each end of content, snapped
