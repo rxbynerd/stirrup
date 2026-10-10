@@ -17,7 +17,7 @@ A JSONL trace file is a stream of one-line JSON events, each carrying
 a `kind` discriminator. A complete run produces:
 
 ```jsonl
-{"kind":"run_started","schemaVersion":"1","runId":"...","config":{...redacted...},"startedAt":"..."}
+{"kind":"run_started","schemaVersion":"2","runId":"...","config":{...redacted...},"startedAt":"..."}
 {"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
 {"kind":"tool_call_record","turn":1,"name":"read_file","input":{...},"output":"..."}
 {"kind":"command_output_record","commandOutput":{"archiveId":"...","toolUseId":"...","stdout":{"rawBytes":123,"scrubbedBytes":111,"rawSha256":"...","scrubbedSha256":"..."}}}
