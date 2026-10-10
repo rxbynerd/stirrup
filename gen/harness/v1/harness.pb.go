@@ -2181,7 +2181,8 @@ type RunTrace struct {
 	// "control_stream_lost" reports a run cancelled because its control
 	// stream ended while it was active.
 	// "structured_output_failed" reports a final answer that still did not
-	// satisfy RunConfig.output_schema after the corrective attempts.
+	// satisfy RunConfig.output_schema after the corrective attempts, or
+	// that satisfied it only before secrets were scrubbed from it.
 	// Provider stop reasons pass through verbatim, including:
 	//
 	//	"refusal"                       — the model declined to respond;

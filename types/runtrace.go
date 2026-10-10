@@ -107,8 +107,9 @@ type RunTrace struct {
 	// failure outranks an archive failure. control_stream_lost reports a
 	// run cancelled because its gRPC control stream ended while it was
 	// active. structured_output_failed reports a final answer that still
-	// did not satisfy RunConfig.OutputSchema after the corrective attempts;
-	// such a run never reaches the verifier.
+	// did not satisfy RunConfig.OutputSchema after the corrective attempts,
+	// or that satisfied it only before secrets were scrubbed from it; such
+	// a run never reaches the verifier.
 	Outcome string `json:"outcome"`
 	// StopDetails is the final model turn's provider-reported stop detail
 	// when the run ended on a non-tool stop reason, such as the category
