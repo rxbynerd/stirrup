@@ -59,13 +59,20 @@ func archiveWorkspace(ctx context.Context, src executor.WorkspaceArchiver, maxBy
 	return packed, nil
 }
 
+// maxSymlinkHops bounds how many symlinks resolveInRoot follows for one
+// target, matching the Linux kernel's limit.
+const maxSymlinkHops = 40
+
 // repackArchive re-reads an untrusted tar stream and writes a gzipped copy
 // holding only directories, regular files, symlinks and hard links, with
 // permission bits and modification times but no ownership. It refuses
-// absolute names, ".." components, symlinks whose target is absolute or
-// leaves the root, hard links to names outside the archive root or beneath
-// a symlink, and any entry beneath an earlier symlink entry, so the archive cannot write
-// outside the extraction directory. Symlinks are never followed.
+// absolute names, ".." components and duplicate names, and once the whole
+// stream is read it refuses, regardless of entry order: any entry beneath
+// a symlink entry; a symlink whose target, resolved through every symlink
+// in the archive, leaves the root, loops or exceeds maxSymlinkHops; and a
+// hard link whose target is not a regular file in the archive. Extracting
+// the result into an empty directory therefore cannot create or write a
+// file outside it. Symlinks are never followed when reading the stream.
 func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 	var buf bytes.Buffer
 	out := &cappedWriter{w: &buf, max: maxBytes}
@@ -73,7 +80,7 @@ func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 	tw := tar.NewWriter(gz)
 	tr := tar.NewReader(r)
 
-	symlinks := map[string]bool{}
+	entries := archiveEntries{types: map[string]byte{}, symlinks: map[string]string{}}
 	files := 0
 	for {
 		hdr, err := tr.Next()
@@ -90,9 +97,6 @@ func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 		if name == "" {
 			continue
 		}
-		if parent := symlinkAncestor(name, symlinks); parent != "" {
-			return packedArchive{}, fmt.Errorf("refusing archive entry %q: beneath symlink %q", hdr.Name, parent)
-		}
 
 		h := &tar.Header{
 			Name:    name,
@@ -108,16 +112,18 @@ func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 			h.Size = hdr.Size
 			files++
 		case tar.TypeSymlink:
-			if err := checkSymlinkTarget(name, hdr.Linkname); err != nil {
-				return packedArchive{}, fmt.Errorf("refusing archive entry %q: %w", hdr.Name, err)
+			if hdr.Linkname == "" {
+				return packedArchive{}, fmt.Errorf("refusing archive entry %q: empty symlink target", hdr.Name)
+			}
+			if strings.HasPrefix(hdr.Linkname, "/") {
+				return packedArchive{}, fmt.Errorf("refusing archive entry %q: symlink target %q is absolute", hdr.Name, hdr.Linkname)
 			}
 			h.Typeflag = tar.TypeSymlink
 			h.Linkname = hdr.Linkname
-			symlinks[name] = true
 			files++
 		case tar.TypeLink:
 			target, err := cleanEntryName(hdr.Linkname)
-			if err != nil || target == "" || symlinkAncestor(target, symlinks) != "" {
+			if err != nil || target == "" {
 				return packedArchive{}, fmt.Errorf("refusing archive entry %q: hard link target %q is outside the workspace", hdr.Name, hdr.Linkname)
 			}
 			h.Typeflag = tar.TypeLink
@@ -125,6 +131,9 @@ func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 			files++
 		default:
 			continue
+		}
+		if err := entries.add(hdr.Name, h); err != nil {
+			return packedArchive{}, err
 		}
 		if err := tw.WriteHeader(h); err != nil {
 			return packedArchive{}, out.wrap(fmt.Errorf("write archive entry %q: %w", name, err))
@@ -134,6 +143,9 @@ func repackArchive(r io.Reader, maxBytes int64) (packedArchive, error) {
 				return packedArchive{}, out.wrap(fmt.Errorf("copy archive entry %q: %w", name, err))
 			}
 		}
+	}
+	if err := entries.validate(); err != nil {
+		return packedArchive{}, err
 	}
 	if err := tw.Close(); err != nil {
 		return packedArchive{}, out.wrap(fmt.Errorf("close tar: %w", err))
@@ -163,27 +175,63 @@ func cleanEntryName(name string) (string, error) {
 	return cleaned, nil
 }
 
-// checkSymlinkTarget rejects a symlink target that is absolute or that,
-// resolved lexically from the link's directory, leaves the archive root.
-func checkSymlinkTarget(name, target string) error {
-	if target == "" {
-		return errors.New("empty symlink target")
+// archiveEntries records every kept entry so links can be checked against
+// the complete archive rather than the entries seen so far.
+type archiveEntries struct {
+	types     map[string]byte
+	symlinks  map[string]string
+	hardlinks []archiveLink
+	order     []string
+}
+
+type archiveLink struct {
+	raw, name, target string
+}
+
+func (e *archiveEntries) add(raw string, h *tar.Header) error {
+	name := strings.TrimSuffix(h.Name, "/")
+	if _, dup := e.types[name]; dup {
+		return fmt.Errorf("refusing archive entry %q: duplicate name %q", raw, name)
 	}
-	if strings.HasPrefix(target, "/") {
-		return fmt.Errorf("symlink target %q is absolute", target)
+	e.types[name] = h.Typeflag
+	e.order = append(e.order, name)
+	switch h.Typeflag {
+	case tar.TypeSymlink:
+		e.symlinks[name] = h.Linkname
+	case tar.TypeLink:
+		e.hardlinks = append(e.hardlinks, archiveLink{raw: raw, name: name, target: h.Linkname})
 	}
-	resolved := path.Join(path.Dir(name), target)
-	if resolved == ".." || strings.HasPrefix(resolved, "../") {
-		return fmt.Errorf("symlink target %q resolves outside the workspace", target)
+	return nil
+}
+
+func (e *archiveEntries) validate() error {
+	for _, name := range e.order {
+		if parent := e.symlinkAncestor(name); parent != "" {
+			return fmt.Errorf("refusing archive entry %q: beneath symlink %q", name, parent)
+		}
+	}
+	for _, name := range e.order {
+		target, ok := e.symlinks[name]
+		if !ok {
+			continue
+		}
+		if err := e.resolveInRoot(path.Dir(name), target); err != nil {
+			return fmt.Errorf("refusing archive entry %q: symlink target %q %w", name, target, err)
+		}
+	}
+	for _, l := range e.hardlinks {
+		if e.types[l.target] != tar.TypeReg {
+			return fmt.Errorf("refusing archive entry %q: hard link target %q is not a regular file in the workspace", l.raw, l.target)
+		}
 	}
 	return nil
 }
 
 // symlinkAncestor returns the first proper ancestor of name recorded as a
 // symlink entry, or "".
-func symlinkAncestor(name string, symlinks map[string]bool) string {
+func (e *archiveEntries) symlinkAncestor(name string) string {
 	for i := strings.IndexByte(name, '/'); i >= 0; {
-		if symlinks[name[:i]] {
+		if _, ok := e.symlinks[name[:i]]; ok {
 			return name[:i]
 		}
 		next := strings.IndexByte(name[i+1:], '/')
@@ -193,6 +241,44 @@ func symlinkAncestor(name string, symlinks map[string]bool) string {
 		i += next + 1
 	}
 	return ""
+}
+
+// resolveInRoot resolves target relative to dir component by component,
+// following symlink entries as an extractor's filesystem would, and fails
+// if the walk leaves the archive root or follows more than maxSymlinkHops
+// links.
+func (e *archiveEntries) resolveInRoot(dir, target string) error {
+	var stack []string
+	if dir != "." {
+		stack = strings.Split(dir, "/")
+	}
+	pending := strings.Split(target, "/")
+	hops := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) == 0 {
+				return errors.New("resolves outside the workspace")
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		link, ok := e.symlinks[strings.Join(append(stack, part), "/")]
+		if !ok {
+			stack = append(stack, part)
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return errors.New("loops or follows too many symlinks")
+		}
+		pending = append(strings.Split(link, "/"), pending...)
+	}
+	return nil
 }
 
 // cappedReader fails with executor.ErrArchiveTooLarge once more than max

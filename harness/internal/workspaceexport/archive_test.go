@@ -219,6 +219,52 @@ func TestGCSExporter_RefusesHostileSandboxStream(t *testing.T) {
 		"hard link outside root":    {{Name: "./h", Typeflag: tar.TypeLink, Linkname: "../etc/shadow"}},
 		"absolute hard link target": {{Name: "./h", Typeflag: tar.TypeLink, Linkname: "/etc/shadow"}},
 		"hard link through symlink": {{Name: "./dir", Typeflag: tar.TypeSymlink, Linkname: "sub"}, {Name: "./h", Typeflag: tar.TypeLink, Linkname: "./dir/f"}},
+		"entry before its symlink parent": {
+			{Name: "./dir/file", Typeflag: tar.TypeReg},
+			{Name: "./dir", Typeflag: tar.TypeSymlink, Linkname: "sub"},
+		},
+		"symlink chain climbs through a self link": {
+			{Name: "./s", Typeflag: tar.TypeSymlink, Linkname: "."},
+			{Name: "./t", Typeflag: tar.TypeSymlink, Linkname: "s/.."},
+		},
+		"symlink chain climbs through a later self link": {
+			{Name: "./t", Typeflag: tar.TypeSymlink, Linkname: "s/.."},
+			{Name: "./s", Typeflag: tar.TypeSymlink, Linkname: "."},
+		},
+		"symlink chain climbs through a parent link": {
+			{Name: "./a/", Typeflag: tar.TypeDir},
+			{Name: "./a/b", Typeflag: tar.TypeSymlink, Linkname: ".."},
+			{Name: "./x", Typeflag: tar.TypeSymlink, Linkname: "a/b/../secret"},
+		},
+		"symlink chain climbs through two links": {
+			{Name: "./a/", Typeflag: tar.TypeDir},
+			{Name: "./a/b", Typeflag: tar.TypeSymlink, Linkname: ".."},
+			{Name: "./t", Typeflag: tar.TypeSymlink, Linkname: "a/b"},
+			{Name: "./d/", Typeflag: tar.TypeDir},
+			{Name: "./d/u", Typeflag: tar.TypeSymlink, Linkname: "../t/.."},
+		},
+		"symlink loop": {
+			{Name: "./a", Typeflag: tar.TypeSymlink, Linkname: "b"},
+			{Name: "./b", Typeflag: tar.TypeSymlink, Linkname: "a"},
+		},
+		"regular file after same-named symlink": {
+			{Name: "./f", Typeflag: tar.TypeSymlink, Linkname: "g"},
+			{Name: "./f", Typeflag: tar.TypeReg},
+		},
+		"duplicate regular file": {
+			{Name: "./f", Typeflag: tar.TypeReg},
+			{Name: "f", Typeflag: tar.TypeReg},
+		},
+		"hard link to an escaping symlink": {
+			{Name: "./up", Typeflag: tar.TypeSymlink, Linkname: "../secret"},
+			{Name: "./h", Typeflag: tar.TypeLink, Linkname: "./up"},
+		},
+		"hard link to an in-root symlink": {
+			{Name: "./f", Typeflag: tar.TypeReg},
+			{Name: "./l", Typeflag: tar.TypeSymlink, Linkname: "f"},
+			{Name: "./h", Typeflag: tar.TypeLink, Linkname: "./l"},
+		},
+		"hard link to a missing name": {{Name: "./h", Typeflag: tar.TypeLink, Linkname: "./absent"}},
 	}
 	for name, headers := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -235,6 +281,30 @@ func TestGCSExporter_RefusesHostileSandboxStream(t *testing.T) {
 				t.Errorf("uploads = %d, want 0", len(srv.requests))
 			}
 		})
+	}
+}
+
+// TestRepackArchive_KeepsInRootLinkChains pins that symlinks resolving
+// through other symlinks are kept when every resolution stays in the root.
+func TestRepackArchive_KeepsInRootLinkChains(t *testing.T) {
+	stream := tarStream(t,
+		&tar.Header{Name: "./t", Typeflag: tar.TypeSymlink, Linkname: "s/a/c/file"},
+		&tar.Header{Name: "./s", Typeflag: tar.TypeSymlink, Linkname: "."},
+		&tar.Header{Name: "./a/", Typeflag: tar.TypeDir, Mode: 0o755},
+		&tar.Header{Name: "./a/b", Typeflag: tar.TypeSymlink, Linkname: ".."},
+		&tar.Header{Name: "./a/c/", Typeflag: tar.TypeDir, Mode: 0o755},
+		&tar.Header{Name: "./a/c/file", Typeflag: tar.TypeReg, Mode: 0o644},
+		&tar.Header{Name: "./a/c/up", Typeflag: tar.TypeSymlink, Linkname: "../b/a"},
+		&tar.Header{Name: "./x", Typeflag: tar.TypeSymlink, Linkname: "a/b/a/c/../c/file"},
+		&tar.Header{Name: "./dangling", Typeflag: tar.TypeSymlink, Linkname: "a/missing"},
+		&tar.Header{Name: "./h", Typeflag: tar.TypeLink, Linkname: "a/c/file"},
+	)
+	packed, err := repackArchive(bytes.NewReader(stream), 1<<20)
+	if err != nil {
+		t.Fatalf("repackArchive: %v", err)
+	}
+	if packed.files != 8 {
+		t.Errorf("files = %d, want 8", packed.files)
 	}
 }
 

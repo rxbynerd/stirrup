@@ -1,6 +1,7 @@
 package workspaceexport
 
 import (
+	"archive/tar"
 	"context"
 	"os"
 	"testing"
@@ -42,7 +43,7 @@ func TestGCSExporter_ContainerExecutor_LiveEngine(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = exec.Close() })
 
-	res, err := exec.Exec(ctx, "mkdir -p sub && printf top > top.txt && printf nested > sub/nested.txt && ln -s top.txt alias", 30*time.Second)
+	res, err := exec.Exec(ctx, "mkdir -p sub && printf top > top.txt && printf nested > sub/nested.txt && ln -s top.txt alias && ln top.txt hard && ln -s ../alias sub/via", 30*time.Second)
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("seed workspace: err %v, result %+v", err, res)
 	}
@@ -53,19 +54,24 @@ func TestGCSExporter_ContainerExecutor_LiveEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
-	if receipt.Status != types.ExportStatusUploaded || receipt.Files != 3 {
-		t.Errorf("receipt = %+v, want uploaded with 3 files", receipt)
+	if receipt.Status != types.ExportStatusUploaded || receipt.Files != 5 {
+		t.Errorf("receipt = %+v, want uploaded with 5 files", receipt)
 	}
 	got := map[string]string{}
+	kinds := map[string]byte{}
 	for _, h := range readUploaded(t, srv.last().Body) {
 		got[h.Name] = h.Linkname
+		kinds[h.Name] = h.Typeflag
 	}
-	for _, name := range []string{"top.txt", "sub/", "sub/nested.txt", "alias"} {
+	for _, name := range []string{"top.txt", "sub/", "sub/nested.txt", "alias", "hard", "sub/via"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("upload is missing %q (entries %v)", name, got)
 		}
 	}
 	if got["alias"] != "top.txt" {
 		t.Errorf("alias link target = %q, want top.txt", got["alias"])
+	}
+	if kinds["hard"] != tar.TypeLink && kinds["top.txt"] != tar.TypeLink {
+		t.Errorf("neither hard nor top.txt is a hard link entry (kinds %v)", kinds)
 	}
 }
