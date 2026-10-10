@@ -203,3 +203,33 @@ func TestExportWorkspace_ExecutorWithoutArchiver(t *testing.T) {
 		t.Errorf("uploads = %d, want 0", n)
 	}
 }
+
+// TestRunWithConfig_ExportsLoopExecutorWorkspace pins that a harness run
+// exports through the loop's executor: the upload holds a file seeded in
+// the executor's workspace, not the harness process's working directory.
+func TestRunWithConfig_ExportsLoopExecutorWorkspace(t *testing.T) {
+	srv := openAICompatibleSuccessServer(t)
+	defer srv.Close()
+	uploads := installGCSUploadCapture(t)
+	t.Chdir(t.TempDir())
+
+	config := runOutcomeTestConfig(t, srv.URL)
+	config.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
+	if err := os.WriteFile(filepath.Join(config.Executor.Workspace, "seed.txt"), []byte("from the executor"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdoutDone := captureStdout(t)
+	runErr := runWithConfig(config, runOptions{outputMode: "json"})
+	_ = stdoutDone()
+	if runErr != nil {
+		t.Fatalf("runWithConfig: %v", runErr)
+	}
+	got := uploads()
+	if len(got) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(got))
+	}
+	if files := uploadedFiles(t, got[0]); files["seed.txt"] != "from the executor" {
+		t.Errorf("uploaded entries = %v, want seed.txt from the executor's workspace", files)
+	}
+}
