@@ -272,10 +272,18 @@ func TestGCSTraceEmitter_ServerError(t *testing.T) {
 		t.Fatalf("NewGCSTraceEmitter: %v", err)
 	}
 	emitter.Start("r", nil)
-	if _, err := emitter.Finish(context.Background(), "success"); err == nil {
+	tr, err := emitter.Finish(context.Background(), "success")
+	if err == nil {
 		t.Fatal("Finish: want error, got nil")
-	} else if !strings.Contains(err.Error(), "HTTP 403") {
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
 		t.Errorf("error should mention HTTP 403, got %v", err)
+	}
+	if tr == nil {
+		t.Fatal("Finish: want the assembled trace alongside the upload error, got nil")
+	}
+	if tr.ID != "r" || tr.Outcome != "success" {
+		t.Errorf("trace = {ID:%q Outcome:%q}, want {ID:\"r\" Outcome:\"success\"}", tr.ID, tr.Outcome)
 	}
 }
 

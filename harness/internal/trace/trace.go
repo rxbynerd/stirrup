@@ -36,7 +36,9 @@ type TraceEmitter interface {
 	RecordPermissionDenial()
 
 	// Finish finalises the trace, writes it to the backing store, and
-	// returns the completed RunTrace.
+	// returns the completed RunTrace. When writing fails after the trace
+	// was assembled, Finish returns the trace together with the error so
+	// the caller can still report the run.
 	Finish(ctx context.Context, outcome string) (*types.RunTrace, error)
 }
 

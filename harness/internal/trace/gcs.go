@@ -281,7 +281,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 
 	data, err := json.Marshal(trace)
 	if err != nil {
-		return nil, fmt.Errorf("marshal trace: %w", err)
+		return trace, fmt.Errorf("marshal trace: %w", err)
 	}
 	data = append(data, '\n')
 
@@ -294,7 +294,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		Bearer:          e.bearer,
 		EndpointBaseURL: e.endpointBaseURL,
 	}); err != nil {
-		return nil, fmt.Errorf("gcs trace emitter: upload trace: %w", err)
+		return trace, fmt.Errorf("gcs trace emitter: upload trace: %w", err)
 	}
 
 	return trace, nil

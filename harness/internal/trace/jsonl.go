@@ -298,7 +298,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		Trace:       trace,
 	}
 	if err := e.writeLineLocked(ev); err != nil {
-		return nil, err
+		return trace, err
 	}
 	return trace, nil
 }
