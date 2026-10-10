@@ -231,12 +231,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 		preHookSpan.End()
 		if preErr != nil {
-
-			outcome := "setup_failed"
-			if runCtx.Err() != nil {
-				outcome = classifyCtxOutcome(context.Cause(runCtx))
-			}
-			return l.finishWithOutcome(runCtx, config, outcome, fmt.Errorf("pre-run hooks: %w", preErr), stopHeartbeat)
+			return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "setup_failed"), fmt.Errorf("pre-run hooks: %w", preErr), stopHeartbeat)
 		}
 	}
 
@@ -251,7 +246,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		DynamicContext: dynamicContext,
 	})
 	if err != nil {
-		return l.finishWithError(runCtx, config, fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
+		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
 	}
 
 	// The otel emitter's opt-in gen_ai.system_instructions capture; a
@@ -270,7 +265,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
 		recordSpanError(gitSetupSpan, err)
 		gitSetupSpan.End()
-		return l.finishWithError(runCtx, config, fmt.Errorf("git setup: %w", err), stopHeartbeat)
+		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("git setup: %w", err), stopHeartbeat)
 	}
 	gitSetupSpan.End()
 
@@ -532,6 +527,16 @@ func classifyCtxOutcome(cause error) string {
 	default:
 		return "error"
 	}
+}
+
+// setupOutcome is the outcome of a run whose setup step failed: the
+// cancellation cause's outcome once runCtx has ended, since the failure
+// is then most likely the cancellation itself, and fallback otherwise.
+func setupOutcome(runCtx context.Context, fallback string) string {
+	if runCtx.Err() != nil {
+		return classifyCtxOutcome(context.Cause(runCtx))
+	}
+	return fallback
 }
 
 // setRootCancelAttribute tags the root "run" OTel span with the
@@ -1315,7 +1320,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 				opts.OnRunComplete(config, runTrace, err)
 			}
 			if err != nil {
-				// Transport already carries the error event from finishWithError.
+				// Transport already carries the error event from finishWithOutcome.
 				return
 			}
 			if loop.sessionCancelled.Load() {
@@ -1929,11 +1934,6 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 		}
 	}
 	return time.Duration(sum)*time.Second + 30*time.Second
-}
-
-// finishWithError records an "error" outcome and finishes the run.
-func (l *AgenticLoop) finishWithError(ctx context.Context, config *types.RunConfig, err error, stopHeartbeat func()) (*types.RunTrace, error) {
-	return l.finishWithOutcome(ctx, config, "error", err, stopHeartbeat)
 }
 
 // finishWithOutcome ends a run that failed before its first turn (e.g.

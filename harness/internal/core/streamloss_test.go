@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -146,6 +147,46 @@ func TestRun_ControlStreamLostBeforeRunCancelsItWithTheLoss(t *testing.T) {
 	}
 	if n := len(prov.params()); n != 0 {
 		t.Errorf("provider called %d times after a pre-run loss, want 0", n)
+	}
+}
+
+// ctxHonouringGit fails Setup once its context has ended, as a strategy
+// running git through exec.CommandContext does.
+type ctxHonouringGit struct{}
+
+func (ctxHonouringGit) Setup(ctx context.Context, _, _ string) error { return ctx.Err() }
+func (ctxHonouringGit) Checkpoint(context.Context, string) error     { return nil }
+func (ctxHonouringGit) Finalise(context.Context, string) (*types.GitHandoff, error) {
+	return nil, nil
+}
+
+// ctxHonouringPrompt fails Build once its context has ended.
+type ctxHonouringPrompt struct{}
+
+func (ctxHonouringPrompt) Build(ctx context.Context, _ prompt.PromptContext) (string, error) {
+	return "system", ctx.Err()
+}
+
+func TestRun_ControlStreamLostBeforeSetupStepsReportsTheLoss(t *testing.T) {
+	for name, configure := range map[string]func(*AgenticLoop){
+		"git setup":    func(l *AgenticLoop) { l.Git = ctxHonouringGit{} },
+		"prompt build": func(l *AgenticLoop) { l.Prompt = ctxHonouringPrompt{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
+			loop, tr := buildUserInputTestLoop(prov)
+			configure(loop)
+			loop.ControlStreamLost(transport.ErrPeerEndedStream)
+
+			rt, _ := loop.Run(context.Background(), buildTestConfig())
+			if rt == nil {
+				t.Fatal("Run returned no trace")
+			}
+			if rt.Outcome != "control_stream_lost" {
+				t.Fatalf("outcome = %q (error %q), want control_stream_lost", rt.Outcome, rt.Error)
+			}
+			assertDoneStopReason(t, tr, "control_stream_lost")
+		})
 	}
 }
 

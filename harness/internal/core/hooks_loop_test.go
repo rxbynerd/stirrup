@@ -89,9 +89,8 @@ func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	// finishWithOutcome mirrors finishWithError's existing contract
-	// (see TestLoop_PromptBuildError): the underlying hook error is
-	// still surfaced as Run()'s Go error, alongside the populated
+	// finishWithOutcome surfaces the underlying hook error as Run()'s Go
+	// error (see TestLoop_PromptBuildError), alongside the populated
 	// RunTrace reporting the classified outcome.
 	if err == nil {
 		t.Fatal("expected non-nil error from Run() on a fatal pre-run hook failure")
