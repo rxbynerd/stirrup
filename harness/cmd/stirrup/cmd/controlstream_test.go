@@ -19,6 +19,7 @@ import (
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/harness/internal/core"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -220,7 +221,7 @@ func TestRunJob_ConnectionFailureDuringProviderCallCancelsRun(t *testing.T) {
 	assertJobCancelledOnLoss(t, provider, sink, exporter, errCh)
 }
 
-func TestRunJob_StreamEndedRightAfterAssignmentStartsNoRun(t *testing.T) {
+func TestRunJob_StreamLostDuringConstructionStartsNoRun(t *testing.T) {
 	useTempMarkerPaths(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
@@ -228,23 +229,28 @@ func TestRunJob_StreamEndedRightAfterAssignmentStartsNoRun(t *testing.T) {
 	installStubResultSink(t, sink)
 	provider, requests := startOpenAIStub(t)
 
-	end := make(chan struct{})
-	close(end)
-	srv := &losingControlPlane{task: followUpJobConfig(t, provider.URL, 30, 0), end: end}
+	srv := &losingControlPlane{task: followUpJobConfig(t, provider.URL, 30, 0), end: make(chan struct{})}
 	serveStoppableControlPlane(t, srv)
+
+	prevBuild := buildJobLoop
+	t.Cleanup(func() { buildJobLoop = prevBuild })
+	buildJobLoop = func(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...core.LoopOption) (*core.AgenticLoop, error) {
+		close(srv.end)
+		select {
+		case <-ctx.Done():
+		case <-time.After(eventWaitBudget):
+			t.Error("construction context was not cancelled by the stream loss")
+		}
+		return prevBuild(ctx, config, tp, opts...)
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- runJob(jobCmd, nil) }()
 
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("runJob returned nil, want the loss to fail the process")
-		}
-		// The loss can land during the assignment wait, during
-		// construction, or as the run starts; each fails the job.
-		if errors.Is(err, core.ErrControlStreamLost) && !strings.HasPrefix(err.Error(), "building harness: ") {
-			t.Errorf("runJob error = %v, want a construction-time loss reported as a build failure", err)
+		if !errors.Is(err, core.ErrControlStreamLost) || !strings.HasPrefix(err.Error(), "building harness: ") {
+			t.Errorf("runJob error = %v, want a construction-time control stream loss", err)
 		}
 	case <-time.After(terminalWaitBudget):
 		t.Fatal("runJob did not return after the control stream ended")
@@ -252,10 +258,8 @@ func TestRunJob_StreamEndedRightAfterAssignmentStartsNoRun(t *testing.T) {
 	if got := requests.Load(); got != 0 {
 		t.Errorf("provider requests = %d, want 0: no run may start once the stream is gone", got)
 	}
-	for _, r := range sink.calls {
-		if r.Outcome != "control_stream_lost" {
-			t.Errorf("RunResult.Outcome = %q, want control_stream_lost", r.Outcome)
-		}
+	if len(sink.calls) != 0 {
+		t.Errorf("result sink received %d results, want 0: no run started", len(sink.calls))
 	}
 }
 

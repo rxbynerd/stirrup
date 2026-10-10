@@ -43,6 +43,10 @@ var (
 	readinessMarkerPath = health.ReadinessMarker
 )
 
+// buildJobLoop constructs the job's loop; tests replace it to land a
+// control stream loss during construction.
+var buildJobLoop = core.BuildLoopWithTransport
+
 func runJob(cmd *cobra.Command, args []string) error {
 	started := time.Now()
 
@@ -146,7 +150,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	buildCtx, cancelBuild := context.WithCancelCause(runCtx)
 	defer cancelBuild(nil)
 	stopBuildWatch := watchControlStream(tp, cancelBuild)
-	loop, err := core.BuildLoopWithTransport(buildCtx, config, tp)
+	loop, err := buildJobLoop(buildCtx, config, tp)
 	stopBuildWatch()
 	if lossErr := controlStreamErr(tp); lossErr != nil {
 		if loop != nil {
