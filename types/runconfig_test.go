@@ -9281,3 +9281,35 @@ func TestValidateRunConfig_ToolsMaxResultBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestRedact_MCPServerOptionalPreserved(t *testing.T) {
+	rc := RunConfig{
+		Tools: ToolsConfig{
+			MCPServers: []MCPServerConfig{
+				{Name: "a", URI: "http://a", Optional: true},
+				{Name: "b", URI: "http://b"},
+			},
+		},
+	}
+	redacted := rc.Redact()
+	if !redacted.Tools.MCPServers[0].Optional || redacted.Tools.MCPServers[1].Optional {
+		t.Errorf("Redact changed Optional: %+v", redacted.Tools.MCPServers)
+	}
+}
+
+func TestMCPServerConfig_OptionalJSON(t *testing.T) {
+	raw, err := json.Marshal(MCPServerConfig{Name: "a", URI: "http://a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "optional") {
+		t.Errorf("a required server must omit the optional key, got %s", raw)
+	}
+	var decoded MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"a","uri":"http://a","optional":true}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Optional {
+		t.Error("optional:true did not decode")
+	}
+}

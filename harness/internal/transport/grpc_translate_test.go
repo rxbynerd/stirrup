@@ -2260,3 +2260,66 @@ func TestRunConfigFromProto_MaxResultBytesPreserved(t *testing.T) {
 		t.Errorf("MaxResultBytes: got %d, want 65536", got)
 	}
 }
+
+// TestRunConfigFromProto_MCPOptionalPreserved pins the optional flag across
+// the wire format and the translate step; the zero value must stay
+// "required".
+func TestRunConfigFromProto_MCPOptionalPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			McpServers: []*pb.MCPServerConfig{
+				{Name: "required", Uri: "https://mcp.example.com/v1"},
+				{Name: "optional", Uri: "https://mcp.example.com/v2", Optional: true},
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+	if len(rc.Tools.MCPServers) != 2 {
+		t.Fatalf("MCPServers: got %d entries, want 2", len(rc.Tools.MCPServers))
+	}
+	if rc.Tools.MCPServers[0].Optional {
+		t.Error("a server with no optional field must translate as required")
+	}
+	if !rc.Tools.MCPServers[1].Optional {
+		t.Error("Optional was dropped between proto and RunConfig")
+	}
+}
+
+func TestRunTraceToProto_DegradedCapabilities(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{
+		ID: "run-degraded",
+		DegradedCapabilities: []types.DegradedCapability{
+			{Kind: types.DegradedCapabilityMCP, Name: "docs", Error: "connection refused"},
+		},
+	})
+
+	raw, err := proto.Marshal(pt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.DegradedCapabilities) != 1 {
+		t.Fatalf("DegradedCapabilities: got %d entries, want 1", len(decoded.DegradedCapabilities))
+	}
+	got := decoded.DegradedCapabilities[0]
+	if got.Kind != "mcp" || got.Name != "docs" || got.Error != "connection refused" {
+		t.Errorf("DegradedCapabilities[0] = %+v, want mcp/docs/connection refused", got)
+	}
+
+	if empty := runTraceToProto(&types.RunTrace{ID: "run-clean"}); len(empty.DegradedCapabilities) != 0 {
+		t.Errorf("a run with nothing degraded must carry no entries, got %v", empty.DegradedCapabilities)
+	}
+}

@@ -117,6 +117,13 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	}
 	pt.Error = t.Error
 	pt.StructuredOutput = string(t.StructuredOutput)
+	for _, dc := range t.DegradedCapabilities {
+		pt.DegradedCapabilities = append(pt.DegradedCapabilities, &pb.DegradedCapability{
+			Kind:  dc.Kind,
+			Name:  dc.Name,
+			Error: dc.Error,
+		})
+	}
 	return pt
 }
 
@@ -661,6 +668,7 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			APIKeyRef:       srv.ApiKeyRef,
 			AllowedTools:    srv.AllowedTools,
 			AllowedMCPHosts: srv.AllowedMcpHosts,
+			Optional:        srv.Optional,
 		})
 	}
 	for _, ct := range pc.ControlPlane {

@@ -1090,6 +1090,11 @@ message RunTrace {
   // failed. Empty otherwise.
   string error = 22;
 
+  // Configured capabilities the run proceeded without, such as an
+  // optional MCP server that was unavailable at startup. Empty when
+  // nothing degraded.
+  repeated DegradedCapability degraded_capabilities = 33;
+
   // The final answer as compact JSON text, set when RunConfig.output_schema
   // was configured, the answer satisfied it and the outcome is "success".
   // The document is scrubbed of secrets and never truncated. Empty
@@ -1147,6 +1152,19 @@ message ExportReceipt {
   // The archive's non-directory entries (regular files, symlinks and
   // hard links).
   int32 files = 7;
+}
+
+// DegradedCapability mirrors types.DegradedCapability: one configured
+// capability that was skipped at startup because it was unavailable.
+message DegradedCapability {
+  // Capability kind. Currently "mcp".
+  string kind = 1;
+
+  // The operator-supplied name of the capability (the MCP server name).
+  string name = 2;
+
+  // Scrubbed, length-bounded reason the capability was unavailable.
+  string error = 3;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured
@@ -2265,4 +2283,12 @@ message MCPServerConfig {
   // case-insensitive match) in addition to passing the SSRF guard.
   // Empty/unset applies no host pinning.
   repeated string allowed_mcp_hosts = 5;
+
+  // Optional. When false (the default) the server is required: an
+  // unreachable server, a rejected credential, a failed tools/list, or an
+  // advertised tool list missing an allowed_tools entry fails the run
+  // before the first model request. When true the harness logs a warning,
+  // emits a "warning" HarnessEvent, records the server in
+  // RunTrace.degraded_capabilities, and runs without its tools.
+  bool optional = 6;
 }

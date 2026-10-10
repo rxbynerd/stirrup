@@ -105,6 +105,11 @@ type RunResult struct {
 	// WorkspaceExport mirrors RunTrace.WorkspaceExport. Omitted when no
 	// export destination is configured.
 	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
+
+	// DegradedCapabilities names configured capabilities the run
+	// proceeded without, such as an optional MCP server that was
+	// unavailable at startup. Can be non-empty when Outcome is "success".
+	DegradedCapabilities []DegradedCapability `json:"degradedCapabilities,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

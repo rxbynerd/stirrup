@@ -1525,6 +1525,15 @@ type MCPServerConfig struct {
 	// It is an operator-side defence against a server URI being repointed at
 	// an unexpected host. Empty/unset applies no host pinning.
 	AllowedMCPHosts []string `json:"allowedMcpHosts,omitempty"`
+
+	// Optional marks the server as non-essential to the run. By default
+	// (false) a server is required: if it is unreachable, rejects its
+	// credentials, fails tools/list, or does not advertise every name in
+	// AllowedTools, the harness refuses to start the run. An optional
+	// server that fails is skipped with a transport warning and recorded
+	// in RunResult.DegradedCapabilities, and the run proceeds without its
+	// tools.
+	Optional bool `json:"optional,omitempty"`
 }
 
 var validProviderTypes = map[string]bool{
