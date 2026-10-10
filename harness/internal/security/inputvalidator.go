@@ -82,6 +82,11 @@ func CompileJSONSchema(schema json.RawMessage) error {
 	return err
 }
 
+// schemaResourceURL is absolute so the compiler does not resolve it
+// against the working directory, whose path would otherwise appear in
+// validation errors returned to the model.
+const schemaResourceURL = "urn:stirrup:schema"
+
 func compileJSONSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
 	schemaVal, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
@@ -92,11 +97,11 @@ func compileJSONSchema(schema json.RawMessage) (*jsonschema.Schema, error) {
 	// Blocks external resource loading (file://, http://, $ref) — schemas
 	// must be self-contained.
 	c.UseLoader(noopLoader{})
-	if err := c.AddResource("schema.json", schemaVal); err != nil {
+	if err := c.AddResource(schemaResourceURL, schemaVal); err != nil {
 		return nil, fmt.Errorf("failed to add schema resource: %w", err)
 	}
 
-	sch, err := c.Compile("schema.json")
+	sch, err := c.Compile(schemaResourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile schema: %w", err)
 	}

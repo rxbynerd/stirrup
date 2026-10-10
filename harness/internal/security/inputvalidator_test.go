@@ -2,6 +2,7 @@ package security
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -608,5 +609,22 @@ func TestCompileJSONSchema(t *testing.T) {
 				t.Fatalf("CompileJSONSchema error = %v, want one containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateJSONSchema_ErrorOmitsWorkingDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	err = ValidateJSONSchema(json.RawMessage(`{}`), json.RawMessage(`{"type":"object","required":["title"]}`))
+	if err == nil {
+		t.Fatal("ValidateJSONSchema error = nil, want a missing-property violation")
+	}
+	if strings.Contains(err.Error(), wd) || strings.Contains(err.Error(), "file://") {
+		t.Errorf("validation error names a host path: %q", err)
+	}
+	if !strings.Contains(err.Error(), "missing property 'title'") {
+		t.Errorf("validation error = %q, want the violation", err)
 	}
 }
