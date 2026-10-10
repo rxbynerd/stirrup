@@ -70,6 +70,7 @@ its verdicts without changing any outcome. See
 
 | Suite | Source | Notes |
 |---|---|---|
+| `acceptance.hcl` | Hand-authored | Opt-in acceptance suite: eight realistic tasks on pinned revisions of small public Go repositories, plus a verifier that fails once before it passes. Deterministic judges, live provider, no CI baseline. See [Acceptance suite](#acceptance-suite-acceptancehcl). |
 | `command-output-ab-{on,off}.hcl` | Hand-authored (PR #495) | A/B pair for the command-output capture pipeline: byte-identical tasks, differing only in `tools.command_output`. Run both arms, then `stirrup-eval compare -baseline <off>/result.json -current <on>/result.json` — the feature's context-saving claim holds iff the on arm lowers mean tokens at an equal-or-better pass rate. Opt-in, live-provider, no CI baseline. |
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
@@ -127,6 +128,72 @@ are slow and spend credits; they are an explicit opt-in and are not
 part of default CI. No baseline ships for this suite, so the eval
 gate neither runs nor compares it until an operator promotes one
 (see "Promoting a mined suite" for the baseline workflow).
+
+## Acceptance suite (`acceptance.hcl`)
+
+`acceptance.hcl` measures how often an unattended run completes a
+realistic task on a real repository, and whether the run recovers when
+something around it fails. It is an opt-in local run: it has no
+baseline, CI never executes it, and it gates nothing.
+
+Each task clones one of four small public Go modules at a full commit
+SHA (`mitchellh/go-wordwrap` and `rs/xid` under MIT, `google/shlex`
+under Apache-2.0, `dustin/go-humanize` under MIT) and is judged by a
+deterministic command or trace check. Every `ref` must be a 40-character
+SHA; `TestSuites_PinClonedReposToAFullCommitSHA` enforces this for every
+shipped suite. The runner fetches the SHA directly, so it does not have
+to be a branch tip. The tasks:
+
+| Task | Exercises |
+|---|---|
+| `fix-multibyte-wrap`, `fix-json-unmarshal-panic`, `fix-negative-ordinal-suffix` | Fix a failing test. The test is seeded into the workspace; the first two pin the parent of a real upstream fix. |
+| `add-quote-function-with-test` | Add exported functions and tests. A hidden judge-owned test round-trips awkward strings. |
+| `add-function-with-verifier-retry` | A `test-runner` verifier rejects the first submission and runs the real tests afterwards. The judge requires at least two verifier runs, so it passes only when the run recovers from a failed verification. |
+| `move-shared-helper-to-own-file` | A multi-file edit that must change exactly two files. |
+| `comment-only-edit-leaves-code-alone` | A narrow edit; any code change or second file fails. |
+| `answer-question-from-source` | Read-only navigation of an unfamiliar repository; the trace must show no `edit_file` call. |
+
+Because a per-task verifier override needs a suite baseline, the suite
+pins a complete `run_config`: Sonnet 5, `allow-all`, 30 turns, and a
+Go-only tool set without `web_fetch`, so the agent cannot read the
+upstream fix. The `--provider`, `--base-url`, `--api-key-ref` and
+`--model` flags of `stirrup-eval run` retarget the provider and model.
+
+**Requirements.** A Go toolchain, `git`, network access to
+`github.com`, and a provider credential. The harness binary must be
+built first (`just build`).
+
+**Cost.** One trial is eight task runs of up to 30 turns each, so
+`--trials 3` is 24 task runs. Each task's token usage is in the
+`trace` object of `result.json`; take the cost of a run from there
+rather than from an estimate.
+
+```bash
+ANTHROPIC_API_KEY=... ./stirrup-eval run \
+  --suite eval/suites/acceptance.hcl \
+  --harness "$PWD/stirrup" \
+  --output eval/results/acceptance \
+  --trials 3
+```
+
+Baselines for this suite should be taken with repeated trials, as above,
+so a flaky task records a fractional pass rate. The result reports run
+health next to the judge verdict (`healthyPassRate`, `runHealth`).
+
+### Failure-injection coverage
+
+Only the cases the runner can express without new infrastructure are
+tasks. The runner drives a real `stirrup` binary with a task prompt, so
+it has no fake control plane, artifact store or gRPC stream to cut.
+
+| Case | Status |
+|---|---|
+| Failed verifier | Task: `add-function-with-verifier-retry`. |
+| Remote workspace export | Follow-up. Needs an export destination the eval can inspect. |
+| Control-plane restart or stream loss | Follow-up. Needs a fake control plane. |
+| Context compaction | Follow-up. No trace field records that a compaction happened, so a judge cannot assert it, and a task cannot force one deterministically. |
+| Required MCP server missing | Follow-up, with #663. |
+| Budgeted delegation (sub-agent under a small token budget) | Follow-up, with #665. |
 
 ## Authoring a self-pinned suite
 
