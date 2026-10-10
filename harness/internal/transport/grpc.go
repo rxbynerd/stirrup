@@ -118,7 +118,8 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 	}, nil
 }
 
-// Emit scrubs secret patterns from the event's string fields, translates
+// Emit scrubs secret patterns from the event's string fields, caps
+// tool_result content and tool_call input at maxEventFieldBytes, translates
 // the event to its proto representation, and sends it on the gRPC stream.
 // When the optional Security logger is wired and any redaction occurs,
 // emits a SecretRedactedInOutput event with the matched pattern name and a
@@ -128,6 +129,7 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 	event.Content = g.scrubAndReport(event.Content, "transport.grpc.event.content")
 	event.Message = g.scrubAndReport(event.Message, "transport.grpc.event.message")
 	event.Input = scrubEventInput(event.Input, g.scrubAndReport, "transport.grpc.event.input")
+	boundEventFields(&event)
 
 	pe := harnessEventToProto(event)
 
