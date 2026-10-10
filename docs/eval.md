@@ -1231,8 +1231,8 @@ about quality.
 
 | Termination outcome                                                                       | Verifier ran? | Verdict   | `EvalOutcome` |
 |-------------------------------------------------------------------------------------------|---------------|-----------|---------------|
-| `success`                                                                                 | yes           | all pass  | `passed`      |
-| `success`                                                                                 | yes           | any fail  | `failed`      |
+| `success`                                                                                 | yes           | last attempt passes | `passed` |
+| `success`                                                                                 | yes           | last attempt fails  | `failed` |
 | `success`                                                                                 | no            | n/a       | `passed` *    |
 | `verification_failed`, `error`, `tool_failures`                                           | any           | any       | `failed`      |
 | `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `verification_error` | any | any | `inconclusive` |
