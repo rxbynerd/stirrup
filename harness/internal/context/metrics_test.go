@@ -67,8 +67,12 @@ func TestMetricRecorder_RecordsCompaction(t *testing.T) {
 	// well above the available room so the truncation branch fires.
 	msgs := make([]types.Message, 5)
 	for i := range msgs {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
 		msgs[i] = types.Message{
-			Role:    "user",
+			Role:    role,
 			Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 400)}},
 		}
 	}
@@ -104,8 +108,12 @@ func TestMetricRecorder_LastCompactionPassthrough(t *testing.T) {
 
 	msgs := make([]types.Message, 5)
 	for i := range msgs {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
 		msgs[i] = types.Message{
-			Role:    "user",
+			Role:    role,
 			Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 400)}},
 		}
 	}

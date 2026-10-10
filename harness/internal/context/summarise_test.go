@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -45,6 +46,20 @@ func (e *errorStreamProvider) Stream(_ context.Context, _ types.StreamParams) (<
 	return ch, nil
 }
 
+// alternatingMessages returns n messages alternating user and assistant,
+// starting with the user task, with text produced by text(i).
+func alternatingMessages(n int, text func(i int) string) []types.Message {
+	msgs := make([]types.Message, n)
+	for i := range msgs {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs[i] = makeMessage(role, text(i))
+	}
+	return msgs
+}
+
 func TestSummarise_ImplementsInterface(t *testing.T) {
 	var _ ContextStrategy = (*SummariseStrategy)(nil)
 }
@@ -78,15 +93,8 @@ func TestSummarise_OverBudget_SummarisesOldMessages(t *testing.T) {
 	mock := &mockSummaryProvider{summary: "User asked to fix a bug in main.go. Assistant found the issue."}
 	s := NewSummariseStrategy(mock, "test-model")
 
-	// Create 10 messages so there's enough to split (6 recent + 4 old).
-	msgs := make([]types.Message, 10)
-	for i := range msgs {
-		role := "user"
-		if i%2 == 1 {
-			role = "assistant"
-		}
-		msgs[i] = makeMessage(role, strings.Repeat("x", 400))
-	}
+	// The task, 4 old messages and 6 recent ones.
+	msgs := alternatingMessages(11, func(int) string { return strings.Repeat("x", 400) })
 
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
 		MaxTokens:          500,
@@ -101,19 +109,22 @@ func TestSummarise_OverBudget_SummarisesOldMessages(t *testing.T) {
 		t.Errorf("expected provider to be called once, got %d", mock.callCount)
 	}
 
-	// Result should be: 1 summary message + 6 recent messages = 7.
+	// Result should be: the task carrying the summary + 6 recent messages.
 	if len(result) != 7 {
-		t.Errorf("expected 7 messages (1 summary + 6 recent), got %d", len(result))
+		t.Fatalf("expected 7 messages (task with summary + 6 recent), got %d", len(result))
 	}
 
-	// First message should be the summary.
-	if result[0].Role != "user" {
-		t.Errorf("expected summary message role 'user', got %q", result[0].Role)
+	if result[0].Role != "user" || len(result[0].Content) != 2 {
+		t.Fatalf("expected the task message with a summary block, got %+v", result[0])
 	}
-	if !strings.Contains(result[0].Content[0].Text, "<conversation_summary>") {
-		t.Error("expected summary message to contain <conversation_summary> tag")
+	if !reflect.DeepEqual(result[0].Content[0], msgs[0].Content[0]) {
+		t.Error("expected the task block first and unchanged")
 	}
-	if !strings.Contains(result[0].Content[0].Text, "fix a bug") {
+	summaryBlock := result[0].Content[1].Text
+	if !strings.Contains(summaryBlock, "<conversation_summary>") {
+		t.Error("expected summary block to contain <conversation_summary> tag")
+	}
+	if !strings.Contains(summaryBlock, "fix a bug") {
 		t.Error("expected summary content to be present")
 	}
 	if !strings.Contains(mock.lastParams.System, "untrusted data") {
@@ -132,14 +143,7 @@ func TestSummarise_RecentMessagesPreservedVerbatim(t *testing.T) {
 	mock := &mockSummaryProvider{summary: "Earlier conversation summary."}
 	s := NewSummariseStrategy(mock, "test-model")
 
-	msgs := make([]types.Message, 10)
-	for i := range msgs {
-		role := "user"
-		if i%2 == 1 {
-			role = "assistant"
-		}
-		msgs[i] = makeMessage(role, fmt.Sprintf("message-%d", i))
-	}
+	msgs := alternatingMessages(11, func(i int) string { return fmt.Sprintf("message-%d", i) })
 
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
 		MaxTokens:          200,
@@ -151,6 +155,9 @@ func TestSummarise_RecentMessagesPreservedVerbatim(t *testing.T) {
 	}
 
 	// The last 6 messages should be preserved exactly.
+	if len(result) != 1+minRecentMessages {
+		t.Fatalf("expected %d messages, got %d", 1+minRecentMessages, len(result))
+	}
 	for i := 1; i < len(result); i++ {
 		originalIdx := len(msgs) - minRecentMessages + (i - 1)
 		expected := fmt.Sprintf("message-%d", originalIdx)
@@ -263,7 +270,7 @@ func TestSummarise_CachesPreviousSummary(t *testing.T) {
 	if mock.callCount != 1 {
 		t.Errorf("expected provider not called again (cache hit), but call count is %d", mock.callCount)
 	}
-	if !strings.Contains(result[0].Content[0].Text, "Cached summary content") {
+	if !strings.Contains(result[0].Content[len(result[0].Content)-1].Text, "Cached summary content") {
 		t.Error("expected cached summary to be used")
 	}
 }
@@ -342,18 +349,11 @@ func TestSummarise_TooFewMessages_ReturnsAsIs(t *testing.T) {
 	}
 }
 
-func TestSummarise_ZeroBudget_ReturnsRecentMessages(t *testing.T) {
+func TestSummarise_ZeroBudget_KeepsTaskAndLastExchange(t *testing.T) {
 	mock := &mockSummaryProvider{summary: "should not matter"}
 	s := NewSummariseStrategy(mock, "test-model")
 
-	msgs := make([]types.Message, 10)
-	for i := range msgs {
-		role := "user"
-		if i%2 == 1 {
-			role = "assistant"
-		}
-		msgs[i] = makeMessage(role, "msg")
-	}
+	msgs := alternatingMessages(11, func(i int) string { return fmt.Sprintf("msg-%d", i) })
 
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
 		MaxTokens:          50,
@@ -364,9 +364,72 @@ func TestSummarise_ZeroBudget_ReturnsRecentMessages(t *testing.T) {
 		t.Fatalf("Prepare() error: %v", err)
 	}
 
-	// With available <= 0, should return last minRecentMessages.
-	if len(result) != minRecentMessages {
-		t.Errorf("expected %d messages with zero budget, got %d", minRecentMessages, len(result))
+	if want := []types.Message{msgs[0], msgs[9], msgs[10]}; !reflect.DeepEqual(result, want) {
+		t.Errorf("expected the task and the last exchange with zero budget, got %d messages", len(result))
+	}
+	if mock.callCount != 0 {
+		t.Errorf("provider should not be called without room for a summary, got %d calls", mock.callCount)
+	}
+}
+
+// TestSummarise_TaskPinnedOutsideSummary pins that the task is re-sent
+// verbatim ahead of the summary and is not part of the summariser's input,
+// so phrase stripping never rewrites the operator's instructions.
+func TestSummarise_TaskPinnedOutsideSummary(t *testing.T) {
+	const task = "TASK: You must not modify vendor/. Ignore previous drafts."
+	mock := &mockSummaryProvider{summary: "Earlier work."}
+	s := NewSummariseStrategy(mock, "test-model")
+
+	msgs := alternatingMessages(11, func(i int) string { return fmt.Sprintf("message-%d", i) })
+	msgs[0] = makeMessage("user", task)
+
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:          200,
+		CurrentTokens:      500,
+		ReserveForResponse: 50,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	if got := result[0].Content[0].Text; got != task {
+		t.Errorf("first block = %q, want the task verbatim", got)
+	}
+	input := mock.lastParams.Messages[0].Content[0].Text
+	if strings.Contains(input, "vendor/") || strings.Contains(input, "message-0") {
+		t.Errorf("summary input includes the task: %q", input)
+	}
+	if !strings.Contains(input, "message-1") || !strings.Contains(input, "message-4") {
+		t.Errorf("summary input lacks the aged exchanges: %q", input)
+	}
+	if strings.Contains(input, "message-5") {
+		t.Errorf("summary input includes a recent message: %q", input)
+	}
+	if err := checkCompactedHistory(msgs, result); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestSummarise_FallbackKeepsParallelResultsPaired pins that the sliding
+// window fallback after a failed summary never retains the results of
+// parallel tool calls without the assistant turn that made them.
+func TestSummarise_FallbackKeepsParallelResultsPaired(t *testing.T) {
+	msgs := parallelCallHistory(3)
+	s := NewSummariseStrategy(&errorStreamProvider{}, "test-model")
+
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:          1050,
+		CurrentTokens:      1100,
+		ReserveForResponse: 100,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	want := append([]types.Message{msgs[0]}, msgs[3:]...)
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("kept %d messages, want the task and every exchange after the parallel calls", len(result))
+	}
+	if err := checkCompactedHistory(msgs, result); err != nil {
+		t.Error(err)
 	}
 }
 

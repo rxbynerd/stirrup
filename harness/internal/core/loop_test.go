@@ -1986,17 +1986,16 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 // (the snapshot for turn 0's Prepare is the pre-run zero). The final
 // post-Run atomic read gives the value stored after the LAST Prepare.
 func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
-	// A multi-turn run where the oldest messages (a heavy initial prompt)
-	// dominate the token count. MaxTokens (50) is small enough that even
-	// the quartered reserve leaves a budget nowhere near sufficient to
-	// hold the heavy prompt, so sliding-window still collapses to
-	// minPreservedMessages — the genuinely-impossible-budget path (see
+	// A heavy first assistant turn dominates the token count. MaxTokens
+	// (50) is far too small to hold it, so once a later exchange exists
+	// the sliding window drops it and keeps only the task and the last
+	// exchange — the genuinely-impossible-budget path (see
 	// TestLoop_SmallContextBudgetRetainsHistory for the small-but-workable
-	// case, which must NOT collapse to 2 messages).
+	// case, which must NOT drop history).
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
-				{Type: "text_delta", Text: "ok1"},
+				{Type: "text_delta", Text: strings.Repeat("a", 8000)},
 				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
@@ -2021,13 +2020,8 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	loop.Context = rec
 
 	config := buildTestConfig()
-	// Heavy initial prompt; subsequent assistant turns are short so the
-	// heavy prompt dominates the early absolute count and gets dropped
-	// by sliding-window compaction once it falls off the preserved tail.
-	config.Prompt = strings.Repeat("a", 8000) // ~2000 tokens worth of chars
 	// effectiveReserveForResponse(50) = 12 (quartered); available = 38,
-	// still far too small to hold the ~2000-token heavy prompt, so
-	// SlidingWindow drops down to minPreservedMessages.
+	// far too small to hold the ~2000-token heavy turn.
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 50}
 
 	if _, err := loop.Run(context.Background(), config); err != nil {
@@ -2037,47 +2031,36 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// rec.atomics[i] reflects loop.lastContextTokens at the start of turn
 	// i's Prepare invocation — the value stored after turn (i-1)'s
 	// Prepare. The first entry is 0 (pre-run reset).
-	if len(rec.atomics) < 2 {
-		t.Fatalf("expected at least 2 Prepare invocations, got %d (atomics=%v)", len(rec.atomics), rec.atomics)
+	if len(rec.atomics) != 3 {
+		t.Fatalf("expected 3 Prepare invocations, got %d (atomics=%v)", len(rec.atomics), rec.atomics)
 	}
 	if rec.atomics[0] != 0 {
 		t.Errorf("rec.atomics[0] = %d, want 0 (pre-run reset)", rec.atomics[0])
 	}
-	// Value after turn 0's Prepare (atomic at start of turn 1's Prepare).
-	afterTurn0 := rec.atomics[1]
-	if afterTurn0 <= 0 {
-		t.Fatalf("afterTurn0 = %d, expected > 0", afterTurn0)
+	// Value after turn 1's Prepare, which still holds the heavy turn: it
+	// is the only exchange, so nothing can be dropped yet.
+	afterTurn1 := rec.atomics[2]
+	if afterTurn1 <= rec.atomics[1] {
+		t.Fatalf("afterTurn1 = %d, expected the heavy turn to exceed the turn-0 value %d", afterTurn1, rec.atomics[1])
 	}
 
 	// Read the value stored after the LAST Prepare directly from the
 	// atomic; the loop has finished by now, so this is stable.
 	finalValue := loop.lastContextTokens.Load()
 
-	// Compaction in turn 1 must have trimmed the message history. That
-	// means turn 1's compute of (messages + sysprompt + tools) is
-	// strictly less than what turn 0's compute would extrapolate to —
-	// but more directly, the recording strategy gives us proof of
-	// compaction (prepared count drops to 2).
-	t.Logf("prepared lengths: %v", rec.prepared)
+	t.Logf("input lengths: %v, prepared lengths: %v", rec.inputs, rec.prepared)
 	t.Logf("atomic snapshots: %v (final=%d)", rec.atomics, finalValue)
 
-	if len(rec.prepared) < 2 {
-		t.Fatalf("expected >= 2 Prepare invocations, got %v", rec.prepared)
-	}
-	// The very first call may pass through unchanged (only 1 message).
-	// Subsequent calls with growing histories should compact under our
-	// pathologically-low MaxTokens. We require that the final Prepare
-	// returned 2 messages (the minimum), confirming compaction fired.
-	if rec.prepared[len(rec.prepared)-1] != 2 {
-		t.Fatalf("expected last Prepare to compact to 2 messages, got %d (full sequence=%v)", rec.prepared[len(rec.prepared)-1], rec.prepared)
+	// The last Prepare received [task, heavy turn, result, turn, result]
+	// and must keep only the task and the last exchange.
+	if in, out := rec.inputs[2], rec.prepared[2]; in != 5 || out != 3 {
+		t.Fatalf("expected the last Prepare to compact 5 messages to 3, got %d -> %d (in=%v out=%v)", in, out, rec.inputs, rec.prepared)
 	}
 
-	// Compaction shrinks the message contribution. The final absolute
-	// count must be strictly less than the pre-compaction count
-	// (afterTurn0 includes the bigText payload; the post-compaction count
-	// preserves only 2 small messages out of the larger history).
-	if finalValue >= afterTurn0 {
-		t.Errorf("expected final gauge value < afterTurn0; got final=%d afterTurn0=%d", finalValue, afterTurn0)
+	// Compaction shrinks the message contribution: dropping the heavy
+	// turn leaves the final count strictly below the value that held it.
+	if finalValue >= afterTurn1 {
+		t.Errorf("expected final gauge value < afterTurn1; got final=%d afterTurn1=%d", finalValue, afterTurn1)
 	}
 }
 
@@ -2087,7 +2070,7 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 // quarter of maxTokens, leaving a budget that comfortably holds this test's
 // modest message history, so nothing gets dropped. Contrast with
 // TestLoop_ContextTokensGaugeReflectsCompaction's genuinely-impossible
-// budget, which does collapse to minPreservedMessages.
+// budget, which does collapse to the task and the last exchange.
 func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -2117,9 +2100,7 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 	loop.Context = rec
 
 	config := buildTestConfig()
-	// Same heavy prompt as TestLoop_ContextTokensGaugeReflectsCompaction,
-	// but a realistic small-context-model window instead of a
-	// pathologically tiny one.
+	// A heavy prompt in a realistic small-context-model window.
 	config.Prompt = strings.Repeat("a", 8000)
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
 
@@ -2139,8 +2120,8 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 		}
 	}
 	last := rec.prepared[len(rec.prepared)-1]
-	if last <= 2 {
-		t.Fatalf("expected the final Prepare call to retain more than the minimum-preserved 2 messages, got %d (full sequence=%v)", last, rec.prepared)
+	if last <= 3 {
+		t.Fatalf("expected the final Prepare call to retain more than the task and the last exchange, got %d messages (full sequence=%v)", last, rec.prepared)
 	}
 }
 

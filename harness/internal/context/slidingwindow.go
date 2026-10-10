@@ -6,12 +6,9 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// minPreservedMessages is the minimum number of recent messages to keep,
-// ensuring turn structure is maintained even under heavy truncation.
-const minPreservedMessages = 2
-
-// SlidingWindowStrategy drops the oldest messages when the token budget is
-// exceeded, always preserving at least the most recent 2 messages.
+// SlidingWindowStrategy drops the oldest exchanges when the token budget
+// is exceeded. It always keeps the task (the first message) and the most
+// recent complete exchange.
 type SlidingWindowStrategy struct {
 	lastCompaction *CompactionEvent
 }
@@ -21,24 +18,23 @@ func NewSlidingWindowStrategy() *SlidingWindowStrategy {
 	return &SlidingWindowStrategy{}
 }
 
-// Prepare truncates messages from the front of the slice until the estimated
-// token count fits within (MaxTokens - ReserveForResponse). Token estimation
+// Prepare drops whole exchanges after the task, oldest first, until the
+// estimated token count fits within (MaxTokens - ReserveForResponse). The
+// task counts toward the budget but is never dropped. Token estimation
 // uses a simple characters/4 approximation.
 func (s *SlidingWindowStrategy) Prepare(_ context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
 	s.lastCompaction = nil
 
 	available := budget.MaxTokens - budget.ReserveForResponse
 	if available <= 0 {
-		// No room at all; return the minimum preserved messages.
-		if len(messages) <= minPreservedMessages {
-			return messages, nil
-		}
-		result := messages[len(messages)-minPreservedMessages:]
-		s.lastCompaction = &CompactionEvent{
-			Strategy:       "sliding-window",
-			MessagesBefore: len(messages),
-			MessagesAfter:  len(result),
-			TokensBefore:   budget.CurrentTokens,
+		result, compacted := minimalHistory(messages)
+		if compacted {
+			s.lastCompaction = &CompactionEvent{
+				Strategy:       "sliding-window",
+				MessagesBefore: len(messages),
+				MessagesAfter:  len(result),
+				TokensBefore:   budget.CurrentTokens,
+			}
 		}
 		return result, nil
 	}
@@ -47,28 +43,28 @@ func (s *SlidingWindowStrategy) Prepare(_ context.Context, messages []types.Mess
 		return messages, nil
 	}
 
-	estimates := make([]int, len(messages))
-	for i, msg := range messages {
-		estimates[i] = estimateTokens(msg)
-	}
-
+	last := lastExchangeStart(messages)
 	total := budget.CurrentTokens
-	dropUntil := 0
-
-	for dropUntil < len(messages)-minPreservedMessages && total > available {
-		total -= estimates[dropUntil]
-		dropUntil++
+	candidate := 1
+	for candidate < last && total > available {
+		total -= estimateTokens(messages[candidate])
+		candidate++
+	}
+	cut := pairSafeCut(messages, candidate)
+	if cut <= 1 {
+		return messages, nil
+	}
+	for i := candidate; i < cut; i++ {
+		total -= estimateTokens(messages[i])
 	}
 
-	result := messages[dropUntil:]
-	if dropUntil > 0 {
-		s.lastCompaction = &CompactionEvent{
-			Strategy:       "sliding-window",
-			MessagesBefore: len(messages),
-			MessagesAfter:  len(result),
-			TokensBefore:   budget.CurrentTokens,
-			TokensAfter:    total,
-		}
+	result := pinTask(messages, cut)
+	s.lastCompaction = &CompactionEvent{
+		Strategy:       "sliding-window",
+		MessagesBefore: len(messages),
+		MessagesAfter:  len(result),
+		TokensBefore:   budget.CurrentTokens,
+		TokensAfter:    total,
 	}
 	return result, nil
 }

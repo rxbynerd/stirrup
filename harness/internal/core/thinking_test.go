@@ -318,7 +318,9 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 		build func() contextpkg.ContextStrategy
 	}{
 		{"sliding-window", 2, func() contextpkg.ContextStrategy { return contextpkg.NewSlidingWindowStrategy() }},
-		{"summarise", 3, func() contextpkg.ContextStrategy {
+		// Summarising needs an aged exchange between the pinned task and
+		// the recent messages, so the first one exists on call 4.
+		{"summarise", 4, func() contextpkg.ContextStrategy {
 			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model")
 		}},
 		{"offload-to-file", 2, func() contextpkg.ContextStrategy {

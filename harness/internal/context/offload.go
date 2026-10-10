@@ -53,13 +53,14 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 
 	available := budget.MaxTokens - budget.ReserveForResponse
 	if available <= 0 {
-		// Degenerate case: no room. Keep recent messages only.
-		result := keepRecent(messages, recentPreservedMessages)
-		o.lastCompaction = &CompactionEvent{
-			Strategy:       "offload-to-file",
-			MessagesBefore: len(messages),
-			MessagesAfter:  len(result),
-			TokensBefore:   budget.CurrentTokens,
+		result, compacted := minimalHistory(messages)
+		if compacted {
+			o.lastCompaction = &CompactionEvent{
+				Strategy:       "offload-to-file",
+				MessagesBefore: len(messages),
+				MessagesAfter:  len(result),
+				TokensBefore:   budget.CurrentTokens,
+			}
 		}
 		return result, nil
 	}

@@ -11,7 +11,8 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// minRecentMessages is the minimum number of recent messages preserved verbatim when summarising.
+// minRecentMessages is the number of recent messages preserved verbatim when
+// summarising; the split moves forward to the next exchange start.
 const minRecentMessages = 6
 
 var summaryInjectionPatterns = []*regexp.Regexp{
@@ -30,8 +31,8 @@ type SummaryProvider interface {
 }
 
 // SummariseStrategy compresses old conversation turns into a summary
-// using an LLM call, preserving recent messages verbatim. If the summary
-// call fails, it falls back to sliding-window truncation.
+// using an LLM call, preserving the task and recent messages verbatim. If
+// the summary call fails, it falls back to sliding-window truncation.
 type SummariseStrategy struct {
 	provider SummaryProvider
 	model    string
@@ -53,20 +54,22 @@ func NewSummariseStrategy(provider SummaryProvider, model string) *SummariseStra
 }
 
 // Prepare implements ContextStrategy. If messages fit within the token budget,
-// they are returned as-is. Otherwise, older messages are summarised into a
-// single synthetic message, and recent messages are preserved verbatim.
+// they are returned as-is. Otherwise, the exchanges between the task and the
+// recent messages are summarised, and the summary is appended to the task
+// message, which is otherwise re-sent unchanged.
 func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
 	s.lastCompaction = nil
 
 	available := budget.MaxTokens - budget.ReserveForResponse
 	if available <= 0 {
-		// Degenerate case: no room. Keep the minimum recent messages.
-		result := keepRecent(messages, minRecentMessages)
-		s.lastCompaction = &CompactionEvent{
-			Strategy:       "summarise",
-			MessagesBefore: len(messages),
-			MessagesAfter:  len(result),
-			TokensBefore:   budget.CurrentTokens,
+		result, compacted := minimalHistory(messages)
+		if compacted {
+			s.lastCompaction = &CompactionEvent{
+				Strategy:       "summarise",
+				MessagesBefore: len(messages),
+				MessagesAfter:  len(result),
+				TokensBefore:   budget.CurrentTokens,
+			}
 		}
 		return result, nil
 	}
@@ -75,18 +78,19 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 		return messages, nil
 	}
 
-	splitIdx := splitPoint(messages, minRecentMessages)
-	if splitIdx <= 0 {
+	cut := pairSafeCut(messages, len(messages)-minRecentMessages)
+	if cut <= 1 {
 		// Not enough messages to summarise; return what we have.
 		return messages, nil
 	}
 
-	old := messages[:splitIdx]
-	recent := messages[splitIdx:]
+	task := messages[0]
+	old := messages[1:cut]
+	recent := messages[cut:]
 
 	hash := hashMessages(old)
 	if hash == s.cachedHash && s.cachedSummary != "" {
-		result := prependSummary(s.cachedSummary, recent)
+		result := pinTaskWithSummary(task, s.cachedSummary, recent)
 		s.lastCompaction = &CompactionEvent{
 			Strategy:       "summarise",
 			MessagesBefore: len(messages),
@@ -112,7 +116,7 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 	s.cachedHash = hash
 	s.cachedSummary = summary
 
-	result := prependSummary(summary, recent)
+	result := pinTaskWithSummary(task, summary, recent)
 	s.lastCompaction = &CompactionEvent{
 		Strategy:       "summarise",
 		MessagesBefore: len(messages),
@@ -128,38 +132,21 @@ func (s *SummariseStrategy) LastCompaction() *CompactionEvent {
 	return s.lastCompaction
 }
 
-// splitPoint returns the index dividing old messages from the last minRecent recent ones.
-func splitPoint(messages []types.Message, minRecent int) int {
-	if len(messages) <= minRecent {
-		return 0
-	}
-	return len(messages) - minRecent
-}
-
-// keepRecent returns the last n messages, or all messages if there are fewer than n.
-func keepRecent(messages []types.Message, n int) []types.Message {
-	if len(messages) <= n {
-		return messages
-	}
-	return messages[len(messages)-n:]
-}
-
-// prependSummary constructs a new message slice with the summary as the
-// first message (role: user), followed by the recent messages.
-func prependSummary(summary string, recent []types.Message) []types.Message {
-	summaryMsg := types.Message{
-		Role:      "user",
-		Synthetic: true,
-		Content: []types.ContentBlock{
-			{
-				Type: "text",
-				Text: fmt.Sprintf("<conversation_summary>\n%s\n</conversation_summary>", summary),
-			},
-		},
-	}
+// pinTaskWithSummary returns the task message with the summary appended as
+// a trailing text block, followed by the recent messages. Carrying the
+// summary inside the task message keeps roles alternating, since recent
+// starts with an assistant message.
+func pinTaskWithSummary(task types.Message, summary string, recent []types.Message) []types.Message {
+	content := make([]types.ContentBlock, 0, len(task.Content)+1)
+	content = append(content, task.Content...)
+	content = append(content, types.ContentBlock{
+		Type: "text",
+		Text: fmt.Sprintf("<conversation_summary>\n%s\n</conversation_summary>", summary),
+	})
+	task.Content = content
 
 	result := make([]types.Message, 0, 1+len(recent))
-	result = append(result, summaryMsg)
+	result = append(result, task)
 	result = append(result, recent...)
 	return result
 }
