@@ -27,8 +27,10 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefresherClosesFirst(t *testing.
 	server := newOpenAIServer(t, nil, nil, nil)
 	defer server.Close()
 
-	// A refresh is always imminent: the token is issued already expired.
-	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTL: time.Nanosecond}
+	// The refresh is scheduled but not yet due, so it is pending at
+	// shutdown. An already-expired token would let the refresher spend its
+	// whole request budget, and warn, before Close runs.
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTL: time.Hour}
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-close-order-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
