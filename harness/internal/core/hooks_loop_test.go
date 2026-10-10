@@ -1,13 +1,17 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -40,12 +44,19 @@ type fakeHookRunner struct {
 	// need to observe or block on that ctx (e.g. simulating an
 	// in-flight hook that only returns once its ctx is cancelled).
 	onPost func(ctx context.Context)
+
+	// onPre, when set, is invoked at the start of RunPre so a test can
+	// stand in for a hook that mutates the workspace.
+	onPre func()
 }
 
 var _ hook.Runner = (*fakeHookRunner)(nil)
 
 func (f *fakeHookRunner) RunPre(_ context.Context) ([]types.HookExecution, error) {
 	f.preCalls++
+	if f.onPre != nil {
+		f.onPre()
+	}
 	return f.preResults, f.preErr
 }
 
@@ -439,5 +450,128 @@ func TestPostHookBudget(t *testing.T) {
 				t.Errorf("postHookBudget(%+v) = %v, want %v", tc.hooks, got, tc.want)
 			}
 		})
+	}
+}
+
+// workspaceProbeBuilder records whether a marker file existed in the
+// workspace when Build ran, and how often Build ran.
+type workspaceProbeBuilder struct {
+	marker string
+	calls  int
+	seen   bool
+}
+
+func (b *workspaceProbeBuilder) Build(_ context.Context, _ prompt.PromptContext) (string, error) {
+	b.calls++
+	_, err := os.Stat(b.marker)
+	b.seen = err == nil
+	return "system prompt", nil
+}
+
+// recordingPromptTrace wraps a JSONL emitter with the optional prompt
+// recorder capabilities and logs when each is invoked.
+type recordingPromptTrace struct {
+	*trace.JSONLTraceEmitter
+	log               *[]string
+	systemInstruction []string
+	resolutions       []string
+}
+
+func (e *recordingPromptTrace) RecordSystemInstructions(instructions string) {
+	e.systemInstruction = append(e.systemInstruction, instructions)
+	*e.log = append(*e.log, "record_system_instructions")
+}
+
+func (e *recordingPromptTrace) RecordPromptResolution(model, tier string) {
+	e.resolutions = append(e.resolutions, model+"/"+tier)
+	*e.log = append(*e.log, "record_prompt_resolution")
+}
+
+func TestLoop_Hooks_PromptBuiltAfterPreRunHook(t *testing.T) {
+	workspace := t.TempDir()
+	marker := filepath.Join(workspace, "cloned.txt")
+
+	var log []string
+	builder := &workspaceProbeBuilder{marker: marker}
+	loop := buildTestLoop(simpleSuccessProvider())
+	loop.Prompt = builder
+	loop.Hooks = &fakeHookRunner{onPre: func() {
+		log = append(log, "pre_hook")
+		if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+			t.Errorf("write marker: %v", err)
+		}
+	}}
+	rec := &recordingPromptTrace{JSONLTraceEmitter: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false), log: &log}
+	loop.Trace = rec
+
+	config := buildTestConfig()
+	config.Executor.Workspace = workspace
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("Build called %d times, want 1", builder.calls)
+	}
+	if !builder.seen {
+		t.Error("Build did not see the file created by the pre-run hook")
+	}
+	want := []string{"pre_hook", "record_system_instructions", "record_prompt_resolution"}
+	if strings.Join(log, ",") != strings.Join(want, ",") {
+		t.Errorf("event order = %v, want %v", log, want)
+	}
+	if len(rec.systemInstruction) != 1 || rec.systemInstruction[0] != "system prompt" {
+		t.Errorf("RecordSystemInstructions calls = %v, want exactly one with the built prompt", rec.systemInstruction)
+	}
+	if len(rec.resolutions) != 1 {
+		t.Errorf("RecordPromptResolution called %d times, want 1", len(rec.resolutions))
+	}
+}
+
+func TestLoop_Hooks_PreRunFatalFailure_NeverBuildsPrompt(t *testing.T) {
+	var log []string
+	builder := &workspaceProbeBuilder{marker: filepath.Join(t.TempDir(), "absent")}
+	loop := buildTestLoop(simpleSuccessProvider())
+	loop.Prompt = builder
+	loop.Hooks = &fakeHookRunner{preErr: errSentinelPreHookFailure}
+	rec := &recordingPromptTrace{JSONLTraceEmitter: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false), log: &log}
+	loop.Trace = rec
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err == nil {
+		t.Fatal("expected non-nil error from Run() on a fatal pre-run hook failure")
+	}
+	if runTrace.Outcome != "setup_failed" {
+		t.Errorf("Outcome = %q, want setup_failed", runTrace.Outcome)
+	}
+	if builder.calls != 0 {
+		t.Errorf("Build called %d times, want 0 after a failed pre-run hook", builder.calls)
+	}
+	if len(log) != 0 {
+		t.Errorf("prompt recorders ran after a failed pre-run hook: %v", log)
+	}
+}
+
+func TestLoop_Hooks_PromptBuildErrorAfterHooksSkipsPostRun(t *testing.T) {
+	loop := buildTestLoop(simpleSuccessProvider())
+	loop.Prompt = &failingPromptBuilder{err: errors.New("builder boom")}
+	hooks := &fakeHookRunner{}
+	loop.Hooks = hooks
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err == nil || !strings.Contains(err.Error(), "build system prompt") {
+		t.Fatalf("Run() error = %v, want a build system prompt error", err)
+	}
+	if runTrace.Outcome != "error" {
+		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
+	}
+	if hooks.preCalls != 1 {
+		t.Errorf("RunPre called %d times, want 1 (hooks run before the build)", hooks.preCalls)
+	}
+	if len(hooks.postCalls) != 0 {
+		t.Errorf("RunPost called %d times, want 0 after an early failure", len(hooks.postCalls))
 	}
 }

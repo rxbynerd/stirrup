@@ -219,6 +219,30 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
+	// Runs before Prompt.Build and Git.Setup: the deterministic git strategy
+	// assumes an existing checkout, so a clone hook must create it first. A
+	// nil Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
+	if l.Hooks != nil {
+		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
+		preResults, preErr := l.Hooks.RunPre(runCtx)
+		l.recordHookExecutions(preResults)
+		if preErr != nil {
+			preHookSpan.RecordError(preErr)
+			preHookSpan.SetStatus(codes.Error, preErr.Error())
+		}
+		preHookSpan.End()
+		if preErr != nil {
+
+			outcome := "setup_failed"
+			if runCtx.Err() != nil {
+				outcome = classifyCtxOutcome(context.Cause(runCtx))
+			}
+			return l.finishWithOutcome(runCtx, outcome, fmt.Errorf("pre-run hooks: %w", preErr))
+		}
+	}
+
+	// Built after the pre-run hooks so a clone hook can populate the
+	// workspace the builder reads.
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
@@ -241,28 +265,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// this is recorded regardless of content-capture settings.
 	if recorder, ok := l.Trace.(trace.PromptResolutionRecorder); ok {
 		recorder.RecordPromptResolution(promptModel, prompt.TierFor(promptModel))
-	}
-
-	// Runs before Git.Setup: the deterministic git strategy assumes an
-	// existing checkout, so a clone hook must create it first. A nil
-	// Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
-	if l.Hooks != nil {
-		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
-		preResults, preErr := l.Hooks.RunPre(runCtx)
-		l.recordHookExecutions(preResults)
-		if preErr != nil {
-			preHookSpan.RecordError(preErr)
-			preHookSpan.SetStatus(codes.Error, preErr.Error())
-		}
-		preHookSpan.End()
-		if preErr != nil {
-
-			outcome := "setup_failed"
-			if runCtx.Err() != nil {
-				outcome = classifyCtxOutcome(context.Cause(runCtx))
-			}
-			return l.finishWithOutcome(runCtx, outcome, fmt.Errorf("pre-run hooks: %w", preErr))
-		}
 	}
 
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")

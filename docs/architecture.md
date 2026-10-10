@@ -129,9 +129,10 @@ metrics throughout.
 
 Lifecycle hooks (issue #461) run around this loop, not inside it. A
 configured `hook.Runner` (`hook.Noop` when the run has none) executes
-`preRun` hooks after `PromptBuilder` builds the system prompt and
+`preRun` hooks before `PromptBuilder` builds the system prompt and
 before `GitStrategy.Setup` — the deterministic git strategy assumes an
-existing checkout, so a clone hook has to create it first — under the
+existing checkout, so a clone hook has to create it first, and the
+prompt builder then sees the workspace the hooks produced — under the
 run's own wall-clock context. `postRun` hooks execute after outcome
 classification and `GitStrategy.Finalise`, before the run reports
 `done`, on a context detached from the run's own cancellation and
