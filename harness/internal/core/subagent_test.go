@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1068,3 +1070,106 @@ func TestSpawnSubAgent_RecordsSubagentMetrics_Failure(t *testing.T) {
 type providerUnavailableError struct{}
 
 func (e *providerUnavailableError) Error() string { return "provider unavailable" }
+
+// parallelToolCallProvider answers every request but the last with two
+// parallel tool calls and records the messages each request carried.
+type parallelToolCallProvider struct {
+	mu        sync.Mutex
+	toolTurns int
+	requests  [][]types.Message
+}
+
+func (p *parallelToolCallProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	turn := len(p.requests)
+	p.requests = append(p.requests, append([]types.Message(nil), params.Messages...))
+
+	var events []types.StreamEvent
+	if turn < p.toolTurns {
+		for call := range 2 {
+			events = append(events, types.StreamEvent{
+				Type:  "tool_call",
+				ID:    fmt.Sprintf("tc_%d_%d", turn, call),
+				Name:  "big_tool",
+				Input: map[string]any{"turn": turn, "call": call},
+			})
+		}
+		events = append(events, types.StreamEvent{Type: "message_complete", StopReason: "tool_use"})
+	} else {
+		events = []types.StreamEvent{
+			{Type: "text_delta", Text: "Sub-agent done."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		}
+	}
+	ch := make(chan types.StreamEvent, len(events))
+	for _, e := range events {
+		ch <- e
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestSpawnSubAgent_CompactionNeverOrphansToolResults pins that a sub-agent
+// whose history outgrows its context budget sends every request with its
+// task first and each tool_result right after the assistant turn that
+// called it, including results of parallel calls.
+func TestSpawnSubAgent_CompactionNeverOrphansToolResults(t *testing.T) {
+	const subTask = "Investigate the repository layout"
+	prov := &parallelToolCallProvider{toolTurns: 5}
+	parentLoop := buildSubAgentTestLoop(nil)
+	parentLoop.Provider = prov
+	registry, ok := parentLoop.Tools.(*tool.Registry)
+	if !ok {
+		t.Fatalf("parent loop Tools is %T, want *tool.Registry", parentLoop.Tools)
+	}
+	registry.Register(&tool.Tool{
+		Name:        "big_tool",
+		Description: "Returns a large output",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return strings.Repeat("output line\n", 1700), nil
+		},
+	})
+
+	parentConfig := buildTestConfig()
+	// effectiveReserveForResponse keeps 64000 of 80000 tokens, leaving
+	// room for about one exchange of two ~5000-token results.
+	parentConfig.ContextStrategy.MaxTokens = 80_000
+
+	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: subTask})
+	if err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+	if result.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", result.Outcome)
+	}
+	if len(prov.requests) != prov.toolTurns+1 {
+		t.Fatalf("provider saw %d requests, want %d", len(prov.requests), prov.toolTurns+1)
+	}
+
+	compacted := false
+	for i, msgs := range prov.requests {
+		if want := 2*i + 1; len(msgs) < want {
+			compacted = true
+		}
+		if len(msgs) == 0 || msgs[0].Role != "user" || msgs[0].Content[0].Text != subTask {
+			t.Fatalf("request %d does not start with the sub-agent task: %+v", i, msgs)
+		}
+		for j, msg := range msgs {
+			for _, block := range msg.Content {
+				if block.Type != "tool_result" {
+					continue
+				}
+				if j == 0 || msgs[j-1].Role != "assistant" || !slices.ContainsFunc(msgs[j-1].Content, func(b types.ContentBlock) bool {
+					return b.Type == "tool_use" && b.ID == block.ToolUseID
+				}) {
+					t.Fatalf("request %d message %d: tool_result %q has no tool_use in the previous message", i, j, block.ToolUseID)
+				}
+			}
+		}
+	}
+	if !compacted {
+		t.Fatal("no request was compacted; the budget does not exercise compaction")
+	}
+}
