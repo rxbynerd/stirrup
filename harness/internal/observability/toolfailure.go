@@ -19,6 +19,11 @@ const (
 	// does not resolve via tool.Registry.Resolve.
 	ToolFailureUnknownTool ToolFailureCategory = "unknown_tool"
 
+	// ToolFailureInvalidArguments — the model's tool-call arguments did
+	// not decode to a JSON object, so the provider adapter marked the call
+	// and the loop rejected it before schema validation.
+	ToolFailureInvalidArguments ToolFailureCategory = "invalid_arguments"
+
 	// ToolFailureSchemaValidation — security.ValidateJSONSchema rejected
 	// the model's input against the tool's published InputSchema.
 	ToolFailureSchemaValidation ToolFailureCategory = "schema_validation_failed"
@@ -118,6 +123,7 @@ const ToolNameProviderScope = ""
 // metric labels are drawn from the enum rather than a free-form string.
 var allToolFailureCategories = map[ToolFailureCategory]struct{}{
 	ToolFailureUnknownTool:              {},
+	ToolFailureInvalidArguments:         {},
 	ToolFailureSchemaValidation:         {},
 	ToolFailureSecurityGuard:            {},
 	ToolFailurePermissionDenied:         {},

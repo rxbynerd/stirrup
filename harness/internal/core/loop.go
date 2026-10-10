@@ -906,7 +906,7 @@ func (l *AgenticLoop) runInnerLoop(
 			finalAssistantText = finalText
 		}
 
-		toolCalls := collectToolCalls(sr.Blocks)
+		toolCalls := collectToolCalls(sr.Blocks, sr.InvalidToolInputs)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on

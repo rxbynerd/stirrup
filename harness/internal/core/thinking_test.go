@@ -91,7 +91,7 @@ func TestThinkingBlocksSkippedByTextAndToolCallReaders(t *testing.T) {
 	if got := lastAssistantText(blocks); got != "answer" {
 		t.Errorf("lastAssistantText = %q, want %q", got, "answer")
 	}
-	calls := collectToolCalls(blocks)
+	calls := collectToolCalls(blocks, nil)
 	if len(calls) != 1 || calls[0].ID != "tc_1" {
 		t.Errorf("collectToolCalls = %+v, want only tc_1", calls)
 	}

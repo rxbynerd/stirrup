@@ -120,6 +120,11 @@ type ToolCall struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
+
+	// InvalidInput is set when the model's arguments were not a JSON
+	// object. Input is then an empty object, and the call is rejected
+	// before dispatch with the parse error as its tool result.
+	InvalidInput *InvalidToolInput `json:"-"`
 }
 
 // ToolResult represents the result of a tool invocation.

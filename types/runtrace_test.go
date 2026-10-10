@@ -56,6 +56,7 @@ func TestToolCallTrace_ErrorCategoryRoundTrip(t *testing.T) {
 	// imported — types must not depend on harness/internal/observability.
 	validCategories := map[string]struct{}{
 		"unknown_tool":                {},
+		"invalid_arguments":           {},
 		"schema_validation_failed":    {},
 		"security_guard_denied":       {},
 		"permission_denied":           {},

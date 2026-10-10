@@ -362,8 +362,8 @@ type structuredOutput struct {
 
 // preflightToolCall runs the deterministic, model-free checks every tool
 // call must pass before the PhasePreTool guard and dispatch: unknown-tool
-// rejection, prototype-pollution strip, JSON-schema validation, and the
-// tool-input tripwires. t is call's resolved tool, nil when unknown.
+// rejection, malformed-arguments rejection, prototype-pollution strip,
+// JSON-schema validation, and the tool-input tripwires. t is call's resolved tool, nil when unknown.
 //
 // On success it returns the cleaned input (the form both the guard and the
 // handler see) and an empty category. On rejection it returns the
@@ -377,6 +377,10 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 			return nil, msg, observability.ToolFailureUnknownTool
 		}
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
+	}
+
+	if call.InvalidInput != nil {
+		return nil, invalidArgsMessage(call.Name, call.InvalidInput), observability.ToolFailureInvalidArguments
 	}
 
 	// Strip prototype-pollution keys before validation so we can both notify
@@ -614,15 +618,18 @@ func appendToolResults(messages []types.Message, results []types.ToolResult) []t
 	})
 }
 
-// collectToolCalls extracts tool calls from the model's streamed content blocks.
-func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
+// collectToolCalls extracts tool calls from the model's streamed content
+// blocks. invalid maps a tool_use block's index in blocks to the marker for
+// arguments that were not a JSON object.
+func collectToolCalls(blocks []types.ContentBlock, invalid map[int]*types.InvalidToolInput) []types.ToolCall {
 	var calls []types.ToolCall
-	for _, b := range blocks {
+	for i, b := range blocks {
 		if b.Type == "tool_use" {
 			calls = append(calls, types.ToolCall{
-				ID:    b.ID,
-				Name:  b.Name,
-				Input: b.Input,
+				ID:           b.ID,
+				Name:         b.Name,
+				Input:        b.Input,
+				InvalidInput: invalid[i],
 			})
 		}
 	}
@@ -634,12 +641,15 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 // the provider reported no input figure. ReplayFields is provider-opaque
 // round-trip state from the message_complete event, plumbed through to
 // the persisted assistant Message without being inspected or logged.
+// InvalidToolInputs is keyed by index into Blocks; the raw arguments it
+// holds stay out of Blocks so history only ever carries valid JSON input.
 type streamResult struct {
-	Blocks       []types.ContentBlock
-	StopReason   string
-	StopDetails  *types.StopDetails
-	Usage        types.TokenUsage
-	ReplayFields map[string]json.RawMessage
+	Blocks            []types.ContentBlock
+	StopReason        string
+	StopDetails       *types.StopDetails
+	Usage             types.TokenUsage
+	ReplayFields      map[string]json.RawMessage
+	InvalidToolInputs map[int]*types.InvalidToolInput
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
@@ -686,6 +696,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			// turn is replayed.
 			inputBytes, _ := json.Marshal(event.Input)
 			normalizedInput := types.NormalizeToolInput(inputBytes)
+			if event.InvalidInput != nil {
+				if result.InvalidToolInputs == nil {
+					result.InvalidToolInputs = make(map[int]*types.InvalidToolInput)
+				}
+				result.InvalidToolInputs[len(result.Blocks)] = event.InvalidInput
+			}
 			// ThoughtSignature is provider-opaque state the harness must
 			// echo back unchanged on the next request so the model can
 			// resume its prior reasoning. Adapters that do not emit it
@@ -709,6 +725,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Input: bytes.Clone(normalizedInput),
 			}); err != nil {
 				emitFailed("tool_call", err)
+			}
+			if event.InvalidInput != nil {
+				warning := invalidArgsWarning(event.ID, event.Name, event.InvalidInput)
+				if err := tp.Emit(types.HarnessEvent{Type: "warning", Message: warning}); err != nil {
+					emitFailed("warning", err)
+				}
 			}
 
 		case "thinking", "redacted_thinking":

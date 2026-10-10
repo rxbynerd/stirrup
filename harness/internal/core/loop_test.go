@@ -822,7 +822,7 @@ func TestCollectToolCalls(t *testing.T) {
 		{Type: "tool_use", ID: "tc_2", Name: "write_file", Input: json.RawMessage(`{"path":"out.go","content":"..."}`)},
 	}
 
-	calls := collectToolCalls(blocks)
+	calls := collectToolCalls(blocks, nil)
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 tool calls, got %d", len(calls))
 	}

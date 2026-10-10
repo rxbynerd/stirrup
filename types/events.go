@@ -62,6 +62,20 @@ type StreamEvent struct {
 	// harness must not introspect or mutate the values. See
 	// docs/provider-quirks.md for the flattening rule and threading design.
 	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
+
+	// InvalidInput marks a "tool_call" event whose streamed arguments did
+	// not decode to a JSON object; Input is nil when it is set. The raw
+	// text is model output that has not been scrubbed, so it never
+	// serialises.
+	InvalidInput *InvalidToolInput `json:"-"`
+}
+
+// InvalidToolInput describes tool-call arguments that are not a JSON
+// object: Raw is the argument text exactly as the provider streamed it and
+// Error is the decoder's message.
+type InvalidToolInput struct {
+	Raw   string
+	Error string
 }
 
 // StopDetails is a provider's structured explanation of why a model

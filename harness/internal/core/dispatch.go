@@ -45,7 +45,7 @@ type pendingCall struct {
 	output      string
 	structured  structuredOutput // optional typed result payload + kind; zero value for text-only tools and every failure path
 	success     bool
-	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
+	errorReason string // trace reason overriding the scrubbed output (guard deny, invalid arguments); apply security.Scrub before setting
 	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
 	// failureCategory is the bounded ToolFailureCategory describing why
 	// this call failed; empty when success is true.
@@ -103,7 +103,7 @@ func (l *AgenticLoop) planAndDispatch(
 		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), spanName,
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
-				attribute.Int("tool.input_size", len(call.Input)),
+				attribute.Int("tool.input_size", toolInputSize(call)),
 			),
 		)
 		toolSpanCtx := oteltrace.ContextWithSpan(ctx, toolSpan)
@@ -132,6 +132,9 @@ func (l *AgenticLoop) planAndDispatch(
 			plan[i].output = rejection
 			plan[i].success = false
 			plan[i].failureCategory = rejectCategory
+			if rejectCategory == observability.ToolFailureInvalidArguments {
+				plan[i].errorReason = invalidArgsTraceReason(call.Name, call.InvalidInput)
+			}
 			continue
 		}
 		plan[i].tool = t
@@ -266,12 +269,12 @@ func (l *AgenticLoop) planAndDispatch(
 		}
 		p.span.End()
 
-		// Guard-denial carries the structured reason; success/failure
-		// carries the scrubbed dispatch output (raw error text can echo
-		// IAM paths, schema fields, secret-shaped inputs).
+		// Guard-denial and invalid arguments carry their own reason;
+		// other failures carry the scrubbed dispatch output (raw error
+		// text can echo IAM paths, schema fields, secret-shaped inputs).
 		errorReason := ""
 		switch {
-		case p.denied:
+		case p.errorReason != "":
 			errorReason = p.errorReason
 		case !p.success:
 			errorReason = security.Scrub(p.output)
@@ -289,7 +292,7 @@ func (l *AgenticLoop) planAndDispatch(
 			DurationMs:    callDuration.Milliseconds(),
 			Success:       p.success,
 			ErrorReason:   errorReason,
-			InputSize:     len(p.call.Input),
+			InputSize:     toolInputSize(p.call),
 			OutputSize:    len(p.output),
 			ErrorCategory: errorCategory,
 		})
@@ -330,7 +333,7 @@ func (l *AgenticLoop) planAndDispatch(
 			l.logEmitFailure("tool_result", err)
 		}
 
-		if outcome := stall.recordToolCall(p.call.Name, p.call.Input, p.success); outcome != "" {
+		if outcome := stall.recordToolCall(p.call.Name, stallInput(p.call), p.success); outcome != "" {
 			l.Metrics.Stalls.Add(ctx, 1,
 				l.metricAttrs(attribute.String("run.mode", config.Mode)),
 			)
