@@ -643,21 +643,36 @@ func seedWorkspaceFiles(workspaceDir string, files map[string]string) error {
 	return nil
 }
 
-// cloneRepo clones a git repository at the given ref into the target directory.
+// cloneRepo materialises a git repository in targetDir. With an empty ref it
+// takes a depth-1 clone of the default branch. With a ref (a branch, a tag, or
+// a full commit SHA) it fetches exactly that commit by name, because a
+// depth-1 clone holds only the default branch tip and cannot check out any
+// other commit. The server must permit fetching the object by SHA, which
+// GitHub does.
 func cloneRepo(ctx context.Context, repo, ref, targetDir string) error {
-	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repo, targetDir)
-	if output, err := cloneCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone: %w\n%s", err, output)
+	if strings.HasPrefix(repo, "-") || strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("repo %q and ref %q must not start with %q", repo, ref, "-")
+	}
+	if ref == "" {
+		cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repo, targetDir)
+		if output, err := cloneCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git clone: %w\n%s", err, output)
+		}
+		return nil
 	}
 
-	if ref != "" {
-		checkoutCmd := exec.CommandContext(ctx, "git", "checkout", ref)
-		checkoutCmd.Dir = targetDir
-		if output, err := checkoutCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git checkout %s: %w\n%s", ref, err, output)
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"remote", "add", "origin", repo},
+		{"fetch", "--quiet", "--depth", "1", "origin", ref},
+		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = targetDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w\n%s", args[0], err, output)
 		}
 	}
-
 	return nil
 }
 
