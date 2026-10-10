@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -381,5 +382,100 @@ func TestBuildLoop_OpenAIContextOverflowRecoversEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(events.String(), "retrying the turn once") {
 		t.Errorf("no warning event announces the retry:\n%s", events.String())
+	}
+}
+
+// TestBuildLoop_SummariseUsesTheConfiguredWindow pins that the factory
+// hands the summarise strategy the run's context window: with
+// contextStrategy.maxTokens below the summary model's registered window,
+// the summary call's response cap is a quarter of that window rather than
+// the cap for an unknown one.
+func TestBuildLoop_SummariseUsesTheConfiguredWindow(t *testing.T) {
+	const window, reads = 8000, 12
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	workspace := t.TempDir()
+	for i := range reads {
+		content := strings.Repeat(fmt.Sprintf("FILE%d line\n", i), 120)
+		if err := os.WriteFile(filepath.Join(workspace, fmt.Sprintf("f%d.txt", i)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	textReply := func(text string) string {
+		return openAIChunk(fmt.Sprintf(`{"id":"t","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, text)) +
+			openAIChunk(`{"id":"t","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
+			"data: [DONE]\n\n"
+	}
+	var mu sync.Mutex
+	var turns int
+	var summaryBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.Contains(string(raw), "You are a precise summariser") {
+			summaryBodies = append(summaryBodies, body)
+			_, _ = fmt.Fprint(w, textReply("earlier files were read"))
+			return
+		}
+		i := turns
+		turns++
+		if i >= reads {
+			_, _ = fmt.Fprint(w, textReply("done"))
+			return
+		}
+		_, _ = fmt.Fprint(w, openAIChunk(fmt.Sprintf(`{"id":"r%d","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_%d","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"f%d.txt\"}"}}]},"finish_reason":null}]}`, i, i, i))+
+			openAIChunk(fmt.Sprintf(`{"id":"r%d","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`, i))+
+			"data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:            "summarise-window",
+		Mode:             "execution",
+		Prompt:           "Read every file.",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "summarise", MaxTokens: window},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: workspace},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         reads + 2,
+		Timeout:          &timeout,
+	}
+	var events bytes.Buffer
+	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&events, &bytes.Buffer{}))
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success; events:\n%s", runTrace.Outcome, events.String())
+	}
+	if len(summaryBodies) == 0 {
+		t.Fatal("the run never made a summary call")
+	}
+	for i, body := range summaryBodies {
+		maxTokens := body["max_tokens"]
+		if maxTokens == nil {
+			maxTokens = body["max_completion_tokens"]
+		}
+		if got, ok := maxTokens.(float64); !ok || int(got) != window/4 {
+			t.Errorf("summary call %d caps the response at %v tokens, want %d", i+1, maxTokens, window/4)
+		}
 	}
 }
