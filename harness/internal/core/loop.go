@@ -323,6 +323,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// only the invocation that ended the run contributes to RunTrace.
 	var finalStopDetails *types.StopDetails
 	var finalInnerOutcome string
+	nextTurn := 0
 	if turnZeroAbort {
 		outcome = "rule_of_two_violation"
 	}
@@ -330,7 +331,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
 
 		var innerOutcome, innerFinalText string
-		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker, &nextTurn)
 		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
 			finalAssistantText = innerFinalText
@@ -367,7 +368,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 
 		verificationAttempts++
-		if verificationAttempts > maxVerificationRetries {
+		if verificationAttempts > maxVerificationRetries || nextTurn >= config.MaxTurns {
 			outcome = "verification_failed"
 			break
 		}
@@ -578,6 +579,9 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
 // max turns is reached, budget is exceeded, or an error occurs.
+// nextTurn is the run-level turn counter: the loop starts at *nextTurn
+// and leaves it at the first unused turn number, so verification
+// repairs continue the numbering and share config.MaxTurns.
 // Returns the updated messages, the outcome, the last non-empty
 // assistant text observed across the turns (empty when no turn produced
 // any text), and the final turn's stop details when the model ended the
@@ -588,6 +592,7 @@ func (l *AgenticLoop) runInnerLoop(
 	systemPrompt string,
 	messages []types.Message,
 	tokenTracker *TokenTracker,
+	nextTurn *int,
 ) ([]types.Message, string, string, *types.StopDetails) {
 	var lastStopReason string
 	// finalAssistantText holds the last non-empty assistant text seen across
@@ -606,7 +611,9 @@ func (l *AgenticLoop) runInnerLoop(
 
 	cacheKey := providerCacheKey(config.RunID)
 
-	for turn := 0; turn < config.MaxTurns; turn++ {
+	for *nextTurn < config.MaxTurns {
+		turn := *nextTurn
+		*nextTurn = turn + 1
 		l.Logger.Info("turn started", "turn", turn)
 
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
