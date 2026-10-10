@@ -227,10 +227,12 @@ func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
+	scanned := map[string]bool{}
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") || name == "spanerror.go" {
 			continue
 		}
+		scanned[name] = true
 		src, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -265,5 +267,10 @@ func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
 			}
 			return true
 		})
+	}
+	for _, name := range []string{"loop.go", "types.go"} {
+		if !scanned[name] {
+			t.Errorf("scan did not cover %s; the glob must run from the core package directory", name)
+		}
 	}
 }
