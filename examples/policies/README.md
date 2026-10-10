@@ -70,6 +70,7 @@ as `CedarSchemaVersion`. Bump it whenever the entity layout changes.
 
 | File | Effect | Purpose |
 |------|--------|---------|
+| `autonomous-allow-list.cedar` | `permit` + `forbid` | Permits the read tools, `read_command_output`, `edit_file` and `run_command`, and forbids the destructive-shell patterns. Pair with a fallback of `deny-all`. Used by `examples/runconfig/autonomous-preset.json`. |
 | `destructive-shell.cedar` | `forbid` | Blocks `run_command` calls whose `command` matches `*rm -rf*`, `*chmod -R*`, `*git push --force*`, `*mkfs*`, etc. Defence-in-depth against unintended history rewrites or filesystem-wide destruction. Pair with an `allow-all` fallback when it is the only gate on `run_command` — a `deny-side-effects` fallback already denies every `run_command` on no-match. |
 | `github-only-fetch.cedar` | `permit` | Permits `web_fetch` only to `github.com`, `api.github.com`, `raw.githubusercontent.com`, and `docs.python.org`. Pair with a fallback of `deny-all` to deny everything else — `deny-side-effects` does not deny non-mutating `web_fetch`. |
 | `no-secret-in-input.cedar` | `forbid` | Forbids any tool whose input contains common leaked-secret patterns (`sk-*`, `ghp_*`, `github_pat_*`, `aws_secret_*`) in the `command`, `content`, or `url` fields. Structural backstop for the LogScrubber. |

@@ -38,6 +38,9 @@ ANTHROPIC_API_KEY=... ./stirrup harness --mode execution --prompt "Fix the faili
   --config examples/runconfig/full.json \
   --prompt "Fix the failing test in main_test.go"
 
+# unattended runs: the tested preset is described in docs/autonomous-preset.md
+./stirrup run-config --config examples/runconfig/autonomous-preset.json --validate
+
 # using AWS Bedrock (AWS_PROFILE should be set)
 ./stirrup harness \
   --prompt "Give me a summary of the safety rings doc" \
