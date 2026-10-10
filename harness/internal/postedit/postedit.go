@@ -293,10 +293,11 @@ func commandLabel(command string) string {
 	return security.NeutraliseFenceMarkers(strconv.Quote(label))
 }
 
-// boundedDiagnostics returns the scrubbed combined output, cut to
-// MaxDiagnosticsBytes, with the scrubbed byte count and whether a cut
-// happened. Scrubbing runs before the cut so a secret straddling the
-// boundary is still matched.
+// boundedDiagnostics returns the scrubbed, fence-neutralised combined
+// output, cut to MaxDiagnosticsBytes, with its byte count before the cut
+// and whether a cut happened. Both transformations run before the cut so
+// a secret straddling the boundary is still matched and neutralising
+// cannot grow the result past the cap.
 func boundedDiagnostics(stdout, stderr string) (string, int, bool) {
 	combined := stdout
 	if stderr != "" {
@@ -305,7 +306,7 @@ func boundedDiagnostics(stdout, stderr string) (string, int, bool) {
 		}
 		combined += stderr
 	}
-	scrubbed := strings.TrimRight(security.Scrub(combined), " \t\r\n")
+	scrubbed := security.NeutraliseFenceMarkers(strings.TrimRight(security.Scrub(combined), " \t\r\n"))
 	total := len(scrubbed)
 	if total == 0 {
 		return "(the check produced no output)", 0, false

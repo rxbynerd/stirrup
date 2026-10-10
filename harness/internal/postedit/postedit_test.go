@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -395,6 +396,112 @@ func TestRun_ExecutorErrorWarnsWithScrubbedText(t *testing.T) {
 	records := rec.all()
 	if len(records) != 1 || records[0].Error == "" || strings.Contains(records[0].Error, "sk-ant-abc123") {
 		t.Fatalf("records = %+v", records)
+	}
+}
+
+type stubExecutor struct {
+	executor.Executor
+	result     *executor.ExecResult
+	maxTimeout time.Duration
+
+	mu       sync.Mutex
+	timeouts []time.Duration
+}
+
+func (s *stubExecutor) Exec(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timeouts = append(s.timeouts, timeout)
+	return s.result, nil
+}
+
+func (s *stubExecutor) Capabilities() executor.ExecutorCapabilities {
+	return executor.ExecutorCapabilities{CanExec: true, MaxTimeout: s.maxTimeout}
+}
+
+func (s *stubExecutor) calls() []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Duration(nil), s.timeouts...)
+}
+
+func TestRun_TruncationKeepsValidUTF8(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1, Stdout: "a" + strings.Repeat("\u00e9", MaxDiagnosticsBytes)}}
+	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check"})
+	fenced := between(t, c.Run(context.Background(), "write_file", "a.txt"))
+	if !utf8.ValidString(fenced) {
+		t.Fatal("truncated diagnostics split a multi-byte rune")
+	}
+	if !strings.Contains(fenced, fmt.Sprintf("showing the first %d of", MaxDiagnosticsBytes-1)) {
+		t.Errorf("cut did not back off to the rune boundary: %q", fenced[len(fenced)-80:])
+	}
+}
+
+func TestRun_FenceMarkerHeavyOutputStaysWithinCap(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1, Stdout: strings.Repeat("<", 4*MaxDiagnosticsBytes)}}
+	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check"})
+	fenced := between(t, c.Run(context.Background(), "write_file", "a.txt"))
+	if strings.Contains(fenced, "<<<") {
+		t.Fatal("fence marker survived in the diagnostics")
+	}
+	if len(fenced) > MaxDiagnosticsBytes+100 {
+		t.Errorf("diagnostics are %d bytes, want at most the %d-byte cap plus the truncation marker", len(fenced), MaxDiagnosticsBytes)
+	}
+}
+
+func TestRun_LongCommandLabelIsCut(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1, Stdout: "bad"}}
+	command := "check " + strings.Repeat("x", 300) + " END"
+	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: command})
+	got := c.Run(context.Background(), "write_file", "a.txt")
+	header, _, _ := strings.Cut(got, "\n")
+	if strings.Contains(header, "END") || !strings.Contains(header, `..."`) {
+		t.Errorf("command label not cut: %q", header)
+	}
+}
+
+func TestRun_TimeoutIsClampedToExecutorMax(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{}, maxTimeout: 2 * time.Second}
+	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check", TimeoutSeconds: types.MaxPostEditTimeoutSeconds})
+	c.Run(context.Background(), "write_file", "a.txt")
+	if got := ex.calls(); len(got) != 1 || got[0] != 2*time.Second {
+		t.Errorf("executor received timeouts %v, want [2s]", got)
+	}
+}
+
+func TestRun_ExecutorOutputTruncationIsRecorded(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1, Stdout: "short", OutputTruncated: true}}
+	c, rec := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check"})
+	c.Run(context.Background(), "write_file", "a.txt")
+	if records := rec.all(); len(records) != 1 || !records[0].Truncated {
+		t.Errorf("records = %+v", records)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("no entropy") }
+
+func TestRun_DiagnosticsWithheldWithoutFence(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1, Stdout: "diagnostic-text"}}
+	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check"})
+	c.entropy = failingReader{}
+	got := c.Run(context.Background(), "write_file", "a.txt")
+	if !strings.Contains(got, "withheld") || strings.Contains(got, "diagnostic-text") {
+		t.Errorf("feedback = %q", got)
+	}
+}
+
+func TestRun_CancelledContextRunsNoCheck(t *testing.T) {
+	ex := &stubExecutor{result: &executor.ExecResult{ExitCode: 1}}
+	c, rec := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "check"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := c.Run(ctx, "write_file", "a.txt"); got != "" {
+		t.Errorf("feedback = %q", got)
+	}
+	if len(ex.calls()) != 0 || len(rec.all()) != 0 {
+		t.Errorf("check ran after cancellation: calls=%v records=%+v", ex.calls(), rec.all())
 	}
 }
 
