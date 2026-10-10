@@ -478,6 +478,9 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))
 	}
 	attrs = append(attrs, turnUsageBreakdownAttributes(turn)...)
+	if turn.Retries > 0 {
+		attrs = append(attrs, attribute.Int("turn.retries", turn.Retries))
+	}
 	if content != nil {
 		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
 	}

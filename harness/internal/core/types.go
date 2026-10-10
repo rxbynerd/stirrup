@@ -643,7 +643,9 @@ type streamResult struct {
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
-// accumulated content blocks, final stop reason, and token usage.
+// accumulated content blocks, final stop reason, and token usage. On
+// error the result is partial and only its Usage is meaningful: the
+// usage the provider reported before the failure.
 func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
@@ -652,7 +654,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	for event := range ch {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return result, ctx.Err()
 		default:
 		}
 
@@ -741,7 +743,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 
 		case "error":
 			if event.Error != nil {
-				return nil, event.Error
+				return result, event.Error
 			}
 		}
 	}

@@ -893,19 +893,23 @@ func (m *infiniteToolCallProvider) Stream(_ context.Context, _ types.StreamParam
 
 // errorProvider is a provider whose Stream() always returns an error.
 type errorProvider struct {
-	err error
+	err   error
+	calls int
 }
 
 func (m *errorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.calls++
 	return nil, m.err
 }
 
 // streamErrorProvider sends an error event on the channel.
 type streamErrorProvider struct {
-	err error
+	err   error
+	calls int
 }
 
 func (m *streamErrorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.calls++
 	ch := make(chan types.StreamEvent, 1)
 	ch <- types.StreamEvent{Type: "error", Error: m.err}
 	close(ch)
@@ -1224,12 +1228,19 @@ func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
 
 // --- P1: Reliability-critical tests ---
 
+// terminalProviderError is a provider error that explicitly reports
+// itself as not retryable.
+type terminalProviderError struct{ msg string }
+
+func (e terminalProviderError) Error() string   { return e.msg }
+func (e terminalProviderError) Retryable() bool { return false }
+
 func TestLoop_ProviderStreamError(t *testing.T) {
-	prov := &errorProvider{err: errors.New("connection refused")}
+	prov := &errorProvider{err: terminalProviderError{"anthropic API returned status 401: invalid x-api-key"}}
 
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
-	config := buildTestConfig()
+	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
@@ -1241,14 +1252,17 @@ func TestLoop_ProviderStreamError(t *testing.T) {
 	if runTrace.Outcome != "error" {
 		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
 	}
+	if prov.calls != 1 {
+		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
+	}
 }
 
 func TestLoop_StreamEventError(t *testing.T) {
-	prov := &streamErrorProvider{err: errors.New("server returned 500")}
+	prov := &streamErrorProvider{err: terminalProviderError{"anthropic API stream error (invalid_request_error): prompt is too long"}}
 
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
-	config := buildTestConfig()
+	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
@@ -1259,6 +1273,9 @@ func TestLoop_StreamEventError(t *testing.T) {
 	}
 	if runTrace.Outcome != "error" {
 		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+	if prov.calls != 1 {
+		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
 	}
 }
 

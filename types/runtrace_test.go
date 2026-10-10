@@ -400,3 +400,30 @@ func TestTurnTrace_ReportedUsageRoundTrip(t *testing.T) {
 		t.Errorf("round-trip = %+v, want %+v", round, tt)
 	}
 }
+
+// TestTurnTrace_RetriesWireShape pins that a turn with no retries omits
+// the key and a retried turn round-trips its count.
+func TestTurnTrace_RetriesWireShape(t *testing.T) {
+	data, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"retries"`) {
+		t.Errorf("unretried turn must omit retries: %s", data)
+	}
+
+	data, err = json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn", Retries: 1})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"retries":1`) {
+		t.Errorf("retried turn missing retries: %s", data)
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.Retries != 1 {
+		t.Errorf("round-trip Retries = %d, want 1", round.Retries)
+	}
+}
