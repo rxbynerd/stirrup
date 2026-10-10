@@ -29,6 +29,7 @@ import (
 const (
 	genAIProviderNameKey   = "gen_ai.provider.name"
 	genAIRequestModelKey   = "gen_ai.request.model"
+	genAIResponseModelKey  = "gen_ai.response.model"
 	genAIConversationIDKey = "gen_ai.conversation.id"
 	genAIOperationNameKey  = "gen_ai.operation.name"
 	genAIUsageInputTokens  = "gen_ai.usage.input_tokens"
@@ -473,6 +474,9 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 	}
 	if model != "" {
 		attrs = append(attrs, attribute.String(genAIRequestModelKey, model))
+	}
+	if turn.ResponseModel != "" {
+		attrs = append(attrs, attribute.String(genAIResponseModelKey, turn.ResponseModel))
 	}
 	if e.config != nil {
 		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))

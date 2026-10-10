@@ -193,6 +193,7 @@ const (
 	eventKindCommandOutputRecord = "command_output_record"
 	eventKindSubRunStarted       = "subrun_started"
 	eventKindSubRunFinished      = "subrun_finished"
+	eventKindSystemPrompt        = "system_prompt"
 )
 
 // streamedEvent mirrors the on-wire shape of harness/internal/trace.Event
@@ -211,9 +212,14 @@ type streamedEvent struct {
 	ModelOutput   []types.ContentBlock       `json:"modelOutput,omitempty"`
 	ToolCalls     []types.ToolCallRecord     `json:"toolCalls,omitempty"`
 	ToolCall      *types.ToolCallRecord      `json:"toolCall,omitempty"`
+	ResponseModel string                     `json:"responseModel,omitempty"`
 	Trace         *types.RunTrace            `json:"trace,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 	SubRun        *types.SubRunSummary       `json:"subRun,omitempty"`
+
+	HarnessVersion     string `json:"harnessVersion,omitempty"`
+	SystemPrompt       string `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256 string `json:"systemPromptSha256,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -256,7 +262,7 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 }
 
 // ReadRecording walks the stream and reassembles a *types.RunRecording
-// from run_started, turn_record, and run_finished events. An
+// from run_started, system_prompt, turn_record, and run_finished events. An
 // interrupted run with no run_finished is returned with
 // FinalOutcome.ID == "". A legacy single-blob trace is treated as a
 // recording with no transcript turns.
@@ -329,16 +335,23 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		case eventKindRunStarted:
 			seenStarted = true
 			recording.RunID = ev.RunID
+			recording.HarnessVersion = ev.HarnessVersion
 			if ev.Config != nil {
 				recording.Config = *ev.Config
 			}
+		case eventKindSystemPrompt:
+			if ev.ParentRunID == "" {
+				recording.SystemPrompt = ev.SystemPrompt
+				recording.SystemPromptSHA256 = ev.SystemPromptSHA256
+			}
 		case eventKindTurnRecord:
 			tr := types.TurnRecord{
-				Turn:        ev.Turn,
-				ModelOutput: ev.ModelOutput,
-				ToolCalls:   ev.ToolCalls,
-				RunID:       ev.RunID,
-				ParentRunID: ev.ParentRunID,
+				Turn:          ev.Turn,
+				ModelOutput:   ev.ModelOutput,
+				ToolCalls:     ev.ToolCalls,
+				RunID:         ev.RunID,
+				ParentRunID:   ev.ParentRunID,
+				ResponseModel: ev.ResponseModel,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput

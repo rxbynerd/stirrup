@@ -108,6 +108,22 @@ func providerCacheKey(runID string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// requestParamsOf projects the parameters of the request actually sent
+// onto the shape recorded in the trace.
+func requestParamsOf(p types.StreamParams) *types.RequestParams {
+	var temperature *float64
+	if p.Temperature != nil {
+		temperature = types.Float64Ptr(*p.Temperature)
+	}
+	return &types.RequestParams{
+		Temperature:     temperature,
+		MaxTokens:       p.MaxTokens,
+		ReasoningEffort: p.ReasoningEffort,
+		ToolChoice:      p.ToolChoice,
+		CacheKey:        p.CacheKey,
+	}
+}
+
 // Run executes the agentic loop:
 //
 //	repeat {
@@ -892,8 +908,10 @@ func (l *AgenticLoop) runInnerLoop(
 				Messages: preparedMessages,
 				Tools:    toolDefs,
 				Model:    selection.Model,
+				Request:  requestParamsOf(params),
 			},
-			ModelOutput: sr.Blocks,
+			ModelOutput:   sr.Blocks,
+			ResponseModel: sr.ResponseModel,
 		}
 
 		// Carries provider replay state so the next request can

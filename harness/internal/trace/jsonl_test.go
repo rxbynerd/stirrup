@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 // readEvents walks a streaming JSONL trace buffer and returns the events
@@ -1015,5 +1018,87 @@ func TestJSONLTraceEmitter_FinishWriteFailureReturnsTrace(t *testing.T) {
 	}
 	if tr.ID != "run-w" || tr.Outcome != "timeout" || tr.Turns != 1 {
 		t.Errorf("trace = {ID:%q Outcome:%q Turns:%d}, want {run-w timeout 1}", tr.ID, tr.Outcome, tr.Turns)
+	}
+}
+
+func TestJSONLTraceEmitter_RunStartedCarriesHarnessVersion(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+	emitter.Start("run-version", nil)
+
+	started := pickEvent(t, readEvents(t, buf.Bytes()), EventKindRunStarted)
+	if started.HarnessVersion != version.Full() {
+		t.Errorf("harnessVersion = %q, want %q", started.HarnessVersion, version.Full())
+	}
+}
+
+func TestJSONLTraceEmitter_RecordSystemInstructions_WritesScrubbedPromptAndDigest(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+	emitter.Start("run-prompt", nil)
+
+	prompt := "You are an agent.\nDeploy with key sk-ant-api03-promptsecret please."
+	emitter.RecordSystemInstructions(prompt)
+
+	if strings.Contains(buf.String(), "sk-ant-api03-promptsecret") {
+		t.Fatalf("system prompt secret reached the trace:\n%s", buf.String())
+	}
+	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindSystemPrompt)
+	if ev.RunID != "run-prompt" {
+		t.Errorf("runId = %q, want run-prompt", ev.RunID)
+	}
+	if !strings.Contains(ev.SystemPrompt, "[REDACTED]") || !strings.HasPrefix(ev.SystemPrompt, "You are an agent.") {
+		t.Errorf("systemPrompt = %q, want the prompt with the secret redacted", ev.SystemPrompt)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	if want := hex.EncodeToString(sum[:]); ev.SystemPromptSHA256 != want {
+		t.Errorf("digest = %q, want digest of the prompt as sent %q", ev.SystemPromptSHA256, want)
+	}
+}
+
+func TestJSONLTraceEmitter_RecordSystemInstructions_RedactionDisabledWritesVerbatim(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, true)
+	emitter.Start("run-debug", nil)
+
+	prompt := "key sk-ant-api03-promptsecret"
+	emitter.RecordSystemInstructions(prompt)
+
+	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindSystemPrompt)
+	if ev.SystemPrompt != prompt {
+		t.Errorf("systemPrompt = %q, want verbatim %q under --debug", ev.SystemPrompt, prompt)
+	}
+}
+
+func TestJSONLTraceEmitter_RecordTurnRecord_PreservesRequestParamsAndResponseModel(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+	emitter.Start("run-request", nil)
+
+	want := types.RequestParams{
+		Temperature:     types.Float64Ptr(0),
+		MaxTokens:       4096,
+		ReasoningEffort: "high",
+		ToolChoice:      types.ToolChoiceRequired,
+		CacheKey:        "0123456789abcdef",
+	}
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:          1,
+		ModelInput:    types.ModelInput{Model: "m", Request: &want},
+		ResponseModel: "m-20260101",
+	})
+
+	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindTurnRecord)
+	if ev.ResponseModel != "m-20260101" {
+		t.Errorf("responseModel = %q, want m-20260101", ev.ResponseModel)
+	}
+	if ev.ModelInput == nil || ev.ModelInput.Request == nil {
+		t.Fatalf("turn_record dropped the request params: %+v", ev.ModelInput)
+	}
+	if !reflect.DeepEqual(*ev.ModelInput.Request, want) {
+		t.Errorf("request params = %+v, want %+v", *ev.ModelInput.Request, want)
+	}
+	if !strings.Contains(buf.String(), `"toolChoice":"required"`) || !strings.Contains(buf.String(), `"temperature":0`) {
+		t.Errorf("wire form lacks toolChoice or an explicit zero temperature:\n%s", buf.String())
 	}
 }

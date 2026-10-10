@@ -38,6 +38,10 @@ const (
 	// skips them instead of mistaking the child for the recorded run.
 	EventKindSubRunStarted  EventKind = "subrun_started"
 	EventKindSubRunFinished EventKind = "subrun_finished"
+	// EventKindSystemPrompt carries the run's rendered system prompt. It
+	// follows run_started because the prompt is built after the trace
+	// starts, and an older reader skips it as an unknown kind.
+	EventKindSystemPrompt EventKind = "system_prompt"
 )
 
 // CurrentSchemaVersion is the streaming-trace schema version emitted in
@@ -65,6 +69,9 @@ type Event struct {
 	CompletedAt *time.Time       `json:"completedAt,omitempty"`
 	Config      *types.RunConfig `json:"config,omitempty"`
 
+	// HarnessVersion names the harness build — populated for run_started.
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+
 	// Turn / ToolCall payload — populated for turn_record and
 	// tool_call_record respectively.
 	Turn        int                    `json:"turn,omitempty"`
@@ -73,12 +80,22 @@ type Event struct {
 	ToolCalls   []types.ToolCallRecord `json:"toolCalls,omitempty"`
 	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
 
+	// ResponseModel is the model the provider reported answering with —
+	// populated for turn_record when the provider reports one.
+	ResponseModel string `json:"responseModel,omitempty"`
+
 	// Hook payload — populated for hook_record events.
 	Hook          *types.HookExecution       `json:"hook,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 
 	// SubRun is the child's outcome — populated for subrun_finished.
 	SubRun *types.SubRunSummary `json:"subRun,omitempty"`
+
+	// System prompt payload — populated for system_prompt events.
+	// SystemPrompt is scrubbed; SystemPromptSHA256 digests the prompt as
+	// sent.
+	SystemPrompt       string `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256 string `json:"systemPromptSha256,omitempty"`
 
 	// Trace summary — populated for run_finished events. Embedding the
 	// full RunTrace here keeps the backward-compat reader's job trivial:

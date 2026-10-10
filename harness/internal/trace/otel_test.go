@@ -712,6 +712,23 @@ func TestOTelTraceEmitter_TurnModelFallback(t *testing.T) {
 	})
 }
 
+func TestOTelTraceEmitter_TurnResponseModel(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-response-model", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1, Model: "alias", ResponseModel: "alias-20260101"})
+	emitter.RecordTurn(types.TurnTrace{Turn: 2, StopReason: "end_turn", DurationMs: 1, Model: "alias"})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	spans := exporter.GetSpans()
+	assertAttribute(t, findSpanByName(t, spans, "turn[1]"), genAIResponseModelKey, "alias-20260101")
+	for _, attr := range findSpanByName(t, spans, "turn[2]").Attributes {
+		if string(attr.Key) == genAIResponseModelKey {
+			t.Errorf("%s should be absent when the provider reported none, found %q", genAIResponseModelKey, attr.Value.AsString())
+		}
+	}
+}
+
 // TestOTelTraceEmitter_UnknownToolSpanNameBounded pins the cardinality
 // bound on tool span names: an unknown-tool failure carries a
 // model-controlled tool name, which must not become an unbounded span

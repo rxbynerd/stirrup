@@ -642,3 +642,72 @@ func TestReader_LineAtCapIsKept(t *testing.T) {
 		t.Fatalf("got %+v skipped=%d, want the edge record and no skips", got, r.SkippedLines())
 	}
 }
+
+func TestReadRecording_RequestMetadata(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"kind":"run_started","schemaVersion":"2","runId":"r1","harnessVersion":"v1.2.3 (abc1234)"}`,
+		`{"kind":"system_prompt","runId":"r1","systemPrompt":"be helpful","systemPromptSha256":"deadbeef"}`,
+		`{"kind":"turn_record","runId":"r1","turn":0,"modelInput":{"messages":[],"tools":[],"model":"m","request":{"temperature":0.2,"maxTokens":8000,"reasoningEffort":"low","toolChoice":"required","cacheKey":"k"}},"responseModel":"m-20260101"}`,
+		`{"kind":"run_finished","trace":{"id":"r1"}}`,
+	}, "\n") + "\n"
+
+	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if rec.HarnessVersion != "v1.2.3 (abc1234)" {
+		t.Errorf("HarnessVersion = %q", rec.HarnessVersion)
+	}
+	if rec.SystemPrompt != "be helpful" || rec.SystemPromptSHA256 != "deadbeef" {
+		t.Errorf("system prompt = %q / %q", rec.SystemPrompt, rec.SystemPromptSHA256)
+	}
+	if len(rec.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(rec.Turns))
+	}
+	if rec.Turns[0].ResponseModel != "m-20260101" {
+		t.Errorf("ResponseModel = %q, want m-20260101", rec.Turns[0].ResponseModel)
+	}
+	req := rec.Turns[0].ModelInput.Request
+	if req == nil {
+		t.Fatal("request params not read")
+	}
+	if req.Temperature == nil || *req.Temperature != 0.2 || req.MaxTokens != 8000 ||
+		req.ReasoningEffort != "low" || req.ToolChoice != types.ToolChoiceRequired || req.CacheKey != "k" {
+		t.Errorf("request params = %+v", *req)
+	}
+}
+
+func TestReadRecording_TracesWithoutRequestMetadataStillParse(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"kind":"run_started","schemaVersion":"1","runId":"old"}`,
+		`{"kind":"turn_record","turn":0,"modelInput":{"messages":[],"tools":[],"model":"m"}}`,
+		`{"kind":"run_finished","trace":{"id":"old"}}`,
+	}, "\n") + "\n"
+
+	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if len(rec.Turns) != 1 || rec.Turns[0].ModelInput.Request != nil {
+		t.Errorf("turns = %+v, want one turn with nil request params", rec.Turns)
+	}
+	if rec.HarnessVersion != "" || rec.SystemPrompt != "" || rec.SystemPromptSHA256 != "" {
+		t.Errorf("legacy trace gained metadata: %q %q %q", rec.HarnessVersion, rec.SystemPrompt, rec.SystemPromptSHA256)
+	}
+}
+
+func TestReadRecording_SubRunSystemPromptDoesNotReplaceParents(t *testing.T) {
+	lines := strings.Join([]string{
+		`{"kind":"run_started","runId":"p"}`,
+		`{"kind":"system_prompt","runId":"p","systemPrompt":"parent prompt"}`,
+		`{"kind":"system_prompt","runId":"p/sub-1","parentRunId":"p","systemPrompt":"child prompt"}`,
+	}, "\n") + "\n"
+
+	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if rec.SystemPrompt != "parent prompt" {
+		t.Errorf("SystemPrompt = %q, want the parent's", rec.SystemPrompt)
+	}
+}

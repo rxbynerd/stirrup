@@ -658,6 +658,9 @@ type streamResult struct {
 	Usage             types.TokenUsage
 	ReplayFields      map[string]json.RawMessage
 	InvalidToolInputs map[int]*types.InvalidToolInput
+	// ResponseModel is the model the provider reported answering with;
+	// empty when it reported none.
+	ResponseModel string
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
@@ -765,6 +768,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			}
 			if event.StopDetails != nil {
 				result.StopDetails = event.StopDetails
+			}
+			if event.ResponseModel != "" {
+				result.ResponseModel = event.ResponseModel
 			}
 			result.Usage.MergeEvent(event)
 			if len(event.ReplayFields) > 0 {

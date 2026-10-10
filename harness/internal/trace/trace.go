@@ -46,9 +46,10 @@ type TraceEmitter interface {
 
 // SystemInstructionsRecorder is an optional capability a TraceEmitter
 // can implement to receive the run's built system prompt via a type
-// assertion after PromptBuilder.Build succeeds. Only the OTel emitter
-// implements it today, to emit gen_ai.system_instructions when content
-// capture is opted into. Not wired through NestedJSONLEmitter: a
+// assertion after PromptBuilder.Build succeeds. The OTel emitter uses it
+// to emit gen_ai.system_instructions when content capture is opted into;
+// the JSONL emitter writes a system_prompt record. Not wired through
+// NestedJSONLEmitter: a
 // sub-agent's system prompt would clobber the parent's single stored
 // value, so sub-agent system instructions are not captured.
 type SystemInstructionsRecorder interface {
