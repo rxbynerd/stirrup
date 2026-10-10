@@ -52,6 +52,31 @@ func TestCapEventInput(t *testing.T) {
 	}
 }
 
+func TestCapEventInput_KeepsHeadOfEscapeHeavyInput(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body     string
+		wantHead string
+	}{
+		"html":   {body: strings.Repeat("<b>&</b>", 1<<17), wantHead: `{"content":"<b>&</b>`},
+		"quotes": {body: strings.Repeat(`\"`, 1<<18), wantHead: `{"content":"\"\"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := json.RawMessage(`{"content":"` + tc.body + `"}`)
+			got := capEventInput(input)
+			if len(got) > maxEventFieldBytes {
+				t.Fatalf("capped input is %d bytes, want <= %d", len(got), maxEventFieldBytes)
+			}
+			var s string
+			if err := json.Unmarshal(got, &s); err != nil {
+				t.Fatalf("capped input must be a valid JSON string: %v", err)
+			}
+			if !strings.HasPrefix(s, tc.wantHead) || len(s) < 32<<10 {
+				t.Fatalf("capped input dropped its head: %d bytes, starts %q", len(s), s[:min(len(s), 40)])
+			}
+		})
+	}
+}
+
 // TestGRPCTransport_OversizedToolResultDoesNotEndStream drives a 6 MiB
 // tool_result and tool_call through a default grpc.NewServer, whose 4 MiB
 // receive limit aborts the stream on an oversized message, and checks the

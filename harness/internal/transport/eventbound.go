@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"unicode/utf8"
@@ -41,18 +42,32 @@ func capEventText(s string) string {
 
 // capEventInput replaces an oversized JSON input with a JSON string holding
 // its head and a marker, so the field stays valid JSON for the control
-// plane. JSON escaping can expand the head up to six-fold; a head that
-// still does not fit is dropped, leaving the marker alone.
+// plane. Escaping a JSON document doubles its quotes and backslashes and
+// can expand control characters six-fold, so a smaller head is tried when
+// the first does not fit, and the marker alone is the last resort.
 func capEventInput(input json.RawMessage) json.RawMessage {
 	if len(input) <= maxEventFieldBytes {
 		return input
 	}
-	head := truncateUTF8(string(input), maxEventFieldBytes/2)
-	encoded, err := json.Marshal(head + fmt.Sprintf(eventTruncationFmt, len(head), len(input)))
-	if err != nil || len(encoded) > maxEventFieldBytes {
-		encoded, _ = json.Marshal(fmt.Sprintf(eventTruncationFmt, 0, len(input)))
+	var encoded []byte
+	for _, n := range []int{maxEventFieldBytes / 2, maxEventFieldBytes / 4, 0} {
+		head := truncateUTF8(string(input), n)
+		encoded = encodeJSONString(head + fmt.Sprintf(eventTruncationFmt, len(head), len(input)))
+		if len(encoded) <= maxEventFieldBytes {
+			break
+		}
 	}
 	return encoded
+}
+
+// encodeJSONString encodes s as a JSON string without HTML escaping, which
+// would otherwise expand every '<', '>' and '&' six-fold.
+func encodeJSONString(s string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s) // a string value always encodes
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 func truncateUTF8(s string, n int) string {
