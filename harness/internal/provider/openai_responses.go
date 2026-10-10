@@ -1891,29 +1891,15 @@ func callKey(itemID string, outputIndex int) string {
 }
 
 // flushOneCall emits a tool_call event for the supplied call state, parsing
-// its accumulated arguments JSON. Returns false on a fatal parse error or
-// when the consumer has gone away (caller should stop reading the stream).
-// Marks the call as emitted so a duplicate .done event does not fire it
-// twice.
+// its accumulated arguments JSON. Returns false when the consumer has gone
+// away (caller should stop reading the stream). Marks the call as emitted
+// so a duplicate .done event does not fire it twice.
 func flushOneCall(st *responsesCallState, emit func(types.StreamEvent) bool) bool {
 	if st.emitted {
 		return true
 	}
 	st.emitted = true
-	var input map[string]any
-	raw := st.argsBuf.String()
-	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &input); err != nil {
-			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)})
-			return false
-		}
-	}
-	return emit(types.StreamEvent{
-		Type:  "tool_call",
-		ID:    st.callID,
-		Name:  st.name,
-		Input: input,
-	})
+	return emit(toolCallEvent(st.callID, st.name, st.argsBuf.String()))
 }
 
 // flushPendingCalls emits any tool calls that were left in flight when the

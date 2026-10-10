@@ -1017,20 +1017,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			switch blockType {
 			case "tool_use":
-				var input map[string]any
-				raw := bs.jsonBuf.String()
-				if raw != "" {
-					if err := json.Unmarshal([]byte(raw), &input); err != nil {
-						emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)})
-						return
-					}
-				}
-				emitEvent(types.StreamEvent{
-					Type:  "tool_call",
-					ID:    bs.id,
-					Name:  bs.name,
-					Input: input,
-				})
+				emitEvent(toolCallEvent(bs.id, bs.name, bs.jsonBuf.String()))
 			case "thinking":
 				emitEvent(types.StreamEvent{
 					Type:             "thinking",

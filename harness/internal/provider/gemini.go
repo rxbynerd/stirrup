@@ -398,25 +398,11 @@ func (g *GeminiAdapter) consumeSSE(
 	// double-emit. thoughtSignature is the part-level Gemini 3.x
 	// reasoning blob, propagated so the loop can round-trip it back to
 	// Vertex; empty for 2.x responses.
-	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) bool {
-		var input map[string]any
-		argsBytes := fullArgs
-		if len(argsBytes) == 0 {
-			argsBytes = []byte("{}")
-		}
-		if err := json.Unmarshal(argsBytes, &input); err != nil {
-			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)})
-			return false
-		}
-		emitEvent(types.StreamEvent{
-			Type:             "tool_call",
-			ID:               fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
-			Name:             name,
-			Input:            input,
-			ThoughtSignature: thoughtSignature,
-		})
+	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) {
+		ev := toolCallEvent(fmt.Sprintf("gemini-%d-%d", streamN, idForSeq), name, string(fullArgs))
+		ev.ThoughtSignature = thoughtSignature
+		emitEvent(ev)
 		delete(toolBufs, name)
-		return true
 	}
 
 	for scanner.Scan() {
@@ -556,9 +542,7 @@ func (g *GeminiAdapter) consumeSSE(
 						// defensively in case the flag is re-enabled.
 						if !fc.WillContinue {
 							// Emit, then advance the ID-synthesis counter.
-							if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
-								return
-							}
+							emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature)
 							nextPartIdx++
 						}
 					}
@@ -570,9 +554,7 @@ func (g *GeminiAdapter) consumeSSE(
 				// sets finishReason without closing a willContinue buffer
 				// would otherwise leave the call invisible to the loop.
 				for _, buf := range toolBufs {
-					if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
-						return
-					}
+					emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature)
 					nextPartIdx++
 				}
 

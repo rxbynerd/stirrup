@@ -578,7 +578,7 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 	}
 }
 
-func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
+func TestOpenAIAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-4","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"chatcmpl-4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}`),
@@ -605,20 +605,48 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 	}
 
 	events := collectEvents(t, ch)
+	requireMarkedToolCall(t, events, "call_bad", "read_file", `{"path":INVALID`)
+}
 
-	foundError := false
-	for _, ev := range events {
-		if ev.Type == "error" {
-			foundError = true
-			if ev.Error == nil {
-				t.Error("error event has nil Error field")
-			} else if !strings.Contains(ev.Error.Error(), "tool arguments JSON") {
-				t.Errorf("expected error about tool arguments JSON, got: %v", ev.Error)
-			}
+// TestOpenAIAdapter_TrailingCommaArgumentsMarkOnlyThatCall pins that a
+// malformed call does not stop the calls after it from being emitted.
+func TestOpenAIAdapter_TrailingCommaArgumentsMarkOnlyThatCall(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"chatcmpl-5","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"main.go\",}"}},{"index":1,"id":"call_ok","type":"function","function":{"name":"list_directory","arguments":"{\"path\": \".\"}"}}]},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"chatcmpl-5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var calls []types.StreamEvent
+	for _, ev := range collectEvents(t, ch) {
+		switch ev.Type {
+		case "tool_call":
+			calls = append(calls, ev)
+		case "error":
+			t.Fatalf("unexpected error event: %v", ev.Error)
 		}
 	}
-	if !foundError {
-		t.Error("expected an error event for malformed tool arguments JSON")
+	if len(calls) != 2 {
+		t.Fatalf("got %d tool_call events, want 2: %+v", len(calls), calls)
+	}
+	if calls[0].InvalidInput == nil || calls[0].InvalidInput.Raw != `{"path": "main.go",}` {
+		t.Errorf("first call InvalidInput = %+v, want the trailing-comma arguments", calls[0].InvalidInput)
+	}
+	if calls[1].InvalidInput != nil || calls[1].Input["path"] != "." {
+		t.Errorf("second call = %+v, want a valid call with path \".\"", calls[1])
 	}
 }
 

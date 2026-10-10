@@ -360,7 +360,7 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestBedrock_MalformedToolInputJSON(t *testing.T) {
+func TestBedrock_MalformedToolInputJSONMarksToolCall(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
@@ -389,24 +389,14 @@ func TestBedrock_MalformedToolInputJSON(t *testing.T) {
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberMessageStop{
-			Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonEndTurn},
+			Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonToolUse},
 		},
 	}
 
 	ch := make(chan types.StreamEvent, 64)
 	reader := newMockEventReader(events, nil)
 	go consumeBedrockStream(context.Background(), reader, ch)
-	result := collectEvents(t, ch)
-
-	foundError := false
-	for _, ev := range result {
-		if ev.Type == "error" && ev.Error != nil && strings.Contains(ev.Error.Error(), "tool input JSON") {
-			foundError = true
-		}
-	}
-	if !foundError {
-		t.Error("expected an error event for malformed tool input JSON")
-	}
+	requireMarkedToolCall(t, collectEvents(t, ch), "toolu_bad", "read_file", `{"path": INVALID`)
 }
 
 func TestBedrock_TranslateMessages(t *testing.T) {

@@ -792,13 +792,14 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 	}
 }
 
-func TestSSE_MalformedToolInput(t *testing.T) {
+func TestSSE_MalformedToolInputMarksToolCall(t *testing.T) {
 
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"read_file"}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"INVALID"}}`),
 		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}`),
 		makeSSE("message_stop", `{}`),
 	)
 
@@ -821,21 +822,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 	}
 
 	events := collectEvents(t, ch)
-
-	foundError := false
-	for _, ev := range events {
-		if ev.Type == "error" {
-			foundError = true
-			if ev.Error == nil {
-				t.Error("error event has nil Error field")
-			} else if !strings.Contains(ev.Error.Error(), "tool input JSON") {
-				t.Errorf("expected error about tool input JSON, got: %v", ev.Error)
-			}
-		}
-	}
-	if !foundError {
-		t.Error("expected an error event for malformed tool input JSON")
-	}
+	requireMarkedToolCall(t, events, "toolu_bad", "read_file", `{"path":INVALID`)
 }
 
 func TestSSE_MultipleBlocks(t *testing.T) {

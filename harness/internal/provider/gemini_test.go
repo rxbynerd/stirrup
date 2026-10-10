@@ -187,6 +187,38 @@ func TestGeminiAdapter_StreamedToolCall(t *testing.T) {
 	}
 }
 
+// TestGeminiAdapter_NonObjectArgsMarkToolCall covers a gateway that sends
+// functionCall.args as something other than a JSON object: the call is
+// marked rather than ending the stream.
+func TestGeminiAdapter_NonObjectArgsMarkToolCall(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":"{\"path\": \"main.go\",}"}}]}}]}`) +
+		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	call := requireMarkedToolCall(t, events, "", "read_file", `"{\"path\": \"main.go\",}"`)
+	if !strings.HasPrefix(call.ID, "gemini-") {
+		t.Errorf("tool_call.ID = %q, want prefix gemini-", call.ID)
+	}
+	for _, ev := range events {
+		if ev.Type == "message_complete" && ev.StopReason != "tool_use" {
+			t.Errorf("stop_reason = %q, want tool_use", ev.StopReason)
+		}
+	}
+}
+
 // TestGeminiAdapter_MultiToolCallTurn ensures two tool calls in the same
 // turn produce two distinct tool_call events with unique IDs.
 func TestGeminiAdapter_MultiToolCallTurn(t *testing.T) {

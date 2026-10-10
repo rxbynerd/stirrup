@@ -1441,20 +1441,7 @@ func (o *OpenAICompatibleAdapter) flushToolCallsVia(toolCalls map[int]*openaiToo
 		if !ok {
 			continue
 		}
-		var input map[string]any
-		raw := state.argsBuf.String()
-		if raw != "" {
-			if err := json.Unmarshal([]byte(raw), &input); err != nil {
-				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)})
-				return
-			}
-		}
-		emit(types.StreamEvent{
-			Type:  "tool_call",
-			ID:    state.id,
-			Name:  state.name,
-			Input: input,
-		})
+		emit(toolCallEvent(state.id, state.name, state.argsBuf.String()))
 	}
 
 	for k := range toolCalls {
