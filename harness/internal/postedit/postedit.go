@@ -1,6 +1,5 @@
 // Package postedit runs the operator-authored tools.postEdit checks after
-// an edit tool succeeds and renders their failures for the model. See
-// docs/configuration.md for the configuration surface.
+// an edit tool succeeds and renders their failures for the model.
 package postedit
 
 import (

@@ -1368,11 +1368,10 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	}
 }
 
-// attachPostEditChecks wraps the registered edit tool's handler so the
-// configured tools.postEdit checks run after every successful edit. The
-// one edit tool serves write_file, edit_file, search_replace and
-// apply_diff, so every workspace-writing edit path is covered. Returns
-// nil when no checks are configured or no edit tool is registered.
+// attachPostEditChecks wraps the registered edit tool's handler with the
+// tools.postEdit checks. That one tool serves every edit strategy, so no
+// workspace-writing edit path bypasses them. Returns nil when no checks
+// are configured or no edit tool is registered.
 func attachPostEditChecks(registry *tool.Registry, editToolName string, exec executor.Executor, checks []types.PostEditCheckConfig) *postedit.Checker {
 	checker := postedit.New(checks, exec, nil)
 	if checker == nil {
