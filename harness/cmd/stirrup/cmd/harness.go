@@ -357,8 +357,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 			Type: opts.ProviderType,
 			// Dropped for gemini (Vertex AI uses GCP IAM) and for Azure
 			// WIF (bearer comes from OAuth2 exchange); the validator
-			// rejects APIKeyRef in both cases, and the cobra default
-			// would otherwise trip it with a confusing error.
+			// rejects APIKeyRef in both cases.
 			APIKeyRef: func() string {
 				if opts.ProviderType == "gemini" || opts.AzureTenantID != "" {
 					return ""
@@ -1602,7 +1601,7 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	}
 
 	// Only enforce on the anthropic provider with anthropic-wif
-	// credentials; reconciles the cobra default flag value against WIF
+	// credentials; reconciles a file-provided apiKeyRef against WIF
 	// before validateAnthropicProviderFields runs.
 	if cfg.Provider.Type == "anthropic" &&
 		cfg.Provider.Credential != nil &&
@@ -1615,9 +1614,9 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 					"via OAuth bearer tokens and a static API key would silently " +
 					"shadow the federated credential (issue #117 risk #4)")
 		}
-		// Default flag value carries no operator intent under WIF —
-		// clear it silently so validateAnthropicProviderFields does not
-		// reject the otherwise-valid config.
+		// A file-provided value is cleared silently so
+		// validateAnthropicProviderFields does not reject the
+		// otherwise-valid config; only an explicit flag is an error.
 		cfg.Provider.APIKeyRef = ""
 	}
 
@@ -1709,8 +1708,8 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 	}
 
-	// Reconciles the cobra default flag value (shared "secret://ANTHROPIC_API_KEY"
-	// across providers) against WIF before validateOpenAIWIFCrossField runs.
+	// Reconciles a file-provided apiKeyRef against WIF before
+	// validateOpenAIWIFCrossField runs.
 	if (cfg.Provider.Type == "openai-compatible" || cfg.Provider.Type == "openai-responses") &&
 		cfg.Provider.Credential != nil &&
 		cfg.Provider.Credential.Type == "openai-wif" &&
@@ -1722,9 +1721,9 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 					"via OAuth bearer tokens and a static API key would conflict with " +
 					"the federated credential")
 		}
-		// Default flag value carries no operator intent under WIF — clear it
-		// silently so validateOpenAIWIFCrossField does not reject the
-		// otherwise-valid config.
+		// A file-provided value is cleared silently so
+		// validateOpenAIWIFCrossField does not reject the otherwise-valid
+		// config; only an explicit flag is an error.
 		cfg.Provider.APIKeyRef = ""
 	}
 

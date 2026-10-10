@@ -1,0 +1,56 @@
+package cmd
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"github.com/rxbynerd/stirrup/types"
+)
+
+const (
+	defaultAnthropicModel  = "claude-sonnet-4-6"
+	defaultAnthropicKeyRef = "secret://ANTHROPIC_API_KEY"
+	defaultOpenAIKeyRef    = "secret://OPENAI_API_KEY"
+)
+
+// applyProviderDefaults fills the model and API key reference that the
+// resolved provider implies, after the base config and the flag
+// overrides have been merged, so a value from --config or an explicit
+// flag always wins. The provider is read from cfg, which makes a
+// provider named in a --config file drive the defaults the same way
+// --provider does.
+//
+// The key reference is defaulted only when no credential block supplies
+// authentication, and an explicit --api-key-ref (including an empty
+// one) is never replaced. The model is defaulted only for the anthropic
+// provider; every other provider has no safe default, so a static
+// router without a model is an error that names the provider and the
+// flag. Non-static routers carry their own model fields and are left
+// to ValidateRunConfig.
+func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig) error {
+	provider := cfg.Provider.Type
+	if provider == "" {
+		provider = "anthropic"
+	}
+
+	if !cmd.Flags().Changed("api-key-ref") && cfg.Provider.APIKeyRef == "" && cfg.Provider.Credential == nil {
+		switch provider {
+		case "anthropic":
+			cfg.Provider.APIKeyRef = defaultAnthropicKeyRef
+		case "openai-compatible", "openai-responses":
+			cfg.Provider.APIKeyRef = defaultOpenAIKeyRef
+		}
+	}
+
+	staticRouter := cfg.ModelRouter.Type == "" || cfg.ModelRouter.Type == "static"
+	if staticRouter && cfg.ModelRouter.Model == "" {
+		if provider != "anthropic" {
+			return validationError(fmt.Errorf(
+				"--model is required with --provider=%s: no default model is defined for this provider; "+
+					"pass --model <model-id> or set modelRouter.model in the --config file", provider))
+		}
+		cfg.ModelRouter.Model = defaultAnthropicModel
+	}
+	return nil
+}

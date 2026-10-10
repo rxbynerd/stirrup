@@ -76,6 +76,10 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		return nil, err
 	}
 
+	if err := applyProviderDefaults(sources.Cmd, cfg); err != nil {
+		return nil, err
+	}
+
 	if sources.Resolve != ResolveAll {
 		return cfg, nil
 	}

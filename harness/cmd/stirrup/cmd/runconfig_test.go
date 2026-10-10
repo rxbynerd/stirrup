@@ -91,13 +91,14 @@ func TestRunRunConfig_Idempotency(t *testing.T) {
 
 // TestRunRunConfig_ValidateRejectsInvalidConfig pins that --validate
 // exits non-zero on a config the validator rejects: bedrock + the
-// CLI-default `claude-sonnet-4-6`, which validateBedrockProviderFields
+// Anthropic API alias `claude-sonnet-4-6`, which validateBedrockProviderFields
 // rejects with an inference-profile remediation hint.
 func TestRunRunConfig_ValidateRejectsInvalidConfig(t *testing.T) {
 	_, err := runRunConfigForTest(t, []string{
 		"--validate",
 		"--mode", "execution",
 		"--provider", "bedrock",
+		"--model", "claude-sonnet-4-6",
 		"--prompt", "x",
 	}, "")
 	if err == nil {
@@ -105,6 +106,28 @@ func TestRunRunConfig_ValidateRejectsInvalidConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bedrock") {
 		t.Errorf("error should mention bedrock, got: %v", err)
+	}
+}
+
+// TestRunRunConfig_ProviderDefaults pins the provider-derived defaults
+// through the subcommand: the OpenAI key reference is filled in, and a
+// non-Anthropic provider without --model is refused.
+func TestRunRunConfig_ProviderDefaults(t *testing.T) {
+	out, err := runRunConfigForTest(t, []string{
+		"--provider", "openai-responses",
+		"--model", "gpt-5.4-nano",
+		"--compact",
+	}, "")
+	if err != nil {
+		t.Fatalf("runRunConfig: %v", err)
+	}
+	if !strings.Contains(out, `"apiKeyRef":"secret://OPENAI_API_KEY"`) {
+		t.Errorf("output should carry the OpenAI key reference, got: %s", out)
+	}
+
+	_, err = runRunConfigForTest(t, []string{"--provider", "openai-responses", "--compact"}, "")
+	if err == nil || !strings.Contains(err.Error(), "--provider=openai-responses") {
+		t.Fatalf("expected a missing --model error naming the provider, got %v", err)
 	}
 }
 
