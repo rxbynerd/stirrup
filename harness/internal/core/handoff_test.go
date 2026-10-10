@@ -122,6 +122,39 @@ func TestRun_RequiredExportFailureYieldsHandoffFailed(t *testing.T) {
 	}
 }
 
+func TestRun_ExportErrorIsScrubbedAndCapped(t *testing.T) {
+	loop := buildTestLoop(endTurnProvider())
+	tr := &cancellableTransport{}
+	loop.Transport = tr
+	long := "upload refused for " + spanProbeKey + " " + strings.Repeat("x", 2*maxFailureTextBytes)
+	loop.Handoff = &fakeHandoff{err: errors.New(long)}
+
+	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.WorkspaceExport == nil {
+		t.Fatal("WorkspaceExport = nil, want a failed receipt")
+	}
+	done := doneEvent(t, tr.Events())
+	if done.Trace == nil || done.Trace.WorkspaceExport == nil {
+		t.Fatal("done carries no workspace export receipt")
+	}
+	maxLen := maxFailureTextBytes + len("... [truncated by harness]")
+	for name, text := range map[string]string{
+		"RunTrace.WorkspaceExport.Error":   runTrace.WorkspaceExport.Error,
+		"RunTrace.Error":                   runTrace.Error,
+		"done Trace.WorkspaceExport.Error": done.Trace.WorkspaceExport.Error,
+	} {
+		if strings.Contains(text, spanProbeKey) {
+			t.Errorf("%s carries the unscrubbed key", name)
+		}
+		if text == "" || len(text) > maxLen {
+			t.Errorf("%s is %d bytes, want non-empty and capped near %d", name, len(text), maxFailureTextBytes)
+		}
+	}
+}
+
 func TestRun_OptionalExportFailureKeepsSuccess(t *testing.T) {
 	loop := buildTestLoop(endTurnProvider())
 	loop.Handoff = &fakeHandoff{err: errors.New("upload refused")}
