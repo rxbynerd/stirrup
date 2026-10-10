@@ -125,11 +125,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	startedAt := e.startedAt
 	var redacted types.RunConfig
 	if config != nil {
-		if e.redactionDisabled {
-			redacted = *config
-		} else {
-			redacted = config.Redact()
-		}
+		redacted = e.redactConfig(config)
 	}
 	ev := Event{
 		Kind:          EventKindRunStarted,
@@ -278,12 +274,7 @@ func (e *JSONLTraceEmitter) RecordSubRunStarted(runID, parentRunID string, start
 		StartedAt:   &startedAt,
 	}
 	if config != nil {
-		var redacted types.RunConfig
-		if e.redactionDisabled {
-			redacted = *config
-		} else {
-			redacted = config.Redact()
-		}
+		redacted := e.redactConfig(config)
 		ev.Config = &redacted
 	}
 	_ = e.writeLineLocked(ev)
@@ -564,6 +555,18 @@ func scrubRawJSON(raw json.RawMessage, redactionDisabled bool) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(wrapped)
+}
+
+// redactConfig returns config as persisted: secret references stripped and
+// the prompt scrubbed, since it can carry agent-authored text. A debug
+// build keeps the config verbatim.
+func (e *JSONLTraceEmitter) redactConfig(config *types.RunConfig) types.RunConfig {
+	if e.redactionDisabled {
+		return *config
+	}
+	redacted := config.Redact()
+	redacted.Prompt = security.Scrub(config.Prompt)
+	return redacted
 }
 
 // scrubOrPass returns security.Scrub(s), or s verbatim under the --debug

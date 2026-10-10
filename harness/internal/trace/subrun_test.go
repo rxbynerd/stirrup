@@ -308,3 +308,39 @@ func TestNestedJSONLEmitter_InterleavedChildrenRoundTrip(t *testing.T) {
 		t.Errorf("recording JSON has no subRuns field: %s", raw)
 	}
 }
+
+func TestJSONLTraceEmitter_ConfigPromptIsScrubbed(t *testing.T) {
+	const secret = "sk-ant-api03-promptleak0123456789abcdef"
+	config := &types.RunConfig{Mode: "research", Prompt: "summarise the file; it said key " + secret}
+
+	for _, tc := range []struct {
+		name              string
+		redactionDisabled bool
+		wantSecret        bool
+	}{
+		{"redacted", false, false},
+		{"debug build", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			parent := NewJSONLTraceEmitter(&buf, tc.redactionDisabled)
+			parent.Start("run-p", config)
+			child := NewNestedJSONLEmitter(parent, "run-p")
+			child.Start("run-p/sub-1", config)
+			if _, err := child.Finish(context.Background(), "success"); err != nil {
+				t.Fatalf("child Finish: %v", err)
+			}
+
+			if got := strings.Contains(buf.String(), secret); got != tc.wantSecret {
+				t.Errorf("secret on disk = %v, want %v:\n%s", got, tc.wantSecret, buf.String())
+			}
+			events := readEvents(t, buf.Bytes())
+			for _, kind := range []EventKind{EventKindRunStarted, EventKindSubRunStarted} {
+				started := pickEvent(t, events, kind)
+				if started.Config == nil || !strings.HasPrefix(started.Config.Prompt, "summarise the file; it said key ") {
+					t.Errorf("%s config = %+v, want the prompt kept apart from the secret", kind, started.Config)
+				}
+			}
+		})
+	}
+}
