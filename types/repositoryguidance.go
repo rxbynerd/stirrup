@@ -120,7 +120,7 @@ func validateRepositoryGuidanceConfig(config *RunConfig, errs *[]string) {
 }
 
 // repositoryGuidancePathProblem returns why p is not a valid guidance file
-// name, or "" when it is. Version one reads the workspace root only, so a
+// name, or "" when it is. Guidance is read from the workspace root only, so a
 // path separator is rejected outright, which also rules out absolute
 // paths and ".." traversal below the root.
 func repositoryGuidancePathProblem(p string) string {
