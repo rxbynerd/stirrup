@@ -682,6 +682,53 @@ func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_ReadOnlyModeRejectsOffloadToFile(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			c.ContextStrategy = ContextStrategyConfig{Type: "offload-to-file"}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected %s mode to reject offload-to-file", mode)
+			}
+			for _, want := range []string{mode, "offload-to-file"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected error to mention %q, got: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ReadOnlyModeAcceptsNonWritingStrategies(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		for _, strategy := range []string{"", "sliding-window", "summarise"} {
+			t.Run(mode+"/"+strategy, func(t *testing.T) {
+				c := validConfig()
+				c.Mode = mode
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+				c.ContextStrategy = ContextStrategyConfig{Type: strategy}
+				if err := ValidateRunConfig(c); err != nil {
+					t.Fatalf("read-only mode %s with contextStrategy %q should validate: %v", mode, strategy, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateRunConfig_ExecutionModeAcceptsOffloadToFile(t *testing.T) {
+	c := validConfig()
+	c.Mode = "execution"
+	c.ContextStrategy = ContextStrategyConfig{Type: "offload-to-file"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("execution mode with offload-to-file should validate: %v", err)
+	}
+}
+
 // A toolset profile must not loosen the read-only-mode write-tool exclusion: a
 // read-only mode that lists a write tool is rejected regardless of profile.
 func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *testing.T) {

@@ -1612,10 +1612,12 @@ var validPromptBuilderTypes = map[string]bool{
 	"composed": true,
 }
 
+const contextStrategyOffloadToFile = "offload-to-file"
+
 var validContextStrategyTypes = map[string]bool{
-	"sliding-window":  true,
-	"summarise":       true,
-	"offload-to-file": true,
+	"sliding-window":             true,
+	"summarise":                  true,
+	contextStrategyOffloadToFile: true,
 }
 
 var validVcsBackendTypes = map[string]bool{
@@ -2281,6 +2283,14 @@ func ValidateRunConfig(config *RunConfig) error {
 				}
 			}
 		}
+	}
+
+	// offload-to-file writes tool results into the workspace through the
+	// executor, outside the permission policy, so a read-only mode cannot use it.
+	if readOnlyModes[config.Mode] && config.ContextStrategy.Type == contextStrategyOffloadToFile {
+		errs = append(errs, fmt.Sprintf(
+			"read-only mode %q does not support contextStrategy %q: it writes offloaded tool results into the workspace; use %q or %q",
+			config.Mode, contextStrategyOffloadToFile, "sliding-window", "summarise"))
 	}
 
 	// maxTurns must be bounded
