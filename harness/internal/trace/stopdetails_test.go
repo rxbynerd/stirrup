@@ -175,3 +175,40 @@ func TestNestedJSONLEmitter_StopDetailsNotForwardedToParent(t *testing.T) {
 		t.Errorf("parent StopDetails = %+v, want nil", got.StopDetails)
 	}
 }
+
+// degradedCapabilitiesEmitter is a TraceEmitter that also records degraded
+// capabilities; the top-level production emitters satisfy it.
+type degradedCapabilitiesEmitter interface {
+	TraceEmitter
+	DegradedCapabilitiesRecorder
+}
+
+func TestEmitters_RecordDegradedCapabilitiesReachesRunTrace(t *testing.T) {
+	want := []types.DegradedCapability{{Kind: types.DegradedCapabilityMCP, Name: "docs", Error: "connection refused"}}
+	for name, build := range stopDetailsEmitterBuilders(t) {
+		e, ok := build(t).(degradedCapabilitiesEmitter)
+		if !ok {
+			continue // the nested child emitter carries no degraded capabilities
+		}
+		t.Run(name, func(t *testing.T) {
+			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
+			e.RecordDegradedCapabilities(want)
+			got, err := e.Finish(context.Background(), "success")
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if len(got.DegradedCapabilities) != 1 || got.DegradedCapabilities[0] != want[0] {
+				t.Errorf("DegradedCapabilities = %+v, want %+v", got.DegradedCapabilities, want)
+			}
+
+			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
+			got, err = e.Finish(context.Background(), "success")
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			if len(got.DegradedCapabilities) != 0 {
+				t.Errorf("DegradedCapabilities after restart = %+v, want none", got.DegradedCapabilities)
+			}
+		})
+	}
+}

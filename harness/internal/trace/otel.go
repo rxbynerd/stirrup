@@ -105,8 +105,9 @@ type OTelTraceEmitter struct {
 	runError             string
 	// lastChatErrorType is the error.type of the run's most recent
 	// top-level chat span; empty when that request succeeded.
-	lastChatErrorType string
-	structuredOutput  json.RawMessage
+	lastChatErrorType    string
+	structuredOutput     json.RawMessage
+	degradedCapabilities []types.DegradedCapability
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -133,6 +134,7 @@ var (
 	_ PromptResolutionRecorder     = (*OTelTraceEmitter)(nil)
 	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
 	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
+	_ DegradedCapabilitiesRecorder = (*OTelTraceEmitter)(nil)
 	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
 	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
 	_ GitHandoffRecorder           = (*OTelTraceEmitter)(nil)
@@ -245,6 +247,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.runError = ""
 	e.lastChatErrorType = ""
 	e.structuredOutput = nil
+	e.degradedCapabilities = nil
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
@@ -363,6 +366,14 @@ func (e *OTelTraceEmitter) RecordStopDetails(details *types.StopDetails) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stopDetails = details
+}
+
+// RecordDegradedCapabilities stores the capabilities the run proceeded
+// without so the RunTrace aggregate returned by Finish carries them.
+func (e *OTelTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCapability) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
 }
 
 func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
@@ -545,6 +556,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		WorkspaceExport:      e.workspaceExport,
 		Error:                e.runError,
 		StructuredOutput:     e.structuredOutput,
+		DegradedCapabilities: e.degradedCapabilities,
 	}
 
 	return trace, nil

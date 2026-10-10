@@ -138,6 +138,7 @@ func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, ou
 	if recorder, ok := l.Trace.(trace.RunErrorRecorder); ok && errText != "" {
 		recorder.RecordRunError(errText)
 	}
+	l.recordDegradedCapabilities()
 	runTrace, traceErr := l.finishTrace(ctx, outcome)
 	if runTrace != nil && runTrace.Error == "" {
 		switch {
@@ -172,16 +173,17 @@ func doneSummary(rt *types.RunTrace) *types.RunTrace {
 		return nil
 	}
 	return &types.RunTrace{
-		ID:               rt.ID,
-		StartedAt:        rt.StartedAt,
-		CompletedAt:      rt.CompletedAt,
-		Turns:            rt.Turns,
-		TokenUsage:       rt.TokenUsage,
-		Outcome:          rt.Outcome,
-		StopDetails:      rt.StopDetails,
-		Git:              rt.Git,
-		WorkspaceExport:  rt.WorkspaceExport,
-		Error:            rt.Error,
-		StructuredOutput: rt.StructuredOutput,
+		ID:                   rt.ID,
+		StartedAt:            rt.StartedAt,
+		CompletedAt:          rt.CompletedAt,
+		Turns:                rt.Turns,
+		TokenUsage:           rt.TokenUsage,
+		Outcome:              rt.Outcome,
+		StopDetails:          rt.StopDetails,
+		Git:                  rt.Git,
+		WorkspaceExport:      rt.WorkspaceExport,
+		Error:                rt.Error,
+		StructuredOutput:     rt.StructuredOutput,
+		DegradedCapabilities: rt.DegradedCapabilities,
 	}
 }

@@ -606,3 +606,25 @@ func TestWorkspaceHandoff_FollowUpExportsToRunScopedURI(t *testing.T) {
 		t.Errorf("follow-up receipt URI = %q, want %q", receipt.URI, want[1])
 	}
 }
+
+func TestBuildRunResult_CarriesDegradedCapabilities(t *testing.T) {
+	rt := &types.RunTrace{
+		ID:      "run-degraded",
+		Outcome: "success",
+		DegradedCapabilities: []types.DegradedCapability{
+			{Kind: types.DegradedCapabilityMCP, Name: "docs", Error: "connection refused"},
+		},
+	}
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
+	if len(got.DegradedCapabilities) != 1 || got.DegradedCapabilities[0].Name != "docs" {
+		t.Errorf("DegradedCapabilities = %+v, want the docs server", got.DegradedCapabilities)
+	}
+
+	raw, err := json.Marshal(buildRunResult(&types.RunTrace{ID: "clean", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "degradedCapabilities") {
+		t.Errorf("a clean RunResult must omit degradedCapabilities, got %s", raw)
+	}
+}
