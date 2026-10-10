@@ -198,6 +198,41 @@ func TestBuildContextStrategy_ClearToolResults(t *testing.T) {
 	}
 }
 
+// TestBuildContextStrategy_ClearAtLeastReachesStrategy pins that a
+// configured clearAtLeast replaces the default batch minimum: a minimum no
+// batch can reach falls back to dropping exchanges, while the default
+// clears results from the same history.
+func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
+	history := []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}}
+	for i := range 10 {
+		id := fmt.Sprintf("call_%d", i)
+		history = append(history,
+			types.Message{Role: "assistant", Content: []types.ContentBlock{{Type: "tool_use", ID: id, Name: "read_file", Input: json.RawMessage(`{}`)}}},
+			types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: id, Content: strings.Repeat("x", 2000)}}},
+		)
+	}
+	budget := contextpkg.TokenBudget{MaxTokens: 4000, CurrentTokens: estimateCurrentTokens(history), ReserveForResponse: 1000}
+	prepare := func(cfg types.ContextStrategyConfig) ([]types.Message, *contextpkg.CompactionEvent) {
+		cs := buildContextStrategy(cfg, nil, "", 0, nil, nil)
+		out, err := cs.Prepare(context.Background(), history, budget)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		return out, cs.LastCompaction()
+	}
+
+	clearAtLeast := 1_000_000
+	out, ev := prepare(types.ContextStrategyConfig{Type: "clear-tool-results", ClearAtLeast: &clearAtLeast})
+	if ev == nil || ev.ToolResultsCleared != 0 || len(ev.Warnings) != 1 || len(out) >= len(history) {
+		t.Fatalf("clearAtLeast=%d: event %+v with %d of %d messages, want the fallback warning and dropped exchanges", clearAtLeast, ev, len(out), len(history))
+	}
+
+	out, ev = prepare(types.ContextStrategyConfig{Type: "clear-tool-results"})
+	if ev == nil || ev.ToolResultsCleared == 0 || len(ev.Warnings) != 0 || len(out) != len(history) {
+		t.Fatalf("default minimum: event %+v with %d of %d messages, want results cleared and nothing dropped", ev, len(out), len(history))
+	}
+}
+
 func TestWarnUnknownExcludedTools(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)})
