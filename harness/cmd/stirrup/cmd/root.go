@@ -185,6 +185,7 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 		DurationMs:                  rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
 		FinalAssistantText:          finalText,
 		FinalAssistantTextTruncated: truncated,
+		StructuredOutput:            rt.StructuredOutput,
 		Error:                       rt.Error,
 		CommandOutputArchive:        rt.CommandOutputArchive,
 		Git:                         rt.Git,

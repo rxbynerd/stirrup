@@ -32,37 +32,9 @@ const maxPromptFileBytes int64 = 10 * 1024 * 1024 // matches local.go maxFileSiz
 func readPromptFile(path string) (string, error) {
 	// Every failure here is an I/O error (exit 3); the prompt file is
 	// plain text, so none is a JSON parse failure.
-	clean := filepath.Clean(path)
-	info, err := os.Stat(clean)
+	data, err := readFlagFile("--prompt-file", path, maxPromptFileBytes)
 	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	if info.IsDir() {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: is a directory", path))
-	}
-	// Reject FIFOs/char devices/sockets: os.Stat reports Size()==0 for
-	// these, which would sail past the size cap below and could hang
-	// ReadAll forever (e.g. /dev/zero or an unwritten FIFO).
-	if !info.Mode().IsRegular() {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: not a regular file", path))
-	}
-	if info.Size() > maxPromptFileBytes {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes))
-	}
-	// Bounded read closes the TOCTOU window where the file grows
-	// between os.Stat and Open; +1 byte distinguishes "at the cap"
-	// from "over the cap" for an accurate error.
-	f, err := os.Open(clean)
-	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
-	if err != nil {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
-	}
-	if int64(len(data)) > maxPromptFileBytes {
-		return "", ioError(fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes))
+		return "", err
 	}
 	// Trim only trailing CR/LF; leading whitespace (e.g. an
 	// intentionally-indented code block) round-trips unchanged.
@@ -71,6 +43,64 @@ func readPromptFile(path string) (string, error) {
 		return "", ioError(fmt.Errorf("--prompt-file %q is empty", path))
 	}
 	return trimmed, nil
+}
+
+// maxOutputSchemaFileBytes bounds the --output-schema read; the schema
+// itself is held to a smaller limit by ValidateRunConfig.
+const maxOutputSchemaFileBytes int64 = 1 << 20
+
+// readOutputSchemaFile loads an --output-schema JSON Schema file. A read
+// failure is an I/O error (exit 3) and malformed JSON a parse error
+// (exit 2), the same classes as --config.
+func readOutputSchemaFile(path string) (json.RawMessage, error) {
+	data, err := readFlagFile("--output-schema", path, maxOutputSchemaFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, data); err != nil {
+		return nil, parseError(fmt.Errorf("parsing --output-schema %q: %w", path, err))
+	}
+	return json.RawMessage(compact.Bytes()), nil
+}
+
+// readFlagFile reads the regular file a path-valued flag names, refusing
+// directories, devices and files over maxBytes. Every failure is an I/O
+// error (exit 3).
+func readFlagFile(flagName, path string, maxBytes int64) ([]byte, error) {
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	if info.IsDir() {
+		return nil, ioError(fmt.Errorf("reading %s %q: is a directory", flagName, path))
+	}
+	// Reject FIFOs/char devices/sockets: os.Stat reports Size()==0 for
+	// these, which would sail past the size cap below and could hang
+	// ReadAll forever (e.g. /dev/zero or an unwritten FIFO).
+	if !info.Mode().IsRegular() {
+		return nil, ioError(fmt.Errorf("reading %s %q: not a regular file", flagName, path))
+	}
+	if info.Size() > maxBytes {
+		return nil, ioError(fmt.Errorf("reading %s %q: %d bytes exceeds %d byte cap", flagName, path, info.Size(), maxBytes))
+	}
+	// Bounded read closes the TOCTOU window where the file grows
+	// between os.Stat and Open; +1 byte distinguishes "at the cap"
+	// from "over the cap" for an accurate error.
+	f, err := os.Open(clean)
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, ioError(fmt.Errorf("reading %s %q: %w", flagName, path, err))
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, ioError(fmt.Errorf("reading %s %q: exceeds %d byte cap", flagName, path, maxBytes))
+	}
+	return data, nil
 }
 
 // harnessCLIOptions captures every CLI-surfaced setting that influences the
@@ -990,6 +1020,18 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			selector[k] = v
 		}
 		cfg.Executor.K8sNodeSelector = selector
+	}
+	if changed("output-schema") {
+		path, _ := f.GetString("output-schema")
+		if path == "" {
+			cfg.OutputSchema = nil
+		} else {
+			schema, err := readOutputSchemaFile(path)
+			if err != nil {
+				return err
+			}
+			cfg.OutputSchema = schema
+		}
 	}
 	if changed("permission-policy-file") {
 		path, _ := f.GetString("permission-policy-file")

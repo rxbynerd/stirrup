@@ -55,6 +55,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("log-level", "info", "Log level: debug, info, warn, error")
 	f.String("prompt", "", "User prompt (can also be passed as a positional argument; falls back to --prompt-file then STIRRUP_PROMPT env var, then a prompt field in --config)")
 	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
+	f.String("output-schema", "", "Path to a JSON Schema (Draft 2020-12) file the run's final answer must satisfy (sets outputSchema). The model must end with one JSON document conforming to it; the validated document is returned as structuredOutput, and a run whose answer still fails after two corrective attempts ends with outcome structured_output_failed. References must be local (\"#...\"). An empty value clears a schema set by --config.")
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
 	f.String("executor", "local", "Executor: local, container, k8s, k8s-sandbox, api, none (none has no local filesystem or shell access — MCP-only / server-side-tool runs)")
@@ -142,6 +143,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 
 	_ = cmd.MarkFlagFilename("config", "json")
 	_ = cmd.MarkFlagFilename("prompt-file")
+	_ = cmd.MarkFlagFilename("output-schema", "json")
 	_ = cmd.MarkFlagFilename("gcp-credentials-file", "json")
 	_ = cmd.MarkFlagFilename("permission-policy-file", "cedar")
 	_ = cmd.MarkFlagFilename("trace", "jsonl")
