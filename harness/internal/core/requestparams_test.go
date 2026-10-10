@@ -5,11 +5,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
 	"github.com/rxbynerd/stirrup/types/version"
@@ -176,5 +180,70 @@ func TestRun_JSONLRecordingHoldsPromptVersionAndRequest(t *testing.T) {
 	}
 	if got := recording.Turns[0].ModelInput.Request.MaxTokens; got != sent.MaxTokens {
 		t.Errorf("recorded maxTokens = %d, sent %d", got, sent.MaxTokens)
+	}
+}
+
+func TestRequestParamsOf_NilTemperatureIsOmitted(t *testing.T) {
+	got := requestParamsOf(types.StreamParams{MaxTokens: 1000})
+	if got.Temperature != nil {
+		t.Errorf("Temperature = %v, want nil so the recording omits it rather than recording 0", *got.Temperature)
+	}
+	if got.MaxTokens != 1000 {
+		t.Errorf("MaxTokens = %d, want 1000", got.MaxTokens)
+	}
+	line, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(line), "temperature") {
+		t.Errorf("recorded request params %s carry a temperature, want it omitted", line)
+	}
+}
+
+func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
+	const secret = "sk-ant-api03-modelleak0123456789abcdef"
+	multibyte := strings.Repeat("é", maxResponseModelBytes)
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		check func(t *testing.T, got string)
+	}{
+		{"ordinary id is unchanged", "claude-sonnet-4-6-20260101", func(t *testing.T, got string) {
+			if got != "claude-sonnet-4-6-20260101" {
+				t.Errorf("got %q", got)
+			}
+		}},
+		{"oversized value is capped", strings.Repeat("m", 10*maxResponseModelBytes), func(t *testing.T, got string) {
+			if len(got) != maxResponseModelBytes {
+				t.Errorf("len = %d, want %d", len(got), maxResponseModelBytes)
+			}
+		}},
+		{"cap falls on a rune boundary", multibyte, func(t *testing.T, got string) {
+			if len(got) > maxResponseModelBytes || !utf8.ValidString(got) {
+				t.Errorf("len = %d, valid = %v", len(got), utf8.ValidString(got))
+			}
+		}},
+		{"secret-shaped value is scrubbed", "model-" + secret, func(t *testing.T, got string) {
+			if strings.Contains(got, secret) || !strings.HasPrefix(got, "model-") {
+				t.Errorf("got %q, want the secret removed", got)
+			}
+		}},
+		{"secret straddling the cap is scrubbed", strings.Repeat("m", maxResponseModelBytes-10) + "-" + secret, func(t *testing.T, got string) {
+			if strings.Contains(got, "sk-ant") || len(got) > maxResponseModelBytes {
+				t.Errorf("got %q", got)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := make(chan types.StreamEvent, 2)
+			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn", ResponseModel: tc.model}
+			close(ch)
+			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), ignoreEmitFailure)
+			if err != nil {
+				t.Fatalf("streamEventsToResult: %v", err)
+			}
+			tc.check(t, result.ResponseModel)
+		})
 	}
 }
