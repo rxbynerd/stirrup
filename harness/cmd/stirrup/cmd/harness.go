@@ -889,6 +889,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("tools-profile") {
 		cfg.Tools.Profile, _ = f.GetString("tools-profile")
 	}
+	if changed("protected-write-target") {
+		cfg.Tools.ProtectedWriteTargets, _ = f.GetStringArray("protected-write-target")
+	}
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")
 	}
