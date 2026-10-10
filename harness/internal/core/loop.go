@@ -417,6 +417,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				attribute.Int("verifier.attempt", verificationAttempts),
 			),
 		)
+		attempt := verificationAttempts + 1
 		vResult, verifyErr := l.Verifier.Verify(runCtx, verifier.VerifyContext{
 			Mode:     config.Mode,
 			Executor: l.Executor,
@@ -425,12 +426,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if verifyErr != nil {
 			scrubbed := recordSpanError(verifySpan, verifyErr)
 			verifySpan.End()
+			l.reportVerifierError(config, attempt, verifyErr)
 			outcome = "verification_error"
 			l.noteFailure(outcome, "verifier: "+scrubbed)
 			break
 		}
 		verifySpan.SetAttributes(attribute.Bool("verifier.passed", vResult.Passed))
 		verifySpan.End()
+		l.recordVerification(config, boundedVerificationResult(attempt, vResult))
 		if vResult.Passed {
 			outcome = "success"
 			break
