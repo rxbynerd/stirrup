@@ -19,25 +19,21 @@ import (
 
 func ignoreEmitFailure(string, error) {}
 
-// countingTool replaces test_tool with a handler that counts invocations
-// and records whether its context was already cancelled.
-func countingTool(loop *AgenticLoop) (calls *atomic.Int32, cancelledCalls *atomic.Int32) {
-	calls, cancelledCalls = &atomic.Int32{}, &atomic.Int32{}
+// countingTool replaces test_tool with a handler that counts invocations.
+func countingTool(loop *AgenticLoop) *atomic.Int32 {
+	calls := &atomic.Int32{}
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
 		Name:        "test_tool",
 		Description: "A test tool",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		Handler: func(ctx context.Context, _ json.RawMessage) (string, error) {
+		Handler: func(context.Context, json.RawMessage) (string, error) {
 			calls.Add(1)
-			if ctx.Err() != nil {
-				cancelledCalls.Add(1)
-			}
 			return "tool result", nil
 		},
 	})
 	loop.Tools = registry
-	return calls, cancelledCalls
+	return calls
 }
 
 // blockingProvider blocks every Stream until its context ends, then
@@ -74,7 +70,7 @@ func TestRun_ControlStreamLostDuringProviderCallCancelsRun(t *testing.T) {
 	loop.Git = git
 	handoff := &fakeHandoff{}
 	loop.Handoff = handoff
-	toolCalls, _ := countingTool(loop)
+	toolCalls := countingTool(loop)
 
 	go func() {
 		<-prov.entered
@@ -110,7 +106,7 @@ func TestRun_ControlStreamLostDuringProviderCallCancelsRun(t *testing.T) {
 func TestRun_ControlStreamLostBeforeInFlightResponseSkipsItsTools(t *testing.T) {
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
-	toolCalls, _ := countingTool(loop)
+	toolCalls := countingTool(loop)
 	prov.onCall = func(i int) {
 		if i == 0 {
 			loop.ControlStreamLost(errors.New("rpc error: code = Unavailable desc = connection refused"))
@@ -129,6 +125,43 @@ func TestRun_ControlStreamLostBeforeInFlightResponseSkipsItsTools(t *testing.T) 
 	}
 	if n := len(prov.params()); n != 1 {
 		t.Errorf("provider calls = %d, want 1", n)
+	}
+	assertDoneStopReason(t, tr, "control_stream_lost")
+}
+
+func TestRun_ControlStreamLostDuringToolCallCancelsTheTool(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	var sawCancel atomic.Bool
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "test_tool",
+		Description: "A test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(ctx context.Context, _ json.RawMessage) (string, error) {
+			loop.ControlStreamLost(transport.ErrPeerEndedStream)
+			select {
+			case <-ctx.Done():
+				sawCancel.Store(true)
+			case <-time.After(10 * time.Second):
+			}
+			return "tool result", nil
+		},
+	})
+	loop.Tools = registry
+
+	rt, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sawCancel.Load() {
+		t.Error("tool handler's context was not cancelled by the loss")
+	}
+	if rt.Outcome != "control_stream_lost" {
+		t.Fatalf("outcome = %q, want control_stream_lost", rt.Outcome)
+	}
+	if n := len(prov.params()); n != 1 {
+		t.Errorf("provider calls = %d, want 1: no model request may follow the loss", n)
 	}
 	assertDoneStopReason(t, tr, "control_stream_lost")
 }
