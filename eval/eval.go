@@ -13,9 +13,19 @@ import (
 // attribute, or an EvalSuite.
 const MaxTrials = 20
 
+// DeliveryNotMeasured is the Delivery value of a run whose handoff to the
+// caller is not recorded.
+const DeliveryNotMeasured = "not_measured"
+
 // TaskResult captures the outcome of evaluating a single EvalTask. A task
 // run more than once carries every run in Trials; the task-level Outcome,
 // Trace, JudgeVerdict, and Error then summarise them (see docs/eval.md).
+//
+// Outcome is the judge's verdict alone. RunHealth, Verification, and
+// Delivery describe the run beside it; they are empty on results written
+// before they existed and on a passing dry run. A task run more than once reports
+// the worst RunHealth across its trials, and VerificationFailed when any
+// trial's verification failed.
 type TaskResult struct {
 	TaskID       string          `json:"taskId"`
 	Outcome      string          `json:"outcome"` // "pass" | "fail" | "error"
@@ -25,6 +35,10 @@ type TaskResult struct {
 	DurationMs   int64           `json:"durationMs"`
 	Trials       []TrialResult   `json:"trials,omitempty"`
 	PassFraction float64         `json:"passFraction"`
+
+	RunHealth    types.RunHealth          `json:"runHealth,omitempty"`
+	Verification types.VerificationStatus `json:"verification,omitempty"`
+	Delivery     string                   `json:"delivery,omitempty"`
 }
 
 // JudgeVerdict is the result of applying an EvalJudge to a run.
@@ -91,6 +105,10 @@ type TrialResult struct {
 	Error        string       `json:"error,omitempty"`
 	DurationMs   int64        `json:"durationMs"`
 	Turns        int          `json:"turns"`
+
+	RunHealth    types.RunHealth          `json:"runHealth,omitempty"`
+	Verification types.VerificationStatus `json:"verification,omitempty"`
+	Delivery     string                   `json:"delivery,omitempty"`
 }
 
 // TrialCounts tallies a task's trial outcomes. Any outcome other than
@@ -104,15 +122,55 @@ type TrialCounts struct {
 // Counts tallies the task's trials. A result without Trials is one trial
 // whose outcome is Outcome.
 func (t TaskResult) Counts() TrialCounts {
+	return t.GateCounts(false)
+}
+
+// GateCounts is Counts for the comparison gate. With requireHealthy, a
+// trial whose judge passed but whose RunHealth is not types.RunHealthy
+// counts as a fail.
+func (t TaskResult) GateCounts(requireHealthy bool) TrialCounts {
 	var c TrialCounts
 	if len(t.Trials) == 0 {
-		c.add(t.Outcome)
+		c.add(gatedOutcome(t.Outcome, t.RunHealth, requireHealthy))
 		return c
 	}
 	for _, tr := range t.Trials {
-		c.add(tr.Outcome)
+		c.add(gatedOutcome(tr.Outcome, tr.RunHealth, requireHealthy))
 	}
 	return c
+}
+
+func gatedOutcome(outcome string, health types.RunHealth, requireHealthy bool) string {
+	if requireHealthy && outcome == "pass" && health != types.RunHealthy {
+		return "fail"
+	}
+	return outcome
+}
+
+// HealthyPassFraction is the share of the task's trials whose judge passed
+// and whose RunHealth is types.RunHealthy.
+func (t TaskResult) HealthyPassFraction() float64 {
+	c := t.GateCounts(true)
+	return c.PassFraction()
+}
+
+// HealthyPassRate is the mean HealthyPassFraction over all tasks, or nil
+// when no task records a RunHealth (results written before it existed and
+// dry runs).
+func HealthyPassRate(tasks []TaskResult) *float64 {
+	var sum float64
+	measured := false
+	for _, t := range tasks {
+		if t.RunHealth != "" {
+			measured = true
+		}
+		sum += t.HealthyPassFraction()
+	}
+	if !measured {
+		return nil
+	}
+	rate := sum / float64(len(tasks))
+	return &rate
 }
 
 func (c *TrialCounts) add(outcome string) {
@@ -156,8 +214,12 @@ func (c TrialCounts) Outcome() string {
 }
 
 // SuiteResult captures the outcome of evaluating an entire EvalSuite.
-// PassRate is the mean of the per-task PassFraction values. Trials is the
-// number of runs per task; zero means one.
+// PassRate is the mean of the per-task PassFraction values, which are
+// judge-based. HealthyPassRate is the mean share of trials whose judge
+// passed and whose run was healthy, over all tasks; it is nil when the
+// result carries no run health. RequireHealthy records that the comparison
+// gate counts only healthy judge passes. Trials is the number of runs per
+// task; zero means one.
 type SuiteResult struct {
 	SuiteID     string       `json:"suiteId"`
 	RunID       string       `json:"runId"`
@@ -166,6 +228,9 @@ type SuiteResult struct {
 	Tasks       []TaskResult `json:"tasks"`
 	PassRate    float64      `json:"passRate"`
 	Trials      int          `json:"trials,omitempty"`
+
+	HealthyPassRate *float64 `json:"healthyPassRate,omitempty"`
+	RequireHealthy  bool     `json:"requireHealthy,omitempty"`
 
 	// JudgeCache counts how diff-review verdicts used the judge cache. Nil
 	// when the invocation ran live.
@@ -263,13 +328,21 @@ type ComparisonSummary struct {
 }
 
 // RateSummary describes one side of a comparison over all of its tasks.
+// PassRate is the gate's rate: judge-based, or healthy-only when
+// RequireHealthy is set, in which case JudgePassRate holds the judge-based
+// rate. HealthyPassRate is nil when the result carries no run health.
 // StdErr is nil with fewer than two tasks. PassHatK[k-1] and PassAtK[k-1]
 // hold the pass^k and pass@k estimates for k up to the smallest per-task
 // trial count.
 type RateSummary struct {
-	Tasks      int       `json:"tasks"`
-	Trials     int       `json:"trials"`
-	PassRate   float64   `json:"passRate"`
+	Tasks    int     `json:"tasks"`
+	Trials   int     `json:"trials"`
+	PassRate float64 `json:"passRate"`
+
+	HealthyPassRate *float64 `json:"healthyPassRate,omitempty"`
+	JudgePassRate   *float64 `json:"judgePassRate,omitempty"`
+	RequireHealthy  bool     `json:"requireHealthy,omitempty"`
+
 	StdErr     *float64  `json:"stdErr,omitempty"`
 	WilsonLow  float64   `json:"wilsonLow"`
 	WilsonHigh float64   `json:"wilsonHigh"`

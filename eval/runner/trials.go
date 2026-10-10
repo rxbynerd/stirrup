@@ -69,7 +69,13 @@ func aggregateTrials(taskID string, runs []eval.TaskResult) eval.TaskResult {
 		return r
 	}
 
-	res := eval.TaskResult{TaskID: taskID, Trials: make([]eval.TrialResult, len(runs))}
+	res := eval.TaskResult{
+		TaskID:       taskID,
+		Trials:       make([]eval.TrialResult, len(runs)),
+		RunHealth:    types.RunHealthy,
+		Verification: types.VerificationNone,
+		Delivery:     eval.DeliveryNotMeasured,
+	}
 	for i, r := range runs {
 		turns := 0
 		if r.Trace != nil {
@@ -82,8 +88,13 @@ func aggregateTrials(taskID string, runs []eval.TaskResult) eval.TaskResult {
 			Error:        r.Error,
 			DurationMs:   r.DurationMs,
 			Turns:        turns,
+			RunHealth:    r.RunHealth,
+			Verification: r.Verification,
+			Delivery:     r.Delivery,
 		}
 		res.DurationMs += r.DurationMs
+		res.RunHealth = worseHealth(res.RunHealth, r.RunHealth)
+		res.Verification = combineVerification(res.Verification, r.Verification)
 	}
 
 	counts := res.Counts()
@@ -105,6 +116,37 @@ func aggregateTrials(taskID string, runs []eval.TaskResult) eval.TaskResult {
 	res.Error = split
 	res.JudgeVerdict = eval.JudgeVerdict{Passed: false, Reason: split}
 	return res
+}
+
+// worseHealth returns the less healthy of a and b.
+func worseHealth(a, b types.RunHealth) types.RunHealth {
+	rank := func(h types.RunHealth) int {
+		switch h {
+		case types.RunHealthy:
+			return 0
+		case types.RunDegraded:
+			return 1
+		default:
+			return 2
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+// combineVerification folds one more trial's verdict into a task's:
+// failed when any trial failed, else passed when any passed, else none.
+func combineVerification(acc, next types.VerificationStatus) types.VerificationStatus {
+	switch {
+	case acc == types.VerificationFailed || next == types.VerificationFailed:
+		return types.VerificationFailed
+	case acc == types.VerificationPassed || next == types.VerificationPassed:
+		return types.VerificationPassed
+	default:
+		return types.VerificationNone
+	}
 }
 
 func hasStrictMajority(c eval.TrialCounts, outcome string) bool {

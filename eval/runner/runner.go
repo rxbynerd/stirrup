@@ -46,6 +46,11 @@ type RunConfig struct {
 	// trials attribute, then to 1.
 	Trials int
 
+	// RequireHealthy makes the comparison gate count a judge pass only when
+	// the run was healthy, in addition to a suite's require_healthy
+	// attribute.
+	RequireHealthy bool
+
 	// DryRun if true, validates the suite without executing tasks.
 	DryRun bool
 
@@ -206,6 +211,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		Tasks:       results,
 		PassRate:    suitePassRate(results),
 		Trials:      trials,
+
+		HealthyPassRate: eval.HealthyPassRate(results),
+		RequireHealthy:  cfg.RequireHealthy || suite.RequireHealthy,
 	}
 	if !cacheMode.IsLive() {
 		summary := cfg.JudgeOptions.CacheStats.Summary(cacheMode)
@@ -524,7 +532,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if judgeErr != nil {
 			return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
 		}
-		return buildResult(task.ID, start, trace, verdict)
+		return buildResult(task.ID, start, trace, verdict, true)
 	}
 
 	trace, err := parseTraceFile(traceFile)
@@ -542,7 +550,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed: %w", err))
 	}
 
-	return buildResult(task.ID, start, trace, verdict)
+	return buildResult(task.ID, start, trace, verdict, false)
 }
 
 // judgeErrorResult is errorResult for a judge that could not rule. An
@@ -551,6 +559,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 func judgeErrorResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, err error) eval.TaskResult {
 	result := errorResult(taskID, start, err)
 	result.Trace = trace
+	result.Verification = types.LastVerification(trace)
 	if verdict.Status == types.JudgeStatusError {
 		result.JudgeVerdict = verdict
 	}
@@ -663,12 +672,16 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	return r.Last()
 }
 
-// errorResult builds a TaskResult with outcome "error".
+// errorResult builds a TaskResult with outcome "error". The run counts as
+// failed whatever the cause: no judge verdict exists for it.
 func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 	return eval.TaskResult{
-		TaskID:  taskID,
-		Outcome: "error",
-		Error:   err.Error(),
+		TaskID:       taskID,
+		Outcome:      "error",
+		Error:        err.Error(),
+		RunHealth:    types.RunFailed,
+		Verification: types.VerificationNone,
+		Delivery:     eval.DeliveryNotMeasured,
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: false,
 			Status: types.JudgeStatusError,
@@ -807,13 +820,18 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 // buildResult constructs a TaskResult from a trace and verdict. A verdict
 // whose status is "error" is the error outcome whatever its Passed field
 // says, so a judge that could not rule never counts as a pass or a fail.
-func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict) eval.TaskResult {
+// The outcome is the verdict alone; harnessFailed, the trace, and the
+// verifier results only fill the run health fields beside it.
+func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, harnessFailed bool) eval.TaskResult {
 	result := eval.TaskResult{
 		TaskID:       taskID,
 		Outcome:      "fail",
 		Trace:        trace,
 		JudgeVerdict: verdict,
 		DurationMs:   time.Since(start).Milliseconds(),
+		RunHealth:    types.RunHealthFor(trace, harnessFailed),
+		Verification: types.LastVerification(trace),
+		Delivery:     eval.DeliveryNotMeasured,
 	}
 	switch {
 	case verdict.Status == types.JudgeStatusError:

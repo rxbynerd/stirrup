@@ -59,3 +59,21 @@ func TestLoadSuiteHCL_TrialsCap(t *testing.T) {
 		t.Errorf("trials = 21: error = %v, want a cap error", err)
 	}
 }
+
+func TestLoadSuiteHCL_RequireHealthy(t *testing.T) {
+	got, err := LoadSuiteHCL(writeTemp(t, "require.hcl", trialsSuiteSource("  require_healthy = true\n")))
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if !got.RequireHealthy {
+		t.Error("RequireHealthy = false, want true")
+	}
+
+	unset, err := LoadSuiteHCL(writeTemp(t, "no-require.hcl", trialsSuiteSource("")))
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if unset.RequireHealthy {
+		t.Error("RequireHealthy = true when the attribute is absent")
+	}
+}

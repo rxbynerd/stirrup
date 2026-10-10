@@ -58,5 +58,5 @@ func ReplayRecording(ctx context.Context, recording types.RunRecording, task typ
 		return judgeErrorResult(task.ID, start, jctx.Trace, verdict, err), err
 	}
 
-	return buildResult(task.ID, start, jctx.Trace, verdict), nil
+	return buildResult(task.ID, start, jctx.Trace, verdict, false), nil
 }

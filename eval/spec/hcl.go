@@ -129,6 +129,7 @@ type suiteSpec struct {
 	RunConfig       *runConfigSpec `hcl:"run_config,block"`
 	QuarantineFlags []string       `hcl:"quarantine_flags,optional"`
 	Trials          *int           `hcl:"trials,optional"`
+	RequireHealthy  bool           `hcl:"require_healthy,optional"`
 	Tasks           []taskSpec     `hcl:"task,block"`
 }
 
@@ -358,6 +359,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		RunConfig:       suiteRunConfig,
 		QuarantineFlags: quarantineFlags,
 		Trials:          trials,
+		RequireHealthy:  s.RequireHealthy,
 	}, nil
 }
 
