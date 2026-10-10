@@ -96,6 +96,17 @@ func NewLocalExecutorWithConfig(cfg LocalExecutorConfig) (*LocalExecutor, error)
 // the result is contained within the workspace. It rejects path traversal
 // attempts and symlinks that escape the workspace.
 func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
+	return e.resolvePath(relativePath, true)
+}
+
+// ResolvePathQuietly is ResolvePath without the path-traversal security
+// event, for callers probing a path that a later ResolvePath call checks
+// and reports again.
+func (e *LocalExecutor) ResolvePathQuietly(relativePath string) (string, error) {
+	return e.resolvePath(relativePath, false)
+}
+
+func (e *LocalExecutor) resolvePath(relativePath string, report bool) (string, error) {
 	if filepath.IsAbs(relativePath) {
 		// Allow absolute paths only if they fall within the workspace.
 		resolved, err := filepath.EvalSymlinks(relativePath)
@@ -108,7 +119,7 @@ func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
 			}
 		}
 		if !isWithin(resolved, e.workspace) {
-			if e.Security != nil {
+			if report && e.Security != nil {
 				e.Security.PathTraversalBlocked(relativePath, e.workspace)
 			}
 			return "", fmt.Errorf("path escapes workspace: %s", relativePath)
@@ -126,7 +137,7 @@ func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
 		}
 	}
 	if !isWithin(resolved, e.workspace) {
-		if e.Security != nil {
+		if report && e.Security != nil {
 			e.Security.PathTraversalBlocked(relativePath, e.workspace)
 		}
 		return "", fmt.Errorf("path escapes workspace: %s", relativePath)

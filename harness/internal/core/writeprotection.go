@@ -13,8 +13,18 @@ func (l *AgenticLoop) buildWriteProtection() security.ProtectedWriteTargets {
 		}
 	}
 	var resolve func(string) (string, error)
-	if l.Executor != nil {
+	if q, ok := l.Executor.(quietResolver); ok {
+		resolve = q.ResolvePathQuietly
+	} else if l.Executor != nil {
 		resolve = l.Executor.ResolvePath
 	}
 	return security.NewProtectedWriteTargets(entries, resolve)
+}
+
+// quietResolver is an executor whose ResolvePath reports traversal attempts
+// as security events. The guard only probes a candidate the tool dispatch
+// resolves again, so it uses the quiet form and each attempt is reported
+// once.
+type quietResolver interface {
+	ResolvePathQuietly(relativePath string) (string, error)
 }

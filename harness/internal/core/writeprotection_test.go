@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -8,9 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -223,5 +226,45 @@ func TestSpawnSubAgent_InheritsProtectedWriteTargets(t *testing.T) {
 	}
 	if len(*writes) != 1 || (*writes)[0] != "notes.md" {
 		t.Errorf("sub-agent writes = %v, want only notes.md", *writes)
+	}
+}
+
+func TestLoop_ProtectedWriteTargets_EscapingSymlinkReportsTraversalOnce(t *testing.T) {
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(workspace, "escape_link")); err != nil {
+		t.Fatal(err)
+	}
+	local, err := executor.NewLocalExecutor(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(nil, &secBuf)
+	local.Security = loop.Security
+	loop.Executor = local
+	loop.ProtectedWriteTargets = []string{"AGENTS.md"}
+	loop.Tools.(*tool.Registry).Register(builtins.WriteFileTool(local))
+	loop.Provider = &multiCallProvider{calls: [][]types.StreamEvent{
+		{
+			{Type: "tool_call", ID: "w1", Name: "write_file", Input: map[string]any{"path": "escape_link/notes.md", "content": "x"}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}}
+
+	config := buildTestConfig()
+	config.Executor.Workspace = workspace
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n := strings.Count(secBuf.String(), `"event":"path_traversal_blocked"`); n != 1 {
+		t.Errorf("path_traversal_blocked events = %d, want exactly 1 for one escaping write:\n%s", n, secBuf.String())
 	}
 }
