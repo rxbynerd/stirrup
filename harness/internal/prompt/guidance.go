@@ -79,16 +79,16 @@ func (l *repositoryGuidanceLoader) Load(ctx context.Context) ([]GuidanceDocument
 				}})
 				continue
 			case errors.Is(err, fs.ErrNotExist):
-				return nil, fmt.Errorf("pinned repository guidance %q is missing from the workspace: %w", path, err)
+				return nil, fmt.Errorf("pinned file %q is missing from the workspace: %w", path, err)
 			default:
-				return nil, fmt.Errorf("read repository guidance %q: %w", path, err)
+				return nil, fmt.Errorf("read %q: %w", path, err)
 			}
 		}
 
 		digest := sha256.Sum256([]byte(raw))
 		got := hex.EncodeToString(digest[:])
 		if isPinned && !strings.EqualFold(got, want) {
-			return nil, fmt.Errorf("repository guidance %q does not match its pinned SHA-256 (got %s, want %s)", path, got, strings.ToLower(want))
+			return nil, fmt.Errorf("%q does not match its pinned SHA-256 (got %s, want %s)", path, got, strings.ToLower(want))
 		}
 
 		content, truncated := truncateUTF8(raw, budget)

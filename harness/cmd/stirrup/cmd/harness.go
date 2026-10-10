@@ -1223,6 +1223,40 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.ToolChoiceEscalation.MaxRetries = mr
 	}
+	return applyRepositoryGuidanceOverrides(cmd, cfg)
+}
+
+// applyRepositoryGuidanceOverrides folds the --repository-guidance-* flags
+// into cfg. --repository-guidance-file replaces the file list; pins merge
+// over any file-supplied pins so one flag can re-pin a single file.
+func applyRepositoryGuidanceOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
+	f := cmd.Flags()
+	if !f.Changed("repository-guidance-file") && !f.Changed("repository-guidance-max-bytes") && !f.Changed("repository-guidance-pin") {
+		return nil
+	}
+	if cfg.RepositoryGuidance == nil {
+		cfg.RepositoryGuidance = &types.RepositoryGuidanceConfig{}
+	}
+	rg := cfg.RepositoryGuidance
+	if f.Changed("repository-guidance-file") {
+		rg.Files, _ = f.GetStringArray("repository-guidance-file")
+	}
+	if f.Changed("repository-guidance-max-bytes") {
+		rg.MaxBytes, _ = f.GetInt("repository-guidance-max-bytes")
+	}
+	if f.Changed("repository-guidance-pin") {
+		pins, _ := f.GetStringArray("repository-guidance-pin")
+		for _, entry := range pins {
+			path, digest, err := parseQueryParam(entry)
+			if err != nil {
+				return fmt.Errorf("--repository-guidance-pin %q: %w", entry, err)
+			}
+			if rg.PinnedSHA256 == nil {
+				rg.PinnedSHA256 = map[string]string{}
+			}
+			rg.PinnedSHA256[path] = digest
+		}
+	}
 	return nil
 }
 
