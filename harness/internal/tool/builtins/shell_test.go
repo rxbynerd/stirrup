@@ -135,3 +135,12 @@ func TestRunCommandTool_NonTimeoutErrorStillPropagates(t *testing.T) {
 		t.Errorf("err = %v, must not satisfy errors.Is(err, executor.ErrTimeout)", err)
 	}
 }
+
+func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) {
+	desc := RunCommandTool(&mockExecutor{}).Description
+	for _, want := range []string{"the processes it started are killed", "SIGKILL", "detached into their own session or process group"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("run_command description missing %q: %s", want, desc)
+		}
+	}
+}

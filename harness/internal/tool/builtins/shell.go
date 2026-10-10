@@ -47,7 +47,7 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 		Description: "Execute a shell command in the workspace directory. Returns stdout, then a 'STDERR:' block when stderr is non-empty, then '[exit code: N]' when the command exited non-zero. " +
 			"Use this for build, test, format, lint, and other tooling invocations that have to actually run. " +
 			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
-			"timeout is in seconds (default 30, max 300); the command is killed when the timeout elapses. " +
+			"timeout is in seconds (default 30, max 300); when it elapses the command and the processes it started are killed (SIGTERM, then SIGKILL after a short grace), except processes that detached into their own session or process group. " +
 			"On timeout this returns the partial stdout/stderr captured before the deadline plus a '[timed out after Ns]' marker, not a hard error, so act on the partial output or rerun with a longer timeout. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
 		// Pinned to the description by TestBuiltinInputExamples_MatchDescription.
