@@ -412,40 +412,52 @@ func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runEr
 	return exportWorkspace(exportCtx, cfg, exportTo, p.exportRequired)
 }
 
-// setupSignalHandler installs SIGINT/SIGTERM handlers that cancel the given context.
-func setupSignalHandler(cancel context.CancelFunc) {
-	sigCh := make(chan os.Signal, 1)
+// setupSignalHandler installs SIGINT/SIGTERM handlers; see handleSignals.
+func setupSignalHandler(interrupt, shutdown func()) {
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nReceived interrupt, shutting down...")
-		cancel()
-	}()
+	go handleSignals(sigCh, os.Stderr, interrupt, shutdown)
 }
 
-// shutdownCloseGrace bounds how long armShutdownWatchdog waits after a
-// process shutdown signal before proactively closing the loop, even if
-// Run() has not returned yet (e.g. a detached postRun lifecycle hook is
-// still winding down). Chosen comfortably under the shortest documented
+// handleSignals calls interrupt on the first signal, which ends the run
+// while its bounded post-run work (git finalise, postRun hooks, trace
+// finish) continues, and shutdown, when non-nil, on a second signal to
+// abandon that work.
+func handleSignals(sigCh <-chan os.Signal, out io.Writer, interrupt, shutdown func()) {
+	<-sigCh
+	_, _ = fmt.Fprintln(out, "\nReceived interrupt, shutting down...")
+	interrupt()
+	if shutdown == nil {
+		return
+	}
+	<-sigCh
+	_, _ = fmt.Fprintln(out, "Received second interrupt, abandoning post-run work...")
+	shutdown()
+}
+
+// shutdownCloseGrace bounds how long armShutdownWatchdog waits after the
+// first process shutdown signal before proactively closing the loop, even
+// if Run() has not returned yet (e.g. detached post-run work is still
+// winding down). Chosen comfortably under the shortest documented
 // orchestrator SIGKILL escalation (10s on Cloud Run and `docker stop`;
 // see docs/cloud-run-jobs.md) so the executor's sandbox has a real
 // chance to be torn down before the process is killed outright.
 const shutdownCloseGrace = 5 * time.Second
 
 // armShutdownWatchdog starts a background goroutine that proactively
-// closes loop after shutdownCtx is done, unless the returned stop
+// closes loop after signalCtx is done, unless the returned stop
 // function is called first (Run() already returned; the caller's own
 // `defer loop.Close()` handles teardown). Guards against the
 // orchestrator's SIGKILL escalation firing before Run() returns, which
 // would otherwise skip the deferred Close() entirely and orphan the
 // executor's sandbox. Close() is safe to invoke more than once.
-func armShutdownWatchdog(shutdownCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
+func armShutdownWatchdog(signalCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
 	runDone := make(chan struct{})
 	go func() {
 		select {
 		case <-runDone:
 			return
-		case <-shutdownCtx.Done():
+		case <-signalCtx.Done():
 		}
 		select {
 		case <-runDone:

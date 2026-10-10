@@ -269,10 +269,9 @@ Salient points for stirrup:
   configuring `postRun` lifecycle hooks (issue #461) is a partial
   exception: those hooks deliberately run on a context detached from
   the run's own deadline/cancellation so an in-flight artifact upload
-  can survive it, but the harness still observes SIGTERM directly on
-  that detached context (`AgenticLoop.Shutdown`) and cuts a `postRun`
-  hook short promptly rather than letting it run for its full
-  configured budget (up to 1830s). A background watchdog additionally
+  can survive it; a second SIGTERM cancels that detached context
+  (`AgenticLoop.Shutdown`) and cuts a `postRun` hook short rather than
+  letting it run for its full configured budget (up to 1830s). A background watchdog additionally
   bounds executor teardown to 5 seconds after SIGTERM even if `Run()`
   has not yet returned, so the container is stopped and removed well
   inside the 10-second grace window regardless of what an in-flight

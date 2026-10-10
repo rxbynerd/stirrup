@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -371,6 +373,57 @@ func TestArmShutdownWatchdog_NoShutdownNeverCloses(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if closer.callCount() != 0 {
 		t.Errorf("Close called %d times, want 0 (no shutdown signal was ever sent)", closer.callCount())
+	}
+}
+
+func TestHandleSignals_FirstInterruptsSecondShutsDown(t *testing.T) {
+	sigCh := make(chan os.Signal, 2)
+	interrupted := make(chan struct{})
+	shutdown := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		handleSignals(sigCh, &bytes.Buffer{}, func() { close(interrupted) }, func() { close(shutdown) })
+		close(done)
+	}()
+
+	sigCh <- syscall.SIGTERM
+	select {
+	case <-interrupted:
+	case <-time.After(time.Second):
+		t.Fatal("first signal did not call interrupt")
+	}
+	select {
+	case <-shutdown:
+		t.Fatal("first signal called shutdown, want post-run work left running")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	sigCh <- syscall.SIGTERM
+	select {
+	case <-shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("second signal did not call shutdown")
+	}
+	<-done
+}
+
+func TestHandleSignals_NilShutdownReturnsAfterFirstSignal(t *testing.T) {
+	sigCh := make(chan os.Signal, 1)
+	interrupted := false
+	done := make(chan struct{})
+	go func() {
+		handleSignals(sigCh, &bytes.Buffer{}, func() { interrupted = true }, nil)
+		close(done)
+	}()
+
+	sigCh <- syscall.SIGINT
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleSignals did not return after the first signal with no shutdown func")
+	}
+	if !interrupted {
+		t.Error("first signal did not call interrupt")
 	}
 }
 

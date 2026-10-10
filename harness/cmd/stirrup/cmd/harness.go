@@ -1335,7 +1335,7 @@ func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOpti
 	// than cmd.Context() which is nil outside Cobra's Execute path.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(cancel)
+	setupSignalHandler(cancel, nil)
 
 	report, err := preflightFn(ctx, cfg, opts)
 	if err != nil {
@@ -1674,20 +1674,16 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		}
 	}
 
-	// shutdownCtx carries only the process-level shutdown signal,
-	// independent of ctx's run-deadline cancellation below: the
-	// detached postRun hook phase must survive ctx's own deadline but
-	// still observe a genuine shutdown — see AgenticLoop.Shutdown and
+	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
+	// post-run work keeps its bounded budget until a second signal
+	// cancels shutdownCtx — see AgenticLoop.Shutdown and
 	// docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(func() {
-		shutdownCancel()
-		cancel()
-	})
+	setupSignalHandler(cancel, shutdownCancel)
 
 	// The wall-clock budget covers component construction plus the
 	// primary run; follow-ups mint their own from the cancel-only ctx.
@@ -1705,7 +1701,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
-	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
 	policy := &postRunPolicy{

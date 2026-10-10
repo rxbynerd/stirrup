@@ -51,19 +51,16 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
-	// shutdownCtx carries only the process-level shutdown signal, independent
-	// of ctx below, so the detached postRun hook phase still observes it.
-	// See docs/cloud-run-jobs.md.
+	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
+	// post-run work keeps its bounded budget until a second signal
+	// cancels shutdownCtx. See docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
 	// Timeout is applied later once the RunConfig (which carries it) arrives.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(func() {
-		shutdownCancel()
-		cancel()
-	})
+	setupSignalHandler(cancel, shutdownCancel)
 
 	tp, err := transport.NewGRPCTransport(ctx, addr)
 	if err != nil {
@@ -165,7 +162,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
-	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
 	// The control plane decides the export URI via
