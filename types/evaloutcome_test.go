@@ -47,15 +47,47 @@ func TestEvalOutcomeFor(t *testing.T) {
 			want: EvalFailed,
 		},
 		{
-			name: "success with mixed verifier verdicts",
+			name: "success with last verifier attempt failing",
 			trace: RunTrace{
 				Outcome: "success",
 				VerificationResults: []VerificationResult{
-					{Passed: true},
-					{Passed: false},
+					{Attempt: 1, Passed: true},
+					{Attempt: 2, Passed: false},
 				},
 			},
 			want: EvalFailed,
+		},
+		{
+			name: "success after a failed attempt and a passing repair",
+			trace: RunTrace{
+				Outcome: "success",
+				VerificationResults: []VerificationResult{
+					{Attempt: 1, Passed: false, Feedback: "tests failed"},
+					{Attempt: 2, Passed: true},
+				},
+			},
+			want: EvalPassed,
+		},
+		{
+			name: "verification_failed with recorded attempts",
+			trace: RunTrace{
+				Outcome: "verification_failed",
+				VerificationResults: []VerificationResult{
+					{Attempt: 1, Passed: false},
+					{Attempt: 2, Passed: false},
+				},
+			},
+			want: EvalFailed,
+		},
+		{
+			name: "verification_error with a recorded verifier error",
+			trace: RunTrace{
+				Outcome: "verification_error",
+				VerificationResults: []VerificationResult{
+					{Attempt: 1, Passed: false, Error: "exec failed"},
+				},
+			},
+			want: EvalInconclusive,
 		},
 		{name: "verification_failed", trace: RunTrace{Outcome: "verification_failed"}, want: EvalFailed},
 		{name: "error", trace: RunTrace{Outcome: "error"}, want: EvalFailed},
