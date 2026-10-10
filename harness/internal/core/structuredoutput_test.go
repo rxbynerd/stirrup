@@ -161,6 +161,97 @@ func TestRun_StructuredOutputFailsAfterCorrectiveAttempts(t *testing.T) {
 	}
 }
 
+func TestRun_StructuredCorrectionsShareMaxTurns(t *testing.T) {
+	const valid = `{"title":"Fix login","labels":["bug"]}`
+	tests := []struct {
+		name        string
+		maxTurns    int
+		answers     []string
+		wantCalls   int
+		wantOutcome string
+	}{
+		{name: "turn budget smaller than the correction budget", maxTurns: 2, answers: []string{"not json"}, wantCalls: 2, wantOutcome: "max_turns"},
+		{name: "single turn leaves no room for a correction", maxTurns: 1, answers: []string{"not json"}, wantCalls: 1, wantOutcome: "max_turns"},
+		{name: "valid answer on the last turn", maxTurns: 3, answers: []string{"not json", "still not json", valid}, wantCalls: 3, wantOutcome: "success"},
+		{name: "correction budget exhausted before the turn budget", maxTurns: 20, answers: []string{"not json"}, wantCalls: 1 + maxStructuredOutputCorrections, wantOutcome: "structured_output_failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			loop, prov, _ := structuredTestLoop(tc.answers...)
+			config := structuredTestConfig()
+			config.MaxTurns = tc.maxTurns
+
+			runTrace, err := loop.Run(context.Background(), config)
+			if err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if got := prov.calls(); got != tc.wantCalls {
+				t.Errorf("provider calls = %d, want %d", got, tc.wantCalls)
+			}
+			if runTrace.Turns != tc.wantCalls {
+				t.Errorf("RunTrace.Turns = %d, want %d", runTrace.Turns, tc.wantCalls)
+			}
+			if runTrace.Outcome != tc.wantOutcome {
+				t.Fatalf("Outcome = %q, want %q (error %q)", runTrace.Outcome, tc.wantOutcome, runTrace.Error)
+			}
+			if tc.wantOutcome == "max_turns" {
+				if !strings.Contains(runTrace.Error, "before the final answer satisfied the output schema") ||
+					!strings.Contains(runTrace.Error, "not a single JSON document") {
+					t.Errorf("Error = %q, want the turn limit and the last violation", runTrace.Error)
+				}
+				last := prov.requests[len(prov.requests)-1]
+				if corrections := countSyntheticUserTurns(last); corrections != tc.wantCalls-1 {
+					t.Errorf("last request carries %d corrections, want %d", corrections, tc.wantCalls-1)
+				}
+			}
+		})
+	}
+}
+
+func TestRun_StructuredCorrectionsWithToolTurnsShareMaxTurns(t *testing.T) {
+	tests := []struct {
+		name        string
+		maxTurns    int
+		wantOutcome string
+	}{
+		{name: "turns run out at a correction boundary", maxTurns: 4, wantOutcome: "max_turns"},
+		{name: "turns run out mid-correction", maxTurns: 5, wantOutcome: "max_turns"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &attemptProvider{turnsPerAttempt: 2}
+			loop, callTurns := buildRepairTestLoop(prov)
+			config := structuredTestConfig()
+			config.MaxTurns = tc.maxTurns
+
+			runTrace, err := loop.Run(context.Background(), config)
+			if err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if got := prov.callCount(); got != tc.maxTurns {
+				t.Errorf("provider calls = %d, want %d", got, tc.maxTurns)
+			}
+			if runTrace.Turns != tc.maxTurns {
+				t.Errorf("RunTrace.Turns = %d, want %d", runTrace.Turns, tc.maxTurns)
+			}
+			if runTrace.Outcome != tc.wantOutcome {
+				t.Errorf("Outcome = %q, want %q (error %q)", runTrace.Outcome, tc.wantOutcome, runTrace.Error)
+			}
+			assertStrictlyIncreasing(t, "tool call turns", *callTurns)
+		})
+	}
+}
+
+func countSyntheticUserTurns(messages []types.Message) int {
+	n := 0
+	for _, m := range messages {
+		if m.Role == "user" && m.Synthetic {
+			n++
+		}
+	}
+	return n
+}
+
 func TestRun_InvalidAnswerNeverReachesVerifier(t *testing.T) {
 	loop, _, _ := structuredTestLoop(
 		"not json",

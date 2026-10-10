@@ -360,6 +360,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 					l.noteFailure(outcome, "structured output: "+violation)
 					break
 				}
+				if nextTurn >= config.MaxTurns {
+					outcome = "max_turns"
+					l.noteFailure(outcome, fmt.Sprintf("reached the turn limit (maxTurns %d) before the final answer satisfied the output schema: %s", config.MaxTurns, violation))
+					break
+				}
 				structuredCorrections++
 				l.Logger.Info("final answer failed the output schema; requesting a correction",
 					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
