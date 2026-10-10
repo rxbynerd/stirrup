@@ -421,6 +421,12 @@ type ToolCallRecord struct {
 }
 
 // RunRecording is a full recording of a run.
+//
+// Turns holds only the recorded run's own turns. Sub-agent runs that
+// streamed into the same trace are in SubRuns, one entry per child in
+// order of first appearance. CommandOutputs describes the run's whole
+// sidecar archive, which sub-agents share, so its entries span every
+// run and carry their own RunID.
 type RunRecording struct {
 	RunID          string                `json:"runId"`
 	Config         RunConfig             `json:"config"`
@@ -429,7 +435,31 @@ type RunRecording struct {
 	CommandOutputs []CommandOutputRecord `json:"commandOutputs,omitempty"`
 	// SkippedLines counts trace lines the reader dropped for exceeding
 	// its per-line cap. A non-zero value marks the recording as partial.
-	SkippedLines int `json:"skippedLines,omitempty"`
+	SkippedLines int               `json:"skippedLines,omitempty"`
+	SubRuns      []SubRunRecording `json:"subRuns,omitempty"`
+}
+
+// SubRunRecording is one sub-agent run reassembled from the parent's
+// trace. Summary is nil when the trace ends before the child finished.
+type SubRunRecording struct {
+	RunID       string         `json:"runId"`
+	ParentRunID string         `json:"parentRunId,omitempty"`
+	Config      RunConfig      `json:"config"`
+	Turns       []TurnRecord   `json:"turns"`
+	Summary     *SubRunSummary `json:"summary,omitempty"`
+}
+
+// SubRunSummary is the outcome of a sub-agent run, streamed on the
+// parent's trace when the child finishes.
+type SubRunSummary struct {
+	RunID       string     `json:"runId"`
+	ParentRunID string     `json:"parentRunId,omitempty"`
+	Outcome     string     `json:"outcome"`
+	Turns       int        `json:"turns"`
+	TokenUsage  TokenUsage `json:"tokenUsage"`
+	StartedAt   time.Time  `json:"startedAt"`
+	CompletedAt time.Time  `json:"completedAt"`
+	DurationMs  int64      `json:"durationMs"`
 }
 
 // BudgetCheck holds the result of a token budget check.

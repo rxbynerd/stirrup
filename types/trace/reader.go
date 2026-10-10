@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -190,6 +191,8 @@ const (
 	eventKindToolCallRecord      = "tool_call_record"
 	eventKindRunFinished         = "run_finished"
 	eventKindCommandOutputRecord = "command_output_record"
+	eventKindSubRunStarted       = "subrun_started"
+	eventKindSubRunFinished      = "subrun_finished"
 )
 
 // streamedEvent mirrors the on-wire shape of harness/internal/trace.Event
@@ -199,6 +202,7 @@ type streamedEvent struct {
 	Kind          string                     `json:"kind"`
 	SchemaVersion string                     `json:"schemaVersion,omitempty"`
 	RunID         string                     `json:"runId,omitempty"`
+	ParentRunID   string                     `json:"parentRunId,omitempty"`
 	StartedAt     *time.Time                 `json:"startedAt,omitempty"`
 	CompletedAt   *time.Time                 `json:"completedAt,omitempty"`
 	Config        *types.RunConfig           `json:"config,omitempty"`
@@ -209,6 +213,7 @@ type streamedEvent struct {
 	ToolCall      *types.ToolCallRecord      `json:"toolCall,omitempty"`
 	Trace         *types.RunTrace            `json:"trace,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
+	SubRun        *types.SubRunSummary       `json:"subRun,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -256,6 +261,12 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 // FinalOutcome.ID == "". A legacy single-blob trace is treated as a
 // recording with no transcript turns.
 //
+// A turn_record that names a parent run and carries a run ID other than
+// the recording's belongs to a sub-agent: it is grouped into
+// RunRecording.SubRuns together with that child's subrun_started and
+// subrun_finished events, and never appears in Turns. Records without
+// run IDs, as in traces written before sub-run tagging, stay in Turns.
+//
 // Lines longer than MaxLineBytes are dropped without discarding the
 // records around them; RunRecording.SkippedLines reports how many, and
 // a non-zero count means the recording is incomplete.
@@ -265,6 +276,20 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 	recording := &types.RunRecording{}
 	seenStarted := false
+	subRunIndex := map[string]int{}
+	subRun := func(runID, parentRunID string) *types.SubRunRecording {
+		i, ok := subRunIndex[runID]
+		if !ok {
+			i = len(recording.SubRuns)
+			subRunIndex[runID] = i
+			recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: runID})
+		}
+		child := &recording.SubRuns[i]
+		if parentRunID != "" {
+			child.ParentRunID = parentRunID
+		}
+		return child
+	}
 	for r.scanner.Scan() {
 		line := r.scanner.Bytes()
 		if len(line) == 0 {
@@ -312,11 +337,33 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 				Turn:        ev.Turn,
 				ModelOutput: ev.ModelOutput,
 				ToolCalls:   ev.ToolCalls,
+				RunID:       ev.RunID,
+				ParentRunID: ev.ParentRunID,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput
 			}
+			if ev.ParentRunID != "" && ev.RunID != "" && ev.RunID != recording.RunID {
+				child := subRun(ev.RunID, ev.ParentRunID)
+				child.Turns = append(child.Turns, tr)
+				continue
+			}
 			recording.Turns = append(recording.Turns, tr)
+		case eventKindSubRunStarted:
+			if ev.RunID == "" {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			if ev.Config != nil {
+				child.Config = *ev.Config
+			}
+		case eventKindSubRunFinished:
+			if ev.RunID == "" || ev.SubRun == nil {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			summary := *ev.SubRun
+			child.Summary = &summary
 		case eventKindRunFinished:
 			if ev.Trace != nil {
 				recording.FinalOutcome = *ev.Trace
@@ -356,7 +403,11 @@ func synthesizeLegacyCommandOutputs(recording *types.RunRecording) {
 	for _, record := range recording.CommandOutputs {
 		seen[record.RunID+"\x00"+record.ToolUseID] = true
 	}
-	for _, turn := range recording.Turns {
+	turns := slices.Clone(recording.Turns)
+	for _, child := range recording.SubRuns {
+		turns = append(turns, child.Turns...)
+	}
+	for _, turn := range turns {
 		for _, call := range turn.ToolCalls {
 			if call.Name != "run_command" && call.InternalName != "run_command" {
 				continue

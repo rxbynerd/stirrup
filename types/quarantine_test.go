@@ -105,3 +105,22 @@ func TestClassifyForQuarantine_LargeArchivedCommandStream(t *testing.T) {
 		t.Fatalf("flags=%v", flags)
 	}
 }
+
+// TestClassifyForQuarantine_LargeSubRunTurn pins that a large payload
+// inside a sub-agent run is flagged: sub-runs are stored with the
+// recording, so they are baked into the suite with it.
+func TestClassifyForQuarantine_LargeSubRunTurn(t *testing.T) {
+	big := strings.Repeat("z", DefaultLargePayloadBytes+1)
+	recordings := []RunRecording{{
+		RunID: "r1",
+		Turns: []TurnRecord{{Turn: 0, ModelOutput: []ContentBlock{{Type: "text", Text: "small"}}}},
+		SubRuns: []SubRunRecording{{
+			RunID: "r1/sub-1",
+			Turns: []TurnRecord{{Turn: 0, ToolCalls: []ToolCallRecord{{Name: "read_file", Output: big}}}},
+		}},
+	}}
+	flags := ClassifyForQuarantine(recordings)
+	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
+		t.Errorf("sub-run large flags = %v, want [%s]", flags, QuarantineLargePayload)
+	}
+}
