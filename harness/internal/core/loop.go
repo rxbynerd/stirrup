@@ -355,7 +355,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			doc, err := checkStructuredOutput(finalAnswerText(messages), config.OutputSchema, structuredOutputLimit(config))
 			if err != nil {
 				violation := structuredOutputViolation(err)
-				if structuredCorrections >= maxStructuredOutputCorrections {
+				if errors.Is(err, errStructuredOutputRedacted) || structuredCorrections >= maxStructuredOutputCorrections {
 					outcome = "structured_output_failed"
 					l.noteFailure(outcome, "structured output: "+violation)
 					break

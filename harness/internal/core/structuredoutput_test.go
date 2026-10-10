@@ -398,6 +398,26 @@ func TestRun_StructuredOutputIsScrubbed(t *testing.T) {
 	}
 }
 
+func TestRun_RedactionThatBreaksTheSchemaFailsWithoutCorrection(t *testing.T) {
+	loop, prov, _ := structuredTestLoop(`{"key":"AKIAIOSFODNN7EXAMPLE"}`)
+	config := structuredTestConfig()
+	config.OutputSchema = json.RawMessage(`{"type":"object","required":["key"],"properties":{"key":{"type":"string","pattern":"^AKIA[A-Z0-9]{16}$"}}}`)
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "structured_output_failed" {
+		t.Fatalf("Outcome = %q, want structured_output_failed", runTrace.Outcome)
+	}
+	if prov.calls() != 1 {
+		t.Errorf("provider calls = %d, want 1: the model cannot correct a redaction", prov.calls())
+	}
+	if !strings.HasPrefix(runTrace.Error, "structured output: scrubbing secrets from the JSON document broke it") {
+		t.Errorf("Error = %q, want redaction named as the cause", runTrace.Error)
+	}
+}
+
 func TestRun_OversizedStructuredOutputIsAFailureNotTruncated(t *testing.T) {
 	big := `{"title":"` + strings.Repeat("x", 60) + `","labels":["bug","bug","bug","bug","bug","bug"]}`
 	loop, prov, _ := structuredTestLoop(big)
@@ -500,13 +520,45 @@ func TestCheckStructuredOutput(t *testing.T) {
 		}
 	})
 
-	t.Run("strips_prototype_pollution_keys", func(t *testing.T) {
-		got, err := checkStructuredOutput(`{"n":1,"__proto__":{"admin":true}}`, schema, 1024)
-		if err != nil {
-			t.Fatalf("error = %v", err)
+	t.Run("rejects_prototype_pollution_keys", func(t *testing.T) {
+		for _, doc := range []string{`{"n":1,"__proto__":{"admin":true}}`, `{"n":1,"note":"x","nested":[{"constructor":"Foo"}]}`} {
+			_, err := checkStructuredOutput(doc, json.RawMessage(`{"type":"object"}`), 1024)
+			if err == nil || !strings.Contains(err.Error(), "reserved key") || errors.Is(err, errStructuredOutputRedacted) {
+				t.Errorf("%s: error = %v, want a correctable reserved-key violation", doc, err)
+			}
 		}
-		if strings.Contains(string(got), "__proto__") {
-			t.Errorf("document = %s, want __proto__ removed", got)
+	})
+
+	t.Run("names_the_reserved_key_a_schema_requires", func(t *testing.T) {
+		requires := json.RawMessage(`{"type":"object","required":["constructor"]}`)
+		_, err := checkStructuredOutput(`{"constructor":"Foo"}`, requires, 1024)
+		if err == nil || !strings.Contains(err.Error(), `reserved key "constructor"`) {
+			t.Errorf("error = %v, want the reserved key named", err)
+		}
+	})
+
+	t.Run("rejects_a_repeated_key", func(t *testing.T) {
+		_, err := checkStructuredOutput(`{"n":1,"note":"a","note":"b"}`, schema, 1024)
+		if err == nil || !strings.Contains(err.Error(), `repeats the key "note"`) || errors.Is(err, errStructuredOutputRedacted) {
+			t.Errorf("error = %v, want a correctable repeated-key violation", err)
+		}
+	})
+
+	t.Run("redaction_that_breaks_the_schema_is_not_correctable", func(t *testing.T) {
+		pattern := json.RawMessage(`{"type":"object","properties":{"key":{"type":"string","pattern":"^AKIA[A-Z0-9]{16}$"}}}`)
+		_, err := checkStructuredOutput(`{"key":"AKIAIOSFODNN7EXAMPLE"}`, pattern, 1024)
+		if !errors.Is(err, errStructuredOutputRedacted) {
+			t.Fatalf("error = %v, want errStructuredOutputRedacted", err)
+		}
+		if strings.Contains(err.Error(), "AKIAIOSFODNN7EXAMPLE") {
+			t.Errorf("error = %q carries the credential", err)
+		}
+	})
+
+	t.Run("keys_that_collide_after_redaction_are_not_correctable", func(t *testing.T) {
+		_, err := checkStructuredOutput(`{"AKIAIOSFODNN7EXAMPLE":1,"AKIAIOSFODNN7EXAMPL2":2}`, json.RawMessage(`{"type":"object"}`), 1024)
+		if !errors.Is(err, errStructuredOutputRedacted) || !strings.Contains(err.Error(), "two keys became") {
+			t.Errorf("error = %v, want a redaction collision", err)
 		}
 	})
 
@@ -532,6 +584,25 @@ func TestCheckStructuredOutput(t *testing.T) {
 			t.Errorf("error = %v, want the size limit", err)
 		}
 	})
+}
+
+func TestDuplicateKey(t *testing.T) {
+	tests := []struct {
+		doc     string
+		wantKey string
+	}{
+		{doc: `{"a":1,"b":{"a":2},"c":[{"a":3},{"a":4}]}`},
+		{doc: `{"a":1,"b":2,"a":3}`, wantKey: "a"},
+		{doc: `{"o":{"x":[1,{"y":1}],"x":true}}`, wantKey: "x"},
+		{doc: `["a","a",{"k":"a"}]`},
+		{doc: `"a"`},
+	}
+	for _, tc := range tests {
+		key, ok := duplicateKey([]byte(tc.doc))
+		if ok != (tc.wantKey != "") || key != tc.wantKey {
+			t.Errorf("duplicateKey(%s) = %q, %v; want %q", tc.doc, key, ok, tc.wantKey)
+		}
+	}
 }
 
 func TestScrubJSONStrings(t *testing.T) {

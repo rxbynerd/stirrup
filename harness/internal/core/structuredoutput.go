@@ -59,31 +59,97 @@ func finalAnswerText(messages []types.Message) string {
 	return lastAssistantText(last.Content)
 }
 
+// errStructuredOutputRedacted marks a document that satisfied the schema
+// as the model sent it but not once secrets were scrubbed from it. The
+// model cannot correct a value it never sent, so the run fails instead.
+var errStructuredOutputRedacted = errors.New("scrubbing secrets from the JSON document broke it")
+
 // checkStructuredOutput turns a final answer into the document the run
-// returns: extracted, compacted, stripped of prototype-pollution keys,
-// scrubbed, size-checked, and validated against schema. On failure the
-// error is the reason to give the model.
+// returns: extracted, compacted, checked for reserved and repeated keys,
+// validated against schema, scrubbed, size-checked, and validated again
+// when scrubbing changed it. An error wrapping errStructuredOutputRedacted
+// means the scrubbed document no longer validates; any other error is
+// the reason to give the model.
 func checkStructuredOutput(text string, schema json.RawMessage, maxBytes int) (json.RawMessage, error) {
 	doc, err := extractStructuredOutput(text)
 	if err != nil {
 		return nil, err
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, doc); err != nil {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, doc); err != nil {
 		return nil, fmt.Errorf("the final message is not a single JSON document: %w", err)
 	}
-	stripped, _, err := security.StripDangerousKeysFromInput(compact.Bytes())
-	if err != nil {
+	compact := buf.Bytes()
+	if _, reserved, err := security.StripDangerousKeysFromInput(compact); err != nil {
 		return nil, fmt.Errorf("the final message is not a single JSON document: %w", err)
+	} else if len(reserved) > 0 {
+		return nil, fmt.Errorf("the JSON document uses the reserved key %q; rename it", reserved[0])
 	}
-	scrubbed := scrubJSONStrings(stripped)
+	if key, ok := duplicateKey(compact); ok {
+		return nil, fmt.Errorf("the JSON document repeats the key %q in one object", key)
+	}
+	if err := security.ValidateJSONSchema(compact, schema); err != nil {
+		return nil, errors.New(schemaViolationText(err))
+	}
+	scrubbed := scrubJSONStrings(compact)
 	if len(scrubbed) > maxBytes {
 		return nil, fmt.Errorf("the JSON document is %d bytes, over the %d-byte limit; return a smaller document", len(scrubbed), maxBytes)
 	}
+	if bytes.Equal(scrubbed, compact) {
+		return scrubbed, nil
+	}
+	if key, ok := duplicateKey(scrubbed); ok {
+		return nil, fmt.Errorf("%w: two keys became %q", errStructuredOutputRedacted, key)
+	}
 	if err := security.ValidateJSONSchema(scrubbed, schema); err != nil {
-		return nil, errors.New(schemaViolationText(err))
+		return nil, fmt.Errorf("%w: %s", errStructuredOutputRedacted, schemaViolationText(err))
 	}
 	return scrubbed, nil
+}
+
+// duplicateKey returns the first key that appears twice in one object of
+// doc, which must be valid JSON.
+func duplicateKey(doc []byte) (string, bool) {
+	type container struct {
+		keys    map[string]bool
+		wantKey bool
+	}
+	var stack []*container
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].keys != nil {
+			stack[n-1].wantKey = true
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	dec.UseNumber()
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		if n := len(stack); n > 0 && stack[n-1].wantKey {
+			if key, ok := tok.(string); ok {
+				top := stack[n-1]
+				if top.keys[key] {
+					return key, true
+				}
+				top.keys[key] = true
+				top.wantKey = false
+				continue
+			}
+		}
+		switch tok {
+		case json.Delim('{'):
+			stack = append(stack, &container{keys: map[string]bool{}, wantKey: true})
+		case json.Delim('['):
+			stack = append(stack, &container{})
+		case json.Delim('}'), json.Delim(']'):
+			stack = stack[:len(stack)-1]
+			valueDone()
+		default:
+			valueDone()
+		}
+	}
 }
 
 // extractStructuredOutput returns the JSON document in text, which must
