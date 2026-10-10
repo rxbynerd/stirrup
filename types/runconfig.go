@@ -4517,6 +4517,11 @@ func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]st
 //   - ModelRouter.ModeModels[*] contains "gemini-named-entry/<model>"
 //     overrides — each is checked individually.
 //
+// Names starting with "claude-" are also rejected: the Gemini adapter
+// speaks generateContent, so an Anthropic model name can only 404 on
+// Vertex. This catches the Anthropic default being carried across a
+// provider switch.
+//
 // We do not check CheapModel / ExpensiveModel here because the dynamic
 // router never targets gemini today; revisit when that lands.
 func validateGeminiModelName(config *RunConfig, errs *[]string) {
@@ -4548,6 +4553,13 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"%s %q must match %s for provider type %q (no slashes, percent signs, or special characters)",
 				label, model, geminiModelNamePattern.String(), "gemini"))
+			return
+		}
+		if strings.HasPrefix(model, "claude-") {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s %q is an Anthropic model name and cannot be served by provider type %q; "+
+					"pass a Gemini model id (e.g. --model gemini-3.1-pro-preview)",
+				label, model, "gemini"))
 		}
 	}
 

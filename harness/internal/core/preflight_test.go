@@ -190,6 +190,42 @@ func TestPreflight_PlatformMissingRequiredOptionFails(t *testing.T) {
 	}
 }
 
+func TestPreflight_CredentialHintNamesAPIKeyRefOnProviderMismatch(t *testing.T) {
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	hintFor := func(cfg *types.RunConfig) string {
+		t.Helper()
+		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+		if err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		for _, s := range report.Steps {
+			if s.Name == "credentials" {
+				return s.Hint
+			}
+		}
+		t.Fatal("no credentials step in report")
+		return ""
+	}
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	hint := hintFor(cfg)
+	for _, want := range []string{"--api-key-ref", "openai-compatible", "secret://ANTHROPIC_API_KEY"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint %q should contain %q", hint, want)
+		}
+	}
+
+	cfg = preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Provider.APIKeyRef = "secret://TEST_PREFLIGHT_UNSET"
+	if hint := hintFor(cfg); strings.Contains(hint, "--api-key-ref") {
+		t.Errorf("hint %q should stay generic for a non-Anthropic key reference", hint)
+	}
+}
+
 func TestPreflight_SkipProvider(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)

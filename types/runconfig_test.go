@@ -4946,6 +4946,36 @@ func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_GeminiRejectsClaudeModel pins that an Anthropic
+// model name cannot be paired with the gemini provider, for the default
+// model and for a per-mode override, and that non-claude names still pass.
+func TestValidateRunConfig_GeminiRejectsClaudeModel(t *testing.T) {
+	c := geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "claude-sonnet-4-6"}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "modelRouter.model") || !strings.Contains(err.Error(), "Anthropic model name") {
+		t.Fatalf("expected the claude- rejection on modelRouter.model, got: %v", err)
+	}
+
+	c = geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{
+		Type:       "per-mode",
+		Provider:   "gemini",
+		Model:      "gemini-2.5-pro",
+		ModeModels: map[string]string{"planning": "gemini/claude-opus-4-7"},
+	}
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "modelRouter.modeModels[planning]") {
+		t.Fatalf("expected the claude- rejection on the mode override, got: %v", err)
+	}
+
+	c = geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-claude-lookalike"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("a model merely containing claude must pass, got: %v", err)
+	}
+}
+
 // TestValidateRunConfig_GeminiFieldsLeakRejected verifies that the four
 // gemini-only ProviderConfig fields cannot ride along on a non-gemini
 // provider. A stale value from an earlier provider-type choice would
