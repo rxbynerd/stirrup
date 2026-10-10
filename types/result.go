@@ -2,7 +2,10 @@
 // adapters serialise at end-of-run.
 package types
 
-import "unicode/utf8"
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
 
 // DefaultMaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText
 // when a run does not set ResultSinkConfig.MaxFinalAssistantTextBytes.
@@ -71,6 +74,11 @@ type RunResult struct {
 	// FinalAssistantTextTruncated is true when FinalAssistantText was
 	// truncated. The untruncated text remains on the trace.
 	FinalAssistantTextTruncated bool `json:"finalAssistantTextTruncated,omitempty"`
+
+	// StructuredOutput mirrors RunTrace.StructuredOutput: the final answer
+	// as a JSON document that satisfied RunConfig.OutputSchema. Never
+	// truncated; an answer over the size limit fails the run instead.
+	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
 
 	// VerifierVerdict is the optional verifier outcome, present only
 	// when a verifier ran.

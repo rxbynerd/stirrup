@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -213,6 +214,15 @@ type RunConfig struct {
 	// PostRun hooks are never committed. Nil means no hooks. See
 	// docs/configuration.md#lifecycle-hooks.
 	Hooks *HooksConfig `json:"hooks,omitempty"`
+
+	// OutputSchema is a self-contained JSON Schema (Draft 2020-12) object
+	// the run's final answer must satisfy. When set, the final assistant
+	// message must be one JSON document conforming to it; the validated
+	// document is returned as RunTrace.StructuredOutput, and a run whose
+	// answer still fails after the corrective attempts ends with outcome
+	// "structured_output_failed". Applies to top-level runs only. Empty
+	// leaves the final answer as free text.
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels promoted to the OTel
@@ -2224,6 +2234,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateControlPlaneTools(config, &errs)
+	validateOutputSchema(config.OutputSchema, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCommandOutputConfig(config.Tools, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
@@ -3502,6 +3513,68 @@ func validateControlPlaneInputSchema(schema json.RawMessage, path string, errs *
 	if typ, _ := doc["type"].(string); typ != "object" {
 		*errs = append(*errs, path+` must declare "type": "object"`)
 	}
+}
+
+// maxOutputSchemaBytes bounds RunConfig.OutputSchema, which is rendered
+// into the system prompt of every turn.
+const maxOutputSchemaBytes = 64 << 10
+
+// validateOutputSchema requires OutputSchema, when set, to be a JSON object
+// of at most maxOutputSchemaBytes whose $ref and $dynamicRef values are all
+// local fragments ("#..."). Compiling the schema needs a JSON Schema
+// implementation this module does not depend on; the harness compiles it
+// when it builds the run.
+func validateOutputSchema(schema json.RawMessage, errs *[]string) {
+	if len(schema) == 0 {
+		return
+	}
+	if len(schema) > maxOutputSchemaBytes {
+		*errs = append(*errs, fmt.Sprintf("outputSchema is %d bytes, over the %d-byte limit", len(schema), maxOutputSchemaBytes))
+		return
+	}
+	var doc any
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		*errs = append(*errs, fmt.Sprintf("outputSchema is not valid JSON: %v", err))
+		return
+	}
+	obj, ok := doc.(map[string]any)
+	if !ok {
+		*errs = append(*errs, "outputSchema must be a JSON Schema object")
+		return
+	}
+	if ref, found := firstNonLocalSchemaRef(obj); found {
+		*errs = append(*errs, fmt.Sprintf("outputSchema must be self-contained: reference %q is not a local fragment (it must start with \"#\")", ref))
+	}
+}
+
+// firstNonLocalSchemaRef walks v in key order and returns the first string
+// $ref or $dynamicRef value that does not start with "#".
+func firstNonLocalSchemaRef(v any) (string, bool) {
+	switch node := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(node))
+		for k := range node {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if k == "$ref" || k == "$dynamicRef" {
+				if ref, ok := node[k].(string); ok && !strings.HasPrefix(ref, "#") {
+					return ref, true
+				}
+			}
+			if ref, found := firstNonLocalSchemaRef(node[k]); found {
+				return ref, true
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if ref, found := firstNonLocalSchemaRef(item); found {
+				return ref, true
+			}
+		}
+	}
+	return "", false
 }
 
 // validateMCPServers checks the structural trust-model fields on every

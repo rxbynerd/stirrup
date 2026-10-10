@@ -60,6 +60,7 @@ func TestEvalOutcomeFor(t *testing.T) {
 		{name: "verification_failed", trace: RunTrace{Outcome: "verification_failed"}, want: EvalFailed},
 		{name: "error", trace: RunTrace{Outcome: "error"}, want: EvalFailed},
 		{name: "tool_failures", trace: RunTrace{Outcome: "tool_failures"}, want: EvalFailed},
+		{name: "structured_output_failed", trace: RunTrace{Outcome: "structured_output_failed"}, want: EvalFailed},
 
 		{name: "max_turns", trace: RunTrace{Outcome: "max_turns"}, want: EvalInconclusive},
 		{name: "budget_exceeded", trace: RunTrace{Outcome: "budget_exceeded"}, want: EvalInconclusive},

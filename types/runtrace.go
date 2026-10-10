@@ -92,7 +92,7 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "handoff_failed" | "control_stream_lost" |
+	// "handoff_failed" | "control_stream_lost" | "structured_output_failed" |
 	// "command_output_capture_failed" | "command_output_archive_failed", or a
 	// provider stop reason passed through verbatim, such as "refusal" (the
 	// model declined to respond; see StopDetails) or
@@ -106,7 +106,9 @@ type RunTrace struct {
 	// run — the primary failure cause stays authoritative — and a capture
 	// failure outranks an archive failure. control_stream_lost reports a
 	// run cancelled because its gRPC control stream ended while it was
-	// active.
+	// active. structured_output_failed reports a final answer that still
+	// did not satisfy RunConfig.OutputSchema after the corrective attempts;
+	// such a run never reaches the verifier.
 	Outcome string `json:"outcome"`
 	// StopDetails is the final model turn's provider-reported stop detail
 	// when the run ended on a non-tool stop reason, such as the category
@@ -117,6 +119,10 @@ type RunTrace struct {
 	// through to RunResult.FinalAssistantText. Omitted when the run produced
 	// no assistant turn (e.g. an early validation failure before any turn).
 	FinalAssistantText string `json:"finalAssistantText,omitempty"`
+	// StructuredOutput is the scrubbed, compact JSON document of a final
+	// answer that satisfied RunConfig.OutputSchema. Omitted when no schema
+	// was configured or no answer satisfied it.
+	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
 	// HookResults carries every lifecycle hook execution recorded during the
 	// run, across both phases, in dispatch order. Empty when no hooks were
 	// configured. Populated by trace emitters implementing trace.HookRecorder
