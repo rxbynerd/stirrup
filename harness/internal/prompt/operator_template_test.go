@@ -45,10 +45,14 @@ func TestNewTemplatePromptBuilder_KeepsStructuralFragments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ws := newFakeWorkspace("/workspace")
+	ws.entries = []string{"go.mod"}
+	ws.toplevel = "/workspace"
 	got, err := b.Build(t.Context(), PromptContext{
 		Mode:           "execution",
 		Model:          "claude-fable-5",
-		Workspace:      t.TempDir(),
+		Workspace:      "/workspace",
+		Executor:       ws,
 		MaxTurns:       7,
 		DynamicContext: map[string]string{"ticket": "fix the bug"},
 	})
@@ -62,7 +66,7 @@ func TestNewTemplatePromptBuilder_KeepsStructuralFragments(t *testing.T) {
 	if strings.Contains(got, execBase) {
 		t.Error("mode prompt should be replaced, not appended")
 	}
-	for _, want := range []string{"Working directory:", "Turn budget: 7", "<untrusted_context"} {
+	for _, want := range []string{"Working directory:", "Turn budget: 7", "Workspace files:\n  go.mod", "Git status: clean", "<untrusted_context"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("structural fragment %q missing from output", want)
 		}

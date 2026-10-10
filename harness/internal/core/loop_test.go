@@ -21,6 +21,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -372,6 +373,30 @@ func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
 				t.Fatalf("PromptContext.Model = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLoop_ThreadsExecutorIntoPromptContext pins that the workspace prompt
+// fragments receive the run's executor, so they read the sandbox rather
+// than the configured host path.
+func TestLoop_ThreadsExecutorIntoPromptContext(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	loop := buildTestLoop(prov)
+	exec := executor.NewNoneExecutor()
+	loop.Executor = exec
+	capturingPrompt := &capturingPromptBuilder{}
+	loop.Prompt = capturingPrompt
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if got, ok := capturingPrompt.last.Executor.(*executor.NoneExecutor); !ok || got != exec {
+		t.Fatalf("PromptContext.Executor = %#v, want the loop's executor", capturingPrompt.last.Executor)
 	}
 }
 

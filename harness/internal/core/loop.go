@@ -276,6 +276,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
+		Executor:       l.Executor,
 		MaxTurns:       config.MaxTurns,
 		Model:          promptModel,
 		DynamicContext: dynamicContext,
