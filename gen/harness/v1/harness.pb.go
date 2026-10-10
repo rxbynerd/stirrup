@@ -2173,7 +2173,9 @@ type RunTrace struct {
 	//	"setup_failed", "hook_failed", "handoff_failed",
 	//	"control_stream_lost", "guardrail_blocked", "rule_of_two_violation",
 	//	"structured_output_failed", "command_output_capture_failed",
-	//	"command_output_archive_failed".
+	//	"command_output_archive_failed",
+	//	"context_exhausted" (the prepared request could not fit the
+	//	context budget; no provider call was made).
 	//
 	// "handoff_failed" reports a failed final git checkpoint or a failed
 	// required workspace export; like "hook_failed" and the command_output

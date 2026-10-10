@@ -93,7 +93,10 @@ type RunTrace struct {
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
 	// "handoff_failed" | "control_stream_lost" | "structured_output_failed" |
-	// "command_output_capture_failed" | "command_output_archive_failed", or a
+	// "command_output_capture_failed" | "command_output_archive_failed" |
+	// "context_exhausted" (the smallest request the context strategy and
+	// tool result truncation could prepare did not fit the context budget,
+	// so no provider call was made), or a
 	// provider stop reason passed through verbatim, such as "refusal" (the
 	// model declined to respond; see StopDetails) or
 	// "model_context_window_exceeded" (the response filled the model's

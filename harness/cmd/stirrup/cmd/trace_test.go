@@ -641,6 +641,7 @@ func TestOutcomeColor(t *testing.T) {
 		{"budget_exceeded", ansiYellow},
 		{"stalled", ansiYellow},
 		{"timeout", ansiYellow},
+		{"context_exhausted", ansiYellow},
 		{"cancelled", ansiGrey},
 		{"", ansiBlue},
 		{"some_unknown_outcome", ansiBlue},
