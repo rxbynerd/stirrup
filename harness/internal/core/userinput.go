@@ -357,7 +357,9 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 // separator from gluing inputs together. A harness-injected trailing
 // message (verifier feedback, an escalation nudge) loses its Synthetic
 // mark on merge: it now carries the operator's words, which consumers
-// that drop synthetic turns (compaction, the LLM judge) must keep.
+// that drop synthetic turns (compaction, the LLM judge) must keep. Its
+// Origin is kept, so merged verifier feedback is still classified as
+// untrusted, together with the operator's words.
 func injectUserInput(messages []types.Message, texts []string) []types.Message {
 	joined := strings.Join(texts, "\n\n")
 	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
