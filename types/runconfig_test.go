@@ -6086,7 +6086,7 @@ func TestExecutorConfig_ExportRequired(t *testing.T) {
 
 func TestExecutorConfig_WorkspaceExportRequiredJSONTriState(t *testing.T) {
 	cases := map[string]*bool{
-		`{"type":"local"}`:                                 nil,
+		`{"type":"local"}`: nil,
 		`{"type":"local","workspaceExportRequired":false}`: new(bool),
 	}
 	for doc, want := range cases {
