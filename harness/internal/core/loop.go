@@ -1049,10 +1049,10 @@ func (l *AgenticLoop) runInnerLoop(
 // applyEscalation performs the recovery EscalationPolicy chose for a
 // suspected missed-tool turn, returning the (possibly extended)
 // message history. EscalationNative forces ToolChoiceRequired on the
-// next turn (only honoured if the provider supports it); EscalationPrompt
-// appends a user message nudging the model. Both emit a
-// stirrup.harness.tool_failures observation and an escalation span for
-// operator auditing.
+// next turn (only honoured if the provider supports it). A non-empty
+// PromptMessage is appended as a synthetic user message for either
+// kind. Both emit a stirrup.harness.tool_failures observation and an
+// escalation span for operator auditing.
 func (l *AgenticLoop) applyEscalation(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -1061,19 +1061,17 @@ func (l *AgenticLoop) applyEscalation(
 	messages []types.Message,
 	pendingToolChoice *types.ToolChoiceMode,
 ) []types.Message {
-	switch decision.Kind {
-	case EscalationNative:
+	if decision.Kind == EscalationNative {
 		*pendingToolChoice = types.ToolChoiceRequired
-	case EscalationPrompt:
-		if decision.PromptMessage != "" {
-			messages = append(messages, types.Message{
-				Role:      "user",
-				Synthetic: true,
-				Content: []types.ContentBlock{
-					{Type: "text", Text: decision.PromptMessage},
-				},
-			})
-		}
+	}
+	if decision.PromptMessage != "" {
+		messages = append(messages, types.Message{
+			Role:      "user",
+			Synthetic: true,
+			Content: []types.ContentBlock{
+				{Type: "text", Text: decision.PromptMessage},
+			},
+		})
 	}
 
 	// tool.name is the bounded empty-sentinel — no tool was involved,

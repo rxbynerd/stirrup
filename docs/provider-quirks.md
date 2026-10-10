@@ -1063,20 +1063,23 @@ concerns are tracked separately:
     a message naming the model and the accepted set. The 180-day
     staleness window flags both rules for re-verification.
 
-11. **Native tool-choice escalation sends a history that ends on an
+11. **Native tool-choice escalation and a history that ends on an
     assistant message (unprobed).** When the escalation policy picks
     the native strategy, the loop appends the model's no-tool reply
-    and retries with required tool choice without adding a user
-    message (`core/loop.go::applyEscalation`; the prompt strategy
-    appends a synthetic user message instead). The next request
-    therefore ends on an assistant turn, which Anthropic treats as a
-    prefill. The native strategy is chosen for every Anthropic model
-    whose `ToolChoice` capability advertises `Required`, which is every
-    model except Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos 5.1
-    (`applyAnthropicAutoToolChoiceOnly` routes those to the prompt
-    strategy, so a trailing assistant message cannot reach them). The Anthropic adapter sends no `thinking` parameter, so
-    a thinking-enabled variant is not reachable from a stirrup request;
-    the only reachable controls are `tool_choice` and
+    and retries with required tool choice
+    (`core/loop.go::applyEscalation`). With nothing after that reply,
+    the next request ends on an assistant turn, which Anthropic treats
+    as a prefill. The native strategy is chosen for every Anthropic
+    model whose `ToolChoice` capability advertises `Required`, which
+    is every model except Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos
+    5.1 (`applyAnthropicAutoToolChoiceOnly` routes those to the prompt
+    strategy). The base Anthropic rule therefore sets
+    `ToolChoice.RejectsTrailingAssistant`, and for a provider with
+    that flag the policy adds a short synthetic user message on the
+    native path, so the retry ends on a user turn. The flag rests on
+    documentation alone. The Anthropic adapter sends no `thinking`
+    parameter, so a thinking-enabled variant is not reachable from a
+    stirrup request; the only reachable controls are `tool_choice` and
     `output_config.effort`.
 
     | Provider | Model | Setting | Status | Result |
@@ -1089,15 +1092,20 @@ concerns are tracked separately:
     | `openai-compatible`, `openai-responses` | default model | any | unprobed | `OPENAI_API_KEY` was not present in the session; neither a rejection nor an acceptance has been established |
     | `gemini` | any | any | unprobed | not attempted |
 
-    No row records a live status or response body, so the issue's
-    acceptance criteria are not met yet and the loop is unchanged. The
+    No row records a live status or response body. The
     documentation-only rows make a rejection on current Anthropic
-    models the expected outcome. Probe procedure: send a streaming
-    Messages request with one tool, a history of
-    `user`, `assistant` (plain text, no tool use), a `tool_choice` of
-    `{"type":"any"}`, and a small `max_tokens`, once per setting; record
-    the HTTP status and the error body (never the request headers). If
-    any row returns 400, the fix is a minimal synthetic user message
-    on the native path for that provider, gated by a per-provider
-    quirk, with a test that native escalation no longer sends a
-    history ending on an assistant message to it.
+    models the expected outcome, so the flag covers every Anthropic
+    model rather than waiting for the probe; on a model that accepts a
+    trailing assistant message the extra user turn is harmless.
+    `openai-compatible` and `gemini` do not set the flag and still
+    retry with a history that ends on the assistant answer.
+    `openai-responses` resolves no native tool-choice capability, so
+    it takes the prompt strategy and cannot reach this path. Probe
+    procedure: send a streaming Messages request with one tool, a
+    history of `user`, `assistant` (plain text, no tool use), a
+    `tool_choice` of `{"type":"any"}`, and a small `max_tokens`, once
+    per setting; record the HTTP status and the error body (never the
+    request headers). If an OpenAI-compatible or Gemini row returns
+    400, set the flag on that provider's base tool-choice rule. If
+    both Anthropic rows accept the request, the flag can be narrowed
+    to the models that reject it.

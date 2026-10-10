@@ -466,6 +466,9 @@ func TestToolChoiceCapabilityRules(t *testing.T) {
 		if q.ToolChoice.None {
 			t.Errorf("anthropic: ToolChoice.None = true, want false (no native none mode)")
 		}
+		if !q.ToolChoice.RejectsTrailingAssistant {
+			t.Errorf("anthropic: ToolChoice.RejectsTrailingAssistant = false, want true (a trailing assistant message is a prefill)")
+		}
 	})
 
 	t.Run("openai-compatible advertises every mode", func(t *testing.T) {
