@@ -5,6 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -285,5 +290,96 @@ func TestLoop_ContextOverflowWithNothingToCompactSendsNoRetry(t *testing.T) {
 	}
 	if !strings.Contains(events.String(), "forced compaction target") {
 		t.Errorf("transport events do not name the forced compaction target:\n%s", events.String())
+	}
+}
+
+// TestBuildLoop_OpenAIContextOverflowRecoversEndToEnd drives a factory-built
+// loop against an OpenAI-compatible server that rejects the fourth request
+// with its documented context_length_exceeded error. The run recovers with
+// one forced compaction that drops the oldest file read, and succeeds.
+func TestBuildLoop_OpenAIContextOverflowRecoversEndToEnd(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	workspace := t.TempDir()
+	for i := range 3 {
+		content := strings.Repeat(fmt.Sprintf("FILE%d-CONTENT line of a large file\n", i), 500)
+		if err := os.WriteFile(filepath.Join(workspace, fmt.Sprintf("f%d.txt", i)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readTurn := func(i int) string {
+		return openAIChunk(fmt.Sprintf(`{"id":"r%d","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_%d","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"f%d.txt\"}"}}]},"finish_reason":null}]}`, i, i, i)) +
+			openAIChunk(fmt.Sprintf(`{"id":"r%d","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`, i)) +
+			"data: [DONE]\n\n"
+	}
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		n := len(bodies)
+		mu.Unlock()
+		switch {
+		case n <= 3:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, readTurn(n-1))
+		case n == 4:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens. Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`)
+		default:
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, openAIChunk(`{"id":"done","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`)+
+				openAIChunk(`{"id":"done","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)+
+				"data: [DONE]\n\n")
+		}
+	}))
+	defer server.Close()
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:            "overflow-e2e",
+		Mode:             "execution",
+		Prompt:           "Read the three files.",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: workspace},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         10,
+		Timeout:          &timeout,
+	}
+	var events bytes.Buffer
+	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&events, &bytes.Buffer{}))
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success; events:\n%s", runTrace.Outcome, events.String())
+	}
+	if len(bodies) != 5 {
+		t.Fatalf("server saw %d requests, want 5", len(bodies))
+	}
+	rejected, retried := bodies[3], bodies[4]
+	if !strings.Contains(rejected, "FILE0-CONTENT") || strings.Contains(retried, "FILE0-CONTENT") {
+		t.Error("the retry still carries the oldest file read, or the rejected request never did")
+	}
+	if !strings.Contains(retried, "FILE2-CONTENT") || !strings.Contains(retried, "Read the three files.") {
+		t.Error("the retry lost the task or the latest file read")
+	}
+	if !strings.Contains(events.String(), "retrying the turn once") {
+		t.Errorf("no warning event announces the retry:\n%s", events.String())
 	}
 }
