@@ -102,6 +102,7 @@ type RunResult struct {
 // Export receipt statuses.
 const (
 	ExportStatusUploaded = "uploaded"
+	ExportStatusEmpty    = "empty"
 	ExportStatusFailed   = "failed"
 )
 
@@ -109,8 +110,10 @@ const (
 type ExportReceipt struct {
 	// URI is the destination the workspace archive was written to.
 	URI string `json:"uri"`
-	// Status is ExportStatusUploaded when the exporter completed and
-	// ExportStatusFailed otherwise.
+	// Status is ExportStatusUploaded when the archive was uploaded,
+	// ExportStatusEmpty when the workspace had no files and nothing was
+	// uploaded, and ExportStatusFailed otherwise. An empty export counts
+	// as a success.
 	Status string `json:"status"`
 	// Required reports whether a failed export fails the run; see
 	// ExecutorConfig.WorkspaceExportRequired.

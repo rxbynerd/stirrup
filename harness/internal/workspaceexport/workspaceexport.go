@@ -29,11 +29,15 @@ const MaxArchiveBytes = 1 << 30
 // uploadTimeout bounds the GCS PUT round-trip.
 const uploadTimeout = 5 * time.Minute
 
+// ErrEmptyWorkspace reports a workspace with no regular files, for which
+// nothing is uploaded.
+var ErrEmptyWorkspace = errors.New("workspace exporter: workspace has no files to export")
+
 // Exporter uploads a workspace directory to a remote destination URI.
 type Exporter interface {
-	// Export tars + gzips workspaceDir and PUTs it to destURI. An
-	// empty or non-existent workspaceDir is a silent skip (returns
-	// nil); the caller decides whether that's an error.
+	// Export tars + gzips workspaceDir and PUTs it to destURI. A
+	// workspaceDir with no regular files uploads nothing and returns
+	// ErrEmptyWorkspace; a missing workspaceDir is an error.
 	Export(ctx context.Context, workspaceDir, destURI string) error
 }
 
@@ -84,7 +88,7 @@ func NewGCSExporter(opts GCSExporterOptions) (*GCSExporter, error) {
 
 // Export tars + gzips workspaceDir into an in-memory buffer (subject
 // to MaxArchiveBytes) and uploads it to destURI, which must be a
-// gs:// URI. An empty or non-existent workspaceDir is a silent no-op.
+// gs:// URI.
 func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) error {
 	bucket, object, err := parseGCSURI(destURI)
 	if err != nil {
@@ -93,9 +97,6 @@ func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) 
 
 	info, err := os.Stat(workspaceDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 		return fmt.Errorf("workspace exporter: stat workspace %q: %w", workspaceDir, err)
 	}
 	if !info.IsDir() {
@@ -108,7 +109,7 @@ func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) 
 		return fmt.Errorf("workspace exporter: build tarball: %w", err)
 	}
 	if wrote == 0 {
-		return nil
+		return ErrEmptyWorkspace
 	}
 
 	resolved, err := e.credentialSource.Resolve(ctx)

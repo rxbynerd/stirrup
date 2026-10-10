@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,7 +151,7 @@ func TestGCSExporter_ServerError(t *testing.T) {
 	}
 }
 
-func TestGCSExporter_EmptyDirectorySkip(t *testing.T) {
+func TestGCSExporter_EmptyDirectoryReportsEmptyWithoutUpload(t *testing.T) {
 	dir := t.TempDir()
 
 	srv := &captureUploadServer{}
@@ -162,15 +163,15 @@ func TestGCSExporter_EmptyDirectorySkip(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	if err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz"); err != nil {
-		t.Fatalf("Export on empty dir should be nil-op, got %v", err)
+	if err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz"); !errors.Is(err, ErrEmptyWorkspace) {
+		t.Fatalf("Export on empty dir = %v, want ErrEmptyWorkspace", err)
 	}
 	if len(srv.requests) != 0 {
 		t.Errorf("empty dir should produce no upload, got %d requests", len(srv.requests))
 	}
 }
 
-func TestGCSExporter_MissingDirectorySkip(t *testing.T) {
+func TestGCSExporter_MissingDirectoryIsAnError(t *testing.T) {
 	srv := &captureUploadServer{}
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -180,8 +181,9 @@ func TestGCSExporter_MissingDirectorySkip(t *testing.T) {
 		EndpointBaseURL:  httpSrv.URL,
 	})
 
-	if err := exp.Export(context.Background(), "/does/not/exist", "gs://b/o.tar.gz"); err != nil {
-		t.Errorf("missing dir should be silent skip, got %v", err)
+	err := exp.Export(context.Background(), "/does/not/exist", "gs://b/o.tar.gz")
+	if err == nil || errors.Is(err, ErrEmptyWorkspace) || !strings.Contains(err.Error(), "/does/not/exist") {
+		t.Errorf("missing dir: Export = %v, want an error naming the workspace", err)
 	}
 	if len(srv.requests) != 0 {
 		t.Errorf("missing dir should produce no upload, got %d requests", len(srv.requests))

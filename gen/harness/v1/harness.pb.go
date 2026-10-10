@@ -2425,7 +2425,9 @@ type ExportReceipt struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The destination the workspace archive was written to.
 	Uri string `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
-	// "uploaded" when the exporter completed, "failed" otherwise.
+	// "uploaded" when the archive was uploaded, "empty" when the workspace
+	// had no files and nothing was uploaded (counts as a success), "failed"
+	// otherwise.
 	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// Whether a failed export fails the run (executor.workspace_export_required).
 	Required bool `protobuf:"varint,3,opt,name=required,proto3" json:"required,omitempty"`
@@ -3836,8 +3838,9 @@ type ExecutorConfig struct {
 	// uploaded at the end of every run, whatever its outcome, before the
 	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
 	// today; the bucket path must be non-empty. Rejected for the "api" and
-	// "none" executors, neither of which has a workspace. A run with an
-	// empty workspace skips the upload silently.
+	// "none" executors, neither of which has a workspace. A workspace with
+	// no files uploads nothing and reports export status "empty"; a missing
+	// workspace is an export failure.
 	WorkspaceExportTo string `protobuf:"bytes,15,opt,name=workspace_export_to,json=workspaceExportTo,proto3" json:"workspace_export_to,omitempty"`
 	// Optional. Requests a control-plane-issued sandbox identity token and
 	// injects it into the sandbox environment. Requires the gRPC transport
