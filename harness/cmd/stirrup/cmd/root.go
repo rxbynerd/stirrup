@@ -413,7 +413,9 @@ func (p *postRunPolicy) finalise(cfg *types.RunConfig, rt *types.RunTrace, runEr
 }
 
 // setupSignalHandler installs SIGINT/SIGTERM handlers; see handleSignals.
-func setupSignalHandler(interrupt, shutdown func()) {
+// A variable so tests can deliver the signals without a real process
+// signal.
+var setupSignalHandler = func(interrupt, shutdown func()) {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go handleSignals(sigCh, os.Stderr, interrupt, shutdown)
@@ -435,22 +437,21 @@ func handleSignals(sigCh <-chan os.Signal, out io.Writer, interrupt, shutdown fu
 	shutdown()
 }
 
-// shutdownCloseGrace bounds how long armShutdownWatchdog waits after the
-// first process shutdown signal before proactively closing the loop, even
-// if Run() has not returned yet (e.g. detached post-run work is still
-// winding down). Chosen comfortably under the shortest documented
-// orchestrator SIGKILL escalation (10s on Cloud Run and `docker stop`;
-// see docs/cloud-run-jobs.md) so the executor's sandbox has a real
-// chance to be torn down before the process is killed outright.
-const shutdownCloseGrace = 5 * time.Second
+// shutdownCloseGrace bounds how long armShutdownWatchdog waits after its
+// signal context is done before closing the loop, even if Run() has not
+// returned yet. It sits under Cloud Run's 10 s SIGTERM-to-SIGKILL
+// escalation (see docs/cloud-run-jobs.md) so the executor's sandbox is
+// torn down before the process is killed. A variable so tests can
+// shorten it.
+var shutdownCloseGrace = 5 * time.Second
 
-// armShutdownWatchdog starts a background goroutine that proactively
-// closes loop after signalCtx is done, unless the returned stop
-// function is called first (Run() already returned; the caller's own
-// `defer loop.Close()` handles teardown). Guards against the
-// orchestrator's SIGKILL escalation firing before Run() returns, which
-// would otherwise skip the deferred Close() entirely and orphan the
-// executor's sandbox. Close() is safe to invoke more than once.
+// armShutdownWatchdog starts a background goroutine that closes loop
+// grace after signalCtx is done, unless the returned stop function is
+// called first (Run() already returned; the caller's own
+// `defer loop.Close()` handles teardown). Closing tears down the
+// executor, transport and trace emitter, so any post-run work still
+// running is cut short; callers choose signalCtx accordingly. Close()
+// is safe to invoke more than once.
 func armShutdownWatchdog(signalCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
 	runDone := make(chan struct{})
 	go func() {

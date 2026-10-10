@@ -1676,8 +1676,9 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 
 	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
 	// post-run work keeps its bounded budget until a second signal
-	// cancels shutdownCtx — see AgenticLoop.Shutdown and
-	// docs/cloud-run-jobs.md.
+	// cancels shutdownCtx — see AgenticLoop.Shutdown. The shutdown
+	// watchdog arms on that second signal too: no orchestrator SIGKILL
+	// is known to follow the first.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
@@ -1701,7 +1702,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
-	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
+	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
 	policy := &postRunPolicy{

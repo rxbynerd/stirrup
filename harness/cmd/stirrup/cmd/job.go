@@ -53,7 +53,9 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
 	// post-run work keeps its bounded budget until a second signal
-	// cancels shutdownCtx. See docs/cloud-run-jobs.md.
+	// cancels shutdownCtx, or until the shutdown watchdog armed on the
+	// first signal closes the loop ahead of the orchestrator's SIGKILL.
+	// See docs/cloud-run-jobs.md.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
