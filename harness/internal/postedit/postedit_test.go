@@ -167,6 +167,45 @@ func TestRun_PathIsQuotedAgainstShellInjection(t *testing.T) {
 	}
 }
 
+func TestRun_QuotedOrNestedPlaceholderResistsInjection(t *testing.T) {
+	templates := map[string]string{
+		"double-quoted": `test -f "{path}" && printf '%s' "{path}" > seen.txt`,
+		"embedded":      `test -f "./{path}" && printf '%s' "x{path}" > seen.txt`,
+		"nested shell":  `sh -c 'test -f {path} && printf %s {path} > seen.txt'`,
+		"substitution":  `test -n "$(ls -- {path})" && printf '%s' {path} > seen.txt`,
+	}
+	paths := []string{"$(touch pwned).go", "`touch pwned`.go", `a"; touch pwned; ".go`, "d' ; touch pwned ; '.go"}
+	for name, template := range templates {
+		for _, p := range paths {
+			t.Run(name+"/"+p, func(t *testing.T) {
+				ex, root := newLocal(t)
+				c, rec := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*.go", Command: template})
+				writeFile(t, root, p, "x")
+				if got := c.Run(context.Background(), "write_file", p); got != "" {
+					t.Fatalf("check did not resolve the literal path: %q", got)
+				}
+				if _, err := os.Stat(filepath.Join(root, "pwned")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("injected command ran (err=%v)", err)
+				}
+				seen, err := os.ReadFile(filepath.Join(root, "seen.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := p
+				if name == "embedded" {
+					want = "x" + p
+				}
+				if string(seen) != want {
+					t.Errorf("check saw %q, want %q", seen, want)
+				}
+				if records := rec.all(); len(records) != 1 || records[0].Failed() {
+					t.Errorf("records = %+v", records)
+				}
+			})
+		}
+	}
+}
+
 func TestRun_LeadingDashPathIsNotAnOption(t *testing.T) {
 	ex, root := newLocal(t)
 	c, _ := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*", Command: "echo {path} > seen.txt"})

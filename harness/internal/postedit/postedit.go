@@ -35,6 +35,9 @@ const fenceLabel = "POST_EDIT_DIAGNOSTICS"
 // model when a check fails.
 const maxCommandLabelBytes = 200
 
+// editedPathVar holds the edited path for the check's shell.
+const editedPathVar = "STIRRUP_EDITED_PATH"
+
 // Recorder receives one record per check execution. Trace emitters
 // implementing trace.PostEditCheckRecorder satisfy it.
 type Recorder interface {
@@ -147,7 +150,7 @@ func (c *Checker) Run(ctx context.Context, toolName, editedPath string) string {
 
 func (c *Checker) runOne(ctx context.Context, meta tool.CallContext, toolName, editedPath string, index int) string {
 	check := c.checks[index]
-	command := strings.ReplaceAll(check.Command, types.PostEditPathPlaceholder, ShellQuote(commandPath(editedPath)))
+	command := expandCommand(check.Command, editedPath)
 
 	timeout := time.Duration(types.EffectivePostEditTimeout(check)) * time.Second
 	if caps := c.exec.Capabilities(); caps.MaxTimeout > 0 && timeout > caps.MaxTimeout {
@@ -210,6 +213,19 @@ func (c *Checker) record(rec types.PostEditCheckRecord) {
 	if r != nil {
 		r.RecordPostEditCheck(rec)
 	}
+}
+
+// placeholderExpansion expands to exactly one word holding the path
+// whether it appears bare, inside double quotes, or inside $(...), and is
+// never parsed as shell syntax. The variable is exported so a nested
+// "sh -c '...'" expands it too.
+const placeholderExpansion = `${` + editedPathVar + `:+"$` + editedPathVar + `"}`
+
+// expandCommand returns the shell script that runs template for
+// editedPath.
+func expandCommand(template, editedPath string) string {
+	return "export " + editedPathVar + "=" + ShellQuote(commandPath(editedPath)) + "; " +
+		strings.ReplaceAll(template, types.PostEditPathPlaceholder, placeholderExpansion)
 }
 
 // ShellQuote wraps s in POSIX single quotes so sh -c reads it as one

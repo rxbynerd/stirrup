@@ -1463,10 +1463,11 @@ type PostEditCheckConfig struct {
 	// containing "/" matches the cleaned workspace-relative path.
 	Glob string `json:"glob"`
 
-	// Command is executed via "sh -c" through the run's Executor. Each
-	// PostEditPathPlaceholder is replaced by the edited path, POSIX
-	// single-quoted. Like hook commands it is operator configuration and
-	// is not subject to the permission policy.
+	// Command is executed via "sh -c" through the run's Executor; only a
+	// non-zero exit reports a problem. Each PostEditPathPlaceholder
+	// expands to a reference to the exported STIRRUP_EDITED_PATH variable,
+	// one word whether bare or double-quoted. Like hook commands it is
+	// operator configuration and is not subject to the permission policy.
 	Command string `json:"command"`
 
 	// TimeoutSeconds bounds one execution. Zero resolves to
@@ -1476,8 +1477,9 @@ type PostEditCheckConfig struct {
 }
 
 const (
-	// PostEditPathPlaceholder is replaced by the quoted edited path in
-	// PostEditCheckConfig.Command.
+	// PostEditPathPlaceholder marks where PostEditCheckConfig.Command
+	// takes the edited path. Wrapped in single quotes it would pass the
+	// variable reference instead of the path, so validation rejects that.
 	PostEditPathPlaceholder = "{path}"
 
 	DefaultPostEditTimeoutSeconds = 60
@@ -2644,6 +2646,11 @@ func validatePostEditChecks(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, field+".command is required")
 		} else if len(c.Command) > maxHookCommandBytes {
 			*errs = append(*errs, fmt.Sprintf("%s.command must be <= %d bytes, got %d", field, maxHookCommandBytes, len(c.Command)))
+		}
+		if strings.Contains(c.Command, "'"+PostEditPathPlaceholder+"'") {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.command must not wrap %s in single quotes; it already expands to a quoted path",
+				field, PostEditPathPlaceholder))
 		}
 		if strings.Contains(strings.ToLower(c.Command), "secret://") {
 			*errs = append(*errs, fmt.Sprintf(

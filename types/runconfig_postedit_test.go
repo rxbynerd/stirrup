@@ -14,7 +14,11 @@ func TestValidateRunConfig_PostEdit_AcceptedInExecutionMode(t *testing.T) {
 	for _, executorType := range []string{"", "local", "container"} {
 		c := validConfig()
 		c.Executor = ExecutorConfig{Type: executorType}
-		c.Tools.PostEdit = []PostEditCheckConfig{validPostEditCheck(), {Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: MaxPostEditTimeoutSeconds}}
+		c.Tools.PostEdit = []PostEditCheckConfig{
+			validPostEditCheck(),
+			{Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: MaxPostEditTimeoutSeconds},
+			{Glob: "*.go", Command: `test -f "{path}" && sh -c 'gofmt -l {path}'`},
+		}
 		if err := ValidateRunConfig(c); err != nil {
 			t.Errorf("executor %q: valid postEdit rejected: %v", executorType, err)
 		}
@@ -74,6 +78,7 @@ func TestValidateRunConfig_PostEdit_EntryRules(t *testing.T) {
 		{"missing command", PostEditCheckConfig{Glob: "*", Command: "  "}, "tools.postEdit[0].command is required"},
 		{"long command", PostEditCheckConfig{Glob: "*", Command: strings.Repeat("a", maxHookCommandBytes+1)}, "command must be <="},
 		{"secret ref", PostEditCheckConfig{Glob: "*", Command: "curl SECRET://x"}, "secret://"},
+		{"single-quoted placeholder", PostEditCheckConfig{Glob: "*", Command: "gofmt -l '{path}'"}, "must not wrap {path} in single quotes"},
 		{"negative timeout", PostEditCheckConfig{Glob: "*", Command: "true", TimeoutSeconds: -1}, "timeoutSeconds must be 0"},
 		{"timeout over max", PostEditCheckConfig{Glob: "*", Command: "true", TimeoutSeconds: MaxPostEditTimeoutSeconds + 1}, "timeoutSeconds must be 0"},
 	}
