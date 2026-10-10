@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -134,6 +135,59 @@ func TestLoop_OversizedToolResultIsTruncatedToFit(t *testing.T) {
 	stored := capture.history[2]
 	if got := stored[2].Content[0].Content; got != big {
 		t.Errorf("stored history holds %d bytes of the result, want the full %d", len(got), len(big))
+	}
+}
+
+// TestLoop_FitTruncationStripsThinkingBlocks pins that a request whose
+// tool results the fit postcondition truncated, with no compaction by the
+// strategy, carries no thinking blocks, nor does any later request.
+func TestLoop_FitTruncationStripsThinkingBlocks(t *testing.T) {
+	thinkingToolTurn := func(n int, name string) []types.StreamEvent {
+		return []types.StreamEvent{
+			{Type: "thinking", Text: "plan", ThoughtSignature: fmt.Sprintf("sig-%d", n)},
+			{Type: "tool_call", ID: fmt.Sprintf("tc_%d", n), Name: name, Input: map[string]any{"turn": n}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		}
+	}
+	prov := &requestRecordingProvider{calls: [][]types.StreamEvent{
+		thinkingToolTurn(1, "test_tool"),
+		thinkingToolTurn(2, "big_tool"),
+		thinkingToolTurn(3, "test_tool"),
+	}}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "big_tool",
+		Description: "Returns a large output",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			return strings.Repeat("x", 40_000), nil
+		},
+	})
+	loop.Context = &rewriteFromCallStrategy{compactFrom: math.MaxInt}
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 2000
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
+	}
+	if len(prov.requests) != 4 {
+		t.Fatalf("provider saw %d requests, want 4", len(prov.requests))
+	}
+	if sigs := thinkingSignatures(prov.requests[1].Messages); len(sigs) == 0 {
+		t.Fatal("request 2 carries no thinking blocks before any truncation")
+	}
+	if !strings.Contains(prov.requests[2].Messages[4].Content[0].Content, "[...truncated ") {
+		t.Fatal("request 3 did not truncate the big_tool result")
+	}
+	for i := 2; i < len(prov.requests); i++ {
+		if sigs := thinkingSignatures(prov.requests[i].Messages); len(sigs) != 0 {
+			t.Errorf("request %d replays thinking blocks %v after a fit truncation", i+1, sigs)
+		}
 	}
 }
 
