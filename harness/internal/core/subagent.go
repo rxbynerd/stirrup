@@ -115,7 +115,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// recorder) so the clone doesn't shed those wrappers.
 	childPermissions := parent.Permissions
 	if parentPolicyEngine, ok := permission.Unwrap(parent.Permissions).(*permission.PolicyEnginePolicy); ok {
-		clone := parentPolicyEngine.ForChildRun(childConfig.RunID)
+		clone := parentPolicyEngine.ForChildRun(childConfig.RunID, "")
 		if rewrapped, ok := permission.RewrapChain(parent.Permissions, clone); ok {
 			childPermissions = rewrapped
 		} else {
