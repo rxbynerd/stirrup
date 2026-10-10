@@ -323,3 +323,37 @@ func TestLoop_StallNudge_RepeatedSpilledCommandOutputStalls(t *testing.T) {
 		t.Errorf("stallNudge flags = %s, want the nudge on the third turn only", got)
 	}
 }
+
+func TestLoop_StallNudge_PendingNudgeIsDroppedWhenTheBatchEndsTheRun(t *testing.T) {
+	batch := make([]types.StreamEvent, 0, maxConsecutiveFailures+1)
+	for i := 0; i < maxConsecutiveFailures; i++ {
+		batch = append(batch, types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", i), Name: "broken_tool", Input: map[string]any{}})
+	}
+	batch = append(batch, stopWith("tool_use"))
+	h, reader := newStallHarness(t, batch, scriptEndTurn)
+	h.loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "broken_tool",
+		Description: "Always fails",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "", fmt.Errorf("broken")
+		},
+	})
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "tool_failures" {
+		t.Fatalf("Outcome = %q, want tool_failures", runTrace.Outcome)
+	}
+	if got := fmt.Sprint(stallNudgeFlags(h.emitter)); got != "[false]" {
+		t.Errorf("stallNudge flags = %s, want [false]: the queued nudge was never sent", got)
+	}
+	if got := counterTotal(t, reader, "stirrup.harness.stall_nudges"); got != 0 {
+		t.Errorf("stall_nudges = %d, want 0", got)
+	}
+	if w := stallWarnings(h); len(w) != 0 {
+		t.Errorf("stall warnings = %q, want none", w)
+	}
+}
