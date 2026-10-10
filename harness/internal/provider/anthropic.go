@@ -793,9 +793,8 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	})
 	if err != nil {
 		a.recordLatency(ctx, start, metricAttrs)
-		// a.baseURL is operator-configurable and may carry a credential in
-		// its query string; unwrap the *url.Error so its embedded URL (which
-		// Go does not query-redact) never reaches a log or caller (CWE-532).
+		// Unwrap the *url.Error so its embedded URL, which Go does not
+		// query-redact, never reaches a log or caller (CWE-532).
 		return nil, classifyTransportError(fmt.Errorf("execute request: %w", security.UnwrapURLError(err)))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, a.streamIdleTimeout)
