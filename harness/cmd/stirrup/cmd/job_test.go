@@ -560,3 +560,36 @@ func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
 		t.Errorf("RunResult.Turns = %d, want 0: setup failed before the first turn", result.Turns)
 	}
 }
+
+func TestJobSessionBudget(t *testing.T) {
+	run := 30 * time.Second
+
+	t.Run("run alone without a follow-up window", func(t *testing.T) {
+		t.Setenv("STIRRUP_SESSION_DEADLINE", "")
+		if got := jobSessionBudget(run, 0); got != run {
+			t.Errorf("budget = %v, want %v", got, run)
+		}
+	})
+
+	t.Run("follow-up allowance when a window is configured", func(t *testing.T) {
+		t.Setenv("STIRRUP_SESSION_DEADLINE", "")
+		want := run + cliSessionBudget(run, 60)
+		if got := jobSessionBudget(run, 60); got != want {
+			t.Errorf("budget = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("session deadline overrides the estimate", func(t *testing.T) {
+		t.Setenv("STIRRUP_SESSION_DEADLINE", "7200")
+		if got := jobSessionBudget(run, 60); got != 2*time.Hour {
+			t.Errorf("budget = %v, want 2h", got)
+		}
+	})
+
+	t.Run("invalid session deadline is ignored", func(t *testing.T) {
+		t.Setenv("STIRRUP_SESSION_DEADLINE", "soon")
+		if got := jobSessionBudget(run, 0); got != run {
+			t.Errorf("budget = %v, want %v", got, run)
+		}
+	})
+}

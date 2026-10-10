@@ -35,14 +35,23 @@ const (
 	k8sEgressProxyPort = 8080
 )
 
-// podLabels returns the label set applied to every sandbox Pod. The sandbox
-// marker is constant; the pod-name label is unique per Pod so a per-Pod
-// NetworkPolicy can select exactly this Pod.
-func podLabels(podName string) map[string]string {
-	return map[string]string{
-		k8sSandboxLabel: "true",
-		k8sPodNameLabel: podName,
+// sandboxLabels returns the labels shared by a sandbox Pod and its
+// NetworkPolicy: the sandbox marker and, when runID is non-empty, the run ID.
+func sandboxLabels(runID string) map[string]string {
+	labels := map[string]string{k8sSandboxLabel: "true"}
+	if v := k8sLabelValue(runID); v != "" {
+		labels[k8sRunIDLabel] = v
 	}
+	return labels
+}
+
+// podLabels returns the label set applied to every sandbox Pod: the shared
+// sandbox labels plus a pod-name label unique per Pod, so a per-Pod
+// NetworkPolicy can select exactly this Pod.
+func podLabels(podName, runID string) map[string]string {
+	labels := sandboxLabels(runID)
+	labels[k8sPodNameLabel] = podName
+	return labels
 }
 
 // networkPolicyName derives the NetworkPolicy object name from the Pod name.
@@ -55,12 +64,12 @@ func networkPolicyName(podName string) string {
 // denyAllEgressPolicy builds a NetworkPolicy that selects the named Pod and
 // permits no egress at all (installed for Mode=="none"). Enforcement depends
 // on the cluster CNI supporting NetworkPolicy; see docs/executors/k8s.md.
-func denyAllEgressPolicy(namespace, podName string) *networkingv1.NetworkPolicy {
+func denyAllEgressPolicy(namespace, podName, runID string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      networkPolicyName(podName),
 			Namespace: namespace,
-			Labels:    map[string]string{k8sSandboxLabel: "true"},
+			Labels:    sandboxLabels(runID),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
@@ -80,7 +89,7 @@ func denyAllEgressPolicy(namespace, podName string) *networkingv1.NetworkPolicy 
 // proxy, not the policy — NetworkPolicy operates on IPs/ports/selectors. The
 // proxy peer selector has no NamespaceSelector, so the egress proxy
 // Deployment must run in the sandbox's namespace. See docs/executors/k8s.md.
-func allowlistEgressPolicy(namespace, podName string) *networkingv1.NetworkPolicy {
+func allowlistEgressPolicy(namespace, podName, runID string) *networkingv1.NetworkPolicy {
 	dnsPort := intstr.FromInt32(k8sDNSPort)
 	proxyPort := intstr.FromInt32(k8sEgressProxyPort)
 	udp := corev1.ProtocolUDP
@@ -90,7 +99,7 @@ func allowlistEgressPolicy(namespace, podName string) *networkingv1.NetworkPolic
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      networkPolicyName(podName),
 			Namespace: namespace,
-			Labels:    map[string]string{k8sSandboxLabel: "true"},
+			Labels:    sandboxLabels(runID),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
@@ -131,15 +140,15 @@ func allowlistEgressPolicy(namespace, podName string) *networkingv1.NetworkPolic
 // deny-all for "none", proxy+DNS allowlist for "allowlist". Any other mode
 // is a programming error and is surfaced as an error rather than silently
 // installing no policy.
-func egressPolicyFor(network *types.NetworkConfig, namespace, podName string) (*networkingv1.NetworkPolicy, error) {
+func egressPolicyFor(network *types.NetworkConfig, namespace, podName, runID string) (*networkingv1.NetworkPolicy, error) {
 	if network == nil {
 		return nil, fmt.Errorf("k8s executor: network config is required (fail-closed)")
 	}
 	switch network.Mode {
 	case "none":
-		return denyAllEgressPolicy(namespace, podName), nil
+		return denyAllEgressPolicy(namespace, podName, runID), nil
 	case "allowlist":
-		return allowlistEgressPolicy(namespace, podName), nil
+		return allowlistEgressPolicy(namespace, podName, runID), nil
 	default:
 		return nil, fmt.Errorf("k8s executor: unsupported network mode %q (want \"none\" or \"allowlist\")", network.Mode)
 	}

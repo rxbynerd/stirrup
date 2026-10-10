@@ -1778,9 +1778,15 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
 	defer runCancel()
 
+	graceSecs := 0
+	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
+		graceSecs = *config.FollowUpGrace
+	}
+
 	loop, err := core.BuildLoop(runCtx, config,
 		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
 		core.WithWireTrace(opts.wireTrace),
+		core.WithSessionBudget(runTimeout+cliSessionBudget(runTimeout, graceSecs)),
 	)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
@@ -1805,10 +1811,6 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		return err
 	}
 
-	graceSecs := 0
-	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		graceSecs = *config.FollowUpGrace
-	}
 	// The CLI has no orchestrator deadline behind it, so the session as a
 	// whole is bounded here; see cliSessionBudget.
 	sessionCtx, sessionCancel := withRunTimeout(ctx, cliSessionBudget(runTimeout, graceSecs))

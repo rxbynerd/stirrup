@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,10 @@ type ContainerExecutorConfig struct {
 	// outside the workspace to deliver tokens. Set by the factory alongside
 	// ExtraEnv when executor.sandboxIdentity is configured.
 	SandboxIdentityToken bool
+	// Lifecycle labels the container with the run ID and bounds its
+	// lifetime: the container sleeps for MaxLifetime and is then
+	// auto-removed, so it cannot outlive a harness that exits uncleanly.
+	Lifecycle Lifecycle
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -271,13 +276,16 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		}
 	}
 
+	hc.AutoRemove = true
+
 	containerID, err := api.createContainer(ctx, containerCreateRequest{
 		Image:      cfg.Image,
-		Cmd:        []string{"sleep", "infinity"},
+		Cmd:        []string{"sleep", sleepArg(cfg.Lifecycle)},
 		WorkingDir: containerWorkspace,
 		Env:        env,
 		User:       hardenedUser,
 		HostConfig: hc,
+		Labels:     containerLabels(cfg.Lifecycle.RunID),
 	})
 	if err != nil {
 		if proxy != nil {
@@ -308,6 +316,25 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	}, nil
 }
 
+// sleepArg is the argument to the container's keep-alive `sleep`: the
+// lifetime in whole seconds, or "infinity" when no bound is set.
+func sleepArg(l Lifecycle) string {
+	if secs, ok := l.seconds(); ok {
+		return strconv.FormatInt(secs, 10)
+	}
+	return "infinity"
+}
+
+// containerLabels returns the labels that mark a container as a stirrup
+// sandbox and record the run that created it.
+func containerLabels(runID string) map[string]string {
+	labels := map[string]string{containerLabelSandbox: "true"}
+	if runID != "" {
+		labels[containerLabelRunID] = runID
+	}
+	return labels
+}
+
 // stopProxyBounded shuts the egress proxy down with a 5-second deadline so
 // a hung Engine cannot wedge an executor build's error-path cleanup, and a
 // listener is never leaked if Stop never returns.
@@ -329,7 +356,8 @@ func splitListenAddr(addr string) (host, port string, err error) {
 
 // Close stops and removes the container. It should be called via defer after
 // creating the executor. If an egress proxy was started for this executor it
-// is shut down too.
+// is shut down too. A container the engine already auto-removed counts as
+// removed.
 func (e *ContainerExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

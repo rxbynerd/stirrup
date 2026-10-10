@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -108,6 +109,14 @@ func (c *containerAPIClient) url(path string) string {
 	return fmt.Sprintf("http://localhost/%s%s", apiVersion, path)
 }
 
+// apiStatusError is an Engine API response with a status of 400 or above.
+type apiStatusError struct {
+	status int
+	msg    string
+}
+
+func (e *apiStatusError) Error() string { return e.msg }
+
 // apiError is the JSON error structure returned by the Engine API.
 type apiError struct {
 	Message string `json:"message"`
@@ -126,9 +135,9 @@ func (c *containerAPIClient) doRequest(req *http.Request) (*http.Response, error
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var apiErr apiError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
-			return nil, fmt.Errorf("docker API %s %s: %s (HTTP %d)", req.Method, req.URL.Path, apiErr.Message, resp.StatusCode)
+			return nil, &apiStatusError{status: resp.StatusCode, msg: fmt.Sprintf("docker API %s %s: %s (HTTP %d)", req.Method, req.URL.Path, apiErr.Message, resp.StatusCode)}
 		}
-		return nil, fmt.Errorf("docker API %s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, string(body))
+		return nil, &apiStatusError{status: resp.StatusCode, msg: fmt.Sprintf("docker API %s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, string(body))}
 	}
 	return resp, nil
 }
@@ -145,6 +154,9 @@ type containerCreateRequest struct {
 	// User runs the container's main process as uid[:gid]; see
 	// docs/security.md for the hardened default.
 	User string `json:"User,omitempty"`
+	// Labels mark the container as a stirrup sandbox so a leaked one can be
+	// found with an engine label filter.
+	Labels map[string]string `json:"Labels,omitempty"`
 }
 
 type hostConfig struct {
@@ -169,6 +181,10 @@ type hostConfig struct {
 	// ExtraHosts injects "host.docker.internal:host-gateway" so the
 	// container can reach the host's egress proxy.
 	ExtraHosts []string `json:"ExtraHosts,omitempty"`
+	// AutoRemove has the engine delete the container as soon as its main
+	// process exits, so a sandbox whose keep-alive sleep ends is reaped
+	// without any harness involvement.
+	AutoRemove bool `json:"AutoRemove,omitempty"`
 }
 
 type containerCreateResponse struct {
@@ -298,6 +314,9 @@ func (c *containerAPIClient) stopContainer(ctx context.Context, id string, timeo
 	return nil
 }
 
+// removeContainer deletes a container. A container that is already gone, or
+// that the engine is already removing (an auto-removed container racing the
+// explicit delete), counts as removed.
 func (c *containerAPIClient) removeContainer(ctx context.Context, id string, force bool) error {
 	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
 	defer cancel()
@@ -309,6 +328,11 @@ func (c *containerAPIClient) removeContainer(ctx context.Context, id string, for
 	}
 	resp, err := c.doRequest(req)
 	if err != nil {
+		var statusErr *apiStatusError
+		if errors.As(err, &statusErr) && (statusErr.status == http.StatusNotFound ||
+			(statusErr.status == http.StatusConflict && strings.Contains(statusErr.msg, "already in progress"))) {
+			return nil
+		}
 		return classifyControlPlaneErr(ctx, err)
 	}
 	_ = resp.Body.Close()

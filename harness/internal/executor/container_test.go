@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -847,6 +848,115 @@ func TestContainerExecutor_Capabilities(t *testing.T) {
 		if caps.MaxTimeout != maxTimeout {
 			t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
 		}
+	}
+}
+
+func TestContainerExecutor_CreateRequestCarriesLifecycle(t *testing.T) {
+	var got containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"POST /containers/*/stop":  func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"DELETE /containers/*":     func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Lifecycle:  Lifecycle{RunID: "run-42", MaxLifetime: 90*time.Minute + 500*time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if want := []string{"sleep", "5401"}; !slices.Equal(got.Cmd, want) {
+		t.Errorf("Cmd = %v, want %v (lifetime rounded up to whole seconds)", got.Cmd, want)
+	}
+	if !got.HostConfig.AutoRemove {
+		t.Error("HostConfig.AutoRemove = false, want true")
+	}
+	if got.Labels["stirrup.sandbox"] != "true" || got.Labels["stirrup.run-id"] != "run-42" {
+		t.Errorf("Labels = %v, want stirrup.sandbox=true and stirrup.run-id=run-42", got.Labels)
+	}
+}
+
+func TestContainerExecutor_CreateRequestWithoutLifetimeKeepsAlive(t *testing.T) {
+	var got containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"POST /containers/*/stop":  func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"DELETE /containers/*":     func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if want := []string{"sleep", "infinity"}; !slices.Equal(got.Cmd, want) {
+		t.Errorf("Cmd = %v, want %v", got.Cmd, want)
+	}
+	if _, ok := got.Labels["stirrup.run-id"]; ok {
+		t.Errorf("Labels = %v, want no run-id label for an empty run ID", got.Labels)
+	}
+}
+
+// TestContainerExecutor_CloseToleratesAutoRemovedContainer covers the engine
+// having already reaped the container (its keep-alive sleep ended, or the
+// stop triggered auto-removal) before the explicit delete arrives.
+func TestContainerExecutor_CloseToleratesAutoRemovedContainer(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr bool
+	}{
+		{"not found", http.StatusNotFound, `{"message":"No such container: test-container-id"}`, false},
+		{"removal already in progress", http.StatusConflict, `{"message":"removal of container test-container-id is already in progress"}`, false},
+		{"other conflict", http.StatusConflict, `{"message":"container is paused"}`, true},
+		{"server error", http.StatusInternalServerError, `{"message":"boom"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+				"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusNotFound)
+				},
+				"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tt.status)
+					_, _ = w.Write([]byte(tt.body))
+				},
+			})
+			defer cleanup()
+
+			err := exec.Close()
+			if tt.wantErr && err == nil {
+				t.Fatal("Close succeeded, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		})
 	}
 }
 

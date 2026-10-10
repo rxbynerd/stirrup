@@ -140,19 +140,19 @@ func TestEgressPolicyFor(t *testing.T) {
 	const ns, pod = "default", "stirrup-abc123"
 
 	t.Run("nil network is rejected", func(t *testing.T) {
-		if _, err := egressPolicyFor(nil, ns, pod); err == nil {
+		if _, err := egressPolicyFor(nil, ns, pod, ""); err == nil {
 			t.Fatal("expected error for nil network")
 		}
 	})
 
 	t.Run("unsupported mode is rejected", func(t *testing.T) {
-		if _, err := egressPolicyFor(&types.NetworkConfig{Mode: "bridge"}, ns, pod); err == nil {
+		if _, err := egressPolicyFor(&types.NetworkConfig{Mode: "bridge"}, ns, pod, ""); err == nil {
 			t.Fatal("expected error for unsupported mode")
 		}
 	})
 
 	t.Run("none yields deny-all egress", func(t *testing.T) {
-		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "none"}, ns, pod)
+		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "none"}, ns, pod, "")
 		if err != nil {
 			t.Fatalf("egressPolicyFor(none): %v", err)
 		}
@@ -171,7 +171,7 @@ func TestEgressPolicyFor(t *testing.T) {
 	})
 
 	t.Run("allowlist yields dns + proxy egress", func(t *testing.T) {
-		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "allowlist"}, ns, pod)
+		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "allowlist"}, ns, pod, "")
 		if err != nil {
 			t.Fatalf("egressPolicyFor(allowlist): %v", err)
 		}
