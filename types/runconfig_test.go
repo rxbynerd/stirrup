@@ -6039,6 +6039,70 @@ func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *tes
 	}
 }
 
+func TestValidateRunConfig_WorkspaceExportRequired_RejectedWithoutDestination(t *testing.T) {
+	for _, v := range []bool{true, false} {
+		c := validConfig()
+		c.Executor = ExecutorConfig{Type: "local", WorkspaceExportRequired: &v}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatalf("workspaceExportRequired=%v without workspaceExportTo: expected error", v)
+		}
+		if !strings.Contains(err.Error(), "executor.workspaceExportRequired requires executor.workspaceExportTo") {
+			t.Errorf("workspaceExportRequired=%v: unexpected error: %v", v, err)
+		}
+	}
+}
+
+func TestValidateRunConfig_WorkspaceExportRequired_AcceptedWithDestination(t *testing.T) {
+	for _, v := range []bool{true, false} {
+		c := validConfig()
+		c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: "gs://bucket/path", WorkspaceExportRequired: &v}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("workspaceExportRequired=%v with a destination: %v", v, err)
+		}
+	}
+}
+
+func TestExecutorConfig_ExportRequired(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name string
+		cfg  ExecutorConfig
+		want bool
+	}{
+		{"no destination", ExecutorConfig{}, false},
+		{"destination defaults to required", ExecutorConfig{WorkspaceExportTo: "gs://b/p"}, true},
+		{"explicit true", ExecutorConfig{WorkspaceExportTo: "gs://b/p", WorkspaceExportRequired: &yes}, true},
+		{"explicit false", ExecutorConfig{WorkspaceExportTo: "gs://b/p", WorkspaceExportRequired: &no}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.ExportRequired(); got != tc.want {
+				t.Errorf("ExportRequired() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecutorConfig_WorkspaceExportRequiredJSONTriState(t *testing.T) {
+	cases := map[string]*bool{
+		`{"type":"local"}`:                                 nil,
+		`{"type":"local","workspaceExportRequired":false}`: new(bool),
+	}
+	for doc, want := range cases {
+		var ec ExecutorConfig
+		if err := json.Unmarshal([]byte(doc), &ec); err != nil {
+			t.Fatalf("unmarshal %s: %v", doc, err)
+		}
+		switch {
+		case want == nil && ec.WorkspaceExportRequired != nil:
+			t.Errorf("%s: got %v, want nil", doc, *ec.WorkspaceExportRequired)
+		case want != nil && (ec.WorkspaceExportRequired == nil || *ec.WorkspaceExportRequired != *want):
+			t.Errorf("%s: got %v, want %v", doc, ec.WorkspaceExportRequired, *want)
+		}
+	}
+}
+
 // --- Redact() coverage for resultSink.attributes ---
 
 func TestRedact_ResultSinkAttributes(t *testing.T) {

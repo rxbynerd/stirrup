@@ -76,8 +76,9 @@ type RunResult struct {
 	// when a verifier ran.
 	VerifierVerdict *VerifierResult `json:"verifierVerdict,omitempty"`
 
-	// Error carries a short human-readable reason when Outcome is not
-	// "success". Omitted on success.
+	// Error mirrors RunTrace.Error: a short human-readable reason when
+	// Outcome is not "success", or the trace persistence failure of an
+	// otherwise-successful run. Omitted otherwise.
 	Error string `json:"error,omitempty"`
 
 	// HookFailures is the count of lifecycle hook executions whose
@@ -92,6 +93,31 @@ type RunResult struct {
 	// Git mirrors RunTrace.Git: the branch, result SHA and base SHA of a
 	// deterministic-git run. Omitted when the git strategy is "none".
 	Git *GitHandoff `json:"git,omitempty"`
+
+	// WorkspaceExport mirrors RunTrace.WorkspaceExport. Omitted when no
+	// export destination is configured.
+	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
+}
+
+// Export receipt statuses.
+const (
+	ExportStatusUploaded = "uploaded"
+	ExportStatusFailed   = "failed"
+)
+
+// ExportReceipt reports the end-of-run workspace export of one run.
+type ExportReceipt struct {
+	// URI is the destination the workspace archive was written to.
+	URI string `json:"uri"`
+	// Status is ExportStatusUploaded when the exporter completed and
+	// ExportStatusFailed otherwise.
+	Status string `json:"status"`
+	// Required reports whether a failed export fails the run; see
+	// ExecutorConfig.WorkspaceExportRequired.
+	Required bool `json:"required"`
+	// Error is the scrubbed, length-capped export failure. Empty unless
+	// Status is ExportStatusFailed.
+	Error string `json:"error,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

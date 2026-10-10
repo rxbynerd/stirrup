@@ -928,6 +928,12 @@ type ExecutorConfig struct {
 	// set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 
+	// WorkspaceExportRequired selects whether a failed workspace export
+	// fails a successful run with outcome "handoff_failed". Nil defaults
+	// to true; see ExportRequired. Rejected when WorkspaceExportTo is
+	// empty.
+	WorkspaceExportRequired *bool `json:"workspaceExportRequired,omitempty"`
+
 	// SandboxIdentity requests a control-plane-issued token over the gRPC
 	// control stream and injects it into the sandbox environment. The token
 	// never enters RunConfig. GitProxy composes non-secret GIT_CONFIG_* env
@@ -5147,6 +5153,19 @@ func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 	}
 }
 
+// ExportRequired reports whether a failed workspace export fails the
+// run: WorkspaceExportRequired when set, otherwise true whenever an
+// export destination is configured.
+func (e ExecutorConfig) ExportRequired() bool {
+	if e.WorkspaceExportTo == "" {
+		return false
+	}
+	if e.WorkspaceExportRequired != nil {
+		return *e.WorkspaceExportRequired
+	}
+	return true
+}
+
 // validateExecutorWorkspaceExportTo enforces the URI shape on the
 // optional Executor.WorkspaceExportTo field and the cross-field
 // constraint that the api and none executors (both read-only or
@@ -5154,6 +5173,9 @@ func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 // tarball.
 func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 	if cfg.WorkspaceExportTo == "" {
+		if cfg.WorkspaceExportRequired != nil {
+			*errs = append(*errs, "executor.workspaceExportRequired requires executor.workspaceExportTo")
+		}
 		return
 	}
 	// Neither the api executor (read-only, backed by a VCS API) nor the

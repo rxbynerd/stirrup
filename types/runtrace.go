@@ -100,7 +100,8 @@ type RunTrace struct {
 	// context window and is truncated).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
 	// handoff_failed reports a deterministic-git final checkpoint that failed
-	// or left the working tree dirty (see Git). handoff_failed, hook_failed
+	// or left the working tree dirty (see Git), or a required workspace
+	// export that failed (see WorkspaceExport). handoff_failed, hook_failed
 	// and both command_output_* outcomes claim only an otherwise-successful
 	// run — the primary failure cause stays authoritative — and a capture
 	// failure outranks an archive failure.
@@ -123,6 +124,14 @@ type RunTrace struct {
 	// Git is the git state the run handed off after its final checkpoint.
 	// Nil when the git strategy does not manage git (gitStrategy "none").
 	Git *GitHandoff `json:"git,omitempty"`
+	// WorkspaceExport is the receipt of the end-of-run workspace export.
+	// Nil when no export destination is configured.
+	WorkspaceExport *ExportReceipt `json:"workspaceExport,omitempty"`
+	// Error is the scrubbed, length-capped reason for a non-success
+	// Outcome: the run's earliest failure. It is also set on a successful
+	// run whose trace could not be persisted, in which case only the
+	// returned trace carries it. Empty otherwise.
+	Error string `json:"error,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run
