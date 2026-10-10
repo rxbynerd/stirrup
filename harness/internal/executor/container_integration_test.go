@@ -1,10 +1,15 @@
 package executor
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -19,6 +24,18 @@ import (
 // engine; STIRRUP_TEST_CONTAINER_IMAGE (default busybox:latest) must
 // already be present locally.
 func liveContainerExecutor(t *testing.T, ctx context.Context, sandboxIdentity bool) *ContainerExecutor {
+	t.Helper()
+	return newLiveContainerExecutor(t, ctx, sandboxIdentity, Lifecycle{})
+}
+
+// liveContainerExecutorWithLifecycle is liveContainerExecutor with the
+// sandbox lifetime and run label set.
+func liveContainerExecutorWithLifecycle(t *testing.T, ctx context.Context, life Lifecycle) *ContainerExecutor {
+	t.Helper()
+	return newLiveContainerExecutor(t, ctx, false, life)
+}
+
+func newLiveContainerExecutor(t *testing.T, ctx context.Context, sandboxIdentity bool, life Lifecycle) *ContainerExecutor {
 	t.Helper()
 	sock := os.Getenv("STIRRUP_TEST_CONTAINER_SOCKET")
 	if sock == "" {
@@ -35,6 +52,7 @@ func liveContainerExecutor(t *testing.T, ctx context.Context, sandboxIdentity bo
 		SocketPath:           sock,
 		Network:              &types.NetworkConfig{Mode: "none"},
 		SandboxIdentityToken: sandboxIdentity,
+		Lifecycle:            life,
 	})
 	if err != nil {
 		t.Fatalf("NewContainerExecutorWithContext: %v", err)
@@ -222,4 +240,133 @@ func TestContainerExecutor_TimeoutKillsProcessTree_LiveEngine(t *testing.T) {
 			t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", res, "out\n", "err\n")
 		}
 	})
+}
+
+const (
+	orphanHelperEnv = "STIRRUP_TEST_ORPHAN_HELPER"
+	orphanReadyTag  = "ORPHAN_READY "
+	// orphanLifetime is the sandbox lifetime the orphan tests give the
+	// helper process; short enough to wait out, long enough to inspect.
+	orphanLifetime = 20 * time.Second
+)
+
+// TestContainerOrphanHelper is the body of the child process the orphan test
+// kills. It builds a container executor with a short lifetime, reports the
+// container ID, and then waits to be killed; it does nothing when run as part
+// of the normal suite.
+func TestContainerOrphanHelper(t *testing.T) {
+	if os.Getenv(orphanHelperEnv) == "" {
+		t.Skip("helper process for TestContainerExecutor_OrphanReapedAfterHarnessKill")
+	}
+	sandbox := liveContainerExecutorWithLifecycle(t, context.Background(), Lifecycle{RunID: "orphan-test", MaxLifetime: orphanLifetime})
+	fmt.Println(orphanReadyTag + sandbox.containerID)
+	time.Sleep(10 * time.Minute)
+}
+
+type inspectedContainer struct {
+	State  struct{ Running bool }
+	Config struct{ Labels map[string]string }
+}
+
+// inspectContainer reports whether the engine still has the container; a 404
+// is the absence the orphan test waits for.
+func inspectContainer(ctx context.Context, api *containerAPIClient, id string) (*inspectedContainer, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api.url("/containers/"+id+"/json"), nil)
+	if err != nil {
+		return nil, false, err
+	}
+	resp, err := api.doRequest(req)
+	if err != nil {
+		var statusErr *apiStatusError
+		if errors.As(err, &statusErr) && statusErr.status == http.StatusNotFound {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out inspectedContainer
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, false, err
+	}
+	return &out, true, nil
+}
+
+// TestContainerExecutor_OrphanReapedAfterHarnessKill SIGKILLs a process that
+// owns a sandbox container, so no Close runs, and verifies that the labelled
+// container disappears on its own within its lifetime.
+func TestContainerExecutor_OrphanReapedAfterHarnessKill(t *testing.T) {
+	sock := os.Getenv("STIRRUP_TEST_CONTAINER_SOCKET")
+	if sock == "" {
+		t.Skip("STIRRUP_TEST_CONTAINER_SOCKET not set; skipping live container engine test")
+	}
+	api := newContainerAPIClient(sock)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestContainerOrphanHelper$", "-test.v")
+	cmd.Env = append(os.Environ(), orphanHelperEnv+"=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	killed := false
+	var id string
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		if id != "" {
+			_ = api.removeContainer(context.Background(), id, true)
+		}
+	})
+
+	ready := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if rest, ok := strings.CutPrefix(sc.Text(), orphanReadyTag); ok {
+				ready <- rest
+				break
+			}
+		}
+		_, _ = io.Copy(io.Discard, stdout)
+	}()
+	select {
+	case id = <-ready:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("helper did not report a container ID")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	c, found, err := inspectContainer(ctx, api, id)
+	if err != nil || !found {
+		t.Fatalf("inspect running sandbox: found=%v err=%v", found, err)
+	}
+	if !c.State.Running || c.Config.Labels["stirrup.sandbox"] != "true" || c.Config.Labels["stirrup.run-id"] != "orphan-test" {
+		t.Fatalf("sandbox = running %v labels %v, want running with stirrup labels", c.State.Running, c.Config.Labels)
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("SIGKILL helper: %v", err)
+	}
+	killed = true
+	_ = cmd.Wait()
+
+	deadline := time.Now().Add(orphanLifetime + 30*time.Second)
+	for {
+		_, found, err := inspectContainer(ctx, api, id)
+		if err != nil {
+			t.Fatalf("inspect after kill: %v", err)
+		}
+		if !found {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("container %s still present %v after the harness was killed", id, orphanLifetime+30*time.Second)
+		}
+		time.Sleep(time.Second)
+	}
 }

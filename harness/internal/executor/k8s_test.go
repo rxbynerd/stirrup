@@ -3,6 +3,7 @@
 package executor
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,15 +11,18 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -929,5 +933,194 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 	t.Logf("HTTPS via proxy to example.com (not allowlisted) → http_code %q", denied)
 	if strings.HasPrefix(denied, "2") || strings.HasPrefix(denied, "3") {
 		t.Errorf("non-allowlisted example.com via proxy returned http_code %q, want a failure (proxy 403)", denied)
+	}
+}
+
+const (
+	k8sOrphanHelperEnv = "STIRRUP_TEST_K8S_ORPHAN_HELPER"
+	k8sOrphanReadyTag  = "ORPHAN_READY "
+	// k8sOrphanLifetime is the sandbox lifetime the orphan test gives the
+	// helper process.
+	k8sOrphanLifetime = 20 * time.Second
+)
+
+// TestK8sOrphanHelper is the body of the child process the orphan test kills:
+// it builds a k8s executor with a short lifetime, reports the Pod name, and
+// then waits to be killed. It does nothing in the normal suite.
+func TestK8sOrphanHelper(t *testing.T) {
+	if os.Getenv(k8sOrphanHelperEnv) == "" {
+		t.Skip("helper process for TestK8sExecutor_OrphanBoundedAfterHarnessKill")
+	}
+	cfg := testK8sEnv(t)
+	sandbox, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
+		Lifecycle:        Lifecycle{RunID: "orphan-test", MaxLifetime: k8sOrphanLifetime},
+	})
+	if err != nil {
+		t.Fatalf("NewK8sExecutor: %v", err)
+	}
+	fmt.Println(k8sOrphanReadyTag + sandbox.podName)
+	time.Sleep(10 * time.Minute)
+}
+
+// TestK8sExecutor_OrphanBoundedAfterHarnessKill SIGKILLs a process that owns a
+// sandbox Pod, so no Close runs, and verifies the kubelet ends the Pod on its
+// own once the lifetime passes. The Pod and its NetworkPolicy carry the run ID
+// label until an operator deletes them.
+func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
+	cfg := testK8sEnv(t)
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+	if err != nil {
+		t.Fatalf("build verification clientset: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestK8sOrphanHelper$", "-test.v")
+	cmd.Env = append(os.Environ(), k8sOrphanHelperEnv+"=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	killed := false
+	var podName string
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		if podName != "" {
+			bg := context.Background()
+			_ = clientset.CoreV1().Pods(cfg.namespace).Delete(bg, podName, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
+			_ = clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Delete(bg, networkPolicyName(podName), metav1.DeleteOptions{})
+		}
+	})
+
+	ready := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			if rest, ok := strings.CutPrefix(sc.Text(), k8sOrphanReadyTag); ok {
+				ready <- rest
+				break
+			}
+		}
+		_, _ = io.Copy(io.Discard, stdout)
+	}()
+	select {
+	case podName = <-ready:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("helper did not report a Pod name")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get sandbox pod: %v", err)
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != int64(k8sOrphanLifetime/time.Second) {
+		t.Errorf("activeDeadlineSeconds = %v, want %d", pod.Spec.ActiveDeadlineSeconds, int64(k8sOrphanLifetime/time.Second))
+	}
+	if pod.Labels[k8sRunIDLabel] != "orphan-test" {
+		t.Errorf("pod labels = %v, want %s=orphan-test", pod.Labels, k8sRunIDLabel)
+	}
+	policy, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(podName), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get egress policy: %v", err)
+	}
+	if policy.Labels[k8sRunIDLabel] != "orphan-test" {
+		t.Errorf("policy labels = %v, want %s=orphan-test", policy.Labels, k8sRunIDLabel)
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("SIGKILL helper: %v", err)
+	}
+	killed = true
+	_ = cmd.Wait()
+
+	wait := k8sOrphanLifetime + 60*time.Second
+	deadline := time.Now().Add(wait)
+	for {
+		got, getErr := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, podName, metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(getErr):
+			return
+		case getErr != nil:
+			t.Fatalf("get pod after kill: %v", getErr)
+		case got.Status.Phase == corev1.PodFailed && got.Status.Reason == "DeadlineExceeded":
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pod %s still %s %v after the harness was killed", podName, got.Status.Phase, wait)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod deletes the pod named
+// as the sandbox's owner and verifies the cluster garbage-collects the sandbox
+// Pod. A bare Pod stands in for the harness pod.
+func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
+	cfg := testK8sEnv(t)
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+	if err != nil {
+		t.Fatalf("build verification clientset: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	owner, err := clientset.CoreV1().Pods(cfg.namespace).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: cfg.namespace},
+		Spec: corev1.PodSpec{
+			RestartPolicy:    corev1.RestartPolicyNever,
+			RuntimeClassName: optionalRuntimeClassName(cfg.runtimeClass),
+			Containers: []corev1.Container{{
+				Name:    "owner",
+				Image:   cfg.image,
+				Command: []string{"/bin/sh", "-c", "sleep 600"},
+			}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create stand-in harness pod: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = clientset.CoreV1().Pods(cfg.namespace).Delete(context.Background(), owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
+	})
+
+	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
+		HarnessPod:       &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
+	})
+	if err != nil {
+		t.Fatalf("NewK8sExecutor: %v", err)
+	}
+	t.Cleanup(func() { _ = sandbox.Close() })
+
+	if err := clientset.CoreV1().Pods(cfg.namespace).Delete(ctx, owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))}); err != nil {
+		t.Fatalf("delete stand-in harness pod: %v", err)
+	}
+
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		_, getErr := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, sandbox.podName, metav1.GetOptions{})
+		if apierrors.IsNotFound(getErr) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sandbox pod %s still present 90s after its owner was deleted (last get err: %v)", sandbox.podName, getErr)
+		}
+		time.Sleep(time.Second)
 	}
 }
