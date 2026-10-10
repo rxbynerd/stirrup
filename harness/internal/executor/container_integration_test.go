@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"archive/tar"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -203,6 +204,41 @@ func TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine(t *testing.
 	}
 	if !slices.Equal(entries, []string{"sub/", "top.txt"}) {
 		t.Errorf("ListDirectory(.) = %q, want [sub/ top.txt]", entries)
+	}
+}
+
+// TestContainerExecutor_ArchiveWorkspace_LiveEngine pins that the archive
+// is produced by tar inside the container: it carries the files the sandbox
+// wrote and records a symlink as a symlink entry.
+func TestContainerExecutor_ArchiveWorkspace_LiveEngine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := liveContainerExecutor(t, ctx, false)
+
+	res, err := exec.Exec(ctx, "mkdir -p sub && echo hi > top.txt && echo nested > sub/nested.txt && ln -s top.txt alias", 30*time.Second)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("seed workspace: err %v, result %+v", err, res)
+	}
+	var buf strings.Builder
+	stats, err := exec.ArchiveWorkspace(ctx, &buf, 1<<20)
+	if err != nil {
+		t.Fatalf("ArchiveWorkspace: %v", err)
+	}
+	if stats.Bytes != int64(buf.Len()) {
+		t.Errorf("stats.Bytes = %d, want %d", stats.Bytes, buf.Len())
+	}
+	got := map[string]tarEntry{}
+	for _, e := range readTarEntries(t, []byte(buf.String())) {
+		got[strings.TrimPrefix(e.name, "./")] = e
+	}
+	if e := got["top.txt"]; e.typeflag != tar.TypeReg || e.body != "hi\n" {
+		t.Errorf("top.txt = %+v, want a regular file with body hi", e)
+	}
+	if e := got["sub/nested.txt"]; e.body != "nested\n" {
+		t.Errorf("sub/nested.txt = %+v, want body nested", e)
+	}
+	if e := got["alias"]; e.typeflag != tar.TypeSymlink || e.linkname != "top.txt" {
+		t.Errorf("alias = %+v, want a symlink to top.txt", e)
 	}
 }
 
