@@ -3,7 +3,9 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -129,15 +131,16 @@ func TestGitLabExecutor_RequestShape(t *testing.T) {
 func TestGitLabExecutor_ReadFile(t *testing.T) {
 	content := "package main\n\nfunc main() {}\n"
 	tests := []struct {
-		name    string
-		status  int
-		body    string
-		path    string
-		want    string
-		wantErr string
+		name         string
+		status       int
+		body         string
+		path         string
+		want         string
+		wantErr      string
+		wantNotExist bool
 	}{
 		{name: "success", status: http.StatusOK, body: content, path: "main.go", want: content},
-		{name: "not found", status: http.StatusNotFound, body: `{"message":"404 File Not Found"}`, path: "nope.go", wantErr: "HTTP 404"},
+		{name: "not found", status: http.StatusNotFound, body: `{"message":"404 File Not Found"}`, path: "nope.go", wantErr: "HTTP 404", wantNotExist: true},
 		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"401 Unauthorized"}`, path: "main.go", wantErr: "HTTP 401"},
 		{name: "empty path", status: http.StatusOK, body: content, path: "/", wantErr: "path is empty"},
 	}
@@ -157,6 +160,9 @@ func TestGitLabExecutor_ReadFile(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+				}
+				if got := errors.Is(err, fs.ErrNotExist); got != tt.wantNotExist {
+					t.Errorf("errors.Is(err, fs.ErrNotExist) = %v, want %v", got, tt.wantNotExist)
 				}
 				return
 			}
