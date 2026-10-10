@@ -453,24 +453,26 @@ func (l *AgenticLoop) recordAttemptUsage(
 	selectedProvider provider.ProviderAdapter,
 	attempt providerAttempt,
 	toolCalls int,
+	outputLimitRecovery bool,
 ) types.TurnTrace {
 	sr, tokens := attempt.result, attempt.tokens
 	tokenTracker.RecordTurn(tokens)
 
 	turnMode, turnBatchID := turnModeInfo(selectedProvider)
 	summary := types.TurnTrace{
-		Turn:          turn,
-		Tokens:        tokens,
-		InputReported: attempt.inputReported,
-		StopReason:    sr.StopReason,
-		StopDetails:   sr.StopDetails,
-		DurationMs:    attempt.duration.Milliseconds(),
-		Mode:          turnMode,
-		BatchID:       turnBatchID,
-		Model:         selection.Model,
-		ResponseModel: sr.ResponseModel,
-		Retries:       attempt.retries,
-		ToolCalls:     toolCalls,
+		Turn:                turn,
+		Tokens:              tokens,
+		InputReported:       attempt.inputReported,
+		StopReason:          sr.StopReason,
+		StopDetails:         sr.StopDetails,
+		DurationMs:          attempt.duration.Milliseconds(),
+		Mode:                turnMode,
+		BatchID:             turnBatchID,
+		Model:               selection.Model,
+		ResponseModel:       sr.ResponseModel,
+		Retries:             attempt.retries,
+		ToolCalls:           toolCalls,
+		OutputLimitRecovery: outputLimitRecovery,
 	}
 	l.Trace.RecordTurn(summary)
 

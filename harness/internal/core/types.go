@@ -178,6 +178,11 @@ type AgenticLoop struct {
 	// ID is unique within the trace file the run shares with them.
 	subAgentSpawns atomic.Int64
 
+	// outputLimitRecoveries counts the max_tokens stops the current run
+	// has continued past. It is reset at run start, so verification
+	// re-entries share the per-run bound.
+	outputLimitRecoveries int
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.

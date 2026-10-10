@@ -64,10 +64,12 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	if in.EscalationsSoFar >= p.maxRetries {
 		return none
 	}
-	// A refusal or a full context window is not a missed tool call, and
-	// re-prompting would retry the stop rather than recover from it.
+	// A refusal, a full context window or a response cut off at the
+	// output limit is not a missed tool call, and re-prompting would
+	// retry the stop rather than recover from it. The loop handles a
+	// max_tokens stop itself.
 	switch in.StopReason {
-	case "tool_use", "refusal", types.StopReasonContextWindowExceeded:
+	case "tool_use", "refusal", types.StopReasonContextWindowExceeded, "max_tokens":
 		return none
 	}
 	if !in.ToolsAvailable {

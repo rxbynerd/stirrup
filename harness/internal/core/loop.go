@@ -332,6 +332,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.lastContextTokens.Store(0)
 	l.historyRewritten = false
 	l.subAgentSpawns.Store(0)
+	l.outputLimitRecoveries = 0
 
 	// Tagged with run.id and run.mode; unregistered at run end so the
 	// OTel SDK does not keep observing this run after it finishes.
@@ -927,7 +928,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
+				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0, false)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
@@ -965,24 +966,22 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason == "tool_use" {
 			dispatched = len(toolCalls)
 		}
-		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
+		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
+		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
 		// calls are filled in after planAndDispatch runs below.
 		turnRecord := types.TurnRecord{
-			Turn:          turn,
-			ModelInput:    modelInputOf(selection.Model, params),
-			ModelOutput:   sr.Blocks,
-			ResponseModel: sr.ResponseModel,
+			Turn:                turn,
+			ModelInput:          modelInputOf(selection.Model, params),
+			ModelOutput:         sr.Blocks,
+			ResponseModel:       sr.ResponseModel,
+			OutputLimitRecovery: outputLimitRecovery,
 		}
 		// The chat span covers inference only; tool spans are its
 		// siblings under the agent span.
 		chat.End(trace.ChatSpanEnd{Summary: &summary, Record: &turnRecord})
-
-		// Carries provider replay state so the next request can
-		// round-trip it.
-		messages = appendAssistantContent(messages, sr.Blocks, sr.ReplayFields)
 
 		// finalText feeds RunTrace.FinalAssistantText and the end_turn
 		// PhasePostTurn guard below. priorFinalText is the pre-commit
@@ -992,6 +991,21 @@ func (l *AgenticLoop) runInnerLoop(
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
+
+		if outputLimitRecovery {
+			l.Trace.RecordTurnRecord(turnRecord)
+			messages = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			continue
+		}
+
+		// Carries provider replay state so the next request can
+		// round-trip it. A max_tokens turn is never dispatched, so its
+		// tool calls stay out of history.
+		assistantBlocks := sr.Blocks
+		if sr.StopReason == "max_tokens" {
+			assistantBlocks = withoutToolUse(sr.Blocks)
+		}
+		messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on

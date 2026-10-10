@@ -497,8 +497,8 @@ func TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop(t *testing.T) {
 	rec.mu.Lock()
 	turns := append([]types.TurnTrace(nil), rec.turns...)
 	rec.mu.Unlock()
-	if len(turns) != 1 {
-		t.Fatalf("got %d turn traces, want 1", len(turns))
+	if len(turns) == 0 {
+		t.Fatal("got no turn traces")
 	}
 	if turns[0].ToolCalls != 0 {
 		t.Errorf("max_tokens turn ToolCalls = %d, want 0", turns[0].ToolCalls)
@@ -1509,7 +1509,10 @@ func TestLoop_VerificationError(t *testing.T) {
 	}
 }
 
-func TestLoop_MaxTokensStopReasonIsFailure(t *testing.T) {
+// TestLoop_MaxTokensStopIsFailureOnceRecoveriesAreSpent pins that a
+// model which keeps stopping at the output limit ends the run with
+// max_tokens after the bounded recoveries.
+func TestLoop_MaxTokensStopIsFailureOnceRecoveriesAreSpent(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Partial answer"},
@@ -1526,6 +1529,9 @@ func TestLoop_MaxTokensStopReasonIsFailure(t *testing.T) {
 	}
 	if runTrace.Outcome != "max_tokens" {
 		t.Errorf("expected outcome 'max_tokens', got %q", runTrace.Outcome)
+	}
+	if runTrace.Turns != maxOutputLimitRecoveries+1 {
+		t.Errorf("Turns = %d, want %d (one per recovery plus the terminal stop)", runTrace.Turns, maxOutputLimitRecoveries+1)
 	}
 }
 
