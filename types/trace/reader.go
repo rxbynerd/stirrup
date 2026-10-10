@@ -5,6 +5,7 @@ package trace
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -41,6 +43,13 @@ type Reader struct {
 	closer  io.Closer
 	scanner *bufio.Scanner
 	logger  *slog.Logger
+
+	// skipped counts lines longer than MaxLineBytes that the scanner
+	// discarded; discarding is true while the tail of such a line is
+	// still being dropped. Both live on the Reader so they survive
+	// resetScanner.
+	skipped    int
+	discarding bool
 }
 
 // ReaderOption customises a Reader.
@@ -62,15 +71,20 @@ func WithLogger(l *slog.Logger) ReaderOption {
 // Close on the returned Reader does NOT close r.
 func NewReader(r io.Reader, opts ...ReaderOption) *Reader {
 	reader := &Reader{
-		src:     r,
-		logger:  slog.Default(),
-		scanner: bufio.NewScanner(r),
+		src:    r,
+		logger: slog.Default(),
 	}
-	reader.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
+	reader.resetScanner()
 	for _, opt := range opts {
 		opt(reader)
 	}
 	return reader
+}
+
+// SkippedLines reports how many lines longer than MaxLineBytes the
+// reader has discarded so far.
+func (r *Reader) SkippedLines() int {
+	return r.skipped
 }
 
 // Open opens path for reading and returns a Reader that owns the file.
@@ -104,6 +118,35 @@ func (r *Reader) Close() error {
 func (r *Reader) resetScanner() {
 	r.scanner = bufio.NewScanner(r.src)
 	r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
+	r.scanner.Split(r.splitLines)
+}
+
+// splitLines is bufio.ScanLines that drops lines longer than
+// MaxLineBytes instead of failing the scan. Once the buffer holds
+// MaxLineBytes without a newline, the buffered bytes are discarded and
+// every following byte up to and including the next newline is dropped
+// as well, so the scanner resumes on the next line boundary.
+func (r *Reader) splitLines(data []byte, atEOF bool) (int, []byte, error) {
+	if r.discarding {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			r.discarding = false
+			return i + 1, nil, nil
+		}
+		return len(data), nil, nil
+	}
+	advance, token, err := bufio.ScanLines(data, atEOF)
+	if token != nil || advance > 0 || err != nil {
+		return advance, token, err
+	}
+	if len(data) >= MaxLineBytes {
+		r.skipped++
+		r.discarding = true
+		r.logger.Debug("trace.Reader: skip oversized line",
+			"cap", MaxLineBytes,
+		)
+		return len(data), nil, nil
+	}
+	return 0, nil, nil
 }
 
 // Next returns the next RunTrace record in the stream. Both wire
@@ -111,8 +154,8 @@ func (r *Reader) resetScanner() {
 // it yields only run_finished events, skipping the rest.
 //
 // Malformed lines and lines exceeding MaxLineBytes are skipped with a
-// slog.Debug log. Returns io.EOF when exhausted; other scanner errors
-// are surfaced verbatim.
+// slog.Debug log; SkippedLines reports the oversized count. Returns
+// io.EOF when exhausted; other scanner errors are surfaced verbatim.
 func (r *Reader) Next() (*types.RunTrace, error) {
 	for r.scanner.Scan() {
 		line := r.scanner.Bytes()
@@ -133,14 +176,6 @@ func (r *Reader) Next() (*types.RunTrace, error) {
 		return trace, nil
 	}
 	if err := r.scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			r.logger.Debug("trace.Reader: skip oversized line",
-				"cap", MaxLineBytes,
-			)
-			r.scanner = bufio.NewScanner(r.src)
-			r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
-			return r.Next()
-		}
 		return nil, fmt.Errorf("reading trace file: %w", err)
 	}
 	return nil, io.EOF
@@ -156,6 +191,9 @@ const (
 	eventKindToolCallRecord      = "tool_call_record"
 	eventKindRunFinished         = "run_finished"
 	eventKindCommandOutputRecord = "command_output_record"
+	eventKindSubRunStarted       = "subrun_started"
+	eventKindSubRunFinished      = "subrun_finished"
+	eventKindSystemPrompt        = "system_prompt"
 )
 
 // streamedEvent mirrors the on-wire shape of harness/internal/trace.Event
@@ -165,6 +203,7 @@ type streamedEvent struct {
 	Kind          string                     `json:"kind"`
 	SchemaVersion string                     `json:"schemaVersion,omitempty"`
 	RunID         string                     `json:"runId,omitempty"`
+	ParentRunID   string                     `json:"parentRunId,omitempty"`
 	StartedAt     *time.Time                 `json:"startedAt,omitempty"`
 	CompletedAt   *time.Time                 `json:"completedAt,omitempty"`
 	Config        *types.RunConfig           `json:"config,omitempty"`
@@ -173,8 +212,14 @@ type streamedEvent struct {
 	ModelOutput   []types.ContentBlock       `json:"modelOutput,omitempty"`
 	ToolCalls     []types.ToolCallRecord     `json:"toolCalls,omitempty"`
 	ToolCall      *types.ToolCallRecord      `json:"toolCall,omitempty"`
+	ResponseModel string                     `json:"responseModel,omitempty"`
 	Trace         *types.RunTrace            `json:"trace,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
+	SubRun        *types.SubRunSummary       `json:"subRun,omitempty"`
+
+	HarnessVersion     string `json:"harnessVersion,omitempty"`
+	SystemPrompt       string `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256 string `json:"systemPromptSha256,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -217,16 +262,40 @@ func decodeRunTraceLine(line []byte) (*types.RunTrace, bool, error) {
 }
 
 // ReadRecording walks the stream and reassembles a *types.RunRecording
-// from run_started, turn_record, and run_finished events. An
+// from run_started, system_prompt, turn_record, and run_finished events. An
 // interrupted run with no run_finished is returned with
 // FinalOutcome.ID == "". A legacy single-blob trace is treated as a
 // recording with no transcript turns.
+//
+// A turn_record that names a parent run and carries a run ID other than
+// the recording's belongs to a sub-agent: it is grouped into
+// RunRecording.SubRuns together with that child's subrun_started and
+// subrun_finished events, and never appears in Turns. Records without
+// run IDs, as in traces written before sub-run tagging, stay in Turns.
+//
+// Lines longer than MaxLineBytes are dropped without discarding the
+// records around them; RunRecording.SkippedLines reports how many, and
+// a non-zero count means the recording is incomplete.
 //
 // The reader is consumed end-to-end; the caller does not call Next
 // afterwards.
 func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 	recording := &types.RunRecording{}
 	seenStarted := false
+	subRunIndex := map[string]int{}
+	subRun := func(runID, parentRunID string) *types.SubRunRecording {
+		i, ok := subRunIndex[runID]
+		if !ok {
+			i = len(recording.SubRuns)
+			subRunIndex[runID] = i
+			recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: runID})
+		}
+		child := &recording.SubRuns[i]
+		if parentRunID != "" {
+			child.ParentRunID = parentRunID
+		}
+		return child
+	}
 	for r.scanner.Scan() {
 		line := r.scanner.Bytes()
 		if len(line) == 0 {
@@ -266,19 +335,48 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		case eventKindRunStarted:
 			seenStarted = true
 			recording.RunID = ev.RunID
+			recording.HarnessVersion = ev.HarnessVersion
 			if ev.Config != nil {
 				recording.Config = *ev.Config
 			}
+		case eventKindSystemPrompt:
+			if ev.ParentRunID == "" {
+				recording.SystemPrompt = ev.SystemPrompt
+				recording.SystemPromptSHA256 = ev.SystemPromptSHA256
+			}
 		case eventKindTurnRecord:
 			tr := types.TurnRecord{
-				Turn:        ev.Turn,
-				ModelOutput: ev.ModelOutput,
-				ToolCalls:   ev.ToolCalls,
+				Turn:          ev.Turn,
+				ModelOutput:   ev.ModelOutput,
+				ToolCalls:     ev.ToolCalls,
+				RunID:         ev.RunID,
+				ParentRunID:   ev.ParentRunID,
+				ResponseModel: ev.ResponseModel,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput
 			}
+			if ev.ParentRunID != "" && ev.RunID != "" && ev.RunID != recording.RunID {
+				child := subRun(ev.RunID, ev.ParentRunID)
+				child.Turns = append(child.Turns, tr)
+				continue
+			}
 			recording.Turns = append(recording.Turns, tr)
+		case eventKindSubRunStarted:
+			if ev.RunID == "" {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			if ev.Config != nil {
+				child.Config = *ev.Config
+			}
+		case eventKindSubRunFinished:
+			if ev.RunID == "" || ev.SubRun == nil {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			summary := *ev.SubRun
+			child.Summary = &summary
 		case eventKindRunFinished:
 			if ev.Trace != nil {
 				recording.FinalOutcome = *ev.Trace
@@ -295,15 +393,15 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			// unknown kind: skip.
 		}
 	}
+	recording.SkippedLines = r.skipped
+	if r.skipped > 0 {
+		r.logger.Warn("trace.Reader: recording is partial; oversized lines were skipped",
+			"skippedLines", r.skipped,
+			"cap", MaxLineBytes,
+			"runId", recording.RunID,
+		)
+	}
 	if err := r.scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			r.logger.Debug("trace.Reader: skip oversized line",
-				"cap", MaxLineBytes,
-			)
-			r.scanner = bufio.NewScanner(r.src)
-			r.scanner.Buffer(make([]byte, 0, initialScanBuf), MaxLineBytes)
-			return r.ReadRecording()
-		}
 		return recording, fmt.Errorf("reading trace file: %w", err)
 	}
 	synthesizeLegacyCommandOutputs(recording)
@@ -318,7 +416,11 @@ func synthesizeLegacyCommandOutputs(recording *types.RunRecording) {
 	for _, record := range recording.CommandOutputs {
 		seen[record.RunID+"\x00"+record.ToolUseID] = true
 	}
-	for _, turn := range recording.Turns {
+	turns := slices.Clone(recording.Turns)
+	for _, child := range recording.SubRuns {
+		turns = append(turns, child.Turns...)
+	}
+	for _, turn := range turns {
 		for _, call := range turn.ToolCalls {
 			if call.Name != "run_command" && call.InternalName != "run_command" {
 				continue

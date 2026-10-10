@@ -150,6 +150,8 @@ type geminiThinkingConfig struct {
 // one SSE `data:` event. The Candidates array updates incrementally — a
 // chunk with the same candidate index appends to the previous chunk's parts.
 type generateContentChunk struct {
+	// ModelVersion is the model version that produced the response.
+	ModelVersion   string                `json:"modelVersion,omitempty"`
 	Candidates     []geminiCandidate     `json:"candidates,omitempty"`
 	UsageMetadata  *geminiUsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback *geminiPromptFeedback `json:"promptFeedback,omitempty"`

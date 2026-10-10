@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync/atomic"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -19,9 +20,32 @@ type ReplayProvider struct {
 	counter atomic.Int64
 }
 
-// NewReplayProvider creates a ReplayProvider from a sequence of recorded turns.
+// NewReplayProvider creates a ReplayProvider from a sequence of recorded
+// turns. Turns of every top-level run (empty ParentRunID) replay in
+// order, so a recording spanning follow-up runs replays whole; a
+// sub-agent's turns are dropped so its output is never served to the
+// parent's requests. A sequence holding only sub-agent turns replays the
+// first turn's run.
 func NewReplayProvider(turns []types.TurnRecord) *ReplayProvider {
-	return &ReplayProvider{turns: turns}
+	return &ReplayProvider{turns: replayableTurns(turns)}
+}
+
+func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
+	if len(turns) == 0 {
+		return turns
+	}
+	keep := func(turn types.TurnRecord) bool { return turn.ParentRunID == "" }
+	if !slices.ContainsFunc(turns, keep) {
+		runID := turns[0].RunID
+		keep = func(turn types.TurnRecord) bool { return turn.RunID == runID }
+	}
+	kept := make([]types.TurnRecord, 0, len(turns))
+	for _, turn := range turns {
+		if keep(turn) {
+			kept = append(kept, turn)
+		}
+	}
+	return kept
 }
 
 // Stream replays the next recorded turn's model output as a channel of

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -169,6 +170,10 @@ type AgenticLoop struct {
 	// failure is the reason behind the current run's failure outcome; see
 	// noteFailure. Reset at run start.
 	failure runFailure
+
+	// subAgentSpawns numbers this run's sub-agents, so each child's run
+	// ID is unique within the trace file the run shares with them.
+	subAgentSpawns atomic.Int64
 
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
@@ -654,6 +659,28 @@ type streamResult struct {
 	Usage             types.TokenUsage
 	ReplayFields      map[string]json.RawMessage
 	InvalidToolInputs map[int]*types.InvalidToolInput
+	// ResponseModel is the model the provider reported answering with;
+	// empty when it reported none.
+	ResponseModel string
+}
+
+// maxResponseModelBytes caps the provider-reported model identifier that
+// reaches trace sinks.
+const maxResponseModelBytes = 256
+
+// boundedResponseModel scrubs a provider-reported model identifier and caps
+// it at maxResponseModelBytes on a rune boundary. Scrubbing runs first so a
+// cut cannot split a secret into an unrecognisable fragment.
+func boundedResponseModel(model string) string {
+	model = security.Scrub(model)
+	if len(model) <= maxResponseModelBytes {
+		return model
+	}
+	cut := maxResponseModelBytes
+	for cut > 0 && !utf8.RuneStart(model[cut]) {
+		cut--
+	}
+	return model[:cut]
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
@@ -761,6 +788,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			}
 			if event.StopDetails != nil {
 				result.StopDetails = event.StopDetails
+			}
+			if event.ResponseModel != "" {
+				result.ResponseModel = boundedResponseModel(event.ResponseModel)
 			}
 			result.Usage.MergeEvent(event)
 			if len(event.ReplayFields) > 0 {

@@ -336,6 +336,10 @@ type TurnTrace struct {
 	// this record describes. Tokens includes any usage the provider
 	// reported for those attempts.
 	Retries int `json:"retries,omitempty"`
+	// ResponseModel is the model identifier the provider reported for this
+	// turn's response, which can differ from Model (the requested alias).
+	// Empty when the provider reports none.
+	ResponseModel string `json:"responseModel,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.
@@ -388,13 +392,32 @@ type TurnRecord struct {
 	ToolCalls   []ToolCallRecord `json:"toolCalls"`
 	RunID       string           `json:"runId,omitempty"`
 	ParentRunID string           `json:"parentRunId,omitempty"`
+	// ResponseModel is the model identifier the provider reported
+	// answering with; empty when it reported none. The same value rides on
+	// TurnTrace.ResponseModel for emitters that keep only summaries.
+	ResponseModel string `json:"responseModel,omitempty"`
 }
 
-// ModelInput records what the model saw on a given turn.
+// ModelInput records what the model saw on a given turn. Request is nil
+// on traces written before request parameters were recorded.
 type ModelInput struct {
 	Messages []Message        `json:"messages"`
 	Tools    []ToolDefinition `json:"tools"`
 	Model    string           `json:"model"`
+	Request  *RequestParams   `json:"request,omitempty"`
+}
+
+// RequestParams records the sampling and steering parameters of the
+// request sent for one turn, copied from the StreamParams handed to the
+// provider. Temperature is the value after defaulting; nil means the
+// request carried none. CacheKey is the provider-neutral affinity digest,
+// never the run ID itself.
+type RequestParams struct {
+	Temperature     *float64       `json:"temperature,omitempty"`
+	MaxTokens       int            `json:"maxTokens"`
+	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
+	ToolChoice      ToolChoiceMode `json:"toolChoice"`
+	CacheKey        string         `json:"cacheKey,omitempty"`
 }
 
 // ToolCallRecord records a single tool call and its result.
@@ -421,12 +444,54 @@ type ToolCallRecord struct {
 }
 
 // RunRecording is a full recording of a run.
+//
+// Turns holds only the recorded run's own turns. Sub-agent runs that
+// streamed into the same trace are in SubRuns, one entry per child in
+// order of first appearance. CommandOutputs describes the run's whole
+// sidecar archive, which sub-agents share, so its entries span every
+// run and carry their own RunID.
 type RunRecording struct {
 	RunID          string                `json:"runId"`
 	Config         RunConfig             `json:"config"`
 	Turns          []TurnRecord          `json:"turns"`
 	FinalOutcome   RunTrace              `json:"finalOutcome"`
 	CommandOutputs []CommandOutputRecord `json:"commandOutputs,omitempty"`
+	// SkippedLines counts trace lines the reader dropped for exceeding
+	// its per-line cap. A non-zero value marks the recording as partial.
+	SkippedLines int               `json:"skippedLines,omitempty"`
+	SubRuns      []SubRunRecording `json:"subRuns,omitempty"`
+	// HarnessVersion is the harness build that wrote the trace; empty for
+	// traces written before it was recorded.
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+	// SystemPrompt is the scrubbed system prompt the run's requests
+	// carried, and SystemPromptSHA256 the hex digest of the prompt as it
+	// was sent, before scrubbing. Both are empty when the trace holds no
+	// system_prompt record.
+	SystemPrompt       string `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256 string `json:"systemPromptSha256,omitempty"`
+}
+
+// SubRunRecording is one sub-agent run reassembled from the parent's
+// trace. Summary is nil when the trace ends before the child finished.
+type SubRunRecording struct {
+	RunID       string         `json:"runId"`
+	ParentRunID string         `json:"parentRunId,omitempty"`
+	Config      RunConfig      `json:"config"`
+	Turns       []TurnRecord   `json:"turns"`
+	Summary     *SubRunSummary `json:"summary,omitempty"`
+}
+
+// SubRunSummary is the outcome of a sub-agent run, streamed on the
+// parent's trace when the child finishes.
+type SubRunSummary struct {
+	RunID       string     `json:"runId"`
+	ParentRunID string     `json:"parentRunId,omitempty"`
+	Outcome     string     `json:"outcome"`
+	Turns       int        `json:"turns"`
+	TokenUsage  TokenUsage `json:"tokenUsage"`
+	StartedAt   time.Time  `json:"startedAt"`
+	CompletedAt time.Time  `json:"completedAt"`
+	DurationMs  int64      `json:"durationMs"`
 }
 
 // BudgetCheck holds the result of a token budget check.

@@ -94,7 +94,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// Build the child RunConfig first so we have the child run ID to
 	// thread through the Cedar policy clone below.
 	childConfig := *parentConfig
-	childConfig.RunID = fmt.Sprintf("sub-%d", time.Now().UnixNano())
+	childConfig.RunID = subAgentRunID(parentConfig.RunID, parent.subAgentSpawns.Add(1))
 	childConfig.Prompt = subConfig.Prompt
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
@@ -266,6 +266,15 @@ func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
 		maxTurns = parentMaxTurns
 	}
 	return maxTurns
+}
+
+// subAgentRunID names the n-th sub-agent of a run as
+// "<parentRunID>/sub-<n>".
+func subAgentRunID(parentRunID string, n int64) string {
+	if parentRunID == "" {
+		return fmt.Sprintf("sub-%d", n)
+	}
+	return fmt.Sprintf("%s/sub-%d", parentRunID, n)
 }
 
 // filterToolRegistry creates a new Registry containing all tools from the

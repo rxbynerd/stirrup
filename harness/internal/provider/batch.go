@@ -433,6 +433,7 @@ func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, prov
 // shape the batch endpoint returns for a successful entry. Only the
 // fields the fabrication path consumes are decoded.
 type anthropicBatchResponse struct {
+	Model      string                       `json:"model,omitempty"`
 	Content    []anthropicBatchContentBlock `json:"content"`
 	StopReason string                       `json:"stop_reason"`
 	Usage      anthropicUsage               `json:"usage"`
@@ -507,9 +508,10 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 	}
 
 	ev := types.StreamEvent{
-		Type:       "message_complete",
-		StopReason: resp.StopReason,
-		Content:    blocks,
+		Type:          "message_complete",
+		StopReason:    resp.StopReason,
+		Content:       blocks,
+		ResponseModel: resp.Model,
 	}
 	resp.Usage.applyTo(&ev)
 	ch <- ev
@@ -791,6 +793,7 @@ func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID strin
 // body returned inside an /v1/files batch output line's "response.body"
 // field. Only the fields the fabrication path consumes are decoded.
 type openaiChatBatchResponse struct {
+	Model   string                  `json:"model,omitempty"`
 	Choices []openaiChatBatchChoice `json:"choices"`
 	Usage   *openaiUsage            `json:"usage,omitempty"`
 }
@@ -851,8 +854,9 @@ func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMes
 	}
 
 	ev := types.StreamEvent{
-		Type:       "message_complete",
-		StopReason: mapFinishReason(choice.FinishReason),
+		Type:          "message_complete",
+		StopReason:    mapFinishReason(choice.FinishReason),
+		ResponseModel: resp.Model,
 	}
 	if resp.Usage != nil {
 		resp.Usage.applyTo(&ev)
@@ -866,6 +870,7 @@ func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMes
 // endpoint. The shape matches the response.completed envelope the
 // streaming SSE adapter consumes via response.output[] items + usage.
 type openaiResponsesBatchResponse struct {
+	Model             string `json:"model,omitempty"`
 	Status            string `json:"status"`
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
@@ -931,8 +936,9 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 
 	stop := deriveOpenAIResponsesStopReason(resp, hasTool)
 	ev := types.StreamEvent{
-		Type:       "message_complete",
-		StopReason: stop,
+		Type:          "message_complete",
+		StopReason:    stop,
+		ResponseModel: resp.Model,
 	}
 	if resp.Usage != nil {
 		resp.Usage.applyTo(&ev)

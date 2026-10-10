@@ -1,5 +1,7 @@
 package types
 
+import "slices"
+
 // ClassifyForQuarantine inspects recordings the eval miner is about to
 // bake into a suite and returns the QuarantineFlags the resulting
 // QuarantinedSuite should carry. Pure; does not mutate recordings.
@@ -18,7 +20,8 @@ func ClassifyForQuarantine(recordings []RunRecording) []QuarantineFlag {
 
 // hasLargePayload reports whether any recording carries a turn
 // (sum of modelOutput + tool I/O sizes) or a tool call (output size
-// alone) exceeding limit bytes.
+// alone) exceeding limit bytes. Sub-run turns count: they are stored
+// with the recording.
 func hasLargePayload(recordings []RunRecording, limit int) bool {
 	for _, rec := range recordings {
 		// Archive stream sizes are evaluated independently from transcript
@@ -29,7 +32,11 @@ func hasLargePayload(recordings []RunRecording, limit int) bool {
 				return true
 			}
 		}
-		for _, turn := range rec.Turns {
+		turns := slices.Clone(rec.Turns)
+		for _, child := range rec.SubRuns {
+			turns = append(turns, child.Turns...)
+		}
+		for _, turn := range turns {
 			turnSize := 0
 			for _, blk := range turn.ModelOutput {
 				turnSize += len(blk.Text) + len(blk.Input)

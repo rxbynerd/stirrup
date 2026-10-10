@@ -1,14 +1,19 @@
 // Package observability provides structured logging with automatic secret
-// scrubbing for the stirrup harness. All string attribute values are passed
-// through security.Scrub() before reaching the underlying handler, ensuring
-// that API keys, tokens, and other secrets cannot leak into log output.
+// scrubbing for the stirrup harness. Log messages and every attribute value
+// are passed through security.Scrub() before reaching the underlying
+// handler, which redacts credentials in the formats the scrubber recognises.
+// A secret with no recognisable format is not redacted.
 package observability
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync/atomic"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -25,7 +30,11 @@ type SecurityNotifier interface {
 }
 
 // ScrubHandler wraps any slog.Handler and redacts known secret patterns from
-// all string attribute values before delegating to the inner handler.
+// the message and every attribute value before delegating to the inner
+// handler. LogValuer values are resolved first. Errors, fmt.Stringers and
+// byte slices become scrubbed strings, groups are scrubbed recursively, and
+// any other composite value (map, slice, struct) is rendered as one scrubbed
+// JSON string. Numeric, boolean, time and duration values are unchanged.
 //
 // Optionally accepts a SecurityNotifier (typically *security.SecurityLogger)
 // so the harness emits a structured SecretRedactedInOutput event each time
@@ -53,10 +62,10 @@ func (h *ScrubHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// Handle walks all attributes in the record, scrubs string values, then
-// delegates to the inner handler. The original record is not modified.
+// Handle scrubs the message and every attribute value, then delegates to the
+// inner handler. The original record is not modified.
 func (h *ScrubHandler) Handle(ctx context.Context, r slog.Record) error {
-	scrubbed := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	scrubbed := slog.NewRecord(r.Time, r.Level, h.scrubString(r.Message, "logger.message"), r.PC)
 	r.Attrs(func(a slog.Attr) bool {
 		scrubbed.AddAttrs(h.scrubAttrAndReport(a))
 		return true
@@ -64,7 +73,7 @@ func (h *ScrubHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, scrubbed)
 }
 
-// WithAttrs scrubs string attribute values, then delegates to the inner handler.
+// WithAttrs scrubs the attribute values, then delegates to the inner handler.
 func (h *ScrubHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	scrubbed := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
@@ -78,30 +87,102 @@ func (h *ScrubHandler) WithGroup(name string) slog.Handler {
 	return &ScrubHandler{inner: h.inner.WithGroup(name), security: h.security}
 }
 
-// scrubAttrAndReport recursively scrubs string values within an slog.Attr.
-// Group attributes have their sub-attributes scrubbed individually. When the
-// handler has a SecurityNotifier wired, every redaction produces a
-// SecretRedactedInOutput event.
-func (h *ScrubHandler) scrubAttrAndReport(a slog.Attr) slog.Attr {
-	switch a.Value.Kind() {
-	case slog.KindString:
-		scrubbed, stats := security.ScrubWithStats(a.Value.String())
-		if stats.Count > 0 && h.security != nil {
-			for _, p := range stats.Patterns {
-				h.security.SecretRedactedInOutput(p, "logger.attr."+a.Key)
-			}
+// scrubString redacts known secret patterns from s. When the handler has a
+// SecurityNotifier wired, every redaction produces a SecretRedactedInOutput
+// event tagged with location.
+func (h *ScrubHandler) scrubString(s, location string) string {
+	scrubbed, stats := security.ScrubWithStats(s)
+	if stats.Count > 0 && h.security != nil {
+		for _, p := range stats.Patterns {
+			h.security.SecretRedactedInOutput(p, location)
 		}
-		return slog.Attr{Key: a.Key, Value: slog.StringValue(scrubbed)}
+	}
+	return scrubbed
+}
+
+// scrubAttrAndReport returns a with its value scrubbed. The value is
+// resolved first so a LogValuer cannot defer its content past the handler.
+// Group attributes have their sub-attributes scrubbed individually.
+func (h *ScrubHandler) scrubAttrAndReport(a slog.Attr) slog.Attr {
+	if a.Equal(slog.Attr{}) {
+		return a
+	}
+	v := a.Value.Resolve()
+	switch v.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, h.scrubString(v.String(), "logger.attr."+a.Key))
 	case slog.KindGroup:
-		attrs := a.Value.Group()
+		attrs := v.Group()
 		scrubbed := make([]slog.Attr, len(attrs))
 		for i, ga := range attrs {
 			scrubbed[i] = h.scrubAttrAndReport(ga)
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(scrubbed...)}
+	case slog.KindAny:
+		if v.Any() == nil {
+			return slog.Attr{Key: a.Key, Value: v}
+		}
+		if scalar, ok := namedScalar(v.Any()); ok {
+			return h.scrubAttrAndReport(slog.Attr{Key: a.Key, Value: scalar})
+		}
+		return slog.String(a.Key, h.scrubString(renderAny(v.Any()), "logger.attr."+a.Key))
 	default:
-		return a
+		return slog.Attr{Key: a.Key, Value: v}
 	}
+}
+
+// namedScalar converts a value whose underlying type is a basic kind (a
+// named string, bool or number that slog stores as KindAny) to the matching
+// slog value, so it keeps its scalar shape instead of being rendered as
+// JSON. Errors and fmt.Stringers are excluded because their own rendering
+// takes precedence.
+func namedScalar(v any) (slog.Value, bool) {
+	switch v.(type) {
+	case nil, error, fmt.Stringer:
+		return slog.Value{}, false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return slog.StringValue(rv.String()), true
+	case reflect.Bool:
+		return slog.BoolValue(rv.Bool()), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return slog.Int64Value(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return slog.Uint64Value(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return slog.Float64Value(rv.Float()), true
+	}
+	return slog.Value{}, false
+}
+
+// renderAny renders an opaque log value as text: Error() for errors, String()
+// for fmt.Stringers, the content of a byte slice, and a single JSON string
+// for anything else (falling back to %+v when the value cannot be marshalled).
+// A value whose rendering panics yields a placeholder rather than crashing
+// the logging call.
+func renderAny(v any) (out string) {
+	defer func() {
+		if recover() != nil {
+			out = "[unrenderable log value]"
+		}
+	}()
+	switch t := v.(type) {
+	case error:
+		return t.Error()
+	case fmt.Stringer:
+		return t.String()
+	case []byte:
+		return string(t)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return fmt.Sprintf("%+v", v)
+	}
+	return string(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
 
 // NewLogger creates a structured JSON logger that scrubs secrets from all

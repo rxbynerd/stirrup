@@ -403,6 +403,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 		Mode:          turnMode,
 		BatchID:       turnBatchID,
 		Model:         model,
+		ResponseModel: sr.ResponseModel,
 		Retries:       attempt.retries,
 	})
 

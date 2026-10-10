@@ -65,10 +65,10 @@ covering:
 - Key/value-anchored 32-character hex secrets
 - `secret://` references themselves
 
-Because the scrubber sits at the `slog.Handler` boundary, secret
-leakage through a misformatted log line is structurally impossible —
-the scrubber runs before any handler (JSON, text, OTel log
-exporter) sees the attribute.
+Because the scrubber sits at the `slog.Handler` boundary, it is
+defence in depth against recognised credential formats — it runs
+before any handler (JSON, text, OTel log exporter) sees the
+attribute. A secret with no recognisable format is not redacted.
 
 ### Command-output scrub-on-write
 

@@ -25,10 +25,12 @@ import (
 //
 // Calling either of those on the parent from inside the child loop would
 // reset the parent's accumulated trace state. NestedJSONLEmitter therefore
-// forwards only the per-event RecordTurn and RecordToolCall hooks, while
-// keeping its own local accumulator so its Finish can return a *RunTrace
-// describing the child run (the existing core.SpawnSubAgent flow consumes
-// runTrace.Outcome and runTrace.Turns from the returned value).
+// forwards only the per-event hooks, while keeping its own local
+// accumulator so its Finish can return a *RunTrace describing the child
+// run (the existing core.SpawnSubAgent flow consumes runTrace.Outcome and
+// runTrace.Turns from the returned value). Its own Start and Finish reach
+// a parent implementing SubRunRecorder as the child's start and outcome
+// summary instead.
 type NestedJSONLEmitter struct {
 	parent      TraceEmitter
 	parentRunID string
@@ -47,6 +49,7 @@ type NestedJSONLEmitter struct {
 var _ FinalAssistantTextRecorder = (*NestedJSONLEmitter)(nil)
 var _ StopDetailsRecorder = (*NestedJSONLEmitter)(nil)
 var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
+var _ SubRunRecorder = (*NestedJSONLEmitter)(nil)
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
 // events to parent, tagged with parentRunID and the child's runID set
@@ -60,13 +63,12 @@ func NewNestedJSONLEmitter(parent TraceEmitter, parentRunID string) *NestedJSONL
 	}
 }
 
-// Start records the child's runID and config. It does NOT call
+// Start records the child's runID and config and reports the child's
+// start to a parent implementing SubRunRecorder. It does NOT call
 // parent.Start: the parent already started its own root run when the
 // outer Run() began, and re-starting would reset its accumulated state.
 func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	e.runID = runID
 	e.config = config
 	e.startedAt = time.Now()
@@ -75,6 +77,12 @@ func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
 	e.stopDetails = nil
+	startedAt := e.startedAt
+	e.mu.Unlock()
+
+	if recorder, ok := e.parent.(SubRunRecorder); ok {
+		recorder.RecordSubRunStarted(runID, e.parentRunID, startedAt, config)
+	}
 }
 
 // RecordTurn appends to the child's local trace and forwards a tagged
@@ -172,11 +180,44 @@ func (e *NestedJSONLEmitter) RecordCommandOutput(record types.CommandOutputRecor
 	}
 }
 
-// Finish builds and returns the child's RunTrace. It does NOT call
+// RecordSubRunStarted forwards a nested child's start unchanged, so a
+// deeper sub-run still lands on the root file.
+func (e *NestedJSONLEmitter) RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig) {
+	if recorder, ok := e.parent.(SubRunRecorder); ok {
+		recorder.RecordSubRunStarted(runID, parentRunID, startedAt, config)
+	}
+}
+
+// RecordSubRunFinished forwards a nested child's outcome unchanged.
+func (e *NestedJSONLEmitter) RecordSubRunFinished(summary types.SubRunSummary) {
+	if recorder, ok := e.parent.(SubRunRecorder); ok {
+		recorder.RecordSubRunFinished(summary)
+	}
+}
+
+// Finish builds and returns the child's RunTrace and reports its outcome
+// summary to a parent implementing SubRunRecorder. It does NOT call
 // parent.Finish: the parent's own Run finishes its emitter exactly
 // once when the outer run completes; calling it from a child would
 // truncate the parent's trace mid-run.
 func (e *NestedJSONLEmitter) Finish(_ context.Context, outcome string) (*types.RunTrace, error) {
+	runTrace := e.buildRunTrace(outcome)
+	if recorder, ok := e.parent.(SubRunRecorder); ok {
+		recorder.RecordSubRunFinished(types.SubRunSummary{
+			RunID:       runTrace.ID,
+			ParentRunID: e.parentRunID,
+			Outcome:     runTrace.Outcome,
+			Turns:       runTrace.Turns,
+			TokenUsage:  runTrace.TokenUsage,
+			StartedAt:   runTrace.StartedAt,
+			CompletedAt: runTrace.CompletedAt,
+			DurationMs:  runTrace.CompletedAt.Sub(runTrace.StartedAt).Milliseconds(),
+		})
+	}
+	return runTrace, nil
+}
+
+func (e *NestedJSONLEmitter) buildRunTrace(outcome string) *types.RunTrace {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -209,5 +250,5 @@ func (e *NestedJSONLEmitter) Finish(_ context.Context, outcome string) (*types.R
 		Outcome:            outcome,
 		StopDetails:        e.stopDetails,
 		FinalAssistantText: e.finalAssistantText,
-	}, nil
+	}
 }

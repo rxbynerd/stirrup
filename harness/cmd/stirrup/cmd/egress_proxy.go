@@ -104,7 +104,7 @@ func runEgressProxy(cmd *cobra.Command, _ []string) error {
 // Errors are returned wrapped in the CLI exit-code classes: an I/O failure
 // (listen / shutdown) is exit 3, a malformed allowlist is exit 1.
 func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writer) error {
-	logger := slog.New(slog.NewTextHandler(logW, &slog.HandlerOptions{Level: opts.level}))
+	logger := newScrubbedTextLogger(logW, opts.level)
 
 	// runID is empty: a standalone proxy is not scoped to a single run.
 	audit := security.NewSecurityLogger(logW, "")
