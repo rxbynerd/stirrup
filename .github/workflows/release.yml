@@ -778,12 +778,18 @@ jobs:
       mode: warn
 
   # Extended eval sweep: the same baselined suites the per-push gate
-  # runs on Haiku 4.5 (ci.yml::eval-gate), re-run against the stronger
-  # models a release is expected to work well with. Intentionally NOT
-  # in `release.needs` — mirroring the vulnerability-gate's warn
-  # posture, the non-blocking stance is structural: a regression here
-  # paints the release run red (per-model matrix cell fails on the
-  # compare step's exit code) but never blocks the release itself.
+  # runs on openai/gpt-5.6-luna (ci.yml::eval-gate), re-run against the
+  # stronger models a release is expected to work well with.
+  # Self-pinned provider-quirks-* suites are not part of the sweep: a
+  # --model override would replace the model they pin, so they stay
+  # opt-in through ci.yml's run_quirks_suites dispatch input.
+  # Every compared suite is reported in the job summary, per model.
+  #
+  # Intentionally NOT in `release.needs` — mirroring the
+  # vulnerability-gate's warn posture, the non-blocking stance is
+  # structural: a regression here paints the release run red
+  # (per-model matrix cell fails on the compare step's exit code) but
+  # never blocks the release itself.
   # Promotion to blocking is a one-line change: add `eval-extended`
   # to `release.needs`.
   #
@@ -808,6 +814,8 @@ jobs:
       # of the matrix is a per-model verdict.
       fail-fast: false
       matrix:
+        # The models a release is checked against. Edit this list to
+        # change them; nothing else in the job names a model.
         model:
           - claude-sonnet-5
           - claude-opus-4-8
@@ -856,6 +864,9 @@ jobs:
           for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
+            case "$name" in
+              provider-quirks-*) continue ;;
+            esac
             if [ -f "eval/baselines/${name}.json" ]; then
               found=true
               break
@@ -925,6 +936,12 @@ jobs:
           for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
+            case "$name" in
+              provider-quirks-*)
+                echo "Skipping ${name} — self-pinned quirk suite; --model would override its pin (run it via ci.yml workflow_dispatch with run_quirks_suites=true)"
+                continue
+                ;;
+            esac
             if [ ! -f "eval/baselines/${name}.json" ]; then
               echo "Skipping ${name} — no baseline (unbaselined suites are opt-in; see eval/suites/README.md)"
               continue
@@ -946,21 +963,100 @@ jobs:
       # cell red. The release proceeds regardless (see the job
       # comment) — the red cell is the operator's cue to investigate
       # before announcing the release.
+      #
+      # Every suite is compared before the step exits, so one
+      # regression does not hide another. compare exits 1 on a block
+      # and 2 when it could not run; the worst code becomes the
+      # step's exit code. The comparison JSON is kept next to each
+      # result for the summary step.
       - name: Compare against baseline
         if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
         shell: bash
+        env:
+          EVAL_MODEL: ${{ matrix.model }}
         run: |
           shopt -s nullglob
+          worst=0
           for result_dir in eval/results/*/; do
             name=$(basename "$result_dir")
             result="${result_dir}result.json"
             baseline="eval/baselines/${name}.json"
-            if [ -f "$baseline" ]; then
-              ./stirrup-eval compare \
-                --current "$result" \
-                --baseline "$baseline"
-            else
+            if [ ! -f "$baseline" ]; then
               echo "No baseline found at $baseline — skipping comparison"
+              continue
+            fi
+            report="${result_dir}compare.txt"
+            rc=0
+            ./stirrup-eval compare \
+              --current "$result" \
+              --baseline "$baseline" \
+              --output "${result_dir}comparison.json" > "$report" 2>&1 || rc=$?
+            cat "$report"
+            if [ "$rc" -eq 1 ]; then
+              echo "::error::Extended eval for ${name} on ${EVAL_MODEL}: block"
+            elif [ "$rc" -ge 2 ]; then
+              echo "::error::Extended eval for ${name} on ${EVAL_MODEL}: compare did not run (exit ${rc})"
+            fi
+            if [ "$rc" -gt "$worst" ]; then
+              worst=$rc
+            fi
+          done
+          exit "$worst"
+
+      # One table per matrix cell, so the run page states which models
+      # the release was checked against and how each suite fared. Pass
+      # rate is the judge verdict; healthy pass rate also requires the
+      # harness to have exited zero with a success outcome. Results
+      # written before run health existed show n/a.
+      - name: Publish eval summary
+        if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          EVAL_MODEL: ${{ matrix.model }}
+        run: |
+          shopt -s nullglob
+          {
+            echo "### Extended eval: ${EVAL_MODEL}"
+            echo
+            echo "| Suite | Gate | Pass rate | Healthy pass rate | Healthy runs | Tasks | Runs |"
+            echo "|---|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for result_dir in eval/results/*/; do
+            name=$(basename "$result_dir")
+            result="${result_dir}result.json"
+            [ -f "$result" ] || continue
+            if [ -f "${result_dir}comparison.json" ]; then
+              gate=$(jq -r '.summary.gate // "unknown"' "${result_dir}comparison.json")
+            elif [ -f "eval/baselines/${name}.json" ]; then
+              gate="not compared"
+            else
+              gate="no baseline"
+            fi
+            jq -r --arg name "$name" --arg gate "$gate" '
+              def pct: if . == null then "n/a" else "\(. * 1000 | round / 10)%" end;
+              [.tasks[] | if ((.trials // []) | length) > 0 then .trials[] else . end] as $runs
+              | ($runs | map(select(.runHealth != null)) | length) as $measured
+              | ($runs | map(select(.runHealth == "healthy")) | length) as $healthy
+              | "| \($name) | \($gate) | \(.passRate | pct) | \(.healthyPassRate | pct) | "
+                + (if $measured == 0 then "n/a" else "\($healthy)/\($runs | length)" end)
+                + " | \(.tasks | length) | \($runs | length) |"
+            ' "$result" >> "$GITHUB_STEP_SUMMARY"
+          done
+          for result_dir in eval/results/*/; do
+            name=$(basename "$result_dir")
+            gate=pass
+            if [ -f "${result_dir}comparison.json" ]; then
+              gate=$(jq -r '.summary.gate // "unknown"' "${result_dir}comparison.json")
+            fi
+            if [ "$gate" != pass ] && [ -f "${result_dir}compare.txt" ]; then
+              {
+                echo
+                echo "#### ${name}: ${gate}"
+                echo
+                echo '```text'
+                cat "${result_dir}compare.txt"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
