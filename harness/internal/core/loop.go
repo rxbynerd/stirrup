@@ -785,6 +785,10 @@ func (l *AgenticLoop) runInnerLoop(
 		compaction := l.Context.LastCompaction()
 		if compaction != nil {
 			l.historyRewritten = true
+			for _, warning := range compaction.Warnings {
+				l.Logger.Warn("context strategy degraded", "strategy", compaction.Strategy, "warning", warning)
+				_ = l.Transport.Emit(types.HarnessEvent{Type: "warning", Message: warning})
+			}
 		}
 		if l.historyRewritten {
 			// A thinking block is bound to the exact history before it, so
