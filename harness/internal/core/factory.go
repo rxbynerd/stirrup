@@ -206,7 +206,6 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build code scanner: %w", err)
 	}
 	registry := buildToolRegistry(exec, es, config.Tools, commandOutputStore)
-	postEditChecker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, config.Tools.PostEdit)
 
 	// exporters and resourceOpts are shared by the log, trace, and metric
 	// exporters below so all three signals carry a consistent resource
@@ -250,6 +249,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		logger = logger.With("sessionName", config.SessionName)
 	}
 	logPlatformExporters(logger, config, exporters)
+	postEditChecker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, config.Tools.PostEdit, logger)
 
 	// 4b. Sandbox identity token refresh, started here rather than at 3b
 	// so its log lines ride the scrub-wrapped logger. Runs from now until
@@ -1371,14 +1371,15 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 // attachPostEditChecks wraps the registered edit tool's handler with the
 // tools.postEdit checks. That one tool serves every edit strategy, so no
 // workspace-writing edit path bypasses them. Returns nil when no checks
-// are configured or no edit tool is registered.
-func attachPostEditChecks(registry *tool.Registry, editToolName string, exec executor.Executor, checks []types.PostEditCheckConfig) *postedit.Checker {
-	checker := postedit.New(checks, exec, nil)
+// are configured or no edit tool is registered, warning in the latter case.
+func attachPostEditChecks(registry *tool.Registry, editToolName string, exec executor.Executor, checks []types.PostEditCheckConfig, logger *slog.Logger) *postedit.Checker {
+	checker := postedit.New(checks, exec, logger)
 	if checker == nil {
 		return nil
 	}
 	t := registry.Resolve(editToolName)
 	if t == nil || t.Handler == nil {
+		logger.Warn("tools.postEdit is configured but no edit tool is registered; post-edit checks will not run", "editTool", editToolName)
 		return nil
 	}
 	t.Handler = checker.Wrap(t.Name, t.Handler)

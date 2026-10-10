@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,7 @@ func TestAttachPostEditChecks_EveryEditToolRunsChecks(t *testing.T) {
 			registry := buildToolRegistry(exec, tc.strategy, types.ToolsConfig{}, nil)
 			checker := attachPostEditChecks(registry, tc.strategy.ToolDefinition().Name, exec, []types.PostEditCheckConfig{
 				{Glob: "*.go", Command: "echo checked {path} >> checks.log; echo diagnostic-line; exit 3"},
-			})
+			}, slog.New(slog.DiscardHandler))
 			if checker == nil {
 				t.Fatal("attachPostEditChecks returned nil")
 			}
@@ -81,7 +82,9 @@ func TestAttachPostEditChecks_NoChecksLeavesHandlerUntouched(t *testing.T) {
 	}
 	es := edit.NewWholeFileStrategy()
 	registry := buildToolRegistry(exec, es, types.ToolsConfig{}, nil)
-	if checker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, nil); checker != nil {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	if checker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, nil, logger); checker != nil {
 		t.Fatal("expected nil checker without checks")
 	}
 	out, err := registry.Resolve("write_file").Handler(context.Background(), json.RawMessage(`{"path":"a.go","content":"x"}`))
@@ -90,8 +93,14 @@ func TestAttachPostEditChecks_NoChecksLeavesHandlerUntouched(t *testing.T) {
 	}
 
 	noEdit := buildToolRegistry(exec, es, types.ToolsConfig{BuiltIn: []string{"read_file"}}, nil)
-	if checker := attachPostEditChecks(noEdit, es.ToolDefinition().Name, exec, []types.PostEditCheckConfig{{Glob: "*", Command: "true"}}); checker != nil {
+	if logs.Len() != 0 {
+		t.Errorf("unconfigured checks logged: %s", logs.String())
+	}
+	if checker := attachPostEditChecks(noEdit, es.ToolDefinition().Name, exec, []types.PostEditCheckConfig{{Glob: "*", Command: "true"}}, logger); checker != nil {
 		t.Fatal("expected nil checker when no edit tool is registered")
+	}
+	if !strings.Contains(logs.String(), "no edit tool is registered") {
+		t.Errorf("missing warning for inert tools.postEdit; logs: %s", logs.String())
 	}
 }
 
