@@ -634,6 +634,27 @@ func TestStructuredOutputViolationIsScrubbedAndCapped(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		sink *types.ResultSinkConfig
+		want int
+	}{
+		{name: "default", sink: nil, want: types.DefaultMaxFinalAssistantTextBytes},
+		{name: "operator limit below the cap", sink: &types.ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 4096}, want: 4096},
+		{name: "operator limit above the cap", sink: &types.ResultSinkConfig{Type: "none", MaxFinalAssistantTextBytes: 1 << 20}, want: maxStructuredOutputBytes},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := structuredTestConfig()
+			config.ResultSink = tc.sink
+			if got := structuredOutputLimit(config); got != tc.want {
+				t.Errorf("structuredOutputLimit = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateOutputSchema(t *testing.T) {
 	if err := ValidateOutputSchema(buildTestConfig()); err != nil {
 		t.Errorf("no schema: error = %v, want nil", err)

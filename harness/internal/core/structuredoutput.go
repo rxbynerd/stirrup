@@ -17,10 +17,11 @@ const (
 	// RunConfig.OutputSchema.
 	maxStructuredOutputCorrections = 2
 
-	// maxStructuredOutputBytes caps the structured output below any result
-	// sink limit an operator sets, so the "done" event that carries it
-	// stays well within gRPC message limits.
-	maxStructuredOutputBytes = 1 << 20
+	// maxStructuredOutputBytes caps the structured output whatever result
+	// sink limit an operator sets, leaving room within the stdout-json
+	// sink's 250 KiB line cap for the rest of the RunResult; that sink
+	// can shrink the final text but never the structured output.
+	maxStructuredOutputBytes = 200 << 10
 
 	// maxStructuredOutputViolationBytes bounds the validation error
 	// returned to the model in a corrective attempt.

@@ -115,6 +115,47 @@ func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
 	}
 }
 
+func TestRunWithConfig_StructuredOutputKeepsTheResultLineUnderItsCap(t *testing.T) {
+	const resultLineCap = 250 * 1024
+	prefix, suffix := `{"title":"`, `","labels":["bug"]}`
+	document := func(size int) string {
+		return prefix + strings.Repeat("<&>", (size-len(prefix)-len(suffix))/3) + suffix
+	}
+	tests := []struct {
+		name        string
+		doc         string
+		wantOutcome string
+	}{
+		{name: "largest document", doc: document(200 << 10), wantOutcome: "success"},
+		{name: "document over the cap", doc: document(260 << 10), wantOutcome: "structured_output_failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := answerSequenceServer(t, tc.doc)
+			config, _ := structuredRunConfig(t, srv.URL)
+			config.ResultSink = &types.ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 1 << 20}
+			config.MaxTurns = 3
+
+			stdoutDone := captureStdout(t)
+			_ = runWithConfig(config, runOptions{outputMode: "json"})
+			stdout := stdoutDone()
+
+			for _, line := range strings.Split(stdout, "\n") {
+				if strings.HasPrefix(line, "STIRRUP_RESULT ") && len(line)+1 > resultLineCap {
+					t.Errorf("STIRRUP_RESULT line is %d bytes, over the %d-byte cap", len(line)+1, resultLineCap)
+				}
+			}
+			result := decodeStirrupResult(t, stdout)
+			if result.Outcome != tc.wantOutcome {
+				t.Fatalf("RunResult outcome = %q, want %q (error %q)", result.Outcome, tc.wantOutcome, result.Error)
+			}
+			if tc.wantOutcome == "success" && string(result.StructuredOutput) != tc.doc {
+				t.Errorf("structuredOutput is %d bytes, want the %d-byte document", len(result.StructuredOutput), len(tc.doc))
+			}
+		})
+	}
+}
+
 func structuredJobTask(t *testing.T, providerURL string) *pb.RunConfig {
 	t.Helper()
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
