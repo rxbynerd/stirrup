@@ -4,15 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -246,5 +252,74 @@ func TestLoop_StallNudge_PollWithChangingOutputIsNotNudged(t *testing.T) {
 	}
 	if got := counterTotal(t, reader, "stirrup.harness.stall_nudges"); got != 0 {
 		t.Errorf("stall_nudges = %d, want 0 for polls whose output changes", got)
+	}
+}
+
+// largeOutputExecutor streams the same oversized stdout for every command.
+type largeOutputExecutor struct {
+	executor.Executor
+	stdout string
+}
+
+func (e largeOutputExecutor) ExecStream(_ context.Context, _ string, _ time.Duration, stdout, _ io.Writer) (*executor.ExecResult, error) {
+	if _, err := io.WriteString(stdout, e.stdout); err != nil {
+		return nil, err
+	}
+	return &executor.ExecResult{ExitCode: 1}, nil
+}
+
+func TestLoop_StallNudge_RepeatedSpilledCommandOutputStalls(t *testing.T) {
+	const calls = 2 * stallRepeats
+	var script [][]types.StreamEvent
+	for i := 0; i < calls; i++ {
+		script = append(script, []types.StreamEvent{
+			{Type: "tool_call", ID: fmt.Sprintf("tc_%d", i), Name: "run_command", Input: map[string]any{"command": "go test ./..."}},
+			stopWith("tool_use"),
+		})
+	}
+	script = append(script, scriptEndTurn)
+	h, reader := newStallHarness(t, script...)
+
+	cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
+	store, err := commandoutput.New(commandoutput.Options{RunID: "test-run-1", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+	if err != nil {
+		t.Fatalf("commandoutput.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	exec := largeOutputExecutor{stdout: strings.Repeat("FAIL TestX\n", int(cfg.InlineMaxBytes)/10+1)}
+	h.loop.Tools.(*tool.Registry).Register(builtins.RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes))
+
+	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requests := h.provider.params()
+	refs := map[string]bool{}
+	for _, m := range requests[len(requests)-1].Messages {
+		for _, b := range m.Content {
+			if b.Type != "tool_result" {
+				continue
+			}
+			for _, line := range strings.Split(b.Content, "\n") {
+				if strings.HasPrefix(line, "stdout_ref=") {
+					refs[line] = true
+				}
+			}
+		}
+	}
+	if len(refs) != len(requests)-1 {
+		t.Fatalf("distinct stdout refs = %d, want %d: every call must spill with its own reference", len(refs), len(requests)-1)
+	}
+	if runTrace.Outcome != "stalled" {
+		t.Fatalf("Outcome = %q, want stalled", runTrace.Outcome)
+	}
+	if len(requests) != calls {
+		t.Fatalf("provider calls = %d, want %d", len(requests), calls)
+	}
+	if got := counterTotal(t, reader, "stirrup.harness.stall_nudges"); got != 1 {
+		t.Errorf("stall_nudges = %d, want 1", got)
+	}
+	if got := fmt.Sprint(stallNudgeFlags(h.emitter)); got != "[false false true false false false]" {
+		t.Errorf("stallNudge flags = %s, want the nudge on the third turn only", got)
 	}
 }

@@ -252,6 +252,30 @@ func TestStallDetector_SameNameDifferentInput(t *testing.T) {
 	}
 }
 
+func spilledRendering(refID, tail string) string {
+	return "[command output spilled to compliance archive]\n" +
+		"exit_code=1 timed_out=false timeout_seconds=30 capture_complete=true archive_id=run-1\n" +
+		"stdout raw_bytes=40000 scrubbed_bytes=40000 raw_sha256=aa scrubbed_sha256=aa\n" +
+		"stdout_ref=stirrup://command-output/" + refID + "/stdout\n" +
+		"stdout_tail:\n" + tail + "\n" +
+		"stderr raw_bytes=0 scrubbed_bytes=0 raw_sha256=bb scrubbed_sha256=bb\n" +
+		"stderr_ref=stirrup://command-output/" + refID + "/stderr\n" +
+		"stderr_tail:\n"
+}
+
+func TestStallSignature_IgnoresPerCallCommandOutputRefs(t *testing.T) {
+	input := json.RawMessage(`{"command":"go test ./..."}`)
+	first := stallSignatureOf("run_command", input, spilledRendering("0123456789abcdef", "FAIL"), false)
+	second := stallSignatureOf("run_command", input, spilledRendering("fedcba9876543210", "FAIL"), false)
+	if first != second {
+		t.Error("spilled renderings that differ only in their references produced different signatures")
+	}
+	changed := stallSignatureOf("run_command", input, spilledRendering("fedcba9876543210", "ok"), false)
+	if first == changed {
+		t.Error("spilled renderings with different output produced the same signature")
+	}
+}
+
 func TestCanonicalToolInput(t *testing.T) {
 	cases := []struct {
 		name string

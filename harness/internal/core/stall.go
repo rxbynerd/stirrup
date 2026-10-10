@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -39,6 +41,13 @@ const stallNudgeText = "The last %d tool calls repeated the same pattern with th
 // stallSignature identifies a call by its tool name, canonical input,
 // success flag and output.
 type stallSignature [sha256.Size]byte
+
+const commandOutputRefPrefix = "stirrup://command-output/"
+
+// commandOutputRefPattern matches a command-output store reference. The
+// store derives each reference from the tool-use ID, so identical calls
+// with identical output render different references.
+var commandOutputRefPattern = regexp.MustCompile(regexp.QuoteMeta(commandOutputRefPrefix) + `[0-9a-f]+/`)
 
 // stallDetector tracks repeated tool-call patterns and consecutive
 // failures to detect when the agentic loop is making no progress. The
@@ -130,7 +139,7 @@ func stallSignatureOf(name string, input json.RawMessage, output string, success
 	}
 	writeField([]byte(name))
 	writeField(canonicalToolInput(input))
-	writeField([]byte(output))
+	writeField([]byte(stallComparableOutput(output)))
 	if success {
 		h.Write([]byte{1})
 	} else {
@@ -139,6 +148,16 @@ func stallSignatureOf(name string, input json.RawMessage, output string, success
 	var sig stallSignature
 	h.Sum(sig[:0])
 	return sig
+}
+
+// stallComparableOutput removes the per-call part of command-output
+// references so a repeated run_command whose output spilled to the
+// archive still matches its earlier calls.
+func stallComparableOutput(output string) string {
+	if !strings.Contains(output, commandOutputRefPrefix) {
+		return output
+	}
+	return commandOutputRefPattern.ReplaceAllLiteralString(output, commandOutputRefPrefix)
 }
 
 // canonicalToolInput re-encodes a JSON input with sorted object keys and
