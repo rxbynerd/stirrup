@@ -317,6 +317,28 @@ func TestRun_MatchingAndOrder(t *testing.T) {
 	}
 }
 
+func TestRun_AbsolutePathInsideWorkspaceMatchesSlashGlob(t *testing.T) {
+	dir := t.TempDir()
+	ex, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := ex.HostWorkspaceRoot()
+	c, rec := newChecker(t, ex, types.PostEditCheckConfig{Glob: "cmd/*.go", Command: "true"})
+	writeFile(t, root, "cmd/main.go", "package main\n")
+
+	for _, p := range []string{filepath.Join(root, "cmd", "main.go"), filepath.Join(dir, "cmd", "main.go"), "/elsewhere/cmd/main.go"} {
+		c.Run(context.Background(), "edit_file", p)
+	}
+	records := rec.all()
+	if len(records) != 2 {
+		t.Fatalf("records = %+v, want one per in-workspace absolute path", records)
+	}
+	if records[0].Path != filepath.Join(root, "cmd", "main.go") {
+		t.Errorf("recorded path = %q, want the path as edited", records[0].Path)
+	}
+}
+
 func TestRun_NoMatchRunsNothing(t *testing.T) {
 	ex, _ := newLocal(t)
 	c, rec := newChecker(t, ex, types.PostEditCheckConfig{Glob: "*.go", Command: "exit 1"})

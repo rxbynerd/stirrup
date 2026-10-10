@@ -110,9 +110,10 @@ func (c *Checker) Run(ctx context.Context, toolName, editedPath string) string {
 		return ""
 	}
 	cleaned := path.Clean(editedPath)
+	target := c.workspaceRelative(cleaned)
 	var matched []int
 	for i, check := range c.checks {
-		if globMatches(check.Glob, cleaned) {
+		if globMatches(check.Glob, target) {
 			matched = append(matched, i)
 		}
 	}
@@ -241,6 +242,27 @@ func commandPath(p string) string {
 		return "./" + p
 	}
 	return p
+}
+
+// workspaceRelative maps an absolute path inside the workspace to its
+// workspace-relative form so slash-containing globs match it. Any other
+// path is returned unchanged.
+func (c *Checker) workspaceRelative(cleaned string) string {
+	if !path.IsAbs(cleaned) {
+		return cleaned
+	}
+	root, err := c.exec.ResolvePath(".")
+	if err != nil {
+		return cleaned
+	}
+	resolved, err := c.exec.ResolvePath(cleaned)
+	if err != nil {
+		return cleaned
+	}
+	if rel, ok := strings.CutPrefix(resolved, strings.TrimSuffix(root, "/")+"/"); ok {
+		return rel
+	}
+	return cleaned
 }
 
 // globMatches applies a slash-free glob to the base name and any other
