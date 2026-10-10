@@ -25,7 +25,7 @@ func (l *AgenticLoop) fitPreparedRequest(
 ) ([]types.Message, int, error) {
 	systemTokens := estimateSystemPromptTokens(systemPrompt)
 	toolTokens := estimateToolDefinitionTokens(toolDefs)
-	tokens := estimateCurrentTokens(prepared) + systemTokens + toolTokens
+	tokens := estimateCurrentTokens(prepared, budget.structuredResults) + systemTokens + toolTokens
 	limit := contextpkg.FitLimit(budget.prepare)
 	if tokens <= limit {
 		return prepared, tokens, nil
@@ -36,7 +36,7 @@ func (l *AgenticLoop) fitPreparedRequest(
 		l.historyRewritten = true
 		fitted = types.StripThinkingBlocks(fitted)
 		before := tokens
-		tokens = estimateCurrentTokens(fitted) + systemTokens + toolTokens
+		tokens = estimateCurrentTokens(fitted, budget.structuredResults) + systemTokens + toolTokens
 		span.SetAttributes(attribute.Int("context.fit.truncated_results", cut))
 		l.Logger.Warn("tool results truncated to fit the context budget",
 			"toolResults", cut,
@@ -51,7 +51,7 @@ func (l *AgenticLoop) fitPreparedRequest(
 
 	taskTokens := 0
 	if len(fitted) > 0 {
-		taskTokens = estimateCurrentTokens(fitted[:1])
+		taskTokens = estimateCurrentTokens(fitted[:1], budget.structuredResults)
 	}
 	return fitted, tokens, fmt.Errorf(
 		"context budget exhausted: the request needs about %d estimated tokens (system prompt %d, tool definitions %d, task %d, other messages %d after truncating %d tool results) "+

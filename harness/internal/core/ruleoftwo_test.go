@@ -364,12 +364,11 @@ func buildTestConfigWithMaxTurns(maxTurns int) *types.RunConfig {
 	return cfg
 }
 
-// TestLoop_RuleOfTwoDetectsStructuredToolResult closes the structured-
-// result bypass: the Anthropic and Gemini adapters forward
-// ContentBlock.Structured to the model (as a second text block /
-// functionResponse.response.structured respectively), so a credential
-// present only in the structured payload is model-visible and must
-// latch even when the text Content is benign.
+// TestLoop_RuleOfTwoDetectsStructuredToolResult pins that the monitor
+// scans the full ContentBlock.Structured payload kept in history, a
+// superset of the wire view the Anthropic and Gemini adapters send, so a
+// credential present only in the structured payload latches even when
+// the text Content is benign.
 func TestLoop_RuleOfTwoDetectsStructuredToolResult(t *testing.T) {
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)

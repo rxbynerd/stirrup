@@ -104,6 +104,10 @@ type AgenticLoop struct {
 	// window; nil means no registry, so only contextStrategy.maxTokens
 	// and the default window apply.
 	ContextWindows capabilityResolver
+	// StructuredResults reports whether the provider a turn is routed to
+	// sends the structured tool-result envelope, so the context estimate
+	// counts what goes on the wire. Nil counts it for every provider.
+	StructuredResults StructuredResultSupport
 	// Hooks runs the run's configured lifecycle hooks; optional, like
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
@@ -793,10 +797,37 @@ func (l *AgenticLoop) Close() error {
 	return nil
 }
 
+// StructuredResultSupport reports whether the adapter for a router-selected
+// provider key and model sends tool results' structured envelope on the
+// wire. An empty provider key names the run's primary provider.
+type StructuredResultSupport func(provider, model string) bool
+
+// sendsStructuredResults resolves StructuredResults for one turn's routing
+// selection.
+func (l *AgenticLoop) sendsStructuredResults(provider, model string) bool {
+	if l.StructuredResults == nil {
+		return true
+	}
+	return l.StructuredResults(provider, model)
+}
+
 // estimateCurrentTokens returns the estimated tokens of the message
-// history, using the estimate the context strategies apply to it.
-func estimateCurrentTokens(messages []types.Message) int {
-	return max(contextpkg.EstimateHistoryTokens(messages), 1)
+// history, using the estimate the context strategies apply to it. That
+// estimate counts each tool result's wire envelope
+// (types.ToolResultWireEnvelope); when structuredResults is false the
+// adapter sends no envelope, so it is not counted.
+func estimateCurrentTokens(messages []types.Message, structuredResults bool) int {
+	total := contextpkg.EstimateHistoryTokens(messages)
+	if !structuredResults {
+		for _, msg := range messages {
+			for _, block := range msg.Content {
+				if block.Type == "tool_result" {
+					total -= len(types.ToolResultWireEnvelope(block)) / tokenEstimationDivisor
+				}
+			}
+		}
+	}
+	return max(total, 1)
 }
 
 // estimateSystemPromptTokens estimates the token count for the system prompt.

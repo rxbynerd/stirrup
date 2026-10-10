@@ -734,7 +734,8 @@ func (l *AgenticLoop) runInnerLoop(
 		// Token estimate includes system prompt and tool definitions —
 		// these consume context but aren't in the message history.
 		toolDefs := l.Tools.List()
-		currentTokens := estimateCurrentTokens(messages) +
+		structuredResults := l.sendsStructuredResults(selection.Provider, selection.Model)
+		currentTokens := estimateCurrentTokens(messages, structuredResults) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
 		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
@@ -768,6 +769,7 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 		}
 		budget := newTurnBudget(window, responseReserve, calibration, currentTokens)
+		budget.structuredResults = structuredResults
 		preparedMessages, requestTokens, prepOutcome := l.prepareRequest(ctx, messages, systemPrompt, toolDefs, budget, 0)
 		if prepOutcome != "" {
 			return messages, prepOutcome, finalAssistantText, nil

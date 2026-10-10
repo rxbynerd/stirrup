@@ -164,6 +164,8 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		},
 	}
 
+	childLoop.StructuredResults = parent.StructuredResults
+
 	// Nests every child span under the parent's tool.spawn_agent span;
 	// Run() preserves a pre-set TraceContext rather than overwriting it.
 	childLoop.TraceContext = ctx

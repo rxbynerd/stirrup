@@ -1456,7 +1456,7 @@ func TestLoop_PromptBuildError(t *testing.T) {
 
 func TestEstimateCurrentTokens(t *testing.T) {
 	// Empty messages should return 1 (minimum).
-	if got := estimateCurrentTokens(nil); got != 1 {
+	if got := estimateCurrentTokens(nil, true); got != 1 {
 		t.Errorf("empty messages: want 1, got %d", got)
 	}
 
@@ -1465,7 +1465,7 @@ func TestEstimateCurrentTokens(t *testing.T) {
 		Role:    "user",
 		Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40)}},
 	}}
-	got := estimateCurrentTokens(msgs)
+	got := estimateCurrentTokens(msgs, true)
 	// 4 (message overhead) + 3 (block overhead) + 10 (40/4 chars) = 17
 	if got != 17 {
 		t.Errorf("single text message: want 17, got %d", got)
@@ -1481,7 +1481,7 @@ func TestEstimateCurrentTokens(t *testing.T) {
 			Input: json.RawMessage(`{"path":"/foo"}`), // 15 chars → 3 tokens
 		}},
 	}}
-	got = estimateCurrentTokens(toolMsg)
+	got = estimateCurrentTokens(toolMsg, true)
 	// 4 (msg) + 3 (block) + 4 (ID) + 2 (Name) + 3 (Input) = 16
 	if got != 16 {
 		t.Errorf("tool_use message: want 16, got %d", got)
@@ -1501,7 +1501,7 @@ func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
 		},
 	}
 	// 4 (msg) + 3 (block) + (40960 + 7) / 4 = 10248
-	if got := estimateCurrentTokens([]types.Message{msg}); got != 10248 {
+	if got := estimateCurrentTokens([]types.Message{msg}, true); got != 10248 {
 		t.Errorf("message with 40 KB replay state: want 10248, got %d", got)
 	}
 }
@@ -1550,7 +1550,7 @@ func TestEstimateTokens_OverheadSignificance(t *testing.T) {
 			Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
 		}
 	}
-	got := estimateCurrentTokens(msgs)
+	got := estimateCurrentTokens(msgs, true)
 	// Each message: 4 (msg overhead) + 3 (block overhead) + 0 ("ok" is 2 chars → 0 at /4) = 7
 	// 20 * 7 = 140
 	if got != 140 {
