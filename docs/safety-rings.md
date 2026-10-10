@@ -276,7 +276,7 @@ top of the rings, never the ring itself.
 the operator prompt and the sanitized dynamic-context values. On every
 later turn it reads each freshly arrived `tool_result` block — both the
 text content and any structured JSON payload the adapters forward to
-the model — *before* any LLM guard runs (deterministic-first, so a
+the model — and the verifier feedback that opens a verification retry, *before* any LLM guard runs (deterministic-first, so a
 later guard scrub cannot un-trip the latch). Once the latch trips,
 rescans are skipped for the rest of the run (except under the `redact`
 action, which keeps scanning so it can rewrite every later result).
@@ -353,7 +353,7 @@ matched content (events run through `ScrubMap`):
   observe-only, so the event never promises an action that cannot fire.
 - `sensitive_data_detected` (warn) — `{patterns, tier, source, turn,
   action, transition}`, where `source` is `prompt`, `dynamic_context`,
-  `tool_result`, or `guard:<id>`. Pattern names only, never content.
+  `tool_result`, `user_response`, `verifier_feedback`, or `guard:<id>`. Pattern names only, never content.
 - `rule_of_two_triggered` (warn, once per run at the false→true
   transition) — `{untrustedInput, externalCommunication, sensitiveData:
   true, action, source, scanning_suspended}`. A one-time transport
