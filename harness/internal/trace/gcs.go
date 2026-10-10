@@ -86,6 +86,7 @@ type GCSTraceEmitter struct {
 	repositoryGuidance   []types.RepositoryGuidanceRecord
 	auxiliaryTokens      types.TokenUsage
 	externalGuardTokens  types.TokenUsage
+	postEditChecks       []types.PostEditCheckRecord
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
@@ -100,6 +101,7 @@ var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
 var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
 var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
 var _ StructuredOutputRecorder = (*GCSTraceEmitter)(nil)
+var _ PostEditCheckRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -193,6 +195,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.repositoryGuidance = nil
 	e.auxiliaryTokens = types.TokenUsage{}
 	e.externalGuardTokens = types.TokenUsage{}
+	e.postEditChecks = nil
 }
 
 // RecordTurn appends a turn trace.
@@ -273,6 +276,14 @@ func (e *GCSTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGui
 	e.repositoryGuidance = append([]types.RepositoryGuidanceRecord(nil), records...)
 }
 
+// RecordPostEditCheck accumulates a post-edit check record for the
+// uploaded trace object.
+func (e *GCSTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.postEditChecks = append(e.postEditChecks, scrubPostEditCheck(record, e.redactionDisabled))
+}
+
 func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -341,6 +352,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	repositoryGuidance := e.repositoryGuidance
 	auxiliaryTokens := e.auxiliaryTokens
 	externalGuardTokens := e.externalGuardTokens
+	postEditChecks := append([]types.PostEditCheckRecord(nil), e.postEditChecks...)
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -387,6 +399,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		RepositoryGuidance:   repositoryGuidance,
 		AuxiliaryTokens:      auxiliaryTokens,
 		ExternalGuardTokens:  externalGuardTokens,
+		PostEditChecks:       postEditChecks,
 	}
 
 	data, err := json.Marshal(trace)

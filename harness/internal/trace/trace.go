@@ -130,6 +130,12 @@ type CommandOutputRecorder interface {
 	RecordCommandOutput(types.CommandOutputRecord)
 }
 
+// PostEditCheckRecorder receives bounded metadata for each tools.postEdit
+// check execution. The check's diagnostics are not part of the record.
+type PostEditCheckRecorder interface {
+	RecordPostEditCheck(types.PostEditCheckRecord)
+}
+
 // CommandOutputArchiveRecorder attaches the finalized sidecar location to the
 // run summary and, for OTel, bounded root-span attributes.
 type CommandOutputArchiveRecorder interface {

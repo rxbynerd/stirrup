@@ -122,6 +122,7 @@ type OTelTraceEmitter struct {
 	repositoryGuidance   []types.RepositoryGuidanceRecord
 	auxiliaryTokens      types.TokenUsage
 	externalGuardTokens  types.TokenUsage
+	postEditChecks       []types.PostEditCheckRecord
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -159,6 +160,7 @@ var (
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
 	_ LedgerUsageRecorder          = (*OTelTraceEmitter)(nil)
+	_ PostEditCheckRecorder        = (*OTelTraceEmitter)(nil)
 )
 
 // OTelTraceEmitterOptions configures NewOTelTraceEmitter.
@@ -272,6 +274,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
+	e.postEditChecks = nil
 
 	conversationID := ""
 	if config != nil {
@@ -502,6 +505,36 @@ func (e *OTelTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
 	e.structuredOutput = append(json.RawMessage(nil), doc...)
 }
 
+// RecordPostEditCheck emits a post_edit_check span under the root span
+// and accumulates the record for the RunTrace aggregate.
+func (e *OTelTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	scrubbed := scrubPostEditCheck(record, e.redactionDisabled)
+	e.postEditChecks = append(e.postEditChecks, scrubbed)
+	if e.rootCtx == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("post_edit_check.tool", scrubbed.Tool),
+		attribute.String("post_edit_check.tool_use_id", scrubbed.ToolUseID),
+		attribute.Int("post_edit_check.index", scrubbed.Index),
+		attribute.String("post_edit_check.command", scrubbed.Command),
+		attribute.Int("post_edit_check.exit_code", scrubbed.ExitCode),
+		attribute.Int64("post_edit_check.duration_ms", scrubbed.DurationMs),
+		attribute.Bool("post_edit_check.timed_out", scrubbed.TimedOut),
+	}
+	_, span := e.tracer.Start(e.rootCtx, "post_edit_check", oteltrace.WithAttributes(attrs...))
+	if scrubbed.Failed() {
+		status := fmt.Sprintf("exit code %d", scrubbed.ExitCode)
+		if scrubbed.Error != "" {
+			status = scrubbed.Error
+		}
+		span.SetStatus(codes.Error, status)
+	}
+	span.End()
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -630,6 +663,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		RepositoryGuidance:   e.repositoryGuidance,
 		AuxiliaryTokens:      e.auxiliaryTokens,
 		ExternalGuardTokens:  e.externalGuardTokens,
+		PostEditChecks:       e.postEditChecks,
 	}
 
 	return trace, nil

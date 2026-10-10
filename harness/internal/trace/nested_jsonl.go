@@ -56,6 +56,7 @@ var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
 var _ SubRunRecorder = (*NestedJSONLEmitter)(nil)
 var _ RootContextProvider = (*NestedJSONLEmitter)(nil)
 var _ LiveSpanStarter = (*NestedJSONLEmitter)(nil)
+var _ PostEditCheckRecorder = (*NestedJSONLEmitter)(nil)
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
 // events to parent, tagged with parentRunID and the child's runID set
@@ -245,6 +246,14 @@ func (e *NestedJSONLEmitter) RecordStopDetails(details *types.StopDetails) {
 func (e *NestedJSONLEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	if parent, ok := e.parent.(CommandOutputRecorder); ok {
 		parent.RecordCommandOutput(record)
+	}
+}
+
+// RecordPostEditCheck forwards a child's post-edit check record to the
+// parent, like RecordCommandOutput.
+func (e *NestedJSONLEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
+	if parent, ok := e.parent.(PostEditCheckRecorder); ok {
+		parent.RecordPostEditCheck(record)
 	}
 }
 
