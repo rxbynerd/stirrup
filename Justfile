@@ -5,7 +5,7 @@ build:
     go build -o stirrup-eval ./eval/cmd/eval
 
 test:
-    go test ./harness/... ./types/... ./eval/...
+    go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 
 # Race-detector pass over the goroutine-heavy packages (executor —
 # which includes egressproxy — provider, core, and sandboxidentity,
@@ -17,7 +17,7 @@ test-race:
     go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/... ./harness/internal/sandboxidentity/...
 
 lint:
-    golangci-lint run ./harness/... ./types/... ./eval/...
+    golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 
 # Go module vulnerability scan, mirroring the CI govulncheck job.
 # govulncheck scans one module's build graph per invocation, so each
@@ -25,13 +25,30 @@ lint:
 vuln:
     #!/usr/bin/env bash
     set -euo pipefail
-    for mod in types gen harness eval; do
+    for mod in types gen harness eval examples/controlplane; do
         echo "==> govulncheck (${mod})"
         (cd "${mod}" && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...)
     done
 
 proto:
     buf generate
+
+# Smoke test: one task through examples/controlplane, a scripted
+# OpenAI-compatible provider and the locally built `stirrup job` with the
+# local executor. Needs no container engine and no API key.
+controlplane-smoke: build
+    examples/controlplane/smoke.sh success
+
+# The same smoke test with a scripted provider failure; passes only when
+# the run is reported as failed with a non-zero exit.
+controlplane-smoke-failure: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if examples/controlplane/smoke.sh provider-error; then
+        echo "FAIL: a failed run exited 0" >&2
+        exit 1
+    fi
+    echo "ok: failed run exited non-zero"
 
 buf-lint:
     buf lint

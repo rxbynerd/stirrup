@@ -41,6 +41,7 @@ jobs:
             harness/go.mod
             types/go.mod
             eval/go.mod
+            examples/controlplane/go.mod
 
       - name: Compute version label
         id: ver
@@ -73,6 +74,10 @@ jobs:
         working-directory: eval
         run: go test ./...
 
+      - name: Run control-plane example tests
+        working-directory: examples/controlplane
+        run: go test ./...
+
       # Race-detector pass over the goroutine-heavy packages (executor
       # — which includes egressproxy — provider, and core). Scoped
       # rather than ./... because the full sweep under -race is much
@@ -92,6 +97,10 @@ jobs:
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             ./cmd/stirrup
 
+      - name: Build control-plane example
+        working-directory: examples/controlplane
+        run: go build -o /dev/null . ./stubprovider
+
       - name: Build eval binary
         env:
           VERSION_LABEL: ${{ steps.ver.outputs.label }}
@@ -100,6 +109,20 @@ jobs:
           go build -trimpath \
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             -o stirrup-eval ./eval/cmd/eval
+
+      # Drives one task through the example control plane, a scripted
+      # provider and the binary built above, then checks that a provider
+      # failure turns into a non-zero exit. See examples/controlplane/README.md.
+      - name: Smoke-test the control-plane example
+        env:
+          STIRRUP: ${{ github.workspace }}/harness/stirrup
+        run: |
+          set -euo pipefail
+          examples/controlplane/smoke.sh success
+          if examples/controlplane/smoke.sh provider-error; then
+            echo "provider-error scenario unexpectedly succeeded" >&2
+            exit 1
+          fi
 
       # buf compiles proto/ independently of the committed gen/ output,
       # so this step also catches a .proto edit that was never passed
