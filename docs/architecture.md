@@ -448,11 +448,11 @@ differently:
 
 - **Anthropic** — the Messages API's `tool_result` `content` accepts a
   content-block array. The adapter emits the canonical text part plus a
-  text part carrying the structured JSON, so the model receives both
-  renderings.
+  text part carrying a lean view of the structured JSON that omits the
+  body fields the text already renders.
 - **Gemini** — `functionResponse.response` is a free-form JSON object.
-  The adapter embeds the envelope under `structured`/`kind` alongside
-  the canonical `content` key.
+  The adapter embeds the same lean view under `structured`/`kind`
+  alongside the canonical `content` key.
 - **OpenAI (Chat Completions and Responses)** — the tool message /
   `function_call_output` is a plain string on the wire, so these
   adapters carry no capability and send the text fallback only.

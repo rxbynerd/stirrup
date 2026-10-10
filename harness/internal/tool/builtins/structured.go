@@ -1,5 +1,7 @@
 package builtins
 
+import "github.com/rxbynerd/stirrup/types"
+
 // The structured result types in this file are the typed envelopes built-in
 // tools marshal into ToolResult.Structured. They are deliberately concrete Go
 // structs rather than map[string]any so the JSON contract is reviewable and
@@ -8,17 +10,18 @@ package builtins
 
 // Kind discriminators identify which struct a ToolResult.Structured payload
 // carries. Consumers route by these stable values rather than JSON-sniffing
-// the payload. Each StructuredHandler returns the matching kind.
+// the payload. Each StructuredHandler returns the matching kind. The values
+// are defined in types so the provider wire view can route on them.
 const (
-	kindCommandResult      = "command_result"
-	kindSearchResult       = "search_result"
-	kindFindResult         = "find_result"
-	kindFileExcerpt        = "file_excerpt"
-	kindGitStatus          = "git_status"
-	kindGitChangedFiles    = "git_changed_files"
-	kindGitDiff            = "git_diff"
-	kindGitShow            = "git_show"
-	kindCommandOutputChunk = "command_output_chunk"
+	kindCommandResult      = types.ToolResultKindCommandResult
+	kindSearchResult       = types.ToolResultKindSearchResult
+	kindFindResult         = types.ToolResultKindFindResult
+	kindFileExcerpt        = types.ToolResultKindFileExcerpt
+	kindGitStatus          = types.ToolResultKindGitStatus
+	kindGitChangedFiles    = types.ToolResultKindGitChangedFiles
+	kindGitDiff            = types.ToolResultKindGitDiff
+	kindGitShow            = types.ToolResultKindGitShow
+	kindCommandOutputChunk = types.ToolResultKindCommandOutputChunk
 )
 
 // commandResult is the structured payload for run_command. TimedOut reports

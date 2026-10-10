@@ -270,17 +270,19 @@ func geminiSystemFromMessages(system string, messages []types.Message) string {
 // object Vertex expects in functionResponse.response. The canonical text
 // always populates "content" (the fallback the model can read regardless
 // of structured support). When the resolved capability accepts the
-// object-response shape and the block carries a structured envelope, the
-// envelope is embedded verbatim under "structured" with its
-// discriminator under "kind".
+// object-response shape and the block has a wire envelope
+// (types.ToolResultWireEnvelope), that envelope is embedded under
+// "structured" with its discriminator under "kind".
 func geminiToolResultResponse(block types.ContentBlock, cap quirks.StructuredToolResultCapability) (json.RawMessage, error) {
 	body := geminiFunctionResponseBody{
 		Content: block.Content,
 		Error:   block.IsError,
 	}
-	if cap.Supported && cap.ObjectResponse && len(block.Structured) > 0 {
-		body.Structured = block.Structured
-		body.Kind = block.Kind
+	if cap.Supported && cap.ObjectResponse {
+		if envelope := types.ToolResultWireEnvelope(block); len(envelope) > 0 {
+			body.Structured = envelope
+			body.Kind = block.Kind
+		}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

@@ -432,10 +432,9 @@ func anthropicToolUseInput(b types.ContentBlock) json.RawMessage {
 // the key is omitted (text/tool_use blocks never carry tool-result content).
 // For tool_result blocks it returns the JSON-string form by default; when the
 // resolved capability accepts the content-block array shape and the block
-// carries a structured envelope, it returns the array form — the canonical
-// text part plus a text part holding the structured JSON — so the model
-// receives both renderings and the text fallback survives even if a consumer
-// reads only the first part.
+// has a wire envelope (types.ToolResultWireEnvelope), it returns the array
+// form — the canonical text part plus a text part holding that envelope — so
+// the text fallback survives even if a consumer reads only the first part.
 //
 // A marshalling failure falls back to the plain string content: structured
 // serialisation is purely additive and must never drop the canonical text.
@@ -446,17 +445,15 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 	// The array form requires a non-empty canonical text: an empty first part
 	// ({"type":"text","text":""}) is meaningless, so an empty Content falls
 	// through to the nil-return below regardless of the structured payload.
-	// A structured envelope byte-identical to the canonical text would put
-	// the same bytes on the wire twice, so those collapse to the single
-	// string form below.
-	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" &&
-		string(b.Structured) != b.Content {
-		parts := []anthropicToolResultPart{
-			{Type: "text", Text: b.Content},
-			{Type: "text", Text: string(b.Structured)},
-		}
-		if raw, err := json.Marshal(parts); err == nil {
-			return raw
+	if cap.Supported && cap.ContentBlockArray && b.Content != "" {
+		if envelope := types.ToolResultWireEnvelope(b); len(envelope) > 0 {
+			parts := []anthropicToolResultPart{
+				{Type: "text", Text: b.Content},
+				{Type: "text", Text: string(envelope)},
+			}
+			if raw, err := json.Marshal(parts); err == nil {
+				return raw
+			}
 		}
 	}
 
