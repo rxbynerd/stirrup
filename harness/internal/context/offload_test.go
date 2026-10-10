@@ -290,7 +290,7 @@ func TestOffloadToFile_WriteFailure_FallsBackToTruncation(t *testing.T) {
 	}
 
 	content := result[2].Content[0].Content
-	if !strings.Contains(content, "[...truncated...]") {
+	if !strings.Contains(content, "[...truncated 2000 bytes...]") {
 		t.Error("expected truncation marker in fallback content")
 	}
 	// Should keep first 500 and last 500 chars.
