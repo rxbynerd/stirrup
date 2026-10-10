@@ -201,7 +201,7 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 		// 4100 leaves 3075 tokens after the response reserve: the last
 		// request (about 3283) is over it, and the summarised request
 		// (about 2590) fits the limit after the safety margin.
-		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model"), 4100, false, true},
+		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model", 0), 4100, false, true},
 		{"control", contextpkg.NewSlidingWindowStrategy(), 200000, true, false},
 	}
 	for _, tc := range cases {

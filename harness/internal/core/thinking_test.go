@@ -346,7 +346,7 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 		// Summarising needs an aged exchange between the pinned task and
 		// the recent messages, so the first one exists on call 4.
 		{"summarise", 4, func() contextpkg.ContextStrategy {
-			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model")
+			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model", 0)
 		}},
 		{"offload-to-file", 2, func() contextpkg.ContextStrategy {
 			return contextpkg.NewOffloadToFileStrategy(discardFileWriter{})

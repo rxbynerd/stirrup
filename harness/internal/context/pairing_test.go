@@ -178,13 +178,16 @@ func compactionStrategies() map[string]func() ContextStrategy {
 	return map[string]func() ContextStrategy{
 		"sliding-window": func() ContextStrategy { return NewSlidingWindowStrategy() },
 		"summarise": func() ContextStrategy {
-			return NewSummariseStrategy(&mockSummaryProvider{summary: "earlier work"}, "summary-model")
+			return NewSummariseStrategy(&mockSummaryProvider{summary: "earlier work"}, "summary-model", 0)
+		},
+		"summarise-small-window": func() ContextStrategy {
+			return NewSummariseStrategy(&mockSummaryProvider{summary: "earlier work"}, "summary-model", 4000)
 		},
 		"summarise-start-error-fallback": func() ContextStrategy {
-			return NewSummariseStrategy(&mockSummaryProvider{err: fmt.Errorf("connection refused")}, "summary-model")
+			return NewSummariseStrategy(&mockSummaryProvider{err: fmt.Errorf("connection refused")}, "summary-model", 0)
 		},
 		"summarise-stream-error-fallback": func() ContextStrategy {
-			return NewSummariseStrategy(&errorStreamProvider{}, "summary-model")
+			return NewSummariseStrategy(&errorStreamProvider{}, "summary-model", 0)
 		},
 		"offload-to-file": func() ContextStrategy { return NewOffloadToFileStrategy(newMockFileWriter()) },
 		"offload-to-file-write-failure": func() ContextStrategy {

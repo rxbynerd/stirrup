@@ -934,7 +934,7 @@ func wrapContextStrategy(cs contextpkg.ContextStrategy, cfg types.ContextStrateg
 func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, exec executor.Executor) contextpkg.ContextStrategy {
 	switch cfg.Type {
 	case "summarise":
-		return contextpkg.NewSummariseStrategy(prov, model)
+		return contextpkg.NewSummariseStrategy(prov, model, cfg.MaxTokens)
 	case "offload-to-file":
 		return contextpkg.NewOffloadToFileStrategy(exec)
 	case "sliding-window", "":

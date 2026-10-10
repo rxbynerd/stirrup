@@ -23,6 +23,11 @@ type CompactionEvent struct {
 	MessagesAfter  int
 	TokensBefore   int
 	TokensAfter    int
+
+	// Warnings describes degraded compaction, such as a failed summary
+	// call that fell back to the sliding window. The loop logs each one
+	// and emits it as a warning event.
+	Warnings []string
 }
 
 // ContextStrategy prepares a message slice to fit within a token budget.
