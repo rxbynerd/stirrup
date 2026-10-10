@@ -355,9 +355,10 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor, m
 }
 
 // fitCommandOutputChunk marshals the read_command_output payload for read,
-// dropping trailing content bytes until the JSON fits within maxBytes. The
-// returned ReadResult carries the shortened range so the access ledger
-// records exactly what the model received.
+// dropping trailing content bytes, on a UTF-8 boundary where one exists,
+// until the JSON fits within maxBytes. The returned ReadResult carries the
+// shortened range so the access ledger records exactly what the model
+// received.
 func fitCommandOutputChunk(ref string, read commandoutput.ReadResult, maxBytes int) (commandoutput.ReadResult, []byte, error) {
 	for {
 		payload := commandOutputChunkResult{Reference: ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
@@ -378,6 +379,12 @@ func fitCommandOutputChunk(ref string, read commandoutput.ReadResult, maxBytes i
 		}
 		keep := len(read.Bytes) * max(len(encoded)-over, 0) / len(encoded)
 		keep = min(keep, len(read.Bytes)-1)
+		for cut := keep; cut > 0; cut-- {
+			if utf8.RuneStart(read.Bytes[cut]) {
+				keep = cut
+				break
+			}
+		}
 		read.Bytes = read.Bytes[:keep]
 		read.End = read.Offset + int64(keep)
 		read.EOF = read.End >= read.Content.ScrubbedBytes

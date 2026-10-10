@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -295,5 +296,27 @@ func TestReadCommandOutputFitsWithinMaxResultBytes(t *testing.T) {
 	}
 	if offset != 131072 {
 		t.Fatalf("paginated %d bytes, want 131072", offset)
+	}
+}
+
+// TestFitCommandOutputChunk_CutsOnRuneBoundary checks that shortening a
+// chunk to fit the result budget never splits a multi-byte character.
+func TestFitCommandOutputChunk_CutsOnRuneBoundary(t *testing.T) {
+	content := []byte(strings.Repeat("€", 4000))
+	for _, budget := range []int{1 << 10, 1<<10 + 1, 1<<10 + 2, 4 << 10} {
+		read := commandoutput.ReadResult{Bytes: content, End: int64(len(content)), EOF: true, Stream: "stdout", Content: types.CommandOutputStreamRecord{ScrubbedBytes: int64(len(content))}}
+		got, structured, err := fitCommandOutputChunk("stirrup://command-output/x", read, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(structured) > budget {
+			t.Fatalf("budget %d: payload is %d bytes", budget, len(structured))
+		}
+		if !utf8.Valid(got.Bytes) || strings.ContainsRune(string(structured), utf8.RuneError) || strings.Contains(string(structured), `\ufffd`) {
+			t.Fatalf("budget %d: chunk was cut inside a character", budget)
+		}
+		if got.EOF || got.End != int64(len(got.Bytes)) {
+			t.Fatalf("budget %d: range not shortened: end %d, eof %t", budget, got.End, got.EOF)
+		}
 	}
 }
