@@ -135,7 +135,10 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 		t.Errorf("ListDirectory(roundtrip) = %v, want it to contain data.txt", entries)
 	}
 
-	// (c) Teardown. Close deletes the Sandbox with foreground propagation (so the
+	// (c) A timed-out command leaves no surviving process in the Pod.
+	assertTimeoutKillsProcessTree(t, ctx, exec)
+
+	// (d) Teardown. Close deletes the Sandbox with foreground propagation (so the
 	// Sandbox lingers until its dependent Pod is gone) and then removes the
 	// per-pod NetworkPolicy. After Close the three objects must all be gone:
 	//   - the Sandbox CR     (dynamic client Get → IsNotFound)

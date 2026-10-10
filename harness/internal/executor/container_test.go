@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,6 +258,9 @@ func newMockContainerExecutor(t *testing.T, extraHandlers map[string]http.Handle
 	}
 
 	sock, sockCleanup := mockEngineServer(t, handlers)
+	// Mock exec handlers that hang would otherwise stall the follow-up kill
+	// exec for the full production bound.
+	withShortTimeout(t, &groupKillTimeout, time.Second)
 
 	exec := &ContainerExecutor{
 		api:         newContainerAPIClient(sock),
@@ -467,9 +472,10 @@ func TestContainerExecutor_Exec(t *testing.T) {
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			// Verify it wraps in sh -c
-			if len(req.Cmd) != 3 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" {
-				t.Errorf("exec cmd should be sh -c ..., got %v", req.Cmd)
+			// The command runs through the process-group wrapper, which
+			// passes the original command as its last argument.
+			if len(req.Cmd) != 7 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" || req.Cmd[6] != "echo output" {
+				t.Errorf("exec cmd should be the sh -c group wrapper around the command, got %v", req.Cmd)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-run"})
@@ -1771,5 +1777,131 @@ func TestContainerExecutor_ExecStream_WriterErrorAborts(t *testing.T) {
 	_, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &failAfterWriter{remaining: 4096, err: limitErr}, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "capture limit exceeded") {
 		t.Fatalf("expected writer failure to surface, got %v", err)
+	}
+}
+
+// recordedExecs collects the Cmd of every exec the mock engine is asked to
+// create, in order, so tests can see the follow-up kill exec.
+type recordedExecs struct {
+	mu   sync.Mutex
+	cmds [][]string
+}
+
+func (r *recordedExecs) add(cmd []string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cmds = append(r.cmds, cmd)
+	return len(r.cmds)
+}
+
+func (r *recordedExecs) all() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.cmds...)
+}
+
+// killTrackingHandlers serves a first exec that hangs (the command) and
+// answers any later exec (the kill) immediately with exit 0.
+func killTrackingHandlers(execs *recordedExecs) map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			var req execCreateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			n := execs.add(req.Cmd)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: fmt.Sprintf("exec-%d", n)})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/start"), "exec-1") {
+				hangingExecStartHandler("partial\n")(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+		},
+	}
+}
+
+func assertKillExecFollowsRun(t *testing.T, cmds [][]string) {
+	t.Helper()
+	if len(cmds) != 2 {
+		t.Fatalf("execs = %d, want the command plus one kill exec: %v", len(cmds), cmds)
+	}
+	run, kill := cmds[0], cmds[1]
+	if len(run) != 7 || run[6] != "sleep 600" {
+		t.Fatalf("run exec = %v, want the group wrapper around %q", run, "sleep 600")
+	}
+	if len(kill) != 5 || kill[0] != "sh" || kill[1] != "-c" || kill[2] != groupKillScript {
+		t.Fatalf("kill exec = %v, want the group kill script", kill)
+	}
+	if kill[4] != run[5] || !strings.HasPrefix(kill[4], groupPidFileDir+"/.stirrup-exec-") {
+		t.Errorf("kill pid file %q must match the run pid file %q under %s", kill[4], run[5], groupPidFileDir)
+	}
+}
+
+func TestContainerExecutor_Exec_TimeoutKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	_, err := exec.Exec(context.Background(), "sleep 600", 200*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_Exec_CancelKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+	_, err := exec.Exec(ctx, "sleep 600", 60*time.Second)
+	if err == nil || errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want a plain cancellation", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_ExecStream_TimeoutKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	var stdout, stderr bytes.Buffer
+	_, err := exec.ExecStream(context.Background(), "sleep 600", 200*time.Millisecond, &stdout, &stderr)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_Exec_CompletedCommandIssuesNoKill(t *testing.T) {
+	execs := &recordedExecs{}
+	handlers := killTrackingHandlers(execs)
+	handlers["POST /exec/*/start"] = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		writeDockerFrame(w, 1, []byte("done\n"))
+	}
+	exec, cleanup := newMockContainerExecutor(t, handlers)
+	defer cleanup()
+
+	result, err := exec.Exec(context.Background(), "echo done", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "done\n" {
+		t.Errorf("result = %+v", result)
+	}
+	if n := len(execs.all()); n != 1 {
+		t.Errorf("execs = %d, want only the command itself", n)
 	}
 }

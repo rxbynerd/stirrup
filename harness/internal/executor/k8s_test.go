@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -273,6 +274,69 @@ func TestK8sExec_Cancelled(t *testing.T) {
 	if result == nil || !strings.Contains(result.Stdout, "partial") {
 		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel (#473)", result)
 	}
+}
+
+// podCommandRunner is the exec surface shared by the k8s and k8s-sandbox
+// executors, which both route through podExecCore.
+type podCommandRunner interface {
+	Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error)
+	ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error)
+}
+
+// podProcessGone runs a probe inside the Pod that succeeds when the pid
+// recorded in pidFile no longer names a live process. A killed process whose
+// parent never reaps it stays as a zombie, which counts as gone.
+func podProcessGone(t *testing.T, ctx context.Context, exec podCommandRunner, pidFile string) bool {
+	t.Helper()
+	probe := `pid=$(cat ` + pidFile + `); [ -e /proc/$pid/stat ] || exit 0; read -r l </proc/$pid/stat; case "${l##*) }" in Z*) exit 0 ;; esac; exit 1`
+	res, err := exec.Exec(ctx, probe, 30*time.Second)
+	if err != nil {
+		t.Fatalf("probe %s: %v", pidFile, err)
+	}
+	return res.ExitCode == 0
+}
+
+// assertTimeoutKillsProcessTree verifies that a command killed by its
+// timeout leaves no surviving process and that a detached grandchild never
+// writes its marker, through both Exec and ExecStream; it also checks that a
+// command finishing before its deadline keeps its exit code and output.
+func assertTimeoutKillsProcessTree(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
+	for _, name := range []string{"exec", "stream"} {
+		sleeperPID := "/tmp/" + name + "-sleeper.pid"
+		marker := "/tmp/" + name + "-after-timeout"
+		command := "sh -c 'sleep 3; touch " + marker + "' >/dev/null 2>&1 & sleep 600 & echo $! > " + sleeperPID + "; wait"
+
+		var err error
+		if name == "exec" {
+			_, err = exec.Exec(ctx, command, time.Second)
+		} else {
+			_, err = exec.ExecStream(ctx, command, time.Second, io.Discard, io.Discard)
+		}
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("%s: err = %v, want ErrTimeout", name, err)
+		}
+		if !podProcessGone(t, ctx, exec, sleeperPID) {
+			t.Errorf("%s: sleep 600 survived the timeout", name)
+		}
+		time.Sleep(4 * time.Second)
+		if res, err := exec.Exec(ctx, "test ! -e "+marker, 30*time.Second); err != nil || res.ExitCode != 0 {
+			t.Errorf("%s: detached grandchild survived the timeout and wrote its marker: err=%v result=%+v", name, err, res)
+		}
+	}
+
+	res, err := exec.Exec(ctx, "echo out; echo err >&2; exit 7", 30*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 7 || res.Stdout != "out\n" || res.Stderr != "err\n" {
+		t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", res, "out\n", "err\n")
+	}
+}
+
+func TestK8sExec_TimeoutKillsProcessTree(t *testing.T) {
+	exec := newTestK8sExecutor(t)
+	assertTimeoutKillsProcessTree(t, context.Background(), exec)
 }
 
 // TestK8sExec_OutputCap verifies the 10 MB output cap fires when a command

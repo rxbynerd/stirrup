@@ -165,3 +165,61 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 		t.Errorf("ReadFile(alias) = (%q, %v), want an in-workspace symlink to read its target", got, err)
 	}
 }
+
+// containerProcessGone runs a probe inside the container that succeeds when
+// the pid recorded in pidFile no longer names a live process. A killed
+// process whose parent never reaps it stays as a zombie, which counts as gone.
+func containerProcessGone(t *testing.T, ctx context.Context, exec *ContainerExecutor, pidFile string) bool {
+	t.Helper()
+	probe := `pid=$(cat ` + pidFile + `); [ -e /proc/$pid/stat ] || exit 0; read -r l </proc/$pid/stat; case "${l##*) }" in Z*) exit 0 ;; esac; exit 1`
+	res, err := exec.Exec(ctx, probe, 30*time.Second)
+	if err != nil {
+		t.Fatalf("probe %s: %v", pidFile, err)
+	}
+	return res.ExitCode == 0
+}
+
+// TestContainerExecutor_TimeoutKillsProcessTree_LiveEngine verifies, against
+// a real engine, that a timed-out or cancelled command leaves no surviving
+// process and that a detached grandchild never writes its marker.
+func TestContainerExecutor_TimeoutKillsProcessTree_LiveEngine(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := liveContainerExecutor(t, ctx, false)
+
+	run := func(t *testing.T, name string, call func(command string) error) {
+		t.Run(name, func(t *testing.T) {
+			sleeperPID := "/tmp/" + name + "-sleeper.pid"
+			marker := "/tmp/" + name + "-after-timeout"
+			command := "sh -c 'sleep 3; touch " + marker + "' >/dev/null 2>&1 & sleep 600 & echo $! > " + sleeperPID + "; wait"
+			if err := call(command); !errors.Is(err, ErrTimeout) {
+				t.Fatalf("err = %v, want ErrTimeout", err)
+			}
+			if !containerProcessGone(t, ctx, exec, sleeperPID) {
+				t.Error("sleep 600 survived the timeout")
+			}
+			time.Sleep(4 * time.Second)
+			if res, err := exec.Exec(ctx, "test ! -e "+marker, 30*time.Second); err != nil || res.ExitCode != 0 {
+				t.Errorf("detached grandchild survived the timeout and wrote its marker: err=%v result=%+v", err, res)
+			}
+		})
+	}
+	run(t, "exec", func(command string) error {
+		_, err := exec.Exec(ctx, command, time.Second)
+		return err
+	})
+	run(t, "stream", func(command string) error {
+		_, err := exec.ExecStream(ctx, command, time.Second, io.Discard, io.Discard)
+		return err
+	})
+
+	t.Run("unaffected", func(t *testing.T) {
+		res, err := exec.Exec(ctx, "echo out; echo err >&2; exit 7", 30*time.Second)
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+		if res.ExitCode != 7 || res.Stdout != "out\n" || res.Stderr != "err\n" {
+			t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", res, "out\n", "err\n")
+		}
+	})
+}

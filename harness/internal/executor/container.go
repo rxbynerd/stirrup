@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"path"
 	"strings"
 	"time"
@@ -525,9 +526,14 @@ func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout ti
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	result, err := e.execInContainer(ctx, []string{"sh", "-c", command}, e.workspace, timeout)
+	grouped, err := newGroupedCommand("sh", command)
+	if err != nil {
+		return nil, err
+	}
+	result, err := e.execInContainer(ctx, grouped.runArgv(), e.workspace, timeout)
 	if err != nil {
 		if ctx.Err() != nil {
+			e.killGroup(grouped)
 			// Preserve whatever output execInContainer captured before the
 			// ctx ended, rather than discarding it (nil only if the command
 			// never started).
@@ -554,15 +560,36 @@ func (e *ContainerExecutor) ExecStream(ctx context.Context, command string, time
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	result, err := e.execInContainerStream(ctx, []string{"sh", "-c", command}, e.workspace, timeout, stdout, stderr)
+	grouped, err := newGroupedCommand("sh", command)
+	if err != nil {
+		return nil, err
+	}
+	result, err := e.execInContainerStream(ctx, grouped.runArgv(), e.workspace, timeout, stdout, stderr)
 	if result == nil {
 		result = &ExecResult{}
 	}
 	if err != nil && ctx.Err() != nil {
+		e.killGroup(grouped)
 		result.ExitCode = -1
 		return result, classifyExecCtxErr(ctx, timeout)
 	}
 	return result, err
+}
+
+// killGroup kills the process group of a command whose exec ended with its
+// ctx. Closing the exec stream does not stop the process inside the
+// container and the Engine API cannot kill an exec instance, so a follow-up
+// exec signals the group. It runs on its own deadline because the command's
+// deadline has expired; failures are logged, not returned, so the command's
+// timeout or cancellation result is never replaced.
+func (e *ContainerExecutor) killGroup(g groupedCommand) {
+	result, err := e.execInContainer(context.Background(), g.killArgv(), e.workspace, groupKillTimeout)
+	switch {
+	case err != nil:
+		slog.Warn("container executor could not kill timed-out command", "err", err)
+	case result.ExitCode != 0:
+		slog.Warn("container executor could not kill timed-out command", "exit_code", result.ExitCode, "stderr", strings.TrimSpace(result.Stderr))
+	}
 }
 
 // truncateAndReport caps result's stdout/stderr at maxOutputSize and, when a
