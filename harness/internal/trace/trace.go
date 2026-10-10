@@ -67,6 +67,15 @@ type PromptResolutionRecorder interface {
 	RecordPromptResolution(model, tier string)
 }
 
+// RepositoryGuidanceRecorder is an optional capability a TraceEmitter can
+// implement to receive the run's loaded repositoryGuidance metadata (path,
+// tier, sizes, digest) after the system prompt is built. Recording is not
+// gated on content capture: the records carry no guidance text, which
+// reaches traces only through the system prompt.
+type RepositoryGuidanceRecorder interface {
+	RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord)
+}
+
 // HookRecorder is an optional capability a TraceEmitter can implement to
 // receive lifecycle hook results as each PreRun/PostRun hook completes.
 // Only the JSONL emitter implements it: it streams a hook_record line

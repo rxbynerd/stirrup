@@ -83,10 +83,12 @@ type GCSTraceEmitter struct {
 	runError             string
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
+	repositoryGuidance   []types.RepositoryGuidanceRecord
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
 var _ VerificationRecorder = (*GCSTraceEmitter)(nil)
+var _ RepositoryGuidanceRecorder = (*GCSTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
@@ -185,6 +187,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.workspaceExport = nil
 	e.runError = ""
 	e.structuredOutput = nil
+	e.repositoryGuidance = nil
 }
 
 // RecordTurn appends a turn trace.
@@ -247,6 +250,14 @@ func (e *GCSTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCa
 }
 
 func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
+
+// RecordRepositoryGuidance stores the guidance records so the uploaded
+// trace object carries them.
+func (e *GCSTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repositoryGuidance = append([]types.RepositoryGuidanceRecord(nil), records...)
+}
 
 func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
@@ -313,6 +324,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	runError := e.runError
 	structuredOutput := e.structuredOutput
 	degradedCapabilities := e.degradedCapabilities
+	repositoryGuidance := e.repositoryGuidance
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -355,6 +367,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		Error:                runError,
 		StructuredOutput:     structuredOutput,
 		DegradedCapabilities: degradedCapabilities,
+		RepositoryGuidance:   repositoryGuidance,
 	}
 
 	data, err := json.Marshal(trace)
