@@ -616,6 +616,7 @@ func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
 		wantLastRole string
 	}{
 		{"anthropic native ends on a user turn", "anthropic", "claude-sonnet-4-6", types.ToolChoiceRequired, "user"},
+		{"anthropic native keeps the user turn where a prefill is accepted", "anthropic", "claude-haiku-4-5", types.ToolChoiceRequired, "user"},
 		{"openai-compatible native unchanged", "openai-compatible", "gpt-4o", types.ToolChoiceRequired, "assistant"},
 		{"gemini native unchanged", "gemini", "gemini-2.5-pro", types.ToolChoiceRequired, "assistant"},
 		{"anthropic auto-only takes the prompt strategy", "anthropic", "claude-sonnet-5-5", types.ToolChoiceAuto, "user"},
