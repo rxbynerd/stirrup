@@ -87,6 +87,17 @@ type blockingToolCallProvider struct {
 	reached   chan struct{}
 }
 
+// waitCancelled reports whether the server observed the client abandon
+// the first request within eventWaitBudget. The handler notices the
+// disconnect asynchronously, possibly after runJob has returned.
+func (p *blockingToolCallProvider) waitCancelled() bool {
+	deadline := time.Now().Add(eventWaitBudget)
+	for !p.cancelled.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return p.cancelled.Load()
+}
+
 func startBlockingToolCallProvider(t *testing.T) *blockingToolCallProvider {
 	t.Helper()
 	p := &blockingToolCallProvider{reached: make(chan struct{})}
@@ -151,7 +162,7 @@ func assertJobCancelledOnLoss(t *testing.T, provider *blockingToolCallProvider, 
 	if got := provider.requests.Load(); got != 1 {
 		t.Errorf("provider requests = %d, want 1: no model request may follow the loss", got)
 	}
-	if !provider.cancelled.Load() {
+	if !provider.waitCancelled() {
 		t.Error("the in-flight provider request was not cancelled")
 	}
 	if len(sink.calls) != 1 {
