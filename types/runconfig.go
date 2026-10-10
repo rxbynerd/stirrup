@@ -952,7 +952,8 @@ type ExecutorConfig struct {
 	// for executors that can archive their workspace (see
 	// ExecutorCanArchiveWorkspace). A workspace with no files uploads an
 	// empty archive and reports export status "empty"; a missing workspace
-	// root is an export failure.
+	// root is an export failure, as is any symlink whose target is
+	// absolute or resolves outside the workspace.
 	// Future S3 / Azure Blob support will broaden the scheme set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 
