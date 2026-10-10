@@ -132,7 +132,7 @@ func TestTLSConfig_SummaryOmitsFileContents(t *testing.T) {
 		cfg  TLSConfig
 		want []string
 	}{
-		{TLSConfig{}, []string{"plaintext"}},
+		{TLSConfig{}, []string{"mode=plaintext"}},
 		{TLSConfig{ServerName: "cp.internal"}, []string{"mode=tls", "ca=system-roots", "server-name=cp.internal"}},
 		{TLSConfig{CAFile: pki.CAFile, CertFile: pki.ClientCertFile, KeyFile: pki.ClientKeyFile}, []string{"mode=mutual-tls", "ca=" + pki.CAFile}},
 	}

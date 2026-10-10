@@ -31,7 +31,18 @@ Required environment variables:
                               set to the Job's activeDeadlineSeconds (optional)
   STIRRUP_POD_NAME,           Downward-API identity of this pod; with all three
   STIRRUP_POD_UID,            set, a k8s sandbox in the same namespace is owned
-  STIRRUP_POD_NAMESPACE       by it (optional)`,
+  STIRRUP_POD_NAMESPACE       by it (optional)
+
+Transport security (optional; plaintext when none is set). Setting any of
+these enables TLS 1.3 with no plaintext fallback, and a missing or
+unreadable file fails the job before it dials:
+  CONTROL_PLANE_TLS_CA_FILE      PEM CA bundle for the control plane's
+                                 certificate (default: system roots)
+  CONTROL_PLANE_TLS_CERT_FILE    PEM client certificate for mutual TLS
+  CONTROL_PLANE_TLS_KEY_FILE     PEM key for the client certificate
+                                 (set together with the certificate)
+  CONTROL_PLANE_TLS_SERVER_NAME  Name to verify the server certificate
+                                 against, if not the address host`,
 	Args: cobra.NoArgs,
 	RunE: runJob,
 }
@@ -60,6 +71,17 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
+	tlsCfg := controlPlaneTLSFromEnv()
+	tlsCreds, err := resolveControlPlaneTLS(tlsCfg)
+	if err != nil {
+		return err
+	}
+	var dialOpts []transport.GRPCTransportOption
+	if tlsCreds != nil {
+		dialOpts = append(dialOpts, transport.WithTLSCredentials(tlsCreds))
+	}
+	logControlPlaneTransport(cmd.ErrOrStderr(), addr, tlsCfg)
+
 	// The first SIGINT/SIGTERM cancels ctx and so the run; detached
 	// post-run work keeps its bounded budget until a second signal
 	// cancels shutdownCtx, or until the shutdown watchdog armed on the
@@ -73,7 +95,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	setupSignalHandler(cancel, shutdownCancel)
 
-	tp, err := transport.NewGRPCTransport(ctx, addr)
+	tp, err := transport.NewGRPCTransport(ctx, addr, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to control plane at %s: %w", addr, err)
 	}

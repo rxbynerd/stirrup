@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
@@ -730,6 +731,7 @@ func init() {
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "With --dry-run, the total wall-clock budget for the preflight. Meaningless without --dry-run (exit 4).")
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 	f.Bool("debug", false, "Disable redaction/scrubbing of trace and recording output (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. CLI-only — never representable in a RunConfig, so a control-plane submission cannot request it. See docs/security.md#debug-builds.")
+	addTransportTLSFlags(f)
 	f.Bool("trace-wire", false, "Dump raw, unredacted provider wire request/response to stderr (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. Bedrock traffic is not tapped (AWS SDK, no raw *http.Client seam). CLI-only — never representable in a RunConfig. See docs/security.md#debug-builds.")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
@@ -737,6 +739,9 @@ func init() {
 	// a literal one-character argument no completion engine needs to
 	// suggest, so the file-name completion alone is sufficient.
 	_ = harnessCmd.MarkFlagFilename("output-runconfig", "json")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSCAFile, "pem", "crt")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSCertFile, "pem", "crt")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSKeyFile, "pem", "key")
 
 	// --output is a closed three-value set; pin the completion list so
 	// shells surface the same values the validator enforces.
@@ -1309,6 +1314,11 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err := validateDryRunFlags(f, dryRun); err != nil {
 		return err
 	}
+	tlsCfg := transportTLSFromFlags(f)
+	tlsCreds, err := resolveTransportTLSFlags(tlsCfg, cfg.Transport.Type)
+	if err != nil {
+		return err
+	}
 	if dryRun {
 		outPath, _ := f.GetString("output-runconfig")
 		return runDryRun(cmd, cfg, dryRunOptionsFromFlags(f), outputMode, outPath)
@@ -1326,10 +1336,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	// reaches here.
 	debugRedactionDisabled, _ := f.GetBool("debug")
 	wireTrace, _ := f.GetBool("trace-wire")
+	if cfg.Transport.Type == "grpc" {
+		logControlPlaneTransport(cmd.ErrOrStderr(), cfg.Transport.Address, tlsCfg)
+	}
 	return runWithConfig(cfg, runOptions{
 		outputMode:             outputMode,
 		debugRedactionDisabled: debugRedactionDisabled,
 		wireTrace:              wireTrace,
+		transportTLS:           tlsCreds,
 	})
 }
 
@@ -1739,10 +1753,14 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // are doubly gated: validateDebugBuildFlags (PreRunE) rejects a release
 // binary before either can be true, and core.BuildLoop re-checks the
 // build tag at the point of effect. See docs/security.md#debug-builds.
+//
+// transportTLS carries the loaded --transport-tls-* credentials; nil
+// keeps the plaintext default.
 type runOptions struct {
 	outputMode             string
 	debugRedactionDisabled bool
 	wireTrace              bool
+	transportTLS           credentials.TransportCredentials
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1786,6 +1804,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
 		core.WithWireTrace(opts.wireTrace),
 		core.WithSessionBudget(runTimeout+cliSessionBudget(runTimeout, graceSecs)),
+		core.WithTransportTLS(opts.transportTLS),
 	)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)

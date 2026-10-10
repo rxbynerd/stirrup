@@ -161,6 +161,9 @@ func TestFlagCompletion_FileFlags(t *testing.T) {
 		{flag: "trace", wantExt: []string{"jsonl"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "workspace", wantDir: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "output-runconfig", wantExt: []string{"json"}, onCommands: []*cobra.Command{harnessCmd}},
+		{flag: "transport-tls-ca-file", wantExt: []string{"pem", "crt"}, onCommands: []*cobra.Command{harnessCmd}},
+		{flag: "transport-tls-cert-file", wantExt: []string{"pem", "crt"}, onCommands: []*cobra.Command{harnessCmd}},
+		{flag: "transport-tls-key-file", wantExt: []string{"pem", "key"}, onCommands: []*cobra.Command{harnessCmd}},
 		{flag: "export-workspace-to", wantNone: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {

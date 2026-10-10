@@ -58,10 +58,10 @@ func (c TLSConfig) Mode() TLSMode {
 // trust source and server-name override but never reads or prints file
 // contents.
 func (c TLSConfig) Summary() string {
-	if !c.Enabled() {
-		return string(TLSModePlaintext)
-	}
 	parts := []string{"mode=" + string(c.Mode())}
+	if !c.Enabled() {
+		return parts[0]
+	}
 	if c.CAFile != "" {
 		parts = append(parts, "ca="+c.CAFile)
 	} else {
