@@ -491,6 +491,18 @@ func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
 	}
 }
 
+func TestTurnRetryPolicyFor_ZeroDelaysFallBackToDefaults(t *testing.T) {
+	config := buildTestConfig()
+	config.Provider.Retry = &types.ProviderRetryConfig{MaxAttempts: 3}
+	got := turnRetryPolicyFor(config, "anthropic")
+	if got.initialDelay != turnRetryInitialDelayFallback || got.maxDelay != turnRetryMaxDelayFallback {
+		t.Fatalf("policy = %+v, want initial %v and max %v", got, turnRetryInitialDelayFallback, turnRetryMaxDelayFallback)
+	}
+	if d := got.delay(0); d < turnRetryInitialDelayFallback/2 {
+		t.Errorf("delay(0) = %v, want at least %v so retries are not back to back", d, turnRetryInitialDelayFallback/2)
+	}
+}
+
 func TestTurnRetryPolicy_DelayUsesEqualJitter(t *testing.T) {
 	p := turnRetryPolicy{maxRetries: 2, initialDelay: 100 * time.Millisecond, maxDelay: 300 * time.Millisecond}
 	for range 200 {

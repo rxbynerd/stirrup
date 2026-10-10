@@ -15,9 +15,13 @@ import (
 // Each attempt may itself make up to maxAttempts pre-stream HTTP requests.
 const maxTurnRetries = 2
 
-// turnRetryInitialDelayFallback applies when an embedder bypasses
-// ValidateRunConfig and leaves initialDelayMs at zero.
-const turnRetryInitialDelayFallback = 500 * time.Millisecond
+// turnRetryInitialDelayFallback and turnRetryMaxDelayFallback apply when
+// an embedder bypasses ValidateRunConfig and leaves initialDelayMs or
+// maxDelayMs at zero; they mirror the RunConfig defaults.
+const (
+	turnRetryInitialDelayFallback = 500 * time.Millisecond
+	turnRetryMaxDelayFallback     = 16 * time.Second
+)
 
 // Turn-scope values of the provider.retry.outcome attribute on
 // provider_retry_outcomes, recorded once per turn that hit a retryable
@@ -56,10 +60,14 @@ func turnRetryPolicyFor(config *types.RunConfig, providerName string) turnRetryP
 	if initial <= 0 {
 		initial = turnRetryInitialDelayFallback
 	}
+	maxDelay := time.Duration(cfg.MaxDelayMs) * time.Millisecond
+	if maxDelay <= 0 {
+		maxDelay = turnRetryMaxDelayFallback
+	}
 	return turnRetryPolicy{
 		maxRetries:   min(cfg.MaxAttempts-1, maxTurnRetries),
 		initialDelay: initial,
-		maxDelay:     time.Duration(cfg.MaxDelayMs) * time.Millisecond,
+		maxDelay:     maxDelay,
 		budget:       time.Duration(cfg.WallClockBudgetMs) * time.Millisecond,
 	}
 }
