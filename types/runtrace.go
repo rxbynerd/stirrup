@@ -156,6 +156,14 @@ type RunTrace struct {
 	// offered, including MCP and control-plane tools that Config.Tools.BuiltIn
 	// cannot name. Set only on sub-agent traces.
 	EffectiveTools []string `json:"effectiveTools,omitempty"`
+	// AuxiliaryTokens is the part of TokenUsage spent outside agentic
+	// turns on the run's provider credentials: summary generation, the
+	// llm-judge verifier and the cloud-judge guard.
+	AuxiliaryTokens TokenUsage `json:"auxiliaryTokens,omitzero"`
+	// ExternalGuardTokens is the usage reported by a guard on its own
+	// endpoint (granite-guardian). It is not part of TokenUsage and is not
+	// charged to maxTokenBudget.
+	ExternalGuardTokens TokenUsage `json:"externalGuardTokens,omitzero"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run

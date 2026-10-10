@@ -1148,6 +1148,16 @@ message RunTrace {
   // The document is scrubbed of secrets and never truncated. Empty
   // otherwise.
   string structured_output = 36;
+
+  // Portion of the token totals above spent outside agentic turns on the
+  // run's provider credentials: summary generation, the llm-judge
+  // verifier and the cloud-judge guard. Absent when there was none.
+  TokenUsage auxiliary_tokens = 25;
+
+  // Usage reported by a guard on its own endpoint (granite-guardian). Not
+  // part of the token totals above and not charged to max_token_budget.
+  // Absent when there was none.
+  TokenUsage external_guard_tokens = 26;
 }
 
 // GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
@@ -1231,6 +1241,16 @@ message VerificationVerdict {
   // Set, with passed false, when the verifier failed to produce a
   // verdict (for example, the executor or judge model was unreachable).
   string error = 4;
+}
+
+// Token counts for one slice of a run's usage. Input includes cached
+// tokens in full; reasoning is a portion of output.
+message TokenUsage {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  int32 cache_read_tokens = 3;
+  int32 cache_write_tokens = 4;
+  int32 reasoning_tokens = 5;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured

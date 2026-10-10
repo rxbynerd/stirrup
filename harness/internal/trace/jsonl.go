@@ -61,11 +61,14 @@ type JSONLTraceEmitter struct {
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
 	repositoryGuidance   []types.RepositoryGuidanceRecord
+	auxiliaryTokens      types.TokenUsage
+	externalGuardTokens  types.TokenUsage
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 var _ VerificationRecorder = (*JSONLTraceEmitter)(nil)
 var _ RepositoryGuidanceRecorder = (*JSONLTraceEmitter)(nil)
+var _ LedgerUsageRecorder = (*JSONLTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
@@ -134,6 +137,8 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.runError = ""
 	e.structuredOutput = nil
 	e.repositoryGuidance = nil
+	e.auxiliaryTokens = types.TokenUsage{}
+	e.externalGuardTokens = types.TokenUsage{}
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -302,6 +307,15 @@ func (e *JSONLTraceEmitter) RecordDegradedCapabilities(degraded []types.Degraded
 	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
 }
 
+// RecordLedgerUsage stores the run's auxiliary and external guard usage
+// for the run_finished summary.
+func (e *JSONLTraceEmitter) RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auxiliaryTokens = auxiliary
+	e.externalGuardTokens = externalGuard
+}
+
 func (e *JSONLTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -418,6 +432,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	for _, turn := range e.turns {
 		totalTokens.Add(turn.Tokens)
 	}
+	totalTokens.Add(e.auxiliaryTokens)
 
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
@@ -454,6 +469,8 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		StructuredOutput:     e.structuredOutput,
 		DegradedCapabilities: e.degradedCapabilities,
 		RepositoryGuidance:   e.repositoryGuidance,
+		AuxiliaryTokens:      e.auxiliaryTokens,
+		ExternalGuardTokens:  e.externalGuardTokens,
 	}
 
 	ev := Event{
