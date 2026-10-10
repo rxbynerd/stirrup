@@ -59,11 +59,12 @@ func RetryPolicyFromConfig(cfg *types.ProviderRetryConfig) RetryPolicy {
 // (500ms), duplicated because that constant is unexported.
 const defaultInitialDelayFallback = 500 * time.Millisecond
 
-// retryableStatus reports whether status code s warrants a retry.
-// List is the cross-SDK consensus: 408, 409, 429, 500, 502, 503, 504.
+// retryableStatus reports whether status code s warrants a retry: the
+// cross-SDK consensus (408, 409, 429, 500, 502, 503, 504) plus 529,
+// Anthropic's "overloaded" status.
 func retryableStatus(s int) bool {
 	switch s {
-	case 408, 409, 429, 500, 502, 503, 504:
+	case 408, 409, 429, 500, 502, 503, 504, 529:
 		return true
 	default:
 		return false
@@ -103,21 +104,27 @@ func peekQuotaExhausted(resp *http.Response) (code string, exhausted bool) {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(peek), rest), resp.Body}
+	return quotaExhaustedBody(peek)
+}
 
+// quotaExhaustedBody reports whether a 429 error body names a billing,
+// spend, or quota limit, by error.code or by the broader error.type
+// "insufficient_quota", and returns the matched value.
+func quotaExhaustedBody(body []byte) (code string, exhausted bool) {
 	// any, not string: gateways and other providers send numeric codes
 	// (Gemini's error.code is the HTTP status), which must not fail the
 	// decode of a sibling field.
-	var body struct {
+	var parsed struct {
 		Error struct {
 			Type any `json:"type"`
 			Code any `json:"code"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(peek, &body) != nil {
+	if json.Unmarshal(body, &parsed) != nil {
 		return "", false
 	}
-	code, _ = body.Error.Code.(string)
-	errType, _ := body.Error.Type.(string)
+	code, _ = parsed.Error.Code.(string)
+	errType, _ := parsed.Error.Type.(string)
 	switch {
 	case quotaErrorCodes[code]:
 		return code, true
@@ -518,5 +525,6 @@ func recordOutcome(ctx context.Context, m *observability.Metrics, providerType, 
 		attribute.String("provider.type", providerType),
 		attribute.String("provider.model", model),
 		attribute.String("provider.retry.outcome", outcome),
+		attribute.String("scope", "request"),
 	))
 }

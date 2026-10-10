@@ -215,7 +215,8 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	// DoWithRetry only covers the pre-stream call; a failure after
-	// streaming has begun is never replayed.
+	// streaming has begun is classified for the agentic loop, which
+	// retries the whole turn.
 	resp, err := DoWithRetry(ctx, g.httpClient, req, RetryOptions{
 		Policy:       g.RetryPolicy,
 		Logger:       g.Logger,
@@ -225,7 +226,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	})
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("execute request: %w", err)
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", err))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, g.streamIdleTimeout)
 
@@ -256,9 +257,9 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 			if geminiContextOverflow(resp.StatusCode, bodyBytes) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, bodyBytes)
 		}
-		return nil, fmt.Errorf("vertex AI returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("vertex AI returned status %d", resp.StatusCode), resp.StatusCode, nil)
 	}
 
 	streamN := g.streamCounter.Add(1)
@@ -612,6 +613,6 @@ func (g *GeminiAdapter) consumeSSE(
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 	}
 }

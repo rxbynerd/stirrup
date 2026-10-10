@@ -631,10 +631,14 @@ type sseError struct {
 
 // anthropicStreamError builds the error for an SSE "error" event, keeping
 // the provider's error type so it survives into logs and the run trace.
+// overloaded_error and api_error are server-side faults, so they are
+// marked retryable for the loop's turn retry.
 func anthropicStreamError(data string) error {
 	var se sseError
 	_ = json.Unmarshal([]byte(data), &se)
 	switch {
+	case se.Error.Type == "overloaded_error", se.Error.Type == "api_error":
+		return types.MarkRetryable(fmt.Errorf("anthropic API stream error (%s): %s", se.Error.Type, se.Error.Message))
 	case se.Error.Type != "":
 		return fmt.Errorf("anthropic API stream error (%s): %s", se.Error.Type, se.Error.Message)
 	case se.Error.Message != "":
@@ -780,10 +784,9 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
 	// DoWithRetry retries only this pre-stream call (connection errors, or a
-	// 429/5xx on the initial response). It is never invoked again once the
-	// channel below is returned, so a failure after streaming has begun is
-	// never replayed — the same boundary the openai-compatible adapter
-	// relies on.
+	// 429/5xx on the initial response). A failure after streaming has begun
+	// is never replayed here; it is classified for the agentic loop, which
+	// retries the whole turn.
 	resp, err := DoWithRetry(ctx, a.httpClient, req, RetryOptions{
 		Policy:       a.RetryPolicy,
 		Logger:       a.Logger,
@@ -796,7 +799,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		// a.baseURL is operator-configurable and may carry a credential in
 		// its query string; unwrap the *url.Error so its embedded URL (which
 		// Go does not query-redact) never reaches a log or caller (CWE-532).
-		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
+		return nil, classifyTransportError(fmt.Errorf("execute request: %w", security.UnwrapURLError(err)))
 	}
 	resp.Body = newIdleTimeoutBody(resp.Body, a.streamIdleTimeout)
 
@@ -820,9 +823,9 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 			if anthropicContextOverflow(resp.StatusCode, body) {
 				err = types.MarkContextOverflow(err)
 			}
-			return nil, err
+			return nil, classifyStatusError(err, resp.StatusCode, body)
 		}
-		return nil, fmt.Errorf("anthropic API returned status %d", resp.StatusCode)
+		return nil, classifyStatusError(fmt.Errorf("anthropic API returned status %d", resp.StatusCode), resp.StatusCode, nil)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
@@ -1072,6 +1075,6 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	}
 
 	if err := scanner.Err(); err != nil {
-		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		emitEvent(types.StreamEvent{Type: "error", Error: classifyTransportError(fmt.Errorf("read SSE stream: %w", err))})
 	}
 }

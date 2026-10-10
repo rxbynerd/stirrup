@@ -190,6 +190,7 @@ func TestRetryableStatus(t *testing.T) {
 		{503, true},
 		{504, true},
 		{505, false},
+		{529, true},
 	}
 	for _, tt := range tests {
 		got := retryableStatus(tt.status)
