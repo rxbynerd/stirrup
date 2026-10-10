@@ -38,6 +38,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	))
 	m.VerificationAttempts.Add(ctx, 2)
 	m.Stalls.Add(ctx, 1)
+	m.StallNudges.Add(ctx, 2)
 	m.ContextCompactions.Add(ctx, 2)
 	m.SecurityEvents.Add(ctx, 4, metric.WithAttributes(attribute.String("event", "test")))
 
@@ -120,6 +121,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.harness.provider_retry_outcomes", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.verification_attempts", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.stalls", 1)
+	assertInt64Sum(t, sums, "stirrup.harness.stall_nudges", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.context_compactions", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.security_events", 4)
 	assertInt64Sum(t, sums, "stirrup.guard.checks", 7)
@@ -324,6 +326,7 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.SecurityEvents.Add(ctx, 1)
 	m.VerificationAttempts.Add(ctx, 1)
 	m.Stalls.Add(ctx, 1)
+	m.StallNudges.Add(ctx, 1)
 	m.RunDuration.Record(ctx, 1500.0)
 	m.TurnDuration.Record(ctx, 250.0)
 	m.ToolCallDuration.Record(ctx, 50.0)

@@ -36,6 +36,7 @@ type Metrics struct {
 	SecurityEvents        metric.Int64Counter
 	VerificationAttempts  metric.Int64Counter
 	Stalls                metric.Int64Counter
+	StallNudges           metric.Int64Counter
 	GuardChecks           metric.Int64Counter
 	GuardErrors           metric.Int64Counter
 	GuardSkips            metric.Int64Counter
@@ -270,6 +271,14 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.Stalls, err = meter.Int64Counter("stirrup.harness.stalls",
 		metric.WithUnit("{stall}"),
 		metric.WithDescription("Total stall-detected loop terminations"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.StallNudges, err = meter.Int64Counter("stirrup.harness.stall_nudges",
+		metric.WithUnit("{nudge}"),
+		metric.WithDescription("Total synthetic messages telling the model it is repeating a tool-call pattern, sent before a stall termination"),
 	)
 	if err != nil {
 		return nil, err
