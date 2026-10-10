@@ -297,6 +297,57 @@ func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	}
 }
 
+func TestBuildRunResult_GitHandoff(t *testing.T) {
+	handoff := &types.GitHandoff{Branch: "stirrup/run-git", SHA: "bbb", BaseSHA: "aaa"}
+	got := buildRunResult(&types.RunTrace{ID: "run-git", Outcome: "success", Git: handoff}, types.DefaultMaxFinalAssistantTextBytes)
+	if got.Git == nil || *got.Git != *handoff {
+		t.Errorf("Git = %+v, want %+v", got.Git, handoff)
+	}
+	if got.Error != "" {
+		t.Errorf("Error = %q, want empty on success", got.Error)
+	}
+}
+
+func TestBuildRunResult_HandoffFailedCarriesGitError(t *testing.T) {
+	rt := &types.RunTrace{
+		ID:      "run-git-fail",
+		Outcome: "handoff_failed",
+		Git:     &types.GitHandoff{Branch: "stirrup/run-git-fail", SHA: "aaa", BaseSHA: "aaa", Error: "final checkpoint: commit: exit status 1"},
+	}
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
+	if got.Error != rt.Git.Error {
+		t.Errorf("Error = %q, want the git failure %q", got.Error, rt.Git.Error)
+	}
+}
+
+// An earlier failure outcome keeps RunResult.Error for that failure; the
+// git failure stays in the git section.
+func TestBuildRunResult_GitErrorOnFailedRunStaysInGitSection(t *testing.T) {
+	rt := &types.RunTrace{
+		ID:      "run-budget",
+		Outcome: "budget_exceeded",
+		Git:     &types.GitHandoff{Branch: "stirrup/run-budget", Error: "final checkpoint: commit: exit status 1"},
+	}
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
+	if got.Error != "" {
+		t.Errorf("Error = %q, want the git failure kept out of RunResult.Error", got.Error)
+	}
+	if got.Git == nil || got.Git.Error != rt.Git.Error {
+		t.Errorf("Git = %+v, want the git failure recorded", got.Git)
+	}
+}
+
+func TestBuildRunResult_NoGitHandoffOmitsSection(t *testing.T) {
+	got := buildRunResult(&types.RunTrace{ID: "run-none", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes)
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"git"`) {
+		t.Errorf("RunResult JSON = %s, want no git key", data)
+	}
+}
+
 // fakeCloser is an io.Closer test double recording Close call count,
 // for armShutdownWatchdog tests.
 type fakeCloser struct {

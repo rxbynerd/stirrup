@@ -183,6 +183,12 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 		FinalAssistantText:          finalText,
 		FinalAssistantTextTruncated: truncated,
 		CommandOutputArchive:        rt.CommandOutputArchive,
+		Git:                         rt.Git,
+	}
+	// handoff_failed only claims an otherwise-successful run, so the git
+	// failure is the run's earliest failure whenever it is the outcome.
+	if rt.Outcome == "handoff_failed" && rt.Git != nil {
+		res.Error = rt.Git.Error
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
