@@ -9343,3 +9343,49 @@ func TestMCPServerConfig_OptionalJSON(t *testing.T) {
 		t.Error("optional:true did not decode")
 	}
 }
+
+// TestRunConfig_WindDown pins the windDown block's wire shape and the
+// WindDownEnabled accessor: absent and enabled:false are both off, and an
+// enabled block validates.
+func TestRunConfig_WindDown(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"absent", `{}`, false},
+		{"empty block", `{"windDown":{}}`, false},
+		{"disabled", `{"windDown":{"enabled":false}}`, false},
+		{"enabled", `{"windDown":{"enabled":true}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rc RunConfig
+			if err := json.Unmarshal([]byte(tc.json), &rc); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := rc.WindDownEnabled(); got != tc.want {
+				t.Errorf("WindDownEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if (*RunConfig)(nil).WindDownEnabled() {
+		t.Error("nil RunConfig must report wind-down off")
+	}
+
+	c := validConfig()
+	c.WindDown = &WindDownConfig{Enabled: true}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("enabled windDown must validate: %v", err)
+	}
+
+	c.WindDown = nil
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "windDown") {
+		t.Errorf("nil WindDown must be omitted from JSON, got %s", data)
+	}
+}

@@ -621,6 +621,11 @@ message RunConfig {
   // ("#..."). Absent leaves the final answer as free text.
   google.protobuf.Struct output_schema = 57;
 
+  // Optional. A single synthetic instruction to wrap up, sent once a
+  // turn, token or time budget is nearly spent. An absent sub-message is
+  // OFF.
+  WindDownConfig wind_down = 56;
+
   // RunConfig.transport is intentionally NOT mirrored. The transport is
   // a property of how the harness was launched, not of the work being
   // assigned: a config that arrives in a TaskAssignment arrived over
@@ -687,6 +692,16 @@ message ToolChoiceEscalationConfig {
   // missed-tool recovery. Values outside that range are rejected by
   // ValidateRunConfig.
   int32 max_retries = 2;
+}
+
+// WindDownConfig configures the wind-down instruction. When enabled, the
+// harness sends it once per run, at the start of the first turn on which
+// two turns remain (counting that turn), 90 percent of max_token_budget is
+// consumed, or 90 percent of the run deadline has elapsed. Read-only modes
+// receive a summary-only variant. OFF by default.
+message WindDownConfig {
+  // Optional. Turns the instruction on. Default false.
+  bool enabled = 1;
 }
 
 // ResultSinkConfig selects where the run's answer — a small RunResult
