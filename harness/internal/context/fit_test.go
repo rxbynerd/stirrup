@@ -1,6 +1,7 @@
 package context
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand/v2"
 	"reflect"
@@ -270,6 +271,67 @@ func TestTruncateToolResults_GeneratedHistories(t *testing.T) {
 					t.Fatalf("seed %d: the excess of %d tokens was not met, yet message %d keeps %d bytes of a tool result", seed, excess, i, len(block.Content))
 				}
 			}
+		}
+	}
+}
+
+// TestCompaction_PreparedHistoryFitsFitLimit pins that the strategies
+// which drop exchanges compact to the fit check's limit, so the fit
+// postcondition never truncates tool results after a compaction that could
+// have fitted by dropping more. Summarise drops exchanges only through its
+// fallback, and leaves a history too short to summarise unchanged.
+func TestCompaction_PreparedHistoryFitsFitLimit(t *testing.T) {
+	strategies := compactionStrategies()
+	for name := range strategies {
+		if name != "sliding-window" && !strings.HasSuffix(name, "-fallback") {
+			delete(strategies, name)
+		}
+	}
+	for seed := range uint64(150) {
+		r := rand.New(rand.NewPCG(seed, 668))
+		msgs := generateHistory(r, r.IntN(14))
+		overhead := r.IntN(3000)
+		minimal, _ := minimalHistory(msgs)
+		summarisable := pairSafeCut(msgs, len(msgs)-minRecentMessages) > 1
+		for name, newStrategy := range strategies {
+			if name != "sliding-window" && !summarisable {
+				continue
+			}
+			for _, budget := range compactionBudgets(msgs, overhead) {
+				limit := FitLimit(budget)
+				if limit <= 0 || overhead+historyTokens(minimal) > limit {
+					continue
+				}
+				prepared, err := newStrategy().Prepare(context.Background(), msgs, budget)
+				if err != nil {
+					t.Fatalf("seed %d %s: Prepare() error: %v", seed, name, err)
+				}
+				tokens := overhead + historyTokens(prepared)
+				if _, cut := TruncateToolResults(prepared, tokens-limit); cut != 0 {
+					t.Fatalf("seed %d %s max=%d: prepared history estimates at %d against a fit limit of %d; %d tool results would be truncated",
+						seed, name, budget.MaxTokens, tokens, limit, cut)
+				}
+			}
+		}
+	}
+}
+
+// TestCompaction_TriggersAtFitLimit pins that every strategy compacts a
+// request that fits the room after the response reserve but not FitLimit.
+func TestCompaction_TriggersAtFitLimit(t *testing.T) {
+	msgs := parallelCallHistory(3)
+	budget := TokenBudget{MaxTokens: 1300, CurrentTokens: 1100, ReserveForResponse: 100}
+	if historyTokens(msgs) != budget.CurrentTokens || budget.CurrentTokens <= FitLimit(budget) ||
+		budget.CurrentTokens > budget.MaxTokens-budget.ReserveForResponse {
+		t.Fatalf("history of %d tokens does not sit between FitLimit %d and the room", historyTokens(msgs), FitLimit(budget))
+	}
+	for name, newStrategy := range compactionStrategies() {
+		s := newStrategy()
+		if _, err := s.Prepare(context.Background(), msgs, budget); err != nil {
+			t.Fatalf("%s: Prepare() error: %v", name, err)
+		}
+		if s.LastCompaction() == nil {
+			t.Errorf("%s did not compact a request over FitLimit", name)
 		}
 	}
 }

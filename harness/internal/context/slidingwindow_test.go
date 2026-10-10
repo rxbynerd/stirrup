@@ -234,7 +234,7 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 		msgs := generateHistory(r, r.IntN(14))
 		overhead := r.IntN(3000)
 		for _, budget := range compactionBudgets(msgs, overhead) {
-			available := budget.MaxTokens - budget.ReserveForResponse
+			available := FitLimit(budget)
 			s := NewSlidingWindowStrategy()
 			result, err := s.Prepare(context.Background(), msgs, budget)
 			if err != nil {

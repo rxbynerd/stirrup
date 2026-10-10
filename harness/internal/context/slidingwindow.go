@@ -19,13 +19,13 @@ func NewSlidingWindowStrategy() *SlidingWindowStrategy {
 }
 
 // Prepare drops whole exchanges after the task, oldest first, until the
-// estimated token count fits within (MaxTokens - ReserveForResponse). The
-// task counts toward the budget but is never dropped. Token estimation
-// uses a simple characters/4 approximation.
+// estimated token count fits within FitLimit(budget). The task counts
+// toward the budget but is never dropped. Token estimation uses a simple
+// characters/4 approximation.
 func (s *SlidingWindowStrategy) Prepare(_ context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
 	s.lastCompaction = nil
 
-	available := budget.MaxTokens - budget.ReserveForResponse
+	available := FitLimit(budget)
 	if available <= 0 {
 		result, compacted := minimalHistory(messages)
 		if compacted {

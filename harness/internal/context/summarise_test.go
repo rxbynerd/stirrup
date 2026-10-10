@@ -417,7 +417,7 @@ func TestSummarise_FallbackKeepsParallelResultsPaired(t *testing.T) {
 	s := NewSummariseStrategy(&errorStreamProvider{}, "test-model")
 
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
-		MaxTokens:          1050,
+		MaxTokens:          1120,
 		CurrentTokens:      1100,
 		ReserveForResponse: 100,
 	})

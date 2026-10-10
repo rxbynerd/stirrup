@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -188,5 +190,60 @@ func TestLoop_ContextExhaustedWhenTruncationCannotFit(t *testing.T) {
 	}
 	if len(prov.requests) != 1 {
 		t.Fatalf("provider saw %d requests, want only the first", len(prov.requests))
+	}
+}
+
+// TestLoop_SlidingWindowCompactionNeedsNoFitTruncation pins that the
+// sliding window compacts a history of small exchanges to the fit limit,
+// so the fit postcondition never truncates a tool result or warns.
+func TestLoop_SlidingWindowCompactionNeedsNoFitTruncation(t *testing.T) {
+	const turns = 16
+	var calls [][]types.StreamEvent
+	for i := range turns {
+		calls = append(calls, []types.StreamEvent{
+			{Type: "tool_call", ID: fmt.Sprintf("tc_%d", i), Name: "small_tool", Input: map[string]any{"n": i}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		})
+	}
+	prov := &requestRecordingProvider{calls: calls}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	var logs bytes.Buffer
+	loop.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "small_tool",
+		Description: "Returns a small output",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
+		Handler: func(_ context.Context, input json.RawMessage) (string, error) {
+			return string(input) + strings.Repeat("r", 600), nil
+		},
+	})
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 2400
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
+	}
+	if len(prov.requests) != turns+1 {
+		t.Fatalf("provider saw %d requests, want %d", len(prov.requests), turns+1)
+	}
+	if got, want := len(prov.requests[turns].Messages), 1+2*turns; got >= want {
+		t.Fatalf("final request carries %d of %d messages; the budget never forced a compaction", got, want)
+	}
+	for i, req := range prov.requests {
+		for _, msg := range req.Messages {
+			for _, block := range msg.Content {
+				if strings.Contains(block.Content, "[...truncated ") {
+					t.Fatalf("request %d sent a truncated tool result", i+1)
+				}
+			}
+		}
+	}
+	if strings.Contains(logs.String(), "tool results truncated") {
+		t.Errorf("the fit postcondition truncated tool results after a compaction:\n%s", logs.String())
 	}
 }

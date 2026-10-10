@@ -60,7 +60,7 @@ func NewSummariseStrategy(provider SummaryProvider, model string) *SummariseStra
 func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
 	s.lastCompaction = nil
 
-	available := budget.MaxTokens - budget.ReserveForResponse
+	available := FitLimit(budget)
 	if available <= 0 {
 		result, compacted := minimalHistory(messages)
 		if compacted {

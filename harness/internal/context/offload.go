@@ -50,7 +50,7 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 		return messages, nil
 	}
 
-	available := budget.MaxTokens - budget.ReserveForResponse
+	available := FitLimit(budget)
 	if available <= 0 {
 		result, compacted := minimalHistory(messages)
 		if compacted {
