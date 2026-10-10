@@ -425,6 +425,50 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	}
 }
 
+func TestRunConfigProtoRoundTrip_ClearToolResultsFields(t *testing.T) {
+	keep, clearAtLeast := int32(0), int32(20000)
+	original := &pb.RunConfig{ContextStrategy: &pb.ContextStrategyConfig{
+		Type:         "clear-tool-results",
+		MaxTokens:    100000,
+		Keep:         &keep,
+		ClearAtLeast: &clearAtLeast,
+		ExcludeTools: []string{"run_command", "web_fetch"},
+	}}
+	wire, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got := runConfigFromProto(&decoded).ContextStrategy
+	if got.Type != "clear-tool-results" || got.MaxTokens != 100000 {
+		t.Errorf("Type/MaxTokens = %q/%d", got.Type, got.MaxTokens)
+	}
+	if got.Keep == nil || *got.Keep != 0 {
+		t.Errorf("Keep = %v, want an explicit 0", got.Keep)
+	}
+	if got.ClearAtLeast == nil || *got.ClearAtLeast != 20000 {
+		t.Errorf("ClearAtLeast = %v, want 20000", got.ClearAtLeast)
+	}
+	if want := []string{"run_command", "web_fetch"}; !reflect.DeepEqual(got.ExcludeTools, want) {
+		t.Errorf("ExcludeTools = %v, want %v", got.ExcludeTools, want)
+	}
+	decoded.ContextStrategy.ExcludeTools[0] = "mutated"
+	if got.ExcludeTools[0] != "run_command" {
+		t.Error("ExcludeTools aliases the proto slice")
+	}
+}
+
+func TestRunConfigFromProto_ClearToolResultsFieldsAbsentStayUnset(t *testing.T) {
+	got := runConfigFromProto(&pb.RunConfig{ContextStrategy: &pb.ContextStrategyConfig{Type: "sliding-window"}}).ContextStrategy
+	if got.Keep != nil || got.ClearAtLeast != nil || got.ExcludeTools != nil {
+		t.Errorf("unset proto fields must stay unset, got %+v", got)
+	}
+}
+
 // TestRunConfigProtoRoundTrip_GuardRailNilStays_Nil documents that an
 // absent guard_rail proto field translates to a nil GuardRail (the
 // validator then applies the default — guards are opt-in).

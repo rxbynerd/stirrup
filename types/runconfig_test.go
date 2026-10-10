@@ -705,7 +705,7 @@ func TestValidateRunConfig_ReadOnlyModeRejectsOffloadToFile(t *testing.T) {
 
 func TestValidateRunConfig_ReadOnlyModeAcceptsNonWritingStrategies(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
-		for _, strategy := range []string{"", "sliding-window", "summarise"} {
+		for _, strategy := range []string{"", "sliding-window", "summarise", "clear-tool-results"} {
 			t.Run(mode+"/"+strategy, func(t *testing.T) {
 				c := validConfig()
 				c.Mode = mode
@@ -1014,6 +1014,46 @@ func TestValidateRunConfig_ContextStrategyMaxTokens(t *testing.T) {
 			}
 			if tt.wantErr && !strings.Contains(err.Error(), "contextStrategy.maxTokens") {
 				t.Errorf("expected error to mention contextStrategy.maxTokens, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ClearToolResultsFields(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	tests := []struct {
+		name    string
+		cfg     ContextStrategyConfig
+		wantErr string
+	}{
+		{"defaults", ContextStrategyConfig{Type: "clear-tool-results"}, ""},
+		{"keep zero accepted", ContextStrategyConfig{Type: "clear-tool-results", Keep: intp(0)}, ""},
+		{"all fields", ContextStrategyConfig{
+			Type: "clear-tool-results", MaxTokens: 100000, Keep: intp(5), ClearAtLeast: intp(20000),
+			ExcludeTools: []string{"run_command", "web_fetch"},
+		}, ""},
+		{"negative keep", ContextStrategyConfig{Type: "clear-tool-results", Keep: intp(-1)}, "contextStrategy.keep must be >= 0"},
+		{"zero clearAtLeast", ContextStrategyConfig{Type: "clear-tool-results", ClearAtLeast: intp(0)}, "contextStrategy.clearAtLeast must be > 0"},
+		{"negative clearAtLeast", ContextStrategyConfig{Type: "clear-tool-results", ClearAtLeast: intp(-5)}, "contextStrategy.clearAtLeast must be > 0"},
+		{"blank excluded tool", ContextStrategyConfig{Type: "clear-tool-results", ExcludeTools: []string{"read_file", " "}}, "contextStrategy.excludeTools[1]"},
+		{"keep on another strategy", ContextStrategyConfig{Type: "summarise", Keep: intp(2)}, `contextStrategy.keep applies only to contextStrategy "clear-tool-results", not "summarise"`},
+		{"clearAtLeast on the default strategy", ContextStrategyConfig{ClearAtLeast: intp(2)}, `contextStrategy.clearAtLeast applies only to contextStrategy "clear-tool-results", not "sliding-window"`},
+		{"excludeTools on another strategy", ContextStrategyConfig{Type: "offload-to-file", ExcludeTools: []string{"read_file"}}, "contextStrategy.excludeTools applies only to"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = "execution"
+			c.ContextStrategy = tt.cfg
+			err := ValidateRunConfig(c)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateRunConfig(%+v) = %v, want nil", tt.cfg, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateRunConfig(%+v) = %v, want an error containing %q", tt.cfg, err, tt.wantErr)
 			}
 		})
 	}

@@ -888,8 +888,18 @@ type PromptBuilderConfig struct {
 
 // ContextStrategyConfig selects the context strategy implementation.
 type ContextStrategyConfig struct {
-	Type      string `json:"type"`                // "sliding-window" | "summarise"
+	Type      string `json:"type"`                // "sliding-window" | "summarise" | "offload-to-file" | "clear-tool-results"
 	MaxTokens int    `json:"maxTokens,omitempty"` // token budget
+
+	// Keep, ClearAtLeast and ExcludeTools apply only to
+	// "clear-tool-results". Keep is the number of most recent tool results
+	// never cleared (nil selects the strategy default; zero is legal).
+	// ClearAtLeast is the minimum estimated tokens one clearing batch must
+	// reclaim (nil selects a share of the budget). ExcludeTools names tools
+	// whose results are never cleared.
+	Keep         *int     `json:"keep,omitempty"`
+	ClearAtLeast *int     `json:"clearAtLeast,omitempty"`
+	ExcludeTools []string `json:"excludeTools,omitempty"`
 }
 
 // ExecutorConfig selects the executor implementation.
@@ -1612,12 +1622,16 @@ var validPromptBuilderTypes = map[string]bool{
 	"composed": true,
 }
 
-const contextStrategyOffloadToFile = "offload-to-file"
+const (
+	contextStrategyOffloadToFile    = "offload-to-file"
+	contextStrategyClearToolResults = "clear-tool-results"
+)
 
 var validContextStrategyTypes = map[string]bool{
-	"sliding-window":             true,
-	"summarise":                  true,
-	contextStrategyOffloadToFile: true,
+	"sliding-window":                true,
+	"summarise":                     true,
+	contextStrategyOffloadToFile:    true,
+	contextStrategyClearToolResults: true,
 }
 
 var validVcsBackendTypes = map[string]bool{
@@ -2209,6 +2223,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validatePromptBuilderConfig(config, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateContextStrategyBudget(config.ContextStrategy, &errs)
+	validateClearToolResults(config.ContextStrategy, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
 	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
@@ -2289,8 +2304,8 @@ func ValidateRunConfig(config *RunConfig) error {
 	// executor, outside the permission policy, so a read-only mode cannot use it.
 	if readOnlyModes[config.Mode] && config.ContextStrategy.Type == contextStrategyOffloadToFile {
 		errs = append(errs, fmt.Sprintf(
-			"read-only mode %q does not support contextStrategy %q: it writes offloaded tool results into the workspace; use %q or %q",
-			config.Mode, contextStrategyOffloadToFile, "sliding-window", "summarise"))
+			"read-only mode %q does not support contextStrategy %q: it writes offloaded tool results into the workspace; use %q, %q or %q",
+			config.Mode, contextStrategyOffloadToFile, "sliding-window", "summarise", contextStrategyClearToolResults))
 	}
 
 	// maxTurns must be bounded
@@ -2511,6 +2526,43 @@ func validateContextStrategyBudget(cfg ContextStrategyConfig, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf(
 			"contextStrategy.maxTokens must be 0 (use the default context window) or >= %d, got %d",
 			minContextStrategyMaxTokens, cfg.MaxTokens))
+	}
+}
+
+// validateClearToolResults rejects clear-tool-results settings that are
+// out of range, and rejects them outright on any other strategy, where
+// they would be silently ignored.
+func validateClearToolResults(cfg ContextStrategyConfig, errs *[]string) {
+	if cfg.Type != contextStrategyClearToolResults {
+		selected := cfg.Type
+		if selected == "" {
+			selected = "sliding-window"
+		}
+		for _, f := range []struct {
+			name string
+			set  bool
+		}{
+			{"keep", cfg.Keep != nil},
+			{"clearAtLeast", cfg.ClearAtLeast != nil},
+			{"excludeTools", len(cfg.ExcludeTools) > 0},
+		} {
+			if f.set {
+				*errs = append(*errs, fmt.Sprintf("contextStrategy.%s applies only to contextStrategy %q, not %q",
+					f.name, contextStrategyClearToolResults, selected))
+			}
+		}
+		return
+	}
+	if cfg.Keep != nil && *cfg.Keep < 0 {
+		*errs = append(*errs, fmt.Sprintf("contextStrategy.keep must be >= 0, got %d", *cfg.Keep))
+	}
+	if cfg.ClearAtLeast != nil && *cfg.ClearAtLeast <= 0 {
+		*errs = append(*errs, fmt.Sprintf("contextStrategy.clearAtLeast must be > 0, got %d", *cfg.ClearAtLeast))
+	}
+	for i, name := range cfg.ExcludeTools {
+		if strings.TrimSpace(name) == "" {
+			*errs = append(*errs, fmt.Sprintf("contextStrategy.excludeTools[%d] must be a tool name, got %q", i, name))
+		}
 	}
 }
 

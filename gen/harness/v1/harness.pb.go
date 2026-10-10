@@ -3774,10 +3774,23 @@ type ContextStrategyConfig struct {
 	//	"summarise"       — replace old messages with an LLM-generated summary.
 	//	"offload-to-file" — write old messages to a file and replace with a
 	//	                    pointer.
+	//	"clear-tool-results" — replace old tool results with a fixed
+	//	                    placeholder in batches, keeping the prompt cache
+	//	                    valid between batches.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Token budget for the context window. When the conversation exceeds this
 	// limit, the strategy is applied to compact it.
-	MaxTokens     int32 `protobuf:"varint,2,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
+	MaxTokens int32 `protobuf:"varint,2,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
+	// Optional, "clear-tool-results" only. Number of most recent tool results
+	// never cleared. Unset selects the strategy default; zero is legal.
+	Keep *int32 `protobuf:"varint,5,opt,name=keep,proto3,oneof" json:"keep,omitempty"`
+	// Optional, "clear-tool-results" only. Minimum estimated tokens one
+	// clearing batch must reclaim; must be positive. Unset selects a share of
+	// the budget.
+	ClearAtLeast *int32 `protobuf:"varint,6,opt,name=clear_at_least,json=clearAtLeast,proto3,oneof" json:"clear_at_least,omitempty"`
+	// Optional, "clear-tool-results" only. Tools whose results are never
+	// cleared.
+	ExcludeTools  []string `protobuf:"bytes,7,rep,name=exclude_tools,json=excludeTools,proto3" json:"exclude_tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3824,6 +3837,27 @@ func (x *ContextStrategyConfig) GetMaxTokens() int32 {
 		return x.MaxTokens
 	}
 	return 0
+}
+
+func (x *ContextStrategyConfig) GetKeep() int32 {
+	if x != nil && x.Keep != nil {
+		return *x.Keep
+	}
+	return 0
+}
+
+func (x *ContextStrategyConfig) GetClearAtLeast() int32 {
+	if x != nil && x.ClearAtLeast != nil {
+		return *x.ClearAtLeast
+	}
+	return 0
+}
+
+func (x *ContextStrategyConfig) GetExcludeTools() []string {
+	if x != nil {
+		return x.ExcludeTools
+	}
+	return nil
 }
 
 // ExecutorConfig selects the sandboxed execution environment for file I/O
@@ -5518,11 +5552,16 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x13PromptBuilderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\btemplate\x18\x02 \x01(\tR\btemplate\x12!\n" +
-	"\fprompt_model\x18\x03 \x01(\tR\vpromptModel\"J\n" +
+	"\fprompt_model\x18\x03 \x01(\tR\vpromptModel\"\xcf\x01\n" +
 	"\x15ContextStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
-	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\xf9\a\n" +
+	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\x12\x17\n" +
+	"\x04keep\x18\x05 \x01(\x05H\x00R\x04keep\x88\x01\x01\x12)\n" +
+	"\x0eclear_at_least\x18\x06 \x01(\x05H\x01R\fclearAtLeast\x88\x01\x01\x12#\n" +
+	"\rexclude_tools\x18\a \x03(\tR\fexcludeToolsB\a\n" +
+	"\x05_keepB\x11\n" +
+	"\x0f_clear_at_least\"\xf9\a\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
 	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
@@ -5768,6 +5807,7 @@ func file_harness_v1_harness_proto_init() {
 	file_harness_v1_harness_proto_msgTypes[14].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[20].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[21].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[28].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[29].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[35].OneofWrappers = []any{}
 	type x struct{}

@@ -1641,11 +1641,27 @@ message ContextStrategyConfig {
   //   "summarise"       — replace old messages with an LLM-generated summary.
   //   "offload-to-file" — write old messages to a file and replace with a
   //                       pointer.
+  //   "clear-tool-results" — replace old tool results with a fixed
+  //                       placeholder in batches, keeping the prompt cache
+  //                       valid between batches.
   string type = 1;
 
   // Token budget for the context window. When the conversation exceeds this
   // limit, the strategy is applied to compact it.
   int32 max_tokens = 2;
+
+  // Optional, "clear-tool-results" only. Number of most recent tool results
+  // never cleared. Unset selects the strategy default; zero is legal.
+  optional int32 keep = 5;
+
+  // Optional, "clear-tool-results" only. Minimum estimated tokens one
+  // clearing batch must reclaim; must be positive. Unset selects a share of
+  // the budget.
+  optional int32 clear_at_least = 6;
+
+  // Optional, "clear-tool-results" only. Tools whose results are never
+  // cleared.
+  repeated string exclude_tools = 7;
 }
 
 // ---------------------------------------------------------------------------
