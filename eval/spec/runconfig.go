@@ -22,28 +22,29 @@ type runConfigSpec struct {
 	// sets it logs one warning per task and caps nothing.
 	//
 	// Deprecated: cost budgeting is a no-op.
-	MaxCostBudget        *float64              `hcl:"max_cost_budget,optional"`
-	Timeout              *int                  `hcl:"timeout,optional"`
-	FollowUpGrace        *int                  `hcl:"follow_up_grace,optional"`
-	LogLevel             string                `hcl:"log_level,optional"`
-	SystemPromptOverride string                `hcl:"system_prompt_override,optional"`
-	SensitiveData        *bool                 `hcl:"sensitive_data,optional"`
-	Provider             *providerSpec         `hcl:"provider,block"`
-	ModelRouter          *modelRouterSpec      `hcl:"model_router,block"`
-	PromptBuilder        *promptBuilderSpec    `hcl:"prompt_builder,block"`
-	ContextStrategy      *contextStrategySpec  `hcl:"context_strategy,block"`
-	Executor             *executorSpec         `hcl:"executor,block"`
-	EditStrategy         *editStrategySpec     `hcl:"edit_strategy,block"`
-	Verifier             *verifierSpec         `hcl:"verifier,block"`
-	PermissionPolicy     *permissionPolicySpec `hcl:"permission_policy,block"`
-	GitStrategy          *gitStrategySpec      `hcl:"git_strategy,block"`
-	Transport            *transportSpec        `hcl:"transport,block"`
-	TraceEmitter         *traceEmitterSpec     `hcl:"trace_emitter,block"`
-	Tools                *toolsSpec            `hcl:"tools,block"`
-	RuleOfTwo            *ruleOfTwoSpec        `hcl:"rule_of_two,block"`
-	CodeScanner          *codeScannerSpec      `hcl:"code_scanner,block"`
-	GuardRail            *guardRailSpec        `hcl:"guard_rail,block"`
-	Observability        *observabilitySpec    `hcl:"observability,block"`
+	MaxCostBudget        *float64                `hcl:"max_cost_budget,optional"`
+	Timeout              *int                    `hcl:"timeout,optional"`
+	FollowUpGrace        *int                    `hcl:"follow_up_grace,optional"`
+	LogLevel             string                  `hcl:"log_level,optional"`
+	SystemPromptOverride string                  `hcl:"system_prompt_override,optional"`
+	SensitiveData        *bool                   `hcl:"sensitive_data,optional"`
+	Provider             *providerSpec           `hcl:"provider,block"`
+	ModelRouter          *modelRouterSpec        `hcl:"model_router,block"`
+	PromptBuilder        *promptBuilderSpec      `hcl:"prompt_builder,block"`
+	ContextStrategy      *contextStrategySpec    `hcl:"context_strategy,block"`
+	Executor             *executorSpec           `hcl:"executor,block"`
+	EditStrategy         *editStrategySpec       `hcl:"edit_strategy,block"`
+	Verifier             *verifierSpec           `hcl:"verifier,block"`
+	PermissionPolicy     *permissionPolicySpec   `hcl:"permission_policy,block"`
+	GitStrategy          *gitStrategySpec        `hcl:"git_strategy,block"`
+	Transport            *transportSpec          `hcl:"transport,block"`
+	TraceEmitter         *traceEmitterSpec       `hcl:"trace_emitter,block"`
+	Tools                *toolsSpec              `hcl:"tools,block"`
+	RuleOfTwo            *ruleOfTwoSpec          `hcl:"rule_of_two,block"`
+	CodeScanner          *codeScannerSpec        `hcl:"code_scanner,block"`
+	GuardRail            *guardRailSpec          `hcl:"guard_rail,block"`
+	Observability        *observabilitySpec      `hcl:"observability,block"`
+	RepositoryGuidance   *repositoryGuidanceSpec `hcl:"repository_guidance,block"`
 }
 
 // runConfigOverridesSpec mirrors types.RunConfigOverrides. Every field
@@ -259,6 +260,12 @@ type guardRailSpec struct {
 	Stages        []guardRailSpec `hcl:"stage,block"`
 }
 
+type repositoryGuidanceSpec struct {
+	Files        []string          `hcl:"files"`
+	MaxBytes     int               `hcl:"max_bytes,optional"`
+	PinnedSHA256 map[string]string `hcl:"pinned_sha256,optional"`
+}
+
 type observabilitySpec struct {
 	Environment      string `hcl:"environment,optional"`
 	ServiceNamespace string `hcl:"service_namespace,optional"`
@@ -396,6 +403,13 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 		out.Observability = types.ObservabilityConfig{
 			Environment:      s.Observability.Environment,
 			ServiceNamespace: s.Observability.ServiceNamespace,
+		}
+	}
+	if rg := s.RepositoryGuidance; rg != nil {
+		out.RepositoryGuidance = &types.RepositoryGuidanceConfig{
+			Files:        append([]string(nil), rg.Files...),
+			MaxBytes:     rg.MaxBytes,
+			PinnedSHA256: rg.PinnedSHA256,
 		}
 	}
 	return out
