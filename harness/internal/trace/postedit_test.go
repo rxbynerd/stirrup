@@ -3,6 +3,8 @@ package trace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -47,6 +49,49 @@ func TestJSONLTraceEmitter_RecordPostEditCheck_StreamsAccumulatesAndScrubs(t *te
 	}
 	if strings.Contains(buf.String(), "sk-ant-api03-leak") {
 		t.Errorf("secret reached the persisted trace:\n%s", buf.String())
+	}
+}
+
+func TestGCSTraceEmitter_RecordPostEditCheck_AccumulatesAndScrubs(t *testing.T) {
+	srv := newGCSCaptureServer()
+	httpSrv := httptest.NewServer(srv.handler())
+	defer httpSrv.Close()
+
+	emitter, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
+		Bucket:           "my-bucket",
+		CredentialSource: &staticBearerSource{token: "test-token"},
+		EndpointBaseURL:  httpSrv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewGCSTraceEmitter: %v", err)
+	}
+	emitter.Start("run-gcs-post-edit", nil)
+	emitter.RecordPostEditCheck(types.PostEditCheckRecord{
+		ToolUseID: "toolu_1", Tool: "edit_file", Path: "a.go", Command: "gofmt -l {path}", ExitCode: 1,
+	})
+	emitter.RecordPostEditCheck(types.PostEditCheckRecord{
+		Tool: "write_file", Path: "sk-ant-api03-leak.go", Index: 1, Command: "check",
+		TimedOut: true, Error: "timed out holding sk-ant-api03-leak",
+	})
+
+	tr, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if len(tr.PostEditChecks) != 2 || tr.PostEditChecks[0].ToolUseID != "toolu_1" || !tr.PostEditChecks[1].TimedOut {
+		t.Fatalf("returned PostEditChecks = %+v", tr.PostEditChecks)
+	}
+
+	body := string(srv.last().Body)
+	if strings.Contains(body, "sk-ant-api03-leak") {
+		t.Errorf("secret reached the uploaded trace:\n%s", body)
+	}
+	var uploaded types.RunTrace
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &uploaded); err != nil {
+		t.Fatalf("unmarshal uploaded body: %v", err)
+	}
+	if len(uploaded.PostEditChecks) != 2 || uploaded.PostEditChecks[0].ExitCode != 1 {
+		t.Errorf("uploaded PostEditChecks = %+v", uploaded.PostEditChecks)
 	}
 }
 
