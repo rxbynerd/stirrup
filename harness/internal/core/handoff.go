@@ -69,6 +69,8 @@ func describeOutcome(config *types.RunConfig, outcome string) string {
 		return "stopped after too many consecutive tool failures"
 	case "verification_failed":
 		return "verification failed after the final retry"
+	case "structured_output_failed":
+		return "the final answer did not satisfy outputSchema after the corrective attempts"
 	case "guardrail_blocked":
 		return "blocked by the guardrail"
 	case "rule_of_two_violation":
@@ -162,23 +164,24 @@ func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, ou
 }
 
 // doneSummary is the part of a RunTrace that "done" carries: the fields
-// the proto RunTrace summary mirrors. The config, tool calls, hook
-// results and final assistant text stay on the trace emitter and result
-// sink, off the event stream.
+// the proto RunTrace summary mirrors, including the structured output.
+// The config, tool calls, hook results and final assistant text stay on
+// the trace emitter and result sink, off the event stream.
 func doneSummary(rt *types.RunTrace) *types.RunTrace {
 	if rt == nil {
 		return nil
 	}
 	return &types.RunTrace{
-		ID:              rt.ID,
-		StartedAt:       rt.StartedAt,
-		CompletedAt:     rt.CompletedAt,
-		Turns:           rt.Turns,
-		TokenUsage:      rt.TokenUsage,
-		Outcome:         rt.Outcome,
-		StopDetails:     rt.StopDetails,
-		Git:             rt.Git,
-		WorkspaceExport: rt.WorkspaceExport,
-		Error:           rt.Error,
+		ID:               rt.ID,
+		StartedAt:        rt.StartedAt,
+		CompletedAt:      rt.CompletedAt,
+		Turns:            rt.Turns,
+		TokenUsage:       rt.TokenUsage,
+		Outcome:          rt.Outcome,
+		StopDetails:      rt.StopDetails,
+		Git:              rt.Git,
+		WorkspaceExport:  rt.WorkspaceExport,
+		Error:            rt.Error,
+		StructuredOutput: rt.StructuredOutput,
 	}
 }

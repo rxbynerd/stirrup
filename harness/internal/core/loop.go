@@ -244,6 +244,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		MaxTurns:       config.MaxTurns,
 		Model:          promptModel,
 		DynamicContext: dynamicContext,
+		OutputSchema:   config.OutputSchema,
 	})
 	if err != nil {
 		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
@@ -324,6 +325,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	var finalStopDetails *types.StopDetails
 	var finalInnerOutcome string
 	nextTurn := 0
+	// structuredOutput is the validated document of the answer that ended
+	// the latest inner loop; structuredCorrections counts the corrective
+	// attempts the run has spent.
+	var structuredOutput json.RawMessage
+	structuredCorrections := 0
 	if turnZeroAbort {
 		outcome = "rule_of_two_violation"
 	}
@@ -331,6 +337,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
 
 		var innerOutcome, innerFinalText string
+		structuredOutput = nil
 		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker, &nextTurn)
 		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
@@ -340,6 +347,26 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if innerOutcome != "success" {
 			outcome = innerOutcome
 			break
+		}
+
+		// An answer that fails the output schema never reaches the
+		// verifier: it is corrected, or the run fails.
+		if len(config.OutputSchema) > 0 {
+			doc, err := checkStructuredOutput(finalAnswerText(messages), config.OutputSchema, structuredOutputLimit(config))
+			if err != nil {
+				violation := structuredOutputViolation(err)
+				if structuredCorrections >= maxStructuredOutputCorrections {
+					outcome = "structured_output_failed"
+					l.noteFailure(outcome, "structured output: "+violation)
+					break
+				}
+				structuredCorrections++
+				l.Logger.Info("final answer failed the output schema; requesting a correction",
+					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
+				messages = append(messages, structuredOutputCorrection(violation))
+				continue
+			}
+			structuredOutput = doc
 		}
 
 		l.Metrics.VerificationAttempts.Add(runCtx, 1, l.metricAttrs())
@@ -453,6 +480,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// reach disk.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
+	}
+	if recorder, ok := l.Trace.(trace.StructuredOutputRecorder); ok && structuredOutput != nil {
+		recorder.RecordStructuredOutput(structuredOutput)
 	}
 	// Stop details describe the provider stop that ended the inner loop;
 	// an outcome reclassified afterwards (verification, cancellation,

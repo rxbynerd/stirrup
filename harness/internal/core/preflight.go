@@ -120,7 +120,11 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		add(PreflightStep{Name: name, Status: PreflightFail, Detail: err.Error(), Hint: hint})
 	}
 
-	if err := types.ValidateRunConfig(config); err != nil {
+	err := types.ValidateRunConfig(config)
+	if err == nil {
+		err = ValidateOutputSchema(config)
+	}
+	if err != nil {
 		fail("config-validation", err, "fix the RunConfig shape; see `stirrup run-config --validate`")
 		report.finalise()
 		return report, nil

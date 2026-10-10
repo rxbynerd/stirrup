@@ -91,6 +91,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		secLogger.ConfigValidationFailed([]string{err.Error()})
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
+	if err := ValidateOutputSchema(config); err != nil {
+		secLogger.ConfigValidationFailed([]string{err.Error()})
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
 
 	// Rule-of-Two arming/audit; see docs/safety-rings.md. The arming
 	// decision feeds both the audit event here and the monitor built
