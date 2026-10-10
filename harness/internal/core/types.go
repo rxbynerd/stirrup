@@ -96,12 +96,13 @@ type AgenticLoop struct {
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
 	Hooks hook.Runner
 	// Shutdown, when non-nil, is a process-lifetime context done when the
-	// harness receives a process-level shutdown signal (SIGTERM/SIGINT/pod
-	// deletion) — independent of Run()'s ctx, which carries the run's own
-	// deadline and control-plane cancel. The detached postRun hook phase
-	// races its bounded budget against Shutdown so it can survive a
-	// run-deadline/control-plane cancel while still observing a genuine
-	// process shutdown promptly. See docs/architecture.md. Nil-safe.
+	// process abandons post-run work (the CLI entry points cancel it on a
+	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent
+	// of Run()'s ctx, which carries the run's own deadline and cancel.
+	// Git finalise, postRun hooks and trace finish race their bounded
+	// budgets against Shutdown so they survive the end of the run while
+	// still observing a forced shutdown promptly. See
+	// docs/architecture.md. Nil-safe.
 	Shutdown     context.Context
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter

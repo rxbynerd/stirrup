@@ -122,6 +122,9 @@ func providerCacheKey(runID string) string {
 //	  if retries exhausted → done (with failure)
 //	  else → feed verifier feedback back into the loop as a user message
 //	}
+//
+// A non-nil trace returned with a non-nil error means the run completed
+// but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
@@ -402,10 +405,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		l.setRootCancelAttribute(cause)
 	}
 
-	// Uses the parent ctx (not runCtx): if the run was cancelled,
-	// git.Finalise should still be able to persist whatever state exists.
+	// Post-run work below runs on detached contexts (see
+	// detachedContext) so a run that ended by deadline or cancellation
+	// still records its git state, hook results and trace.
+	finaliseCtx, finaliseCancel := l.detachedContext(ctx, gitFinaliseBudget)
 	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
-	if _, err := l.Git.Finalise(ctx); err != nil {
+	if _, err := l.Git.Finalise(finaliseCtx); err != nil {
 		finaliseSpan.RecordError(err)
 		l.Logger.Warn("git finalise failed", "error", err)
 		_ = l.Transport.Emit(types.HarnessEvent{
@@ -414,23 +419,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 	finaliseSpan.End()
+	finaliseCancel()
 
-	// Runs on a ctx detached from the run's own deadline/cancellation
-	// (context.WithoutCancel) so a long-running hook can still finish;
-	// l.Shutdown still races a genuine process shutdown against that
-	// budget. See docs/configuration.md#lifecycle-hooks and
+	// See docs/configuration.md#lifecycle-hooks and
 	// docs/cloud-run-jobs.md for the outcome-override and SIGTERM detail.
 	if l.Hooks != nil {
-		postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), postHookBudget(config.Hooks))
-		if l.Shutdown != nil {
-			go func() {
-				select {
-				case <-l.Shutdown.Done():
-					postCancel()
-				case <-postCtx.Done():
-				}
-			}()
-		}
+		postCtx, postCancel := l.detachedContext(ctx, postHookBudget(config.Hooks))
 		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)
@@ -490,14 +484,49 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		recorder.RecordStopDetails(finalStopDetails)
 	}
 
-	// Uses the parent ctx: the trace exporter's ForceFlush should still
-	// have a usable deadline even if the run-scoped ctx is cancelled.
-	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
+	// A trace that was assembled but not persisted is still returned, so
+	// the entry points can emit its RunResult; the outcome is unchanged.
+	runTrace, traceErr := l.finishTrace(ctx, outcome)
 	if traceErr != nil {
-		return nil, fmt.Errorf("finish trace: %w", traceErr)
+		return runTrace, fmt.Errorf("finish trace: %w", traceErr)
 	}
 
 	return runTrace, nil
+}
+
+const (
+	gitFinaliseBudget = 30 * time.Second
+	// traceFinishBudget must exceed the GCS trace emitter's 60 s
+	// per-upload client timeout so one full upload attempt fits.
+	traceFinishBudget = 90 * time.Second
+)
+
+// detachedContext returns a context that keeps ctx's values but not its
+// deadline or cancellation, bounded by budget and cancelled as soon as
+// l.Shutdown is done. Post-run work uses it so a run that ended by
+// timeout or cancellation can still persist its result, while a process
+// shutdown still abandons that work promptly.
+func (l *AgenticLoop) detachedContext(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	if l.Shutdown == nil {
+		return detached, cancel
+	}
+	if l.Shutdown.Err() != nil {
+		cancel()
+		return detached, cancel
+	}
+	stop := context.AfterFunc(l.Shutdown, cancel)
+	return detached, func() {
+		stop()
+		cancel()
+	}
+}
+
+// finishTrace finishes the trace on a detached context.
+func (l *AgenticLoop) finishTrace(ctx context.Context, outcome string) (*types.RunTrace, error) {
+	finishCtx, cancel := l.detachedContext(ctx, traceFinishBudget)
+	defer cancel()
+	return l.Trace.Finish(finishCtx, outcome)
 }
 
 // classifyCtxOutcome maps a context cancellation cause onto the
@@ -1937,7 +1966,7 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 	}); emitErr != nil {
 		l.Logger.Warn("transport emit failed", "event", "done", "error", emitErr)
 	}
-	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
+	runTrace, traceErr := l.finishTrace(ctx, outcome)
 	if traceErr != nil {
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
