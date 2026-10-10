@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
@@ -166,12 +167,22 @@ func (f *turnBudgetFragment) Render(_ context.Context, pc PromptContext) (string
 	return fmt.Sprintf("Turn budget: %d turns. Use them efficiently.", pc.MaxTurns), nil
 }
 
+// The listing holds names the agent chooses, so it is bounded before it
+// reaches the prompt.
+const (
+	workspaceTreeMaxEntries = 200
+	workspaceTreeMaxBytes   = 8 << 10
+)
+
 type workspaceTreeFragment struct{}
 
 // WorkspaceTreeFragment returns a fragment that lists the top-level files and
 // directories of the executor's workspace, directories marked with a
-// trailing slash. It renders nothing when there is no executor, when the
-// executor cannot read, or when the workspace is empty.
+// trailing slash. Names containing control characters are left out, and the
+// listing ends in a marker line when entries were left out or dropped past
+// the entry and byte bounds. It renders nothing when there is no executor,
+// when the executor cannot read, when listing fails, or when the workspace
+// is empty.
 func WorkspaceTreeFragment() PromptFragment {
 	return &workspaceTreeFragment{}
 }
@@ -182,19 +193,27 @@ func (f *workspaceTreeFragment) Render(ctx context.Context, pc PromptContext) (s
 	}
 
 	entries, err := pc.Executor.ListDirectory(ctx, ".")
-	if err != nil {
-		return "", fmt.Errorf("list workspace directory: %w", err)
-	}
-
-	if len(entries) == 0 {
+	if err != nil || len(entries) == 0 {
 		return "", nil
 	}
 
 	var sb strings.Builder
 	sb.WriteString("Workspace files:")
+	shown, size := 0, 0
 	for _, name := range entries {
+		if shown == workspaceTreeMaxEntries || size+len(name)+3 > workspaceTreeMaxBytes {
+			break
+		}
+		if strings.ContainsFunc(name, unicode.IsControl) {
+			continue
+		}
 		sb.WriteString("\n  ")
 		sb.WriteString(name)
+		shown++
+		size += len(name) + 3
+	}
+	if shown < len(entries) {
+		fmt.Fprintf(&sb, "\n[workspace listing truncated: %d of %d entries shown]", shown, len(entries))
 	}
 	return sb.String(), nil
 }
