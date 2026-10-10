@@ -170,6 +170,10 @@ type AgenticLoop struct {
 	// noteFailure. Reset at run start.
 	failure runFailure
 
+	// subAgentSpawns numbers this run's sub-agents, so each child's run
+	// ID is unique within the trace file the run shares with them.
+	subAgentSpawns atomic.Int64
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.

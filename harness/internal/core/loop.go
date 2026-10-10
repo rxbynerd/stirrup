@@ -291,6 +291,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
 	l.historyRewritten = false
+	l.subAgentSpawns.Store(0)
 
 	// Tagged with run.id and run.mode; unregistered at run end so the
 	// OTel SDK does not keep observing this run after it finishes.
