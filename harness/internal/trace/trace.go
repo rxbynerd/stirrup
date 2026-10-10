@@ -5,6 +5,7 @@ package trace
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -126,4 +127,14 @@ type RunErrorRecorder interface {
 // the same reason as FinalAssistantTextRecorder.
 type StructuredOutputRecorder interface {
 	RecordStructuredOutput(doc json.RawMessage)
+}
+
+// SubRunRecorder is an optional capability a TraceEmitter can implement
+// to receive the start and finish of a sub-agent run from
+// NestedJSONLEmitter. The JSONL emitter streams them as subrun_started
+// and subrun_finished lines so a reader can rebuild each child's history
+// from the parent's file.
+type SubRunRecorder interface {
+	RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig)
+	RecordSubRunFinished(summary types.SubRunSummary)
 }

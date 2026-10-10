@@ -65,6 +65,7 @@ var _ GitHandoffRecorder = (*JSONLTraceEmitter)(nil)
 var _ WorkspaceExportRecorder = (*JSONLTraceEmitter)(nil)
 var _ RunErrorRecorder = (*JSONLTraceEmitter)(nil)
 var _ StructuredOutputRecorder = (*JSONLTraceEmitter)(nil)
+var _ SubRunRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -165,6 +166,8 @@ func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 	scrubbed := scrubTurnRecord(turn, e.redactionDisabled)
 	ev := Event{
 		Kind:        EventKindTurnRecord,
+		RunID:       e.runIDLocked(scrubbed.RunID),
+		ParentRunID: scrubbed.ParentRunID,
 		Turn:        scrubbed.Turn,
 		ModelInput:  &scrubbed.ModelInput,
 		ModelOutput: scrubbed.ModelOutput,
@@ -194,8 +197,10 @@ func (e *JSONLTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 		DurationMs: call.DurationMs,
 	}
 	ev := Event{
-		Kind:     EventKindToolCallRecord,
-		ToolCall: &tc,
+		Kind:        EventKindToolCallRecord,
+		RunID:       e.runIDLocked(call.RunID),
+		ParentRunID: call.ParentRunID,
+		ToolCall:    &tc,
 	}
 	_ = e.writeLineLocked(ev)
 }
@@ -224,8 +229,9 @@ func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
 	e.hookResults = append(e.hookResults, scrubbed)
 
 	ev := Event{
-		Kind: EventKindHookRecord,
-		Hook: &scrubbed,
+		Kind:  EventKindHookRecord,
+		RunID: e.runID,
+		Hook:  &scrubbed,
 	}
 	_ = e.writeLineLocked(ev)
 }
@@ -251,7 +257,62 @@ func (e *JSONLTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	copyRecord := record
-	_ = e.writeLineLocked(Event{Kind: EventKindCommandOutputRecord, CommandOutput: &copyRecord})
+	_ = e.writeLineLocked(Event{
+		Kind:          EventKindCommandOutputRecord,
+		RunID:         e.runIDLocked(record.RunID),
+		ParentRunID:   record.ParentRunID,
+		CommandOutput: &copyRecord,
+	})
+}
+
+// RecordSubRunStarted writes a subrun_started line carrying the child's
+// config, redacted under the same rule as Start.
+func (e *JSONLTraceEmitter) RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ev := Event{
+		Kind:        EventKindSubRunStarted,
+		RunID:       runID,
+		ParentRunID: parentRunID,
+		StartedAt:   &startedAt,
+	}
+	if config != nil {
+		var redacted types.RunConfig
+		if e.redactionDisabled {
+			redacted = *config
+		} else {
+			redacted = config.Redact()
+		}
+		ev.Config = &redacted
+	}
+	_ = e.writeLineLocked(ev)
+}
+
+// RecordSubRunFinished writes a subrun_finished line carrying the
+// child's outcome summary.
+func (e *JSONLTraceEmitter) RecordSubRunFinished(summary types.SubRunSummary) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	completedAt := summary.CompletedAt
+	_ = e.writeLineLocked(Event{
+		Kind:        EventKindSubRunFinished,
+		RunID:       summary.RunID,
+		ParentRunID: summary.ParentRunID,
+		CompletedAt: &completedAt,
+		SubRun:      &summary,
+	})
+}
+
+// runIDLocked returns the run ID a forwarded record names, or this
+// emitter's own run ID for a record produced by the run itself. Must be
+// called with e.mu held.
+func (e *JSONLTraceEmitter) runIDLocked(recordRunID string) string {
+	if recordRunID != "" {
+		return recordRunID
+	}
+	return e.runID
 }
 
 func (e *JSONLTraceEmitter) RecordCommandOutputArchive(location string) {

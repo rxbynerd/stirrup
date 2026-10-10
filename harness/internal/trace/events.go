@@ -32,11 +32,19 @@ const (
 	// as each PreRun/PostRun hook completes (mirrors tool_call_record).
 	EventKindHookRecord          EventKind = "hook_record"
 	EventKindCommandOutputRecord EventKind = "command_output_record"
+	// EventKindSubRunStarted and EventKindSubRunFinished bracket a
+	// sub-agent run streamed into its parent's file. They are distinct
+	// from run_started and run_finished so a reader that predates them
+	// skips them instead of mistaking the child for the recorded run.
+	EventKindSubRunStarted  EventKind = "subrun_started"
+	EventKindSubRunFinished EventKind = "subrun_finished"
 )
 
 // CurrentSchemaVersion is the streaming-trace schema version emitted in
 // run_started events. Bump on backward-incompatible event-shape changes.
-const CurrentSchemaVersion = "1"
+// Version 2 tags per-run records with runId/parentRunId and adds the
+// subrun_started and subrun_finished kinds.
+const CurrentSchemaVersion = "2"
 
 // Event is the wire-shape of one line in a streaming JSONL trace file.
 // Fields are populated according to Kind; reading code must dispatch
@@ -46,12 +54,16 @@ const CurrentSchemaVersion = "1"
 // pointers so a future kind addition does not break older readers: an
 // unrecognised Kind round-trips as opaque bytes.
 type Event struct {
-	Kind          EventKind        `json:"kind"`
-	SchemaVersion string           `json:"schemaVersion,omitempty"`
-	RunID         string           `json:"runId,omitempty"`
-	StartedAt     *time.Time       `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time       `json:"completedAt,omitempty"`
-	Config        *types.RunConfig `json:"config,omitempty"`
+	Kind          EventKind `json:"kind"`
+	SchemaVersion string    `json:"schemaVersion,omitempty"`
+	// RunID names the run that produced the line, on run_started and on
+	// every per-run record. ParentRunID is set when that run is a
+	// sub-agent.
+	RunID       string           `json:"runId,omitempty"`
+	ParentRunID string           `json:"parentRunId,omitempty"`
+	StartedAt   *time.Time       `json:"startedAt,omitempty"`
+	CompletedAt *time.Time       `json:"completedAt,omitempty"`
+	Config      *types.RunConfig `json:"config,omitempty"`
 
 	// Turn / ToolCall payload — populated for turn_record and
 	// tool_call_record respectively.
@@ -64,6 +76,9 @@ type Event struct {
 	// Hook payload — populated for hook_record events.
 	Hook          *types.HookExecution       `json:"hook,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
+
+	// SubRun is the child's outcome — populated for subrun_finished.
+	SubRun *types.SubRunSummary `json:"subRun,omitempty"`
 
 	// Trace summary — populated for run_finished events. Embedding the
 	// full RunTrace here keeps the backward-compat reader's job trivial:
