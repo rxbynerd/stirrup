@@ -2165,6 +2165,37 @@ message ToolsConfig {
   // Only meaningful on the gRPC transport: a config arriving in
   // task_assignment satisfies that by construction.
   repeated ControlPlaneToolConfig control_plane = 3;
+
+  // Optional. Compliance capture of run_command stdout/stderr. Mirrors
+  // RunConfig `tools.commandOutput`; unset fields resolve to the harness
+  // defaults (see docs/configuration.md#command-output-capture).
+  CommandOutputConfig command_output = 6;
+}
+
+// CommandOutputConfig bounds full run_command output capture. The byte
+// caps are compliance boundaries: crossing one cancels the command, and
+// failure_posture decides what that does to the run.
+message CommandOutputConfig {
+  // Optional. Capture is enabled when unset; an explicit false disables it.
+  optional bool enabled = 1;
+
+  // Optional. "strict" (default) or "bestEffort".
+  string failure_posture = 2;
+
+  // Optional. Largest combined scrubbed output returned inline to the
+  // model before spilling to the archive. 0 selects 32 KiB.
+  int64 inline_max_bytes = 3;
+
+  // Optional. Tail bytes per stream shown when output spills. 0 selects
+  // 4 KiB.
+  int64 preview_bytes_per_stream = 4;
+
+  // Optional. Per-stream capture cap. 0 selects 50 MiB; maximum 256 MiB.
+  int64 max_bytes_per_stream = 5;
+
+  // Optional. Per-run capture cap across all commands. 0 selects 500 MiB;
+  // maximum 2 GiB.
+  int64 max_bytes_per_run = 6;
 }
 
 // ControlPlaneToolConfig declares one tool whose result the control plane

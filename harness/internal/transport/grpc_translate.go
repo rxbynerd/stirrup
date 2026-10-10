@@ -671,6 +671,19 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			RequiresApproval: ct.RequiresApproval,
 		})
 	}
+	if co := pc.CommandOutput; co != nil {
+		tc.CommandOutput = types.CommandOutputConfig{
+			FailurePosture:        co.FailurePosture,
+			InlineMaxBytes:        co.InlineMaxBytes,
+			PreviewBytesPerStream: co.PreviewBytesPerStream,
+			MaxBytesPerStream:     co.MaxBytesPerStream,
+			MaxBytesPerRun:        co.MaxBytesPerRun,
+		}
+		if co.Enabled != nil {
+			enabled := *co.Enabled
+			tc.CommandOutput.Enabled = &enabled
+		}
+	}
 	return tc
 }
 
