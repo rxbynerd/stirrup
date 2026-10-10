@@ -429,6 +429,12 @@ func TestEscalation_DisabledNoRetry(t *testing.T) {
 // accepts a first-turn refusal or full context window as the run outcome
 // instead of re-prompting for a tool call.
 func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
+	// A context-window stop with nothing left to compact ends the run as
+	// context_exhausted rather than with the stop reason.
+	wantOutcome := map[string]string{
+		"refusal":                       "refusal",
+		"model_context_window_exceeded": "context_exhausted",
+	}
 	for _, stop := range []string{"refusal", "model_context_window_exceeded"} {
 		t.Run(stop, func(t *testing.T) {
 			prov := &sequencedProvider{scripts: [][]types.StreamEvent{
@@ -444,8 +450,8 @@ func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
 			if prov.calls() != 1 {
 				t.Errorf("%s must not escalate; got %d provider calls", stop, prov.calls())
 			}
-			if runTrace.Outcome != stop {
-				t.Errorf("Outcome = %q, want %q", runTrace.Outcome, stop)
+			if runTrace.Outcome != wantOutcome[stop] {
+				t.Errorf("Outcome = %q, want %q", runTrace.Outcome, wantOutcome[stop])
 			}
 			if n := countNoToolWhenRequired(t, reader); n != 0 {
 				t.Errorf("no_tool_when_required count = %d, want 0", n)

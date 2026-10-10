@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // capabilityResolver resolves a (provider, model) pair to its tool-choice
@@ -66,7 +67,7 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	// A refusal or a full context window is not a missed tool call, and
 	// re-prompting would retry the stop rather than recover from it.
 	switch in.StopReason {
-	case "tool_use", "refusal", "model_context_window_exceeded":
+	case "tool_use", "refusal", types.StopReasonContextWindowExceeded:
 		return none
 	}
 	if !in.ToolsAvailable {

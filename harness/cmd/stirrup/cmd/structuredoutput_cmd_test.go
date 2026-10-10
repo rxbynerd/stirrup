@@ -133,6 +133,9 @@ func TestRunWithConfig_StructuredOutputKeepsTheResultLineUnderItsCap(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _ := answerSequenceServer(t, tc.doc)
 			config, _ := structuredRunConfig(t, srv.URL)
+			// An unregistered model keeps the default window, which fits the
+			// oversized document; gpt-4o-mini's registered window does not.
+			config.ModelRouter.Model = "unregistered-model"
 			config.ResultSink = &types.ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 1 << 20}
 			config.MaxTurns = 3
 

@@ -234,9 +234,10 @@ read the details from the trace emitters (the JSONL and GCS
 The gRPC `RunTrace.stop_details` field on `done.trace` mirrors them.
 
 `model_context_window_exceeded` (the response filled the model's
-context window and is truncated) is also returned verbatim as the
-outcome. The harness neither retries nor continues after either stop
-reason, and tool-choice escalation does not re-prompt after them.
+context window and is truncated) instead makes the harness compact the
+history and retry the turn once; a second overflow ends the run as
+`context_exhausted`. The harness neither retries nor continues after a
+refusal, and tool-choice escalation does not re-prompt after either.
 Refusals cannot be triggered benignly, so the `stop_details` shape is
 documented, not probed.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -289,7 +290,7 @@ func TestOffloadToFile_WriteFailure_FallsBackToTruncation(t *testing.T) {
 	}
 
 	content := result[2].Content[0].Content
-	if !strings.Contains(content, "[...truncated...]") {
+	if !strings.Contains(content, "[...truncated 2000 bytes...]") {
 		t.Error("expected truncation marker in fallback content")
 	}
 	// Should keep first 500 and last 500 chars.
@@ -448,5 +449,31 @@ func TestOffloadToFile_EmptyMessages_ReturnsEmpty(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(result))
+	}
+}
+
+// TestOffloadToFile_NoRoomKeepsTaskAndLastExchange pins that the no-room
+// path keeps the task and the last complete exchange, never the results of
+// parallel tool calls without the assistant turn that made them.
+func TestOffloadToFile_NoRoomKeepsTaskAndLastExchange(t *testing.T) {
+	msgs := parallelCallHistory(1)
+	s := NewOffloadToFileStrategy(newMockFileWriter())
+
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:          100,
+		CurrentTokens:      700,
+		ReserveForResponse: 100,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+	if want := []types.Message{msgs[0], msgs[5], msgs[6]}; !reflect.DeepEqual(result, want) {
+		t.Fatalf("kept %d messages, want the task and the last exchange", len(result))
+	}
+	if c := s.LastCompaction(); c == nil || c.MessagesBefore != 7 || c.MessagesAfter != 3 {
+		t.Errorf("LastCompaction = %+v, want 7 -> 3 messages", c)
+	}
+	if err := checkCompactedHistory(msgs, result); err != nil {
+		t.Error(err)
 	}
 }

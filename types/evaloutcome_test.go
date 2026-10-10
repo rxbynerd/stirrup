@@ -69,6 +69,7 @@ func TestEvalOutcomeFor(t *testing.T) {
 		{name: "stalled", trace: RunTrace{Outcome: "stalled"}, want: EvalInconclusive},
 		{name: "cancelled", trace: RunTrace{Outcome: "cancelled"}, want: EvalInconclusive},
 		{name: "verification_error", trace: RunTrace{Outcome: "verification_error"}, want: EvalInconclusive},
+		{name: "context_exhausted", trace: RunTrace{Outcome: "context_exhausted"}, want: EvalInconclusive},
 
 		// Lifecycle-hook infra failures are pinned explicitly rather than
 		// relying on the unknown-outcome default below.

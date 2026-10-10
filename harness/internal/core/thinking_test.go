@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -290,19 +291,43 @@ type discardFileWriter struct{}
 
 func (discardFileWriter) WriteFile(context.Context, string, string) error { return nil }
 
-// maxTokensCompactingFrom returns a contextStrategy.maxTokens whose usable
-// budget admits the loop's estimate for call first-1 but not for call
-// first, so an over-budget strategy first compacts on call index first.
+// maxTokensCompactingFrom returns the largest contextStrategy.maxTokens
+// whose fit limit admits the loop's estimate for call first-1 but whose
+// usable budget does not admit the estimate for call first, so an
+// over-budget strategy first compacts on call index first.
 func maxTokensCompactingFrom(t *testing.T, estimates []int, first int) int {
 	t.Helper()
 	lo, hi := estimates[first-1], estimates[first]
+	found := 0
 	for m := lo; m <= 2*hi+defaultReserveForResponse; m++ {
-		if avail := m - effectiveReserveForResponse(m); avail >= lo && avail < hi {
-			return m
+		budget := contextpkg.TokenBudget{MaxTokens: m, ReserveForResponse: effectiveReserveForResponse(m)}
+		if contextpkg.FitLimit(budget) >= lo && m-budget.ReserveForResponse < hi {
+			found = m
 		}
 	}
-	t.Fatalf("no maxTokens separates estimates %d and %d", lo, hi)
-	return 0
+	if found == 0 {
+		t.Fatalf("no maxTokens separates estimates %d and %d", lo, hi)
+	}
+	return found
+}
+
+// registerLargeTestTool replaces test_tool with one whose results are
+// large enough for every strategy to shrink, so each compacted request
+// fits its budget.
+func registerLargeTestTool(t *testing.T, loop *AgenticLoop) {
+	t.Helper()
+	registry, ok := loop.Tools.(*tool.Registry)
+	if !ok {
+		t.Fatalf("loop Tools is %T, want *tool.Registry", loop.Tools)
+	}
+	registry.Register(&tool.Tool{
+		Name:        "test_tool",
+		Description: "A test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			return strings.Repeat("tool result line\n", 150), nil
+		},
+	})
 }
 
 // TestLoop_RealStrategiesStripThinkingAfterCompaction drives each context
@@ -318,8 +343,10 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 		build func() contextpkg.ContextStrategy
 	}{
 		{"sliding-window", 2, func() contextpkg.ContextStrategy { return contextpkg.NewSlidingWindowStrategy() }},
-		{"summarise", 3, func() contextpkg.ContextStrategy {
-			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model")
+		// Summarising needs an aged exchange between the pinned task and
+		// the recent messages, so the first one exists on call 4.
+		{"summarise", 4, func() contextpkg.ContextStrategy {
+			return contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model", 0)
 		}},
 		{"offload-to-file", 2, func() contextpkg.ContextStrategy {
 			return contextpkg.NewOffloadToFileStrategy(discardFileWriter{})
@@ -329,6 +356,7 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calibrate := &recordingStrategy{inner: tc.build()}
 			loop := buildTestLoop(nil)
+			registerLargeTestTool(t, loop)
 			loop.Provider = &thinkingParamsProvider{turns: turns}
 			loop.Context = calibrate
 			if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
@@ -340,6 +368,7 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 			cfg := buildTestConfig()
 			cfg.ContextStrategy.MaxTokens = maxTokensCompactingFrom(t, calibrate.currentTokens, tc.first)
 			loop = buildTestLoop(nil)
+			registerLargeTestTool(t, loop)
 			loop.Provider = prov
 			loop.Context = rec
 			if _, err := loop.Run(context.Background(), cfg); err != nil {

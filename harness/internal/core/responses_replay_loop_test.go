@@ -38,14 +38,14 @@ func responsesToolTurnSSE(n int) string {
 		responsesSSEEvent("response.function_call_arguments.delta", fmt.Sprintf(`{"item_id":"fc_%d","output_index":1,"delta":"%s"}`, n, args)) +
 		responsesSSEEvent("response.function_call_arguments.done", fmt.Sprintf(`{"item_id":"fc_%d","output_index":1,"arguments":"%s"}`, n, args)) +
 		responsesSSEEvent("response.output_item.done", `{"output_index":1,"item":`+call+`}`) +
-		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+reasoning+`,`+call+`],"usage":{"input_tokens":10,"output_tokens":5}}}`)
+		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+reasoning+`,`+call+`],"usage":{"output_tokens":5}}}`)
 }
 
 // responsesFinalTurnSSE is a closing text-only turn.
 func responsesFinalTurnSSE() string {
 	message := `{"type":"message","id":"msg_final","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}`
 	return responsesSSEEvent("response.output_text.delta", `{"item_id":"msg_final","output_index":0,"delta":"done"}`) +
-		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+message+`],"usage":{"input_tokens":10,"output_tokens":5}}}`)
+		responsesSSEEvent("response.completed", `{"response":{"status":"completed","output":[`+message+`],"usage":{"output_tokens":5}}}`)
 }
 
 // responsesTurnServer answers each request with the next scripted SSE body
@@ -198,13 +198,17 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 		wantFirstTurn  bool
 		wantSummarised bool
 	}{
-		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model"), 100, false, true},
+		// 4100 leaves 3075 tokens after the response reserve: the last
+		// request (about 3283) is over it, and the summarised request
+		// (about 2590) fits the limit after the safety margin.
+		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model", 0), 4100, false, true},
 		{"control", contextpkg.NewSlidingWindowStrategy(), 200000, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newResponsesTurnServer(t, script...)
 			loop := buildTestLoop(nil)
+			registerLargeTestTool(t, loop)
 			loop.Provider = nil
 			loop.Providers = map[string]provider.ProviderAdapter{"responses-a": srv.adapter()}
 			loop.Router = router.NewStaticRouter("responses-a", replayLoopModel)

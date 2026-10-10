@@ -134,6 +134,23 @@ func saturateInt32(n int) int32 {
 
 // runConfigFromProto translates a proto RunConfig to the internal
 // types.RunConfig. This is the primary path for TaskAssignment payloads.
+func contextStrategyFromProto(pc *pb.ContextStrategyConfig) types.ContextStrategyConfig {
+	cfg := types.ContextStrategyConfig{
+		Type:         pc.Type,
+		MaxTokens:    int(pc.MaxTokens),
+		ExcludeTools: append([]string(nil), pc.ExcludeTools...),
+	}
+	if pc.Keep != nil {
+		v := int(*pc.Keep)
+		cfg.Keep = &v
+	}
+	if pc.ClearAtLeast != nil {
+		v := int(*pc.ClearAtLeast)
+		cfg.ClearAtLeast = &v
+	}
+	return cfg
+}
+
 func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	rc := types.RunConfig{
 		RunID:          pc.RunId,
@@ -187,10 +204,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		}
 	}
 	if pc.ContextStrategy != nil {
-		rc.ContextStrategy = types.ContextStrategyConfig{
-			Type:      pc.ContextStrategy.Type,
-			MaxTokens: int(pc.ContextStrategy.MaxTokens),
-		}
+		rc.ContextStrategy = contextStrategyFromProto(pc.ContextStrategy)
 	}
 	if pc.Executor != nil {
 		rc.Executor = executorConfigFromProto(pc.Executor)

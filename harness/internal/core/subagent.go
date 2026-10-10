@@ -167,6 +167,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// Nests every child span under the parent's tool.spawn_agent span;
 	// Run() preserves a pre-set TraceContext rather than overwriting it.
 	childLoop.TraceContext = ctx
+	childLoop.ContextWindows = parent.ContextWindows
 
 	start := time.Now()
 	runTrace, err := childLoop.Run(ctx, &childConfig)

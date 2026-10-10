@@ -3,7 +3,6 @@ package context
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -51,15 +50,16 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 		return messages, nil
 	}
 
-	available := budget.MaxTokens - budget.ReserveForResponse
+	available := FitLimit(budget)
 	if available <= 0 {
-		// Degenerate case: no room. Keep recent messages only.
-		result := keepRecent(messages, recentPreservedMessages)
-		o.lastCompaction = &CompactionEvent{
-			Strategy:       "offload-to-file",
-			MessagesBefore: len(messages),
-			MessagesAfter:  len(result),
-			TokensBefore:   budget.CurrentTokens,
+		result, compacted := minimalHistory(messages)
+		if compacted {
+			o.lastCompaction = &CompactionEvent{
+				Strategy:       "offload-to-file",
+				MessagesBefore: len(messages),
+				MessagesAfter:  len(result),
+				TokensBefore:   budget.CurrentTokens,
+			}
 		}
 		return result, nil
 	}
@@ -95,7 +95,7 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 			err := o.writer.WriteFile(ctx, filePath, block.Content)
 			if err != nil {
 				// Fallback: truncate in place.
-				newContent[j].Content = truncateContent(block.Content)
+				newContent[j].Content = truncateHeadTail(block.Content, truncationKeepChars)
 			} else {
 				newContent[j].Content = fmt.Sprintf(
 					"[Full output offloaded to %s — read this file if you need the details]",
@@ -139,18 +139,4 @@ func (o *OffloadToFileStrategy) LastCompaction() *CompactionEvent {
 // block, scoped by turn index and tool use ID.
 func offloadFilePath(turnIndex int, toolUseID string) string {
 	return fmt.Sprintf(".stirrup/context/turn-%d-%s.txt", turnIndex, toolUseID)
-}
-
-// truncateContent keeps the first and last truncationKeepChars characters of
-// content with a truncation marker in between. Used as a fallback when file
-// writing fails.
-func truncateContent(content string) string {
-	if len(content) <= truncationKeepChars*2 {
-		return content
-	}
-	var sb strings.Builder
-	sb.WriteString(content[:truncationKeepChars])
-	sb.WriteString("\n[...truncated...]\n")
-	sb.WriteString(content[len(content)-truncationKeepChars:])
-	return sb.String()
 }

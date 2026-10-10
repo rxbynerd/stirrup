@@ -42,7 +42,7 @@ thirteen interfaces below.
 | 1 | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini` | `harness/internal/provider/` |
 | 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` | `harness/internal/router/` |
 | 3 | `PromptBuilder` | `default` (per-mode templates, composed) | `harness/internal/prompt/` |
-| 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file` | `harness/internal/context/` |
+| 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file`, `clear-tool-results` | `harness/internal/context/` |
 | 5 | `ToolRegistry` | seven built-in tools + remote MCP servers | `harness/internal/tool/` |
 | 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub) | `harness/internal/executor/` |
 | 7 | `EditStrategy` | `whole-file`, `search-replace`, `udiff`, `multi` | `harness/internal/edit/` |
@@ -592,7 +592,7 @@ for the operator-facing flag matrix.
 
 ## Context strategies
 
-Three strategies manage message history as it approaches the token
+Four strategies manage message history as it approaches the token
 limit:
 
 - **`sliding-window`** — drops the oldest messages beyond a
@@ -601,6 +601,9 @@ limit:
   message via a separate (cheaper) model call.
 - **`offload-to-file`** — writes full tool results to workspace
   files and replaces the in-context message with a pointer.
+- **`clear-tool-results`** — replaces old tool results with a fixed
+  placeholder in occasional batches, so the prompt cache stays valid
+  between batches.
 
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt

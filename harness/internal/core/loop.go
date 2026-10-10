@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -76,9 +75,6 @@ const (
 
 	// messageOverheadTokens accounts for the JSON structure around each message.
 	messageOverheadTokens = 4
-
-	// blockOverheadTokens accounts for the JSON structure around each content block.
-	blockOverheadTokens = 3
 
 	// toolDefinitionOverheadTokens accounts for the JSON structure wrapping each tool definition.
 	toolDefinitionOverheadTokens = 10
@@ -645,6 +641,7 @@ func (l *AgenticLoop) runInnerLoop(
 	pendingToolChoice := types.ToolChoiceAuto
 
 	cacheKey := providerCacheKey(config.RunID)
+	var calibration tokenCalibration
 
 	for *nextTurn < config.MaxTurns {
 		turn := *nextTurn
@@ -740,80 +737,41 @@ func (l *AgenticLoop) runInnerLoop(
 		currentTokens := estimateCurrentTokens(messages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
-		maxTokens := defaultMaxContextTokens
-		if config.ContextStrategy.MaxTokens > 0 {
-			maxTokens = config.ContextStrategy.MaxTokens
+		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
+		if turn == 0 && window.cappedFrom > 0 {
+			l.Logger.Warn("contextStrategy.maxTokens exceeds the model's registered context window",
+				"maxTokens", window.cappedFrom,
+				"contextWindow", window.tokens,
+				"model", selection.Model,
+			)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type: "warning",
+				Message: fmt.Sprintf("contextStrategy.maxTokens=%d exceeds %s; budgeting against the registered window",
+					window.cappedFrom, window.source),
+			})
 		}
-		responseReserve := effectiveReserveForResponse(maxTokens)
+		responseReserve := effectiveReserveForResponse(window.tokens)
 		if turn == 0 && responseReserve < defaultReserveForResponse {
-			// Once per run (turn 0): maxTokens is constant, so
+			// Once per run (turn 0): the window is constant, so
 			// re-emitting this every turn would be noise.
 			l.Logger.Warn("context response reserve scaled down for small context budget",
-				"maxTokens", maxTokens,
+				"maxTokens", window.tokens,
 				"reserve", responseReserve,
 				"defaultReserve", defaultReserveForResponse,
 			)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type: "warning",
 				Message: fmt.Sprintf(
-					"contextStrategy.maxTokens=%d is at or below the default response reserve (%d); scaling the reserve down to %d tokens so history packing keeps a usable budget",
-					maxTokens, defaultReserveForResponse, responseReserve,
+					"%s is at or below the default response reserve (%d); scaling the reserve down to %d tokens so history packing keeps a usable budget",
+					window.source, defaultReserveForResponse, responseReserve,
 				),
 			})
 		}
-		_, contextSpan := l.Tracer.Start(l.traceCtx(ctx), "context.prepare",
-			oteltrace.WithAttributes(
-				attribute.Int("messages.before", len(messages)),
-				attribute.Int("tokens.before", currentTokens),
-			),
-		)
-		preparedMessages, err := l.Context.Prepare(ctx, messages, contextpkg.TokenBudget{
-			MaxTokens:          maxTokens,
-			CurrentTokens:      currentTokens,
-			ReserveForResponse: responseReserve,
-		})
-		if err != nil {
-			scrubbed := recordSpanError(contextSpan, err)
-			contextSpan.End()
-			if ctx.Err() != nil {
-				return messages, outcomeCtxDone, finalAssistantText, nil
-			}
-			l.noteFailure("error", "context strategy: "+scrubbed)
-			return messages, "error", finalAssistantText, nil
+		budget := newTurnBudget(window, responseReserve, calibration, currentTokens)
+		preparedMessages, requestTokens, prepOutcome := l.prepareRequest(ctx, messages, systemPrompt, toolDefs, budget, 0)
+		if prepOutcome != "" {
+			return messages, prepOutcome, finalAssistantText, nil
 		}
-		compaction := l.Context.LastCompaction()
-		if compaction != nil {
-			l.historyRewritten = true
-		}
-		if l.historyRewritten {
-			// A thinking block is bound to the exact history before it, so
-			// none is replayed once the run has sent a rewritten history.
-			preparedMessages = types.StripThinkingBlocks(preparedMessages)
-		}
-		// Feeds the ContextTokens observable gauge registered in Run;
-		// compaction shrinks this value, new messages grow it.
-		tokensAfterPrepare := estimateCurrentTokens(preparedMessages) +
-			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
-		l.lastContextTokens.Store(int64(tokensAfterPrepare))
-		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
-		if compaction != nil {
-			contextSpan.SetAttributes(
-				attribute.String("context.strategy", compaction.Strategy),
-				attribute.Int("context.tokens.after", compaction.TokensAfter),
-			)
-			l.Metrics.ContextCompactions.Add(ctx, 1,
-				l.metricAttrs(attribute.String("context.strategy", compaction.Strategy)),
-			)
-			l.Logger.Info("context compacted",
-				"strategy", compaction.Strategy,
-				"messages.before", compaction.MessagesBefore,
-				"messages.after", compaction.MessagesAfter,
-				"tokens.before", compaction.TokensBefore,
-				"tokens.after", compaction.TokensAfter,
-			)
-		}
-		contextSpan.End()
 
 		turnStart := time.Now()
 		selectedProvider := l.Provider
@@ -850,15 +808,6 @@ func (l *AgenticLoop) runInnerLoop(
 			attribute.String("provider.type", selection.Provider),
 			attribute.String("provider.model", selection.Model),
 		)
-		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
-
-		spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
-			oteltrace.WithAttributes(
-				attribute.String("provider.type", selection.Provider),
-				attribute.String("provider.model", selection.Model),
-				attribute.Int("turn.number", turn),
-			),
-		)
 
 		// Forward an explicit override verbatim (including 0.0 for
 		// greedy decoding); otherwise fall back to defaultTemperature
@@ -874,7 +823,7 @@ func (l *AgenticLoop) runInnerLoop(
 		turnToolChoice := pendingToolChoice
 		pendingToolChoice = types.ToolChoiceAuto
 
-		ch, err := selectedProvider.Stream(spanCtx, types.StreamParams{
+		params := types.StreamParams{
 			Model:           selection.Model,
 			System:          systemPrompt,
 			Messages:        preparedMessages,
@@ -884,150 +833,52 @@ func (l *AgenticLoop) runInnerLoop(
 			ReasoningEffort: config.ReasoningEffort,
 			ToolChoice:      turnToolChoice,
 			CacheKey:        cacheKey,
-		})
-		if err != nil {
-			scrubbedErr := recordSpanError(providerSpan, err)
-			providerSpan.End()
-			// Surfaces the failure outside OTel too (log + transport
-			// warning); skipped when ctx is already cancelled — the
-			// cancel/timeout path below reports instead.
-			if ctx.Err() == nil {
-				l.Logger.Error("provider stream failed",
-					"provider", selection.Provider,
-					"model", selection.Model,
-					"error", scrubbedErr,
-				)
-				_ = l.Transport.Emit(types.HarnessEvent{
-					Type:    "warning",
-					Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
-				})
+		}
+		// A request that exceeds the context window gets one forced
+		// compaction and retry per turn; a second overflow ends the run.
+		var attempt providerAttempt
+		rejected := 0
+		for {
+			attempt = l.requestProvider(ctx, config, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
+			if attempt.err == nil && attempt.inputReported {
+				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
-			// Rollback: don't append anything on error.
-			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
-			// Co-emit into tool-failure metrics only when tools were
-			// offered: a pure text-only request error isn't a
-			// tool-use failure from the model's perspective.
-			if len(toolDefs) > 0 {
-				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", observability.ToolNameProviderScope),
-					attribute.String("category", observability.ToolFailureProviderRequest.String()),
-					attribute.String("provider.type", selection.Provider),
-					attribute.String("provider.model", selection.Model),
-					attribute.String("run.mode", config.Mode),
-				))
+			if ctx.Err() != nil || !attempt.overflowed() {
+				break
 			}
-			turnMode, turnBatchID := turnModeInfo(selectedProvider)
-			l.Trace.RecordTurn(types.TurnTrace{
-				Turn:       turn,
-				StopReason: "error",
-				DurationMs: time.Since(turnStart).Milliseconds(),
-				Mode:       turnMode,
-				BatchID:    turnBatchID,
-				Model:      selection.Model,
-			})
+			if attempt.err == nil {
+				// The response filled the window: its tokens are charged
+				// and the truncated response is discarded.
+				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt)
+				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
+					return messages, "budget_exceeded", finalAssistantText, nil
+				}
+			}
+			if rejected > 0 {
+				l.reportContextExhausted(overflowExhaustedError(rejected, requestTokens))
+				return messages, "context_exhausted", finalAssistantText, nil
+			}
+			rejected = requestTokens
+			l.reportOverflowRetry(turn, selection, attempt, rejected)
+			preparedMessages, requestTokens, prepOutcome = l.prepareRequest(ctx, messages, systemPrompt, toolDefs, budget.forcedCompaction(rejected), rejected)
+			if prepOutcome != "" {
+				return messages, prepOutcome, finalAssistantText, nil
+			}
+			params.Messages = preparedMessages
+		}
+		if attempt.err != nil {
 			// Lets the outer loop classify cancelled/timeout rather
 			// than a generic error.
 			if ctx.Err() != nil {
 				return messages, outcomeCtxDone, finalAssistantText, nil
 			}
-			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
+			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, attempt.errText))
 			return messages, "error", finalAssistantText, nil
 		}
-
-		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
-		turnDuration := time.Since(turnStart)
-
-		if streamErr != nil {
-			scrubbedErr := recordSpanError(providerSpan, streamErr)
-			providerSpan.End()
-			// Same as the Stream() log+emit above.
-			if ctx.Err() == nil {
-				l.Logger.Error("provider stream failed",
-					"provider", selection.Provider,
-					"model", selection.Model,
-					"error", scrubbedErr,
-				)
-				_ = l.Transport.Emit(types.HarnessEvent{
-					Type:    "warning",
-					Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
-				})
-			}
-			// Rollback on stream error — don't append partial content.
-			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
-			// Distinguished from provider_request_failed: a fault after
-			// the stream opened is stream-side, not a rejected request.
-			if len(toolDefs) > 0 {
-				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", observability.ToolNameProviderScope),
-					attribute.String("category", observability.ToolFailureProviderStream.String()),
-					attribute.String("provider.type", selection.Provider),
-					attribute.String("provider.model", selection.Model),
-					attribute.String("run.mode", config.Mode),
-				))
-			}
-			turnMode, turnBatchID := turnModeInfo(selectedProvider)
-			l.Trace.RecordTurn(types.TurnTrace{
-				Turn:       turn,
-				StopReason: "error",
-				DurationMs: turnDuration.Milliseconds(),
-				Mode:       turnMode,
-				BatchID:    turnBatchID,
-				Model:      selection.Model,
-			})
-			// Lets the outer loop classify a ctx-abort correctly.
-			if ctx.Err() != nil {
-				return messages, outcomeCtxDone, finalAssistantText, nil
-			}
-			l.noteFailure("error", fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr))
-			return messages, "error", finalAssistantText, nil
-		}
-		// Input is the provider's figure when it reports one; otherwise
-		// it is estimated from the messages sent plus system prompt and
-		// tools.
-		turnTokens := sr.Usage
-		inputReported := turnTokens.Input > 0
-		if !inputReported {
-			turnTokens.Input = estimateCurrentTokens(preparedMessages) +
-				estimateSystemPromptTokens(systemPrompt) +
-				estimateToolDefinitionTokens(toolDefs)
-		}
-
-		providerSpan.SetAttributes(
-			attribute.Int("tokens.input", turnTokens.Input),
-			attribute.Bool("tokens.input_reported", inputReported),
-			attribute.Int("tokens.output", turnTokens.Output),
-			attribute.String("stop_reason", sr.StopReason),
-		)
-		providerSpan.SetAttributes(usageBreakdownAttributes(turnTokens)...)
-		if sr.StopDetails != nil {
-			// Explanation is provider free text bound for the persisted
-			// trace, so it gets the same scrub as final assistant text.
-			// The copy leaves the provider's event untouched.
-			scrubbed := *sr.StopDetails
-			scrubbed.Explanation = security.Scrub(scrubbed.Explanation)
-			sr.StopDetails = &scrubbed
-			if sr.StopDetails.Category != "" {
-				providerSpan.SetAttributes(attribute.String("stop.category", sr.StopDetails.Category))
-			}
-		}
-		providerSpan.End()
+		sr := attempt.result
 
 		lastStopReason = sr.StopReason
-
-		tokenTracker.RecordTurn(turnTokens)
-
-		turnMode, turnBatchID := turnModeInfo(selectedProvider)
-		l.Trace.RecordTurn(types.TurnTrace{
-			Turn:          turn,
-			Tokens:        turnTokens,
-			InputReported: inputReported,
-			StopReason:    sr.StopReason,
-			StopDetails:   sr.StopDetails,
-			DurationMs:    turnDuration.Milliseconds(),
-			Mode:          turnMode,
-			BatchID:       turnBatchID,
-			Model:         selection.Model,
-		})
+		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -1041,27 +892,6 @@ func (l *AgenticLoop) runInnerLoop(
 			},
 			ModelOutput: sr.Blocks,
 		}
-
-		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
-		l.Metrics.Turns.Add(ctx, 1, modeAttr)
-		l.Metrics.TokensInput.Add(ctx, int64(turnTokens.Input), l.metricAttrs())
-		l.Metrics.TokensOutput.Add(ctx, int64(turnTokens.Output), l.metricAttrs())
-		if turnTokens.CacheRead > 0 {
-			l.Metrics.TokensCacheRead.Add(ctx, int64(turnTokens.CacheRead), l.metricAttrs())
-		}
-		if turnTokens.CacheWrite > 0 {
-			l.Metrics.TokensCacheWrite.Add(ctx, int64(turnTokens.CacheWrite), l.metricAttrs())
-		}
-		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
-
-		l.Logger.Info("turn completed", "turn", turn,
-			"tokens.input", turnTokens.Input,
-			"tokens.input_reported", inputReported,
-			"tokens.output", turnTokens.Output,
-			"tokens.cache_read", turnTokens.CacheRead,
-			"tokens.cache_write", turnTokens.CacheWrite,
-			"tokens.reasoning", turnTokens.Reasoning,
-			"stopReason", sr.StopReason)
 
 		// Carries provider replay state so the next request can
 		// round-trip it.

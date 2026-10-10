@@ -130,9 +130,8 @@ For the current `stirrup job` implementation, read
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
 `hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
-Provider stop reasons also pass through verbatim: `refusal` (the model
-declined to respond) and `model_context_window_exceeded` (the response
-filled the model's context window and is truncated).
+Provider stop reasons also pass through verbatim, such as `refusal`
+(the model declined to respond).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 
@@ -569,7 +568,7 @@ hard — or different providers per mode.
   same reason. Enforce money limits in the control plane using provider
   billing/pricing data.
 - `contextStrategy` bounds the conversation itself:
-  `sliding-window` (default), `summarise`, or `offload-to-file`.
+  `sliding-window` (default), `summarise`, `offload-to-file`, or `clear-tool-results`.
 - Pair `timeout` with an infrastructure-level deadline
   (`activeDeadlineSeconds`) that also allows for assignment, setup,
   and teardown — and, with follow-ups enabled, for every additional
