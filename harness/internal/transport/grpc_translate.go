@@ -124,6 +124,15 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Error: dc.Error,
 		})
 	}
+	if n := len(t.VerificationResults); n > 0 {
+		last := t.VerificationResults[n-1]
+		pt.Verification = &pb.VerificationVerdict{
+			Attempt:  saturateInt32(last.Attempt),
+			Passed:   last.Passed,
+			Feedback: last.Feedback,
+			Error:    last.Error,
+		}
+	}
 	return pt
 }
 

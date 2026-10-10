@@ -1235,6 +1235,43 @@ func TestRunTraceToProto_PartialStopDetails(t *testing.T) {
 	}
 }
 
+// TestRunTraceToProto_Verification pins that the last verifier attempt
+// reaches the wire through a round trip, and that a run with no recorded
+// attempt leaves the field absent.
+func TestRunTraceToProto_Verification(t *testing.T) {
+	tr := &types.RunTrace{
+		Outcome: "verification_error",
+		VerificationResults: []types.VerificationResult{
+			{Attempt: 1, Passed: false, Feedback: "tests failed"},
+			{Attempt: 2, Passed: false, Error: "exec failed: [REDACTED]"},
+		},
+	}
+	raw, err := proto.Marshal(runTraceToProto(tr))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetVerification()
+	if got.GetAttempt() != 2 || got.GetPassed() || got.GetFeedback() != "" || got.GetError() != "exec failed: [REDACTED]" {
+		t.Errorf("verification = %v, want attempt 2, failed, verifier error and no feedback", got)
+	}
+
+	passed := runTraceToProto(&types.RunTrace{
+		Outcome:             "success",
+		VerificationResults: []types.VerificationResult{{Attempt: 1, Passed: true}},
+	})
+	if v := passed.GetVerification(); v == nil || !v.GetPassed() || v.GetAttempt() != 1 {
+		t.Errorf("verification = %v, want a passing attempt 1", v)
+	}
+
+	if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.Verification != nil {
+		t.Errorf("verification = %v, want absent with no recorded attempt", pt.Verification)
+	}
+}
+
 // TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
 // a TaskAssignment with no hooks sub-message must not synthesise a
 // non-nil types.HooksConfig.
