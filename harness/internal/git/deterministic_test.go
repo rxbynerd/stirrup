@@ -130,6 +130,9 @@ func TestSetup_InitialisesNonRepository(t *testing.T) {
 	if err := gs.Setup(context.Background(), "", "run-3"); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
+	if !containsCall(exec.calls, "test -e .git || test -L .git") {
+		t.Errorf("Setup initialised without checking for a .git entry:\n%s", strings.Join(exec.calls, "\n"))
+	}
 	want := [][]string{
 		{"rev-parse", "--show-toplevel"},
 		{"init", "--quiet"},
@@ -139,7 +142,7 @@ func TestSetup_InitialisesNonRepository(t *testing.T) {
 		{"checkout", "-b", "stirrup/run-3"},
 		{"rev-parse", "--verify", "--quiet", "HEAD"},
 	}
-	gitCalls := exec.calls[1:]
+	gitCalls := gitCommands(exec.calls)
 	if len(gitCalls) != len(want) {
 		t.Fatalf("git commands = %d, want %d:\n%s", len(gitCalls), len(want), strings.Join(gitCalls, "\n"))
 	}
@@ -147,6 +150,48 @@ func TestSetup_InitialisesNonRepository(t *testing.T) {
 		if !hasArgs(gitCalls[i], args...) {
 			t.Errorf("git call[%d] = %q, want %q", i, gitCalls[i], args)
 		}
+	}
+}
+
+func TestSetup_RefusesUnresolvableGitEntry(t *testing.T) {
+	emptyHostPath(t)
+	repo := &fakeRepo{
+		root:          "/workspace",
+		notRepo:       true,
+		notRepoStderr: "fatal: not a git repository: /Users/op/src/app/.git/worktrees/feature\n",
+		gitEntry:      true,
+	}
+	exec := newScriptedExecutor(repo.respond)
+	gs := NewDeterministicGitStrategy(exec)
+
+	err := gs.Setup(context.Background(), "", "run-3b")
+	if err == nil || !strings.Contains(err.Error(), "self-contained repository") {
+		t.Fatalf("Setup error = %v, want the unresolvable .git entry message", err)
+	}
+	for _, call := range exec.calls {
+		for _, mutating := range []string{"init", "checkout", "add", "commit"} {
+			if hasArgs(call, mutating) {
+				t.Errorf("Setup issued %q despite an unresolvable .git entry", call)
+			}
+		}
+	}
+	if err := gs.Checkpoint(context.Background(), "x"); err == nil {
+		t.Error("Checkpoint succeeded after a failed Setup")
+	}
+}
+
+func TestSetup_KeepsTrailingSpaceInWorkspaceRoot(t *testing.T) {
+	emptyHostPath(t)
+	for name, repo := range map[string]*fakeRepo{
+		"existing repository": {root: "/work space ", toplevel: "/work space "},
+		"initialised":         {root: "/work space ", notRepo: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gs := NewDeterministicGitStrategy(newScriptedExecutor(repo.respond))
+			if err := gs.Setup(context.Background(), "", "run-3c"); err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+		})
 	}
 }
 
@@ -245,6 +290,7 @@ func TestFinalise_RejectsHostileOutput(t *testing.T) {
 		{"branch with dotdot", testSHA1, "a..b"},
 		{"branch with space", testSHA1, "a b"},
 		{"empty branch", testSHA1, ""},
+		{"detached HEAD", testSHA1, "HEAD"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -569,6 +615,24 @@ func TestLocal_SetupRejectsWorkspaceInsideRepository(t *testing.T) {
 	}
 }
 
+func TestLocal_SetupRefusesWorktreeWithUnreachableGitdir(t *testing.T) {
+	ws := t.TempDir()
+	gitFile := filepath.Join(ws, ".git")
+	const pointer = "gitdir: /nonexistent/host/repo/.git/worktrees/feature\n"
+	if err := os.WriteFile(gitFile, []byte(pointer), 0o644); err != nil {
+		t.Fatalf("write .git file: %v", err)
+	}
+	gs := localStrategy(t, ws)
+	err := gs.Setup(context.Background(), ws, "worktree")
+	if err == nil || !strings.Contains(err.Error(), "self-contained repository") {
+		t.Fatalf("Setup error = %v, want the unresolvable .git entry message", err)
+	}
+	got, err := os.ReadFile(gitFile)
+	if err != nil || string(got) != pointer {
+		t.Errorf(".git file changed: content %q, err %v", got, err)
+	}
+}
+
 func TestLocal_SetupInitialisesPlainDirectory(t *testing.T) {
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "seed.txt"), []byte("seed"), 0o644); err != nil {
@@ -592,6 +656,25 @@ func TestLocal_SetupInitialisesPlainDirectory(t *testing.T) {
 	if !ValidSHA(result.SHA) {
 		t.Errorf("Finalise SHA = %q", result.SHA)
 	}
+}
+
+func gitCommands(calls []string) []string {
+	var out []string
+	for _, c := range calls {
+		if strings.HasPrefix(c, "git ") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func containsCall(calls []string, want string) bool {
+	for _, c := range calls {
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLocal_FinaliseCommitsOutstandingWork(t *testing.T) {

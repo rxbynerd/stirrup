@@ -62,6 +62,10 @@ type fakeRepo struct {
 	staged bool
 	// notRepo answers show-toplevel with git's not-a-repository failure.
 	notRepo bool
+	// notRepoStderr replaces the default not-a-repository message.
+	notRepoStderr string
+	// gitEntry answers the workspace .git existence test with success.
+	gitEntry bool
 	// gitMissing answers every git command the way sh reports an absent
 	// binary.
 	gitMissing bool
@@ -71,13 +75,22 @@ func (f *fakeRepo) respond(command string) (*executor.ExecResult, error) {
 	switch {
 	case command == "pwd -P":
 		return &executor.ExecResult{Stdout: f.root + "\n"}, nil
+	case command == "test -e .git || test -L .git":
+		if f.gitEntry {
+			return &executor.ExecResult{}, nil
+		}
+		return &executor.ExecResult{ExitCode: 1}, nil
 	case !strings.HasPrefix(command, "git "):
 		return nil, errors.New("unexpected non-git command: " + command)
 	case f.gitMissing:
 		return &executor.ExecResult{ExitCode: 127, Stderr: "sh: git: not found\n"}, nil
 	case hasArgs(command, "rev-parse", "--show-toplevel"):
 		if f.notRepo {
-			return &executor.ExecResult{ExitCode: 128, Stderr: "fatal: not a git repository (or any of the parent directories): .git\n"}, nil
+			stderr := f.notRepoStderr
+			if stderr == "" {
+				stderr = "fatal: not a git repository (or any of the parent directories): .git\n"
+			}
+			return &executor.ExecResult{ExitCode: 128, Stderr: stderr}, nil
 		}
 		return &executor.ExecResult{Stdout: f.toplevel + "\n"}, nil
 	case hasArgs(command, "init"):

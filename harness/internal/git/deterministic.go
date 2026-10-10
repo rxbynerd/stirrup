@@ -107,11 +107,14 @@ func (d *DeterministicGitStrategy) prepareBranch(ctx context.Context, branch str
 	}
 	switch {
 	case res.ExitCode == 0:
-		toplevel := strings.TrimSpace(res.Stdout)
+		toplevel := strings.TrimSuffix(res.Stdout, "\n")
 		if toplevel != d.root {
 			return fmt.Errorf("workspace %s is inside repository %s; refusing to operate on an enclosing repository", d.root, toplevel)
 		}
 	case isNotRepository(res):
+		if err := d.refuseUnresolvableGitEntry(ctx); err != nil {
+			return err
+		}
 		if err := d.initialise(ctx); err != nil {
 			return err
 		}
@@ -177,6 +180,8 @@ func (d *DeterministicGitStrategy) Finalise(ctx context.Context, outcome string)
 
 	if branch, err := d.output(ctx, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
 		errs = append(errs, fmt.Errorf("get branch name: %w", err))
+	} else if branch == "HEAD" {
+		errs = append(errs, errors.New("HEAD is detached; there is no branch to report"))
 	} else if !ValidBranchName(branch) {
 		errs = append(errs, fmt.Errorf("rev-parse --abbrev-ref HEAD returned %q, not a branch name", truncate(branch)))
 	} else {
@@ -220,6 +225,24 @@ func (d *DeterministicGitStrategy) workspaceRoot(ctx context.Context) (string, e
 	return root, nil
 }
 
+// refuseUnresolvableGitEntry fails when git reports no repository although
+// the workspace holds a .git entry, typically a worktree or submodule .git
+// file naming a host gitdir the sandbox cannot see. Initialising over it
+// would replace or hide the operator's repository.
+func (d *DeterministicGitStrategy) refuseUnresolvableGitEntry(ctx context.Context) error {
+	res, err := d.exec.Exec(ctx, "test -e .git || test -L .git", commandTimeout)
+	if err != nil {
+		return fmt.Errorf("inspect workspace .git entry: %w", err)
+	}
+	if res == nil {
+		return errors.New("inspect workspace .git entry: executor returned no result")
+	}
+	if res.ExitCode == 0 {
+		return fmt.Errorf("workspace %s has a .git entry that git cannot open inside the sandbox; the workspace must be a self-contained repository, not a worktree or submodule whose gitdir lives elsewhere", d.root)
+	}
+	return nil
+}
+
 // initialise turns a non-repository workspace into a repository whose base
 // commit holds the workspace's initial state, so the first checkpoint and
 // the final SHA have a base to be compared against.
@@ -227,11 +250,14 @@ func (d *DeterministicGitStrategy) initialise(ctx context.Context) error {
 	if err := d.mustSucceed(ctx, "init", "--quiet"); err != nil {
 		return fmt.Errorf("initialise repository: %w", err)
 	}
-	toplevel, err := d.output(ctx, "rev-parse", "--show-toplevel")
+	res, err := d.run(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return err
 	}
-	if toplevel != d.root {
+	if res.ExitCode != 0 {
+		return exitError(res, "rev-parse --show-toplevel")
+	}
+	if toplevel := strings.TrimSuffix(res.Stdout, "\n"); toplevel != d.root {
 		return fmt.Errorf("initialised repository root %s does not match workspace %s", toplevel, d.root)
 	}
 	if err := d.mustSucceed(ctx, "add", "-A"); err != nil {
