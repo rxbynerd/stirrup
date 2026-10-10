@@ -2,6 +2,8 @@ package builtins
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -91,6 +93,11 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 			if err := json.Unmarshal(wire, &wireFields); err != nil {
 				t.Fatalf("decode wire view %s: %v", wire, err)
 			}
+			for _, name := range jsonFieldNames(tt.payload) {
+				if _, ok := fullFields[name]; !ok {
+					t.Errorf("fixture leaves field %q unset, so the wire view is not checked for it", name)
+				}
+			}
 			isBody := map[string]bool{}
 			for _, k := range tt.body {
 				isBody[k] = true
@@ -120,4 +127,25 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// jsonFieldNames returns the JSON names of v's exported top-level fields.
+func jsonFieldNames(v any) []string {
+	rt := reflect.TypeOf(v)
+	var names []string
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		switch name {
+		case "-":
+			continue
+		case "":
+			name = f.Name
+		}
+		names = append(names, name)
+	}
+	return names
 }
