@@ -92,6 +92,15 @@ func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 			return "tool result", nil
 		},
 	})
+	// A read-only built-in, so a read-only child still has a built-in tool.
+	registry.Register(&tool.Tool{
+		Name:        "read_file",
+		Description: "A read-only built-in",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "file contents", nil
+		},
+	})
 	// Register a spawn_agent tool to verify it gets filtered for the child.
 	registry.Register(&tool.Tool{
 		Name:              "spawn_agent",

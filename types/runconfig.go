@@ -2213,6 +2213,12 @@ var readOnlyModes = map[string]bool{
 	"planning": true, "review": true, "research": true, "toil": true,
 }
 
+// IsBuiltInTool reports whether name is a built-in tool accepted in
+// Tools.BuiltIn.
+func IsBuiltInTool(name string) bool {
+	return validBuiltInToolNames[name]
+}
+
 // IsReadOnlyMode reports whether the named run mode is a read-only mode
 // (one that must not enable write-capable tools).
 func IsReadOnlyMode(mode string) bool {

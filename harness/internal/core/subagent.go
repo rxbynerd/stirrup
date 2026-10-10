@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,32 +50,105 @@ type SubAgentResult struct {
 }
 
 // SpawnSubAgent creates and runs a sub-agent that reuses the parent loop's
-// provider, executor, and tools but operates with its own message history,
-// trace, and transport. The sub-agent runs synchronously in the caller's
+// provider and executor but operates with its own message history, trace,
+// and transport. The sub-agent runs synchronously in the caller's
 // goroutine, blocking until it completes.
 //
 // The sub-agent is deliberately constrained: it uses a NullTransport (no
 // streaming to the control plane), a NoneVerifier, a NoneGitStrategy, and
 // a fresh sliding-window context strategy. It does NOT have access to the
-// spawn_agent tool, preventing infinite recursion.
+// spawn_agent tool, preventing infinite recursion. A read-only child mode
+// also removes every workspace-mutating tool and denies them in front of
+// the inherited permission chain; a read-only parent cannot spawn an
+// execution child.
 func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types.RunConfig, subConfig SubAgentConfig) (*SubAgentResult, error) {
+	run, err := prepareSubAgent(ctx, parent, parentConfig, subConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	start := time.Now()
+	runTrace, err := run.execute(ctx)
+	elapsed := time.Since(start)
+
+	recordSpawnMetrics(ctx, parent, parentConfig, run.config.Mode, runTrace, elapsed, err == nil)
+
+	if err != nil {
+		return &SubAgentResult{
+			Outcome: "error",
+			Output:  err.Error(),
+		}, nil
+	}
+
+	output := run.capture.lastText()
+	if output == "" {
+		output = fmt.Sprintf("Sub-agent completed with outcome: %s", runTrace.Outcome)
+	}
+
+	return &SubAgentResult{
+		Outcome: runTrace.Outcome,
+		Output:  output,
+		Turns:   runTrace.Turns,
+	}, nil
+}
+
+// subAgentRun is a fully assembled, not yet started sub-agent.
+type subAgentRun struct {
+	loop    *AgenticLoop
+	config  *types.RunConfig
+	capture *captureTransport
+	// effectiveTools holds the internal IDs of every tool the child is
+	// offered, in registration order.
+	effectiveTools []string
+}
+
+// execute runs the child loop and stamps the effective tool list on the
+// returned trace.
+func (r *subAgentRun) execute(ctx context.Context) (*types.RunTrace, error) {
+	runTrace, err := r.loop.Run(ctx, r.config)
+	if runTrace != nil {
+		runTrace.EffectiveTools = r.effectiveTools
+	}
+	return runTrace, err
+}
+
+// prepareSubAgent validates the requested child mode against the parent's
+// and assembles the child loop and the RunConfig it records. A rejected
+// request returns an error before any child component is built.
+func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types.RunConfig, subConfig SubAgentConfig) (*subAgentRun, error) {
 	if subConfig.Prompt == "" {
 		return nil, fmt.Errorf("sub-agent prompt must not be empty")
 	}
-
-	maxTurns := capSubAgentMaxTurns(subConfig.MaxTurns, parentConfig.MaxTurns)
 
 	mode := subConfig.Mode
 	if mode == "" {
 		mode = parentConfig.Mode
 	}
+	if err := checkSubAgentMode(parentConfig.Mode, mode); err != nil {
+		return nil, err
+	}
+	readOnly := types.IsReadOnlyMode(mode)
+
+	maxTurns := capSubAgentMaxTurns(subConfig.MaxTurns, parentConfig.MaxTurns)
 
 	// filterToolRegistry keys on internal tool IDs, not the parent's
-	// presented aliases, so the exclusion holds regardless of toolset
-	// profile. Re-wrap under the parent's profile so the sub-agent sees
-	// the same aliases as the parent.
-	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
-	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
+	// presented aliases, so the exclusions hold regardless of toolset
+	// profile.
+	childRegistry := filterToolRegistry(parent.Tools, "spawn_agent")
+	var mutating map[string]bool
+	if readOnly {
+		mutating = mutatingToolSet(childRegistry)
+		childRegistry = filterToolRegistry(childRegistry, slices.Collect(maps.Keys(mutating))...)
+	}
+	effectiveTools, builtIns := subAgentToolNames(childRegistry)
+	if readOnly && len(builtIns) == 0 {
+		return nil, fmt.Errorf("cannot spawn a %q sub-agent: no read-only built-in tools remain once workspace-mutating tools are removed", mode)
+	}
+
+	// Re-wrap under the parent's profile so the sub-agent sees the same
+	// aliases as the parent.
+	var childTools tool.ToolRegistry = childRegistry
+	if presenter, err := tool.NewPresenter(childRegistry, parent.ToolProfile); err == nil {
 		childTools = presenter
 	} else {
 		// Degrade to the unaliased registry rather than aborting the spawn,
@@ -95,7 +170,9 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}
 
 	// Build the child RunConfig first so we have the child run ID to
-	// thread through the Cedar policy clone below.
+	// thread through the Cedar policy clone below. The recorded tools,
+	// permission policy and context strategy describe what the child
+	// enforces, not what the parent configured.
 	childConfig := *parentConfig
 	childConfig.RunID = subAgentRunID(parentConfig.RunID, parent.subAgentSpawns.Add(1))
 	childConfig.Prompt = subConfig.Prompt
@@ -103,19 +180,25 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	childConfig.MaxTurns = maxTurns
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
 	childConfig.OutputSchema = nil
+	childConfig.Tools.BuiltIn = builtIns
+	childConfig.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: parentConfig.ContextStrategy.MaxTokens}
+	if readOnly {
+		childConfig.PermissionPolicy = readOnlyChildPermissionPolicy(parentConfig.PermissionPolicy)
+	}
 	// Lifecycle hooks are parent-run-only: the child always gets hook.Noop
 	// (below), so clear the field here too, or a persisted child trace
 	// would claim hooks the sub-agent never ran.
 	childConfig.Hooks = nil
 
 	// A Cedar policy-engine policy gets a per-child clone with parentRunId
-	// populated, which is what lets the subagent-capability-cap.cedar
-	// starter policy match. permission.Unwrap/RewrapChain find and replace
-	// the policy through any wrapper chain (Rule-of-Two gate, metric
+	// and the child's mode populated, which is what lets the
+	// subagent-capability-cap.cedar starter policy and principal.mode
+	// rules match. permission.Unwrap/RewrapChain find and replace the
+	// policy through any wrapper chain (Rule-of-Two gate, metric
 	// recorder) so the clone doesn't shed those wrappers.
 	childPermissions := parent.Permissions
 	if parentPolicyEngine, ok := permission.Unwrap(parent.Permissions).(*permission.PolicyEnginePolicy); ok {
-		clone := parentPolicyEngine.ForChildRun(childConfig.RunID, "")
+		clone := parentPolicyEngine.ForChildRun(childConfig.RunID, mode)
 		if rewrapped, ok := permission.RewrapChain(parent.Permissions, clone); ok {
 			childPermissions = rewrapped
 		} else {
@@ -123,6 +206,9 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 			// more enforcement) rather than the per-child Cedar identity.
 			parent.Logger.WarnContext(ctx, "permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
 		}
+	}
+	if readOnly {
+		childPermissions = permission.NewSideEffectGate(mutating, childPermissions)
 	}
 
 	// Forwards every Turn/ToolCall the child records to the parent's
@@ -179,29 +265,49 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// the child's Run adds the inherited guidance snapshot's files.
 	childLoop.ProtectedWriteTargets = parent.ProtectedWriteTargets
 
-	start := time.Now()
-	runTrace, err := childLoop.Run(ctx, &childConfig)
-	elapsed := time.Since(start)
-
-	recordSpawnMetrics(ctx, parent, parentConfig, mode, runTrace, elapsed, err == nil)
-
-	if err != nil {
-		return &SubAgentResult{
-			Outcome: "error",
-			Output:  err.Error(),
-		}, nil
-	}
-
-	output := captureTp.lastText()
-	if output == "" {
-		output = fmt.Sprintf("Sub-agent completed with outcome: %s", runTrace.Outcome)
-	}
-
-	return &SubAgentResult{
-		Outcome: runTrace.Outcome,
-		Output:  output,
-		Turns:   runTrace.Turns,
+	return &subAgentRun{
+		loop:           childLoop,
+		config:         &childConfig,
+		capture:        captureTp,
+		effectiveTools: effectiveTools,
 	}, nil
+}
+
+// checkSubAgentMode rejects a child mode that would widen a read-only
+// parent's authority. Any child mode may be requested from a parent that
+// is not read-only; a read-only parent may request only read-only modes.
+func checkSubAgentMode(parentMode, childMode string) error {
+	if types.IsReadOnlyMode(parentMode) && !types.IsReadOnlyMode(childMode) {
+		return fmt.Errorf("a %q run cannot spawn a %q sub-agent: a read-only run may only spawn planning, review, research or toil sub-agents", parentMode, childMode)
+	}
+	return nil
+}
+
+// subAgentToolNames returns the internal IDs of every tool in registry
+// and the subset that are built-in tools, both in registration order.
+func subAgentToolNames(registry *tool.Registry) (all, builtIns []string) {
+	for _, def := range registry.List() {
+		all = append(all, def.Name)
+		if types.IsBuiltInTool(def.Name) {
+			builtIns = append(builtIns, def.Name)
+		}
+	}
+	return all, builtIns
+}
+
+// readOnlyChildPermissionPolicy returns the permission policy a read-only
+// child records. The child denies workspace-mutating tools in front of
+// the parent's policy, so an allow-all parent (or an allow-all
+// policy-engine fallback) is enforced as deny-side-effects.
+func readOnlyChildPermissionPolicy(parent types.PermissionPolicyConfig) types.PermissionPolicyConfig {
+	child := parent
+	switch {
+	case child.Type == "allow-all":
+		child = types.PermissionPolicyConfig{Type: "deny-side-effects"}
+	case child.Type == "policy-engine" && child.Fallback == "allow-all":
+		child.Fallback = "deny-side-effects"
+	}
+	return child
 }
 
 // recordSpawnMetrics emits stirrup.subagent.{spawns,duration,

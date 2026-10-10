@@ -152,6 +152,10 @@ type RunTrace struct {
 	// loaded for the system prompt, in render order. Populated by trace
 	// emitters implementing trace.RepositoryGuidanceRecorder.
 	RepositoryGuidance []RepositoryGuidanceRecord `json:"repositoryGuidance,omitempty"`
+	// EffectiveTools lists the internal IDs of every tool a sub-agent was
+	// offered, including MCP and control-plane tools that Config.Tools.BuiltIn
+	// cannot name. Set only on sub-agent traces.
+	EffectiveTools []string `json:"effectiveTools,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run

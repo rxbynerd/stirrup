@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -444,6 +445,14 @@ func TestRun_OversizedStructuredOutputIsAFailureNotTruncated(t *testing.T) {
 
 func TestSpawnSubAgent_ChildDoesNotInheritOutputSchema(t *testing.T) {
 	parent, _, _ := structuredTestLoop(`{"title":"parent","labels":["bug"]}`)
+	parent.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "read_file",
+		Description: "stub read_file",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "", nil
+		},
+	})
 	child := &answerProvider{answers: []string{"child prose answer"}}
 	parent.Provider = child
 	parentConfig := structuredTestConfig()
