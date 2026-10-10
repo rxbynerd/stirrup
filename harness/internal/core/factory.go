@@ -13,6 +13,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -282,7 +283,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// from config; built before buildComponents because the ask-upstream
 	// permission policy needs it.
 	if tp == nil {
-		tp, err = buildTransport(ctx, config.Transport)
+		tp, err = buildTransport(ctx, config.Transport, loopOpts.transportTLS)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build transport: %w", err)
@@ -1894,13 +1895,20 @@ func approvalRequiredToolSet(registry *tool.Registry) map[string]bool {
 	return out
 }
 
-func buildTransport(ctx context.Context, cfg types.TransportConfig) (transport.Transport, error) {
+func buildTransport(ctx context.Context, cfg types.TransportConfig, tlsCreds credentials.TransportCredentials) (transport.Transport, error) {
+	if tlsCreds != nil && cfg.Type != "grpc" {
+		return nil, fmt.Errorf("transport TLS settings require the grpc transport, got %q", cfg.Type)
+	}
 	switch cfg.Type {
 	case "grpc":
 		if cfg.Address == "" {
 			return nil, fmt.Errorf("gRPC transport requires an address")
 		}
-		return transport.NewGRPCTransport(ctx, cfg.Address)
+		var opts []transport.GRPCTransportOption
+		if tlsCreds != nil {
+			opts = append(opts, transport.WithTLSCredentials(tlsCreds))
+		}
+		return transport.NewGRPCTransport(ctx, cfg.Address, opts...)
 	case "stdio", "":
 		return transport.NewStdioTransport(os.Stdout, os.Stdin), nil
 	default:

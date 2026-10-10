@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +25,10 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+
+	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -41,6 +47,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
+	"github.com/rxbynerd/stirrup/harness/internal/transport/tlstest"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -1507,7 +1514,7 @@ func TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath(t *testing.T) {
 }
 
 func TestBuildTransport_Stdio(t *testing.T) {
-	tp, err := buildTransport(context.Background(), types.TransportConfig{Type: "stdio"})
+	tp, err := buildTransport(context.Background(), types.TransportConfig{Type: "stdio"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1517,7 +1524,7 @@ func TestBuildTransport_Stdio(t *testing.T) {
 }
 
 func TestBuildTransport_EmptyDefaultsToStdio(t *testing.T) {
-	tp, err := buildTransport(context.Background(), types.TransportConfig{})
+	tp, err := buildTransport(context.Background(), types.TransportConfig{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1527,7 +1534,7 @@ func TestBuildTransport_EmptyDefaultsToStdio(t *testing.T) {
 }
 
 func TestBuildTransport_GRPCMissingAddress(t *testing.T) {
-	_, err := buildTransport(context.Background(), types.TransportConfig{Type: "grpc"})
+	_, err := buildTransport(context.Background(), types.TransportConfig{Type: "grpc"}, nil)
 	if err == nil {
 		t.Fatal("expected error for gRPC without address")
 	}
@@ -1537,12 +1544,67 @@ func TestBuildTransport_GRPCMissingAddress(t *testing.T) {
 }
 
 func TestBuildTransport_UnsupportedType(t *testing.T) {
-	_, err := buildTransport(context.Background(), types.TransportConfig{Type: "websocket"})
+	_, err := buildTransport(context.Background(), types.TransportConfig{Type: "websocket"}, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
 	if !strings.Contains(err.Error(), "unsupported transport type") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildTransport_TLSRequiresGRPC(t *testing.T) {
+	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13})
+	for _, typ := range []string{"stdio", ""} {
+		_, err := buildTransport(context.Background(), types.TransportConfig{Type: typ}, creds)
+		if err == nil {
+			t.Fatalf("buildTransport(type=%q) with TLS credentials succeeded, want an error", typ)
+		}
+		if !strings.Contains(err.Error(), "require the grpc transport") {
+			t.Errorf("buildTransport(type=%q) error = %v, want the grpc-required message", typ, err)
+		}
+	}
+}
+
+func TestBuildTransport_GRPCUsesTLSCredentials(t *testing.T) {
+	pki := tlstest.New(t)
+	creds, err := transport.TLSConfig{
+		CAFile:   pki.CAFile,
+		CertFile: pki.ClientCertFile,
+		KeyFile:  pki.ClientKeyFile,
+	}.Credentials()
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+
+	serve := func(serverTLS *tls.Config) string {
+		lis, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen: %v", err)
+		}
+		var opts []grpc.ServerOption
+		if serverTLS != nil {
+			opts = append(opts, grpc.Creds(credentials.NewTLS(serverTLS)))
+		}
+		gs := grpc.NewServer(opts...)
+		pb.RegisterHarnessServiceServer(gs, &pb.UnimplementedHarnessServiceServer{})
+		go func() { _ = gs.Serve(lis) }()
+		t.Cleanup(gs.Stop)
+		return lis.Addr().String()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tp, err := buildTransport(ctx, types.TransportConfig{Type: "grpc", Address: serve(pki.ServerTLSConfig(true))}, creds)
+	if err != nil {
+		t.Fatalf("buildTransport over mutual TLS: %v", err)
+	}
+	_ = tp.Close()
+
+	if tp, err := buildTransport(ctx, types.TransportConfig{Type: "grpc", Address: serve(nil)}, creds); err == nil {
+		_ = tp.Close()
+		t.Fatal("buildTransport with TLS credentials connected to a plaintext server")
 	}
 }
 

@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"time"
+
+	"google.golang.org/grpc/credentials"
+)
 
 // LoopOptions carries entrypoint-supplied behaviour into BuildLoop.
 //
@@ -14,10 +18,11 @@ type LoopOptions struct {
 	debugRedactionDisabled bool
 	wireTrace              bool
 	sessionBudget          time.Duration
+	transportTLS           credentials.TransportCredentials
 }
 
 // LoopOption configures a LoopOptions value, keeping BuildLoop's signature
-// stable as debug-only knobs are added.
+// stable as CLI-only knobs are added.
 type LoopOption func(*LoopOptions)
 
 // WithDebugRedactionDisabled disables RunConfig.Redact() and the trace
@@ -39,4 +44,11 @@ func WithWireTrace(enabled bool) LoopOption {
 // A budget shorter than RunConfig.Timeout is raised to it.
 func WithSessionBudget(d time.Duration) LoopOption {
 	return func(o *LoopOptions) { o.sessionBudget = d }
+}
+
+// WithTransportTLS secures the gRPC transport BuildLoop dials with creds
+// (--transport-tls-*). BuildLoop fails when creds is set and the configured
+// transport is not grpc, rather than ignoring it.
+func WithTransportTLS(creds credentials.TransportCredentials) LoopOption {
+	return func(o *LoopOptions) { o.transportTLS = creds }
 }
