@@ -39,6 +39,10 @@ type PromptContext struct {
 	// OutputSchema is RunConfig.OutputSchema: the JSON Schema the final
 	// answer must satisfy. Empty when the run returns free text.
 	OutputSchema json.RawMessage
+
+	// RepositoryGuidance is the run's loaded repositoryGuidance files, in
+	// render order. Empty when the run configures none.
+	RepositoryGuidance []GuidanceDocument
 }
 
 // PromptBuilder constructs a system prompt from a PromptContext.
