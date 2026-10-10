@@ -32,13 +32,28 @@ const (
 	flagTransportTLSServerName = "transport-tls-server-name"
 )
 
-func controlPlaneTLSFromEnv() transport.TLSConfig {
-	return transport.TLSConfig{
-		CAFile:     os.Getenv(envControlPlaneTLSCAFile),
-		CertFile:   os.Getenv(envControlPlaneTLSCertFile),
-		KeyFile:    os.Getenv(envControlPlaneTLSKeyFile),
-		ServerName: os.Getenv(envControlPlaneTLSServerName),
+// controlPlaneTLSFromEnv reads the job's TLS settings. A variable that is
+// present but empty (for example an unrendered template) is an error
+// rather than "unset", so a requested TLS posture never degrades to
+// plaintext.
+func controlPlaneTLSFromEnv() (transport.TLSConfig, error) {
+	var cfg transport.TLSConfig
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{envControlPlaneTLSCAFile, &cfg.CAFile},
+		{envControlPlaneTLSCertFile, &cfg.CertFile},
+		{envControlPlaneTLSKeyFile, &cfg.KeyFile},
+		{envControlPlaneTLSServerName, &cfg.ServerName},
+	} {
+		v, present := os.LookupEnv(field.name)
+		if present && v == "" {
+			return transport.TLSConfig{}, fmt.Errorf("%s is set but empty: unset it for plaintext, or give it a value to use TLS", field.name)
+		}
+		*field.dst = v
 	}
+	return cfg, nil
 }
 
 // resolveControlPlaneTLS loads the job's TLS credentials, returning nil
@@ -63,12 +78,27 @@ func addTransportTLSFlags(f *flag.FlagSet) {
 	f.String(flagTransportTLSServerName, "", "Server name to verify the control plane's certificate against, when it differs from the --transport-addr host (requires --transport grpc).")
 }
 
-func transportTLSFromFlags(f *flag.FlagSet) transport.TLSConfig {
-	ca, _ := f.GetString(flagTransportTLSCAFile)
-	cert, _ := f.GetString(flagTransportTLSCertFile)
-	key, _ := f.GetString(flagTransportTLSKeyFile)
-	serverName, _ := f.GetString(flagTransportTLSServerName)
-	return transport.TLSConfig{CAFile: ca, CertFile: cert, KeyFile: key, ServerName: serverName}
+// transportTLSFromFlags reads the harness's --transport-tls-* flags. A
+// flag passed with an empty value is a usage error rather than "unset",
+// so a requested TLS posture never degrades to plaintext.
+func transportTLSFromFlags(f *flag.FlagSet) (transport.TLSConfig, error) {
+	var cfg transport.TLSConfig
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{flagTransportTLSCAFile, &cfg.CAFile},
+		{flagTransportTLSCertFile, &cfg.CertFile},
+		{flagTransportTLSKeyFile, &cfg.KeyFile},
+		{flagTransportTLSServerName, &cfg.ServerName},
+	} {
+		v, _ := f.GetString(field.name)
+		if f.Changed(field.name) && v == "" {
+			return transport.TLSConfig{}, usageError(fmt.Errorf("--%s is set but empty: omit it for plaintext, or give it a value to use TLS", field.name))
+		}
+		*field.dst = v
+	}
+	return cfg, nil
 }
 
 // resolveTransportTLSFlags loads the harness's --transport-tls-*

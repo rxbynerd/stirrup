@@ -1314,7 +1314,10 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err := validateDryRunFlags(f, dryRun); err != nil {
 		return err
 	}
-	tlsCfg := transportTLSFromFlags(f)
+	tlsCfg, err := transportTLSFromFlags(f)
+	if err != nil {
+		return err
+	}
 	tlsCreds, err := resolveTransportTLSFlags(tlsCfg, cfg.Transport.Type)
 	if err != nil {
 		return err

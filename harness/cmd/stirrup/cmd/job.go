@@ -71,7 +71,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
-	tlsCfg := controlPlaneTLSFromEnv()
+	tlsCfg, err := controlPlaneTLSFromEnv()
+	if err != nil {
+		return err
+	}
 	tlsCreds, err := resolveControlPlaneTLS(tlsCfg)
 	if err != nil {
 		return err

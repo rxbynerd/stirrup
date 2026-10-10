@@ -63,12 +63,23 @@ func countingListener(t *testing.T) (string, *atomic.Int32) {
 	return lis.Addr().String(), &accepted
 }
 
+// setControlPlaneTLSEnv sets each non-empty field and leaves the rest
+// unset; an empty field is "not requested", not "requested but empty".
 func setControlPlaneTLSEnv(t *testing.T, cfg transport.TLSConfig) {
 	t.Helper()
-	t.Setenv(envControlPlaneTLSCAFile, cfg.CAFile)
-	t.Setenv(envControlPlaneTLSCertFile, cfg.CertFile)
-	t.Setenv(envControlPlaneTLSKeyFile, cfg.KeyFile)
-	t.Setenv(envControlPlaneTLSServerName, cfg.ServerName)
+	for name, value := range map[string]string{
+		envControlPlaneTLSCAFile:     cfg.CAFile,
+		envControlPlaneTLSCertFile:   cfg.CertFile,
+		envControlPlaneTLSKeyFile:    cfg.KeyFile,
+		envControlPlaneTLSServerName: cfg.ServerName,
+	} {
+		t.Setenv(name, value)
+		if value == "" {
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatalf("unset %s: %v", name, err)
+			}
+		}
+	}
 }
 
 func captureJobStderr(t *testing.T) *bytes.Buffer {
@@ -114,6 +125,39 @@ func TestRunJob_TLSSettingErrorsFailBeforeDial(t *testing.T) {
 			}
 			if strings.Contains(stderr.String(), "control plane transport") {
 				t.Errorf("startup mode was logged despite the TLS error: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunJob_EmptyTLSVariableFailsBeforeDial(t *testing.T) {
+	for _, name := range []string{
+		envControlPlaneTLSCAFile,
+		envControlPlaneTLSCertFile,
+		envControlPlaneTLSKeyFile,
+		envControlPlaneTLSServerName,
+	} {
+		t.Run(name, func(t *testing.T) {
+			useTempMarkerPaths(t)
+			addr, accepted := countingListener(t)
+			t.Setenv("CONTROL_PLANE_ADDR", addr)
+			setControlPlaneTLSEnv(t, transport.TLSConfig{})
+			t.Setenv(name, "")
+			stderr := captureJobStderr(t)
+
+			err := runJob(jobCmd, nil)
+			if err == nil {
+				t.Fatal("runJob succeeded, want an error for an empty TLS variable")
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error = %q, want it to name %s", err, name)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if n := accepted.Load(); n != 0 {
+				t.Errorf("control plane accepted %d connections, want none", n)
+			}
+			if strings.Contains(stderr.String(), "control plane transport") {
+				t.Errorf("startup mode was logged despite the error: %q", stderr.String())
 			}
 		})
 	}
@@ -263,6 +307,49 @@ func TestResolveTransportTLSFlags(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestTransportTLSFromFlags(t *testing.T) {
+	names := []string{flagTransportTLSCAFile, flagTransportTLSCertFile, flagTransportTLSKeyFile, flagTransportTLSServerName}
+
+	t.Run("all unset is plaintext", func(t *testing.T) {
+		f := newTestHarnessCommand().Flags()
+		cfg, err := transportTLSFromFlags(f)
+		if err != nil || cfg.Enabled() {
+			t.Fatalf("transportTLSFromFlags() = (%+v, %v), want a disabled config and no error", cfg, err)
+		}
+	})
+
+	for _, name := range names {
+		t.Run("empty "+name, func(t *testing.T) {
+			f := newTestHarnessCommand().Flags()
+			if err := f.Set(name, ""); err != nil {
+				t.Fatalf("Set(%s): %v", name, err)
+			}
+			_, err := transportTLSFromFlags(f)
+			if err == nil {
+				t.Fatal("transportTLSFromFlags succeeded, want an error for an empty value")
+			}
+			if !strings.Contains(err.Error(), "--"+name) {
+				t.Errorf("error = %q, want it to name --%s", err, name)
+			}
+			if got := classifyExitCode(err); got != exitUsage {
+				t.Errorf("exit code = %d, want %d", got, exitUsage)
+			}
+		})
+	}
+}
+
+func TestRunHarness_EmptyTransportTLSFlagIsRejected(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	mustSetFlags(t, cmd.Flags().Set, map[string]string{
+		"prompt":               "hello",
+		flagTransportTLSCAFile: "",
+	})
+	err := runHarness(cmd, nil)
+	if err == nil || classifyExitCode(err) != exitUsage || !strings.Contains(err.Error(), "--"+flagTransportTLSCAFile) {
+		t.Fatalf("runHarness() error = %v, want a usage error naming --%s", err, flagTransportTLSCAFile)
 	}
 }
 
