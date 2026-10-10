@@ -73,6 +73,7 @@ func TestEvalOutcomeFor(t *testing.T) {
 		// relying on the unknown-outcome default below.
 		{name: "setup_failed", trace: RunTrace{Outcome: "setup_failed"}, want: EvalInconclusive},
 		{name: "hook_failed", trace: RunTrace{Outcome: "hook_failed"}, want: EvalInconclusive},
+		{name: "handoff_failed", trace: RunTrace{Outcome: "handoff_failed"}, want: EvalInconclusive},
 
 		// Unknown / empty outcomes fall through to inconclusive so a
 		// future outcome class added upstream cannot silently land in

@@ -88,6 +88,10 @@ type RunResult struct {
 	// CommandOutputArchive is the local path or durable URI of the compressed
 	// command-output compliance archive, when command output was captured.
 	CommandOutputArchive string `json:"commandOutputArchive,omitempty"`
+
+	// Git mirrors RunTrace.Git: the branch, result SHA and base SHA of a
+	// deterministic-git run. Omitted when the git strategy is "none".
+	Git *GitHandoff `json:"git,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

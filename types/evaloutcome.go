@@ -36,7 +36,8 @@ func EvalOutcomeFor(t RunTrace) EvalOutcome {
 	case "verification_failed", "error", "tool_failures":
 		return EvalFailed
 	case "max_turns", "budget_exceeded", "timeout", "max_tokens", "stalled",
-		"cancelled", "verification_error", "setup_failed", "hook_failed":
+		"cancelled", "verification_error", "setup_failed", "hook_failed",
+		"handoff_failed":
 		return EvalInconclusive
 	default:
 		// Conservative default: an unknown/future outcome must not be

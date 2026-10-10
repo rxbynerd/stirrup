@@ -209,7 +209,9 @@ type RunConfig struct {
 
 	// Hooks configures operator-authored lifecycle hooks that run around
 	// the agentic session: PreRun before it starts, PostRun after it
-	// ends. Nil means no hooks. See docs/configuration.md#lifecycle-hooks.
+	// ends and after the final git checkpoint, so workspace edits made by
+	// PostRun hooks are never committed. Nil means no hooks. See
+	// docs/configuration.md#lifecycle-hooks.
 	Hooks *HooksConfig `json:"hooks,omitempty"`
 }
 
@@ -1074,8 +1076,9 @@ func (rc *RunConfig) EffectiveToolChoiceEscalationMaxRetries() int {
 // HooksConfig configures operator-authored lifecycle hooks that run around
 // the agentic session: PreRun before GitStrategy.Setup (clone, provision a
 // runtime; a fatal failure aborts the run with outcome "setup_failed"),
-// PostRun after GitStrategy.Finalise (artifact submission, smoke tests).
-// Hook output is trace-only and never enters the model's context; hooks run
+// PostRun after GitStrategy.Finalise (artifact submission, smoke tests);
+// Finalise makes the final checkpoint commit, so workspace edits made by
+// PostRun hooks are not committed. Hook output is trace-only and never enters the model's context; hooks run
 // through the run's own Executor, sharing its sandbox and egress posture.
 // See docs/configuration.md#lifecycle-hooks.
 type HooksConfig struct {

@@ -92,15 +92,18 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "command_output_capture_failed" | "command_output_archive_failed", or a
+	// "handoff_failed" | "command_output_capture_failed" |
+	// "command_output_archive_failed", or a
 	// provider stop reason passed through verbatim, such as "refusal" (the
 	// model declined to respond; see StopDetails) or
 	// "model_context_window_exceeded" (the response filled the model's
 	// context window and is truncated).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
-	// hook_failed and both command_output_* outcomes claim only an
-	// otherwise-successful run — the primary failure cause stays
-	// authoritative — and a capture failure outranks an archive failure.
+	// handoff_failed reports a deterministic-git final checkpoint that failed
+	// or left the working tree dirty (see Git). handoff_failed, hook_failed
+	// and both command_output_* outcomes claim only an otherwise-successful
+	// run — the primary failure cause stays authoritative — and a capture
+	// failure outranks an archive failure.
 	Outcome string `json:"outcome"`
 	// StopDetails is the final model turn's provider-reported stop detail
 	// when the run ended on a non-tool stop reason, such as the category
@@ -117,6 +120,26 @@ type RunTrace struct {
 	// (today, the JSONL emitter).
 	HookResults          []HookExecution `json:"hookResults,omitempty"`
 	CommandOutputArchive string          `json:"commandOutputArchive,omitempty"`
+	// Git is the git state the run handed off after its final checkpoint.
+	// Nil when the git strategy does not manage git (gitStrategy "none").
+	Git *GitHandoff `json:"git,omitempty"`
+}
+
+// GitHandoff is the git state a deterministic-git run hands off: the run
+// branch, the commit holding the run's result, and the commit the branch
+// was created from, so a control plane can diff the two.
+type GitHandoff struct {
+	Branch string `json:"branch,omitempty"`
+	SHA    string `json:"sha,omitempty"`
+	// BaseSHA is HEAD when the run branch was created. Empty when the
+	// branch was created on a repository with no commits.
+	BaseSHA string `json:"baseSha,omitempty"`
+	// Dirty is true when `git status --porcelain` still reported changes
+	// (ignored files excluded) after the final checkpoint.
+	Dirty bool `json:"dirty,omitempty"`
+	// Error is the scrubbed, length-capped reason the final checkpoint
+	// failed or left the working tree dirty. Empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // CommandOutputStreamRecord describes one complete command stream without
