@@ -57,3 +57,16 @@ func assertFinding(t *testing.T, findings []ToolGuardFinding, rule string) {
 	}
 	t.Fatalf("expected finding %q in %#v", rule, findings)
 }
+
+func TestIsCredentialPath(t *testing.T) {
+	for _, p := range []string{".env", "./app/.env", ".ssh/config", "home/.aws/credentials", "tls/server.pem", `dir\.env`} {
+		if !IsCredentialPath(p) {
+			t.Errorf("IsCredentialPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"main.go", "docs/environment.md", "src/envelope.txt"} {
+		if IsCredentialPath(p) {
+			t.Errorf("IsCredentialPath(%q) = true, want false", p)
+		}
+	}
+}

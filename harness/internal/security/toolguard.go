@@ -164,6 +164,13 @@ func isWriteTool(toolName string, sideEffects bool) bool {
 	}
 }
 
+// IsCredentialPath reports whether value names or contains a path that the
+// tool guard treats as credential material. Callers use it to withhold file
+// text from model-visible diagnostics for such paths.
+func IsCredentialPath(value string) bool {
+	return containsCredentialPath(value)
+}
+
 func containsCredentialPath(value string) bool {
 	normalized := normalizeGuardPath(value)
 	for _, match := range credentialPathMatchers {
