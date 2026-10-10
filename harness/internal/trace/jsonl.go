@@ -191,14 +191,15 @@ func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 
 	scrubbed := scrubTurnRecord(turn, e.redactionDisabled)
 	ev := Event{
-		Kind:          EventKindTurnRecord,
-		RunID:         e.runIDLocked(scrubbed.RunID),
-		ParentRunID:   scrubbed.ParentRunID,
-		Turn:          scrubbed.Turn,
-		ModelInput:    &scrubbed.ModelInput,
-		ModelOutput:   scrubbed.ModelOutput,
-		ToolCalls:     scrubbed.ToolCalls,
-		ResponseModel: scrubbed.ResponseModel,
+		Kind:                EventKindTurnRecord,
+		RunID:               e.runIDLocked(scrubbed.RunID),
+		ParentRunID:         scrubbed.ParentRunID,
+		Turn:                scrubbed.Turn,
+		ModelInput:          &scrubbed.ModelInput,
+		ModelOutput:         scrubbed.ModelOutput,
+		ToolCalls:           scrubbed.ToolCalls,
+		ResponseModel:       scrubbed.ResponseModel,
+		OutputLimitRecovery: scrubbed.OutputLimitRecovery,
 	}
 	_ = e.writeLineLocked(ev)
 }
@@ -476,13 +477,14 @@ func (e *JSONLTraceEmitter) Close() error {
 // secret-redaction one, so a debug build still never persists it.
 func scrubTurnRecord(t types.TurnRecord, redactionDisabled bool) types.TurnRecord {
 	out := types.TurnRecord{
-		Turn:          t.Turn,
-		ModelInput:    scrubModelInput(t.ModelInput, redactionDisabled),
-		ModelOutput:   scrubContentBlocks(t.ModelOutput, redactionDisabled),
-		ToolCalls:     make([]types.ToolCallRecord, len(t.ToolCalls)),
-		RunID:         t.RunID,
-		ParentRunID:   t.ParentRunID,
-		ResponseModel: scrubOrPass(t.ResponseModel, redactionDisabled),
+		Turn:                t.Turn,
+		ModelInput:          scrubModelInput(t.ModelInput, redactionDisabled),
+		ModelOutput:         scrubContentBlocks(t.ModelOutput, redactionDisabled),
+		ToolCalls:           make([]types.ToolCallRecord, len(t.ToolCalls)),
+		RunID:               t.RunID,
+		ParentRunID:         t.ParentRunID,
+		ResponseModel:       scrubOrPass(t.ResponseModel, redactionDisabled),
+		OutputLimitRecovery: t.OutputLimitRecovery,
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = scrubToolCallRecord(tc, redactionDisabled)

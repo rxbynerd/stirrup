@@ -265,6 +265,9 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 			"modelOutput": tr.ModelOutput,
 			"toolCalls":   tr.ToolCalls,
 		}
+		if tr.OutputLimitRecovery {
+			ev["outputLimitRecovery"] = true
+		}
 		buf.Write(mustMarshal(t, ev))
 		buf.WriteByte('\n')
 	}
@@ -392,6 +395,29 @@ func TestReadRecording_StreamingFormat(t *testing.T) {
 	}
 	if rec.FinalOutcome.Outcome != "success" {
 		t.Errorf("FinalOutcome.Outcome: got %q, want success", rec.FinalOutcome.Outcome)
+	}
+}
+
+// TestReadRecording_PreservesOutputLimitRecovery pins that the per-turn
+// output-limit recovery flag survives the turn_record round trip.
+func TestReadRecording_PreservesOutputLimitRecovery(t *testing.T) {
+	turns := []types.TurnRecord{
+		{Turn: 0, OutputLimitRecovery: true},
+		{Turn: 1},
+	}
+	body := streamingTrace(t, "run-olr", types.RunConfig{RunID: "run-olr"}, turns,
+		types.RunTrace{ID: "run-olr", Turns: 2, Outcome: "success"})
+
+	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if len(rec.Turns) != 2 {
+		t.Fatalf("Turns: got %d, want 2", len(rec.Turns))
+	}
+	if !rec.Turns[0].OutputLimitRecovery || rec.Turns[1].OutputLimitRecovery {
+		t.Errorf("OutputLimitRecovery = %v, %v; want true, false",
+			rec.Turns[0].OutputLimitRecovery, rec.Turns[1].OutputLimitRecovery)
 	}
 }
 

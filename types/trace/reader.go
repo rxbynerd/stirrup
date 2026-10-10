@@ -217,9 +217,10 @@ type streamedEvent struct {
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 	SubRun        *types.SubRunSummary       `json:"subRun,omitempty"`
 
-	HarnessVersion     string `json:"harnessVersion,omitempty"`
-	SystemPrompt       string `json:"systemPrompt,omitempty"`
-	SystemPromptSHA256 string `json:"systemPromptSha256,omitempty"`
+	HarnessVersion      string `json:"harnessVersion,omitempty"`
+	SystemPrompt        string `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256  string `json:"systemPromptSha256,omitempty"`
+	OutputLimitRecovery bool   `json:"outputLimitRecovery,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -346,12 +347,13 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 			}
 		case eventKindTurnRecord:
 			tr := types.TurnRecord{
-				Turn:          ev.Turn,
-				ModelOutput:   ev.ModelOutput,
-				ToolCalls:     ev.ToolCalls,
-				RunID:         ev.RunID,
-				ParentRunID:   ev.ParentRunID,
-				ResponseModel: ev.ResponseModel,
+				Turn:                ev.Turn,
+				ModelOutput:         ev.ModelOutput,
+				ToolCalls:           ev.ToolCalls,
+				RunID:               ev.RunID,
+				ParentRunID:         ev.ParentRunID,
+				ResponseModel:       ev.ResponseModel,
+				OutputLimitRecovery: ev.OutputLimitRecovery,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput

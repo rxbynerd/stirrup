@@ -79,6 +79,8 @@ type Event struct {
 	ModelOutput []types.ContentBlock   `json:"modelOutput,omitempty"`
 	ToolCalls   []types.ToolCallRecord `json:"toolCalls,omitempty"`
 	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
+	// OutputLimitRecovery carries TurnRecord.OutputLimitRecovery.
+	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
 
 	// ResponseModel is the model the provider reported answering with —
 	// populated for turn_record when the provider reports one.

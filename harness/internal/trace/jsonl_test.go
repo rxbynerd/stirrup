@@ -768,6 +768,34 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery pins
+// that a turn the loop continued past an output-limit stop is marked on
+// its turn_record line, and that other turns omit the field.
+func TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	emitter.Start("run-olr", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0, OutputLimitRecovery: true})
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	var flags []bool
+	for _, ev := range readEvents(t, buf.Bytes()) {
+		if ev.Kind == EventKindTurnRecord {
+			flags = append(flags, ev.OutputLimitRecovery)
+		}
+	}
+	if !reflect.DeepEqual(flags, []bool{true, false}) {
+		t.Errorf("turn_record outputLimitRecovery = %v, want [true false]", flags)
+	}
+	if n := strings.Count(buf.String(), `"outputLimitRecovery":true`); n != 1 {
+		t.Errorf("on-disk outputLimitRecovery:true count = %d, want 1", n)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.
