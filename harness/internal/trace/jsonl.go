@@ -51,6 +51,7 @@ type JSONLTraceEmitter struct {
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
 	hookResults          []types.HookExecution
+	verificationResults  []types.VerificationResult
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
@@ -62,6 +63,7 @@ type JSONLTraceEmitter struct {
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
+var _ VerificationRecorder = (*JSONLTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
@@ -120,6 +122,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.hookResults = nil
+	e.verificationResults = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.degradedCapabilities = nil
@@ -258,6 +261,14 @@ func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
 		Hook:  &scrubbed,
 	}
 	_ = e.writeLineLocked(ev)
+}
+
+// RecordVerification appends a verifier attempt for the run_finished
+// event's embedded RunTrace.
+func (e *JSONLTraceEmitter) RecordVerification(result types.VerificationResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.verificationResults = append(e.verificationResults, result)
 }
 
 // RecordFinalAssistantText stores the run's final assistant text so the
@@ -417,6 +428,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		TokenUsage:           totalTokens,
 		ToolCalls:            summaries,
 		PermissionDenials:    e.permissionDenials,
+		VerificationResults:  e.verificationResults,
 		Outcome:              outcome,
 		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,

@@ -97,6 +97,7 @@ type OTelTraceEmitter struct {
 	turns                []types.TurnTrace
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
+	verificationResults  []types.VerificationResult
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
@@ -142,6 +143,7 @@ var (
 	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
+	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
 )
 
 // OTelTraceEmitterOptions configures NewOTelTraceEmitter.
@@ -240,6 +242,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.verificationResults = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.gitHandoff = nil
@@ -358,6 +361,15 @@ func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalAssistantText = text
+}
+
+// RecordVerification appends a verifier attempt for the RunTrace
+// aggregate returned by Finish. The loop's verifier.verify spans carry
+// the per-attempt telemetry.
+func (e *OTelTraceEmitter) RecordVerification(result types.VerificationResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.verificationResults = append(e.verificationResults, result)
 }
 
 // RecordStopDetails stores the run's final stop details so the RunTrace
@@ -548,6 +560,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		TokenUsage:           totalTokens,
 		ToolCalls:            summaries,
 		PermissionDenials:    e.permissionDenials,
+		VerificationResults:  e.verificationResults,
 		Outcome:              outcome,
 		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,
