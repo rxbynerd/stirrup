@@ -1,0 +1,62 @@
+{
+  "runId": "autonomous-preset",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5"
+  },
+  "promptBuilder": { "type": "default" },
+  "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
+  "executor": {
+    "type": "container",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
+    "registryAllowlist": ["ghcr.io/rxbynerd/*"],
+    "runtime": "runsc",
+    "network": {
+      "mode": "allowlist",
+      "allowlist": ["proxy.golang.org", "sum.golang.org"]
+    },
+    "resources": { "cpus": 2.0, "memoryMb": 2048, "diskMb": 8192, "pids": 256 },
+    "workspaceExportTo": "gs://example-stirrup-exports/autonomous-preset"
+  },
+  "editStrategy": { "type": "multi", "fuzzyThreshold": 0.85 },
+  "verifier": {
+    "type": "test-runner",
+    "command": "go test ./...",
+    "timeout": 300
+  },
+  "permissionPolicy": {
+    "type": "policy-engine",
+    "policyFile": "examples/policies/autonomous-allow-list.cedar",
+    "fallback": "deny-all"
+  },
+  "gitStrategy": { "type": "deterministic" },
+  "transport": { "type": "stdio" },
+  "resultSink": { "type": "stdout-json" },
+  "traceEmitter": {
+    "type": "otel",
+    "endpoint": "localhost:4317"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "grep_files",
+      "find_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "ruleOfTwo": { "enforce": true },
+  "codeScanner": { "type": "patterns", "blockOnWarn": false },
+  "maxTurns": 30,
+  "timeout": 1800,
+  "maxTokenBudget": 2000000,
+  "logLevel": "info"
+}
