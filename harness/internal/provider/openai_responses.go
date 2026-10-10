@@ -612,6 +612,7 @@ func (u responsesUsage) applyTo(ev *types.StreamEvent) {
 // responsesResponse is the response object delivered on response.completed
 // and response.incomplete. Only the fields stirrup acts on are unmarshalled.
 type responsesResponse struct {
+	Model             string `json:"model,omitempty"`
 	Status            string `json:"status"`
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
@@ -1770,9 +1771,10 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			return false
 		}
 		ev := types.StreamEvent{
-			Type:         "message_complete",
-			StopReason:   deriveStopReason(payload.Response),
-			ReplayFields: replay.finalize(ctx, payload.Response.RawOutput, false),
+			Type:          "message_complete",
+			StopReason:    deriveStopReason(payload.Response),
+			ReplayFields:  replay.finalize(ctx, payload.Response.RawOutput, false),
+			ResponseModel: payload.Response.Model,
 		}
 		if payload.Response.Usage != nil {
 			payload.Response.Usage.applyTo(&ev)
@@ -1806,9 +1808,10 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			}
 		}
 		ev := types.StreamEvent{
-			Type:         "message_complete",
-			StopReason:   stop,
-			ReplayFields: replay.finalize(ctx, payload.Response.RawOutput, true),
+			Type:          "message_complete",
+			StopReason:    stop,
+			ReplayFields:  replay.finalize(ctx, payload.Response.RawOutput, true),
+			ResponseModel: payload.Response.Model,
 		}
 		if payload.Response.Usage != nil {
 			payload.Response.Usage.applyTo(&ev)

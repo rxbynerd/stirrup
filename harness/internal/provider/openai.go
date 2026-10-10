@@ -617,6 +617,7 @@ type openaiToolDefinition struct {
 // openaiChunk is a single SSE chunk from the streaming Chat Completions API.
 type openaiChunk struct {
 	ID      string              `json:"id"`
+	Model   string              `json:"model,omitempty"`
 	Choices []openaiChunkChoice `json:"choices"`
 	Usage   *openaiUsage        `json:"usage,omitempty"`
 }
@@ -1197,12 +1198,15 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	// Guards against a second usage-only message_complete once one
 	// already carried the usage.
 	usageEmitted := false
+	// Model the server reports on its chunks, attached to every
+	// message_complete so it survives whichever one the loop reads last.
+	var responseModel string
 
 	flushTrailingUsage := func() {
 		if streamUsage == nil || usageEmitted {
 			return
 		}
-		ev := types.StreamEvent{Type: "message_complete"}
+		ev := types.StreamEvent{Type: "message_complete", ResponseModel: responseModel}
 		streamUsage.applyTo(&ev)
 		emitEvent(ev)
 		usageEmitted = true
@@ -1264,9 +1268,10 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 			// stop reason.
 			if !messageCompleted && len(replayFieldsCapture) > 0 {
 				emitEvent(types.StreamEvent{
-					Type:         "message_complete",
-					StopReason:   mapFinishReason("stop"),
-					ReplayFields: flattenReplayCapture(replayFieldsCapture),
+					Type:          "message_complete",
+					StopReason:    mapFinishReason("stop"),
+					ReplayFields:  flattenReplayCapture(replayFieldsCapture),
+					ResponseModel: responseModel,
 				})
 			}
 			flushTrailingUsage()
@@ -1277,6 +1282,10 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse chunk: %w", err)})
 			return
+		}
+
+		if chunk.Model != "" {
+			responseModel = chunk.Model
 		}
 
 		// The usage block may ride on the finish chunk or on a trailing
@@ -1346,8 +1355,9 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 
 				stopReason := mapFinishReason(*choice.FinishReason)
 				ev := types.StreamEvent{
-					Type:       "message_complete",
-					StopReason: stopReason,
+					Type:          "message_complete",
+					StopReason:    stopReason,
+					ResponseModel: responseModel,
 					// Rides on message_complete so the agentic loop persists
 					// it on the assistant Message and threads it back via
 					// translateMessages on the next turn.

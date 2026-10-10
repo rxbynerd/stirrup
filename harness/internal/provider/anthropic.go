@@ -499,6 +499,14 @@ type sseDelta struct {
 	Signature   string `json:"signature,omitempty"`
 }
 
+// sseMessageStart is the message_start event; only the model the API
+// reports having used is read from it.
+type sseMessageStart struct {
+	Message struct {
+		Model string `json:"model"`
+	} `json:"message"`
+}
+
 type sseMessageDelta struct {
 	Delta struct {
 		StopReason string `json:"stop_reason"`
@@ -909,6 +917,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), maxSSEScannerBuffer)
 	var currentEvent string
+	var responseModel string
 
 	for scanner.Scan() {
 		select {
@@ -937,6 +946,14 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 		data := strings.TrimPrefix(line, "data: ")
 
 		switch currentEvent {
+		case "message_start":
+			// Best effort: the model figure is trace metadata, so a
+			// malformed message_start must not fail the stream.
+			var ms sseMessageStart
+			if err := json.Unmarshal([]byte(data), &ms); err == nil {
+				responseModel = ms.Message.Model
+			}
+
 		case "content_block_start":
 			var cbs sseContentBlockStart
 			if err := json.Unmarshal([]byte(data), &cbs); err != nil {
@@ -1035,9 +1052,10 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				return
 			}
 			ev := types.StreamEvent{
-				Type:        "message_complete",
-				StopReason:  md.Delta.StopReason,
-				StopDetails: parseAnthropicStopDetails(md.Delta.StopDetails),
+				Type:          "message_complete",
+				StopReason:    md.Delta.StopReason,
+				StopDetails:   parseAnthropicStopDetails(md.Delta.StopDetails),
+				ResponseModel: responseModel,
 			}
 			if md.Usage != nil {
 				md.Usage.applyTo(&ev)

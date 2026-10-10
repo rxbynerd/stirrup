@@ -48,6 +48,12 @@ type StreamEvent struct {
 	// reported none.
 	StopDetails *StopDetails `json:"stopDetails,omitempty"`
 
+	// ResponseModel is the model identifier the provider reports having
+	// answered with, which can be a dated snapshot of the requested model
+	// alias. Populated only on "message_complete" events; empty when the
+	// provider reports none.
+	ResponseModel string `json:"responseModel,omitempty"`
+
 	// ThoughtSignature is the opaque provider-private blob captured for
 	// round-trip on the next turn: Gemini's thoughtSignature on "tool_call"
 	// events, and Anthropic's signature or redacted data on "thinking" /

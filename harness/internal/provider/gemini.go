@@ -405,6 +405,8 @@ func (g *GeminiAdapter) consumeSSE(
 		delete(toolBufs, name)
 	}
 
+	var responseModel string
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -446,6 +448,10 @@ func (g *GeminiAdapter) consumeSSE(
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse generateContent chunk: %w", err)})
 			return
+		}
+
+		if chunk.ModelVersion != "" {
+			responseModel = chunk.ModelVersion
 		}
 
 		// Decode the same chunk bytes a second time as a generic map so
@@ -564,8 +570,9 @@ func (g *GeminiAdapter) consumeSSE(
 					stop = "tool_use"
 				}
 				ev := types.StreamEvent{
-					Type:       "message_complete",
-					StopReason: stop,
+					Type:          "message_complete",
+					StopReason:    stop,
+					ResponseModel: responseModel,
 				}
 				if chunk.UsageMetadata != nil {
 					chunk.UsageMetadata.applyTo(&ev)
@@ -583,8 +590,9 @@ func (g *GeminiAdapter) consumeSSE(
 		// than the safety_blocked verdict the operator needs to see.
 		if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
 			ev := types.StreamEvent{
-				Type:       "message_complete",
-				StopReason: "safety_blocked",
+				Type:          "message_complete",
+				StopReason:    "safety_blocked",
+				ResponseModel: responseModel,
 			}
 			if chunk.UsageMetadata != nil {
 				chunk.UsageMetadata.applyTo(&ev)
