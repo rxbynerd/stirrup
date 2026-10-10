@@ -122,6 +122,7 @@ func cmdRun(args []string) {
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of task trials to run in parallel (values <= 0 are treated as 1)")
 	trials := fs.Int("trials", 1, fmt.Sprintf("Independent runs per task (1-%d), each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.", eval.MaxTrials))
+	requireHealthy := fs.Bool("require-healthy", false, "Make the comparison gate count a judge pass only when the run was healthy (the harness exited zero and the trace outcome is success). Task outcomes and the pass rate stay judge-based; the choice is recorded in the result. Also settable per suite with the require_healthy attribute.")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
@@ -201,16 +202,17 @@ func cmdRun(args []string) {
 	defer cancel()
 
 	result, err := runner.RunSuite(ctx, suite, runner.RunConfig{
-		HarnessPath: *harnessPath,
-		OutputDir:   *outputDir,
-		Concurrency: *concurrency,
-		Trials:      runTrials,
-		DryRun:      *dryRun,
-		Model:       *model,
-		PromptModel: *promptModel,
-		Provider:    *provider,
-		BaseURL:     *baseURL,
-		APIKeyRef:   *apiKeyRef,
+		HarnessPath:    *harnessPath,
+		OutputDir:      *outputDir,
+		Concurrency:    *concurrency,
+		Trials:         runTrials,
+		DryRun:         *dryRun,
+		RequireHealthy: *requireHealthy,
+		Model:          *model,
+		PromptModel:    *promptModel,
+		Provider:       *provider,
+		BaseURL:        *baseURL,
+		APIKeyRef:      *apiKeyRef,
 		AnthropicWIF: runner.AnthropicWIFConfig{
 			FederationRuleID:  *anthropicFederationRuleID,
 			OrganizationID:    *anthropicOrganizationID,
@@ -434,6 +436,7 @@ func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 			_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
 				len(result.Tasks), passed, failed, errored)
 			_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
+			printHealthyPassRate(w, result)
 			printJudgeCache(w, result)
 			return
 		}
@@ -441,7 +444,23 @@ func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 	_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
 	_, _ = fmt.Fprintf(w, "Pass rate: %.1f%%\n", result.PassRate*100)
+	printHealthyPassRate(w, result)
 	printJudgeCache(w, result)
+}
+
+// printHealthyPassRate writes the share of trials whose judge passed and
+// whose run was healthy, with the sample it covers, beside the judge-based
+// pass rate. Results without run health print nothing.
+func printHealthyPassRate(w io.Writer, result eval.SuiteResult) {
+	if result.HealthyPassRate == nil {
+		return
+	}
+	trials := max(result.Trials, 1)
+	_, _ = fmt.Fprintf(w, "Healthy pass rate: %.1f%% (judge passed and run healthy; %d tasks, %d trials each)\n",
+		*result.HealthyPassRate*100, len(result.Tasks), trials)
+	if result.RequireHealthy {
+		_, _ = fmt.Fprintln(w, "require_healthy: the comparison gate counts only healthy judge passes")
+	}
 }
 
 func printJudgeCache(w io.Writer, result eval.SuiteResult) {

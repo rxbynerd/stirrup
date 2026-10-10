@@ -27,6 +27,7 @@ func FormatText(report eval.ComparisonReport) string {
 		s.CurrentPassRate*100,
 		s.PassRateDelta*100,
 	)
+	writeHealthyRate(&b, s.Baseline, s.Current)
 	writeRate(&b, "baseline", s.Baseline)
 	writeRate(&b, "current", s.Current)
 	writePaired(&b, s.Paired, len(report.Tasks))
@@ -81,12 +82,46 @@ func writeRate(b *strings.Builder, label string, r eval.RateSummary) {
 	if r.StdErr != nil {
 		se = fmt.Sprintf("%.3f", *r.StdErr)
 	}
-	fmt.Fprintf(b, "  %-9s %.1f%% (95%% Wilson over tasks [%.1f%%, %.1f%%]), SE %s, n=%d tasks, K=%d\n",
+	fmt.Fprintf(b, "  %-9s %.1f%% (95%% Wilson over tasks [%.1f%%, %.1f%%]), SE %s, n=%d tasks, K=%d",
 		label+":", r.PassRate*100, r.WilsonLow*100, r.WilsonHigh*100, se, r.Tasks, r.Trials)
+	if r.HealthyPassRate != nil {
+		fmt.Fprintf(b, ", healthy %.1f%%", *r.HealthyPassRate*100)
+	}
+	b.WriteString("\n")
 	if len(r.PassHatK) > 0 {
 		fmt.Fprintf(b, "  %-9s pass^k (k=1..%d): %s; pass@k: %s\n",
 			"", len(r.PassHatK), joinFloats(r.PassHatK), joinFloats(r.PassAtK))
 	}
+}
+
+// writeHealthyRate prints the healthy pass rate of both sides, which count a
+// judge pass only when the run was healthy, and notes a side whose gate
+// does the same.
+func writeHealthyRate(b *strings.Builder, baseline, current eval.RateSummary) {
+	if baseline.HealthyPassRate == nil && current.HealthyPassRate == nil {
+		return
+	}
+	fmt.Fprintf(b, "Healthy Pass Rate: %s → %s", formatRate(baseline.HealthyPassRate), formatRate(current.HealthyPassRate))
+	if baseline.HealthyPassRate != nil && current.HealthyPassRate != nil {
+		fmt.Fprintf(b, " (%+.1f%%)", (*current.HealthyPassRate-*baseline.HealthyPassRate)*100)
+	}
+	b.WriteString("\n")
+	for _, side := range []struct {
+		label string
+		rate  eval.RateSummary
+	}{{"baseline", baseline}, {"current", current}} {
+		if side.rate.RequireHealthy {
+			fmt.Fprintf(b, "  %s counts a pass only when the run was healthy (require_healthy); its judge-only pass rate is %s\n",
+				side.label, formatRate(side.rate.JudgePassRate))
+		}
+	}
+}
+
+func formatRate(rate *float64) string {
+	if rate == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%%", *rate*100)
 }
 
 func writePaired(b *strings.Builder, p *eval.PairedSummary, n int) {

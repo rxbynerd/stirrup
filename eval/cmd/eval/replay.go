@@ -115,6 +115,8 @@ func cmdReplay(args []string) {
 		CompletedAt: time.Now(),
 		Tasks:       tasks,
 		PassRate:    passRate,
+
+		HealthyPassRate: eval.HealthyPassRate(tasks),
 	}
 	if !judgeOpts.CacheMode.IsLive() {
 		summary := judgeOpts.CacheStats.Summary(judgeOpts.CacheMode)

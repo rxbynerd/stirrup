@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // JUnit XML output is documented in docs/eval.md.
@@ -19,14 +20,16 @@ type xmlTestSuites struct {
 }
 
 type xmlTestSuite struct {
-	XMLName   xml.Name      `xml:"testsuite"`
-	Name      string        `xml:"name,attr"`
-	Tests     int           `xml:"tests,attr"`
-	Failures  int           `xml:"failures,attr"`
-	Errors    int           `xml:"errors,attr"`
-	Time      string        `xml:"time,attr"`
-	Timestamp string        `xml:"timestamp,attr"`
-	TestCases []xmlTestCase `xml:"testcase"`
+	XMLName   xml.Name `xml:"testsuite"`
+	Name      string   `xml:"name,attr"`
+	Tests     int      `xml:"tests,attr"`
+	Failures  int      `xml:"failures,attr"`
+	Errors    int      `xml:"errors,attr"`
+	Time      string   `xml:"time,attr"`
+	Timestamp string   `xml:"timestamp,attr"`
+
+	Properties *xmlProperties `xml:"properties,omitempty"`
+	TestCases  []xmlTestCase  `xml:"testcase"`
 }
 
 type xmlTestCase struct {
@@ -37,6 +40,17 @@ type xmlTestCase struct {
 	Failure   *xmlFailure `xml:"failure,omitempty"`
 	Error     *xmlError   `xml:"error,omitempty"`
 	SystemOut string      `xml:"system-out,omitempty"`
+
+	Properties *xmlProperties `xml:"properties,omitempty"`
+}
+
+type xmlProperties struct {
+	Properties []xmlProperty `xml:"property"`
+}
+
+type xmlProperty struct {
+	Name  string `xml:"name,attr"`
+	Value string `xml:"value,attr"`
 }
 
 type xmlFailure struct {
@@ -127,8 +141,56 @@ func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 		Errors:    errors,
 		Time:      formatSeconds(suiteSeconds),
 		Timestamp: timestamp,
-		TestCases: cases,
+
+		Properties: suiteProperties(result),
+		TestCases:  cases,
 	}
+}
+
+// suiteProperties reports the judge-based pass rate, the healthy pass rate,
+// and the sample size they cover. A result that records no run health has
+// no healthy pass rate to report and gets no properties.
+func suiteProperties(result eval.SuiteResult) *xmlProperties {
+	if result.HealthyPassRate == nil {
+		return nil
+	}
+	trials := result.Trials
+	if trials < 1 {
+		trials = 1
+	}
+	props := []xmlProperty{
+		{"pass_rate", formatFraction(result.PassRate)},
+		{"healthy_pass_rate", formatFraction(*result.HealthyPassRate)},
+		{"tasks", strconv.Itoa(len(result.Tasks))},
+		{"trials_per_task", strconv.Itoa(trials)},
+	}
+	if result.RequireHealthy {
+		props = append(props, xmlProperty{"require_healthy", "true"})
+	}
+	return &xmlProperties{Properties: props}
+}
+
+// caseProperties reports a task's run health, verification, and delivery,
+// omitting any a result does not record.
+func caseProperties(t eval.TaskResult) *xmlProperties {
+	var props []xmlProperty
+	if t.RunHealth != "" {
+		props = append(props, xmlProperty{"run_health", string(t.RunHealth)})
+	}
+	if t.Verification != "" {
+		props = append(props, xmlProperty{"verification", string(t.Verification)})
+	}
+	if t.Delivery != "" {
+		props = append(props, xmlProperty{"delivery", t.Delivery})
+	}
+	if len(props) == 0 {
+		return nil
+	}
+	return &xmlProperties{Properties: props}
+}
+
+func formatFraction(f float64) string {
+	return strconv.FormatFloat(f, 'f', 3, 64)
 }
 
 // buildTestCase converts a TaskResult into an XML <testcase>. A task run
@@ -140,6 +202,8 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 		Name:      t.TaskID,
 		Classname: suiteID,
 		Time:      formatSeconds(float64(t.DurationMs) / 1000.0),
+
+		Properties: caseProperties(t),
 	}
 
 	multiTrial := len(t.Trials) > 1
@@ -177,13 +241,13 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 			Body:    body,
 		}
 	case "pass":
-		// A passing task has no failure body, so its shadow verdicts go
-		// to system-out.
+		// A passing task has no failure body, so its shadow verdicts and
+		// an unhealthy run go to system-out.
 		if hasShadow(t.JudgeVerdict.Details) {
-			if tc.SystemOut != "" {
-				tc.SystemOut += "\n\n"
-			}
-			tc.SystemOut += failureBody(t.JudgeVerdict)
+			tc.SystemOut = appendParagraph(tc.SystemOut, failureBody(t.JudgeVerdict))
+		}
+		if t.RunHealth != "" && t.RunHealth != types.RunHealthy {
+			tc.SystemOut = appendParagraph(tc.SystemOut, fmt.Sprintf("the judge passed but the run health was %s", t.RunHealth))
 		}
 	default:
 		// Surface as <error> so operators can grep for "UnknownOutcome".
@@ -196,6 +260,13 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 	}
 
 	return tc
+}
+
+func appendParagraph(out, para string) string {
+	if out == "" {
+		return para
+	}
+	return out + "\n\n" + para
 }
 
 func hasShadow(details []eval.JudgeDetail) bool {

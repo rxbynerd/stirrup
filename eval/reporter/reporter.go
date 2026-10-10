@@ -77,7 +77,7 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 		if !exists {
 			continue
 		}
-		bc, cc := bt.Counts(), ct.Counts()
+		bc, cc := bt.GateCounts(baseline.RequireHealthy), ct.GateCounts(current.RequireHealthy)
 		bf, cf := bc.PassFraction(), cc.PassFraction()
 
 		pairs = append(pairs, eval.TaskComparison{
@@ -257,7 +257,7 @@ func singleTrialExceedsMargin(n, k int, margin float64) bool {
 	return n > 0 && k > 0 && margin+fractionEpsilon < 1/float64(n*k)
 }
 
-// rateSummary describes one result: mean pass fraction, task-level SE,
+// rateSummary describes one result: mean gate pass fraction, task-level SE,
 // a Wilson interval over tasks (trials of one task are not independent,
 // so they are not pooled), and pass^k / pass@k up to the smallest
 // per-task trial count.
@@ -272,7 +272,7 @@ func rateSummary(r eval.SuiteResult) eval.RateSummary {
 	counts := make([]eval.TrialCounts, len(r.Tasks))
 	minTrials := 0
 	for i, t := range r.Tasks {
-		counts[i] = t.Counts()
+		counts[i] = t.GateCounts(r.RequireHealthy)
 		fractions[i] = counts[i].PassFraction()
 		if minTrials == 0 || counts[i].Total() < minTrials {
 			minTrials = counts[i].Total()
@@ -280,6 +280,16 @@ func rateSummary(r eval.SuiteResult) eval.RateSummary {
 	}
 
 	s.PassRate = mean(fractions)
+	s.HealthyPassRate = eval.HealthyPassRate(r.Tasks)
+	if r.RequireHealthy {
+		s.RequireHealthy = true
+		judgeFractions := make([]float64, len(r.Tasks))
+		for i, t := range r.Tasks {
+			judgeFractions[i] = t.Counts().PassFraction()
+		}
+		judge := mean(judgeFractions)
+		s.JudgePassRate = &judge
+	}
 	if se, ok := StdErr(fractions); ok {
 		s.StdErr = &se
 	}
