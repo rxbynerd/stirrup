@@ -92,8 +92,8 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "handoff_failed" | "command_output_capture_failed" |
-	// "command_output_archive_failed", or a
+	// "handoff_failed" | "control_stream_lost" |
+	// "command_output_capture_failed" | "command_output_archive_failed", or a
 	// provider stop reason passed through verbatim, such as "refusal" (the
 	// model declined to respond; see StopDetails) or
 	// "model_context_window_exceeded" (the response filled the model's
@@ -104,7 +104,9 @@ type RunTrace struct {
 	// export that failed (see WorkspaceExport). handoff_failed, hook_failed
 	// and both command_output_* outcomes claim only an otherwise-successful
 	// run — the primary failure cause stays authoritative — and a capture
-	// failure outranks an archive failure.
+	// failure outranks an archive failure. control_stream_lost reports a
+	// run cancelled because its gRPC control stream ended while it was
+	// active.
 	Outcome string `json:"outcome"`
 	// StopDetails is the final model turn's provider-reported stop detail
 	// when the run ended on a non-tool stop reason, such as the category

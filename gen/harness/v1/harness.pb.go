@@ -2156,13 +2156,15 @@ type RunTrace struct {
 	//	"verification_error", "budget_exceeded", "stalled",
 	//	"tool_failures", "cancelled", "timeout", "max_tokens",
 	//	"setup_failed", "hook_failed", "handoff_failed",
-	//	"guardrail_blocked", "rule_of_two_violation",
+	//	"control_stream_lost", "guardrail_blocked", "rule_of_two_violation",
 	//	"command_output_capture_failed",
 	//	"command_output_archive_failed".
 	//
 	// "handoff_failed" reports a failed final git checkpoint or a failed
 	// required workspace export; like "hook_failed" and the command_output
 	// outcomes it only replaces "success", never an earlier failure.
+	// "control_stream_lost" reports a run cancelled because its control
+	// stream ended while it was active.
 	// Provider stop reasons pass through verbatim, including:
 	//
 	//	"refusal"                       — the model declined to respond;
