@@ -83,6 +83,8 @@ type Event struct {
 	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
 	// StallNudge carries TurnRecord.StallNudge.
 	StallNudge bool `json:"stallNudge,omitempty"`
+	// WindDown carries TurnRecord.WindDown.
+	WindDown string `json:"windDown,omitempty"`
 
 	// ResponseModel is the model the provider reported answering with —
 	// populated for turn_record when the provider reports one.

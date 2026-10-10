@@ -824,6 +824,34 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown pins that the
+// turn carrying the wind-down instruction names its trigger on its
+// turn_record line, and that other turns omit the field.
+func TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	emitter.Start("run-wind-down", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0})
+	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1, WindDown: "time"})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	var triggers []string
+	for _, ev := range readEvents(t, buf.Bytes()) {
+		if ev.Kind == EventKindTurnRecord {
+			triggers = append(triggers, ev.WindDown)
+		}
+	}
+	if !reflect.DeepEqual(triggers, []string{"", "time"}) {
+		t.Errorf("turn_record windDown = %q, want [\"\" \"time\"]", triggers)
+	}
+	if n := strings.Count(buf.String(), `"windDown"`); n != 1 {
+		t.Errorf("on-disk windDown count = %d, want 1", n)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.

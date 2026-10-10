@@ -180,6 +180,22 @@ func TestChatSpan_OutputLimitRecoveryAttribute(t *testing.T) {
 	assertAttributesAbsent(t, findSpan(t, exporter, "chat b"), "turn.output_limit_recovery")
 }
 
+// TestChatSpan_WindDownAttribute pins that only the turn that carried the
+// wind-down instruction names its trigger on the chat span.
+func TestChatSpan_WindDownAttribute(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "a"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "tool_use", WindDown: "tokens"},
+	})
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "b"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "end_turn"},
+	})
+	finishLiveRun(t, emitter)
+
+	assertAttribute(t, findSpan(t, exporter, "chat a"), "turn.wind_down", "tokens")
+	assertAttributesAbsent(t, findSpan(t, exporter, "chat b"), "turn.wind_down")
+}
+
 func TestChatSpan_ErrorScrubbed(t *testing.T) {
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{

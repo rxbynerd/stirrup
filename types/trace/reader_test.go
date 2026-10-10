@@ -271,6 +271,9 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 		if tr.StallNudge {
 			ev["stallNudge"] = true
 		}
+		if tr.WindDown != "" {
+			ev["windDown"] = tr.WindDown
+		}
 		buf.Write(mustMarshal(t, ev))
 		buf.WriteByte('\n')
 	}
@@ -444,6 +447,28 @@ func TestReadRecording_PreservesStallNudge(t *testing.T) {
 	if rec.Turns[0].StallNudge || !rec.Turns[1].StallNudge {
 		t.Errorf("StallNudge = %v, %v; want false, true",
 			rec.Turns[0].StallNudge, rec.Turns[1].StallNudge)
+	}
+}
+
+// TestReadRecording_PreservesWindDown pins that the per-turn wind-down
+// trigger survives the turn_record round trip.
+func TestReadRecording_PreservesWindDown(t *testing.T) {
+	turns := []types.TurnRecord{
+		{Turn: 0},
+		{Turn: 1, WindDown: "turns"},
+	}
+	body := streamingTrace(t, "run-wind-down", types.RunConfig{RunID: "run-wind-down"}, turns,
+		types.RunTrace{ID: "run-wind-down", Turns: 2, Outcome: "success"})
+
+	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
+	if err != nil {
+		t.Fatalf("ReadRecording: %v", err)
+	}
+	if len(rec.Turns) != 2 {
+		t.Fatalf("Turns: got %d, want 2", len(rec.Turns))
+	}
+	if rec.Turns[0].WindDown != "" || rec.Turns[1].WindDown != "turns" {
+		t.Errorf("WindDown = %q, %q; want \"\", \"turns\"", rec.Turns[0].WindDown, rec.Turns[1].WindDown)
 	}
 }
 

@@ -222,6 +222,7 @@ type streamedEvent struct {
 	SystemPromptSHA256  string `json:"systemPromptSha256,omitempty"`
 	OutputLimitRecovery bool   `json:"outputLimitRecovery,omitempty"`
 	StallNudge          bool   `json:"stallNudge,omitempty"`
+	WindDown            string `json:"windDown,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -356,6 +357,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 				ResponseModel:       ev.ResponseModel,
 				OutputLimitRecovery: ev.OutputLimitRecovery,
 				StallNudge:          ev.StallNudge,
+				WindDown:            ev.WindDown,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput

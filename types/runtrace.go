@@ -370,6 +370,10 @@ type TurnTrace struct {
 	// limit (StopReason "max_tokens") and the run continued with a
 	// synthetic instruction instead of ending.
 	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
+	// WindDown names the budget threshold that made the harness send its
+	// wind-down instruction at the start of this turn: "turns", "tokens"
+	// or "time". Empty on every other turn.
+	WindDown string `json:"windDown,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.
@@ -432,6 +436,8 @@ type TurnRecord struct {
 	// call pattern and the next request carries a synthetic instruction
 	// to change approach instead of the run ending as stalled.
 	StallNudge bool `json:"stallNudge,omitempty"`
+	// WindDown mirrors TurnTrace.WindDown.
+	WindDown string `json:"windDown,omitempty"`
 }
 
 // ModelInput records what the model saw on a given turn. Request is nil
