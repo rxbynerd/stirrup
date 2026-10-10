@@ -273,6 +273,23 @@ func TestRepositoryGuidanceLoader_CapsPerFileAndInTotal(t *testing.T) {
 	}
 }
 
+func TestRepositoryGuidance_TruncatedPinnedFileIsNotLabelledExact(t *testing.T) {
+	content := strings.Repeat("p", 80)
+	reader := &fakeFileReader{files: map[string]string{"AGENTS.md": content}}
+	cfg := types.RepositoryGuidanceConfig{
+		Files:        []string{"AGENTS.md"},
+		MaxBytes:     50,
+		PinnedSHA256: map[string]string{"AGENTS.md": sha256Hex(content)},
+	}
+	out := renderRepositoryGuidance(loadGuidance(t, cfg, reader))
+	if strings.Contains(out, "verified this exact content") {
+		t.Errorf("a truncated pinned file must not claim its rendered content is the verified content:\n%s", out)
+	}
+	if !strings.Contains(out, "verified the full file by SHA-256") {
+		t.Errorf("truncated pinned label missing:\n%s", out)
+	}
+}
+
 func TestRepositoryGuidanceLoader_TruncationKeepsValidUTF8(t *testing.T) {
 	reader := &fakeFileReader{files: map[string]string{"AGENTS.md": strings.Repeat("é", 10)}}
 	docs := loadGuidance(t, types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}, MaxBytes: 5}, reader)

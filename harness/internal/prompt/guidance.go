@@ -160,7 +160,11 @@ func renderRepositoryGuidance(docs []GuidanceDocument) string {
 	var sb strings.Builder
 	sb.WriteString(guidancePreface)
 	for _, d := range pinned {
-		fmt.Fprintf(&sb, "\n\nOperator-approved repository guidance from %s. The operator verified this exact content by SHA-256.\n<operator_approved_guidance path=%q>\n%s\n</operator_approved_guidance>", d.Path, d.Path, d.Content)
+		verified := "The operator verified this exact content by SHA-256."
+		if d.Truncated {
+			verified = "The operator verified the full file by SHA-256; only its opening portion fits the byte cap and is shown."
+		}
+		fmt.Fprintf(&sb, "\n\nOperator-approved repository guidance from %s. %s\n<operator_approved_guidance path=%q>\n%s\n</operator_approved_guidance>", d.Path, verified, d.Path, d.Content)
 		writeTruncationNote(&sb, d)
 	}
 	if len(advisory) > 0 {
