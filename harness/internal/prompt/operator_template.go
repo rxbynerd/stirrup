@@ -25,6 +25,7 @@ func NewTemplatePromptBuilder(text string, trial TemplateData) (*ComposedPromptB
 		&operatorTemplateFragment{tmpl: tmpl},
 		WorkspacePathFragment(),
 		TurnBudgetFragment(),
+		OutputSchemaFragment(),
 		WorkspaceTreeFragment(),
 		GitStatusFragment(),
 		DynamicContextFragment(),
