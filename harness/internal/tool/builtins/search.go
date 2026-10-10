@@ -163,7 +163,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 		Description: "Search file contents in the workspace for a regular expression (Go RE2 syntax). Returns one 'path:line:match' line per hit. " +
 			"Use this when looking for a string, symbol, or pattern inside files; use find_files instead when searching by filename or extension. " +
 			"The pattern is a regex, not a glob — pass '\\bMyFunc\\b' to find the symbol MyFunc, not '*MyFunc*'. " +
-			"include and exclude take shell-style globs (e.g. '*.go') applied to candidate paths. Results are capped by max_results (default 100, max 1000); binary files are skipped. " +
+			"include and exclude take shell-style globs (e.g. '*.go') applied to candidate paths. Results are capped by max_results (default 100, max 1000); binary files are skipped. Matched lines longer than 4 KiB are shortened with an inline '[line truncated: ...]' marker. " +
 			// The `\\\\b` in the example renders as `\b` on the wire (a RE2
 			// word boundary). It is double-escaped because the Go string
 			// literal first consumes one layer of backslashes, leaving the
@@ -272,6 +272,9 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			truncated := len(matches) > maxResults
 			if truncated {
 				matches = matches[:maxResults]
+			}
+			for i := range matches {
+				matches[i].Text = capLine(matches[i].Text)
 			}
 
 			structured, marshalErr := json.Marshal(searchResult{

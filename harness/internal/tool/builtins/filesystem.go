@@ -111,7 +111,7 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 		Name: "read_file",
 		Description: "Read the contents of a file from the workspace. Returns line-numbered output (\"123\\tcontent\") so subsequent edits can refer to specific lines. " +
 			"Use this when the exact content of a known file is needed; prefer grep_files when searching for a string across many files. " +
-			"start_line is 1-indexed and limit caps the lines returned (default 2000, max 5000). " +
+			"start_line is 1-indexed and limit caps the lines returned (default 2000, max 5000). Lines longer than 4 KiB are shortened with an inline '[line truncated: ...]' marker. " +
 			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
 			"Example: {\"path\": \"path/to/file.go\", \"start_line\": 100, \"limit\": 50}",
 		// InputExamples mirrors the description's worked example as structured
@@ -203,7 +203,7 @@ func readFileExcerpt(path, content string, startLine, limit int) fileExcerpt {
 	}
 	excerptLines := make([]string, 0, endLine-startLine+1)
 	for i := startLine; i <= endLine; i++ {
-		excerptLines = append(excerptLines, lines[i-1])
+		excerptLines = append(excerptLines, capLine(lines[i-1]))
 	}
 	return fileExcerpt{
 		Path:      path,
@@ -248,7 +248,7 @@ func formatReadFile(content string, startLine, limit int) string {
 		}
 		b.WriteString(num)
 		b.WriteByte('\t')
-		b.WriteString(lines[i-1])
+		b.WriteString(capLine(lines[i-1]))
 		if i < endLine {
 			b.WriteByte('\n')
 		}
