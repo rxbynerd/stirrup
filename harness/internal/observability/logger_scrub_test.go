@@ -223,3 +223,30 @@ func TestScrubHandler_UnrenderableValuesDoNotPanic(t *testing.T) {
 type wrappedErr struct{ inner error }
 
 func (e *wrappedErr) Error() string { return e.inner.Error() }
+
+func TestScrubHandler_ZeroAttrAndNilValueAreUnchanged(t *testing.T) {
+	h := &ScrubHandler{}
+
+	if got := h.scrubAttrAndReport(slog.Attr{}); !got.Equal(slog.Attr{}) {
+		t.Errorf("zero attr = %v, want it unchanged", got)
+	}
+	got := h.scrubAttrAndReport(slog.Any("k", nil))
+	if got.Key != "k" || got.Value.Kind() != slog.KindAny || got.Value.Any() != nil {
+		t.Errorf("nil value = %v (kind %v), want a nil KindAny value", got, got.Value.Kind())
+	}
+
+	var buf bytes.Buffer
+	logger := NewLogger("run-1", slog.LevelInfo, &buf)
+	logger.Info("m", slog.Attr{}, "nilval", nil)
+
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+	}
+	if v, ok := rec["nilval"]; !ok || v != nil {
+		t.Errorf("nilval = %#v (present=%v), want JSON null", v, ok)
+	}
+	if _, ok := rec[""]; ok {
+		t.Errorf("record has an empty-key attribute: %s", buf.String())
+	}
+}

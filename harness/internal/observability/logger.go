@@ -104,6 +104,9 @@ func (h *ScrubHandler) scrubString(s, location string) string {
 // resolved first so a LogValuer cannot defer its content past the handler.
 // Group attributes have their sub-attributes scrubbed individually.
 func (h *ScrubHandler) scrubAttrAndReport(a slog.Attr) slog.Attr {
+	if a.Equal(slog.Attr{}) {
+		return a
+	}
 	v := a.Value.Resolve()
 	switch v.Kind() {
 	case slog.KindString:
@@ -116,6 +119,9 @@ func (h *ScrubHandler) scrubAttrAndReport(a slog.Attr) slog.Attr {
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(scrubbed...)}
 	case slog.KindAny:
+		if v.Any() == nil {
+			return slog.Attr{Key: a.Key, Value: v}
+		}
 		if scalar, ok := namedScalar(v.Any()); ok {
 			return h.scrubAttrAndReport(slog.Attr{Key: a.Key, Value: scalar})
 		}
