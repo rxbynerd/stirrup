@@ -1986,21 +1986,19 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 // (the snapshot for turn 0's Prepare is the pre-run zero). The final
 // post-Run atomic read gives the value stored after the LAST Prepare.
 func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
-	// A heavy first assistant turn dominates the token count. MaxTokens
-	// (50) is far too small to hold it, so once a later exchange exists
-	// the sliding window drops it and keeps only the task and the last
-	// exchange — the genuinely-impossible-budget path (see
-	// TestLoop_SmallContextBudgetRetainsHistory for the small-but-workable
-	// case, which must NOT drop history).
+	// A heavy first assistant turn dominates the token count. It fits the
+	// budget on its own, but once a second sizeable exchange exists the
+	// history does not, and the sliding window drops the heavy turn,
+	// keeping only the task and the last exchange.
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
-				{Type: "text_delta", Text: strings.Repeat("a", 8000)},
+				{Type: "text_delta", Text: strings.Repeat("a", 4000)},
 				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
 			{
-				{Type: "text_delta", Text: "ok2"},
+				{Type: "text_delta", Text: strings.Repeat("b", 2400)},
 				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{}},
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
@@ -2020,9 +2018,9 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	loop.Context = rec
 
 	config := buildTestConfig()
-	// effectiveReserveForResponse(50) = 12 (quartered); available = 38,
-	// far too small to hold the ~2000-token heavy turn.
-	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 50}
+	// effectiveReserveForResponse(2000) = 500 (quartered); the 1500 left
+	// hold the ~1000-token heavy turn but not the ~600-token turn after it.
+	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 2000}
 
 	if _, err := loop.Run(context.Background(), config); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -2080,7 +2078,7 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
 			{
-				{Type: "text_delta", Text: "ok2"},
+				{Type: "text_delta", Text: strings.Repeat("b", 2400)},
 				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{}},
 				{Type: "message_complete", StopReason: "tool_use"},
 			},

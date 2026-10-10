@@ -767,11 +767,12 @@ func (l *AgenticLoop) runInnerLoop(
 				attribute.Int("tokens.before", currentTokens),
 			),
 		)
-		preparedMessages, err := l.Context.Prepare(ctx, messages, contextpkg.TokenBudget{
+		budget := contextpkg.TokenBudget{
 			MaxTokens:          maxTokens,
 			CurrentTokens:      currentTokens,
 			ReserveForResponse: responseReserve,
-		})
+		}
+		preparedMessages, err := l.Context.Prepare(ctx, messages, budget)
 		if err != nil {
 			scrubbed := recordSpanError(contextSpan, err)
 			contextSpan.End()
@@ -790,13 +791,21 @@ func (l *AgenticLoop) runInnerLoop(
 			// none is replayed once the run has sent a rewritten history.
 			preparedMessages = types.StripThinkingBlocks(preparedMessages)
 		}
+		preparedMessages, tokensAfterPrepare, fitErr := l.fitPreparedRequest(preparedMessages, systemPrompt, toolDefs, budget, contextSpan)
 		// Feeds the ContextTokens observable gauge registered in Run;
 		// compaction shrinks this value, new messages grow it.
-		tokensAfterPrepare := estimateCurrentTokens(preparedMessages) +
-			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
 		l.lastContextTokens.Store(int64(tokensAfterPrepare))
 		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
+		if fitErr != nil {
+			recordSpanError(contextSpan, fitErr)
+			contextSpan.End()
+			l.Logger.Error("context budget exhausted", "error", fitErr)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type:    "warning",
+				Message: fitErr.Error(),
+			})
+			return messages, "context_exhausted", finalAssistantText, nil
+		}
 		if compaction != nil {
 			contextSpan.SetAttributes(
 				attribute.String("context.strategy", compaction.Strategy),

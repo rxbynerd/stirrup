@@ -198,13 +198,17 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 		wantFirstTurn  bool
 		wantSummarised bool
 	}{
-		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model"), 100, false, true},
+		// 4100 leaves 3075 tokens after the response reserve: the last
+		// request (about 3283) is over it, and the summarised request
+		// (about 2590) fits the limit after the safety margin.
+		{"summarised", contextpkg.NewSummariseStrategy(staticSummaryProvider{}, "summary-model"), 4100, false, true},
 		{"control", contextpkg.NewSlidingWindowStrategy(), 200000, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newResponsesTurnServer(t, script...)
 			loop := buildTestLoop(nil)
+			registerLargeTestTool(t, loop)
 			loop.Provider = nil
 			loop.Providers = map[string]provider.ProviderAdapter{"responses-a": srv.adapter()}
 			loop.Router = router.NewStaticRouter("responses-a", replayLoopModel)
