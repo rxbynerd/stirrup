@@ -140,9 +140,6 @@ func (s *ClearToolResultsStrategy) Prepare(_ context.Context, messages []types.M
 
 	window := budget
 	window.CurrentTokens = tokensAfter
-	if trigger > 0 {
-		window.MaxTokens = budget.ReserveForResponse + trigger
-	}
 	result := slidingWindowFallback(view, window)
 	if len(batch) == 0 && len(result) == len(view) {
 		return view, nil
@@ -259,10 +256,18 @@ func (s *ClearToolResultsStrategy) isExcluded(view []types.Message, ref resultRe
 	return false
 }
 
-// clearReclaim returns the estimated tokens saved by clearing block,
-// counted per field as the loop's request estimate counts them.
+// clearReclaim returns the estimated tokens saved by clearing block.
 func clearReclaim(block types.ContentBlock) int {
-	return len(block.Content)/4 + len(block.Structured)/4 - len(ClearedToolResultPlaceholder)/4
+	return estimateBlockTokens(block) - estimateBlockTokens(clearedBlock(block))
+}
+
+// clearedBlock returns block with its content replaced by the placeholder
+// and its structured envelope, which mirrors the content, dropped.
+func clearedBlock(block types.ContentBlock) types.ContentBlock {
+	block.Content = ClearedToolResultPlaceholder
+	block.Structured = nil
+	block.Kind = ""
+	return block
 }
 
 // clearResult replaces the content of the result at ref with the
@@ -277,9 +282,6 @@ func clearResult(hv *historyView, ref resultRef) int {
 	if block.Type != "tool_result" || block.ToolUseID != ref.toolUseID {
 		return 0
 	}
-	cleared := &hv.writable(ref.message)[ref.block]
-	cleared.Content = ClearedToolResultPlaceholder
-	cleared.Structured = nil
-	cleared.Kind = ""
+	hv.writable(ref.message)[ref.block] = clearedBlock(block)
 	return clearReclaim(block)
 }

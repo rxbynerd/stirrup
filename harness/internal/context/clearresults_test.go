@@ -211,6 +211,22 @@ func TestClearToolResults_InsufficientReclaimFallsBack(t *testing.T) {
 	}
 }
 
+// TestClearToolResults_FallbackDropsToTheFitLimit pins that the sliding
+// window fallback keeps as much history as the sliding window strategy
+// would for the same budget.
+func TestClearToolResults_FallbackDropsToTheFitLimit(t *testing.T) {
+	msgs := toolHistory(10, 2000)
+	for room := 1500; room <= 6000; room += 250 {
+		budget := clearBudget(msgs, 0, room)
+		s := NewClearToolResultsStrategy(ClearToolResultsConfig{Keep: 2, ClearAtLeast: 1_000_000})
+		out := mustPrepare(t, s, msgs, budget)
+		want := mustPrepare(t, NewSlidingWindowStrategy(), msgs, budget)
+		if len(out) != len(want) {
+			t.Errorf("room %d: fallback kept %d messages, the sliding window keeps %d", room, len(out), len(want))
+		}
+	}
+}
+
 func TestClearToolResults_ClearsThenDropsWhenClearingIsNotEnough(t *testing.T) {
 	msgs := toolHistory(10, 2000)
 	for i := 1; i < len(msgs); i += 2 {
