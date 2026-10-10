@@ -152,14 +152,19 @@ message HarnessEvent {
   string name = 4;
 
   // JSON-encoded tool input parameters. Set on "tool_call",
-  // "permission_request", and "tool_result_request" events.
+  // "permission_request", and "tool_result_request" events. On "tool_call"
+  // events the field is capped at 256 KiB: a capped input arrives as a JSON
+  // string, not the original object, ending in
+  // "[truncated by harness for the control stream: N of M bytes shown]".
   bytes input = 5;
 
   // The tool-use ID this result corresponds to. Set on "tool_result" and
   // "tool_result_request" events.
   string tool_use_id = 6;
 
-  // Tool execution result. Set on "tool_result" events.
+  // Tool execution result. Set on "tool_result" events. Capped at 256 KiB;
+  // a capped result ends in
+  // "[truncated by harness for the control stream: N of M bytes shown]".
   string content = 7;
 
   // Why the run ended. Set on "done" events to the run outcome, the same

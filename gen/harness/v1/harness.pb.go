@@ -138,12 +138,17 @@ type HarnessEvent struct {
 	// Tool name. Set on "tool_call" events.
 	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	// JSON-encoded tool input parameters. Set on "tool_call",
-	// "permission_request", and "tool_result_request" events.
+	// "permission_request", and "tool_result_request" events. On "tool_call"
+	// events the field is capped at 256 KiB: a capped input arrives as a JSON
+	// string, not the original object, ending in
+	// "[truncated by harness for the control stream: N of M bytes shown]".
 	Input []byte `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
 	// The tool-use ID this result corresponds to. Set on "tool_result" and
 	// "tool_result_request" events.
 	ToolUseId string `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
-	// Tool execution result. Set on "tool_result" events.
+	// Tool execution result. Set on "tool_result" events. Capped at 256 KiB;
+	// a capped result ends in
+	// "[truncated by harness for the control stream: N of M bytes shown]".
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
 	// Why the run ended. Set on "done" events to the run outcome, the same
 	// value as RunTrace.outcome; see that field for the values. A "done"
