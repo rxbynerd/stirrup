@@ -105,3 +105,17 @@ type CommandOutputArchiveRecorder interface {
 type GitHandoffRecorder interface {
 	RecordGitHandoff(handoff types.GitHandoff)
 }
+
+// WorkspaceExportRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.WorkspaceExport just before Finish, for
+// the same reason as FinalAssistantTextRecorder.
+type WorkspaceExportRecorder interface {
+	RecordWorkspaceExport(receipt types.ExportReceipt)
+}
+
+// RunErrorRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.Error just before Finish, for the same
+// reason as FinalAssistantTextRecorder.
+type RunErrorRecorder interface {
+	RecordRunError(text string)
+}

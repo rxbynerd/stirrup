@@ -115,6 +115,8 @@ type OTelTraceEmitter struct {
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
 	gitHandoff           *types.GitHandoff
+	workspaceExport      *types.ExportReceipt
+	runError             string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -156,6 +158,8 @@ var (
 	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
 	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
 	_ GitHandoffRecorder           = (*OTelTraceEmitter)(nil)
+	_ WorkspaceExportRecorder      = (*OTelTraceEmitter)(nil)
+	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -348,6 +352,8 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.gitHandoff = nil
+	e.workspaceExport = nil
+	e.runError = ""
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -703,6 +709,22 @@ func (e *OTelTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
 	e.gitHandoff = &handoff
 }
 
+// RecordWorkspaceExport stores the run's workspace export receipt for the
+// RunTrace Finish builds.
+func (e *OTelTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaceExport = &receipt
+}
+
+// RecordRunError stores the run's error text for the RunTrace Finish
+// builds.
+func (e *OTelTraceEmitter) RecordRunError(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runError = text
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -899,6 +921,8 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		FinalAssistantText:   e.finalAssistantText,
 		CommandOutputArchive: e.commandOutputArchive,
 		Git:                  e.gitHandoff,
+		WorkspaceExport:      e.workspaceExport,
+		Error:                e.runError,
 	}
 
 	return trace, nil

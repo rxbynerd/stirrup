@@ -52,6 +52,8 @@ type JSONLTraceEmitter struct {
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
 	gitHandoff           *types.GitHandoff
+	workspaceExport      *types.ExportReceipt
+	runError             string
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
@@ -59,6 +61,8 @@ var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*JSONLTraceEmitter)(nil)
+var _ WorkspaceExportRecorder = (*JSONLTraceEmitter)(nil)
+var _ RunErrorRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -111,6 +115,8 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.stopDetails = nil
 	e.commandOutputArchive = ""
 	e.gitHandoff = nil
+	e.workspaceExport = nil
+	e.runError = ""
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -259,6 +265,22 @@ func (e *JSONLTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
 	e.gitHandoff = &handoff
 }
 
+// RecordWorkspaceExport stores the run's workspace export receipt for the
+// RunTrace Finish builds.
+func (e *JSONLTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaceExport = &receipt
+}
+
+// RecordRunError stores the run's error text for the RunTrace Finish
+// builds.
+func (e *JSONLTraceEmitter) RecordRunError(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runError = text
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -302,6 +324,8 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		HookResults:          e.hookResults,
 		CommandOutputArchive: e.commandOutputArchive,
 		Git:                  e.gitHandoff,
+		WorkspaceExport:      e.workspaceExport,
+		Error:                e.runError,
 	}
 
 	ev := Event{

@@ -78,6 +78,8 @@ type GCSTraceEmitter struct {
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
 	gitHandoff           *types.GitHandoff
+	workspaceExport      *types.ExportReceipt
+	runError             string
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
@@ -85,6 +87,8 @@ var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
+var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
+var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -170,6 +174,8 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.stopDetails = nil
 	e.commandOutputArchive = ""
 	e.gitHandoff = nil
+	e.workspaceExport = nil
+	e.runError = ""
 }
 
 // RecordTurn appends a turn trace.
@@ -231,6 +237,22 @@ func (e *GCSTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
 	e.gitHandoff = &handoff
 }
 
+// RecordWorkspaceExport stores the run's workspace export receipt for the
+// RunTrace Finish builds.
+func (e *GCSTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaceExport = &receipt
+}
+
+// RecordRunError stores the run's error text for the RunTrace Finish
+// builds.
+func (e *GCSTraceEmitter) RecordRunError(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runError = text
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -253,6 +275,8 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	stopDetails := e.stopDetails
 	commandOutputArchive := e.commandOutputArchive
 	gitHandoff := e.gitHandoff
+	workspaceExport := e.workspaceExport
+	runError := e.runError
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -290,6 +314,8 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		FinalAssistantText:   finalAssistantText,
 		CommandOutputArchive: commandOutputArchive,
 		Git:                  gitHandoff,
+		WorkspaceExport:      workspaceExport,
+		Error:                runError,
 	}
 
 	data, err := json.Marshal(trace)
