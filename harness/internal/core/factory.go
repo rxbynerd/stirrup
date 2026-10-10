@@ -1204,7 +1204,7 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	// operator configs listing only run_command would otherwise strand refs.
 	// Naming it in builtIn is only needed for the standalone replay case.
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
-		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput()))
+		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput(), cfg.EffectiveMaxResultBytes()))
 		if outputStore != nil {
 			registry.Register(builtins.ReadCommandOutputTool(outputStore, exec, cfg.EffectiveMaxResultBytes()))
 		}

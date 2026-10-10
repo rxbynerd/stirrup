@@ -29,7 +29,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	run := RunCommandToolWithStore(exec, store, cfg)
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 1, ToolUseID: "inline"})
 	inline, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"printf 12345"}`))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestRunCommandTimeoutReturnsCapturedErrorResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	run := RunCommandToolWithStore(exec, store, cfg)
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run-timeout", ToolUseID: "timeout"})
 	input := json.RawMessage([]byte("{\"command\":\"printf partial; sleep 5\",\"timeout\":1}"))
 	result, err := run.StructuredHandler(ctx, input)
@@ -115,7 +115,7 @@ func TestCommandOutputReplayUsesRecordedModelVisibleResultsVerbatim(t *testing.T
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	runResult, err := RunCommandToolWithStore(replay, store, types.CommandOutputConfig{}).StructuredHandler(context.Background(), runInput)
+	runResult, err := RunCommandToolWithStore(replay, store, types.CommandOutputConfig{}, types.DefaultToolMaxResultBytes).StructuredHandler(context.Background(), runInput)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestRunCommandCaptureTimeoutKeepsSoftOutcomeMarker(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "timeout", Turn: 1, ToolUseID: "slow"})
-	got, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 30","timeout":1}`))
+	got, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 30","timeout":1}`))
 	if err != nil {
 		t.Fatalf("unexpected hard error for a timeout: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestRunCommandSpoolsScrubbedBytesForRealCommand(t *testing.T) {
 	secret := "gh" + "p_runCommandFixture0123456789"
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "scrub", ToolUseID: "cmd"})
 	input, _ := json.Marshal(map[string]any{"command": "printf 'token=" + secret + "\\n'"})
-	result, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, input)
+	result, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestReadCommandOutputFitsWithinMaxResultBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	run := RunCommandToolWithStore(exec, store, cfg)
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
 	if !run.SelfBoundedResult {
 		t.Fatal("run_command with a capture store must be self-bounded")
 	}

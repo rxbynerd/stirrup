@@ -227,6 +227,18 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 		dispatch(t, "tc_read", "read_command_output", map[string]any{"ref": spilled.StdoutRef, "limit": commandoutput.ReadMaxBytes})
 	})
 
+	t.Run("run_command without capture", func(t *testing.T) {
+		loop.Tools = buildToolRegistry(localExec, edit.NewMultiStrategy(0.8), types.ToolsConfig{}, nil)
+		t.Cleanup(func() { loop.Tools = registry })
+		result := dispatch(t, "tc_uncaptured", "run_command", map[string]any{"command": "head -c 3000000 /dev/zero | tr '\\0' 'r'; echo build failed >&2; exit 1"})
+		if !strings.Contains(result.Content, "[run_command stdout truncated: ") {
+			t.Fatalf("expected a truncation marker in %d bytes", len(result.Content))
+		}
+		if !strings.HasSuffix(result.Content, "\nSTDERR:\nbuild failed\n\n[exit code: 1]") {
+			t.Fatalf("stderr or exit code lost; result ends %q", result.Content[len(result.Content)-80:])
+		}
+	})
+
 	for name := range registered {
 		if !covered[name] {
 			t.Errorf("registered tool %q has no budget case", name)
