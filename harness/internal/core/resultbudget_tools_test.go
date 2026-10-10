@@ -234,6 +234,21 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 		}
 	})
 
+	t.Run("edit_file mismatch hint", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "tabs.go"), []byte("func a() {\n\tx := 1\n\ty := 2\n}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		result := dispatch(t, "tc_hint", "edit_file", map[string]any{"path": "tabs.go", "operation": "replace", "old_string": "    x := 1\n    y := 2", "new_string": "z := 3"})
+		if !result.IsError {
+			t.Fatalf("expected an error result, got %q", result.Content)
+		}
+		for _, want := range []string{"lines 2-3", "the file indents with tabs"} {
+			if !strings.Contains(result.Content, want) {
+				t.Errorf("model-visible result missing %q: %s", want, result.Content)
+			}
+		}
+	})
+
 	t.Run("run_command without capture", func(t *testing.T) {
 		loop.Tools = buildToolRegistry(localExec, edit.NewMultiStrategy(0.8), types.ToolsConfig{}, nil)
 		t.Cleanup(func() { loop.Tools = registry })
