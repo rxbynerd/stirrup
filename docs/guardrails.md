@@ -124,11 +124,11 @@ tool_use block from the model
 ```
 
 Step 4 is `security.GuardToolCall`: network-exfiltration utilities
-and shell-escape syntax in command fields, credential paths,
-protected harness write targets, and long base64-like payloads. It
-scans the original input, including keys step 2 drops, so a tripwire
-nested under a stripped key still fires. Steps 1-4 are mandatory and
-cannot be disabled.
+and shell-escape syntax in command fields, credential paths, writes
+to loaded repository guidance or `tools.protectedWriteTargets`, and
+long base64-like payloads. It scans the original input, including
+keys step 2 drops, so a tripwire nested under a stripped key still
+fires. Steps 1-4 are mandatory and cannot be disabled.
 
 The guard at step 5 classifies the input after step 2's strip, the
 same bytes the handler receives, and sees the resolved internal tool
