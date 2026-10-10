@@ -78,9 +78,19 @@ func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []s
 	}
 }
 
+// skipUnlessProvided skips when a tool the test needs is missing, except on
+// Linux CI where the tool is expected and its absence must fail the build.
+func skipUnlessProvided(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("CI") != "" && runtime.GOOS == "linux" {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func TestGroupedCommand_KillScriptKillsSessionWithSetsid(t *testing.T) {
 	if _, err := osexec.LookPath("setsid"); err != nil {
-		t.Skip("setsid not available")
+		skipUnlessProvided(t, "setsid not available")
 	}
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "")
@@ -103,7 +113,7 @@ func TestGroupedCommand_KillScriptKillsDescendantsWithoutSetsid(t *testing.T) {
 	for _, tool := range []string{"sh", "sleep", "touch", "rm"} {
 		path, err := osexec.LookPath(tool)
 		if err != nil {
-			t.Skipf("%s not available", tool)
+			skipUnlessProvided(t, "%s not available", tool)
 		}
 		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
 			t.Fatal(err)
@@ -149,19 +159,61 @@ func TestGroupedCommand_PreservesExitStatusAndOutput(t *testing.T) {
 	}
 }
 
-func TestGroupedCommand_KillScriptIgnoresMissingOrBogusPidFile(t *testing.T) {
+func TestGroupedCommand_KillScriptIgnoresBogusPidFile(t *testing.T) {
+	dir := t.TempDir()
+	g, err := newGroupedCommand("/bin/sh", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.pidFile = filepath.Join(dir, "pid")
+	if err := os.WriteFile(g.pidFile, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runKill(t, g, os.Environ())
+}
+
+func TestGroupedCommand_KillScriptExitsNonZeroWithoutPidFile(t *testing.T) {
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.pidFile = filepath.Join(dir, "missing")
-	runKill(t, g, os.Environ())
 
-	if err := os.WriteFile(g.pidFile, []byte("not-a-pid\n"), 0o600); err != nil {
-		t.Fatal(err)
+	argv := g.killArgv()
+	err = osexec.Command(argv[0], argv[1:]...).Run()
+	var exitErr *osexec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 3 {
+		t.Errorf("kill script err = %v, want exit status 3", err)
 	}
-	runKill(t, g, os.Environ())
+}
+
+func TestGroupedCommand_KillScriptNeverSignalsPidZeroOrOne(t *testing.T) {
+	for _, pid := range []string{"0", "1"} {
+		t.Run(pid, func(t *testing.T) {
+			dir := t.TempDir()
+			g, err := newGroupedCommand("/bin/sh", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			g.pidFile = filepath.Join(dir, "pid")
+			if err := os.WriteFile(g.pidFile, []byte(pid+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// kill is replaced by a recording function so a regression cannot
+			// signal the host.
+			signalLog := filepath.Join(dir, "signals")
+			argv := g.killArgv()
+			argv[2] = `kill() { echo "$*" >>"` + signalLog + `"; }
+` + argv[2]
+			if out, err := osexec.Command(argv[0], argv[1:]...).CombinedOutput(); err != nil {
+				t.Fatalf("kill script: %v: %s", err, out)
+			}
+			if raw, err := os.ReadFile(signalLog); err == nil {
+				t.Errorf("kill script signalled pid %s: %q", pid, raw)
+			}
+		})
+	}
 }
 
 func TestNewGroupedCommand_UniquePidFiles(t *testing.T) {

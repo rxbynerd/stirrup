@@ -41,10 +41,14 @@ exit "$rc"`
 // groupKillScript signals the group recorded in the pid file "$1": SIGTERM,
 // a short grace period, then SIGKILL. When the recorded pid does not lead a
 // group (no setsid), it signals the pid and its descendants found by walking
-// /proc instead.
+// /proc instead. A missing pid file (the pid directory was unwritable or the
+// deadline fired before the pid was recorded) exits 3 so the caller can report
+// that nothing was signalled. A pid that is not above 1 is ignored because the
+// file is writable from inside the sandbox.
 const groupKillScript = `pf=$1
-read -r pid <"$pf" 2>/dev/null || exit 0
+read -r pid <"$pf" 2>/dev/null || exit 3
 case $pid in ''|*[!0-9]*) exit 0 ;; esac
+[ "$pid" -gt 1 ] 2>/dev/null || exit 0
 grp=
 all=$pid
 if kill -0 -- "-$pid" 2>/dev/null; then
