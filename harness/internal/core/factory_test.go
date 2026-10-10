@@ -3772,4 +3772,34 @@ func TestSandboxLifecycle(t *testing.T) {
 			t.Errorf("MaxLifetime = %v, want 0", life.MaxLifetime)
 		}
 	})
+
+	t.Run("postRun hook budget extends the run timeout", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PostRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 1800},
+			{Command: "true", TimeoutSeconds: 60},
+		}}}
+		want := 10*time.Minute + postHookBudget(cfg.Hooks) + executor.SandboxGCMargin
+		if life := sandboxLifecycle(cfg, 0); life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("postRun hook budget extends the session budget", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PostRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 300},
+		}}}
+		want := 5*time.Hour + (300+30)*time.Second + executor.SandboxGCMargin
+		if life := sandboxLifecycle(cfg, 5*time.Hour); life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("hooks without postRun entries leave the span unchanged", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PreRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 900},
+		}}}
+		if want := 10*time.Minute + executor.SandboxGCMargin; sandboxLifecycle(cfg, 0).MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", sandboxLifecycle(cfg, 0).MaxLifetime, want)
+		}
+	})
 }

@@ -1017,14 +1017,19 @@ func warnUnknownExcludedTools(names []string, tools tool.ToolRegistry, logger *s
 
 // sandboxLifecycle derives the run label and lifetime bound handed to
 // sandbox-creating executors: the longer of the run timeout and the session
-// budget, plus executor.SandboxGCMargin. The bound is zero (unbounded) only for
-// a config without a timeout, which ValidateRunConfig rejects.
+// budget, plus the postRun hook budget, plus executor.SandboxGCMargin. The
+// postRun hooks execute in the sandbox on a context detached from the run
+// deadline, so their budget extends the span. The bound is zero (unbounded)
+// only for a config without a timeout, which ValidateRunConfig rejects.
 func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) executor.Lifecycle {
 	span := sessionBudget
 	if config.Timeout != nil {
 		if t := time.Duration(*config.Timeout) * time.Second; t > span {
 			span = t
 		}
+	}
+	if span > 0 && config.Hooks != nil && len(config.Hooks.PostRun) > 0 {
+		span += postHookBudget(config.Hooks)
 	}
 	life := executor.Lifecycle{RunID: config.RunID}
 	if span > 0 {
