@@ -608,5 +608,30 @@ func BuiltinRules() []Rule {
 				)
 			},
 		},
+
+		// Context windows are registered only where the documented window
+		// is smaller than the loop's 200k default, which would otherwise
+		// pack requests the model rejects.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4o*",
+			Description:  "OpenAI gpt-4o family: 128k-token context window (documented, not probed)",
+			LastVerified: Date("2026-10-10"),
+			Apply:        applyContextWindow(128_000),
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-4o*",
+			Description:  "OpenAI gpt-4o family via gateway prefix: 128k-token context window (documented, not probed)",
+			LastVerified: Date("2026-10-10"),
+			Apply:        applyContextWindow(128_000),
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-4o*",
+			Description:  "OpenAI Responses gpt-4o family: 128k-token context window (documented, not probed)",
+			LastVerified: Date("2026-10-10"),
+			Apply:        applyContextWindow(128_000),
+		},
 	}
 }

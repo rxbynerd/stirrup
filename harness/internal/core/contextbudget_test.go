@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -9,6 +11,9 @@ import (
 	"testing"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -149,5 +154,124 @@ func TestLoop_CalibrationCompactsEarlierWhenProviderCountsMore(t *testing.T) {
 		if got := requestTokens(req); got > limit {
 			t.Errorf("request %d estimates %d tokens, over the calibrated fit limit of %d", doubled+i, got, limit)
 		}
+	}
+}
+
+// windowResolver registers context windows by "providerType/model".
+type windowResolver map[string]int
+
+func (r windowResolver) Resolve(providerType, model string) quirks.ProviderQuirks {
+	return quirks.ProviderQuirks{ContextWindow: r[providerType+"/"+model]}
+}
+
+func TestEffectiveContextWindow(t *testing.T) {
+	cases := []struct{ explicit, registered, want int }{
+		{0, 0, 0},
+		{100_000, 0, 100_000},
+		{0, 128_000, 128_000},
+		{64_000, 128_000, 64_000},
+		{300_000, 128_000, 128_000},
+	}
+	for _, tc := range cases {
+		if got := effectiveContextWindow(tc.explicit, tc.registered); got != tc.want {
+			t.Errorf("effectiveContextWindow(%d, %d) = %d, want %d", tc.explicit, tc.registered, got, tc.want)
+		}
+	}
+}
+
+func TestResolveContextWindow(t *testing.T) {
+	resolver := windowResolver{"openai-compatible/gpt-4o": 128_000}
+	cases := []struct {
+		name         string
+		resolver     capabilityResolver
+		explicit     int
+		providerName string
+		model        string
+		want         int
+		wantSource   string
+		wantCapped   int
+	}{
+		{"registered window without an explicit one", resolver, 0, "openai-compatible", "gpt-4o", 128_000, "registered for gpt-4o", 0},
+		{"a smaller explicit window wins", resolver, 64_000, "openai-compatible", "gpt-4o", 64_000, "contextStrategy.maxTokens=64000", 0},
+		{"a larger explicit window is capped", resolver, 300_000, "openai-compatible", "gpt-4o", 128_000, "registered for gpt-4o", 300_000},
+		{"a named provider resolves by its type", resolver, 0, "fast", "gpt-4o", 128_000, "registered for gpt-4o", 0},
+		{"an empty provider name is the default provider", resolver, 0, "", "gpt-4o", 128_000, "registered for gpt-4o", 0},
+		{"a model without an entry keeps the default", resolver, 0, "openai-compatible", "gpt-4.1", defaultMaxContextTokens, "default", 0},
+		{"no registry keeps the explicit window", nil, 300_000, "openai-compatible", "gpt-4o", 300_000, "contextStrategy.maxTokens=300000", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loop := &AgenticLoop{}
+			if tc.resolver != nil {
+				loop.ContextWindows = tc.resolver
+			}
+			config := &types.RunConfig{
+				Provider:        types.ProviderConfig{Type: "openai-compatible"},
+				Providers:       map[string]types.ProviderConfig{"fast": {Type: "openai-compatible"}},
+				ContextStrategy: types.ContextStrategyConfig{MaxTokens: tc.explicit},
+			}
+			got := loop.resolveContextWindow(config, tc.providerName, tc.model)
+			if got.tokens != tc.want || !strings.Contains(got.source, tc.wantSource) || got.cappedFrom != tc.wantCapped {
+				t.Errorf("resolveContextWindow = %+v, want %d tokens, source containing %q, cappedFrom %d", got, tc.want, tc.wantSource, tc.wantCapped)
+			}
+		})
+	}
+}
+
+// TestLoop_RegisteredWindowBoundsEveryRequest pins that a model with a
+// 128k registry entry and no contextStrategy.maxTokens never sends a
+// request estimated above 128k, though its history grows past that.
+func TestLoop_RegisteredWindowBoundsEveryRequest(t *testing.T) {
+	const window = 128_000
+	prov := &usageReportingProvider{toolTurns: 6, factor: 1}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.ContextWindows = windowResolver{"anthropic/claude-sonnet-4-6": window}
+	loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "test_tool",
+		Description: "A test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			return strings.Repeat("x", 120_000), nil
+		},
+	})
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 0
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
+	}
+	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: window, ReserveForResponse: effectiveReserveForResponse(window)})
+	for i, req := range prov.requests {
+		if got := requestTokens(req); got > limit || got > window {
+			t.Errorf("request %d estimates %d tokens, over the fit limit %d of the %d-token window", i, got, limit, window)
+		}
+	}
+	last := prov.requests[len(prov.requests)-1]
+	if full := 6*30_000 + requestTokens(types.StreamParams{System: last.System, Tools: last.Tools}); full <= window {
+		t.Fatalf("history of about %d tokens never outgrows the window; the test no longer exercises it", full)
+	}
+}
+
+// TestLoop_ExplicitWindowAboveRegisteredWarns pins the warning when
+// contextStrategy.maxTokens exceeds the model's registered window.
+func TestLoop_ExplicitWindowAboveRegisteredWarns(t *testing.T) {
+	prov := &usageReportingProvider{factor: 1}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.ContextWindows = windowResolver{"anthropic/claude-sonnet-4-6": 128_000}
+	var events bytes.Buffer
+	loop.Transport = transport.NewStdioTransport(&events, &bytes.Buffer{})
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := "contextStrategy.maxTokens=200000 exceeds the 128000-token context window registered for claude-sonnet-4-6"
+	if !strings.Contains(events.String(), want) {
+		t.Errorf("transport events do not contain %q:\n%s", want, events.String())
 	}
 }

@@ -57,3 +57,11 @@ func applyDeepSeekThinkingClass(q *ProviderQuirks) {
 	q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
 	q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 }
+
+// applyContextWindow returns a rule body registering a context window of
+// tokens, input and output together.
+func applyContextWindow(tokens int) func(*ProviderQuirks) {
+	return func(q *ProviderQuirks) {
+		q.ContextWindow = tokens
+	}
+}

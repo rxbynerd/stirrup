@@ -737,7 +737,19 @@ func (l *AgenticLoop) runInnerLoop(
 		currentTokens := estimateCurrentTokens(messages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
-		window := resolveContextWindow(config)
+		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
+		if turn == 0 && window.cappedFrom > 0 {
+			l.Logger.Warn("contextStrategy.maxTokens exceeds the model's registered context window",
+				"maxTokens", window.cappedFrom,
+				"contextWindow", window.tokens,
+				"model", selection.Model,
+			)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type: "warning",
+				Message: fmt.Sprintf("contextStrategy.maxTokens=%d exceeds %s; budgeting against the registered window",
+					window.cappedFrom, window.source),
+			})
+		}
 		responseReserve := effectiveReserveForResponse(window.tokens)
 		if turn == 0 && responseReserve < defaultReserveForResponse {
 			// Once per run (turn 0): the window is constant, so

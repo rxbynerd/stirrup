@@ -68,6 +68,12 @@ type ProviderQuirks struct {
 	// its Schema dialect rejects `examples`.
 	ToolExamples ToolExamplesCapability `json:"toolExamples"`
 
+	// ContextWindow is the resolved model's context window in tokens,
+	// input and output together. Zero means no entry: the loop falls back
+	// to contextStrategy.maxTokens or its default window. When both are
+	// set the loop uses the smaller.
+	ContextWindow int `json:"contextWindow"`
+
 	// --- Behaviour flags ---
 
 	// BehaviourFlags carries adapter-internal behaviour flags that cannot be

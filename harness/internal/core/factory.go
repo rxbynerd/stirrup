@@ -336,7 +336,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 8. Context strategy. Built after buildComponents because the
 	// "summarise" strategy needs the default provider adapter.
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
+	summaryWindow := effectiveContextWindow(config.ContextStrategy.MaxTokens,
+		quirks.DefaultRegistry().Resolve(config.Provider.Type, config.ModelRouter.Model).ContextWindow)
+	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, summaryWindow, exec)
 
 	// 9. Verifier. Construction is deferred to step 13, once metrics
 	// exists — buildVerifier wraps in a metric-recorder when metrics is
@@ -609,6 +611,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}
+	// Compat profiles add no context windows, so the default registry
+	// serves every provider.
+	loop.ContextWindows = quirks.DefaultRegistry()
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
 	// first turn instead of being dropped.
@@ -931,10 +936,10 @@ func wrapContextStrategy(cs contextpkg.ContextStrategy, cfg types.ContextStrateg
 	return contextpkg.NewMetricRecorder(cs, metrics, name)
 }
 
-func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, exec executor.Executor) contextpkg.ContextStrategy {
+func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, window int, exec executor.Executor) contextpkg.ContextStrategy {
 	switch cfg.Type {
 	case "summarise":
-		return contextpkg.NewSummariseStrategy(prov, model, cfg.MaxTokens)
+		return contextpkg.NewSummariseStrategy(prov, model, window)
 	case "offload-to-file":
 		return contextpkg.NewOffloadToFileStrategy(exec)
 	case "sliding-window", "":

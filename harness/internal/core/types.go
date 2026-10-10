@@ -100,6 +100,10 @@ type AgenticLoop struct {
 	// unconditional; a hand-assembled loop may leave it nil.
 	RuleOfTwo  ruleoftwo.Monitor
 	Escalation EscalationPolicy // tool-choice missed-tool recovery; nil = disabled
+	// ContextWindows resolves the selected model's registered context
+	// window; nil means no registry, so only contextStrategy.maxTokens
+	// and the default window apply.
+	ContextWindows capabilityResolver
 	// Hooks runs the run's configured lifecycle hooks; optional, like
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.

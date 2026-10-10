@@ -1671,3 +1671,29 @@ func TestGatewayPrefixResolution_OpenAIReasoningClass(t *testing.T) {
 		}
 	}
 }
+
+// TestContextWindowRules pins which models carry a registered context
+// window; every other model resolves to zero and keeps the loop default.
+func TestContextWindowRules(t *testing.T) {
+	reg := DefaultRegistry()
+	cases := []struct {
+		provider, model string
+		want            int
+	}{
+		{"openai-compatible", "gpt-4o", 128_000},
+		{"openai-compatible", "gpt-4o-mini-2024-07-18", 128_000},
+		{"openai-compatible", "openai/gpt-4o", 128_000},
+		{"openai-responses", "gpt-4o", 128_000},
+		{"openai-compatible", "gpt-4.1", 0},
+		{"openai-compatible", "gpt-5", 0},
+		{"openai-responses", "gpt-6", 0},
+		{"anthropic", "claude-sonnet-4-6", 0},
+		{"gemini", "gemini-2.5-pro", 0},
+		{"bedrock", "anthropic.claude-sonnet-4-6-v1", 0},
+	}
+	for _, tc := range cases {
+		if got := reg.Resolve(tc.provider, tc.model).ContextWindow; got != tc.want {
+			t.Errorf("%s/%s: ContextWindow = %d, want %d", tc.provider, tc.model, got, tc.want)
+		}
+	}
+}

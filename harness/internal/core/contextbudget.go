@@ -60,21 +60,61 @@ type contextWindow struct {
 	source string
 	// remedy is the configuration change that raises the window.
 	remedy string
+	// cappedFrom is a contextStrategy.maxTokens larger than the registered
+	// window that replaced it, else 0.
+	cappedFrom int
 }
 
-// resolveContextWindow returns the context window for the run.
-func resolveContextWindow(config *types.RunConfig) contextWindow {
-	if explicit := config.ContextStrategy.MaxTokens; explicit > 0 {
+// effectiveContextWindow returns the smaller of an explicit and a
+// registered context window, ignoring either when it is zero; zero when
+// neither is set.
+func effectiveContextWindow(explicit, registered int) int {
+	switch {
+	case explicit > 0 && registered > 0:
+		return min(explicit, registered)
+	case explicit > 0:
+		return explicit
+	default:
+		return max(registered, 0)
+	}
+}
+
+// resolveContextWindow returns the context window for a turn on the
+// selected provider and model; an empty provider name is the default
+// provider.
+func (l *AgenticLoop) resolveContextWindow(config *types.RunConfig, providerName, model string) contextWindow {
+	explicit := config.ContextStrategy.MaxTokens
+	registered := 0
+	if l.ContextWindows != nil {
+		providerType := config.Provider.Type
+		if providerName != "" {
+			providerType = providerTypeFor(config, providerName)
+		}
+		registered = l.ContextWindows.Resolve(providerType, model).ContextWindow
+	}
+	switch effectiveContextWindow(explicit, registered) {
+	case 0:
+		return contextWindow{
+			tokens: defaultMaxContextTokens,
+			source: fmt.Sprintf("the default %d-token context window", defaultMaxContextTokens),
+			remedy: "set contextStrategy.maxTokens to the model's context window",
+		}
+	case explicit:
 		return contextWindow{
 			tokens: explicit,
 			source: fmt.Sprintf("contextStrategy.maxTokens=%d", explicit),
 			remedy: "raise contextStrategy.maxTokens",
 		}
-	}
-	return contextWindow{
-		tokens: defaultMaxContextTokens,
-		source: fmt.Sprintf("the default %d-token context window", defaultMaxContextTokens),
-		remedy: "set contextStrategy.maxTokens to the model's context window",
+	default:
+		w := contextWindow{
+			tokens: registered,
+			source: fmt.Sprintf("the %d-token context window registered for %s", registered, model),
+			remedy: "use a model with a larger context window",
+		}
+		if explicit > registered {
+			w.cappedFrom = explicit
+		}
+		return w
 	}
 }
 
