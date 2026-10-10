@@ -153,6 +153,8 @@ func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord 
 // A non-nil trace returned with a non-nil error means the run completed
 // but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
+	l.windDown = windDownState{start: l.now()}
+
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
 	// context.Cause().
@@ -799,6 +801,9 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 		}
 
+		var windDown string
+		messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
+
 		selection := l.Router.Select(ctx, router.RouterContext{
 			Mode:           config.Mode,
 			Turn:           turn,
@@ -866,6 +871,7 @@ func (l *AgenticLoop) runInnerLoop(
 					DurationMs: time.Since(turnStart).Milliseconds(),
 					Mode:       "",
 					Model:      selection.Model,
+					WindDown:   windDown,
 				})
 				l.noteFailure("error", fmt.Sprintf("model router selected unknown provider %q", selection.Provider))
 				return messages, "error", finalAssistantText, nil
@@ -880,6 +886,7 @@ func (l *AgenticLoop) runInnerLoop(
 				DurationMs: time.Since(turnStart).Milliseconds(),
 				Mode:       "",
 				Model:      selection.Model,
+				WindDown:   windDown,
 			})
 			l.noteFailure("error", "no provider is configured")
 			return messages, "error", finalAssistantText, nil
@@ -923,7 +930,7 @@ func (l *AgenticLoop) runInnerLoop(
 		rejected := 0
 		for {
 			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, selectedProvider, params)
-			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
+			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0, windDown)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
@@ -933,7 +940,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0, false)
+				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0, false, windDown)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
@@ -972,7 +979,7 @@ func (l *AgenticLoop) runInnerLoop(
 			dispatched = len(toolCalls)
 		}
 		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
-		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery)
+		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -983,6 +990,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ModelOutput:         sr.Blocks,
 			ResponseModel:       sr.ResponseModel,
 			OutputLimitRecovery: outputLimitRecovery,
+			WindDown:            windDown,
 		}
 		// The chat span covers inference only; tool spans are its
 		// siblings under the agent span.

@@ -183,6 +183,12 @@ type AgenticLoop struct {
 	// re-entries share the per-run bound.
 	outputLimitRecoveries int
 
+	// windDown is the per-run wind-down state; see windDownIfDue.
+	windDown windDownState
+
+	// clock is the wind-down time source; nil means time.Now.
+	clock func() time.Time
+
 	// asyncOnce guards lazy construction of asyncCorrelator: most runs
 	// never use async tools and pay no cost. Held in an atomic so
 	// non-dispatcher goroutines can read it without going through Once.Do.
