@@ -2,12 +2,13 @@ package core
 
 import "time"
 
-// LoopOptions carries entrypoint-supplied behaviour into BuildLoop. The debug
-// bits are CLI-only and build-tag-gated; they deliberately have no RunConfig
-// counterpart, so a control-plane submission can never request them. Every bit is re-checked
-// against debugbuild.DebugBuildEnabled() at its point of effect rather than
-// trusted here, keeping a release build incapable of disabling redaction
-// even if a caller bypasses the CLI's gate. See
+// LoopOptions carries entrypoint-supplied behaviour into BuildLoop.
+//
+// The debug bits are CLI-only and build-tag-gated; they deliberately have no
+// RunConfig counterpart, so a control-plane submission can never request them.
+// Every bit is re-checked against debugbuild.DebugBuildEnabled() at its point
+// of effect rather than trusted here, keeping a release build incapable of
+// disabling redaction even if a caller bypasses the CLI's gate. See
 // docs/security.md#debug-builds.
 type LoopOptions struct {
 	debugRedactionDisabled bool
