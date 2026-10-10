@@ -557,7 +557,9 @@ Full reference: [`provider-quirks.md`](provider-quirks.md).
 The `spawn_agent` tool creates a fresh `AgenticLoop` with its own
 message history, running synchronously as a tool call. The sub-agent
 reuses the parent's provider, executor, and tools (except
-`spawn_agent` itself — preventing infinite recursion). It uses a
+`spawn_agent` itself — preventing infinite recursion). A planning,
+review, research or toil sub-agent also loses every workspace-mutating
+tool, and a read-only parent cannot spawn an `execution` sub-agent. It uses a
 `NullTransport` (no streaming to the control plane), `NoneVerifier`,
 `NoneGitStrategy`, and a `captureTransport` that records text deltas
 for output extraction. Max turns is capped at 20, default 10.
