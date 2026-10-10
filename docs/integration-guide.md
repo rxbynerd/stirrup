@@ -130,9 +130,8 @@ For the current `stirrup job` implementation, read
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
 `hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
-Provider stop reasons also pass through verbatim: `refusal` (the model
-declined to respond) and `model_context_window_exceeded` (the response
-filled the model's context window and is truncated).
+Provider stop reasons also pass through verbatim, such as `refusal`
+(the model declined to respond).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 

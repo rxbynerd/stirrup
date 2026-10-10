@@ -195,10 +195,14 @@ func TestLoop_RefusalWithoutCategory(t *testing.T) {
 	}
 }
 
-func TestLoop_ContextWindowExceededPassesThrough(t *testing.T) {
+// TestLoop_ContextWindowExceededWithNothingToCompact pins that a
+// context-window stop on a request the forced compaction cannot shrink
+// ends the run as context_exhausted, with the stop's tokens charged and
+// no stop details or refusal log.
+func TestLoop_ContextWindowExceededWithNothingToCompact(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Partial answer"},
-		{Type: "message_complete", StopReason: "model_context_window_exceeded"},
+		{Type: "message_complete", StopReason: "model_context_window_exceeded", InputTokens: 120, OutputTokens: 30},
 	}})
 	logBuf, _ := observedLoop(t, loop)
 
@@ -206,8 +210,11 @@ func TestLoop_ContextWindowExceededPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
-	if runTrace.Outcome != "model_context_window_exceeded" {
-		t.Errorf("Outcome = %q, want model_context_window_exceeded", runTrace.Outcome)
+	if runTrace.Outcome != "context_exhausted" {
+		t.Errorf("Outcome = %q, want context_exhausted", runTrace.Outcome)
+	}
+	if runTrace.TokenUsage.Output != 30 {
+		t.Errorf("TokenUsage.Output = %d, want the overflowing response's 30", runTrace.TokenUsage.Output)
 	}
 	if runTrace.StopDetails != nil {
 		t.Errorf("StopDetails = %+v, want nil", runTrace.StopDetails)

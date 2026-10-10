@@ -64,9 +64,9 @@ const (
 //	"done"
 //	  - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
 //	                 "stalled", "tool_failures", "cancelled", "budget_exceeded",
-//	                 "error", "setup_failed", "hook_failed", or a provider
-//	                 stop reason such as "refusal" or
-//	                 "model_context_window_exceeded" passed through verbatim).
+//	                 "error", "setup_failed", "hook_failed",
+//	                 "context_exhausted", or a provider stop reason such as
+//	                 "refusal" passed through verbatim).
 //	  - trace:       RunTrace with execution metrics. Absent when the run
 //	                 failed before the loop was built (a rejected RunConfig),
 //	                 since no trace was ever started.
@@ -2175,7 +2175,8 @@ type RunTrace struct {
 	//	"structured_output_failed", "command_output_capture_failed",
 	//	"command_output_archive_failed",
 	//	"context_exhausted" (the prepared request could not fit the
-	//	context budget; no provider call was made).
+	//	context budget and was not sent, or a turn exceeded the
+	//	model's context window again after a forced compaction).
 	//
 	// "handoff_failed" reports a failed final git checkpoint or a failed
 	// required workspace export; like "hook_failed" and the command_output
@@ -2187,10 +2188,7 @@ type RunTrace struct {
 	// that satisfied it only before secrets were scrubbed from it.
 	// Provider stop reasons pass through verbatim, including:
 	//
-	//	"refusal"                       — the model declined to respond;
-	//	                                  see stop_details.
-	//	"model_context_window_exceeded" — the response filled the model's
-	//	                                  context window and is truncated.
+	//	"refusal" — the model declined to respond; see stop_details.
 	//
 	// Consumers should preserve unknown values.
 	Outcome string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`

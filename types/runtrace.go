@@ -96,11 +96,10 @@ type RunTrace struct {
 	// "command_output_capture_failed" | "command_output_archive_failed" |
 	// "context_exhausted" (the smallest request the context strategy and
 	// tool result truncation could prepare did not fit the context budget,
-	// so no provider call was made), or a
-	// provider stop reason passed through verbatim, such as "refusal" (the
-	// model declined to respond; see StopDetails) or
-	// "model_context_window_exceeded" (the response filled the model's
-	// context window and is truncated).
+	// so it was not sent, or a turn exceeded the model's context window
+	// again after a forced compaction), or a provider stop reason passed
+	// through verbatim, such as "refusal" (the model declined to respond;
+	// see StopDetails).
 	// See docs/configuration.md#lifecycle-hooks for setup_failed/hook_failed.
 	// handoff_failed reports a deterministic-git final checkpoint that failed
 	// or left the working tree dirty (see Git), or a required workspace

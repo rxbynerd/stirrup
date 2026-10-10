@@ -16,9 +16,10 @@ import (
 //
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
-// provider-specific value (e.g. Anthropic's "refusal" or
-// "model_context_window_exceeded") passed through verbatim as the run's
-// outcome. Adapters MUST emit "tool_use" whenever the stream contains a
+// provider-specific value (e.g. Anthropic's "refusal") passed through
+// verbatim as the run's outcome. StopReasonContextWindowExceeded instead
+// makes the loop compact and retry the turn. Adapters MUST emit
+// "tool_use" whenever the stream contains a
 // tool call, regardless of the provider's native finish-reason vocabulary
 // (see docs/providers.md for the Vertex AI STOP-remapping example).
 //
