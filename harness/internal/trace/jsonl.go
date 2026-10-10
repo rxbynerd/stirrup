@@ -51,12 +51,14 @@ type JSONLTraceEmitter struct {
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
+	gitHandoff           *types.GitHandoff
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
+var _ GitHandoffRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -108,6 +110,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.commandOutputArchive = ""
+	e.gitHandoff = nil
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -248,6 +251,14 @@ func (e *JSONLTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.commandOutputArchive = location
 }
 
+// RecordGitHandoff stores the run's git handoff for the RunTrace Finish
+// builds.
+func (e *JSONLTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.gitHandoff = &handoff
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -290,6 +301,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		FinalAssistantText:   e.finalAssistantText,
 		HookResults:          e.hookResults,
 		CommandOutputArchive: e.commandOutputArchive,
+		Git:                  e.gitHandoff,
 	}
 
 	ev := Event{

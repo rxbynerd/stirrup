@@ -98,3 +98,10 @@ type CommandOutputRecorder interface {
 type CommandOutputArchiveRecorder interface {
 	RecordCommandOutputArchive(location string)
 }
+
+// GitHandoffRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.Git just before Finish, for the same
+// reason as FinalAssistantTextRecorder.
+type GitHandoffRecorder interface {
+	RecordGitHandoff(handoff types.GitHandoff)
+}

@@ -114,6 +114,7 @@ type OTelTraceEmitter struct {
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
+	gitHandoff           *types.GitHandoff
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -154,6 +155,7 @@ var (
 	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
 	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
 	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
+	_ GitHandoffRecorder           = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -345,6 +347,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
 	e.stopDetails = nil
+	e.gitHandoff = nil
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -692,6 +695,14 @@ func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord)
 	span.End()
 }
 
+// RecordGitHandoff stores the run's git handoff for the RunTrace Finish
+// builds.
+func (e *OTelTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.gitHandoff = &handoff
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -887,6 +898,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		StopDetails:          e.stopDetails,
 		FinalAssistantText:   e.finalAssistantText,
 		CommandOutputArchive: e.commandOutputArchive,
+		Git:                  e.gitHandoff,
 	}
 
 	return trace, nil
