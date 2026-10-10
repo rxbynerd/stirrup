@@ -216,7 +216,8 @@ func (e *LocalExecutor) ListDirectory(ctx context.Context, path string) ([]strin
 
 // Exec runs a shell command in the workspace directory with the given timeout.
 // A zero timeout uses the default (30s). Output is truncated at 1 MB.
-// The process is killed if the context or timeout expires.
+// The command and the processes it started are killed if the context or
+// timeout expires (SIGTERM to the process group, SIGKILL after a short grace).
 func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
 	// Capped writers bound peak memory to ~maxOutputSize per stream: bytes
 	// past the cap are accepted (so the process never blocks on a full
@@ -255,6 +256,7 @@ func (e *LocalExecutor) ExecStream(ctx context.Context, command string, timeout 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.workspace
 	cmd.Env = filteredCommandEnv()
+	startInOwnProcessGroup(cmd)
 	// WaitDelay bounds how long Wait() blocks on the stdout/stderr pipes
 	// after the process is killed on ctx cancellation, so an orphaned
 	// grandchild holding a pipe open can't defeat cancellation by never
@@ -265,6 +267,9 @@ func (e *LocalExecutor) ExecStream(ctx context.Context, command string, timeout 
 	cmd.Stderr = stderr
 
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		killProcessGroup(cmd, shortCommandKillGrace)
+	}
 
 	result := &ExecResult{}
 
