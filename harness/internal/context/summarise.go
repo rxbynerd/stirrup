@@ -338,9 +338,11 @@ func omissionNote(omitted int) string {
 	return fmt.Sprintf("[%d earlier messages omitted to fit the summary input bound]\n", omitted)
 }
 
-// renderSummaryMessage formats one message for the summary input. Phrase
-// stripping and secret scrubbing apply to tool results only, so operator
-// and harness text reaches the summariser as written.
+// renderSummaryMessage formats one message for the summary input. Tool
+// results are scrubbed of secrets and stripped of injection phrases,
+// assistant text, which can echo tool output, is stripped, and harness
+// text, which can carry raw command output, is scrubbed. Operator text
+// reaches the summariser as written.
 func renderSummaryMessage(msg types.Message) string {
 	label := msg.Role
 	if msg.Synthetic {
@@ -351,7 +353,14 @@ func renderSummaryMessage(msg types.Message) string {
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "text":
-			sb.WriteString(truncateToChars(block.Text, summaryBlockMaxChars))
+			text := block.Text
+			switch {
+			case msg.Synthetic:
+				text = security.Scrub(text)
+			case msg.Role == "assistant":
+				text = stripSummaryInjectionPhrases(text)
+			}
+			sb.WriteString(truncateToChars(text, summaryBlockMaxChars))
 		case "tool_use":
 			fmt.Fprintf(&sb, "<tool_use name=%q id=%q />", block.Name, block.ID)
 		case "tool_result":
