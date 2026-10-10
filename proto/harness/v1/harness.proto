@@ -2170,6 +2170,13 @@ message ToolsConfig {
   // RunConfig `tools.commandOutput`; unset fields resolve to the harness
   // defaults (see docs/configuration.md#command-output-capture).
   CommandOutputConfig command_output = 6;
+
+  // Optional. Upper bound in bytes on the model-visible text of a single
+  // tool result. Longer text is cut to its head with a marker giving the
+  // original size and the offset where the omitted part starts.
+  // run_command and read_command_output bound their own output and are
+  // exempt. 0 selects 102400 (100 KiB); otherwise 1024..1048576.
+  int32 max_result_bytes = 7;
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte

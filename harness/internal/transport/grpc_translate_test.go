@@ -2244,3 +2244,19 @@ func TestRunConfigFromProto_CommandOutputUnsetKeepsDefaults(t *testing.T) {
 		t.Error("capture must default to enabled when command_output is unset")
 	}
 }
+
+// TestRunConfigFromProto_MaxResultBytesPreserved pins the tools.maxResultBytes
+// mirror through the wire format.
+func TestRunConfigFromProto_MaxResultBytesPreserved(t *testing.T) {
+	raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{MaxResultBytes: 65536}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := runConfigFromProto(&decoded).Tools.MaxResultBytes; got != 65536 {
+		t.Errorf("MaxResultBytes: got %d, want 65536", got)
+	}
+}

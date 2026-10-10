@@ -9174,3 +9174,43 @@ func TestRunConfig_ControlPlaneToolsJSONRoundTrip(t *testing.T) {
 		t.Fatalf("inputSchema not preserved verbatim: %s", out)
 	}
 }
+
+func TestToolsEffectiveMaxResultBytes(t *testing.T) {
+	if got := (ToolsConfig{}).EffectiveMaxResultBytes(); got != 100<<10 {
+		t.Fatalf("default = %d, want %d", got, 100<<10)
+	}
+	if got := (ToolsConfig{MaxResultBytes: 4096}).EffectiveMaxResultBytes(); got != 4096 {
+		t.Fatalf("explicit = %d, want 4096", got)
+	}
+}
+
+func TestValidateRunConfig_ToolsMaxResultBytes(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   int
+		wantErr string
+	}{
+		{name: "unset selects default", value: 0},
+		{name: "minimum", value: MinToolMaxResultBytes},
+		{name: "maximum", value: MaxToolMaxResultBytes},
+		{name: "negative", value: -1, wantErr: "tools.maxResultBytes must not be negative"},
+		{name: "below minimum", value: MinToolMaxResultBytes - 1, wantErr: "tools.maxResultBytes must be at least 1024"},
+		{name: "above maximum", value: MaxToolMaxResultBytes + 1, wantErr: "tools.maxResultBytes exceeds maximum of 1048576"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.Tools.MaxResultBytes = tt.value
+			err := ValidateRunConfig(c)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected valid, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}

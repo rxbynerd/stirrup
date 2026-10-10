@@ -5101,8 +5101,14 @@ type ToolsConfig struct {
 	// RunConfig `tools.commandOutput`; unset fields resolve to the harness
 	// defaults (see docs/configuration.md#command-output-capture).
 	CommandOutput *CommandOutputConfig `protobuf:"bytes,6,opt,name=command_output,json=commandOutput,proto3" json:"command_output,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Optional. Upper bound in bytes on the model-visible text of a single
+	// tool result. Longer text is cut to its head with a marker giving the
+	// original size and the offset where the omitted part starts.
+	// run_command and read_command_output bound their own output and are
+	// exempt. 0 selects 102400 (100 KiB); otherwise 1024..1048576.
+	MaxResultBytes int32 `protobuf:"varint,7,opt,name=max_result_bytes,json=maxResultBytes,proto3" json:"max_result_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ToolsConfig) Reset() {
@@ -5161,6 +5167,13 @@ func (x *ToolsConfig) GetCommandOutput() *CommandOutputConfig {
 		return x.CommandOutput
 	}
 	return nil
+}
+
+func (x *ToolsConfig) GetMaxResultBytes() int32 {
+	if x != nil {
+		return x.MaxResultBytes
+	}
+	return 0
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte
@@ -5837,13 +5850,14 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
 	"\x14PlatformOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x02\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
 	"mcpServers\x12O\n" +
 	"\rcontrol_plane\x18\x03 \x03(\v2*.stirrup.harness.v1.ControlPlaneToolConfigR\fcontrolPlane\x12N\n" +
-	"\x0ecommand_output\x18\x06 \x01(\v2'.stirrup.harness.v1.CommandOutputConfigR\rcommandOutput\"\xa8\x02\n" +
+	"\x0ecommand_output\x18\x06 \x01(\v2'.stirrup.harness.v1.CommandOutputConfigR\rcommandOutput\x12(\n" +
+	"\x10max_result_bytes\x18\a \x01(\x05R\x0emaxResultBytes\"\xa8\x02\n" +
 	"\x13CommandOutputConfig\x12\x1d\n" +
 	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12'\n" +
 	"\x0ffailure_posture\x18\x02 \x01(\tR\x0efailurePosture\x12(\n" +

@@ -1388,6 +1388,29 @@ type ToolsConfig struct {
 	// tool_result_request and blocks on the matching tool_result_response.
 	// Requires transport.type == "grpc".
 	ControlPlane []ControlPlaneToolConfig `json:"controlPlane,omitempty"`
+
+	// MaxResultBytes bounds the model-visible text of a single tool result;
+	// longer text is cut to its head with a truncation marker. run_command
+	// and read_command_output bound their own output and are exempt. Zero
+	// selects DefaultToolMaxResultBytes; use EffectiveMaxResultBytes.
+	MaxResultBytes int `json:"maxResultBytes,omitempty"`
+}
+
+// Bounds for ToolsConfig.MaxResultBytes. The minimum leaves room for the
+// truncation marker plus useful content.
+const (
+	DefaultToolMaxResultBytes = 100 << 10
+	MinToolMaxResultBytes     = 1 << 10
+	MaxToolMaxResultBytes     = 1 << 20
+)
+
+// EffectiveMaxResultBytes returns MaxResultBytes, or
+// DefaultToolMaxResultBytes when it is unset (<= 0).
+func (c ToolsConfig) EffectiveMaxResultBytes() int {
+	if c.MaxResultBytes <= 0 {
+		return DefaultToolMaxResultBytes
+	}
+	return c.MaxResultBytes
 }
 
 // ControlPlaneToolConfig declares one tool whose result the control plane
@@ -2319,6 +2342,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOutputSchema(config.OutputSchema, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCommandOutputConfig(config.Tools, &errs)
+	validateToolMaxResultBytes(config.Tools.MaxResultBytes, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	if config.TraceEmitter.Archive != nil {
@@ -2453,6 +2477,17 @@ func ValidateRunConfig(config *RunConfig) error {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func validateToolMaxResultBytes(value int, errs *[]string) {
+	switch {
+	case value < 0:
+		*errs = append(*errs, "tools.maxResultBytes must not be negative")
+	case value > 0 && value < MinToolMaxResultBytes:
+		*errs = append(*errs, fmt.Sprintf("tools.maxResultBytes must be at least %d (0 selects the default of %d)", MinToolMaxResultBytes, DefaultToolMaxResultBytes))
+	case value > MaxToolMaxResultBytes:
+		*errs = append(*errs, fmt.Sprintf("tools.maxResultBytes exceeds maximum of %d", MaxToolMaxResultBytes))
+	}
 }
 
 func validateCommandOutputConfig(tools ToolsConfig, errs *[]string) {

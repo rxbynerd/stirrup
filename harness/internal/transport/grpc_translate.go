@@ -651,7 +651,8 @@ func dynamicContextFromProto(pc map[string]*pb.DynamicContextValue) map[string]t
 
 func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	tc := types.ToolsConfig{
-		BuiltIn: pc.BuiltIn,
+		BuiltIn:        pc.BuiltIn,
+		MaxResultBytes: int(pc.MaxResultBytes),
 	}
 	for _, srv := range pc.McpServers {
 		tc.MCPServers = append(tc.MCPServers, types.MCPServerConfig{

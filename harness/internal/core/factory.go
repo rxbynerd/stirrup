@@ -1206,10 +1206,10 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput()))
 		if outputStore != nil {
-			registry.Register(builtins.ReadCommandOutputTool(outputStore, exec))
+			registry.Register(builtins.ReadCommandOutputTool(outputStore, exec, cfg.EffectiveMaxResultBytes()))
 		}
 	} else if toolEnabled(cfg.BuiltIn, "read_command_output") && outputStore != nil {
-		registry.Register(builtins.ReadCommandOutputTool(outputStore, exec))
+		registry.Register(builtins.ReadCommandOutputTool(outputStore, exec, cfg.EffectiveMaxResultBytes()))
 	}
 	if toolEnabled(cfg.BuiltIn, "web_fetch") {
 		registry.Register(builtins.WebFetchTool())

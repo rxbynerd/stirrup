@@ -55,6 +55,7 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
+		SelfBoundedResult: store != nil,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			if res, found := replayResult(exec, "run_command", input); found {
 				return res, nil
@@ -259,14 +260,17 @@ func replayResult(exec executor.Executor, name string, input json.RawMessage) (t
 }
 
 // ReadCommandOutputTool returns a read-only, approval-free paginator over
-// scrubbed command streams.
-func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *tool.Tool {
+// scrubbed command streams. Each response is shortened to fit within
+// maxResultBytes (tools.maxResultBytes); end_offset reports where it stopped.
+func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor, maxResultBytes int) *tool.Tool {
 	return &tool.Tool{
 		Name: "read_command_output",
 		Description: fmt.Sprintf(
-			"Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to %d KiB and permits at most %d KiB per call.",
+			"Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to %d KiB and permits at most %d KiB per call. "+
+				"A response may stop short of the requested limit to fit the tool result size limit; continue from its end_offset.",
 			commandoutput.ReadDefaultBytes>>10, commandoutput.ReadMaxBytes>>10),
-		InputSchema: readCommandOutputSchema,
+		InputSchema:       readCommandOutputSchema,
+		SelfBoundedResult: true,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			if res, found := replayResult(exec, "read_command_output", input); found {
 				return res, nil
@@ -283,8 +287,7 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
-			payload := commandOutputChunkResult{Reference: params.Ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
-			structured, err := json.Marshal(payload)
+			read, structured, err := fitCommandOutputChunk(params.Ref, read, maxResultBytes)
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
@@ -295,6 +298,36 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *
 			}
 			return tool.StructuredResult{Text: text, Structured: structured, Kind: kindCommandOutputChunk}, nil
 		},
+	}
+}
+
+// fitCommandOutputChunk marshals the read_command_output payload for read,
+// dropping trailing content bytes until the JSON fits within maxBytes. The
+// returned ReadResult carries the shortened range so the access ledger
+// records exactly what the model received.
+func fitCommandOutputChunk(ref string, read commandoutput.ReadResult, maxBytes int) (commandoutput.ReadResult, []byte, error) {
+	for {
+		payload := commandOutputChunkResult{Reference: ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
+		structured, err := json.Marshal(payload)
+		if err != nil {
+			return read, nil, err
+		}
+		over := len(structured) - maxBytes
+		if over <= 0 || len(read.Bytes) == 0 {
+			return read, structured, nil
+		}
+		// JSON escaping expands some bytes up to six-fold, so shrink in
+		// proportion to the encoded content length rather than by the raw
+		// overshoot.
+		encoded, err := json.Marshal(payload.Content)
+		if err != nil {
+			return read, nil, err
+		}
+		keep := len(read.Bytes) * max(len(encoded)-over, 0) / len(encoded)
+		keep = min(keep, len(read.Bytes)-1)
+		read.Bytes = read.Bytes[:keep]
+		read.End = read.Offset + int64(keep)
+		read.EOF = read.End >= read.Content.ScrubbedBytes
 	}
 }
 
