@@ -257,6 +257,45 @@ func TestLoop_RegisteredWindowBoundsEveryRequest(t *testing.T) {
 	}
 }
 
+// TestSpawnSubAgent_InheritsRegisteredWindow pins that a sub-agent budgets
+// against the parent's registered context window: with no
+// contextStrategy.maxTokens, a child on a 128k model never sends a request
+// above that window's fit limit, though its history grows past it.
+func TestSpawnSubAgent_InheritsRegisteredWindow(t *testing.T) {
+	const window = 128_000
+	prov := &usageReportingProvider{toolTurns: 6, factor: 1}
+	parent := buildTestLoop(nil)
+	parent.Provider = prov
+	parent.ContextWindows = windowResolver{"anthropic/claude-sonnet-4-6": window}
+	parent.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "test_tool",
+		Description: "A test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			return strings.Repeat("x", 120_000), nil
+		},
+	})
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 0
+
+	result, err := SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "Do a subtask"})
+	if err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+	if result.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", result.Outcome)
+	}
+	if len(prov.requests) != 7 {
+		t.Fatalf("provider saw %d requests, want 7", len(prov.requests))
+	}
+	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: window, ReserveForResponse: effectiveReserveForResponse(window)})
+	for i, req := range prov.requests {
+		if got := requestTokens(req); got > limit {
+			t.Errorf("child request %d estimates %d tokens, over the fit limit %d of the %d-token window", i, got, limit, window)
+		}
+	}
+}
+
 // TestLoop_ExplicitWindowAboveRegisteredWarns pins the warning when
 // contextStrategy.maxTokens exceeds the model's registered window.
 func TestLoop_ExplicitWindowAboveRegisteredWarns(t *testing.T) {
