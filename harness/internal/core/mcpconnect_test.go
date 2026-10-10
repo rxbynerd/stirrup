@@ -267,3 +267,45 @@ func TestBoundDegradedError_ScrubsSecrets(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// leakyMCPServer answers every request with a JSON-RPC error whose message
+// is long and carries a credential.
+func leakyMCPServer(t *testing.T, secret string) *httptest.Server {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"error":   map[string]any{"code": -32000, "message": secret + " " + strings.Repeat("x", maxDegradedErrorBytes*4)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBuildLoop_RequiredMCPServerErrorIsScrubbedAndBounded(t *testing.T) {
+	const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+	srv := leakyMCPServer(t, secret)
+	cfg := mcpFactoryConfig(t, types.MCPServerConfig{Name: "docs", URI: srv.URL})
+
+	loop, err := BuildLoopWithTransport(context.Background(), cfg, &recordingTransport{})
+	if err == nil {
+		_ = loop.Close()
+		t.Fatal("expected construction to fail for a required MCP server returning an error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("required-server error leaked a secret: %q", err.Error())
+	}
+	prefix := `required MCP server "docs" unavailable: `
+	if !strings.HasPrefix(err.Error(), prefix) {
+		t.Fatalf("error should start with %q, got %q", prefix, err.Error())
+	}
+	if got := len(err.Error()) - len(prefix); got > maxDegradedErrorBytes+len("... [truncated by harness]") {
+		t.Errorf("reason is %d bytes, want it bounded near %d", got, maxDegradedErrorBytes)
+	}
+}

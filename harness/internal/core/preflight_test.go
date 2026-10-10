@@ -327,6 +327,39 @@ func TestPreflight_MCP_Fail(t *testing.T) {
 	}
 }
 
+func TestPreflight_MCP_DetailIsScrubbedAndBounded(t *testing.T) {
+	const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := leakyMCPServer(t, secret)
+
+	for _, optional := range []bool{false, true} {
+		cfg := preflightTestConfig(t, srv.URL+"/v1")
+		cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: optional}}
+
+		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+		if err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		var detail string
+		for _, st := range report.Steps {
+			if st.Name == "mcp:docs" {
+				detail = st.Detail
+			}
+		}
+		if detail == "" {
+			t.Fatalf("optional=%v: no detail on the mcp:docs step; steps: %+v", optional, report.Steps)
+		}
+		if strings.Contains(detail, secret) {
+			t.Errorf("optional=%v: detail leaked a secret: %q", optional, detail)
+		}
+		if len(detail) > maxDegradedErrorBytes+len("... [truncated by harness]") {
+			t.Errorf("optional=%v: detail is %d bytes, want it bounded near %d", optional, len(detail), maxDegradedErrorBytes)
+		}
+	}
+}
+
 func TestPreflight_MCP_OptionalUnreachableWarns(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)

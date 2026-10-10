@@ -1532,7 +1532,8 @@ type MCPServerConfig struct {
 	// AllowedTools, the harness refuses to start the run. An optional
 	// server that fails is skipped with a transport warning and recorded
 	// in RunResult.DegradedCapabilities, and the run proceeds without its
-	// tools.
+	// tools. Allowlisted tools dropped by the per-server tool cap are a
+	// logged warning, not a failure, for either kind of server.
 	Optional bool `json:"optional,omitempty"`
 }
 

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -487,11 +488,12 @@ func preflightMCP(
 			continue
 		}
 		if err := client.Probe(ctx, srv, secrets); err != nil {
+			bounded := errors.New(boundDegradedError(err))
 			if srv.Optional {
-				warn(step, err)
+				warn(step, bounded)
 				continue
 			}
-			fail(step, err, "check the MCP server URI is reachable, the auth ref resolves and allowedTools are all advertised, or mark the server optional (or pass --no-probe-mcp)")
+			fail(step, bounded, "check the MCP server URI is reachable, the auth ref resolves and allowedTools are all advertised, or mark the server optional (or pass --no-probe-mcp)")
 			continue
 		}
 		ok(step, "initialize/tools/list handshake succeeded")

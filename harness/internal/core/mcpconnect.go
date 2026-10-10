@@ -38,7 +38,7 @@ func connectMCPServers(
 			continue
 		}
 		if !srv.Optional {
-			return nil, fmt.Errorf("required MCP server %q unavailable: %w", srv.Name, err)
+			return nil, fmt.Errorf("required MCP server %q unavailable: %s", srv.Name, boundDegradedError(err))
 		}
 
 		reason := boundDegradedError(err)
