@@ -18,6 +18,7 @@ type DeterministicGitStrategy struct {
 	workspace string
 	branch    string
 	baseSHA   string
+	setupDone bool
 }
 
 // NewDeterministicGitStrategy returns a new DeterministicGitStrategy.
@@ -26,15 +27,18 @@ func NewDeterministicGitStrategy() *DeterministicGitStrategy {
 }
 
 // Setup creates a new branch named stirrup/{taskID} from the current HEAD
-// in the given workspace directory.
+// in the given workspace directory. An empty workspace means the process's
+// current directory.
 func (d *DeterministicGitStrategy) Setup(ctx context.Context, workspace string, taskID string) error {
 	d.workspace = workspace
 	d.branch = "stirrup/" + taskID
 	d.baseSHA = ""
+	d.setupDone = false
 
 	if err := d.git(ctx, "checkout", "-b", d.branch); err != nil {
 		return fmt.Errorf("create branch %q: %w", d.branch, err)
 	}
+	d.setupDone = true
 	// Fails only on an unborn branch, which has no base commit.
 	if sha, err := d.gitOutput(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
 		d.baseSHA = sha
@@ -66,7 +70,7 @@ func (d *DeterministicGitStrategy) Checkpoint(ctx context.Context, message strin
 // failed, and every failure is joined into the returned error.
 func (d *DeterministicGitStrategy) Finalise(ctx context.Context, outcome string) (*types.GitHandoff, error) {
 	handoff := &types.GitHandoff{BaseSHA: d.baseSHA}
-	if d.workspace == "" {
+	if !d.setupDone {
 		return handoff, errors.New("git setup has not run")
 	}
 

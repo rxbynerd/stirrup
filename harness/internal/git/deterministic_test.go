@@ -347,6 +347,44 @@ func TestFinalise_BeforeSetup_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestFinalise_EmptyWorkspaceUsesCurrentDirectory(t *testing.T) {
+	repo := initTestRepo(t)
+	t.Chdir(repo)
+	ctx := context.Background()
+
+	gs := NewDeterministicGitStrategy()
+	if err := gs.Setup(ctx, "", "task-cwd"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	handoff, err := gs.Finalise(ctx, "success")
+	if err != nil {
+		t.Fatalf("Finalise: %v", err)
+	}
+	if handoff.Branch != "stirrup/task-cwd" {
+		t.Errorf("branch = %q, want stirrup/task-cwd", handoff.Branch)
+	}
+	if handoff.SHA == "" || handoff.SHA != gitOut(t, repo, "rev-parse", "HEAD") {
+		t.Errorf("SHA = %q, want the repository HEAD", handoff.SHA)
+	}
+	if handoff.Dirty {
+		t.Error("Dirty = true, want the final checkpoint to have committed f.txt")
+	}
+}
+
+func TestFinalise_AfterFailedSetup_ReturnsError(t *testing.T) {
+	gs := NewDeterministicGitStrategy()
+	if err := gs.Setup(context.Background(), t.TempDir(), "task-no-repo"); err == nil {
+		t.Fatal("Setup outside a repository returned nil error")
+	}
+	if _, err := gs.Finalise(context.Background(), "success"); err == nil || !strings.Contains(err.Error(), "has not run") {
+		t.Errorf("Finalise after a failed Setup error = %v, want the setup-has-not-run error", err)
+	}
+}
+
 // isolateGitConfig hides the user's and the system's git configuration, and
 // any identity in the environment, from git commands the test runs.
 func isolateGitConfig(t *testing.T) {
