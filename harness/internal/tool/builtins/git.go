@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
@@ -91,21 +92,15 @@ func validateGitPath(exec executor.Executor, path string) (string, error) {
 	return path, nil
 }
 
-// runGit builds a `sh -c`-safe command from a fixed git verb plus already-
-// validated arguments and executes it. The injected executor runs every
-// command via `sh -c <string>` (executor/local.go:Exec, container.go:Exec), so
-// an unquoted `"git " + path` would be a shell-injection vector. Every element
-// is single-quoted with shellQuote so a value such as `foo; rm -rf /` is
-// treated as literal text by sh, never as syntax. ensureGitRepo must be called
-// before any data-returning git invocation so a non-git workspace yields a
-// clear error rather than a raw git failure.
+// runGit executes a fixed git verb plus already-validated arguments through
+// git.CommandLine, which single-quotes every element (the executor runs the
+// string via `sh -c`, so `foo; rm -rf /` must stay literal text) and carries
+// the hardening flags that keep repository-local configuration from altering
+// the command. ensureGitRepo must be called before any data-returning git
+// invocation so a non-git workspace yields a clear error rather than a raw
+// git failure.
 func runGit(ctx context.Context, exec executor.Executor, args ...string) (*executor.ExecResult, error) {
-	quoted := make([]string, 0, len(args)+1)
-	quoted = append(quoted, "git")
-	for _, a := range args {
-		quoted = append(quoted, shellQuote(a))
-	}
-	return exec.Exec(ctx, strings.Join(quoted, " "), gitTimeout)
+	return exec.Exec(ctx, git.CommandLine(args...), gitTimeout)
 }
 
 // ensureGitRepo returns a clear, deterministic error when the workspace is not

@@ -922,28 +922,32 @@ func TestBuildPermissionPolicy_PolicyEngineFileReadOnce(t *testing.T) {
 }
 
 func TestBuildGitStrategy_None(t *testing.T) {
-	gs := buildGitStrategy(types.GitStrategyConfig{Type: "none"})
+	gs := buildGitStrategy(types.GitStrategyConfig{Type: "none"}, nil)
 	if _, ok := gs.(*git.NoneGitStrategy); !ok {
 		t.Fatalf("expected NoneGitStrategy, got %T", gs)
 	}
 }
 
 func TestBuildGitStrategy_Empty(t *testing.T) {
-	gs := buildGitStrategy(types.GitStrategyConfig{})
+	gs := buildGitStrategy(types.GitStrategyConfig{}, nil)
 	if _, ok := gs.(*git.NoneGitStrategy); !ok {
 		t.Fatalf("expected NoneGitStrategy for empty type, got %T", gs)
 	}
 }
 
 func TestBuildGitStrategy_Deterministic(t *testing.T) {
-	gs := buildGitStrategy(types.GitStrategyConfig{Type: "deterministic"})
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+	gs := buildGitStrategy(types.GitStrategyConfig{Type: "deterministic"}, exec)
 	if _, ok := gs.(*git.DeterministicGitStrategy); !ok {
 		t.Fatalf("expected DeterministicGitStrategy, got %T", gs)
 	}
 }
 
 func TestBuildGitStrategy_UnknownFallsBack(t *testing.T) {
-	gs := buildGitStrategy(types.GitStrategyConfig{Type: "nonexistent"})
+	gs := buildGitStrategy(types.GitStrategyConfig{Type: "nonexistent"}, nil)
 	if _, ok := gs.(*git.NoneGitStrategy); !ok {
 		t.Fatalf("expected NoneGitStrategy for unknown type, got %T", gs)
 	}

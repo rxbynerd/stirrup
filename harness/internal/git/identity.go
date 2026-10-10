@@ -9,10 +9,11 @@ const (
 )
 
 // HardeningFlags are the configuration overrides every harness-issued git
-// command carries, as argv elements. They stop repository-local
-// configuration the agent can rewrite (hooks, fsmonitor, signing,
-// auto-maintenance) from running programs during harness git operations.
-// Clean/smudge filters and other in-repository configuration still apply.
+// command carries, as argv elements. They keep harness git operations
+// deterministic against repository-local configuration the agent can
+// rewrite (hooks, fsmonitor, signing, auto-maintenance). They are not a
+// security boundary: inside the sandbox the agent already holds the same
+// authority as these commands.
 var HardeningFlags = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",

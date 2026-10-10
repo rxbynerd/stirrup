@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -383,6 +384,100 @@ func TestPreflight_Executor_Skip(t *testing.T) {
 	}
 	if !report.OK {
 		t.Errorf("a skipped executor probe must not fail the report; steps: %+v", report.Steps)
+	}
+}
+
+func TestPreflight_GitStrategy_NoneSkips(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if st, ok := stepStatus(report, "git-strategy"); !ok || st != PreflightOK {
+		t.Errorf("git-strategy step = %v (found=%v), want ok", st, ok)
+	}
+	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightSkip {
+		t.Errorf("git-strategy-probe step = %v (found=%v), want skip for the none strategy", st, ok)
+	}
+}
+
+func TestPreflight_GitStrategy_DeterministicProbesGitInExecutor(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightOK {
+		t.Fatalf("git-strategy-probe step = %v (found=%v), want ok; steps: %+v", st, ok, report.Steps)
+	}
+	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "inside the executor") {
+		t.Errorf("git-strategy-probe detail = %q", detail)
+	}
+}
+
+// TestPreflight_GitStrategy_MissingGitFails leaves the executor's PATH with
+// a shell but no git, which is what a sandbox image without git looks like
+// to the probe.
+func TestPreflight_GitStrategy_MissingGitFails(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(sh, filepath.Join(bin, "sh")); err != nil {
+		t.Fatalf("symlink sh: %v", err)
+	}
+	t.Setenv("PATH", bin)
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightFail {
+		t.Fatalf("git-strategy-probe step = %v (found=%v), want fail; steps: %+v", st, ok, report.Steps)
+	}
+	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "git is not available in the sandbox") {
+		t.Errorf("git-strategy-probe detail = %q, want the missing-git message", detail)
+	}
+	if report.OK {
+		t.Error("a missing git binary must fail the dry-run")
+	}
+}
+
+func TestPreflight_GitStrategy_ContainerNotProbed(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor = types.ExecutorConfig{Type: "container", Image: "ubuntu:26.04"}
+	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightSkip {
+		t.Errorf("git-strategy-probe step = %v (found=%v), want skip", st, ok)
+	}
+	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "sandbox image") {
+		t.Errorf("git-strategy-probe detail = %q, want it to say the sandbox image is not probed", detail)
+	}
+	if !report.OK {
+		t.Errorf("an unprobed container git must not fail the report; steps: %+v", report.Steps)
 	}
 }
 
