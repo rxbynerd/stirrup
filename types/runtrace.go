@@ -120,8 +120,9 @@ type RunTrace struct {
 	// no assistant turn (e.g. an early validation failure before any turn).
 	FinalAssistantText string `json:"finalAssistantText,omitempty"`
 	// StructuredOutput is the scrubbed, compact JSON document of a final
-	// answer that satisfied RunConfig.OutputSchema. Omitted when no schema
-	// was configured or no answer satisfied it.
+	// answer that satisfied RunConfig.OutputSchema. Set only when the
+	// outcome is "success"; omitted otherwise, and when no schema was
+	// configured.
 	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
 	// HookResults carries every lifecycle hook execution recorded during the
 	// run, across both phases, in dispatch order. Empty when no hooks were

@@ -2214,8 +2214,9 @@ type RunTrace struct {
 	// failed. Empty otherwise.
 	Error string `protobuf:"bytes,22,opt,name=error,proto3" json:"error,omitempty"`
 	// The final answer as compact JSON text, set when RunConfig.output_schema
-	// was configured and the answer satisfied it. The document is scrubbed
-	// of secrets and never truncated. Empty otherwise.
+	// was configured, the answer satisfied it and the outcome is "success".
+	// The document is scrubbed of secrets and never truncated. Empty
+	// otherwise.
 	StructuredOutput string `protobuf:"bytes,36,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

@@ -300,19 +300,42 @@ func TestRun_AnswerAfterVerifierRetryIsValidatedAgain(t *testing.T) {
 	}
 }
 
-func TestRun_VerificationFailureKeepsLastValidatedOutput(t *testing.T) {
-	loop, _, _ := structuredTestLoop(`{"title":"Fix login","labels":["bug"]}`)
-	loop.Verifier = &recordingVerifier{passes: []bool{false, false, false, false}}
+func TestRun_FailedOutcomeReportsNoStructuredOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(*AgenticLoop)
+		wantOutcome string
+	}{
+		{
+			name:        "verification failed",
+			setup:       func(l *AgenticLoop) { l.Verifier = &recordingVerifier{passes: []bool{false, false, false, false}} },
+			wantOutcome: "verification_failed",
+		},
+		{
+			name:        "post-run hook failed",
+			setup:       func(l *AgenticLoop) { l.Hooks = &fakeHookRunner{postErr: errSentinelPostHookFailure} },
+			wantOutcome: "hook_failed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			loop, _, tr := structuredTestLoop(`{"title":"Fix login","labels":["bug"]}`)
+			tc.setup(loop)
 
-	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "verification_failed" {
-		t.Fatalf("Outcome = %q, want verification_failed", runTrace.Outcome)
-	}
-	if string(runTrace.StructuredOutput) != `{"title":"Fix login","labels":["bug"]}` {
-		t.Errorf("StructuredOutput = %s, want the final validated answer", runTrace.StructuredOutput)
+			runTrace, err := loop.Run(context.Background(), structuredTestConfig())
+			if err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if runTrace.Outcome != tc.wantOutcome {
+				t.Fatalf("Outcome = %q, want %q", runTrace.Outcome, tc.wantOutcome)
+			}
+			if runTrace.StructuredOutput != nil {
+				t.Errorf("StructuredOutput = %s, want none for a failed run", runTrace.StructuredOutput)
+			}
+			if done := doneEvent(t, tr.Events()); done.Trace == nil || done.Trace.StructuredOutput != nil {
+				t.Errorf("done trace = %+v, want no structured output", done.Trace)
+			}
+		})
 	}
 }
 

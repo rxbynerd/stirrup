@@ -486,7 +486,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
 		recorder.RecordFinalAssistantText(finalAssistantText)
 	}
-	if recorder, ok := l.Trace.(trace.StructuredOutputRecorder); ok && structuredOutput != nil {
+	if recorder, ok := l.Trace.(trace.StructuredOutputRecorder); ok && outcome == "success" && structuredOutput != nil {
 		recorder.RecordStructuredOutput(structuredOutput)
 	}
 	// Stop details describe the provider stop that ended the inner loop;

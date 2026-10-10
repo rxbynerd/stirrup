@@ -1077,8 +1077,9 @@ message RunTrace {
   string error = 22;
 
   // The final answer as compact JSON text, set when RunConfig.output_schema
-  // was configured and the answer satisfied it. The document is scrubbed
-  // of secrets and never truncated. Empty otherwise.
+  // was configured, the answer satisfied it and the outcome is "success".
+  // The document is scrubbed of secrets and never truncated. Empty
+  // otherwise.
   string structured_output = 36;
 }
 
