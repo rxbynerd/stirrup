@@ -515,6 +515,7 @@ func scrubModelInput(in types.ModelInput, redactionDisabled bool) types.ModelInp
 		out.Messages[i] = types.Message{
 			Role:      m.Role,
 			Synthetic: m.Synthetic,
+			Origin:    m.Origin,
 			Content:   scrubContentBlocks(m.Content, redactionDisabled),
 		}
 	}

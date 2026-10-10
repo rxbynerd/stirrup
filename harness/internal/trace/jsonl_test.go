@@ -699,7 +699,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic pins the requirement
-// that scrubModelInput forwards the Synthetic marker to the on-disk trace so the
+// that scrubModelInput forwards the Synthetic and Origin markers to the on-disk trace so the
 // replay/mining toolchain can distinguish harness-injected turns from genuine
 // user content.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
@@ -721,6 +721,12 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 					Synthetic: true,
 					Content:   []types.ContentBlock{{Type: "text", Text: "escalation nudge"}},
 				},
+				{
+					Role:      "user",
+					Synthetic: true,
+					Origin:    types.MessageOriginVerifierFeedback,
+					Content:   []types.ContentBlock{{Type: "text", Text: "tests failed"}},
+				},
 			},
 		},
 	})
@@ -740,14 +746,20 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 		t.Fatal("turn_record has no modelInput")
 	}
 	msgs := turnEv.ModelInput.Messages
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
 	}
 	if msgs[0].Synthetic {
 		t.Error("first message should not be synthetic")
 	}
 	if !msgs[1].Synthetic {
 		t.Error("second message should have Synthetic:true preserved through scrubModelInput")
+	}
+	if msgs[1].Origin != "" {
+		t.Errorf("escalation nudge gained Origin %q", msgs[1].Origin)
+	}
+	if msgs[2].Origin != types.MessageOriginVerifierFeedback {
+		t.Errorf("third message Origin = %q, want verifier feedback preserved through scrubModelInput", msgs[2].Origin)
 	}
 
 	onDisk := buf.String()
