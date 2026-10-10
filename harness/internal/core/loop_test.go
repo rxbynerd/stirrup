@@ -1677,7 +1677,7 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 		ch <- types.StreamEvent{Type: "message_complete"}
 		close(ch)
 
-		result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+		result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
 		if err != nil {
 			t.Fatalf("streamEventsToResult() error: %v", err)
 		}
@@ -1703,7 +1703,7 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 		ch <- types.StreamEvent{Type: "message_complete"}
 		close(ch)
 
-		result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+		result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
 		if err != nil {
 			t.Fatalf("streamEventsToResult() error: %v", err)
 		}
@@ -1736,7 +1736,7 @@ func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
 	}
 	close(ch)
 
-	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+	result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -1775,7 +1775,7 @@ func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
 	ch <- types.StreamEvent{Type: "message_complete"}
 	close(ch)
 
-	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+	result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -1825,7 +1825,7 @@ func TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory(t *testing.T
 	ch <- types.StreamEvent{Type: "message_complete"}
 	close(ch)
 
-	result, err := streamEventsToResult(context.Background(), ch, tr, slog.Default())
+	result, err := streamEventsToResult(context.Background(), ch, tr, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -1854,7 +1854,7 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	ch <- types.StreamEvent{Type: "message_complete", OutputTokens: 42}
 	close(ch)
 
-	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), slog.Default())
+	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}

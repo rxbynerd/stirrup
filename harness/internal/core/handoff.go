@@ -61,6 +61,8 @@ func describeOutcome(config *types.RunConfig, outcome string) string {
 		return "reached the run timeout"
 	case "cancelled":
 		return "cancelled before the run completed"
+	case "control_stream_lost":
+		return "the control stream ended before the run completed"
 	case "stalled":
 		return "stopped after repeated identical tool calls"
 	case "tool_failures":
@@ -154,7 +156,7 @@ func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, ou
 		StopReason: outcome,
 		Trace:      doneSummary(runTrace),
 	}); err != nil {
-		l.Logger.Warn("transport emit failed", "event", "done", "error", err)
+		l.logEmitFailure("done", err)
 	}
 	return runTrace, traceErr
 }

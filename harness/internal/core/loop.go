@@ -138,10 +138,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.ensureControlRouting()
 	l.setActiveRun(cancelRun)
 	defer l.setActiveRun(nil)
-	// A cancel that arrived while no run was active ended the session;
-	// this run must not proceed to component work on its behalf.
+	// A cancel or stream loss that arrived while no run was active ended
+	// the session; this run must not proceed to component work on its
+	// behalf.
 	if l.sessionCancelled.Load() {
-		cancelRun(ErrCancelledByControlPlane)
+		cancelRun(l.sessionCancelCause())
 	}
 
 	l.Trace.Start(config.RunID, config)
@@ -283,7 +284,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type: "ready",
 		}); err != nil {
-			l.Logger.Warn("transport emit failed", "event", "ready", "error", err)
+			l.logEmitFailure("ready", err)
 		}
 	}
 
@@ -403,6 +404,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		cause := context.Cause(runCtx)
 		outcome = classifyCtxOutcome(cause)
 		l.setRootCancelAttribute(cause)
+		if outcome == "control_stream_lost" {
+			l.noteFailure(outcome, cause.Error())
+		}
 	}
 
 	// Post-run work below runs on detached contexts (see
@@ -513,13 +517,15 @@ func (l *AgenticLoop) finishTrace(ctx context.Context, outcome string) (*types.R
 // classifyCtxOutcome maps a context cancellation cause onto the
 // outcome reported on "done" / RunTrace.Outcome: a nil cause or bare
 // context.Canceled is a user-initiated cancellation (SIGINT/SIGTERM,
-// or a caller's plain cancel()); ErrCancelledByControlPlane and
-// context.DeadlineExceeded map to their own outcomes; anything else
-// is "error".
+// or a caller's plain cancel()); ErrCancelledByControlPlane,
+// ErrControlStreamLost and context.DeadlineExceeded map to their own
+// outcomes; anything else is "error".
 func classifyCtxOutcome(cause error) string {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
 		return "cancelled"
+	case errors.Is(cause, ErrControlStreamLost):
+		return "control_stream_lost"
 	case errors.Is(cause, context.DeadlineExceeded):
 		return "timeout"
 	case cause == nil, errors.Is(cause, context.Canceled):
@@ -535,6 +541,7 @@ func classifyCtxOutcome(cause error) string {
 // Only applied when the run ended via ctx cancellation.
 //
 //	run.cancelled_by="control_plane" — ErrCancelledByControlPlane cause
+//	run.cancelled_by="control_stream" — ErrControlStreamLost cause
 //	run.cancelled_by="deadline"      — context.DeadlineExceeded cause
 //	run.cancelled_by="signal"        — nil cause or bare context.Canceled
 //	                                   (plain cancel(), SIGINT, etc.)
@@ -552,6 +559,8 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
 		reason = "control_plane"
+	case errors.Is(cause, ErrControlStreamLost):
+		reason = "control_stream"
 	case errors.Is(cause, context.DeadlineExceeded):
 		reason = "deadline"
 	case cause == nil, errors.Is(cause, context.Canceled):
@@ -879,7 +888,7 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "error", finalAssistantText, nil
 		}
 
-		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.Logger)
+		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
@@ -1340,11 +1349,13 @@ func followUpRunContext(parent context.Context, timeout time.Duration) (context.
 
 // startHeartbeat launches a background goroutine that emits heartbeat events
 // at the given interval. Returns a cancel function that stops emission.
+// Only the first failed heartbeat is logged.
 func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration) context.CancelFunc {
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		failed := false
 		for {
 			// Non-blocking pre-check biases toward cancellation: exit
 			// before racing the ticker if ctx is already done.
@@ -1357,7 +1368,10 @@ func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = l.Transport.Emit(types.HarnessEvent{Type: "heartbeat"})
+				if err := l.Transport.Emit(types.HarnessEvent{Type: "heartbeat"}); err != nil && !failed {
+					failed = true
+					l.logEmitFailure("heartbeat", err)
+				}
 			}
 		}
 	}()
@@ -1884,7 +1898,7 @@ func (l *AgenticLoop) recordHookExecutions(execs []types.HookExecution) {
 			Type:    "warning",
 			Message: formatHookWarning(exec),
 		}); err != nil {
-			l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+			l.logEmitFailure("warning", err)
 		}
 	}
 }
@@ -1935,7 +1949,7 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunCo
 		Type:    "error",
 		Message: err.Error(),
 	}); emitErr != nil {
-		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
+		l.logEmitFailure("error", emitErr)
 	}
 	outcome = l.handoffWorkspace(ctx, config, outcome)
 	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)

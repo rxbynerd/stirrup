@@ -327,7 +327,7 @@ func (l *AgenticLoop) planAndDispatch(
 			ToolUseID: p.call.ID,
 			Content:   p.output,
 		}); err != nil {
-			l.Logger.Warn("transport emit failed", "event", "tool_result", "error", err)
+			l.logEmitFailure("tool_result", err)
 		}
 
 		if outcome := stall.recordToolCall(p.call.Name, p.call.Input, p.success); outcome != "" {

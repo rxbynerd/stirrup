@@ -177,12 +177,18 @@ type AgenticLoop struct {
 	controlOnce      sync.Once
 	controlMu        sync.Mutex
 	cancelActive     context.CancelCauseFunc
+	sessionCause     error // guarded by controlMu; set before sessionCancelled
 	sessionCancelled atomic.Bool
 	userInput        *userInputQueue
 	idleCancel       chan struct{}
 	rejections       chan types.HarnessEvent
 	controlStop      chan struct{}
 	controlStopOnce  sync.Once
+
+	// streamLost is set once the control stream has been lost; from then
+	// on lossEmitLogged keeps emit failures to a single warning.
+	streamLost     atomic.Bool
+	lossEmitLogged atomic.Bool
 
 	// asyncExtractorOverride, when non-nil, replaces extractAsyncToolResult
 	// on the async correlator. Test-only seam: the production extractor
@@ -634,7 +640,7 @@ type streamResult struct {
 
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, logger *slog.Logger) (*streamResult, error) {
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
@@ -657,7 +663,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Type: "text_delta",
 				Text: event.Text,
 			}); err != nil {
-				logger.Warn("transport emit failed", "event", "text_delta", "error", err)
+				emitFailed("text_delta", err)
 			}
 
 		case "tool_call":
@@ -696,7 +702,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Name:  event.Name,
 				Input: bytes.Clone(normalizedInput),
 			}); err != nil {
-				logger.Warn("transport emit failed", "event", "tool_call", "error", err)
+				emitFailed("tool_call", err)
 			}
 
 		case "thinking", "redacted_thinking":
