@@ -599,7 +599,7 @@ for the operator walkthrough).
 | Flag | Default | Notes |
 |---|---|---|
 | `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
-| `--export-workspace-required` | `false` | When set, a failed workspace export exits the run non-zero — suitable for jobs whose downstream automation depends on the artifact. When unset (default), upload failures are logged and the run's exit code is unchanged. CLI-behaviour flag only: it does not round-trip through `RunConfig`. |
+| `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. |
 
 The export runs even when the run itself failed, so the workspace
 state stays inspectable after a non-zero exit. Uploads authenticate

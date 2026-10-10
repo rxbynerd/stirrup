@@ -308,15 +308,19 @@ func TestBuildRunResult_GitHandoff(t *testing.T) {
 	}
 }
 
-func TestBuildRunResult_HandoffFailedCarriesGitError(t *testing.T) {
+func TestBuildRunResult_MirrorsRunErrorAndExportReceipt(t *testing.T) {
 	rt := &types.RunTrace{
-		ID:      "run-git-fail",
-		Outcome: "handoff_failed",
-		Git:     &types.GitHandoff{Branch: "stirrup/run-git-fail", SHA: "aaa", BaseSHA: "aaa", Error: "final checkpoint: commit: exit status 1"},
+		ID:              "run-export-fail",
+		Outcome:         "handoff_failed",
+		Error:           "workspace export: upload refused",
+		WorkspaceExport: &types.ExportReceipt{URI: "gs://b/ws.tar.gz", Status: types.ExportStatusFailed, Required: true, Error: "upload refused"},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Error != rt.Git.Error {
-		t.Errorf("Error = %q, want the git failure %q", got.Error, rt.Git.Error)
+	if got.Error != rt.Error {
+		t.Errorf("Error = %q, want %q", got.Error, rt.Error)
+	}
+	if got.WorkspaceExport == nil || *got.WorkspaceExport != *rt.WorkspaceExport {
+		t.Errorf("WorkspaceExport = %+v, want %+v", got.WorkspaceExport, rt.WorkspaceExport)
 	}
 }
 
@@ -326,11 +330,12 @@ func TestBuildRunResult_GitErrorOnFailedRunStaysInGitSection(t *testing.T) {
 	rt := &types.RunTrace{
 		ID:      "run-budget",
 		Outcome: "budget_exceeded",
+		Error:   "exceeded the run's token budget",
 		Git:     &types.GitHandoff{Branch: "stirrup/run-budget", Error: "final checkpoint: commit: exit status 1"},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Error != "" {
-		t.Errorf("Error = %q, want the git failure kept out of RunResult.Error", got.Error)
+	if got.Error != rt.Error {
+		t.Errorf("Error = %q, want the earliest failure %q", got.Error, rt.Error)
 	}
 	if got.Git == nil || got.Git.Error != rt.Git.Error {
 		t.Errorf("Git = %+v, want the git failure recorded", got.Git)
@@ -478,92 +483,111 @@ func TestHandleSignals_NilShutdownReturnsAfterFirstSignal(t *testing.T) {
 	}
 }
 
-// TestExportWorkspace_NoopWhenEmpty pins that WorkspaceExportTo=="" skips
-// exporter construction entirely, asserted via the factory closure.
-func TestExportWorkspace_NoopWhenEmpty(t *testing.T) {
+func installFakeExporter(t *testing.T, exp workspaceexport.Exporter, buildErr error) *bool {
+	t.Helper()
 	called := false
 	orig := newWorkspaceExporter
+	t.Cleanup(func() { newWorkspaceExporter = orig })
 	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 		called = true
-		return fakeExporter{}, nil
+		return exp, buildErr
 	}
-	defer func() { newWorkspaceExporter = orig }()
+	return &called
+}
 
-	cfg := &types.RunConfig{}
-	if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true); err != nil {
-		t.Fatalf("exportWorkspace returned %v, want nil", err)
+func TestWorkspaceHandoff_NoDestinationSkipsExport(t *testing.T) {
+	called := installFakeExporter(t, fakeExporter{}, nil)
+	h := workspaceHandoff{primaryRunID: "run-1"}
+	receipt, err := h.Handoff(context.Background(), &types.RunConfig{RunID: "run-1"}, nil)
+	if receipt != nil || err != nil {
+		t.Fatalf("Handoff() = %+v, %v; want nil, nil without a destination", receipt, err)
 	}
-	if called {
+	if *called {
 		t.Error("newWorkspaceExporter was invoked despite WorkspaceExportTo being empty")
 	}
 }
 
-// TestExportWorkspace_RequiredPropagatesError pins that with
-// exportRequired=true, any failure from Export surfaces as a non-nil
-// error so the caller exits non-zero.
-func TestExportWorkspace_RequiredPropagatesError(t *testing.T) {
+func TestWorkspaceHandoff_SuccessfulExport(t *testing.T) {
+	rec := &recordingExporter{}
+	installRecordingExporter(t, rec)
+	cfg := &types.RunConfig{RunID: "run-1"}
+	cfg.Executor.Workspace = t.TempDir()
+	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
+
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("Handoff() error: %v", err)
+	}
+	want := types.ExportReceipt{URI: cfg.Executor.WorkspaceExportTo, Status: types.ExportStatusUploaded}
+	if receipt == nil || *receipt != want {
+		t.Errorf("receipt = %+v, want %+v", receipt, want)
+	}
+	if got := rec.destinations(); !equalStrings(got, []string{cfg.Executor.WorkspaceExportTo}) {
+		t.Errorf("export destinations = %v", got)
+	}
+}
+
+func TestWorkspaceHandoff_EmptyWorkspaceIsAnEmptySuccess(t *testing.T) {
+	installFakeExporter(t, fakeExporter{err: workspaceexport.ErrEmptyWorkspace}, nil)
+	cfg := &types.RunConfig{RunID: "run-1"}
+	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
+
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("Handoff() error = %v, want nil for an empty workspace", err)
+	}
+	if receipt == nil || receipt.Status != types.ExportStatusEmpty {
+		t.Errorf("receipt = %+v, want status empty", receipt)
+	}
+}
+
+func TestWorkspaceHandoff_ExportFailureReturnsReceiptAndError(t *testing.T) {
 	sentinel := errors.New("simulated GCS upload failure")
-	orig := newWorkspaceExporter
-	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
-		return fakeExporter{err: sentinel}, nil
-	}
-	defer func() { newWorkspaceExporter = orig }()
-
-	cfg := &types.RunConfig{}
+	installFakeExporter(t, fakeExporter{err: sentinel}, nil)
+	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
-	cfg.Executor.Workspace = t.TempDir()
 
-	err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true)
-	if err == nil {
-		t.Fatal("exportWorkspace returned nil, want non-nil (export required)")
-	}
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
 	if !errors.Is(err, sentinel) {
-		t.Errorf("error chain does not wrap sentinel: %v", err)
+		t.Errorf("error = %v, want the export failure in the chain", err)
+	}
+	if receipt == nil || receipt.URI != cfg.Executor.WorkspaceExportTo || receipt.Status == types.ExportStatusUploaded {
+		t.Errorf("receipt = %+v, want the destination without an uploaded status", receipt)
 	}
 }
 
-// TestExportWorkspace_OptionalLogsError pins that with
-// exportRequired=false, an Export failure is logged but does not
-// propagate.
-func TestExportWorkspace_OptionalLogsError(t *testing.T) {
-	orig := newWorkspaceExporter
-	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
-		return fakeExporter{err: errors.New("simulated GCS upload failure")}, nil
-	}
-	defer func() { newWorkspaceExporter = orig }()
-
-	cfg := &types.RunConfig{}
-	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
-	cfg.Executor.Workspace = t.TempDir()
-
-	if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, false); err != nil {
-		t.Errorf("exportWorkspace returned %v, want nil (export optional)", err)
-	}
-}
-
-// TestExportWorkspace_BuilderErrorRequiredVsOptional pins the
-// build-side branch of the same required/optional dichotomy: a
-// factory error is treated identically to an Export error.
-func TestExportWorkspace_BuilderErrorRequiredVsOptional(t *testing.T) {
+func TestWorkspaceHandoff_ExporterBuildFailure(t *testing.T) {
 	build := errors.New("simulated factory failure")
-	orig := newWorkspaceExporter
-	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
-		return nil, build
-	}
-	defer func() { newWorkspaceExporter = orig }()
-
-	cfg := &types.RunConfig{}
+	installFakeExporter(t, nil, build)
+	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
-	t.Run("required", func(t *testing.T) {
-		err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, true)
-		if !errors.Is(err, build) {
-			t.Errorf("required: want sentinel in chain, got %v", err)
-		}
-	})
-	t.Run("optional", func(t *testing.T) {
-		if err := exportWorkspace(context.Background(), cfg, cfg.Executor.WorkspaceExportTo, false); err != nil {
-			t.Errorf("optional: want nil, got %v", err)
-		}
-	})
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	if !errors.Is(err, build) || receipt == nil {
+		t.Errorf("Handoff() = %+v, %v; want a receipt and the build failure", receipt, err)
+	}
+}
+
+func TestWorkspaceHandoff_FollowUpExportsToRunScopedURI(t *testing.T) {
+	rec := &recordingExporter{}
+	installRecordingExporter(t, rec)
+	cfg := &types.RunConfig{RunID: "primary"}
+	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
+	h := workspaceHandoff{primaryRunID: "primary"}
+
+	if _, err := h.Handoff(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RunID = "run-2"
+	receipt, err := h.Handoff(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"gs://bucket/runs/primary/workspace.tar.gz", "gs://bucket/runs/primary/run-2/workspace.tar.gz"}
+	if got := rec.destinations(); !equalStrings(got, want) {
+		t.Errorf("export destinations = %v, want %v", got, want)
+	}
+	if receipt.URI != want[1] {
+		t.Errorf("follow-up receipt URI = %q, want %q", receipt.URI, want[1])
+	}
 }

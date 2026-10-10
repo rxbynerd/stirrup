@@ -189,12 +189,11 @@ IMDS, GitHub Actions OIDC). See
    through the trace emitters (the JSONL and GCS `RunTrace`, and the
    `stop.category` attribute on the OTel `provider.stream` span) and
    the `provider refused to respond` Warn log line;
-   `trace.stop_details` mirrors them on the proto for when `done.trace`
-   is populated (issue #453).
+   `trace.stop_details` mirrors them on the proto.
 9. **Finalise.** The run's `RunResult` is emitted on the configured
-   `resultSink` and, when `executor.workspaceExportTo` is set, the
-   workspace is exported. Every run — primary and follow-up — is
-   finalised this way.
+   `resultSink`; the workspace export, when `executor.workspaceExportTo`
+   is set, has already run before `done`. Every run — primary and
+   follow-up — is finalised this way.
 10. **Follow-up grace** *(optional)*. If `followUpGrace` (or
     `STIRRUP_FOLLOWUP_GRACE`) is positive, the stream stays open for
     that many idle seconds after each run is finalised, so the control
@@ -231,9 +230,9 @@ follow-up's outcome is on its own `done` and `RunResult`, and a
 follow-up whose run fails outright ends the session; neither changes
 the exit status, so an orchestrator's retry decision is about the
 assignment, not the interactive session that followed it. The one
-exception is the CLI's `--export-workspace-required`: a required
-workspace export failing on any run, follow-up included, fails the
-process. `stirrup job` never requires export.
+exception is a required workspace export (`executor.workspaceExportRequired`,
+the default whenever `executor.workspaceExportTo` is set): a required
+export failing on any run, follow-up included, fails the process.
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —

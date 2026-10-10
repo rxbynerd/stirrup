@@ -164,23 +164,19 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
+	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
 	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	// The control plane decides the export URI via
-	// RunConfig.Executor.WorkspaceExportTo; upload failure is non-fatal so
-	// an exit-failing job doesn't lose the trace/resultSink before an
-	// operator can correlate it.
 	policy := &postRunPolicy{
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			printRunSummary(rt)
 			emitRunResult(ctx, cfg, rt)
 		},
-		exportRequired: false,
 	}
 
 	runTrace, runErr := loop.Run(runCtx, config)
-	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
+	if err := policy.finalise(config, runTrace, runErr); err != nil {
 		return err
 	}
 
@@ -199,8 +195,8 @@ func runJob(cmd *cobra.Command, args []string) error {
 		RunTimeout:    runTimeout,
 		OnRunComplete: policy.finaliseFollowUp,
 	})
-	// Export is never required for a job, so this is nil today; the
-	// guard keeps the two entrypoints' exit-status policy identical.
+	// A required export that fails on a follow-up fails the process the
+	// same way it would for the primary run.
 	if err := policy.followUpErr(); err != nil {
 		return err
 	}

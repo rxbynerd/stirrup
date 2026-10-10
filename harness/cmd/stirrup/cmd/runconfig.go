@@ -22,9 +22,8 @@ Resolution order (lowest -> highest precedence):
   3. Explicit flags (those whose Changed() bit is set)
 
 Flags: identical to ` + "`stirrup harness`" + ` for every RunConfig-producing
-flag. CLI-only behaviour flags (--export-workspace-required,
---output-runconfig) are excluded because they do not map to
-RunConfig fields.
+flag. The CLI-only behaviour flag --output-runconfig is excluded
+because it does not map to a RunConfig field.
 
 Output:
   - Default: pretty-printed JSON (2-space indent) to stdout

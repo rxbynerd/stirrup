@@ -221,11 +221,8 @@ type harnessCLIOptions struct {
 	ProviderRetryWallClockBudget time.Duration
 
 	// Workspace export. WorkspaceExportTo is a gs:// URI stored on
-	// RunConfig.Executor.WorkspaceExportTo. WorkspaceExportRequired is
-	// CLI-only (not persisted on RunConfig): it controls whether a
-	// failed export terminates the run non-zero.
-	WorkspaceExportTo       string
-	WorkspaceExportRequired bool
+	// RunConfig.Executor.WorkspaceExportTo.
+	WorkspaceExportTo string
 
 	// ToolDispatchMaxParallel sets the parallel async-tool dispatch
 	// fan-out. Zero defers to DefaultToolDispatchMaxParallel by leaving
@@ -644,13 +641,14 @@ full RunConfig; explicitly-set flags then override individual fields; flags
 left at their default value do NOT override the file. When --config is not
 provided, flags + defaults build the RunConfig directly.
 
-Workspace export (--export-workspace-to gs://...): at end-of-run the
-executor's workspace is tarred, gzipped, and uploaded to the named GCS
-URI. The flag overrides executor.workspaceExportTo from --config when
-explicitly set. Default error semantics: upload failures are logged and
-the run's exit code is unchanged. Pass --export-workspace-required to
-flip that — a failed upload then exits the run non-zero, suitable for
-Cloud Run jobs whose downstream automation depends on the artifact.
+Workspace export (--export-workspace-to gs://...): at the end of every
+run, before its "done" event, the executor's workspace is tarred,
+gzipped, and uploaded to the named GCS URI. The flag overrides
+executor.workspaceExportTo from --config when explicitly set. The export
+is required by default: a failed upload turns a successful run into
+outcome handoff_failed and exits non-zero. Pass
+--export-workspace-required=false (executor.workspaceExportRequired) to
+record the failure without failing the run.
 
 The default --mode is "planning" (read-only: no write_file / edit_file /
 run_command, deny-side-effects permission policy). Pass --mode execution
@@ -674,7 +672,6 @@ func init() {
 	addRunConfigFlags(harnessCmd)
 
 	f := harnessCmd.Flags()
-	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
 	f.Bool("dry-run", false, "Run every initialisation step short of the first agentic turn (validate, construct components, resolve credentials, probe provider/MCP/trace/egress reachability), print a per-step preflight report, then exit. No provider tokens are spent. Exit 0 when all steps pass, 1 when any probe fails, 4 for an invalid flag combination. Composes with --output-runconfig (both run) and --output=json (emits the report as JSON).")
 	f.Bool("no-probe-provider", false, "With --dry-run, skip the provider reachability probe (for cost-controlled environments that do not want any provider contact). Meaningless without --dry-run (exit 4).")
@@ -1072,6 +1069,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("export-workspace-to") {
 		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
 	}
+	if changed("export-workspace-required") {
+		required, _ := f.GetBool("export-workspace-required")
+		cfg.Executor.WorkspaceExportRequired = &required
+	}
 
 	// Explicit zero clears the field so the loop falls back to
 	// DefaultToolDispatchMaxParallel.
@@ -1233,17 +1234,15 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return writeOutputRunConfig(outPath, cfg)
 	}
 
-	exportRequired, _ := f.GetBool("export-workspace-required")
 	// Safe to read raw: PreRunE already rejected an explicitly-set flag on
 	// a release binary, so both are false there by the time control
 	// reaches here.
 	debugRedactionDisabled, _ := f.GetBool("debug")
 	wireTrace, _ := f.GetBool("trace-wire")
 	return runWithConfig(cfg, runOptions{
-		exportWorkspaceRequired: exportRequired,
-		outputMode:              outputMode,
-		debugRedactionDisabled:  debugRedactionDisabled,
-		wireTrace:               wireTrace,
+		outputMode:             outputMode,
+		debugRedactionDisabled: debugRedactionDisabled,
+		wireTrace:              wireTrace,
 	})
 }
 
@@ -1654,10 +1653,9 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // binary before either can be true, and core.BuildLoop re-checks the
 // build tag at the point of effect. See docs/security.md#debug-builds.
 type runOptions struct {
-	exportWorkspaceRequired bool
-	outputMode              string
-	debugRedactionDisabled  bool
-	wireTrace               bool
+	outputMode             string
+	debugRedactionDisabled bool
+	wireTrace              bool
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1702,6 +1700,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	defer func() { _ = loop.Close() }()
 
 	loop.Shutdown = shutdownCtx
+	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
@@ -1709,11 +1708,10 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		emit: func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 			emitRunOutput(ctx, cfg, rt, opts.outputMode)
 		},
-		exportRequired: opts.exportWorkspaceRequired,
 	}
 
 	runTrace, runErr := loop.Run(runCtx, config)
-	if err := policy.finalise(config, runTrace, runErr, config.Executor.WorkspaceExportTo); err != nil {
+	if err := policy.finalise(config, runTrace, runErr); err != nil {
 		return err
 	}
 

@@ -377,12 +377,10 @@ gcloud storage cp \
 tar -xzf workspace.tar.gz
 ```
 
-Upload failures are logged but do **not** change the run's exit code
-unless `--export-workspace-required` is set. The default is a soft
-failure because a partial GCS outage during the upload window is
-operationally less disruptive than masking the underlying run's
-success — flip the required flag on for eval / regression pipelines
-where the artefact is the deliverable.
+An upload failure turns a successful run into outcome `handoff_failed`
+and a non-zero exit unless `executor.workspaceExportRequired` (or
+`--export-workspace-required`) is `false`, which records the failure
+in `RunResult.workspaceExport` without failing the run.
 
 ### Trace JSONL from GCS
 

@@ -11,8 +11,7 @@ import (
 // Both `stirrup harness` and `stirrup run-config` call this so the two
 // subcommands cannot drift on default values, help text, or supported
 // fields. Pure CLI-behaviour flags that do not round-trip through
-// RunConfig (--export-workspace-required, --output-runconfig) live on
-// the harness command directly; the run-config subcommand adds its own
+// RunConfig (--output-runconfig) live on the harness command directly; the run-config subcommand adds its own
 // --validate / --compact / --redact afterwards.
 func addRunConfigFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
@@ -92,7 +91,8 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
 	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
 
-	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
+	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at the end of every run, before its done event (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
+	f.Bool("export-workspace-required", true, "Whether a failed workspace export turns a successful run into outcome handoff_failed (non-zero exit). Defaults to true whenever --export-workspace-to is set; pass --export-workspace-required=false to only record the failure. Left unset, the --config value applies. Requires --export-workspace-to. Mirrors executor.workspaceExportRequired.")
 
 	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 
