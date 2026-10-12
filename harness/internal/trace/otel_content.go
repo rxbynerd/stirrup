@@ -3,6 +3,9 @@ package trace
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"strings"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -27,18 +30,18 @@ type turnContent struct {
 
 // attributes renders the non-empty content fields (plus the run-level
 // system instructions, pre-serialised by RecordSystemInstructions) as
-// span attributes. Empty values are skipped so spans never carry
-// empty-string content attributes.
-func (c *turnContent) attributes(systemInstructionsJSON string) []attribute.KeyValue {
+// span attributes, each capped to maxBytes (0 = no cap). Empty values
+// are skipped so spans never carry empty-string content attributes.
+func (c *turnContent) attributes(systemInstructionsJSON string, maxBytes int) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 3)
 	if c.inputMessages != "" {
-		attrs = append(attrs, attribute.String(genAIInputMessagesKey, c.inputMessages))
+		attrs = appendContentAttribute(attrs, genAIInputMessagesKey, c.inputMessages, maxBytes)
 	}
 	if c.outputMessages != "" {
-		attrs = append(attrs, attribute.String(genAIOutputMessagesKey, c.outputMessages))
+		attrs = appendContentAttribute(attrs, genAIOutputMessagesKey, c.outputMessages, maxBytes)
 	}
 	if systemInstructionsJSON != "" {
-		attrs = append(attrs, attribute.String(genAISystemInstructionsKey, systemInstructionsJSON))
+		attrs = appendContentAttribute(attrs, genAISystemInstructionsKey, systemInstructionsJSON, maxBytes)
 	}
 	return attrs
 }
@@ -54,16 +57,224 @@ type toolContent struct {
 }
 
 // attributes renders the non-empty fields as span attributes, mirroring
-// turnContent.attributes' skip-empty contract.
-func (c *toolContent) attributes() []attribute.KeyValue {
+// turnContent.attributes' skip-empty and cap contract.
+func (c *toolContent) attributes(maxBytes int) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 2)
 	if len(c.arguments) > 0 {
-		attrs = append(attrs, attribute.String(genAIToolCallArgumentsKey, string(c.arguments)))
+		attrs = appendContentAttribute(attrs, genAIToolCallArgumentsKey, string(c.arguments), maxBytes)
 	}
 	if c.result != "" {
-		attrs = append(attrs, attribute.String(genAIToolCallResultKey, c.result))
+		attrs = appendContentAttribute(attrs, genAIToolCallResultKey, c.result, maxBytes)
 	}
 	return attrs
+}
+
+// contentTruncatedKey names the boolean attribute that marks a content
+// attribute as capped by captureContentMaxBytes.
+func contentTruncatedKey(key string) string {
+	return "stirrup." + key + ".truncated"
+}
+
+// appendContentAttribute appends key=value, capping a value longer than
+// maxBytes (0 = no cap) and marking it with contentTruncatedKey.
+func appendContentAttribute(attrs []attribute.KeyValue, key, value string, maxBytes int) []attribute.KeyValue {
+	if maxBytes > 0 && len(value) > maxBytes {
+		value = capContentValue(key, value, maxBytes)
+		attrs = append(attrs, attribute.Bool(contentTruncatedKey(key), true))
+	}
+	return append(attrs, attribute.String(key, value))
+}
+
+// capContentValue shortens a content attribute value to at most maxBytes
+// while keeping JSON-valued attributes valid JSON. Message arrays drop
+// whole messages, part arrays drop whole parts, and only when a single
+// element cannot fit is its text shortened. Input history keeps its
+// newest messages; output and system instructions keep their leading
+// parts. Tool-call arguments become a JSON string of the truncated text.
+func capContentValue(key, value string, maxBytes int) string {
+	var capped, minimal string
+	switch key {
+	case genAIInputMessagesKey:
+		capped, minimal = capMessagesJSON(value, maxBytes, true), "[]"
+	case genAIOutputMessagesKey:
+		capped, minimal = capMessagesJSON(value, maxBytes, false), "[]"
+	case genAISystemInstructionsKey:
+		capped, minimal = capPartsJSON(value, maxBytes), "[]"
+	case genAIToolCallArgumentsKey:
+		capped, minimal = fitJSONString(value, maxBytes), `""`
+	default:
+		return truncateUTF8(value, maxBytes)
+	}
+	if capped == "" || len(capped) > maxBytes {
+		return minimal
+	}
+	return capped
+}
+
+// capMessagesJSON keeps the longest run of whole messages from one end
+// of the array that fits maxBytes, shrinking the end message's parts
+// when none fits whole. Returns "" when nothing fits.
+func capMessagesJSON(value string, maxBytes int, keepNewest bool) string {
+	var msgs []genAIMessage
+	if err := json.Unmarshal([]byte(value), &msgs); err != nil || len(msgs) == 0 {
+		return ""
+	}
+	if keepNewest {
+		slices.Reverse(msgs)
+	}
+	encoded := make([]string, len(msgs))
+	for i, m := range msgs {
+		encoded[i] = marshalGenAI(m)
+	}
+	kept := fitElements(encoded, maxBytes)
+	if len(kept) == 0 {
+		msg := msgs[0]
+		envelope := msg
+		envelope.Parts = []genAIPart{}
+		budget := maxBytes - len("[]") - (len(marshalGenAI(envelope)) - len("[]"))
+		parts := fitParts(msg.Parts, budget)
+		if parts == nil {
+			return ""
+		}
+		msg.Parts = parts
+		return "[" + marshalGenAI(msg) + "]"
+	}
+	if keepNewest {
+		slices.Reverse(kept)
+	}
+	return "[" + strings.Join(kept, ",") + "]"
+}
+
+// capPartsJSON caps a JSON array of parts to maxBytes, or returns "" when
+// nothing fits.
+func capPartsJSON(value string, maxBytes int) string {
+	var parts []genAIPart
+	if err := json.Unmarshal([]byte(value), &parts); err != nil || len(parts) == 0 {
+		return ""
+	}
+	kept := fitParts(parts, maxBytes)
+	if kept == nil {
+		return ""
+	}
+	return marshalGenAI(kept)
+}
+
+// fitParts returns the leading parts whose JSON array fits maxBytes,
+// shortening the first part when it does not fit whole. Returns nil when
+// not even a shortened first part fits.
+func fitParts(parts []genAIPart, maxBytes int) []genAIPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	encoded := make([]string, len(parts))
+	for i, p := range parts {
+		encoded[i] = marshalGenAI(p)
+	}
+	if n := len(fitElements(encoded, maxBytes)); n > 0 {
+		return parts[:n]
+	}
+	shrunk, ok := shrinkPart(parts[0], maxBytes-len("[]"))
+	if !ok {
+		return nil
+	}
+	return []genAIPart{shrunk}
+}
+
+// fitElements returns the longest prefix of encoded JSON values whose
+// array encoding ("[a,b,...]") fits maxBytes.
+func fitElements(encoded []string, maxBytes int) []string {
+	size := len("[]")
+	for i, e := range encoded {
+		add := len(e)
+		if i > 0 {
+			add++
+		}
+		if size+add > maxBytes {
+			return encoded[:i]
+		}
+		size += add
+	}
+	return encoded
+}
+
+// shrinkPart replaces the part's text payload (text content, tool
+// response, or tool-call arguments, the last re-encoded as a JSON
+// string) with its longest prefix whose part encoding fits maxBytes.
+func shrinkPart(p genAIPart, maxBytes int) (genAIPart, bool) {
+	var text string
+	var with func(string) genAIPart
+	switch {
+	case p.Response != nil:
+		text = *p.Response
+		with = func(s string) genAIPart { q := p; q.Response = &s; return q }
+	case len(p.Arguments) > 0:
+		text = string(p.Arguments)
+		with = func(s string) genAIPart { q := p; q.Arguments = jsonStringLiteral(s); return q }
+	default:
+		text = p.Content
+		with = func(s string) genAIPart { q := p; q.Content = s; return q }
+	}
+	prefix, ok := longestFittingPrefix(text, func(s string) bool {
+		return len(marshalGenAI(with(s))) <= maxBytes
+	})
+	if !ok {
+		return p, false
+	}
+	return with(prefix), true
+}
+
+// fitJSONString encodes the longest prefix of s as a JSON string literal
+// that fits maxBytes, or returns "" when not even an empty literal fits.
+func fitJSONString(s string, maxBytes int) string {
+	prefix, ok := longestFittingPrefix(s, func(s string) bool {
+		return len(jsonStringLiteral(s)) <= maxBytes
+	})
+	if !ok {
+		return ""
+	}
+	return string(jsonStringLiteral(prefix))
+}
+
+// longestFittingPrefix returns the longest UTF-8-safe prefix of s that
+// satisfies fits, which must be monotonic in prefix length. JSON escaping
+// makes encoded size non-linear in raw length, hence the search.
+func longestFittingPrefix(s string, fits func(string) bool) (string, bool) {
+	if !fits("") {
+		return "", false
+	}
+	lo, hi := 0, len(s)
+	for lo < hi {
+		mid := lo + (hi-lo+1)/2
+		if fits(truncateUTF8(s, mid)) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return truncateUTF8(s, lo), true
+}
+
+func jsonStringLiteral(s string) json.RawMessage {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return data
+}
+
+// truncateUTF8 returns the longest prefix of s of at most n bytes that
+// does not split a UTF-8 sequence.
+func truncateUTF8(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // genAIMessage mirrors the ChatMessage / OutputMessage shape shared by

@@ -208,6 +208,10 @@ type harnessCLIOptions struct {
 	// the PII rationale.
 	OTelCaptureContent bool
 
+	// OTelCaptureContentMaxBytes sets traceEmitter.captureContentMaxBytes;
+	// 0 leaves captured content uncapped.
+	OTelCaptureContentMaxBytes int
+
 	// Safety-ring escape hatches. Empty string leaves the field unset so
 	// ValidateRunConfig's mode-aware defaulting can take over.
 	ContainerRuntime     string
@@ -333,6 +337,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		traceEmitter.MetricsEndpoint = opts.OTelMetricsEndpoint
 		traceEmitter.MetricsTemporality = opts.OTelMetricsTemporality
 		traceEmitter.CaptureContent = opts.OTelCaptureContent
+		traceEmitter.CaptureContentMaxBytes = opts.OTelCaptureContentMaxBytes
 	}
 
 	config := &types.RunConfig{
@@ -998,6 +1003,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("otel-capture-content") {
 		cfg.TraceEmitter.CaptureContent, _ = f.GetBool("otel-capture-content")
+	}
+	if changed("otel-capture-content-max-bytes") {
+		cfg.TraceEmitter.CaptureContentMaxBytes, _ = f.GetInt("otel-capture-content-max-bytes")
 	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")

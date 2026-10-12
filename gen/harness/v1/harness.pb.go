@@ -4873,6 +4873,12 @@ type TraceEmitterConfig struct {
 	// secret-shaped substrings before any attribute is set. Rejected by
 	// validation for the jsonl and gcs emitters.
 	CaptureContent bool `protobuf:"varint,9,opt,name=capture_content,json=captureContent,proto3" json:"capture_content,omitempty"`
+	// For "otel": maximum size in bytes of each captured content attribute
+	// value. A longer value is shortened at a message or part boundary so
+	// JSON stays valid, and the span gains a sibling
+	// "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
+	// least 256. Rejected unless capture_content is true.
+	CaptureContentMaxBytes int32 `protobuf:"varint,11,opt,name=capture_content_max_bytes,json=captureContentMaxBytes,proto3" json:"capture_content_max_bytes,omitempty"`
 	// For "otel": aggregation temporality of exported metrics. Closed set:
 	//
 	//	"" | "cumulative" | "delta"
@@ -4973,6 +4979,13 @@ func (x *TraceEmitterConfig) GetCaptureContent() bool {
 		return x.CaptureContent
 	}
 	return false
+}
+
+func (x *TraceEmitterConfig) GetCaptureContentMaxBytes() int32 {
+	if x != nil {
+		return x.CaptureContentMaxBytes
+	}
+	return 0
 }
 
 func (x *TraceEmitterConfig) GetMetricsTemporality() string {
@@ -5644,7 +5657,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\xca\x03\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\x85\x04\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -5653,7 +5666,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
 	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x12\x16\n" +
 	"\x06bucket\x18\a \x01(\tR\x06bucket\x12'\n" +
-	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12/\n" +
+	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x129\n" +
+	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12/\n" +
 	"\x13metrics_temporality\x18\n" +
 	" \x01(\tR\x12metricsTemporality\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +

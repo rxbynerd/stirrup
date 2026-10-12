@@ -403,8 +403,35 @@ Safety properties:
   `gcs` emitters, like `protocol` and `headers`.
 
 Operational notes: captured attributes can be large (the full message
-history is serialised on every request), so size-sensitive
-collectors may need span attribute limits configured backend-side.
+history is serialised on every request), and backends limit attribute
+size. Grafana Cloud Traces (Tempo) keeps at most 2048 bytes of an
+attribute value, Datadog truncates attribute values at 25 KB, and
+CloudWatch cuts span content at about 1 MiB without regard to JSON
+structure, so the truncated value no longer parses. Truncation done by
+a backend mid-value leaves invalid JSON that GenAI views cannot render.
+
+`traceEmitter.captureContentMaxBytes` (CLI:
+`--otel-capture-content-max-bytes`) caps each content attribute
+before export instead. A value longer than the cap is shortened so it
+stays valid JSON:
+
+- `gen_ai.input.messages` keeps its newest whole messages.
+- `gen_ai.output.messages` and `gen_ai.system_instructions` keep their
+  leading whole parts.
+- When a single message or part cannot fit, its text is shortened at a
+  UTF-8 boundary.
+- `gen_ai.tool.call.arguments` becomes a JSON string holding the
+  leading bytes of the arguments; `gen_ai.tool.call.result` keeps its
+  leading bytes.
+
+Each capped attribute is accompanied by a boolean
+`stirrup.<attribute>.truncated` (for example
+`stirrup.gen_ai.input.messages.truncated`), so consumers can tell a
+shortened value from a complete one. `0`, the default, disables the
+cap; a non-zero cap must be at least 256 bytes, and the field is
+rejected unless `captureContent` is on. Set it at or below the
+backend's per-attribute limit, for example `2048` for Tempo.
+
 Sub-agent requests are captured with their own content; sub-agent
 *system prompts* are not captured, so their `chat` spans carry no
 `gen_ai.system_instructions`. The semconv

@@ -941,11 +941,17 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		if err := cmd.Flags().Set("otel-metrics-temporality", "delta"); err != nil {
 			t.Fatalf("set otel-metrics-temporality: %v", err)
 		}
+		if err := cmd.Flags().Set("otel-capture-content-max-bytes", "2048"); err != nil {
+			t.Fatalf("set otel-capture-content-max-bytes: %v", err)
+		}
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
 		}
 		if cfg.TraceEmitter.MetricsTemporality != "delta" {
 			t.Errorf("MetricsTemporality override failed: %q", cfg.TraceEmitter.MetricsTemporality)
+		}
+		if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
+			t.Errorf("CaptureContentMaxBytes override failed: %d", cfg.TraceEmitter.CaptureContentMaxBytes)
 		}
 
 		if !cfg.TraceEmitter.CaptureContent {
@@ -960,14 +966,18 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
-			Type:               "otel",
-			CaptureContent:     true,
-			MetricsEndpoint:    "https://metrics.from-file/otlp",
-			MetricsTemporality: "cumulative",
+			Type:                   "otel",
+			CaptureContent:         true,
+			MetricsEndpoint:        "https://metrics.from-file/otlp",
+			MetricsTemporality:     "cumulative",
+			CaptureContentMaxBytes: 4096,
 		}
 
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.CaptureContentMaxBytes != 4096 {
+			t.Errorf("CaptureContentMaxBytes from file should survive, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
 		}
 		if cfg.TraceEmitter.MetricsTemporality != "cumulative" {
 			t.Errorf("MetricsTemporality from file should survive, got %q", cfg.TraceEmitter.MetricsTemporality)
@@ -988,23 +998,24 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 // the jsonl emitter (matching how OTelEndpoint is already scoped).
 func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	base := harnessCLIOptions{
-		RunID:                  "test-run",
-		Mode:                   "execution",
-		Prompt:                 "test",
-		ProviderType:           "anthropic",
-		APIKeyRef:              "secret://ANTHROPIC_API_KEY",
-		Model:                  "claude-sonnet-4-6",
-		MaxTurns:               20,
-		Timeout:                600,
-		TransportType:          "stdio",
-		LogLevel:               "info",
-		TraceEmitterType:       "otel",
-		OTelEndpoint:           "https://gw.example/otlp",
-		OTelProtocol:           "http/protobuf",
-		OTelHeaders:            map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
-		OTelMetricsEndpoint:    "https://gw.example/otlp",
-		OTelMetricsTemporality: "delta",
-		OTelCaptureContent:     true,
+		RunID:                      "test-run",
+		Mode:                       "execution",
+		Prompt:                     "test",
+		ProviderType:               "anthropic",
+		APIKeyRef:                  "secret://ANTHROPIC_API_KEY",
+		Model:                      "claude-sonnet-4-6",
+		MaxTurns:                   20,
+		Timeout:                    600,
+		TransportType:              "stdio",
+		LogLevel:                   "info",
+		TraceEmitterType:           "otel",
+		OTelEndpoint:               "https://gw.example/otlp",
+		OTelProtocol:               "http/protobuf",
+		OTelHeaders:                map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
+		OTelMetricsEndpoint:        "https://gw.example/otlp",
+		OTelMetricsTemporality:     "delta",
+		OTelCaptureContent:         true,
+		OTelCaptureContentMaxBytes: 2048,
 	}
 
 	cfg, err := buildHarnessRunConfig(base)
@@ -1023,6 +1034,9 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if cfg.TraceEmitter.MetricsTemporality != "delta" {
 		t.Errorf("MetricsTemporality should propagate, got %q", cfg.TraceEmitter.MetricsTemporality)
 	}
+	if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
+		t.Errorf("CaptureContentMaxBytes should propagate, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
+	}
 
 	jsonlOpts := base
 	jsonlOpts.TraceEmitterType = "jsonl"
@@ -1030,7 +1044,7 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig (jsonl): %v", err)
 	}
-	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" || cfg.TraceEmitter.MetricsTemporality != "" {
+	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" || cfg.TraceEmitter.MetricsTemporality != "" || cfg.TraceEmitter.CaptureContentMaxBytes != 0 {
 		t.Errorf("otel-only fields must not leak onto the jsonl emitter, got %+v", cfg.TraceEmitter)
 	}
 }

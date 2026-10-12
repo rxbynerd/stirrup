@@ -740,6 +740,21 @@ func TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved(t *testing.T
 	}
 }
 
+// TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved
+// guards TraceEmitterConfig.CaptureContentMaxBytes against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: 2048},
+	})
+	if !rc.TraceEmitter.CaptureContent {
+		t.Error("TraceEmitter.CaptureContent dropped")
+	}
+	if got, want := rc.TraceEmitter.CaptureContentMaxBytes, 2048; got != want {
+		t.Errorf("TraceEmitter.CaptureContentMaxBytes: got %d, want %d", got, want)
+	}
+}
+
 // TestRunConfigFromProto_ProviderRetryConfigPreserved guards the
 // ProviderRetryConfig wire fields against silent drop. The non-nil case
 // checks all four fields round-trip; the nil case checks that a

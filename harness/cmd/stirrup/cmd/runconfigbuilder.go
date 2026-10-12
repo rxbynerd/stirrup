@@ -319,6 +319,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	otelMetricsEndpoint, _ := f.GetString("otel-metrics-endpoint")
 	otelMetricsTemporality, _ := f.GetString("otel-metrics-temporality")
 	otelCaptureContent, _ := f.GetBool("otel-capture-content")
+	otelCaptureContentMaxBytes, _ := f.GetInt("otel-capture-content-max-bytes")
 	containerRuntime, _ := f.GetString("container-runtime")
 	k8sNamespace, _ := f.GetString("k8s-namespace")
 	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
@@ -442,6 +443,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		OTelMetricsEndpoint:          otelMetricsEndpoint,
 		OTelMetricsTemporality:       otelMetricsTemporality,
 		OTelCaptureContent:           otelCaptureContent,
+		OTelCaptureContentMaxBytes:   otelCaptureContentMaxBytes,
 		ContainerRuntime:             containerRuntime,
 		K8sNamespace:                 k8sNamespace,
 		K8sKubeconfig:                k8sKubeconfig,

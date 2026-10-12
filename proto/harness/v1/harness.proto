@@ -2060,6 +2060,13 @@ message TraceEmitterConfig {
   // validation for the jsonl and gcs emitters.
   bool capture_content = 9;
 
+  // For "otel": maximum size in bytes of each captured content attribute
+  // value. A longer value is shortened at a message or part boundary so
+  // JSON stays valid, and the span gains a sibling
+  // "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
+  // least 256. Rejected unless capture_content is true.
+  int32 capture_content_max_bytes = 11;
+
   // For "otel": aggregation temporality of exported metrics. Closed set:
   //   "" | "cumulative" | "delta"
   // Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and

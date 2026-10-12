@@ -1944,9 +1944,10 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 				Endpoint: endpoint,
 				Headers:  headers,
 			},
-			Resource:          resourceOpts,
-			CaptureContent:    cfg.CaptureContent,
-			RedactionDisabled: effectiveRedactionDisabled,
+			Resource:               resourceOpts,
+			CaptureContent:         cfg.CaptureContent,
+			CaptureContentMaxBytes: cfg.CaptureContentMaxBytes,
+			RedactionDisabled:      effectiveRedactionDisabled,
 		})
 	case "gcs":
 		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.

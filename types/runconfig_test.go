@@ -5211,6 +5211,51 @@ func TestValidateRunConfig_MetricsTemporality(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_CaptureContentMaxBytes pins the cap's range and
+// its dependency on captureContent.
+func TestValidateRunConfig_CaptureContentMaxBytes(t *testing.T) {
+	for _, maxBytes := range []int{0, MinCaptureContentMaxBytes, 2048} {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("captureContentMaxBytes %d must be valid: %v", maxBytes, err)
+		}
+	}
+
+	for _, maxBytes := range []int{-1, 1, MinCaptureContentMaxBytes - 1} {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "captureContentMaxBytes must be 0 (no cap) or at least") {
+			t.Errorf("captureContentMaxBytes %d: expected a range error, got: %v", maxBytes, err)
+		}
+	}
+
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContentMaxBytes: 2048}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "captureContentMaxBytes is only valid when traceEmitter.captureContent is true") {
+		t.Errorf("expected a captureContent-required error, got: %v", err)
+	}
+
+	// A non-otel emitter names the emitter type as the cause, not
+	// captureContent, so fixing the first error does not surface a second.
+	for _, emitterType := range []string{"jsonl", "gcs"} {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: emitterType, Bucket: "trace-bucket", CaptureContentMaxBytes: 2048}
+		if emitterType == "jsonl" {
+			c.TraceEmitter.Bucket = ""
+		}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), `traceEmitter.captureContentMaxBytes is only valid when traceEmitter.type is "otel"`) {
+			t.Errorf("%s: expected an otel-only captureContentMaxBytes error, got: %v", emitterType, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "captureContent is true") {
+			t.Errorf("%s: unexpected captureContent-required error: %v", emitterType, err)
+		}
+	}
+}
+
 // TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins that the gRPC OTLP
 // exporters dial host:port endpoints in plaintext, so a bearer/Basic credential
 // in Headers would transmit unencrypted; the validator rejects the combination

@@ -1285,6 +1285,13 @@ type TraceEmitterConfig struct {
 	// consulted when type=="otel". See docs/observability-cloud.md.
 	CaptureContent bool `json:"captureContent,omitempty"`
 
+	// CaptureContentMaxBytes caps the size of each captured content
+	// attribute value. A longer value is shortened at a message or part
+	// boundary so JSON stays valid, and is marked with a sibling
+	// "stirrup.<attribute>.truncated" attribute. 0 means no cap; otherwise
+	// at least MinCaptureContentMaxBytes. Only valid with CaptureContent.
+	CaptureContentMaxBytes int `json:"captureContentMaxBytes,omitempty"`
+
 	// Archive configures durable storage for command-output sidecars. When
 	// omitted, JSONL traces place the archive beside FilePath; GCS traces place
 	// it beside the trace object; all other configurations retain a local
@@ -1803,6 +1810,11 @@ var validTraceEmitterProtocols = map[string]bool{
 	"grpc":          true,
 	"http/protobuf": true,
 }
+
+// MinCaptureContentMaxBytes is the smallest non-zero
+// TraceEmitterConfig.CaptureContentMaxBytes: enough for a capped value to
+// keep its message and part envelope plus some content.
+const MinCaptureContentMaxBytes = 256
 
 // validTraceEmitterMetricsTemporalities is the closed set of
 // TraceEmitterConfig.MetricsTemporality values. Empty defers to the OTel
@@ -4894,6 +4906,22 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 				"traceEmitter.metricsTemporality is only valid when traceEmitter.type is \"otel\" (got type %q)",
 				cfg.Type,
 			))
+		}
+		if cfg.CaptureContentMaxBytes != 0 {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.captureContentMaxBytes is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	} else {
+		switch {
+		case cfg.CaptureContentMaxBytes < 0 || (cfg.CaptureContentMaxBytes > 0 && cfg.CaptureContentMaxBytes < MinCaptureContentMaxBytes):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.captureContentMaxBytes must be 0 (no cap) or at least %d (got %d)",
+				MinCaptureContentMaxBytes, cfg.CaptureContentMaxBytes,
+			))
+		case cfg.CaptureContentMaxBytes > 0 && !cfg.CaptureContent:
+			*errs = append(*errs, "traceEmitter.captureContentMaxBytes is only valid when traceEmitter.captureContent is true")
 		}
 	}
 	// gcs-specific field validation. Bucket is required for gcs and

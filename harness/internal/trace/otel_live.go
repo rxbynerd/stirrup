@@ -226,7 +226,7 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 		e.mu.Unlock()
 
 		if content != nil {
-			attrs = append(attrs, content.attributes(systemInstructions)...)
+			attrs = append(attrs, content.attributes(systemInstructions, e.captureContentMaxBytes)...)
 		}
 
 		if failed {
@@ -335,7 +335,7 @@ func (h *otelToolSpan) End(end ToolSpanEnd) {
 		if e.captureContent && end.Record != nil {
 			rec := scrubToolCallRecord(*end.Record, e.redactionDisabled)
 			content := toolContent{arguments: validRawJSON(rec.Input), result: rec.Output}
-			attrs = append(attrs, content.attributes()...)
+			attrs = append(attrs, content.attributes(e.captureContentMaxBytes)...)
 		}
 
 		h.span.SetAttributes(attrs...)
@@ -392,7 +392,7 @@ func (h *otelAgentSpan) End(end AgentSpanEnd) {
 			attribute.Int("run.turns", end.Turns),
 		}
 		if content != nil {
-			attrs = append(attrs, content.attributes("")...)
+			attrs = append(attrs, content.attributes("", e.captureContentMaxBytes)...)
 		}
 		failed := end.Outcome != "success"
 		if failed {

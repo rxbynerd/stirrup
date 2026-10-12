@@ -79,6 +79,10 @@ type OTelTraceEmitter struct {
 	// the mutex.
 	captureContent bool
 
+	// captureContentMaxBytes caps each content attribute value; 0 means
+	// no cap. Immutable after construction, like captureContent.
+	captureContentMaxBytes int
+
 	// redactionDisabled is the --debug bit, immutable after construction;
 	// see JSONLTraceEmitter.redactionDisabled for the shared contract. Set
 	// only by the factory, and only under a debug build.
@@ -152,6 +156,10 @@ type OTelTraceEmitterOptions struct {
 	// spans; see types.TraceEmitterConfig.CaptureContent.
 	CaptureContent bool
 
+	// CaptureContentMaxBytes caps each captured content attribute value;
+	// 0 means no cap. See types.TraceEmitterConfig.CaptureContentMaxBytes.
+	CaptureContentMaxBytes int
+
 	// RedactionDisabled is the --debug bypass: production callers pass the
 	// factory's already debugbuild-gated value, every other caller false.
 	RedactionDisabled bool
@@ -179,12 +187,12 @@ func NewOTelTraceEmitter(ctx context.Context, opts OTelTraceEmitterOptions, extr
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(observability.BuildResource(opts.Resource)),
 	)
-	return newOTelTraceEmitter(tp, opts.CaptureContent, opts.RedactionDisabled, extra...), nil
+	return newOTelTraceEmitter(tp, opts.CaptureContent, opts.CaptureContentMaxBytes, opts.RedactionDisabled, extra...), nil
 }
 
 // newOTelTraceEmitter registers the run-scope processor, then any extra
 // processors, on tp and builds the emitter around it.
-func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent, redactionDisabled bool, opts ...OTelOption) *OTelTraceEmitter {
+func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent bool, captureContentMaxBytes int, redactionDisabled bool, opts ...OTelOption) *OTelTraceEmitter {
 	var o otelOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -195,11 +203,12 @@ func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent, redactionD
 		tp.RegisterSpanProcessor(p)
 	}
 	return &OTelTraceEmitter{
-		provider:          tp,
-		tracer:            tp.Tracer("stirrup-harness"),
-		scope:             scope,
-		captureContent:    captureContent,
-		redactionDisabled: redactionDisabled,
+		provider:               tp,
+		tracer:                 tp.Tracer("stirrup-harness"),
+		scope:                  scope,
+		captureContent:         captureContent,
+		captureContentMaxBytes: captureContentMaxBytes,
+		redactionDisabled:      redactionDisabled,
 	}
 }
 
@@ -207,7 +216,7 @@ func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent, redactionD
 // given TracerProvider, used in tests to capture spans in-memory.
 // captureContent must not be mutated post-construction, as in production.
 func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool, opts ...OTelOption) *OTelTraceEmitter {
-	return newOTelTraceEmitter(tp, captureContent, false, opts...)
+	return newOTelTraceEmitter(tp, captureContent, 0, false, opts...)
 }
 
 // NewOTelTraceEmitterForTest lets tests in other packages build an
@@ -465,7 +474,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 			if rootContent == nil {
 				rootContent = &turnContent{}
 			}
-			if attrs := rootContent.attributes(e.systemInstructionsJSON); len(attrs) > 0 {
+			if attrs := rootContent.attributes(e.systemInstructionsJSON, e.captureContentMaxBytes); len(attrs) > 0 {
 				e.rootSpan.SetAttributes(attrs...)
 			}
 		}
