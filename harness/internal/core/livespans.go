@@ -127,13 +127,16 @@ func (l *AgenticLoop) startFallbackChatSpan(ctx context.Context, start trace.Cha
 
 func (l *AgenticLoop) startFallbackToolSpan(ctx context.Context, start trace.ToolSpanStart) trace.ToolSpan {
 	name := "execute_tool"
+	toolName := start.Name
 	if start.Known {
 		name += " " + start.Name
+	} else {
+		toolName = trace.UnknownToolName(start.Name, false)
 	}
 	_, span := l.Tracer.Start(l.traceCtx(ctx), name,
 		oteltrace.WithAttributes(
 			attribute.String("gen_ai.operation.name", "execute_tool"),
-			attribute.String("gen_ai.tool.name", start.Name),
+			attribute.String("gen_ai.tool.name", toolName),
 			attribute.Int("tool.input_size", start.InputSize),
 			attribute.Int("turn.number", start.Turn),
 		),

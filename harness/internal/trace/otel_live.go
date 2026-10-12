@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"sync"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -20,6 +21,10 @@ const (
 	spanAbandonedKey           = "stirrup.span.abandoned"
 	toolSpanOperationName      = "execute_tool"
 	chatSpanOperationName      = "chat"
+
+	// maxUnknownToolNameBytes bounds gen_ai.tool.name for a tool name that
+	// resolved to no registered tool.
+	maxUnknownToolNameBytes = 128
 )
 
 var (
@@ -246,14 +251,18 @@ func (e *OTelTraceEmitter) StartToolSpan(parent context.Context, start ToolSpanS
 	}
 
 	// An unresolved tool name is model-controlled, so it stays out of the
-	// span name to bound cardinality; gen_ai.tool.name still carries it.
+	// span name to bound cardinality; gen_ai.tool.name still carries it,
+	// scrubbed and cut short.
 	name := toolSpanOperationName
+	toolName := start.Name
 	if start.Known {
 		name += " " + start.Name
+	} else {
+		toolName = UnknownToolName(start.Name, e.redactionDisabled)
 	}
 	attrs := []attribute.KeyValue{
 		attribute.String(genAIOperationNameKey, toolSpanOperationName),
-		attribute.String(genAIToolNameKey, start.Name),
+		attribute.String(genAIToolNameKey, toolName),
 		attribute.String(genAIToolTypeKey, "function"),
 		attribute.Int("tool.input_size", start.InputSize),
 		attribute.Int("turn.number", start.Turn),
@@ -265,6 +274,22 @@ func (e *OTelTraceEmitter) StartToolSpan(parent context.Context, start ToolSpanS
 	h := &otelToolSpan{liveSpan: liveSpan{span: span, e: e, runID: start.RunID}}
 	e.trackLocked(h)
 	return h
+}
+
+// UnknownToolName returns a model-emitted tool name that resolved to no
+// registered tool in a form safe for a span attribute: scrubbed, then cut
+// to maxUnknownToolNameBytes on a rune boundary. Content capture does not
+// gate the attribute, so the name can carry anything the model read.
+func UnknownToolName(name string, redactionDisabled bool) string {
+	name = scrubOrPass(name, redactionDisabled)
+	if len(name) <= maxUnknownToolNameBytes {
+		return name
+	}
+	end := maxUnknownToolNameBytes
+	for end > 0 && !utf8.RuneStart(name[end]) {
+		end--
+	}
+	return name[:end]
 }
 
 type otelToolSpan struct {

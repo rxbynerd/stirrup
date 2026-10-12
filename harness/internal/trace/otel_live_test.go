@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -339,6 +340,28 @@ func TestToolSpan_UnknownToolNameBounded(t *testing.T) {
 	span := findSpan(t, exporter, "execute_tool")
 	assertAttribute(t, span, genAIToolNameKey, "model_invented_name")
 	assertAttribute(t, span, errorTypeKey, "unknown_tool")
+}
+
+func TestToolSpan_UnknownToolNameScrubbedAndCut(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	name := liveSecret + strings.Repeat("é", 200)
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: name}).End(ToolSpanEnd{
+		Summary: &types.ToolCallTrace{Name: name, ErrorCategory: "unknown_tool"},
+	})
+	finishLiveRun(t, emitter)
+	span := findSpan(t, exporter, "execute_tool")
+	var got string
+	for _, attr := range span.Attributes {
+		if attr.Key == genAIToolNameKey {
+			got = attr.Value.AsString()
+		}
+	}
+	if strings.Contains(got, liveSecret) {
+		t.Errorf("gen_ai.tool.name carries the secret: %q", got)
+	}
+	if len(got) > maxUnknownToolNameBytes || !utf8.ValidString(got) {
+		t.Errorf("gen_ai.tool.name is %d bytes (valid UTF-8: %v), want at most %d valid bytes", len(got), utf8.ValidString(got), maxUnknownToolNameBytes)
+	}
 }
 
 func TestToolSpan_FailureScrubbed(t *testing.T) {
