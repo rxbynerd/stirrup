@@ -19,7 +19,7 @@ import (
 // helpers run.
 
 // turnContent carries the pre-serialised GenAI message attributes for
-// one captured turn span.
+// one captured chat span.
 type turnContent struct {
 	inputMessages  string
 	outputMessages string

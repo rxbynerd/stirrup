@@ -303,7 +303,7 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 // cancelled, with every in-flight call marked as an error. The wall-time
 // bound is well under DefaultAsyncToolTimeout (60s) so a hang here is
 // instantly obvious. Wired with an in-memory OTel exporter to match the
-// tracer setup TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn uses.
+// tracer setup TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent uses.
 func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -587,13 +587,13 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 	}
 }
 
-// TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn is the OTel shape
+// TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent is the OTel shape
 // regression: concurrent async dispatch must create execute_tool spans as
 // SIBLINGS of one another (both children of the caller's trace context),
 // not nested. Nesting would mean a later span's "duration" appears to
 // include earlier siblings, breaking dashboards that aggregate tool
 // durations.
-func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
+func TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -603,12 +603,12 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	loop.Tracer = tp.Tracer("test")
 	config := configWithMaxParallel(2)
 
-	// Open a synthetic "turn" span as the parent for the two execute_tool
-	// spans. planAndDispatch reads its parent via l.traceCtx(ctx); we
-	// thread the turn ctx through both ctx and TraceContext to mirror the
-	// real loop's turn boundary.
-	turnCtx, turnSpan := loop.Tracer.Start(context.Background(), "turn[test]")
-	loop.TraceContext = turnCtx
+	// Open a synthetic agent span as the parent for the two execute_tool
+	// spans. planAndDispatch reads its parent via l.traceCtx(ctx), so the
+	// agent ctx is threaded through both ctx and TraceContext as the real
+	// loop does with its run span.
+	agentCtx, agentSpan := loop.Tracer.Start(context.Background(), "invoke_agent test")
+	loop.TraceContext = agentCtx
 
 	calls := []types.ToolCall{
 		{ID: "tc_otel_0", Name: "async_echo", Input: json.RawMessage(`{}`)},
@@ -618,8 +618,8 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 50*time.Millisecond, "r0")
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 50*time.Millisecond, "r1")
 
-	results, _, outcome := loop.planAndDispatch(turnCtx, config, calls, &stallDetector{}, "", "")
-	turnSpan.End()
+	results, _, outcome := loop.planAndDispatch(agentCtx, config, calls, &stallDetector{}, "", "")
+	agentSpan.End()
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -629,26 +629,26 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
-	var turnStub tracetest.SpanStub
+	var agentStub tracetest.SpanStub
 	for _, s := range spans {
 		switch s.Name {
 		case "execute_tool async_echo":
 			toolSpans = append(toolSpans, s)
-		case "turn[test]":
-			turnStub = s
+		case "invoke_agent test":
+			agentStub = s
 		}
 	}
 	if len(toolSpans) != 2 {
 		t.Fatalf("expected 2 execute_tool async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
 	}
-	if turnStub.Name == "" {
-		t.Fatal("turn[test] span not found in exporter")
+	if agentStub.Name == "" {
+		t.Fatal("invoke_agent test span not found in exporter")
 	}
-	turnSpanID := turnStub.SpanContext.SpanID()
+	agentSpanID := agentStub.SpanContext.SpanID()
 	for i, s := range toolSpans {
-		if s.Parent.SpanID() != turnSpanID {
-			t.Errorf("tool span %d parent=%s, want turn span %s (siblings under turn, not nested)",
-				i, s.Parent.SpanID(), turnSpanID)
+		if s.Parent.SpanID() != agentSpanID {
+			t.Errorf("tool span %d parent=%s, want agent span %s (siblings under the agent span, not nested)",
+				i, s.Parent.SpanID(), agentSpanID)
 		}
 	}
 	// Cross-check: the two tool spans must not be parented under each other.

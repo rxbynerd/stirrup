@@ -64,9 +64,9 @@ func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.I
 	return trace.NewOTelTraceEmitterForTest(tp), exporter
 }
 
-// findRootRunSpanAttribute scans the recorded spans for the root "run"
-// span and returns the value of the given attribute, or an empty string if
-// either the span or the attribute is absent.
+// findRootRunSpanAttribute scans the recorded spans for the root
+// invoke_agent span and returns the value of the given attribute, or an
+// empty string if either the span or the attribute is absent.
 func findRootRunSpanAttribute(spans []tracetest.SpanStub, key string) (string, bool) {
 	for _, s := range spans {
 		if s.Name != "invoke_agent stirrup" {

@@ -94,7 +94,7 @@ func captureTurnRecord() types.TurnRecord {
 // TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture pins the
 // default-off contract: with captureContent unset, a
 // RecordTurnRecord and a RecordSystemInstructions change nothing — the
-// span count and the turn span's attribute set are identical to the
+// span count and the chat span's attribute set are identical to the
 // pre-capture emitter, and no gen_ai content key appears anywhere.
 func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
@@ -327,7 +327,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 // message), and the system instructions — and forwarded sub-agent
 // records contribute to none of them. Backends derive their trace-level
 // input/output views from the root span, so a regression here empties
-// those panels while leaving every turn span intact.
+// those panels while leaving every chat span intact.
 func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	emitter, exporter := newTestOTelEmitterWithCapture()
 

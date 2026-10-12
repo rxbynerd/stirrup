@@ -38,7 +38,7 @@ const (
 	genAIToolNameKey       = "gen_ai.tool.name"
 	genAIAgentNameKey      = "gen_ai.agent.name"
 
-	// Usage breakdown attributes, emitted on a turn span only when
+	// Usage breakdown attributes, emitted on a chat span only when
 	// non-zero so providers that report no breakdown keep the base set.
 	genAIUsageCacheReadInputTokens     = "gen_ai.usage.cache_read.input_tokens"
 	genAIUsageCacheCreationInputTokens = "gen_ai.usage.cache_creation.input_tokens"
@@ -77,7 +77,7 @@ type OTelTraceEmitter struct {
 	scope    *runScopeProcessor
 
 	// captureContent opts the emitter into recording prompt/completion
-	// content on turn spans via the GenAI semconv attributes. Immutable
+	// content on chat spans via the GenAI semconv attributes. Immutable
 	// after construction, so the off-path methods can read it without
 	// the mutex.
 	captureContent bool
@@ -106,7 +106,7 @@ type OTelTraceEmitter struct {
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
-	// turn span. Empty when capture is off or no prompt was forwarded.
+	// chat span. Empty when capture is off or no prompt was forwarded.
 	systemInstructionsJSON string
 
 	// runContent is each run's own I/O, keyed by run ID ("" for the
@@ -387,7 +387,7 @@ func (e *OTelTraceEmitter) RecordTurnRecord(types.TurnRecord) {}
 
 // RecordSystemInstructions stores the run's built system prompt,
 // scrubbed and serialised once, for emission as gen_ai.system_instructions
-// on captured turn spans. With capture off nothing is stored.
+// on captured chat spans. With capture off nothing is stored.
 func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	if !e.captureContent {
 		return
@@ -628,7 +628,7 @@ func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {
 	return e.tracer
 }
 
-// RootContext returns the context containing the root run span, for use
+// RootContext returns the context containing the invoke_agent span, for use
 // as the parent of loop-level spans, or nil before Start.
 func (e *OTelTraceEmitter) RootContext() context.Context {
 	e.mu.Lock()

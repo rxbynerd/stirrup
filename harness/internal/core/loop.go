@@ -607,7 +607,7 @@ func setupOutcome(runCtx context.Context, fallback string) string {
 	return fallback
 }
 
-// setRootCancelAttribute tags the root "run" OTel span with the
+// setRootCancelAttribute tags the root invoke_agent OTel span with the
 // cancellation reason, distinguishing plain/signal cancel from
 // control-plane cancel even though both map to outcome="cancelled".
 // Only applied when the run ended via ctx cancellation.
