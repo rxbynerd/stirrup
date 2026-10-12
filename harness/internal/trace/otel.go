@@ -598,7 +598,6 @@ func (e *OTelTraceEmitter) emitCapturedToolSpansLocked(scrubbed types.TurnRecord
 			continue
 		}
 		content := &toolContent{
-			id:        tc.ID,
 			arguments: validRawJSON(tc.Input),
 			result:    tc.Output,
 		}
@@ -813,6 +812,9 @@ func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStar
 		attribute.String(genAIOperationNameKey, "execute_tool"),
 		attribute.Bool("tool.success", call.Success),
 		attribute.Int64("tool.duration_ms", call.DurationMs),
+	}
+	if call.ID != "" {
+		attrs = append(attrs, attribute.String(genAIToolCallIDKey, scrubOrPass(call.ID, e.redactionDisabled)))
 	}
 	if !call.Success && call.ErrorCategory != "" {
 		attrs = append(attrs, attribute.String(errorTypeKey, call.ErrorCategory))

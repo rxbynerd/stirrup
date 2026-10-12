@@ -242,7 +242,11 @@ semantic-convention attributes those backends read natively:
 | `gen_ai.output.messages` | `turn[N]` | The model's response blocks, including tool calls, with `finish_reason`. |
 | `gen_ai.system_instructions` | `turn[N]` | The run's built system prompt. |
 | `gen_ai.input.messages` / `gen_ai.output.messages` | `run` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
-| `gen_ai.tool.call.id` / `.arguments` / `.result` | `execute_tool <name>` | Each tool call's identifier, input arguments, and result text. |
+| `gen_ai.tool.call.arguments` / `.result` | `execute_tool <name>` | Each tool call's input arguments and result text. |
+
+The tool call identifier (`gen_ai.tool.call.id`) is a correlation key
+rather than content and is emitted on every `execute_tool` span
+whether or not capture is on.
 
 The toggle is vendor-neutral: no backend detection, no vendor
 attribute namespace — any OTLP consumer that understands the GenAI

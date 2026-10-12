@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -119,13 +120,16 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 	for _, span := range spans {
 		for _, key := range []string{
 			genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey,
-			genAIToolCallIDKey, genAIToolCallArgumentsKey, genAIToolCallResultKey,
+			genAIToolCallArgumentsKey, genAIToolCallResultKey,
 		} {
 			if _, ok := spanAttrString(span, key); ok {
 				t.Errorf("span %q carries %q with capture off — content leaked", span.Name, key)
 			}
 		}
 	}
+	// The call ID is a non-sensitive correlation key and is emitted
+	// regardless of capture.
+	assertAttribute(t, findSpan(t, exporter, "execute_tool read_file"), genAIToolCallIDKey, "tu-2")
 	// The turn span keeps its historical counter attributes.
 	turn := findSpan(t, exporter, "turn[1]")
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 100)
@@ -820,6 +824,95 @@ func TestGenAIParts_ToolResponseKeyAlwaysPresent(t *testing.T) {
 			}
 			if _, ok := decoded[0]["result"]; ok {
 				t.Errorf("legacy result key present: %s", raw)
+			}
+		})
+	}
+}
+
+func countSpanAttr(span tracetest.SpanStub, key string) int {
+	n := 0
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			n++
+		}
+	}
+	return n
+}
+
+// TestOTelTraceEmitter_ToolCallID_EmittedOncePerEmissionPath pins that every
+// path that creates an execute_tool span sets gen_ai.tool.call.id exactly
+// once when the call has an ID, and omits it otherwise.
+func TestOTelTraceEmitter_ToolCallID_EmittedOncePerEmissionPath(t *testing.T) {
+	const id = "tu-path"
+	paths := []struct {
+		name    string
+		capture bool
+		drive   func(e *OTelTraceEmitter)
+		want    string
+	}{
+		{"immediate with capture off", false, func(e *OTelTraceEmitter) {
+			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
+		}, id},
+		{"immediate without id", false, func(e *OTelTraceEmitter) {
+			e.RecordToolCall(types.ToolCallTrace{Name: "tool", Success: true})
+		}, ""},
+		{"captured and paired", true, func(e *OTelTraceEmitter) {
+			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
+			e.RecordTurnRecord(types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{{ID: id, Name: "tool", Output: "ok"}}})
+		}, id},
+		{"captured and flushed at finish", true, func(e *OTelTraceEmitter) {
+			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
+		}, id},
+		{"captured record without summary", true, func(e *OTelTraceEmitter) {
+			e.RecordTurnRecord(types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{{ID: id, Name: "tool", Output: "ok"}}})
+		}, id},
+	}
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			emitter, exporter := newTestOTelEmitter()
+			if p.capture {
+				emitter, exporter = newTestOTelEmitterWithCapture()
+			}
+			emitter.Start("run-id-paths", nil)
+			p.drive(emitter)
+			if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			span := findSpan(t, exporter, "execute_tool tool")
+			wantCount := 1
+			if p.want == "" {
+				wantCount = 0
+			}
+			if got := countSpanAttr(span, genAIToolCallIDKey); got != wantCount {
+				t.Fatalf("%s emitted %d times, want %d", genAIToolCallIDKey, got, wantCount)
+			}
+			if got, _ := spanAttrString(span, genAIToolCallIDKey); got != p.want {
+				t.Errorf("%s = %q, want %q", genAIToolCallIDKey, got, p.want)
+			}
+		})
+	}
+}
+
+// TestOTelTraceEmitter_ToolCallID_Scrubbed pins that a secret-shaped call ID
+// is redacted unless redaction is disabled.
+func TestOTelTraceEmitter_ToolCallID_Scrubbed(t *testing.T) {
+	const secretID = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redactionDisabled=%v", disabled), func(t *testing.T) {
+			emitter, exporter := newTestOTelEmitter()
+			emitter.redactionDisabled = disabled
+			emitter.Start("run-id-scrub", nil)
+			emitter.RecordToolCall(types.ToolCallTrace{ID: secretID, Name: "tool", Success: true})
+			if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			want := "[REDACTED]"
+			if disabled {
+				want = secretID
+			}
+			got, _ := spanAttrString(findSpan(t, exporter, "execute_tool tool"), genAIToolCallIDKey)
+			if got != want {
+				t.Errorf("%s = %q, want %q", genAIToolCallIDKey, got, want)
 			}
 		})
 	}
