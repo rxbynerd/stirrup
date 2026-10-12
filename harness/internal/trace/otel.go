@@ -67,26 +67,6 @@ const (
 	promptTierKey  = "prompt.tier"
 )
 
-// genAIProviderName maps stirrup provider type strings to the OTel GenAI
-// `gen_ai.provider.name` enum values. Unknown types (including
-// `openai-compatible`, the generic adapter for vLLM/Ollama/Azure
-// OpenAI/etc.) fall through to the raw value rather than mislabelling
-// telemetry as a specific vendor.
-func genAIProviderName(stirrupType string) string {
-	switch stirrupType {
-	case "anthropic":
-		return "anthropic"
-	case "bedrock":
-		return "aws.bedrock"
-	case "openai-responses":
-		return "openai"
-	case "gemini":
-		return "gcp.vertex_ai"
-	default:
-		return stirrupType
-	}
-}
-
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
 // exported via OTLP/gRPC to a collector endpoint.
 type OTelTraceEmitter struct {
@@ -382,7 +362,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
 			// gen_ai.provider.name is the semconv enum value.
-			attribute.String(genAIProviderNameKey, genAIProviderName(config.Provider.Type)),
+			attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type)),
 		)
 		if config.ModelRouter.Model != "" {
 			span.SetAttributes(
@@ -479,7 +459,7 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		attrs = append(attrs, attribute.String(genAIResponseModelKey, turn.ResponseModel))
 	}
 	if e.config != nil {
-		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))
+		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(e.config.Provider.Type)))
 	}
 	attrs = append(attrs, turnUsageBreakdownAttributes(turn)...)
 	if turn.Retries > 0 {
