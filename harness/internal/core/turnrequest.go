@@ -379,7 +379,8 @@ func (l *AgenticLoop) completeAttempt(
 }
 
 // recordAttemptUsage charges a completed request's tokens to the run and
-// records its turn summary, metrics and log line.
+// records its turn summary, metrics and log line. toolCalls is the number
+// of tool calls the turn dispatches; a discarded response passes zero.
 func (l *AgenticLoop) recordAttemptUsage(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -388,6 +389,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 	model string,
 	selectedProvider provider.ProviderAdapter,
 	attempt providerAttempt,
+	toolCalls int,
 ) {
 	sr, tokens := attempt.result, attempt.tokens
 	tokenTracker.RecordTurn(tokens)
@@ -405,6 +407,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 		Model:         model,
 		ResponseModel: sr.ResponseModel,
 		Retries:       attempt.retries,
+		ToolCalls:     toolCalls,
 	})
 
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))

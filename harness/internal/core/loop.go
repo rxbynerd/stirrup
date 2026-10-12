@@ -868,7 +868,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt)
+				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt, 0)
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
 				}
@@ -897,7 +897,12 @@ func (l *AgenticLoop) runInnerLoop(
 		sr := attempt.result
 
 		lastStopReason = sr.StopReason
-		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt)
+		toolCalls := collectToolCalls(sr.Blocks, sr.InvalidToolInputs)
+		dispatched := 0
+		if sr.StopReason == "tool_use" {
+			dispatched = len(toolCalls)
+		}
+		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt, dispatched)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -926,8 +931,6 @@ func (l *AgenticLoop) runInnerLoop(
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
-
-		toolCalls := collectToolCalls(sr.Blocks, sr.InvalidToolInputs)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on
