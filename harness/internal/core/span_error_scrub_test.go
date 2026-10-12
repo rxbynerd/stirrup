@@ -214,6 +214,13 @@ func TestLoop_OTelChatSpanCarriesScrubbedProviderFailure(t *testing.T) {
 		t.Errorf("chat status = %v %q, want Error with the readable error text", chat.Status.Code, chat.Status.Description)
 	}
 	assertSpanErrorScrubbed(t, spanByName(t, exporter, "provider.stream"), true)
+	root := spanByName(t, exporter, "invoke_agent stirrup")
+	if got, _ := spanAttr(root, "error.type"); got != "provider_request_failed" {
+		t.Errorf("root error.type = %q, want provider_request_failed", got)
+	}
+	if root.Status.Code != codes.Error || !strings.Contains(root.Status.Description, "upstream echoed key") {
+		t.Errorf("root status = %v %q, want Error with the readable error text", root.Status.Code, root.Status.Description)
+	}
 	for _, s := range spans {
 		if strings.Contains(s.Status.Description, spanProbeKey) {
 			t.Errorf("%s status description leaks the probe: %q", s.Name, s.Status.Description)

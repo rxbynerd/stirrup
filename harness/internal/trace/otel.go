@@ -102,7 +102,10 @@ type OTelTraceEmitter struct {
 	gitHandoff           *types.GitHandoff
 	workspaceExport      *types.ExportReceipt
 	runError             string
-	structuredOutput     json.RawMessage
+	// lastChatErrorType is the error.type of the run's most recent
+	// top-level chat span; empty when that request succeeded.
+	lastChatErrorType string
+	structuredOutput  json.RawMessage
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -309,6 +312,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.gitHandoff = nil
 	e.workspaceExport = nil
 	e.runError = ""
+	e.lastChatErrorType = ""
 	e.structuredOutput = nil
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
@@ -545,11 +549,21 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		}
 		// Every non-success outcome marks the root Error so backends
 		// expose one "didn't finish" predicate; run.outcome disambiguates
-		// cancellation from failure. Outcome is a bounded enum, so the
-		// status description needs no scrubbing.
+		// cancellation from failure. error.type is the bounded outcome,
+		// refined for a generic "error" to the type of the model request
+		// that failed last. The description is the run error, scrubbed,
+		// so trace list views show the reason.
 		if outcome != "success" {
-			e.rootSpan.SetAttributes(attribute.String(errorTypeKey, outcome))
-			e.rootSpan.SetStatus(codes.Error, outcome)
+			errorType := outcome
+			if outcome == "error" && e.lastChatErrorType != "" {
+				errorType = e.lastChatErrorType
+			}
+			desc := outcome
+			if e.runError != "" {
+				desc = scrubOrPass(e.runError, e.redactionDisabled)
+			}
+			e.rootSpan.SetAttributes(attribute.String(errorTypeKey, errorType))
+			e.rootSpan.SetStatus(codes.Error, desc)
 		}
 		e.rootSpan.End()
 	}

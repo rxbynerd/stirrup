@@ -168,6 +168,10 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 	h.once.Do(func() {
 		e := h.e
 		failed := end.ErrorType != "" || (end.Summary != nil && end.Summary.StopReason == "error")
+		errorType := end.ErrorType
+		if failed && errorType == "" {
+			errorType = "error"
+		}
 		var attrs []attribute.KeyValue
 		stopReason := ""
 		if s := end.Summary; s != nil {
@@ -207,6 +211,9 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 
 		e.mu.Lock()
 		delete(e.open, liveHandle(h))
+		if h.runID == "" {
+			e.lastChatErrorType = errorType
+		}
 		systemInstructions := ""
 		if content != nil {
 			e.retainRunContentLocked(h.runID, content)
@@ -223,10 +230,6 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 		}
 
 		if failed {
-			errorType := end.ErrorType
-			if errorType == "" {
-				errorType = "error"
-			}
 			attrs = append(attrs, attribute.String(errorTypeKey, errorType))
 		}
 		h.span.SetAttributes(attrs...)

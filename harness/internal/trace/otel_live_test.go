@@ -447,3 +447,65 @@ func TestFinish_EndsAbandonedHandles(t *testing.T) {
 		}
 	}
 }
+
+func failChat(emitter *OTelTraceEmitter, errorType string) {
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
+		Summary:   &types.TurnTrace{StopReason: "error"},
+		ErrorType: errorType,
+	})
+}
+
+func TestRootSpan_FailedRunNamesFailingRequestAndReason(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	failChat(emitter, "provider_request_failed")
+	emitter.RecordRunError("provider anthropic (m): connection refused, key " + liveSecret)
+	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "invoke_agent stirrup")
+	assertAttribute(t, root, errorTypeKey, "provider_request_failed")
+	assertAttribute(t, root, "run.outcome", "error")
+	if root.Status.Code != codes.Error {
+		t.Errorf("status = %v, want Error", root.Status.Code)
+	}
+	if strings.Contains(root.Status.Description, liveSecret) || !strings.Contains(root.Status.Description, "connection refused") {
+		t.Errorf("status description = %q, want scrubbed readable text", root.Status.Description)
+	}
+}
+
+func TestRootSpan_ErrorTypeIgnoresEarlierRecoveredAndSubAgentFailures(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	failChat(emitter, "context_overflow")
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "end_turn"},
+	})
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m", RunID: "run-child"}).End(ChatSpanEnd{
+		Summary:   &types.TurnTrace{StopReason: "error"},
+		ErrorType: "provider_stream_failed",
+	})
+	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "invoke_agent stirrup")
+	assertAttribute(t, root, errorTypeKey, "error")
+	if root.Status.Description != "error" {
+		t.Errorf("status description = %q, want the outcome when no run error was recorded", root.Status.Description)
+	}
+}
+
+func TestRootSpan_OtherOutcomesKeepOutcomeAsErrorType(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	failChat(emitter, "provider_stream_failed")
+	emitter.RecordRunError("reached the turn limit (maxTurns 5)")
+	if _, err := emitter.Finish(context.Background(), "max_turns"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "invoke_agent stirrup")
+	assertAttribute(t, root, errorTypeKey, "max_turns")
+	if root.Status.Description != "reached the turn limit (maxTurns 5)" {
+		t.Errorf("status description = %q", root.Status.Description)
+	}
+}

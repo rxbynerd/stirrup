@@ -255,7 +255,10 @@ Span-specific attributes:
 
 Failures set error status with a scrubbed description and an
 `error.type` from a bounded vocabulary: the run outcome on
-`invoke_agent` spans; `provider_request_failed`,
+`invoke_agent` spans, except that the generic `error` outcome carries
+the `error.type` of the run's last failed `chat` request when there is
+one, and the status description is the scrubbed run error;
+`provider_request_failed`,
 `provider_stream_failed`, `context_overflow`, `cancelled`, or
 `timeout` on `chat` and `provider.stream` spans; the tool failure
 category on `execute_tool` spans. The `context_overflow`, `cancelled`
