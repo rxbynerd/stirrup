@@ -433,13 +433,15 @@ func (l *AgenticLoop) recordAttemptUsage(
 
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 	l.Metrics.Turns.Add(ctx, 1, modeAttr)
-	l.Metrics.TokensInput.Add(ctx, int64(tokens.Input), l.metricAttrs())
-	l.Metrics.TokensOutput.Add(ctx, int64(tokens.Output), l.metricAttrs())
+	inference := inferenceAttrs(config, selection, selectedProvider)
+	tokenAttrs := l.metricAttrs(observability.ProviderModelAttributes(inference.ProviderType, inference.RequestModel)...)
+	l.Metrics.TokensInput.Add(ctx, int64(tokens.Input), tokenAttrs)
+	l.Metrics.TokensOutput.Add(ctx, int64(tokens.Output), tokenAttrs)
 	if tokens.CacheRead > 0 {
-		l.Metrics.TokensCacheRead.Add(ctx, int64(tokens.CacheRead), l.metricAttrs())
+		l.Metrics.TokensCacheRead.Add(ctx, int64(tokens.CacheRead), tokenAttrs)
 	}
 	if tokens.CacheWrite > 0 {
-		l.Metrics.TokensCacheWrite.Add(ctx, int64(tokens.CacheWrite), l.metricAttrs())
+		l.Metrics.TokensCacheWrite.Add(ctx, int64(tokens.CacheWrite), tokenAttrs)
 	}
 	l.Metrics.TurnDuration.Record(ctx, float64(attempt.duration.Milliseconds()), modeAttr)
 

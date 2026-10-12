@@ -173,3 +173,36 @@ func TestLoop_GenAIOperationDuration_NonRetryableFailure(t *testing.T) {
 		t.Error("token usage recorded for a request that failed before streaming")
 	}
 }
+
+func TestLoop_TokenCountersCarryProviderAndModel(t *testing.T) {
+	h := newRetryHarness(t, &scriptedTurnProvider{scripts: []turnScript{answerScript()}})
+	if _, err := h.loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := h.reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch m.Name {
+			case "stirrup.harness.tokens.input", "stirrup.harness.tokens.output":
+			default:
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				provider, _ := attrValue(dp.Attributes, "gen_ai.provider.name")
+				model, _ := attrValue(dp.Attributes, "gen_ai.request.model")
+				if provider.AsString() != "anthropic" || model.AsString() != "claude-sonnet-4-6" {
+					t.Errorf("%s provider/model = %q/%q, want anthropic/claude-sonnet-4-6", m.Name, provider.AsString(), model.AsString())
+				}
+				seen[m.Name] = true
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("token counters observed = %v, want input and output", seen)
+	}
+}

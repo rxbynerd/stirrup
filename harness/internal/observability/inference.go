@@ -62,6 +62,16 @@ type InferenceAttrs struct {
 	ServerPort    int
 }
 
+// ProviderModelAttributes returns the gen_ai.provider.name and
+// gen_ai.request.model attributes that label the token counters, so token
+// totals can be split by provider and model.
+func ProviderModelAttributes(providerType, model string) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String(attrGenAIProviderName, GenAIProviderName(providerType)),
+		attribute.String(attrGenAIRequestModel, model),
+	}
+}
+
 func (a InferenceAttrs) attributes(extra ...attribute.KeyValue) metric.MeasurementOption {
 	attrs := make([]attribute.KeyValue, 0, 6+len(extra))
 	attrs = append(attrs,
