@@ -24,7 +24,9 @@ func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig
 		ProviderType: providerTypeFor(config, selection.Provider),
 		Model:        selection.Model,
 		MaxTokens:    params.MaxTokens,
-		Temperature:  params.Temperature,
+		// The loop's fallback temperature is left off: for models that
+		// take no sampling parameters it never reaches the wire.
+		Temperature: config.Temperature,
 	}
 	start.ServerAddress, start.ServerPort = provider.ServerEndpointOf(selectedProvider)
 	var chat trace.ChatSpan

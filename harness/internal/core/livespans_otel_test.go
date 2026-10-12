@@ -314,3 +314,35 @@ func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
 		t.Errorf("chat error.type = %q, want cancelled", got)
 	}
 }
+
+func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		temp *float64
+		want string
+	}{
+		{name: "loop fallback", temp: nil, want: ""},
+		{name: "operator set", temp: types.Float64Ptr(0.7), want: "0.7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loop, exporter := otelLoop(t, nil)
+			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{{
+				{Type: "text_delta", Text: "done"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			}}}
+			config := buildTestConfig()
+			config.Temperature = tc.temp
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+			if len(chats) != 1 {
+				t.Fatalf("found %d chat spans, want 1", len(chats))
+			}
+			got, _ := spanAttr(chats[0], "gen_ai.request.temperature")
+			if got != tc.want {
+				t.Errorf("gen_ai.request.temperature = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
