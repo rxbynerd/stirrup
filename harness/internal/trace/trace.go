@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -145,4 +147,81 @@ type SubRunRecorder interface {
 // context. A nil return means the emitter records no run span.
 type RootContextProvider interface {
 	RootContext() context.Context
+}
+
+// LiveSpanStarter is an optional capability for emitters that record model
+// requests and tool calls as live spans. A nil handle means the emitter
+// cannot record this span (for example a NestedJSONLEmitter over a parent
+// without the capability); the caller then uses its own fallback.
+type LiveSpanStarter interface {
+	StartChatSpan(parent context.Context, start ChatSpanStart) ChatSpan
+	StartToolSpan(parent context.Context, start ToolSpanStart) ToolSpan
+}
+
+// ChatSpanStart describes one model request at the moment it is sent.
+type ChatSpanStart struct {
+	Turn int
+	// ProviderType is the stirrup provider type, e.g. "anthropic".
+	ProviderType string
+	Model        string
+	// ServerAddress and ServerPort locate the provider endpoint; empty
+	// and zero when the adapter does not report one.
+	ServerAddress string
+	ServerPort    int
+	MaxTokens     int
+	Temperature   *float64
+	// RunID and ParentRunID identify a sub-agent's request; both are
+	// empty for the top-level run.
+	RunID       string
+	ParentRunID string
+}
+
+// ChatSpanEnd describes how a model request finished.
+type ChatSpanEnd struct {
+	// Summary is nil when the request failed before a summary was built.
+	Summary *types.TurnTrace
+	// Record carries the request's input and output; nil on failure.
+	Record *types.TurnRecord
+	// ErrorType is a bounded category; empty on success.
+	ErrorType string
+	// ErrorText is already scrubbed by the caller; the emitter scrubs it
+	// again before it reaches a span.
+	ErrorText string
+}
+
+// ChatSpan is one live model request. Span exposes the underlying span so
+// the caller can parent children on it; End is idempotent.
+type ChatSpan interface {
+	Span() oteltrace.Span
+	End(ChatSpanEnd)
+}
+
+// ToolSpanStart describes one tool call at dispatch.
+type ToolSpanStart struct {
+	CallID string
+	// Name is the model-facing tool name.
+	Name string
+	// Known is false for a name that resolved to no registered tool; the
+	// span name then omits the model-controlled name.
+	Known       bool
+	InputSize   int
+	RunID       string
+	ParentRunID string
+}
+
+// ToolSpanEnd describes how a tool call finished.
+type ToolSpanEnd struct {
+	// Summary is nil for a call dropped after a stall.
+	Summary *types.ToolCallTrace
+	// Record carries the raw input and output; the emitter scrubs it
+	// before recording content.
+	Record *types.ToolCallRecord
+	// EndTime is when the call finished; zero means now.
+	EndTime time.Time
+}
+
+// ToolSpan is one live tool call. End is idempotent.
+type ToolSpan interface {
+	Span() oteltrace.Span
+	End(ToolSpanEnd)
 }

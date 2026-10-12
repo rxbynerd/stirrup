@@ -461,22 +461,28 @@ func scrubTurnRecord(t types.TurnRecord, redactionDisabled bool) types.TurnRecor
 		ResponseModel: scrubOrPass(t.ResponseModel, redactionDisabled),
 	}
 	for i, tc := range t.ToolCalls {
-		out.ToolCalls[i] = types.ToolCallRecord{
-			ID:           tc.ID,
-			Name:         tc.Name,
-			InternalName: tc.InternalName,
-			Input:        scrubRawJSON(tc.Input, redactionDisabled),
-			Output:       scrubOrPass(tc.Output, redactionDisabled),
-			DurationMs:   tc.DurationMs,
-			Success:      tc.Success,
-			// The structured payload carries the same untrusted content
-			// as Output, so it is scrubbed on the same footing.
-			Structured: scrubRawJSON(tc.Structured, redactionDisabled),
-			Kind:       tc.Kind,
-			IsError:    tc.IsError,
-		}
+		out.ToolCalls[i] = scrubToolCallRecord(tc, redactionDisabled)
 	}
 	return out
+}
+
+// scrubToolCallRecord returns a copy of tc with its input, output and
+// structured payload scrubbed.
+func scrubToolCallRecord(tc types.ToolCallRecord, redactionDisabled bool) types.ToolCallRecord {
+	return types.ToolCallRecord{
+		ID:           tc.ID,
+		Name:         tc.Name,
+		InternalName: tc.InternalName,
+		Input:        scrubRawJSON(tc.Input, redactionDisabled),
+		Output:       scrubOrPass(tc.Output, redactionDisabled),
+		DurationMs:   tc.DurationMs,
+		Success:      tc.Success,
+		// The structured payload carries the same untrusted content as
+		// Output, so it is scrubbed on the same footing.
+		Structured: scrubRawJSON(tc.Structured, redactionDisabled),
+		Kind:       tc.Kind,
+		IsError:    tc.IsError,
+	}
 }
 
 // scrubModelInput deep-copies a ModelInput with text content scrubbed.

@@ -109,13 +109,14 @@ type OTelTraceEmitter struct {
 	// turn span. Empty when capture is off or no prompt was forwarded.
 	systemInstructionsJSON string
 
-	// rootInputMessagesJSON / rootOutputMessagesJSON are the parent run's
-	// own turn content (forwarded sub-agent records never contribute),
-	// stamped on the root span at Finish. Input is set-once (turn 0's
-	// seed prompt); output is overwrite-always so the final assistant
-	// message wins. Empty when capture is off.
-	rootInputMessagesJSON  string
-	rootOutputMessagesJSON string
+	// runContent is each run's own I/O, keyed by run ID ("" for the
+	// top-level run): stamped on the root span at Finish and on a
+	// sub-agent span at its End. Empty when capture is off.
+	runContent map[string]*turnContent
+
+	// open holds live span handles not yet ended, so Finish can end any
+	// the loop left open.
+	open map[liveHandle]struct{}
 
 	// pendingTurns buffers turn summaries between RecordTurn and the
 	// matching RecordTurnRecord while capture is on, so one turn[N] span
@@ -354,8 +355,8 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.runError = ""
 	e.structuredOutput = nil
 	e.systemInstructionsJSON = ""
-	e.rootInputMessagesJSON = ""
-	e.rootOutputMessagesJSON = ""
+	e.runContent = nil
+	e.open = nil
 	e.pendingTurns = nil
 	e.pendingToolCalls = nil
 
@@ -556,11 +557,11 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		// finish_reason comes from the paired summary so it matches the
 		// gen_ai.response.finish_reasons attribute on the same span.
 		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, pending.trace.StopReason)
-		e.retainRootContentLocked(scrubbed.RunID, content)
+		e.retainRunContentLocked(scrubbed.RunID, content)
 		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, content)
 	} else {
 		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, "")
-		e.retainRootContentLocked(scrubbed.RunID, content)
+		e.retainRunContentLocked(scrubbed.RunID, content)
 		attrs := append([]attribute.KeyValue{
 			attribute.Int("turn.number", scrubbed.Turn),
 			attribute.String(genAIOperationNameKey, "chat"),
@@ -619,22 +620,25 @@ func (e *OTelTraceEmitter) emitCapturedToolSpansLocked(scrubbed types.TurnRecord
 	}
 }
 
-// retainRootContentLocked feeds a captured turn's content into the
-// run-level slots stamped on the root span at Finish. Only the parent
-// run's own records contribute (empty runID); forwarded sub-agent
-// records are the spawn_agent tool call's business, not the run's I/O.
-// Input is set-once (turn 0's seed prompt); output overwrites, and an
-// empty serialisation never clobbers earlier content. Must be called
-// with e.mu held.
-func (e *OTelTraceEmitter) retainRootContentLocked(runID string, content *turnContent) {
-	if runID != "" {
-		return
+// retainRunContentLocked feeds a captured request's content into its
+// run's I/O slot. Input is set-once (the first request's seed prompt);
+// output overwrites so the final assistant message wins, and an empty
+// serialisation never clobbers earlier content. Must be called with e.mu
+// held.
+func (e *OTelTraceEmitter) retainRunContentLocked(runID string, content *turnContent) {
+	if e.runContent == nil {
+		e.runContent = map[string]*turnContent{}
 	}
-	if e.rootInputMessagesJSON == "" {
-		e.rootInputMessagesJSON = content.inputMessages
+	run, ok := e.runContent[runID]
+	if !ok {
+		run = &turnContent{}
+		e.runContent[runID] = run
+	}
+	if run.inputMessages == "" {
+		run.inputMessages = content.inputMessages
 	}
 	if content.outputMessages != "" {
-		e.rootOutputMessagesJSON = content.outputMessages
+		run.outputMessages = content.outputMessages
 	}
 }
 
@@ -847,6 +851,12 @@ func (e *OTelTraceEmitter) RecordPermissionDenial() {
 // Finish sets the outcome on the root span, ends it, flushes the exporter,
 // and returns the aggregated RunTrace.
 func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
+	// An SDK span that never ends is never exported, so a handle the loop
+	// left open (after a panic, say) is ended here and marked.
+	for _, h := range e.takeOpenHandles() {
+		h.abandon()
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -879,9 +889,9 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		// Must happen before End below — the SDK silently drops
 		// attributes set afterwards.
 		if e.captureContent {
-			rootContent := turnContent{
-				inputMessages:  e.rootInputMessagesJSON,
-				outputMessages: e.rootOutputMessagesJSON,
+			rootContent := e.runContent[""]
+			if rootContent == nil {
+				rootContent = &turnContent{}
 			}
 			if attrs := rootContent.attributes(e.systemInstructionsJSON); len(attrs) > 0 {
 				e.rootSpan.SetAttributes(attrs...)
