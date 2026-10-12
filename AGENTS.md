@@ -39,6 +39,7 @@ stirrup/
       guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
+      observability/otlp/    # OTLP exporter construction for traces, metrics, logs (endpoint, TLS, headers, HTTP client)
       health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
       security/              # SecretStore, LogScrubber, input validation, judge-prompt data fences
       jsonextract/           # Nonce-bound JSON verdict extraction from free-form model output (guard + verifier)

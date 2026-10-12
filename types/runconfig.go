@@ -4929,14 +4929,14 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			))
 		}
 	}
-	// Reject `headers` on the gRPC transport. The gRPC exporter path in
-	// harness/internal/trace/otel.go and observability/metrics.go
-	// unconditionally calls WithInsecure(), so any bearer/Basic credential
-	// supplied via headers would be transmitted in plaintext; only the
-	// HTTP protocol accepts headers today. Empty Protocol defaults to
-	// gRPC at exporter construction time, so the check applies there too.
+	// Reject `headers` on the gRPC transport. The gRPC exporters in
+	// harness/internal/observability/otlp dial the documented host:port
+	// endpoint form without TLS, so any bearer/Basic credential supplied
+	// via headers would be transmitted in plaintext; only the HTTP
+	// protocol accepts headers. Empty Protocol defaults to gRPC at
+	// exporter construction time, so the check applies there too.
 	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
-		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; gRPC transport uses WithInsecure() and would send credentials in plaintext")
+		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; the gRPC transport dials host:port endpoints in plaintext and would expose credentials")
 	}
 	// Header name and value validation. Block CRLF injection at
 	// config-load time rather than letting a "Bearer foo\r\nX-Inj: e"

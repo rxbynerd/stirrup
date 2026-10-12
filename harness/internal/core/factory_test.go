@@ -16,6 +16,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -2854,7 +2855,7 @@ func TestBuildProvider_UnknownTypeMentionsResponses(t *testing.T) {
 func TestResourceOptionsFromConfig(t *testing.T) {
 	t.Run("nil config", func(t *testing.T) {
 		got := resourceOptionsFromConfig(nil)
-		if got != (observability.ResourceOptions{}) {
+		if !reflect.DeepEqual(got, observability.ResourceOptions{}) {
 			t.Errorf("nil config: got %+v, want zero ResourceOptions", got)
 		}
 	})
@@ -2862,7 +2863,7 @@ func TestResourceOptionsFromConfig(t *testing.T) {
 	t.Run("empty observability with mode", func(t *testing.T) {
 		got := resourceOptionsFromConfig(&types.RunConfig{Mode: "execution"})
 		want := observability.ResourceOptions{RunMode: "execution"}
-		if got != want {
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("empty observability: got %+v, want %+v", got, want)
 		}
 	})
@@ -2880,7 +2881,7 @@ func TestResourceOptionsFromConfig(t *testing.T) {
 			ServiceNamespace: "eval",
 			RunMode:          "planning",
 		}
-		if got != want {
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("populated config: got %+v, want %+v", got, want)
 		}
 	})

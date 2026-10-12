@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 )
 
 // captureStore holds the records captured by a captureHandler tree. It is
@@ -181,7 +183,7 @@ func TestNewLoggerWithExport_CorrelatesOnExportPath(t *testing.T) {
 // endpoint (the gRPC exporter dials lazily on first export), and that Close
 // on the returned exporter is safe.
 func TestNewLogExporter_ConstructsWithoutDialing(t *testing.T) {
-	exp, handler, err := NewLogExporter(context.Background(), "localhost:4317", nil, ResourceOptions{})
+	exp, handler, err := NewLogExporter(context.Background(), otlp.Settings{Endpoint: "localhost:4317"}, ResourceOptions{})
 	if err != nil {
 		t.Fatalf("NewLogExporter: %v", err)
 	}

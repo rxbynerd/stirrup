@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -65,7 +68,7 @@ func (f *fakeOTLPHTTPServer) snapshot() []capturedRequest {
 // against an HTTP test server and running a Start/RecordTurn/Finish
 // cycle must POST to /v1/traces with the configured Authorization
 // header. We use httptest.NewServer (plain HTTP) and rely on the
-// emitter detecting the http:// scheme and toggling WithInsecure().
+// exporter detecting the http:// scheme and selecting plaintext.
 func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 	fake := &fakeOTLPHTTPServer{}
 	srv := httptest.NewServer(fake.handler())
@@ -76,15 +79,13 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 		authValue  = "Basic dGVzdC11c2VyOnRlc3QtcGFzcw=="
 	)
 
-	emitter, err := NewOTelTraceEmitter(
-		context.Background(),
-		srv.URL, // httptest URL is "http://127.0.0.1:NNNN"
-		"http/protobuf",
-		map[string]string{authHeader: authValue},
-		observability.ResourceOptions{},
-		false,
-		false,
-	)
+	emitter, err := NewOTelTraceEmitter(context.Background(), OTelTraceEmitterOptions{
+		Exporter: otlp.Settings{
+			Endpoint: srv.URL, // httptest URL is "http://127.0.0.1:NNNN"
+			Protocol: otlp.ProtocolHTTPProtobuf,
+			Headers:  map[string]string{authHeader: authValue},
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewOTelTraceEmitter: %v", err)
 	}
@@ -140,85 +141,6 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 	}
 }
 
-// TestNewOTelTraceEmitter_HTTPProtocol_PreservesGatewayPath pins the
-// Grafana-Cloud–style configuration path. When the operator
-// configures endpoint=https://gateway.example/otlp, traces must POST
-// to /otlp/v1/traces (not /v1/traces — that would bypass the
-// gateway's tenant routing). httptest.NewTLSServer gives us a TLS
-// endpoint so we also verify the emitter does NOT downgrade to plain
-// HTTP for an https:// URL.
-func TestNewOTelTraceEmitter_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
-	fake := &fakeOTLPHTTPServer{}
-	srv := httptest.NewTLSServer(fake.handler())
-	defer srv.Close()
-
-	// Build a gateway-style URL with a base path.
-	gatewayURL := srv.URL + "/otlp"
-
-	// Use the test server's TLS client to bypass cert verification for
-	// the in-test self-signed cert. We do this by stuffing the server's
-	// transport into the SDK via an envvar that otlptracehttp respects.
-	t.Setenv("SSL_CERT_FILE", "")
-	// The OTel HTTP exporter uses the default Transport. For this
-	// test we accept that the request will fail at TLS handshake
-	// (self-signed) — but the captured-request handler will still
-	// fire because httptest.Server's TLS terminates inside the
-	// process and srv.Client() trusts the cert. We override this by
-	// using srv.Certificate(). Since otlptracehttp doesn't expose a
-	// custom http.Client, we can't inject the trust pool here.
-	//
-	// Workaround: Test the path-preservation behaviour via the
-	// emitter's URL parsing helpers, not via an actual successful
-	// round-trip. The successful POST is exercised by the plain-HTTP
-	// test above.
-	if path := joinTracesPath("/otlp"); path != "/otlp/v1/traces" {
-		t.Errorf("joinTracesPath(/otlp) = %q, want /otlp/v1/traces", path)
-	}
-	if path := joinTracesPath("/otlp/"); path != "/otlp/v1/traces" {
-		t.Errorf("joinTracesPath(/otlp/) = %q (trailing slash should be normalised)", path)
-	}
-	if got := stripURLScheme(gatewayURL); got == "" || strings.Contains(got, "/") {
-		t.Errorf("stripURLScheme(%q) = %q (must be host:port only)", gatewayURL, got)
-	}
-	if isInsecureEndpoint(gatewayURL) {
-		t.Errorf("isInsecureEndpoint(%q) = true; an https:// URL must use TLS", gatewayURL)
-	}
-	// The no-scheme endpoint shape (`localhost:4318`) is the typical
-	// local-collector flow and must be classified as insecure so the
-	// exporter applies WithInsecure().
-	if !isInsecureEndpoint("localhost:4318") {
-		t.Error("scheme-less endpoint should be treated as insecure")
-	}
-}
-
-// TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders is a
-// constructor-level test, not a factory-level test: ValidateRunConfig
-// rejects the gRPC + non-empty headers combination at config-load
-// time (see TestValidateRunConfig_HeadersOnGRPCProtocolRejected in
-// the types package), but the constructor itself is not a validation
-// surface — it's called from factory.go *after* validation, so this
-// pins that a future refactor dropping the WithHeaders option from
-// the slice would surface here even though production never reaches
-// this path with non-empty headers.
-func TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders(t *testing.T) {
-	// Direct exporter construction so we exercise the option-
-	// stitching path without paying the OTel SDK's connection
-	// timeout on emitter Close. NewOTelTraceEmitter goes through
-	// the same path.
-	exp, err := buildOTLPTraceExporter(
-		context.Background(),
-		"127.0.0.1:1",
-		"grpc",
-		map[string]string{"X-Tenant": "team-a"},
-	)
-	if err != nil {
-		t.Fatalf("buildOTLPTraceExporter(grpc with headers): %v", err)
-	}
-	if exp == nil {
-		t.Fatalf("expected non-nil exporter")
-	}
-}
-
 // TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol pins the
 // validation contract: an unrecognised wire-protocol value at the
 // constructor must surface as a clear error rather than silently
@@ -226,15 +148,12 @@ func TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders(t *testing.T) {
 // "http/protobuf" should see the typo, not have the request silently
 // route to gRPC.
 func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
-	_, err := NewOTelTraceEmitter(
-		context.Background(),
-		"localhost:4318",
-		"http", // not in the closed set
-		nil,
-		observability.ResourceOptions{},
-		false,
-		false,
-	)
+	_, err := NewOTelTraceEmitter(context.Background(), OTelTraceEmitterOptions{
+		Exporter: otlp.Settings{
+			Endpoint: "localhost:4318",
+			Protocol: "http", // not in the closed set
+		},
+	})
 	if err == nil {
 		t.Fatalf("expected error for unsupported protocol, got nil")
 	}
@@ -277,15 +196,13 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 	scrubbed := observability.NewScrubHandler(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(slog.New(scrubbed))
 
-	emitter, err := NewOTelTraceEmitter(
-		context.Background(),
-		srv.URL,
-		"http/protobuf",
-		resolved,
-		observability.ResourceOptions{},
-		false,
-		false,
-	)
+	emitter, err := NewOTelTraceEmitter(context.Background(), OTelTraceEmitterOptions{
+		Exporter: otlp.Settings{
+			Endpoint: srv.URL,
+			Protocol: otlp.ProtocolHTTPProtobuf,
+			Headers:  resolved,
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewOTelTraceEmitter: %v", err)
 	}
@@ -304,5 +221,69 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 
 	if strings.Contains(logBuf.String(), "ultra-secret-bearer-zzy") {
 		t.Fatalf("resolved bearer leaked into slog output: %s", logBuf.String())
+	}
+}
+
+// recordingExporter is a span-exporter decorator that records the
+// attributes of every span as it reaches export, then delegates.
+type recordingExporter struct {
+	sdktrace.SpanExporter
+	mu    sync.Mutex
+	names []string
+	attrs map[string]string
+}
+
+func (r *recordingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	r.mu.Lock()
+	for _, s := range spans {
+		r.names = append(r.names, s.Name())
+		for _, kv := range s.Attributes() {
+			r.attrs[string(kv.Key)] = kv.Value.String()
+		}
+	}
+	r.mu.Unlock()
+	return r.SpanExporter.ExportSpans(ctx, spans)
+}
+
+// TestNewOTelTraceEmitter_WrapSpanExporterSeesFinalAttributes pins that
+// the decorator sits between the batcher and the OTLP exporter: it sees
+// attributes set on the root span after Start, and its output still
+// reaches the collector.
+func TestNewOTelTraceEmitter_WrapSpanExporterSeesFinalAttributes(t *testing.T) {
+	fake := &fakeOTLPHTTPServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	rec := &recordingExporter{attrs: map[string]string{}}
+	emitter, err := NewOTelTraceEmitter(context.Background(), OTelTraceEmitterOptions{
+		Exporter: otlp.Settings{Endpoint: srv.URL, Protocol: otlp.ProtocolHTTPProtobuf},
+		WrapSpanExporter: func(inner sdktrace.SpanExporter) sdktrace.SpanExporter {
+			rec.SpanExporter = inner
+			return rec
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewOTelTraceEmitter: %v", err)
+	}
+	emitter.Start("run-wrap-1", &types.RunConfig{RunID: "run-wrap-1", Mode: "execution"})
+	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := emitter.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.names) == 0 {
+		t.Fatal("decorator saw no spans")
+	}
+	if got := rec.attrs["run.outcome"]; got != "success" {
+		t.Errorf("decorator saw run.outcome = %q, want the end-time value %q", got, "success")
+	}
+	if len(fake.snapshot()) == 0 {
+		t.Error("decorated exporter did not reach the collector")
 	}
 }

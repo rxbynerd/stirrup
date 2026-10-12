@@ -25,6 +25,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -224,7 +225,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		if logEndpoint == "" {
 			logEndpoint = config.TraceEmitter.Endpoint
 		}
-		logExporter, handler, lerr := observability.NewLogExporter(ctx, logEndpoint, resolvedHeaders, resourceOpts)
+		logExporter, handler, lerr := observability.NewLogExporter(ctx, otlp.Settings{
+			Protocol: otlp.ProtocolGRPC,
+			Endpoint: logEndpoint,
+			Headers:  resolvedHeaders,
+		}, resourceOpts)
 		if lerr != nil {
 			cleanup()
 			return nil, fmt.Errorf("build log exporter: %w", lerr)
@@ -382,7 +387,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		metricsEndpoint = config.TraceEmitter.Endpoint
 	}
 	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
-		metrics, err = observability.NewMetrics(ctx, metricsEndpoint, config.TraceEmitter.Protocol, resolvedHeaders, resourceOpts)
+		metrics, err = observability.NewMetrics(ctx, otlp.Settings{
+			Protocol: config.TraceEmitter.Protocol,
+			Endpoint: metricsEndpoint,
+			Headers:  resolvedHeaders,
+		}, resourceOpts)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build metrics: %w", err)
@@ -1927,7 +1936,16 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 		if endpoint == "" {
 			endpoint = "localhost:4317"
 		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent, effectiveRedactionDisabled)
+		return trace.NewOTelTraceEmitter(ctx, trace.OTelTraceEmitterOptions{
+			Exporter: otlp.Settings{
+				Protocol: cfg.Protocol,
+				Endpoint: endpoint,
+				Headers:  headers,
+			},
+			Resource:          resourceOpts,
+			CaptureContent:    cfg.CaptureContent,
+			RedactionDisabled: effectiveRedactionDisabled,
+		})
 	case "gcs":
 		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.
 		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)

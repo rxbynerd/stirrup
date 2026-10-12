@@ -5185,10 +5185,10 @@ func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins that gRPC OTLP exporter
-// paths unconditionally call WithInsecure(), so a bearer/Basic credential in
-// Headers would transmit in plaintext; the validator rejects the combination at
-// config-load time. Empty Protocol defaults to gRPC, so the rejection covers both
+// TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins that the gRPC OTLP
+// exporters dial host:port endpoints in plaintext, so a bearer/Basic credential
+// in Headers would transmit unencrypted; the validator rejects the combination
+// at config-load time. Empty Protocol defaults to gRPC, so the rejection covers both
 // `""` and `"grpc"`.
 func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 	t.Run("empty protocol with headers rejected", func(t *testing.T) {
@@ -5218,8 +5218,8 @@ func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for headers on gRPC protocol")
 		}
-		if !strings.Contains(err.Error(), "WithInsecure") {
-			t.Errorf("expected error to mention WithInsecure plaintext path, got: %v", err)
+		if !strings.Contains(err.Error(), "plaintext") {
+			t.Errorf("expected error to mention the plaintext gRPC path, got: %v", err)
 		}
 	})
 

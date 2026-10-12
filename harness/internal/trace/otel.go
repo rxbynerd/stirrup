@@ -5,19 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -70,7 +67,7 @@ const (
 )
 
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
-// exported via OTLP/gRPC to a collector endpoint.
+// exported via OTLP to a collector endpoint.
 type OTelTraceEmitter struct {
 	provider *sdktrace.TracerProvider
 	tracer   oteltrace.Tracer
@@ -141,26 +138,48 @@ var (
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 )
 
-// NewOTelTraceEmitter creates an OTel trace emitter that exports spans to
-// the given OTLP endpoint over the chosen wire protocol ("" or "grpc" for
-// OTLP/gRPC, "http/protobuf" for OTLP/HTTP; see docs/observability-cloud.md
-// for endpoint/TLS/header resolution). The caller must eventually call
-// Finish to flush and shut down the exporter. headers must already have
-// "secret://" references resolved to plaintext.
-//
-// redactionDisabled is the --debug bypass: production callers pass the
-// factory's already debugbuild-gated value, every other caller passes false.
-func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent, redactionDisabled bool, opts ...OTelOption) (*OTelTraceEmitter, error) {
-	exporter, err := buildOTLPTraceExporter(ctx, endpoint, protocol, headers)
+// OTelTraceEmitterOptions configures NewOTelTraceEmitter.
+type OTelTraceEmitterOptions struct {
+	// Exporter selects the OTLP endpoint, protocol, headers, and HTTP
+	// client for the span exporter.
+	Exporter otlp.Settings
+
+	// Resource carries the run-scoped resource attributes shared with the
+	// metric and log signals.
+	Resource observability.ResourceOptions
+
+	// CaptureContent opts into recording prompt and completion content on
+	// spans; see types.TraceEmitterConfig.CaptureContent.
+	CaptureContent bool
+
+	// RedactionDisabled is the --debug bypass: production callers pass the
+	// factory's already debugbuild-gated value, every other caller false.
+	RedactionDisabled bool
+
+	// WrapSpanExporter, when set, decorates the OTLP exporter before it is
+	// registered with the batcher, so the decorator sees every span's
+	// final attributes at export time.
+	WrapSpanExporter func(sdktrace.SpanExporter) sdktrace.SpanExporter
+}
+
+// NewOTelTraceEmitter creates an OTel trace emitter that exports spans over
+// OTLP as described by opts.Exporter (see docs/observability-cloud.md for
+// endpoint/TLS/header resolution). The caller must eventually call Finish
+// to flush and shut down the exporter.
+func NewOTelTraceEmitter(ctx context.Context, opts OTelTraceEmitterOptions, extra ...OTelOption) (*OTelTraceEmitter, error) {
+	exporter, err := otlp.NewTraceExporter(ctx, opts.Exporter)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP exporter: %w", err)
+	}
+	if opts.WrapSpanExporter != nil {
+		exporter = opts.WrapSpanExporter(exporter)
 	}
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(observability.BuildResource(resourceOpts)),
+		sdktrace.WithResource(observability.BuildResource(opts.Resource)),
 	)
-	return newOTelTraceEmitter(tp, captureContent, redactionDisabled, opts...), nil
+	return newOTelTraceEmitter(tp, opts.CaptureContent, opts.RedactionDisabled, extra...), nil
 }
 
 // newOTelTraceEmitter registers the run-scope processor, then any extra
@@ -182,103 +201,6 @@ func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent, redactionD
 		captureContent:    captureContent,
 		redactionDisabled: redactionDisabled,
 	}
-}
-
-// buildOTLPTraceExporter dispatches on the configured wire protocol and
-// returns the matching OTel SDK trace exporter.
-func buildOTLPTraceExporter(ctx context.Context, endpoint, protocol string, headers map[string]string) (*otlptrace.Exporter, error) {
-	switch protocol {
-	case "", "grpc":
-		opts := []otlptracegrpc.Option{
-			otlptracegrpc.WithEndpoint(endpoint),
-			otlptracegrpc.WithInsecure(),
-		}
-		if len(headers) > 0 {
-			opts = append(opts, otlptracegrpc.WithHeaders(headers))
-		}
-		return otlptracegrpc.New(ctx, opts...)
-	case "http/protobuf":
-		opts := []otlptracehttp.Option{
-			otlptracehttp.WithEndpoint(stripURLScheme(endpoint)),
-		}
-		// WithEndpointURL would parse the full URL in one call but isn't
-		// available in v1.43.0; emulate by stripping the scheme for the
-		// host component and re-applying the path below.
-		if path := urlPath(endpoint); path != "" {
-			opts = append(opts, otlptracehttp.WithURLPath(joinTracesPath(path)))
-		}
-		if isInsecureEndpoint(endpoint) {
-			opts = append(opts, otlptracehttp.WithInsecure())
-		}
-		if len(headers) > 0 {
-			opts = append(opts, otlptracehttp.WithHeaders(headers))
-		}
-		return otlptracehttp.New(ctx, opts...)
-	default:
-		return nil, fmt.Errorf("unsupported OTLP protocol %q (allowed: grpc, http/protobuf)", protocol)
-	}
-}
-
-// stripURLScheme returns the host:port portion of an OTLP endpoint URL
-// for use with otlptracehttp.WithEndpoint, which expects a bare host
-// and toggles TLS via WithInsecure(). When the endpoint has no scheme
-// (e.g. "localhost:4318"), the value is returned unchanged. Path
-// components are dropped here and re-applied separately via
-// WithURLPath; the caller is responsible for that step.
-func stripURLScheme(endpoint string) string {
-	for _, scheme := range []string{"https://", "http://"} {
-		if strings.HasPrefix(endpoint, scheme) {
-			rest := strings.TrimPrefix(endpoint, scheme)
-			if i := strings.IndexByte(rest, '/'); i >= 0 {
-				return rest[:i]
-			}
-			return rest
-		}
-	}
-	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
-		return endpoint[:i]
-	}
-	return endpoint
-}
-
-// urlPath returns the path component of an OTLP endpoint URL, or the
-// empty string when the endpoint has no path beyond the host.
-func urlPath(endpoint string) string {
-	rest := endpoint
-	for _, scheme := range []string{"https://", "http://"} {
-		if strings.HasPrefix(endpoint, scheme) {
-			rest = strings.TrimPrefix(endpoint, scheme)
-			break
-		}
-	}
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return rest[i:]
-	}
-	return ""
-}
-
-// joinTracesPath appends the per-signal "/v1/traces" suffix to a base
-// gateway path, mirroring what the OTel SDK does when given an endpoint
-// without an explicit URL path. Grafana Cloud's gateway expects the
-// configured URL to end in "/otlp" and resolves the per-signal segment
-// itself, so we preserve the operator-supplied prefix and tack on the
-// suffix the SDK would otherwise apply silently.
-func joinTracesPath(basePath string) string {
-	return strings.TrimRight(basePath, "/") + "/v1/traces"
-}
-
-// isInsecureEndpoint returns true when the endpoint should use plain
-// HTTP: an "http://" scheme or no scheme at all (the local-collector
-// case). "https://" always means TLS.
-func isInsecureEndpoint(endpoint string) bool {
-	if strings.HasPrefix(endpoint, "https://") {
-		return false
-	}
-	if strings.HasPrefix(endpoint, "http://") {
-		return true
-	}
-	// No scheme: assume plaintext (developer / local collector flow).
-	return true
 }
 
 // newOTelTraceEmitterForTest creates an OTel trace emitter backed by the

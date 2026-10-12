@@ -439,7 +439,8 @@ on the dataset header.
 TLS is on by default for `https://` URLs. The exporter falls back to
 plaintext (`WithInsecure()`) only for `http://` URLs or scheme-less
 endpoints (the typical local-collector flow). An `https://` URL never
-silently downgrades.
+silently downgrades. The rule is the same for every signal and both
+protocols, so an `https://` gRPC endpoint also dials with TLS.
 
 ## Kubernetes Job — native HTTP, no Alloy sidecar
 
@@ -564,10 +565,10 @@ emitter is also rejected — those fields only have meaning for
 `type: "otel"`, and a leftover from a migration should fail loudly
 rather than silently keep the wrong config working.
 
-`headers` requires `protocol: http/protobuf`. The gRPC exporter path
-calls `WithInsecure()` unconditionally, so any bearer or Basic
-credential supplied via `headers` would ride a plaintext gRPC channel
-to the collector. To make this footgun unreachable, the validator
+`headers` requires `protocol: http/protobuf`. The gRPC exporter dials
+the documented `host:port` endpoint form in plaintext, so any bearer
+or Basic credential supplied via `headers` would ride a plaintext gRPC
+channel to the collector. To make this footgun unreachable, the validator
 rejects `headers` whenever `protocol` is `""` (which defaults to gRPC
 at exporter construction) or `"grpc"`. The gRPC path is the
 local/sidecar collector flow and assumes the collector itself does

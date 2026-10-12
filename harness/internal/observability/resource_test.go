@@ -3,6 +3,7 @@ package observability
 import (
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 
 	"github.com/rxbynerd/stirrup/types/version"
@@ -180,6 +181,28 @@ func TestInstanceID_Stable(t *testing.T) {
 	}
 	if first != second {
 		t.Errorf("InstanceID not stable across calls: first=%q second=%q", first, second)
+	}
+}
+
+// TestBuildResource_ExtraHasLowestPrecedence pins that Extra attributes
+// appear on the resource but lose to the SDK default resource (which
+// carries OTEL_RESOURCE_ATTRIBUTES) and to the stirrup identity overlay.
+func TestBuildResource_ExtraHasLowestPrecedence(t *testing.T) {
+	t.Setenv(envServiceNamespace, "")
+	got := attrMap(BuildResource(ResourceOptions{Extra: []attribute.KeyValue{
+		attribute.String("platform.extra", "kept"),
+		attribute.String("telemetry.sdk.language", "overridden-by-default"),
+		attribute.String("service.namespace", "overridden-by-overlay"),
+	}}))
+
+	if v := got["platform.extra"]; v != "kept" {
+		t.Errorf("platform.extra: got %q, want %q", v, "kept")
+	}
+	if v := got["telemetry.sdk.language"]; v != "go" {
+		t.Errorf("telemetry.sdk.language: got %q, want the SDK default %q", v, "go")
+	}
+	if v := got["service.namespace"]; v != DefaultServiceNamespace {
+		t.Errorf("service.namespace: got %q, want the stirrup overlay %q", v, DefaultServiceNamespace)
 	}
 }
 

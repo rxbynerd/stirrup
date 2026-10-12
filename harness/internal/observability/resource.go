@@ -94,6 +94,11 @@ type ResourceOptions struct {
 	// Do not add it to ObservabilityConfig or the proto message: it is a
 	// derived attribute, not an operator-configurable label.
 	RunMode string
+
+	// Extra holds caller-supplied defaults with the lowest precedence:
+	// OTEL_RESOURCE_ATTRIBUTES and the SDK defaults override them, and
+	// the stirrup identity attributes override both.
+	Extra []attribute.KeyValue
 }
 
 // BuildResource builds the OTel Resource that identifies this Stirrup
@@ -124,6 +129,12 @@ func BuildResource(opts ResourceOptions) *resource.Resource {
 	}
 
 	base := resource.Default()
+	if len(opts.Extra) > 0 {
+		extra := resource.NewWithAttributes(base.SchemaURL(), opts.Extra...)
+		if withExtra, err := resource.Merge(extra, base); err == nil {
+			base = withExtra
+		}
+	}
 	overlay := resource.NewWithAttributes(base.SchemaURL(), attrs...)
 	merged, err := resource.Merge(base, overlay)
 	if err != nil {
