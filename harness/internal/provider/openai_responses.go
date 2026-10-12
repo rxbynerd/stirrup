@@ -1468,7 +1468,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		// it on event types that represent actual model inference output
 		// so error-path zero latencies do not pollute the histogram.
 		if !ttfbRecorded && o.Metrics != nil && (ev.Type == "text_delta" || ev.Type == "tool_call") {
-			o.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			o.Metrics.RecordFirstChunk(ctx, metricAttrs, inferenceAttrs("openai-responses", model, o.baseURL), time.Since(streamStart))
 			ttfbRecorded = true
 		}
 		select {

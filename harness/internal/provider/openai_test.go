@@ -917,6 +917,7 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
 		t.Errorf("provider_ttfb count = %d, want 1", got)
 	}
+	assertFirstChunkSeries(t, reader, adapter, "openai-compatible", "gpt-4o")
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
 	if !ok || len(h.DataPoints) == 0 {
 		t.Fatal("expected provider_latency data point")

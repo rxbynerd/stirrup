@@ -370,7 +370,7 @@ func (g *GeminiAdapter) consumeSSE(
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
 		if !ttfbRecorded && g.Metrics != nil {
-			g.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			g.Metrics.RecordFirstChunk(ctx, metricAttrs, inferenceAttrs("gemini", model, g.buildURL(model)), time.Since(streamStart))
 			ttfbRecorded = true
 		}
 		ch <- ev

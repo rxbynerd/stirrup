@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -1066,6 +1067,26 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	}
 	if v, ok := attrs.Value("provider.model"); !ok || v.AsString() != "claude-sonnet-4-6" {
 		t.Errorf("provider.model attr = %v ok=%v, want claude-sonnet-4-6", v.AsString(), ok)
+	}
+
+	if got := providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"); got != 1 {
+		t.Errorf("time_to_first_chunk count = %d, want 1", got)
+	}
+	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
+	genAIAttrs := ttfc.DataPoints[0].Attributes
+	wantHost, wantPort := observability.ServerEndpointFromURL(srv.URL)
+	for key, want := range map[string]string{
+		"gen_ai.operation.name": "chat",
+		"gen_ai.provider.name":  "anthropic",
+		"gen_ai.request.model":  "claude-sonnet-4-6",
+		"server.address":        wantHost,
+	} {
+		if v, ok := genAIAttrs.Value(attribute.Key(key)); !ok || v.AsString() != want {
+			t.Errorf("time_to_first_chunk %s = %q ok=%v, want %q", key, v.AsString(), ok, want)
+		}
+	}
+	if v, ok := genAIAttrs.Value("server.port"); !ok || v.AsInt64() != int64(wantPort) {
+		t.Errorf("time_to_first_chunk server.port = %d ok=%v, want %d", v.AsInt64(), ok, wantPort)
 	}
 }
 

@@ -168,6 +168,19 @@ type providerAttempt struct {
 	errText string
 }
 
+// inferenceAttrs identifies the model inference a turn's provider request
+// performs, for the GenAI client metrics. The response model is filled in
+// by callers once the provider reports one.
+func inferenceAttrs(config *types.RunConfig, selection router.ModelSelection, selectedProvider provider.ProviderAdapter) observability.InferenceAttrs {
+	host, port := provider.ServerEndpointOf(selectedProvider)
+	return observability.InferenceAttrs{
+		ProviderType:  providerTypeFor(config, selection.Provider),
+		RequestModel:  selection.Model,
+		ServerAddress: host,
+		ServerPort:    port,
+	}
+}
+
 // overflowed reports whether the request exceeded the model's context
 // window: rejected as too large, or stopped because the response filled
 // the window.
@@ -207,8 +220,10 @@ func (l *AgenticLoop) requestProvider(
 		retrier.policy = turnRetryPolicyFor(config, selection.Provider)
 	}
 	var discarded types.TokenUsage
+	inference := inferenceAttrs(config, selection, selectedProvider)
 
 	for attemptNo := 1; ; attemptNo++ {
+		attemptStart := time.Now()
 		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
 		spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
 			oteltrace.WithAttributes(
@@ -229,12 +244,18 @@ func (l *AgenticLoop) requestProvider(
 			sr, err = streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
 		}
 		if err == nil {
+			succeeded := inference
+			succeeded.ResponseModel = sr.ResponseModel
+			l.Metrics.RecordInferenceDuration(ctx, succeeded, time.Since(attemptStart), "")
+			l.Metrics.RecordInferenceTokens(ctx, succeeded, sr.Usage.Input, sr.Usage.Output)
 			return l.completeAttempt(ctx, providerSpan, sr, discarded, retrier, selection, requestTokens, start)
 		}
+		l.Metrics.RecordInferenceDuration(ctx, inference, time.Since(attemptStart), category.String())
 
 		// A failed stream's result is partial; only its usage is kept.
 		if sr != nil {
 			discarded.Add(sr.Usage)
+			l.Metrics.RecordInferenceTokens(ctx, inference, sr.Usage.Input, sr.Usage.Output)
 		}
 		scrubbedErr := recordSpanError(providerSpan, err)
 		providerSpan.End()
@@ -386,7 +407,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 	config *types.RunConfig,
 	tokenTracker *TokenTracker,
 	turn int,
-	model string,
+	selection router.ModelSelection,
 	selectedProvider provider.ProviderAdapter,
 	attempt providerAttempt,
 	toolCalls int,
@@ -404,7 +425,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 		DurationMs:    attempt.duration.Milliseconds(),
 		Mode:          turnMode,
 		BatchID:       turnBatchID,
-		Model:         model,
+		Model:         selection.Model,
 		ResponseModel: sr.ResponseModel,
 		Retries:       attempt.retries,
 		ToolCalls:     toolCalls,

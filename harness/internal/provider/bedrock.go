@@ -175,7 +175,7 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs)
+		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inferenceAttrs("bedrock", params.Model, ""))
 		b.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -196,21 +196,21 @@ func (b *BedrockAdapter) recordLatency(ctx context.Context, start time.Time, att
 // Equivalent to consumeBedrockStreamMetered with nil metrics; preserved as a
 // stable entry point for tests.
 func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent) {
-	consumeBedrockStreamMetered(ctx, stream, ch, nil, time.Time{}, metric.WithAttributes())
+	consumeBedrockStreamMetered(ctx, stream, ch, nil, time.Time{}, metric.WithAttributes(), observability.InferenceAttrs{})
 }
 
 // consumeBedrockStreamMetered reads events from the Bedrock event stream and
 // translates them into stirrup StreamEvents. It closes ch when done. When
-// metrics is non-nil, records ProviderTTFB on the first non-empty stream
-// event observed (TTFB is recorded at most once per stream).
-func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent, metrics *observability.Metrics, streamStart time.Time, metricAttrs metric.MeasurementOption) {
+// metrics is non-nil, records the time to first chunk on the first non-empty stream
+// event observed (recorded at most once per stream).
+func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent, metrics *observability.Metrics, streamStart time.Time, metricAttrs metric.MeasurementOption, inference observability.InferenceAttrs) {
 	defer close(ch)
 	defer func() { _ = stream.Close() }()
 
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
 		if !ttfbRecorded && metrics != nil {
-			metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			metrics.RecordFirstChunk(ctx, metricAttrs, inference, time.Since(streamStart))
 			ttfbRecorded = true
 		}
 		ch <- ev

@@ -868,7 +868,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt, 0)
+				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
 				}
@@ -902,7 +902,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason == "tool_use" {
 			dispatched = len(toolCalls)
 		}
-		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection.Model, selectedProvider, attempt, dispatched)
+		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool

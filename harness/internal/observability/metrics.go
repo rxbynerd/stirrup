@@ -68,6 +68,12 @@ type Metrics struct {
 	GuardDuration    metric.Float64Histogram
 	SensitiveScan    metric.Float64Histogram
 
+	// OpenTelemetry GenAI client metrics (see inference.go); recorded
+	// alongside the stirrup.* provider instruments.
+	GenAITokenUsage        metric.Int64Histogram
+	GenAIOperationDuration metric.Float64Histogram
+	GenAITimeToFirstChunk  metric.Float64Histogram
+
 	// Component-level histograms
 	SubagentDuration metric.Float64Histogram
 	MCPDuration      metric.Float64Histogram
@@ -578,6 +584,33 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration_ms",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of Rule-of-Two sensitive-content scans"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAITokenUsage, err = meter.Int64Histogram(metricGenAITokenUsage,
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Number of input and output tokens used per model inference"),
+		metric.WithExplicitBucketBoundaries(genAITokenBuckets...),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAIOperationDuration, err = meter.Float64Histogram(metricGenAIOperationDuration,
+		metric.WithUnit("s"),
+		metric.WithDescription("Duration of one model inference request, recorded per attempt"),
+		metric.WithExplicitBucketBoundaries(genAIDurationBuckets...),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAITimeToFirstChunk, err = meter.Float64Histogram(metricGenAITimeToFirstChunk,
+		metric.WithUnit("s"),
+		metric.WithDescription("Time from sending a model inference request to receiving the first streamed chunk"),
+		metric.WithExplicitBucketBoundaries(genAIDurationBuckets...),
 	)
 	if err != nil {
 		return nil, err

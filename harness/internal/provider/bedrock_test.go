@@ -791,12 +791,22 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 		attribute.String("provider.type", "bedrock"),
 		attribute.String("provider.model", "anthropic.claude-sonnet-4-6-v1"),
 	)
-	go consumeBedrockStreamMetered(context.Background(), stream, ch, metrics, time.Now(), attrs)
+	go consumeBedrockStreamMetered(context.Background(), stream, ch, metrics, time.Now(), attrs, inferenceAttrs("bedrock", "anthropic.claude-sonnet-4-6-v1", ""))
 	for range ch {
 	}
 
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
 		t.Errorf("provider_ttfb count = %d, want 1", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"); got != 1 {
+		t.Errorf("time_to_first_chunk count = %d, want 1", got)
+	}
+	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
+	if _, has := ttfc.DataPoints[0].Attributes.Value("server.address"); has {
+		t.Error("bedrock time_to_first_chunk carries server.address, want none")
+	}
+	if v, _ := ttfc.DataPoints[0].Attributes.Value("gen_ai.provider.name"); v.AsString() != "aws.bedrock" {
+		t.Errorf("gen_ai.provider.name = %q, want aws.bedrock", v.AsString())
 	}
 }
 

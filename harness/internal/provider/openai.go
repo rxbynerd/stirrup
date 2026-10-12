@@ -1171,7 +1171,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
 		if !ttfbRecorded && o.Metrics != nil {
-			o.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			o.Metrics.RecordFirstChunk(ctx, metricAttrs, inferenceAttrs("openai-compatible", model, o.baseURL), time.Since(streamStart))
 			ttfbRecorded = true
 		}
 		ch <- ev

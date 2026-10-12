@@ -347,7 +347,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 		return presenter.InternalName(name)
 	}
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
+	// Auxiliary model calls (summarisation, llm-judge, cloud-judge) go
+	// through auxProv so they are counted in the GenAI client metrics.
+	auxProv := newMeteredProvider(prov, config.Provider.Type)
+	cs := buildContextStrategy(config.ContextStrategy, auxProv, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
 
 	// 9. Verifier. Construction is deferred to step 13, once metrics
 	// exists — buildVerifier wraps in a metric-recorder when metrics is
@@ -356,7 +359,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10. GuardRail, built after providers so cloud-judge can reuse the
 	// default ProviderAdapter.
-	gr, err := buildGuardRail(config.GuardRail, providers, prov)
+	gr, err := buildGuardRail(config.GuardRail, providers, auxProv)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
@@ -388,6 +391,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	} else {
 		metrics = observability.NewNoopMetrics()
 	}
+	auxProv.metrics = metrics
 
 	// 14. Wire the SecurityEvents counter so every Emit increments OTel
 	// metrics tagged by "event".
@@ -412,7 +416,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// with the appropriate type label. Construction is deferred to here
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.
-	v = buildVerifier(config.Verifier, prov, metrics)
+	v = buildVerifier(config.Verifier, auxProv, metrics)
 
 	// Applied before the metrics wrapper so gate denials still land in
 	// stirrup.permission.decisions under the policy label (true
