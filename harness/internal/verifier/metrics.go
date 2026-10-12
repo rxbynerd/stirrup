@@ -12,7 +12,7 @@ import (
 )
 
 // metricRecorder wraps a Verifier and records stirrup.verifier.runs and
-// stirrup.verifier.duration_ms on every Verify() call. typeStr is supplied
+// stirrup.verifier.duration on every Verify() call. typeStr is supplied
 // at construction time because the wrapped verifier itself doesn't carry one.
 type metricRecorder struct {
 	inner   Verifier

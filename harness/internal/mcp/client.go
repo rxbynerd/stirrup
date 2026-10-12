@@ -193,7 +193,7 @@ type Client struct {
 	nextID     atomic.Int64
 
 	// Metrics is optional; when set, records stirrup.mcp.calls and
-	// stirrup.mcp.duration_ms per invocation. Nil is safe everywhere.
+	// stirrup.mcp.duration per invocation. Nil is safe everywhere.
 	Metrics *observability.Metrics
 
 	// Logger is optional; when set, emits structured warnings for
@@ -444,7 +444,7 @@ func (c *Client) listTools(ctx context.Context, sess *serverSession) ([]mcpTool,
 // callTool sends a tools/call JSON-RPC request and returns the canonical
 // text result plus a structured envelope (the marshalled mcpStructuredResult,
 // or nil for text-only). It records stirrup.mcp.calls and
-// stirrup.mcp.duration_ms when Metrics is set; serverName (not sess.uri) is
+// stirrup.mcp.duration when Metrics is set; serverName (not sess.uri) is
 // the metric attribute, so dashboards group by operator intent.
 //
 // The envelope is NOT scrubbed here — that happens at the trace-emission

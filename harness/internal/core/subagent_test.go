@@ -804,7 +804,7 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 // TestSpawnSubAgent_RecordsSubagentMetrics asserts that one
 // SpawnSubAgent invocation records exactly one stirrup.subagent.spawns
 // observation (with parent.mode + success), at least one
-// stirrup.subagent.duration_ms observation, and the input/output
+// stirrup.subagent.duration observation, and the input/output
 // token counters are populated from the child's RunTrace.
 func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
@@ -853,9 +853,9 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 		t.Errorf("success = %q, want true", spawns.attrs["success"])
 	}
 
-	// stirrup.subagent.duration_ms: at least one observation.
-	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration_ms") {
-		t.Error("stirrup.subagent.duration_ms recorded no observations")
+	// stirrup.subagent.duration: at least one observation.
+	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration") {
+		t.Error("stirrup.subagent.duration recorded no observations")
 	}
 
 	// Token counters fire (their value can be zero on a mock provider

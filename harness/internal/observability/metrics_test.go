@@ -190,18 +190,18 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	assertFloat64HistogramSum(t, histograms, "stirrup.harness.run_duration", 1500.0)
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.turn_duration", 1)
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.tool_call_duration", 1)
-	assertFloat64HistogramCount(t, histograms, "stirrup.guard.duration_ms", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.guard.duration_ms", 42.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.guard.duration", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.guard.duration", 42.0)
 
 	// Component-level histograms.
-	assertFloat64HistogramCount(t, histograms, "stirrup.subagent.duration_ms", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.subagent.duration_ms", 1200.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.mcp.duration_ms", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.mcp.duration_ms", 75.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.edit.duration_ms", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.edit.duration_ms", 18.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.verifier.duration_ms", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.verifier.duration_ms", 350.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.subagent.duration", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.subagent.duration", 1200.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.mcp.duration", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.mcp.duration", 75.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.edit.duration", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.edit.duration", 18.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.verifier.duration", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.verifier.duration", 350.0)
 }
 
 // TestMetricsRecording_Resource pins that the resource attached to the

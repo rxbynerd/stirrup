@@ -198,7 +198,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}, nil
 }
 
-// recordSpawnMetrics emits stirrup.subagent.{spawns,duration_ms,
+// recordSpawnMetrics emits stirrup.subagent.{spawns,duration,
 // tokens.input,tokens.output,tokens.cache_read,tokens.cache_write} for
 // one sub-agent run; the cache counters only when non-zero. parent.mode is
 // the *parent loop's* mode (not the sub-agent's), so dashboards can

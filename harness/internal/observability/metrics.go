@@ -573,7 +573,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration_ms",
+	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of guard.Check calls"),
 	)
@@ -581,7 +581,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration_ms",
+	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of Rule-of-Two sensitive-content scans"),
 	)
@@ -620,7 +620,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	// bucket configuration is deferred until call-site wiring reveals
 	// the actual latency distribution.
 
-	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration_ms",
+	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Sub-agent run duration"),
 	)
@@ -628,7 +628,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.MCPDuration, err = meter.Float64Histogram("stirrup.mcp.duration_ms",
+	m.MCPDuration, err = meter.Float64Histogram("stirrup.mcp.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("MCP call duration"),
 	)
@@ -636,7 +636,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.EditDuration, err = meter.Float64Histogram("stirrup.edit.duration_ms",
+	m.EditDuration, err = meter.Float64Histogram("stirrup.edit.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Edit strategy duration"),
 	)
@@ -644,7 +644,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.VerifierDuration, err = meter.Float64Histogram("stirrup.verifier.duration_ms",
+	m.VerifierDuration, err = meter.Float64Histogram("stirrup.verifier.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Verifier run duration"),
 	)

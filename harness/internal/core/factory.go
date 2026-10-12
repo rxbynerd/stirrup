@@ -412,7 +412,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	wireEditMetrics(es, metrics)
 
 	// Build the verifier now that metrics is available so each Verify
-	// call records stirrup.verifier.runs / stirrup.verifier.duration_ms
+	// call records stirrup.verifier.runs / stirrup.verifier.duration
 	// with the appropriate type label. Construction is deferred to here
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.

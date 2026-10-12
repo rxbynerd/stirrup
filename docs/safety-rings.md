@@ -362,7 +362,7 @@ matched content (events run through `ScrubMap`):
 
 Metrics: `stirrup.ruleoftwo.detections` (counter, by `{pattern, tier,
 source}`), `stirrup.ruleoftwo.actions` (counter, by `{action}`), and
-`stirrup.ruleoftwo.scan_duration_ms` (histogram, keeping regex cost
+`stirrup.ruleoftwo.scan_duration` (histogram, keeping regex cost
 observable).
 
 #### False positives are an availability cost, not a safety cost
