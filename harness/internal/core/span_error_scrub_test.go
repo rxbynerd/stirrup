@@ -196,6 +196,36 @@ func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
 	}
 }
 
+func TestLoop_OTelChatSpanCarriesScrubbedProviderFailure(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = &errorProvider{err: errSpanProbe}
+	_, _ = loop.Run(context.Background(), buildTestConfig())
+
+	spans := exporter.GetSpans()
+	chats := spansNamed(spans, "chat claude-sonnet-4-6")
+	if len(chats) != 1 {
+		t.Fatalf("found %d chat spans, want 1", len(chats))
+	}
+	chat := chats[0]
+	if got, _ := spanAttr(chat, "error.type"); got != "provider_request_failed" {
+		t.Errorf("chat error.type = %q, want provider_request_failed", got)
+	}
+	if chat.Status.Code != codes.Error || !strings.Contains(chat.Status.Description, "upstream echoed key") {
+		t.Errorf("chat status = %v %q, want Error with the readable error text", chat.Status.Code, chat.Status.Description)
+	}
+	assertSpanErrorScrubbed(t, spanByName(t, exporter, "provider.stream"), true)
+	for _, s := range spans {
+		if strings.Contains(s.Status.Description, spanProbeKey) {
+			t.Errorf("%s status description leaks the probe: %q", s.Name, s.Status.Description)
+		}
+		for _, attr := range s.Attributes {
+			if strings.Contains(attr.Value.String(), spanProbeKey) {
+				t.Errorf("%s attribute %s leaks the probe", s.Name, attr.Key)
+			}
+		}
+	}
+}
+
 func TestDispatchToolCall_PermissionErrorSpanIsScrubbed(t *testing.T) {
 	loop, exporter := newSpanProbeLoop(&mockProvider{})
 	registry := tool.NewRegistry()

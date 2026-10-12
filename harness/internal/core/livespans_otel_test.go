@@ -149,6 +149,46 @@ func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
 	}
 }
 
+func TestLoop_OTelWindowFillingResponseEndsItsChatSpan(t *testing.T) {
+	loop, prov, _, _ := buildOverflowLoop(t, overflowStepsByKind()["context window stop"])
+	emitter, exporter := newInMemoryOTelEmitter(t)
+	loop.Trace = emitter
+	loop.Tracer = emitter.Tracer()
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 200_000
+
+	result, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Outcome != "success" || len(prov.requests) != 5 {
+		t.Fatalf("prerequisite: outcome %q after %d requests, want success after 5", result.Outcome, len(prov.requests))
+	}
+
+	var turn3 []tracetest.SpanStub
+	for _, s := range spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6") {
+		if got, _ := spanAttr(s, "turn.number"); got == "3" {
+			turn3 = append(turn3, s)
+		}
+	}
+	if len(turn3) != 2 {
+		t.Fatalf("turn 3 has %d chat spans, want 2 (window-filling response and retry)", len(turn3))
+	}
+	filled := turn3[0]
+	if got, _ := spanAttr(filled, "error.type"); got != "context_overflow" {
+		t.Errorf("window-filling request error.type = %q, want context_overflow", got)
+	}
+	if _, ok := spanAttr(filled, "stirrup.span.abandoned"); ok {
+		t.Error("window-filling request span was abandoned rather than ended by the loop")
+	}
+	if got, _ := spanAttr(filled, "gen_ai.usage.output_tokens"); got != "40" {
+		t.Errorf("window-filling request output tokens = %q, want 40", got)
+	}
+	if _, ok := spanAttr(turn3[1], "error.type"); ok {
+		t.Error("successful retry carries error.type")
+	}
+}
+
 func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
 	loop, exporter := otelLoop(t, nil)
 	loop.Permissions = permission.NewAllowAll()
@@ -344,5 +384,24 @@ func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
 				t.Errorf("gen_ai.request.temperature = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoop_OTelProviderRequestPastDeadlineIsTimeout(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	rt, _ := loop.Run(ctx, buildTestConfig())
+	if rt.Outcome != "timeout" {
+		t.Fatalf("prerequisite: outcome = %q, want timeout", rt.Outcome)
+	}
+	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+	if len(chats) != 1 {
+		t.Fatalf("found %d chat spans, want 1", len(chats))
+	}
+	if got, _ := spanAttr(chats[0], "error.type"); got != "timeout" {
+		t.Errorf("chat error.type = %q, want timeout", got)
 	}
 }
