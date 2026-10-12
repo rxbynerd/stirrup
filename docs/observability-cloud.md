@@ -305,7 +305,8 @@ All three carry `gen_ai.operation.name` (always `chat`),
 `gen_ai.response.model`, `server.address` and `server.port`. The
 response model is unknown when the first chunk arrives, so
 `time_to_first_chunk` omits it. The server attributes derive from the
-provider endpoint and are omitted for Bedrock. Run IDs, conversation
+provider endpoint; for Bedrock they name the regional Bedrock Runtime
+host. Run IDs, conversation
 IDs, and tool names are never attached, which keeps the series count
 proportional to the configured providers and models. Sub-agent turns
 and the auxiliary model calls made outside the agentic loop (the

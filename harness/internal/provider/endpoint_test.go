@@ -57,7 +57,10 @@ func TestServerEndpointOf(t *testing.T) {
 		{"gemini regional", regional, "europe-west4-aiplatform.googleapis.com", 443},
 		{"normalizing wrapper delegates", NewNormalizingAdapter(anthropic, "anthropic"), "api.anthropic.com", 443},
 		{"batch wrapper delegates", &BatchAdapter{inner: compat}, "llm.internal", 8080},
-		{"bedrock has no endpoint", &BedrockAdapter{}, "", 0},
+		{"bedrock regional runtime host", &BedrockAdapter{region: "us-east-1"}, "bedrock-runtime.us-east-1.amazonaws.com", 443},
+		{"bedrock china partition", &BedrockAdapter{region: "cn-north-1"}, "bedrock-runtime.cn-north-1.amazonaws.com.cn", 443},
+		{"bedrock without a region", &BedrockAdapter{}, "", 0},
+		{"wrapped bedrock delegates", NewNormalizingAdapter(&BedrockAdapter{region: "eu-west-2"}, "bedrock"), "bedrock-runtime.eu-west-2.amazonaws.com", 443},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

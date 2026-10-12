@@ -1,6 +1,10 @@
 package provider
 
-import "github.com/rxbynerd/stirrup/harness/internal/observability"
+import (
+	"strings"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
+)
 
 // ServerEndpointer is implemented by adapters that send requests to a
 // network endpoint. The host and port label the GenAI client metrics as
@@ -36,6 +40,19 @@ func (o *OpenAIResponsesAdapter) ServerEndpoint() (string, int) {
 // ServerEndpoint returns the host and port of the Vertex AI endpoint.
 func (g *GeminiAdapter) ServerEndpoint() (string, int) {
 	return observability.ServerEndpointFromURL(g.buildURL(""))
+}
+
+// ServerEndpoint returns the AWS SDK's default Bedrock Runtime host for
+// the adapter's resolved region, or an empty host when no region resolved.
+func (b *BedrockAdapter) ServerEndpoint() (string, int) {
+	if b.region == "" {
+		return "", 0
+	}
+	suffix := "amazonaws.com"
+	if strings.HasPrefix(b.region, "cn-") {
+		suffix = "amazonaws.com.cn"
+	}
+	return "bedrock-runtime." + b.region + "." + suffix, 443
 }
 
 // ServerEndpoint returns the endpoint of the wrapped adapter.

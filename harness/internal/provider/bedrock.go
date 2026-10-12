@@ -173,9 +173,11 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		return nil, err
 	}
 
+	inference := inferenceAttrs("bedrock", params.Model, "")
+	inference.ServerAddress, inference.ServerPort = b.ServerEndpoint()
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inferenceAttrs("bedrock", params.Model, ""))
+		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inference)
 		b.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
