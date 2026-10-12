@@ -31,8 +31,8 @@ managed gateway over HTTPS.
 ## Native HTTP: Grafana Cloud example
 
 Grafana Cloud's OTLP gateway is HTTP-only and expects the configured
-URL to end in `/otlp`. The SDK appends `/v1/traces` and `/v1/metrics`
-per signal.
+URL to end in `/otlp`. The SDK appends `/v1/traces`, `/v1/metrics`,
+and `/v1/logs` per signal.
 
 ### RunConfig
 
@@ -422,15 +422,21 @@ resolved map is the only source. This is deliberate: silently merging
 two header maps would let an out-of-band env var override a
 config-file Authorization and surprise the operator.
 
+Structured-log export (`observability.logsExport.type: otlp`,
+`--log-export otlp`) uses the same protocol and headers as traces and
+metrics. Its endpoint is `observability.logsExport.endpoint`, falling
+back to `traceEmitter.endpoint`, so one `http/protobuf` gateway URL
+carries all three signals.
+
 ## URL appending
 
 The SDK appends per-signal segments to the configured base path:
 
-| Configured | Traces POST | Metrics POST |
-|---|---|---|
-| `https://gateway/otlp` | `https://gateway/otlp/v1/traces` | `https://gateway/otlp/v1/metrics` |
-| `https://gateway` | `https://gateway/v1/traces` | `https://gateway/v1/metrics` |
-| `localhost:4318` | `http://localhost:4318/v1/traces` | `http://localhost:4318/v1/metrics` |
+| Configured | Traces POST | Metrics POST | Logs POST |
+|---|---|---|---|
+| `https://gateway/otlp` | `https://gateway/otlp/v1/traces` | `https://gateway/otlp/v1/metrics` | `https://gateway/otlp/v1/logs` |
+| `https://gateway` | `https://gateway/v1/traces` | `https://gateway/v1/metrics` | `https://gateway/v1/logs` |
+| `localhost:4318` | `http://localhost:4318/v1/traces` | `http://localhost:4318/v1/metrics` | `http://localhost:4318/v1/logs` |
 
 Grafana Cloud expects `/otlp` (the gateway routes per-tenant from
 that prefix). Honeycomb expects no extra path; their gateway routes
@@ -583,6 +589,3 @@ trusted boundary, or switch to `http/protobuf`.
 - **HTTP/JSON encoding.** Binary protobuf only.
 - **TLS client certificate / mTLS.** Use Bearer/Basic via the
   `headers` map; mTLS support is a separate request.
-- **OTLP/HTTP logs export.** Structured-log export (`--log-export
-  otlp`, issue #96) ships OTLP/gRPC only; an `otlploghttp` variant
-  following the same protocol-switch shape is a separate request.

@@ -1401,11 +1401,13 @@ type LogsExportConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional. The log-export mode.
 	// Valid values: "" (treated as "none"), "none" (stderr only), "otlp"
-	// (stderr plus an OTLP/gRPC log exporter).
+	// (stderr plus an OTLP log exporter using trace_emitter.protocol and
+	// trace_emitter.headers).
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	// Optional. OTLP/gRPC collector address for the log signal. When empty
-	// the harness falls back to trace_emitter.endpoint, so a single
-	// endpoint covers traces, metrics, and logs.
+	// Optional. OTLP collector address for the log signal, in the same form
+	// as trace_emitter.endpoint for the configured protocol. When empty the
+	// harness falls back to trace_emitter.endpoint, so a single endpoint
+	// covers traces, metrics, and logs.
 	Endpoint      string `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

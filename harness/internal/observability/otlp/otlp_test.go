@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -78,6 +81,21 @@ func exportOneMetric(t *testing.T, exp sdkmetric.Exporter) {
 	defer cancel()
 	if err := mp.Shutdown(ctx); err != nil {
 		t.Fatalf("MeterProvider.Shutdown: %v", err)
+	}
+}
+
+// exportOneLog emits a log record through exp and shuts the provider
+// down, which flushes the batch synchronously.
+func exportOneLog(t *testing.T, exp sdklog.Exporter) {
+	t.Helper()
+	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
+	var rec otellog.Record
+	rec.SetBody(attribute.StringValue("hello"))
+	lp.Logger("otlp-test").Emit(context.Background(), rec)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := lp.Shutdown(ctx); err != nil {
+		t.Fatalf("LoggerProvider.Shutdown: %v", err)
 	}
 }
 
@@ -174,6 +192,23 @@ func TestNewMetricExporter_HTTPRoutesToV1MetricsWithHeaders(t *testing.T) {
 	assertOneRequest(t, c, "/v1/metrics", map[string]string{"Authorization": "Basic dGVzdA=="})
 }
 
+func TestNewLogExporter_HTTPRoutesToV1LogsWithHeaders(t *testing.T) {
+	c := &collector{}
+	srv := httptest.NewServer(c.handler())
+	defer srv.Close()
+
+	exp, err := NewLogExporter(context.Background(), Settings{
+		Protocol: ProtocolHTTPProtobuf,
+		Endpoint: srv.URL,
+		Headers:  map[string]string{"Authorization": "Basic dGVzdA=="},
+	})
+	if err != nil {
+		t.Fatalf("NewLogExporter: %v", err)
+	}
+	exportOneLog(t, exp)
+	assertOneRequest(t, c, "/v1/logs", map[string]string{"Authorization": "Basic dGVzdA=="})
+}
+
 // An https:// gateway URL keeps its path prefix and is reached over TLS:
 // the TLS test server rejects plaintext, so a downgrade fails the export.
 func TestHTTPExporters_HTTPSGatewayKeepsPrefixAndTLS(t *testing.T) {
@@ -199,13 +234,19 @@ func TestHTTPExporters_HTTPSGatewayKeepsPrefixAndTLS(t *testing.T) {
 		t.Fatalf("NewMetricExporter: %v", err)
 	}
 	exportOneMetric(t, metricExp)
+	logExp, err := NewLogExporter(context.Background(), settings)
+	if err != nil {
+		t.Fatalf("NewLogExporter: %v", err)
+	}
+	exportOneLog(t, logExp)
 
 	var paths []string
 	for _, r := range c.snapshot() {
 		paths = append(paths, r.path)
 	}
-	if len(paths) != 2 || paths[0] != "/otlp/v1/traces" || paths[1] != "/otlp/v1/metrics" {
-		t.Errorf("request paths = %v, want [/otlp/v1/traces /otlp/v1/metrics]", paths)
+	want := []string{"/otlp/v1/traces", "/otlp/v1/metrics", "/otlp/v1/logs"}
+	if strings.Join(paths, " ") != strings.Join(want, " ") {
+		t.Errorf("request paths = %v, want %v", paths, want)
 	}
 }
 

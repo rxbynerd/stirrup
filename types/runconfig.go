@@ -249,11 +249,13 @@ type ObservabilityConfig struct {
 // trace and metric exporters use).
 type LogsExportConfig struct {
 	// Type is "none" (default — stderr only) or "otlp" (stderr plus an
-	// OTLP/gRPC log exporter). The empty string is treated as "none" so an
-	// unset field keeps stderr-only behaviour.
+	// OTLP log exporter using TraceEmitter.Protocol and TraceEmitter.Headers).
+	// The empty string is treated as "none" so an unset field keeps
+	// stderr-only behaviour.
 	Type string `json:"type,omitempty"`
 
-	// Endpoint is the OTLP/gRPC collector address for the log signal. When
+	// Endpoint is the OTLP collector address for the log signal, in the
+	// same form as TraceEmitter.Endpoint for the configured protocol. When
 	// empty it defaults to TraceEmitter.Endpoint at factory-build time so a
 	// single --otel-endpoint covers traces, metrics, and logs.
 	Endpoint string `json:"endpoint,omitempty"`
@@ -1800,8 +1802,8 @@ var validTraceEmitterProtocols = map[string]bool{
 // validLogsExportTypes is the closed set of
 // ObservabilityConfig.LogsExport.Type values. The empty string is the unset
 // form and is treated as "none" (stderr only) at factory-build time; it is
-// accepted here so an omitted field validates. "otlp" enables the OTLP/gRPC
-// log exporter as a second sink alongside stderr.
+// accepted here so an omitted field validates. "otlp" enables the OTLP log
+// exporter as a second sink alongside stderr.
 var validLogsExportTypes = map[string]bool{
 	"":     true,
 	"none": true,

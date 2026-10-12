@@ -235,9 +235,9 @@ type harnessCLIOptions struct {
 	ServiceNamespace      string
 
 	// LogExport opts structured logs into OTLP export alongside the
-	// stderr default. "none"/empty keeps stderr-only; "otlp" adds the
-	// OTLP/gRPC log exporter. LogExportEndpoint defers to the trace
-	// emitter's endpoint when empty.
+	// stderr default. "none"/empty keeps stderr-only; "otlp" adds an
+	// OTLP log exporter on the trace emitter's protocol.
+	// LogExportEndpoint defers to the trace emitter's endpoint when empty.
 	LogExport         string
 	LogExportEndpoint string
 

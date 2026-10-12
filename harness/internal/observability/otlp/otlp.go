@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -188,26 +189,42 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 	return otlpmetrichttp.New(ctx, opts...)
 }
 
-// NewLogExporter returns the OTLP log exporter described by s. Only
-// OTLP/gRPC is supported.
+// NewLogExporter returns the OTLP log exporter described by s.
 func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 	grpc, err := s.useGRPC()
 	if err != nil {
 		return nil, err
 	}
-	if !grpc {
-		return nil, errors.New("OTLP log export supports only protocol grpc")
+	if grpc {
+		var opts []otlploggrpc.Option
+		if s.Endpoint != "" {
+			ep := parseEndpoint(s.Endpoint)
+			opts = append(opts, otlploggrpc.WithEndpoint(ep.host))
+			if ep.insecure {
+				opts = append(opts, otlploggrpc.WithInsecure())
+			}
+		}
+		if len(s.Headers) > 0 {
+			opts = append(opts, otlploggrpc.WithHeaders(s.Headers))
+		}
+		return otlploggrpc.New(ctx, opts...)
 	}
-	var opts []otlploggrpc.Option
+	var opts []otlploghttp.Option
 	if s.Endpoint != "" {
 		ep := parseEndpoint(s.Endpoint)
-		opts = append(opts, otlploggrpc.WithEndpoint(ep.host))
+		opts = append(opts,
+			otlploghttp.WithEndpoint(ep.host),
+			otlploghttp.WithURLPath(SignalLogs.urlPath(ep.basePath)),
+		)
 		if ep.insecure {
-			opts = append(opts, otlploggrpc.WithInsecure())
+			opts = append(opts, otlploghttp.WithInsecure())
 		}
 	}
 	if len(s.Headers) > 0 {
-		opts = append(opts, otlploggrpc.WithHeaders(s.Headers))
+		opts = append(opts, otlploghttp.WithHeaders(s.Headers))
 	}
-	return otlploggrpc.New(ctx, opts...)
+	if s.HTTPClient != nil {
+		opts = append(opts, otlploghttp.WithHTTPClient(s.HTTPClient))
+	}
+	return otlploghttp.New(ctx, opts...)
 }

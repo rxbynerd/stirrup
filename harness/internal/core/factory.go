@@ -218,7 +218,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// Optional second log sink alongside stderr, opted into via
 	// observability.logsExport.type == "otlp"; falls back to the trace
-	// emitter's endpoint so one --otel-endpoint covers all three signals.
+	// emitter's endpoint and uses its protocol so one --otel-endpoint
+	// covers all three signals.
 	var logExportHandler slog.Handler
 	if config.Observability.LogsExport.Type == "otlp" {
 		logEndpoint := config.Observability.LogsExport.Endpoint
@@ -226,7 +227,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			logEndpoint = config.TraceEmitter.Endpoint
 		}
 		logExporter, handler, lerr := observability.NewLogExporter(ctx, otlp.Settings{
-			Protocol: otlp.ProtocolGRPC,
+			Protocol: config.TraceEmitter.Protocol,
 			Endpoint: logEndpoint,
 			Headers:  resolvedHeaders,
 		}, resourceOpts)
