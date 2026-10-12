@@ -205,7 +205,7 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 }
 
 // TestMetricsRecording_Resource pins that the resource attached to the
-// MeterProvider carries service.name plus the deployment.environment /
+// MeterProvider carries service.name plus the deployment.environment.name /
 // service.namespace defaults, so metrics don't fall back to
 // "unknown_service:stirrup" or lose their Grafana group-by labels. The
 // explicit-options path is exercised by
@@ -250,8 +250,8 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	if got["service.instance.id"] == "" {
 		t.Errorf("service.instance.id missing from metrics resource")
 	}
-	if got["deployment.environment"] != DefaultEnvironment {
-		t.Errorf("deployment.environment=%q, want %q", got["deployment.environment"], DefaultEnvironment)
+	if got["deployment.environment.name"] != DefaultEnvironment {
+		t.Errorf("deployment.environment.name=%q, want %q", got["deployment.environment.name"], DefaultEnvironment)
 	}
 	if got["service.namespace"] != DefaultServiceNamespace {
 		t.Errorf("service.namespace=%q, want %q", got["service.namespace"], DefaultServiceNamespace)
@@ -292,8 +292,8 @@ func TestMetricsRecording_ResourceWithExplicitOptions(t *testing.T) {
 	for _, kv := range rm.Resource.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["deployment.environment"] != "staging" {
-		t.Errorf("deployment.environment=%q, want staging", got["deployment.environment"])
+	if got["deployment.environment.name"] != "staging" {
+		t.Errorf("deployment.environment.name=%q, want staging", got["deployment.environment.name"])
 	}
 	if got["service.namespace"] != "stirrup-eval" {
 		t.Errorf("service.namespace=%q, want stirrup-eval", got["service.namespace"])

@@ -721,18 +721,18 @@ observation alongside the N per-call failure observations, so
 double-count is intentional and load-bearing for stall alerts.
 
 Resource attributes (`service.name`, `service.namespace`,
-`deployment.environment`, `service.instance.id`, `harness.run.mode`)
-are built once per process by `observability.BuildResource`, which
-merges the OTel SDK's `resource.Default()` with Stirrup's overlay;
-if the merge fails (e.g. a future SDK change), it falls back to a
-schemaless resource carrying just the Stirrup attributes. The
-deployment-environment attribute is emitted under the legacy stable
-key `deployment.environment`, not the newer
-`deployment.environment.name` that semconv v1.40.0 exposes via
-`DeploymentEnvironmentName` — the legacy key is what existing
-Grafana dashboards, Tempo derived metrics, and OTel collector
-processors (e.g. `resourcedetectionprocessor`) look for. Stirrup's
-overlay wins over
+`deployment.environment.name`, `service.instance.id`,
+`harness.run.mode`) are built once per process by
+`observability.BuildResource`, which merges the OTel SDK's
+`resource.Default()` with Stirrup's overlay; if the merge fails
+(e.g. a future SDK change), it falls back to a schemaless resource
+carrying just the Stirrup attributes. The deployment-environment
+attribute is emitted under `deployment.environment.name`, the key
+that is stable in semconv from v1.41.0. The older
+`deployment.environment` key has been deprecated since v1.28.0 and
+is not emitted; dashboards, derived metrics, and collector
+processors that still filter on it must switch to the new key.
+Stirrup's overlay wins over
 `OTEL_RESOURCE_ATTRIBUTES` on key conflicts. High-cardinality fields
 (`run.id`, `run.provider`, `run.model`) stay at span/instrument level
 to avoid metric series cardinality explosion. `tool_failures` keeps

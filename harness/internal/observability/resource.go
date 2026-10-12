@@ -30,7 +30,7 @@ const ServiceName = "stirrup"
 // attribute unset (which makes Grafana's group-by quietly drop rows).
 const DefaultServiceNamespace = "stirrup"
 
-// DefaultEnvironment is the value emitted as deployment.environment when no
+// DefaultEnvironment is the value emitted as deployment.environment.name when no
 // operator-supplied or env-var value is available. "local" matches the
 // convention used by the OTel demo and Grafana sample dashboards, so the
 // out-of-the-box experience hits the right tile rather than a fallback bucket.
@@ -100,7 +100,7 @@ type ResourceOptions struct {
 // process, merging resource.Default() with Stirrup-specific service
 // identity (service.name/version/instance.id and the run-scoped opts);
 // the Stirrup overlay wins on key conflicts. See docs/architecture.md for
-// the merge-failure fallback and the deployment.environment key choice.
+// the merge-failure fallback and the deployment.environment.name key choice.
 func BuildResource(opts ResourceOptions) *resource.Resource {
 	// Env-var fallbacks are sanitised against the same character set the
 	// RunConfig validator enforces, so a hostile OTEL_DEPLOYMENT_ENVIRONMENT
@@ -113,8 +113,7 @@ func BuildResource(opts ResourceOptions) *resource.Resource {
 		semconv.ServiceVersion(version.Version()),
 		semconv.ServiceInstanceID(InstanceID()),
 		semconv.ServiceNamespace(ns),
-		// Legacy stable key; see docs/architecture.md.
-		attribute.String("deployment.environment", env),
+		semconv.DeploymentEnvironmentName(env),
 	}
 	if opts.RunMode != "" {
 		// harness.run.mode has no semconv equivalent. Omitted entirely

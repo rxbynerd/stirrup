@@ -1580,7 +1580,7 @@ var apiKeyHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // observabilityLabelPattern bounds the character set of operator-supplied
-// OTel resource labels (deployment.environment, service.namespace) so an
+// OTel resource labels (deployment.environment.name, service.namespace) so an
 // errant value cannot inject path separators or wire-protocol delimiters
 // into the resource attributes that ride on every span and metric. The
 // 64-char cap matches what backends like Grafana truncate at in default

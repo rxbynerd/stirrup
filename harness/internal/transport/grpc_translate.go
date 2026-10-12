@@ -282,7 +282,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	// Observability is value-typed internally but pointer-typed on the
 	// wire; the nil-guard keeps an absent sub-message from synthesising
 	// a zero-value ObservabilityConfig (which would silently resolve to
-	// deployment.environment=local).
+	// deployment.environment.name=local).
 	if pc.Observability != nil {
 		rc.Observability = types.ObservabilityConfig{
 			Environment:      pc.Observability.GetEnvironment(),

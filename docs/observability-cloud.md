@@ -178,7 +178,7 @@ How Stirrup's signal model surfaces in Langfuse:
   `gen_ai.conversation.id`, which Langfuse maps to its session
   grouping natively.
 - **Environments.** `observability.environment` reaches Langfuse via
-  the `deployment.environment` resource attribute.
+  the `deployment.environment.name` resource attribute.
 
 One rendering caveat: Stirrup serialises message content in the
 semconv parts schema (`{role, parts: [...]}`), which Langfuse ingests
@@ -404,7 +404,7 @@ need:
   Cloud + an internal Tempo, for example) without authoring two
   RunConfigs.
 - **Multi-tenant routing.** Re-write resource attributes
-  (`service.namespace`, `deployment.environment`) per route so a
+  (`service.namespace`, `deployment.environment.name`) per route so a
   shared cluster can serve multiple tenants without each pod knowing
   its own tenant.
 - **Protocol translation for sub-systems.** Some collectors also

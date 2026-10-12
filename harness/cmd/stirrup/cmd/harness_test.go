@@ -495,8 +495,8 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 	for _, kv := range res.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["deployment.environment"] != "production-eu" {
-		t.Errorf("deployment.environment should fall through to env var; got %q want production-eu", got["deployment.environment"])
+	if got["deployment.environment.name"] != "production-eu" {
+		t.Errorf("deployment.environment.name should fall through to env var; got %q want production-eu", got["deployment.environment.name"])
 	}
 }
 

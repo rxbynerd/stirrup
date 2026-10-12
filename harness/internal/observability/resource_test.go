@@ -37,7 +37,7 @@ func TestBuildResource_PreservesExistingIdentity(t *testing.T) {
 
 // TestBuildResource_DefaultsApplied pins that an entirely-empty
 // ResourceOptions still produces a usable resource: service.namespace
-// falls through to "stirrup", deployment.environment to "local", and
+// falls through to "stirrup", deployment.environment.name to "local", and
 // harness.run.mode is omitted entirely (no synthetic value injected).
 func TestBuildResource_DefaultsApplied(t *testing.T) {
 	// t.Setenv("", ...) clears the var for the pure-default path.
@@ -49,8 +49,8 @@ func TestBuildResource_DefaultsApplied(t *testing.T) {
 	if v := got["service.namespace"]; v != DefaultServiceNamespace {
 		t.Errorf("service.namespace: got %q, want %q", v, DefaultServiceNamespace)
 	}
-	if v := got["deployment.environment"]; v != DefaultEnvironment {
-		t.Errorf("deployment.environment: got %q, want %q", v, DefaultEnvironment)
+	if v := got["deployment.environment.name"]; v != DefaultEnvironment {
+		t.Errorf("deployment.environment.name: got %q, want %q", v, DefaultEnvironment)
 	}
 	if _, present := got["harness.run.mode"]; present {
 		t.Errorf("harness.run.mode: should be omitted when RunMode is empty, got %q", got["harness.run.mode"])
@@ -69,8 +69,8 @@ func TestBuildResource_ExplicitWins(t *testing.T) {
 		RunMode:          "execution",
 	}))
 
-	if v := got["deployment.environment"]; v != "explicit-environment" {
-		t.Errorf("deployment.environment: got %q, want explicit-environment", v)
+	if v := got["deployment.environment.name"]; v != "explicit-environment" {
+		t.Errorf("deployment.environment.name: got %q, want explicit-environment", v)
 	}
 	if v := got["service.namespace"]; v != "explicit-namespace" {
 		t.Errorf("service.namespace: got %q, want explicit-namespace", v)
@@ -88,8 +88,8 @@ func TestBuildResource_EnvFallback(t *testing.T) {
 
 	got := attrMap(BuildResource(ResourceOptions{}))
 
-	if v := got["deployment.environment"]; v != "production-eu" {
-		t.Errorf("deployment.environment: got %q, want production-eu", v)
+	if v := got["deployment.environment.name"]; v != "production-eu" {
+		t.Errorf("deployment.environment.name: got %q, want production-eu", v)
 	}
 	if v := got["service.namespace"]; v != "stirrup-eval" {
 		t.Errorf("service.namespace: got %q, want stirrup-eval", v)
@@ -121,8 +121,8 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 
 		got := attrMap(BuildResource(ResourceOptions{}))
 
-		if v := got["deployment.environment"]; v != DefaultEnvironment {
-			t.Errorf("deployment.environment: hostile env value should be rejected, got %q want %q", v, DefaultEnvironment)
+		if v := got["deployment.environment.name"]; v != DefaultEnvironment {
+			t.Errorf("deployment.environment.name: hostile env value should be rejected, got %q want %q", v, DefaultEnvironment)
 		}
 	})
 
@@ -137,8 +137,8 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 
 		got := attrMap(BuildResource(ResourceOptions{}))
 
-		if v := got["deployment.environment"]; v != DefaultEnvironment {
-			t.Errorf("deployment.environment: oversized env value should be rejected, got %q (len %d) want %q", v, len(v), DefaultEnvironment)
+		if v := got["deployment.environment.name"]; v != DefaultEnvironment {
+			t.Errorf("deployment.environment.name: oversized env value should be rejected, got %q (len %d) want %q", v, len(v), DefaultEnvironment)
 		}
 	})
 

@@ -753,7 +753,7 @@ type RunConfig struct {
 	// design.
 	GuardRail *GuardRailConfig `protobuf:"bytes,28,opt,name=guard_rail,json=guardRail,proto3" json:"guard_rail,omitempty"`
 	// Optional. Run-scoped attributes that ride on the OTel Resource
-	// (deployment.environment, service.namespace) so traces and metrics
+	// (deployment.environment.name, service.namespace) so traces and metrics
 	// emitted by this run share a consistent resource identity with
 	// other runs in the same deployment. Only low-cardinality fields
 	// belong here — high-cardinality identifiers (run_id, provider,

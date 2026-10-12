@@ -20,7 +20,7 @@ func newTestOTelEmitter() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 
 // newTestOTelEmitterWithOpts mirrors NewOTelTraceEmitter's TracerProvider
 // construction with a caller-supplied ResourceOptions so resource
-// attributes (deployment.environment, service.namespace, harness.run.mode)
+// attributes (deployment.environment.name, service.namespace, harness.run.mode)
 // can be asserted end-to-end on emitted spans.
 func newTestOTelEmitterWithOpts(opts observability.ResourceOptions) (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	exporter := tracetest.NewInMemoryExporter()
@@ -339,7 +339,7 @@ func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 // TestOTelTraceEmitter_ResourceAttributes covers only the default-value
 // path (service.name etc.); without this test, a regression that stopped
 // threading explicit ResourceOptions through to the TracerProvider would
-// not surface — Grafana queries grouping by deployment.environment would
+// not surface — Grafana queries grouping by deployment.environment.name would
 // quietly return empty rows.
 func TestOTelTraceEmitter_ResourceAttributesOnSpan(t *testing.T) {
 	emitter, exporter := newTestOTelEmitterWithOpts(observability.ResourceOptions{
@@ -372,8 +372,8 @@ func TestOTelTraceEmitter_ResourceAttributesOnSpan(t *testing.T) {
 		for _, kv := range span.Resource.Attributes() {
 			got[string(kv.Key)] = kv.Value.AsString()
 		}
-		if got["deployment.environment"] != "test-env" {
-			t.Errorf("span %q: deployment.environment=%q, want test-env", span.Name, got["deployment.environment"])
+		if got["deployment.environment.name"] != "test-env" {
+			t.Errorf("span %q: deployment.environment.name=%q, want test-env", span.Name, got["deployment.environment.name"])
 		}
 		if got["service.namespace"] != "test-ns" {
 			t.Errorf("span %q: service.namespace=%q, want test-ns", span.Name, got["service.namespace"])
