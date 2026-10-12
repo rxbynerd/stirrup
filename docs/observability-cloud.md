@@ -157,26 +157,27 @@ The per-signal URL appending (below) lands exactly on Langfuse's
 
 How Stirrup's signal model surfaces in Langfuse:
 
-- **Observation typing.** The root `run` span
-  (`gen_ai.operation.name: invoke_agent`) renders as an agent
-  observation, `turn[N]` spans (`chat`) as generations, and
-  `execute_tool <name>` spans as tool observations.
+- **Observation typing.** `invoke_agent` spans (the root and each
+  sub-agent) render as agent observations, `chat {model}` spans as
+  generations, and `execute_tool {name}` spans as tool observations;
+  Langfuse types them from `gen_ai.operation.name`. See
+  [Span tree](#span-tree).
 - **Input/output panels** populate only with
   [`captureContent`](#span-content-capture-opt-in): the root span's
-  run-level I/O feeds the trace-level input/output views, turn spans
-  feed per-generation I/O, and tool spans feed per-tool
-  arguments/results. Without the toggle, traces show structure,
+  run-level I/O feeds the trace-level input/output views, chat spans
+  feed per-generation I/O, sub-agent spans carry the sub-agent's own
+  prompt and answer, and tool spans feed per-tool arguments/results. Without the toggle, traces show structure,
   usage, model, and timing with empty content panels.
-- **Cost.** Generations carry `gen_ai.request.model` per turn;
+- **Cost.** Generations carry `gen_ai.request.model` per request;
   Langfuse prices models it recognises by name and needs a custom
   model definition for others.
-- **Error filtering.** Failed runs, turns, and tool calls carry OTel
-  error status, which Langfuse maps to `level: ERROR` with the status
-  message — filter traces and observations by level to triage
-  failures.
-- **Sessions.** `--session-name` is emitted as
-  `gen_ai.conversation.id`, which Langfuse maps to its session
-  grouping natively.
+- **Error filtering.** Failed runs, requests, and tool calls carry
+  OTel error status and `error.type`, which Langfuse maps to
+  `level: ERROR` with the status message — filter traces and
+  observations by level to triage failures.
+- **Sessions.** `--session-name` is emitted on every span as both
+  `gen_ai.conversation.id` and `session.id`, which Langfuse maps to its
+  session grouping natively.
 - **Environments.** `observability.environment` reaches Langfuse via
   the `deployment.environment.name` resource attribute.
 
@@ -202,12 +203,73 @@ backends. IDs are the 32-hex-char trace ID and 16-hex-char span ID
 forms. Records emitted outside an active span (boot-time,
 context-less logging) carry no correlation fields.
 
-## Token usage on turn spans
+## Span tree
 
-Every `turn[N]` span carries `gen_ai.usage.input_tokens` and
-`gen_ai.usage.output_tokens`. Input includes cached tokens and is the
+A run with one tool turn, a sub-agent spawn, and a final answer
+exports this tree (kind is INTERNAL unless stated):
+
+```
+invoke_agent stirrup                       root span
+├─ context.prepare, guard.pre_turn         per turn
+├─ chat {model}                CLIENT      one per provider request
+│  └─ provider.stream                      one per attempt; retries add more
+├─ execute_tool read_file                  one per tool call
+│  ├─ guard.pre_tool
+│  └─ permission.check
+├─ execute_tool spawn_agent
+│  └─ invoke_agent stirrup.subagent        the sub-agent run
+│     ├─ chat {model}          CLIENT
+│     │  └─ provider.stream
+│     └─ execute_tool {name}
+├─ git.checkpoint
+├─ chat {model}                CLIENT      next turn
+├─ guard.post_turn
+└─ verifier.verify, git.finalise, hooks.postRun, workspace.handoff
+```
+
+The structure follows the GenAI agent conventions: `chat` and
+`execute_tool` spans are siblings under their `invoke_agent` span, and
+a `chat` span covers inference only, so its duration is model latency.
+A request re-sent after a context-overflow compaction has different
+input and gets its own `chat` span; a transient-error retry stays
+inside one, as another `provider.stream` child. `turn.number` on
+`chat` spans, and the `gen_ai.tool.call.id` that links a tool span to
+the `tool_call` part of the preceding request's output, reconstruct
+the turns.
+
+Every span in the run carries:
+
+| Attribute | Value |
+|---|---|
+| `gen_ai.agent.name` | `stirrup`, or `stirrup.subagent` for spans inside a sub-agent run. |
+| `gen_ai.conversation.id`, `session.id` | The `--session-name`, when one is set. |
+
+Span-specific attributes:
+
+| Span | Attributes |
+|---|---|
+| `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
+| `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature`, `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
+| `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool`. |
+
+Failures set error status with a scrubbed description and an
+`error.type` from a bounded vocabulary: the run outcome on
+`invoke_agent` spans; `provider_request_failed`,
+`provider_stream_failed`, `context_overflow`, `cancelled`, or
+`timeout` on `chat` and `provider.stream` spans; the tool failure
+category on `execute_tool` spans. Exception events carry the Go type
+of the underlying error in `exception.type`.
+
+## Token usage on chat spans
+
+Every `chat` span that completed carries `gen_ai.usage.input_tokens`
+and `gen_ai.usage.output_tokens`. A failed request carries them only
+when usage was counted before the failure, and never carries
+`gen_ai.response.finish_reasons`: `error.type` names the failure. With
+content capture on, a failed request still records the input messages
+that were sent, and no output. Input includes cached tokens and is the
 provider's figure where the provider reports one, otherwise the
-harness's estimate. When set, a turn span also carries:
+harness's estimate. When set, a chat span also carries:
 
 | Attribute | Meaning |
 |---|---|
@@ -260,7 +322,7 @@ split by provider and model without the histograms.
 
 ## Span content capture (opt-in)
 
-By default the otel emitter records turn-level counters (tokens,
+By default the otel emitter records per-request counters (tokens,
 duration, stop reason) and per-tool spans but **no prompt or
 completion content** — an LLM-observability backend (Langfuse, SigNoz,
 Datadog LLM Observability, Phoenix) shows correct structure, token
@@ -272,11 +334,12 @@ semantic-convention attributes those backends read natively:
 
 | Attribute | On | Carries |
 |---|---|---|
-| `gen_ai.input.messages` | `turn[N]` | The message history the model saw on the turn (JSON, semconv message schema). |
-| `gen_ai.output.messages` | `turn[N]` | The model's response blocks, including tool calls, with `finish_reason`. |
-| `gen_ai.system_instructions` | `turn[N]` | The run's built system prompt. |
-| `gen_ai.input.messages` / `gen_ai.output.messages` | `run` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
-| `gen_ai.tool.call.arguments` / `.result` | `execute_tool <name>` | Each tool call's input arguments and result text. |
+| `gen_ai.input.messages` | `chat {model}` | The message history the model saw on the request (JSON, semconv message schema). |
+| `gen_ai.output.messages` | `chat {model}` | The model's response blocks, including tool calls, with `finish_reason`. |
+| `gen_ai.system_instructions` | `chat {model}` | The run's built system prompt; top-level requests only. |
+| `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
+| `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup.subagent` | The sub-agent's seed prompt and final assistant message. |
+| `gen_ai.tool.call.arguments` / `.result` | `execute_tool {name}` | Each tool call's input arguments and result text. |
 
 The tool call identifier (`gen_ai.tool.call.id`) is a correlation key
 rather than content and is emitted on every `execute_tool` span
@@ -301,10 +364,11 @@ Safety properties:
   `gcs` emitters, like `protocol` and `headers`.
 
 Operational notes: captured attributes can be large (the full message
-history is serialised each turn), so size-sensitive collectors may
-need span attribute limits configured backend-side. Sub-agent turns
-forwarded into the parent's trace are captured with their own
-content; sub-agent *system prompts* are not captured. The semconv
+history is serialised on every request), so size-sensitive
+collectors may need span attribute limits configured backend-side.
+Sub-agent requests are captured with their own content; sub-agent
+*system prompts* are not captured, so their `chat` spans carry no
+`gen_ai.system_instructions`. The semconv
 GenAI conventions are Development-status — attribute names track the
 pinned semconv version (v1.40.0) and may evolve with it.
 

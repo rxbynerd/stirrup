@@ -657,11 +657,15 @@ back as a user message. Three implementations ship:
   local development and replay.
 - **`otel`** — OpenTelemetry traces via OTLP/gRPC (default) or
   OTLP/HTTP (`http/protobuf`). Default endpoint: `localhost:4317` for
-  gRPC. The trace emitter creates a root `run` span with child spans
-  for turns, tool calls, provider streaming, context compaction,
-  verification, permission checks, and git operations. See
-  [`observability-cloud.md`](observability-cloud.md) for cloud
-  backend setup.
+  gRPC. The trace emitter creates a root `invoke_agent stirrup`
+  span with a `chat {model}` span per provider request (its
+  `provider.stream` attempts beneath it), an `execute_tool {name}`
+  span per tool call, and child spans for context compaction,
+  verification, permission checks, guardrails, and git operations. A
+  sub-agent run is an `invoke_agent stirrup.subagent` span beneath
+  its `execute_tool spawn_agent` span. See
+  [`observability-cloud.md`](observability-cloud.md#span-tree) for the
+  tree and cloud backend setup.
 
 The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution

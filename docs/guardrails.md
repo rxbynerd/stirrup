@@ -552,8 +552,9 @@ Enable guardrails and you get a stable observability surface:
 ### OTel spans
 
 Each guard call produces a span named `guard.<phase>` (e.g.
-`guard.pre_turn`, `guard.pre_tool`, `guard.post_turn`), child of
-the corresponding `turn` / `tool.<name>` / `provider.stream` span.
+`guard.pre_turn`, `guard.pre_tool`, `guard.post_turn`). `pre_turn` and
+`post_turn` spans are children of the run's `invoke_agent` span;
+`pre_tool` spans are children of the call's `execute_tool` span.
 Standard attributes: `guard.id`, `guard.criterion`, `guard.score`,
 `guard.verdict`, `guard.latency_ms`.
 
