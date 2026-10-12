@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -166,6 +167,23 @@ type providerAttempt struct {
 	err     error
 	// errText is err scrubbed of secrets, safe for the run's failure text.
 	errText string
+	// errorType is the bounded error.type for a failed request.
+	errorType string
+	// summary is the "error" turn summary a failed request recorded; nil
+	// when none was recorded.
+	summary *types.TurnTrace
+}
+
+// requestErrorType classifies a failed request for error.type: a run
+// cancellation or deadline takes precedence over the failure category.
+func requestErrorType(ctx context.Context, category observability.ToolFailureCategory) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "timeout"
+	case ctx.Err() != nil:
+		return "cancelled"
+	}
+	return category.String()
 }
 
 // inferenceAttrs identifies the model inference a turn's provider request
@@ -200,6 +218,8 @@ func (a providerAttempt) overflowed() bool {
 // and retryOverflow says the caller retries it; a successful one is
 // returned for the caller to record. requestTokens is the request's
 // estimate. Usage reported by failed attempts is charged to tokenTracker.
+// ctx carries the request's chat span, which each attempt's
+// provider.stream span nests under.
 func (l *AgenticLoop) requestProvider(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -225,7 +245,7 @@ func (l *AgenticLoop) requestProvider(
 	for attemptNo := 1; ; attemptNo++ {
 		attemptStart := time.Now()
 		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
-		spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
+		spanCtx, providerSpan := l.Tracer.Start(ctx, "provider.stream",
 			oteltrace.WithAttributes(
 				attribute.String("provider.type", selection.Provider),
 				attribute.String("provider.model", selection.Model),
@@ -258,10 +278,16 @@ func (l *AgenticLoop) requestProvider(
 			l.Metrics.RecordInferenceTokens(ctx, inference, sr.Usage.Input, sr.Usage.Output)
 		}
 		scrubbedErr := recordSpanError(providerSpan, err)
+		errorType := requestErrorType(ctx, category)
+		overflow := ctx.Err() == nil && types.IsContextOverflow(err)
+		if overflow {
+			errorType = "context_overflow"
+		}
+		providerSpan.SetAttributes(attribute.String("error.type", errorType))
 		providerSpan.End()
-		if retryOverflow && ctx.Err() == nil && types.IsContextOverflow(err) {
+		if retryOverflow && overflow {
 			tokenTracker.RecordTurn(discarded)
-			return providerAttempt{tokens: discarded, duration: time.Since(start), retries: retrier.retries, err: err}
+			return providerAttempt{tokens: discarded, duration: time.Since(start), retries: retrier.retries, err: err, errText: scrubbedErr, errorType: errorType}
 		}
 		l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 		// Co-emit into tool-failure metrics only when tools were
@@ -332,7 +358,7 @@ func (l *AgenticLoop) requestProvider(
 		tokenTracker.RecordTurn(discarded)
 		duration := time.Since(start)
 		turnMode, turnBatchID := turnModeInfo(selectedProvider)
-		l.Trace.RecordTurn(types.TurnTrace{
+		summary := types.TurnTrace{
 			Turn:       turn,
 			Tokens:     discarded,
 			StopReason: "error",
@@ -341,8 +367,23 @@ func (l *AgenticLoop) requestProvider(
 			BatchID:    turnBatchID,
 			Model:      selection.Model,
 			Retries:    retrier.retries,
-		})
-		return providerAttempt{tokens: discarded, duration: duration, retries: retrier.retries, err: err, errText: scrubbedErr}
+		}
+		l.Trace.RecordTurn(summary)
+		// The run's cancellation can land after the attempt failed for
+		// another reason; it still decides the request's error type.
+		errorType = requestErrorType(ctx, category)
+		if overflow {
+			errorType = "context_overflow"
+		}
+		return providerAttempt{
+			tokens:    discarded,
+			duration:  duration,
+			retries:   retrier.retries,
+			err:       err,
+			errText:   scrubbedErr,
+			errorType: errorType,
+			summary:   &summary,
+		}
 	}
 }
 
@@ -400,8 +441,9 @@ func (l *AgenticLoop) completeAttempt(
 }
 
 // recordAttemptUsage charges a completed request's tokens to the run and
-// records its turn summary, metrics and log line. toolCalls is the number
-// of tool calls the turn dispatches; a discarded response passes zero.
+// records its turn summary, metrics and log line, and returns the
+// summary. toolCalls is the number of tool calls the turn dispatches; a
+// discarded response passes zero.
 func (l *AgenticLoop) recordAttemptUsage(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -411,12 +453,12 @@ func (l *AgenticLoop) recordAttemptUsage(
 	selectedProvider provider.ProviderAdapter,
 	attempt providerAttempt,
 	toolCalls int,
-) {
+) types.TurnTrace {
 	sr, tokens := attempt.result, attempt.tokens
 	tokenTracker.RecordTurn(tokens)
 
 	turnMode, turnBatchID := turnModeInfo(selectedProvider)
-	l.Trace.RecordTurn(types.TurnTrace{
+	summary := types.TurnTrace{
 		Turn:          turn,
 		Tokens:        tokens,
 		InputReported: attempt.inputReported,
@@ -429,7 +471,8 @@ func (l *AgenticLoop) recordAttemptUsage(
 		ResponseModel: sr.ResponseModel,
 		Retries:       attempt.retries,
 		ToolCalls:     toolCalls,
-	})
+	}
+	l.Trace.RecordTurn(summary)
 
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 	l.Metrics.Turns.Add(ctx, 1, modeAttr)
@@ -453,4 +496,5 @@ func (l *AgenticLoop) recordAttemptUsage(
 		"tokens.cache_write", tokens.CacheWrite,
 		"tokens.reasoning", tokens.Reasoning,
 		"stopReason", sr.StopReason)
+	return summary
 }

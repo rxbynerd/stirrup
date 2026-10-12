@@ -109,9 +109,10 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatal("expected OTel spans to be exported, got none")
 	}
 
-	// 2 turn spans + 2 tool spans + 1 root span.
-	if len(spans) != 5 {
-		t.Errorf("expected 5 spans, got %d", len(spans))
+	// RecordTurn feeds the aggregate only; model requests become spans
+	// through StartChatSpan. 2 tool spans + 1 root span.
+	if len(spans) != 3 {
+		t.Errorf("expected 3 spans, got %d", len(spans))
 		for _, s := range spans {
 			t.Logf("  span: %s", s.Name)
 		}
@@ -123,12 +124,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	}
 	if spanNames["invoke_agent stirrup"] != 1 {
 		t.Errorf("expected 1 root span, got %d", spanNames["invoke_agent stirrup"])
-	}
-	if spanNames["turn[1]"] != 1 {
-		t.Errorf("expected 1 'turn[1]' span, got %d", spanNames["turn[1]"])
-	}
-	if spanNames["turn[2]"] != 1 {
-		t.Errorf("expected 1 'turn[2]' span, got %d", spanNames["turn[2]"])
 	}
 	if spanNames["execute_tool read_file"] != 1 {
 		t.Errorf("expected 1 'execute_tool read_file' span, got %d", spanNames["execute_tool read_file"])
@@ -155,23 +150,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	// spans.
 	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
-
-	// Per-turn token usage and finish reason surface under the GenAI
-	// namespace.
-	var turn1 tracetest.SpanStub
-	for _, s := range spans {
-		if s.Name == "turn[1]" {
-			turn1 = s
-			break
-		}
-	}
-	if turn1.Name == "" {
-		t.Fatal("no turn[1] span found")
-	}
-	assertIntAttribute(t, turn1, genAIUsageInputTokens, 100)
-	assertIntAttribute(t, turn1, genAIUsageOutputTokens, 50)
-	assertStringSliceAttribute(t, turn1, genAIFinishReasonsKey, []string{"tool_use"})
-	assertAttribute(t, turn1, genAIOperationNameKey, "chat")
 }
 
 func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
@@ -402,13 +380,15 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		ModelRouter: types.ModelRouterConfig{Model: "claude-sonnet-4-6"},
 	}
 	emitter.Start("run-genai-1", config)
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 42, Output: 17},
-		ToolCalls:  1,
-		StopReason: "end_turn",
-		DurationMs: 5,
-		Model:      "claude-opus-4-8",
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Turn: 1, Model: "claude-opus-4-8"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{
+			Turn:       1,
+			Tokens:     types.TokenUsage{Input: 42, Output: 17},
+			ToolCalls:  1,
+			StopReason: "end_turn",
+			DurationMs: 5,
+			Model:      "claude-opus-4-8",
+		},
 	})
 	emitter.RecordToolCall(types.ToolCallTrace{
 		Name:       "read_file",
@@ -429,14 +409,14 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		switch s.Name {
 		case "invoke_agent stirrup":
 			root = s
-		case "turn[1]":
+		case "chat claude-opus-4-8":
 			turn = s
 		case "execute_tool read_file":
 			tool = s
 		}
 	}
 	if root.Name == "" || turn.Name == "" || tool.Name == "" {
-		t.Fatalf("expected run, turn[1], execute_tool read_file spans; got %v", spans)
+		t.Fatalf("expected invoke_agent, chat and execute_tool read_file spans; got %v", spans)
 	}
 
 	// Root span: operation name, model, provider, conversation.
@@ -453,9 +433,9 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		}
 	}
 
-	// Turn span: usage tokens, finish reasons, operation name, and the
-	// per-turn model/provider that backends type and price generations
-	// from. The turn-level model (the router's selection) wins over the
+	// Chat span: usage tokens, finish reasons, operation name, and the
+	// per-request model/provider that backends type and price generations
+	// from. The request's model (the router's selection) wins over the
 	// run-level configured model.
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 42)
 	assertIntAttribute(t, turn, genAIUsageOutputTokens, 17)
@@ -467,73 +447,6 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	// Tool span: tool name and operation name.
 	assertAttribute(t, tool, genAIToolNameKey, "read_file")
 	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
-}
-
-// TestOTelTraceEmitter_TurnUsageBreakdownAttributes pins that the cache,
-// reasoning, and input-reported attributes appear on a turn span only
-// when set, so a turn with no breakdown keeps the base attribute set.
-func TestOTelTraceEmitter_TurnUsageBreakdownAttributes(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-	emitter.Start("run-usage-1", &types.RunConfig{RunID: "run-usage-1", Provider: types.ProviderConfig{Type: "anthropic"}})
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:          1,
-		Tokens:        types.TokenUsage{Input: 2476, Output: 941, CacheRead: 2162, CacheWrite: 310, Reasoning: 468},
-		InputReported: true,
-		StopReason:    "tool_use",
-	})
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:       2,
-		Tokens:     types.TokenUsage{Input: 900, Output: 12},
-		StopReason: "end_turn",
-	})
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:          3,
-		Tokens:        types.TokenUsage{Input: 5000, Output: 30, CacheRead: 4096},
-		InputReported: true,
-		StopReason:    "tool_use",
-	})
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:          4,
-		Tokens:        types.TokenUsage{Input: 700, Output: 5},
-		InputReported: true,
-		StopReason:    "end_turn",
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	spans := exporter.GetSpans()
-
-	reported := findSpanByName(t, spans, "turn[1]")
-	assertIntAttribute(t, reported, genAIUsageInputTokens, 2476)
-	assertIntAttribute(t, reported, genAIUsageCacheReadInputTokens, 2162)
-	assertIntAttribute(t, reported, genAIUsageCacheCreationInputTokens, 310)
-	assertIntAttribute(t, reported, genAIUsageReasoningOutputTokens, 468)
-	var sawReported bool
-	for _, attr := range reported.Attributes {
-		if string(attr.Key) == tokensInputReportedKey {
-			sawReported = attr.Value.AsBool()
-		}
-	}
-	if !sawReported {
-		t.Errorf("turn[1]: %s = false or absent, want true", tokensInputReportedKey)
-	}
-
-	estimated := findSpanByName(t, spans, "turn[2]")
-	for _, attr := range estimated.Attributes {
-		switch string(attr.Key) {
-		case tokensInputReportedKey, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens:
-			t.Errorf("turn[2]: unexpected attribute %s=%v on a turn with no breakdown", attr.Key, attr.Value.String())
-		}
-	}
-
-	cacheReadOnly := findSpanByName(t, spans, "turn[3]")
-	assertIntAttribute(t, cacheReadOnly, genAIUsageCacheReadInputTokens, 4096)
-	assertBoolAttribute(t, cacheReadOnly, tokensInputReportedKey, true)
-	assertAttributesAbsent(t, cacheReadOnly, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
-
-	reportedNoCache := findSpanByName(t, spans, "turn[4]")
-	assertBoolAttribute(t, reportedNoCache, tokensInputReportedKey, true)
-	assertAttributesAbsent(t, reportedNoCache, genAIUsageCacheReadInputTokens, genAIUsageCacheCreationInputTokens, genAIUsageReasoningOutputTokens)
 }
 
 func assertBoolAttribute(t *testing.T, span tracetest.SpanStub, key string, want bool) {
@@ -572,75 +485,6 @@ func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
 	} {
 		if got != string(want) {
 			t.Errorf("attribute key %q, want semconv %q", got, want)
-		}
-	}
-}
-
-// TestOTelTraceEmitter_TurnModelFallback pins the gen_ai.request.model
-// resolution order on turn spans: the router's per-turn selection
-// (TurnTrace.Model) wins, the run-level configured model fills in for
-// legacy summaries without one, and the attribute is absent when
-// neither is known — empty attributes pollute downstream filtering.
-func TestOTelTraceEmitter_TurnModelFallback(t *testing.T) {
-	timeout := 60
-	config := &types.RunConfig{
-		RunID:       "run-model-fallback",
-		Mode:        "execution",
-		MaxTurns:    5,
-		Timeout:     &timeout,
-		Provider:    types.ProviderConfig{Type: "anthropic"},
-		ModelRouter: types.ModelRouterConfig{Model: "config-model"},
-	}
-
-	t.Run("turn model wins over config", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-model-fallback", config)
-		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1, Model: "turn-model"})
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		assertAttribute(t, findSpanByName(t, exporter.GetSpans(), "turn[1]"), genAIRequestModelKey, "turn-model")
-	})
-
-	t.Run("config model fills in", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-model-fallback", config)
-		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1})
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		assertAttribute(t, findSpanByName(t, exporter.GetSpans(), "turn[1]"), genAIRequestModelKey, "config-model")
-	})
-
-	t.Run("absent when neither known", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-no-model", nil)
-		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1})
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		span := findSpanByName(t, exporter.GetSpans(), "turn[1]")
-		for _, attr := range span.Attributes {
-			if string(attr.Key) == genAIRequestModelKey {
-				t.Errorf("%s should be absent when no model is known, found %q", genAIRequestModelKey, attr.Value.AsString())
-			}
-		}
-	})
-}
-
-func TestOTelTraceEmitter_TurnResponseModel(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-	emitter.Start("run-response-model", nil)
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1, Model: "alias", ResponseModel: "alias-20260101"})
-	emitter.RecordTurn(types.TurnTrace{Turn: 2, StopReason: "end_turn", DurationMs: 1, Model: "alias"})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	spans := exporter.GetSpans()
-	assertAttribute(t, findSpanByName(t, spans, "turn[1]"), genAIResponseModelKey, "alias-20260101")
-	for _, attr := range findSpanByName(t, spans, "turn[2]").Attributes {
-		if string(attr.Key) == genAIResponseModelKey {
-			t.Errorf("%s should be absent when the provider reported none, found %q", genAIResponseModelKey, attr.Value.AsString())
 		}
 	}
 }
@@ -716,23 +560,6 @@ func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 			t.Errorf("root status = %v, want Unset", span.Status.Code)
 		}
 		assertAttributesAbsent(t, span, errorTypeKey)
-	})
-
-	t.Run("turn error on error stop reason", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-status-turn", nil)
-		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "error", DurationMs: 1})
-		emitter.RecordTurn(types.TurnTrace{Turn: 2, StopReason: "end_turn", DurationMs: 1})
-		if _, err := emitter.Finish(context.Background(), "error"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		spans := exporter.GetSpans()
-		if got := findSpanByName(t, spans, "turn[1]").Status.Code; got != codes.Error {
-			t.Errorf("error turn status = %v, want Error", got)
-		}
-		if got := findSpanByName(t, spans, "turn[2]").Status.Code; got != codes.Unset {
-			t.Errorf("clean turn status = %v, want Unset", got)
-		}
 	})
 
 	t.Run("tool error with reason and error.type", func(t *testing.T) {
@@ -811,15 +638,3 @@ func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
 	emitter.RecordPromptResolution("claude-fable-5", "frontier")
 }
 
-func TestOTelTraceEmitter_TurnRetriesAttribute(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-	emitter.Start("run-retries-1", &types.RunConfig{RunID: "run-retries-1", Provider: types.ProviderConfig{Type: "anthropic"}})
-	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "tool_use"})
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", Retries: 2})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	spans := exporter.GetSpans()
-	assertAttributesAbsent(t, findSpanByName(t, spans, "turn[0]"), "turn.retries")
-	assertIntAttribute(t, findSpanByName(t, spans, "turn[1]"), "turn.retries", 2)
-}

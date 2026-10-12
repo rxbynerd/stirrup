@@ -124,6 +124,22 @@ func requestParamsOf(p types.StreamParams) *types.RequestParams {
 	}
 }
 
+// modelInputOf records the request sent to the model.
+func modelInputOf(model string, p types.StreamParams) types.ModelInput {
+	return types.ModelInput{
+		Messages: p.Messages,
+		Tools:    p.Tools,
+		Model:    model,
+		Request:  requestParamsOf(p),
+	}
+}
+
+// sentRecord is the record of a request that produced no usable output:
+// the input that was sent and nothing else.
+func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord {
+	return &types.TurnRecord{Turn: turn, ModelInput: modelInputOf(model, p)}
+}
+
 // Run executes the agentic loop:
 //
 //	repeat {
@@ -863,10 +879,14 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		// A request that exceeds the context window gets one forced
 		// compaction and retry per turn; a second overflow ends the run.
+		// Each request has its own chat span, ended on every path below.
 		var attempt providerAttempt
+		var chat trace.ChatSpan
 		rejected := 0
 		for {
-			attempt = l.requestProvider(ctx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
+			var chatCtx context.Context
+			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, params)
+			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
@@ -876,10 +896,13 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
+				summary := l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
+				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
 				}
+			} else {
+				chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})
 			}
 			if rejected > 0 {
 				l.reportContextExhausted(overflowExhaustedError(rejected, requestTokens))
@@ -894,6 +917,7 @@ func (l *AgenticLoop) runInnerLoop(
 			params.Messages = preparedMessages
 		}
 		if attempt.err != nil {
+			chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})
 			// Lets the outer loop classify cancelled/timeout rather
 			// than a generic error.
 			if ctx.Err() != nil {
@@ -910,22 +934,20 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason == "tool_use" {
 			dispatched = len(toolCalls)
 		}
-		l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
+		summary := l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
 		// calls are filled in after planAndDispatch runs below.
 		turnRecord := types.TurnRecord{
-			Turn: turn,
-			ModelInput: types.ModelInput{
-				Messages: preparedMessages,
-				Tools:    toolDefs,
-				Model:    selection.Model,
-				Request:  requestParamsOf(params),
-			},
+			Turn:          turn,
+			ModelInput:    modelInputOf(selection.Model, params),
 			ModelOutput:   sr.Blocks,
 			ResponseModel: sr.ResponseModel,
 		}
+		// The chat span covers inference only; tool spans are its
+		// siblings under the agent span.
+		chat.End(trace.ChatSpanEnd{Summary: &summary, Record: &turnRecord})
 
 		// Carries provider replay state so the next request can
 		// round-trip it.

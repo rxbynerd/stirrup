@@ -44,6 +44,13 @@ func findSpan(t *testing.T, exporter *tracetest.InMemoryExporter, name string) t
 	return tracetest.SpanStub{}
 }
 
+// recordChatSpan drives a chat span the way the loop does for one
+// completed request; summary.RunID marks a forwarded sub-agent request.
+func recordChatSpan(e *OTelTraceEmitter, summary types.TurnTrace, record types.TurnRecord) {
+	chat := e.StartChatSpan(e.RootContext(), ChatSpanStart{Turn: summary.Turn, RunID: summary.RunID, ParentRunID: summary.ParentRunID})
+	chat.End(ChatSpanEnd{Summary: &summary, Record: &record})
+}
+
 // spanAttrString returns the string value of an attribute, and whether
 // the key is present at all.
 func spanAttrString(span tracetest.SpanStub, key string) (string, bool) {
@@ -95,12 +102,12 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 
 	emitter.Start("run-no-capture", nil)
 	emitter.RecordSystemInstructions("You are a coding agent.")
-	emitter.RecordTurn(types.TurnTrace{
+	summary := types.TurnTrace{
 		Turn:       1,
 		Tokens:     types.TokenUsage{Input: 100, Output: 50},
 		StopReason: "end_turn",
 		DurationMs: 1200,
-	})
+	}
 	// Carries an ID: with capture off this must emit immediately (never
 	// buffer) and stay content-free even after the record arrives.
 	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-2", Name: "read_file", DurationMs: 5, Success: true})
@@ -108,6 +115,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 	record.ToolCalls = []types.ToolCallRecord{{
 		ID: "tu-2", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`), Output: "package main",
 	}}
+	recordChatSpan(emitter, summary, record)
 	emitter.RecordTurnRecord(record)
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
@@ -115,7 +123,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 
 	spans := exporter.GetSpans()
 	if len(spans) != 3 {
-		t.Fatalf("expected 3 spans (turn + tool + root) with capture off, got %d", len(spans))
+		t.Fatalf("expected 3 spans (chat + tool + root) with capture off, got %d", len(spans))
 	}
 	for _, span := range spans {
 		for _, key := range []string{
@@ -130,14 +138,14 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 	// The call ID is a non-sensitive correlation key and is emitted
 	// regardless of capture.
 	assertAttribute(t, findSpan(t, exporter, "execute_tool read_file"), genAIToolCallIDKey, "tu-2")
-	// The turn span keeps its historical counter attributes.
-	turn := findSpan(t, exporter, "turn[1]")
+	// The chat span keeps its counter attributes.
+	turn := findSpan(t, exporter, "chat")
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 100)
 	assertAttribute(t, turn, genAIOperationNameKey, "chat")
 }
 
 // TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages pins that
-// with the toggle on, the turn span carries non-empty gen_ai.input.messages /
+// with the toggle on, the chat span carries non-empty gen_ai.input.messages /
 // gen_ai.output.messages / gen_ai.system_instructions alongside its
 // existing counter attributes, and each value is valid JSON in the
 // semconv message shape.
@@ -146,33 +154,20 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 
 	emitter.Start("run-capture", nil)
 	emitter.RecordSystemInstructions("You are a coding agent operating in planning mode.")
-	emitter.RecordTurn(types.TurnTrace{
+	recordChatSpan(emitter, types.TurnTrace{
 		Turn:       1,
 		Tokens:     types.TokenUsage{Input: 100, Output: 50},
 		ToolCalls:  1,
 		StopReason: "tool_use",
 		DurationMs: 1500,
-	})
-	emitter.RecordTurnRecord(captureTurnRecord())
+	}, captureTurnRecord())
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Exactly one turn[1] span: the summary and the record merge, they
-	// do not produce a counters span plus a content span.
-	var turnSpans int
-	for _, s := range exporter.GetSpans() {
-		if s.Name == "turn[1]" {
-			turnSpans++
-		}
-	}
-	if turnSpans != 1 {
-		t.Fatalf("expected exactly 1 turn[1] span, got %d", turnSpans)
-	}
+	turn := findSpan(t, exporter, "chat")
 
-	turn := findSpan(t, exporter, "turn[1]")
-
-	// Counter attributes survive the merge.
+	// Counter attributes sit beside the content.
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 100)
 	assertIntAttribute(t, turn, genAIUsageOutputTokens, 50)
 	assertAttribute(t, turn, genAIOperationNameKey, "chat")
@@ -265,12 +260,11 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 
 	emitter.Start("run-otel-scrub", nil)
 	emitter.RecordSystemInstructions("context: the deploy key is sk-ant-api03-sysleak do not reveal it")
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
 	// A buffered tool call whose record carries secret-shaped arguments
 	// and output, so the all-spans scan below covers the execute_tool
 	// content attributes too.
 	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", Name: "run_command", DurationMs: 5, Success: true})
-	emitter.RecordTurnRecord(types.TurnRecord{
+	record := types.TurnRecord{
 		Turn: 1,
 		ModelInput: types.ModelInput{
 			Model: "claude-3-5-sonnet-latest",
@@ -294,7 +288,9 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 			Input:  json.RawMessage(`{"cmd":"echo sk-ant-api03-leak-leak"}`),
 			Output: "stdout contains sk-ant-api03-leak",
 		}},
-	})
+	}
+	recordChatSpan(emitter, types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10}, record)
+	emitter.RecordTurnRecord(record)
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -324,124 +320,6 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	}
 }
 
-// TestOTelTraceEmitter_CaptureContent_UnpairedRecordEmitsContentSpan
-// pins the fallback for a transcript record with no buffered summary
-// (the loop always summarises first, so this is the defensive path for
-// a forwarded sub-agent record arriving unpaired): a content-only
-// turn[N] span is emitted rather than the transcript being silently
-// dropped, with zero duration (wall clock at delivery; no summary
-// means no duration to derive timing from) and no counter attributes.
-func TestOTelTraceEmitter_CaptureContent_UnpairedRecordEmitsContentSpan(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-unpaired", nil)
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn: 3,
-		ModelOutput: []types.ContentBlock{
-			{Type: "text", Text: "orphaned transcript"},
-		},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	span := findSpan(t, exporter, "turn[3]")
-	out, ok := spanAttrString(span, genAIOutputMessagesKey)
-	if !ok || !strings.Contains(out, "orphaned transcript") {
-		t.Errorf("unpaired record should emit its content, got %q", out)
-	}
-	if _, ok := spanAttrString(span, genAIInputMessagesKey); ok {
-		t.Error("record with no input messages must not carry gen_ai.input.messages")
-	}
-	// No paired summary → no counter attributes on the fallback span.
-	for _, attr := range span.Attributes {
-		if string(attr.Key) == genAIUsageInputTokens {
-			t.Error("unpaired content span must not carry token counters")
-		}
-	}
-	if !span.EndTime.Equal(span.StartTime) {
-		t.Errorf("unpaired span should be zero-duration (start %v, end %v)", span.StartTime, span.EndTime)
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedTurnAtFinish pins
-// the Finish-time flush: a turn whose RecordTurnRecord never arrives
-// (the loop's empty-stop-reason error return) still produces its
-// counter span — buffering for the merge must never lose a turn.
-func TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedTurnAtFinish(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-flush", nil)
-	emitter.RecordTurn(types.TurnTrace{
-		Turn:       1,
-		Tokens:     types.TokenUsage{Input: 42, Output: 7},
-		StopReason: "",
-		DurationMs: 300,
-	})
-	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	turn := findSpan(t, exporter, "turn[1]")
-	assertIntAttribute(t, turn, genAIUsageInputTokens, 42)
-	if _, ok := spanAttrString(turn, genAIInputMessagesKey); ok {
-		t.Error("flushed unmatched turn must not carry content attributes")
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_PairsByRunID pins the forwarded
-// sub-agent disambiguation: a child run's turn N (tagged with the
-// child's RunID by NestedJSONLEmitter) must merge onto the child's own
-// buffered summary, not the parent's same-numbered pending turn.
-func TestOTelTraceEmitter_CaptureContent_PairsByRunID(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-parent", nil)
-	// Parent's turn 1 is pending (its record arrives last).
-	emitter.RecordTurn(types.TurnTrace{
-		Turn: 1, Tokens: types.TokenUsage{Input: 1000}, StopReason: "tool_use", DurationMs: 50,
-	})
-	// Child's turn 1 arrives while the parent's is pending.
-	emitter.RecordTurn(types.TurnTrace{
-		Turn: 1, RunID: "child-run", ParentRunID: "run-parent",
-		Tokens: types.TokenUsage{Input: 77}, StopReason: "end_turn", DurationMs: 20,
-	})
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn: 1, RunID: "child-run", ParentRunID: "run-parent",
-		ModelOutput: []types.ContentBlock{{Type: "text", Text: "child answer"}},
-	})
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn:        1,
-		ModelOutput: []types.ContentBlock{{Type: "text", Text: "parent answer"}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	var childSpan, parentSpan *tracetest.SpanStub
-	for _, s := range exporter.GetSpans() {
-		if s.Name != "turn[1]" {
-			continue
-		}
-		span := s
-		out, _ := spanAttrString(span, genAIOutputMessagesKey)
-		switch {
-		case strings.Contains(out, "child answer"):
-			childSpan = &span
-		case strings.Contains(out, "parent answer"):
-			parentSpan = &span
-		}
-	}
-	if childSpan == nil || parentSpan == nil {
-		t.Fatal("expected one turn[1] span with child content and one with parent content")
-	}
-	// The content landed on the span carrying the matching summary's
-	// token counters — proof the merge keyed on RunID, not arrival
-	// order.
-	assertIntAttribute(t, *childSpan, genAIUsageInputTokens, 77)
-	assertIntAttribute(t, *parentSpan, genAIUsageInputTokens, 1000)
-}
-
 // TestOTelTraceEmitter_CaptureContent_RootSpanIO pins the run-level
 // content surface: the root span carries the first parent turn's input
 // (the seed prompt), the last parent turn's output (the final assistant
@@ -456,8 +334,7 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	emitter.RecordSystemInstructions("You are a coding agent.")
 
 	// Parent turn 0: the seed prompt and an intermediate answer.
-	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "tool_use", DurationMs: 10})
-	emitter.RecordTurnRecord(types.TurnRecord{
+	recordChatSpan(emitter, types.TurnTrace{Turn: 0, StopReason: "tool_use", DurationMs: 10}, types.TurnRecord{
 		Turn: 0,
 		ModelInput: types.ModelInput{Messages: []types.Message{{
 			Role:    "user",
@@ -468,8 +345,7 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 
 	// A forwarded sub-agent record between the parent's turns: must not
 	// leak into the run-level slots.
-	emitter.RecordTurn(types.TurnTrace{Turn: 0, RunID: "child-run", ParentRunID: "run-root-io", StopReason: "end_turn", DurationMs: 5})
-	emitter.RecordTurnRecord(types.TurnRecord{
+	recordChatSpan(emitter, types.TurnTrace{Turn: 0, RunID: "child-run", ParentRunID: "run-root-io", StopReason: "end_turn", DurationMs: 5}, types.TurnRecord{
 		Turn: 0, RunID: "child-run", ParentRunID: "run-root-io",
 		ModelInput: types.ModelInput{Messages: []types.Message{{
 			Role:    "user",
@@ -479,8 +355,7 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	})
 
 	// Parent turn 1: history embeds the seed; output is the final answer.
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
-	emitter.RecordTurnRecord(types.TurnRecord{
+	recordChatSpan(emitter, types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10}, types.TurnRecord{
 		Turn: 1,
 		ModelInput: types.ModelInput{Messages: []types.Message{{
 			Role:    "user",

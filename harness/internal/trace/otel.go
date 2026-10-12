@@ -118,17 +118,10 @@ type OTelTraceEmitter struct {
 	// the loop left open.
 	open map[liveHandle]struct{}
 
-	// pendingTurns buffers turn summaries between RecordTurn and the
-	// matching RecordTurnRecord while capture is on, so one turn[N] span
-	// carries counters and content together. Keyed by (RunID, Turn) so a
-	// sub-agent's turn N never merges onto the parent's. Unmatched
-	// entries are flushed as plain spans at Finish. Nil when capture is
-	// off.
-	pendingTurns map[pendingTurnKey]pendingTurn
-
-	// pendingToolCalls is the tool-call analogue of pendingTurns, keyed
-	// by (RunID, tool_use ID). Calls without an ID are un-keyable and
-	// emit immediately instead of buffering.
+	// pendingToolCalls buffers tool call summaries between RecordToolCall
+	// and the enclosing turn's RecordTurnRecord while capture is on, keyed
+	// by (RunID, tool_use ID). Calls without an ID are un-keyable and emit
+	// immediately instead of buffering.
 	pendingToolCalls map[pendingToolKey]pendingToolCall
 }
 
@@ -150,22 +143,6 @@ var (
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 )
-
-// pendingTurnKey pairs a buffered turn summary with its later
-// transcript record. See OTelTraceEmitter.pendingTurns.
-type pendingTurnKey struct {
-	runID string
-	turn  int
-}
-
-// pendingTurn is a turn summary awaiting its transcript record, with
-// the span timing frozen at RecordTurn time so the merged span carries
-// the same timestamps an unmerged span would have.
-type pendingTurn struct {
-	trace     types.TurnTrace
-	spanStart time.Time
-	spanEnd   time.Time
-}
 
 // pendingToolKey pairs a buffered tool call summary with its later
 // transcript entry. See OTelTraceEmitter.pendingToolCalls.
@@ -357,7 +334,6 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
-	e.pendingTurns = nil
 	e.pendingToolCalls = nil
 
 	conversationID := ""
@@ -379,106 +355,12 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.rootCtx = ctx
 }
 
-// RecordTurn creates a child span under the root representing a single
-// agentic loop turn. The span duration is derived from DurationMs.
-//
-// When content capture is on, the span is not emitted here: the summary
-// is buffered (with its timestamps frozen) until the matching
-// RecordTurnRecord arrives, so one turn[N] span carries the counters
-// and the GenAI content attributes together. Unmatched entries are
-// flushed as plain counter spans at Finish.
+// RecordTurn appends a turn summary to the run aggregate. Model requests
+// are recorded as spans through StartChatSpan.
 func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
 	e.turns = append(e.turns, turn)
-
-	if e.rootCtx == nil {
-		return
-	}
-
-	spanEnd := time.Now()
-	spanStart := spanEnd.Add(-time.Duration(turn.DurationMs) * time.Millisecond)
-
-	if e.captureContent {
-		key := pendingTurnKey{runID: turn.RunID, turn: turn.Turn}
-		if prev, ok := e.pendingTurns[key]; ok {
-			// A second summary for the same key without an intervening
-			// record (the loop never does this; defensive against a
-			// future re-entry path). Flush the stale entry as a plain
-			// span so it is not silently dropped.
-			e.emitTurnSpanLocked(prev.trace, prev.spanStart, prev.spanEnd, nil)
-		}
-		if e.pendingTurns == nil {
-			e.pendingTurns = map[pendingTurnKey]pendingTurn{}
-		}
-		e.pendingTurns[key] = pendingTurn{trace: turn, spanStart: spanStart, spanEnd: spanEnd}
-		return
-	}
-
-	e.emitTurnSpanLocked(turn, spanStart, spanEnd, nil)
-}
-
-// emitTurnSpanLocked creates and ends the turn[N] child span. content
-// is nil on the no-capture path (and for flushed unmatched summaries),
-// keeping the attribute set byte-identical to the pre-capture emitter;
-// non-nil content appends the GenAI message attributes after the
-// counter attributes. Must be called with e.mu held.
-//
-// TODO(#89): turn[N] is parented off e.rootCtx (context.Background()),
-// so child sub-agent turn[N] spans don't nest under the parent's
-// tool.spawn_agent span. Fix: inject a parentCtx for child emitters.
-func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, spanEnd time.Time, content *turnContent) {
-	attrs := []attribute.KeyValue{
-		attribute.Int("turn.number", turn.Turn),
-		attribute.Int(genAIUsageInputTokens, turn.Tokens.Input),
-		attribute.Int(genAIUsageOutputTokens, turn.Tokens.Output),
-		attribute.Int("turn.tool_calls", turn.ToolCalls),
-		// gen_ai.response.finish_reasons is defined as a string
-		// array in the GenAI semconv; we wrap our single scalar
-		// StopReason in a one-element slice rather than emitting
-		// a scalar that downstream consumers would have to
-		// special-case.
-		attribute.StringSlice(genAIFinishReasonsKey, []string{turn.StopReason}),
-		attribute.Int64("turn.duration_ms", turn.DurationMs),
-		// Per GenAI semconv, a turn is a chat completion.
-		attribute.String(genAIOperationNameKey, "chat"),
-	}
-	// gen_ai.request.model is Required per semconv; prefer the per-turn
-	// selection, falling back to the run-level model for legacy callers.
-	model := turn.Model
-	if model == "" && e.config != nil {
-		model = e.config.ModelRouter.Model
-	}
-	if model != "" {
-		attrs = append(attrs, attribute.String(genAIRequestModelKey, model))
-	}
-	if turn.ResponseModel != "" {
-		attrs = append(attrs, attribute.String(genAIResponseModelKey, turn.ResponseModel))
-	}
-	if e.config != nil {
-		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(e.config.Provider.Type)))
-	}
-	attrs = append(attrs, turnUsageBreakdownAttributes(turn)...)
-	if turn.Retries > 0 {
-		attrs = append(attrs, attribute.Int("turn.retries", turn.Retries))
-	}
-	if content != nil {
-		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
-	}
-
-	_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", turn.Turn),
-		oteltrace.WithTimestamp(spanStart),
-		oteltrace.WithAttributes(attrs...),
-	)
-	// The loop's error paths (provider resolution, stream open,
-	// mid-stream failure) all record the turn with this sentinel stop
-	// reason and never produce a TurnRecord, so this is the single
-	// choke point that marks failed turns for backend level filtering.
-	if turn.StopReason == "error" {
-		span.SetStatus(codes.Error, "error")
-	}
-	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
 // agentSpanAttributes returns the creation-time attributes shared by the
@@ -521,20 +403,10 @@ func turnUsageBreakdownAttributes(turn types.TurnTrace) []attribute.KeyValue {
 	return attrs
 }
 
-// RecordTurnRecord attaches the turn's transcript to its span when
-// content capture is opted into; a no-op otherwise, since the GenAI
-// semconv marks message content Opt-In.
-//
-// The record passes through the same scrubTurnRecord pass the JSONL
-// emitter applies before any span attribute is built.
-//
-// The record pairs with the summary buffered by RecordTurn under
-// (RunID, Turn); an unpaired record (a forwarded sub-agent record
-// arriving out of order) emits a content-only turn[N] span instead of
-// being dropped.
+// RecordTurnRecord attaches each captured tool call's arguments and
+// result to its execute_tool span; a no-op without content capture. The
+// request's own content reaches its chat span through ChatSpan.End.
 func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
-	// captureContent is immutable after construction: the off-path
-	// reads it without the mutex and preserves the historical no-op.
 	if !e.captureContent {
 		return
 	}
@@ -545,40 +417,7 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 	if e.rootCtx == nil {
 		return
 	}
-
-	scrubbed := scrubTurnRecord(turn, e.redactionDisabled)
-	content := &turnContent{
-		inputMessages: genAIInputMessagesJSON(scrubbed.ModelInput.Messages),
-	}
-
-	key := pendingTurnKey{runID: scrubbed.RunID, turn: scrubbed.Turn}
-	if pending, ok := e.pendingTurns[key]; ok {
-		delete(e.pendingTurns, key)
-		// finish_reason comes from the paired summary so it matches the
-		// gen_ai.response.finish_reasons attribute on the same span.
-		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, pending.trace.StopReason)
-		e.retainRunContentLocked(scrubbed.RunID, content)
-		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, content)
-	} else {
-		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, "")
-		e.retainRunContentLocked(scrubbed.RunID, content)
-		attrs := append([]attribute.KeyValue{
-			attribute.Int("turn.number", scrubbed.Turn),
-			attribute.String(genAIOperationNameKey, "chat"),
-		}, content.attributes(e.systemInstructionsJSON)...)
-		// No summary means no duration to derive timing from: pin the
-		// span to the wall clock at delivery time (start == end).
-		now := time.Now()
-		_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", scrubbed.Turn),
-			oteltrace.WithTimestamp(now),
-			oteltrace.WithAttributes(attrs...),
-		)
-		span.End(oteltrace.WithTimestamp(now))
-	}
-
-	// The record also carries the turn's tool transcript: pair each
-	// entry with its buffered summary and emit the execute_tool spans.
-	e.emitCapturedToolSpansLocked(scrubbed)
+	e.emitCapturedToolSpansLocked(scrubTurnRecord(turn, e.redactionDisabled))
 }
 
 // emitCapturedToolSpansLocked emits execute_tool spans for a captured
@@ -862,19 +701,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 	now := time.Now()
 
-	// Flush turn summaries still waiting for a transcript record (e.g.
-	// the loop's empty-stop-reason error return). Emitted as plain
-	// counter spans with timestamps frozen at RecordTurn time; a missing
-	// record costs the content attributes, never the span itself. Map
-	// emission order is fine because each span carries its own explicit
-	// timestamps.
-	for _, pending := range e.pendingTurns {
-		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, nil)
-	}
-	e.pendingTurns = nil
-
-	// Same flush for tool call summaries whose transcript entry never
-	// arrived.
+	// Flush tool call summaries whose transcript entry never arrived.
 	for _, pending := range e.pendingToolCalls {
 		e.emitToolSpanLocked(pending.call, pending.spanStart, pending.spanEnd, nil)
 	}

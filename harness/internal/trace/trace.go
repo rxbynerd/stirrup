@@ -180,7 +180,8 @@ type ChatSpanStart struct {
 type ChatSpanEnd struct {
 	// Summary is nil when the request failed before a summary was built.
 	Summary *types.TurnTrace
-	// Record carries the request's input and output; nil on failure.
+	// Record carries the request's input and output. A failed request
+	// carries the input it sent and no output.
 	Record *types.TurnRecord
 	// ErrorType is a bounded category; empty on success.
 	ErrorType string

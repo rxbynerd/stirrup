@@ -1,0 +1,187 @@
+package core
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"github.com/rxbynerd/stirrup/types"
+)
+
+// otelLoop returns a test loop recording through an in-memory OTel
+// emitter, with loop spans on the emitter's tracer as in production.
+func otelLoop(t *testing.T, prov *mockProvider) (*AgenticLoop, *tracetest.InMemoryExporter) {
+	t.Helper()
+	emitter, exporter := newInMemoryOTelEmitter(t)
+	loop := buildTestLoop(prov)
+	loop.Trace = emitter
+	loop.Tracer = emitter.Tracer()
+	return loop, exporter
+}
+
+func spansNamed(spans tracetest.SpanStubs, name string) []tracetest.SpanStub {
+	var out []tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name == name {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func spanAttr(s tracetest.SpanStub, key string) (string, bool) {
+	for _, kv := range s.Attributes {
+		if string(kv.Key) == key {
+			return kv.Value.String(), true
+		}
+	}
+	return "", false
+}
+
+func requireParent(t *testing.T, child, parent tracetest.SpanStub) {
+	t.Helper()
+	if child.Parent.SpanID() != parent.SpanContext.SpanID() {
+		t.Errorf("%s: parent span ID = %s, want %s (%s)", child.Name, child.Parent.SpanID(), parent.SpanContext.SpanID(), parent.Name)
+	}
+}
+
+func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
+		{
+			{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use", InputTokens: 10, OutputTokens: 3},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn", InputTokens: 12, OutputTokens: 1},
+		},
+	}}
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	if n := len(spansNamed(spans, "run")); n != 0 {
+		t.Errorf("found %d legacy run spans", n)
+	}
+	root := spansNamed(spans, "invoke_agent stirrup")
+	if len(root) != 1 {
+		t.Fatalf("found %d root spans, want 1", len(root))
+	}
+	chats := spansNamed(spans, "chat claude-sonnet-4-6")
+	if len(chats) != 2 {
+		t.Fatalf("found %d chat spans, want 2", len(chats))
+	}
+	streams := spansNamed(spans, "provider.stream")
+	if len(streams) != 2 {
+		t.Fatalf("found %d provider.stream spans, want 2", len(streams))
+	}
+	for i, chat := range chats {
+		if chat.SpanKind != oteltrace.SpanKindClient {
+			t.Errorf("chat %d kind = %v, want client", i, chat.SpanKind)
+		}
+		requireParent(t, chat, root[0])
+		requireParent(t, streams[i], chat)
+		if got, _ := spanAttr(chat, "turn.number"); got != []string{"0", "1"}[i] {
+			t.Errorf("chat %d turn.number = %s", i, got)
+		}
+	}
+	if got, _ := spanAttr(chats[0], "turn.tool_calls"); got != "1" {
+		t.Errorf("turn.tool_calls = %s, want 1", got)
+	}
+	if got, _ := spanAttr(chats[1], "gen_ai.usage.input_tokens"); got != "12" {
+		t.Errorf("second chat input tokens = %s, want 12", got)
+	}
+	for _, s := range spans {
+		if len(s.Name) > 4 && s.Name[:5] == "turn[" {
+			t.Errorf("legacy turn span %q exported", s.Name)
+		}
+	}
+}
+
+func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
+	loop, prov, _, _ := buildOverflowLoop(t, overflowStep{err: promptTooLong()})
+	emitter, exporter := newInMemoryOTelEmitter(t)
+	loop.Trace = emitter
+	loop.Tracer = emitter.Tracer()
+	config := buildTestConfig()
+	config.ContextStrategy.MaxTokens = 200_000
+
+	result, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Outcome != "success" || len(prov.requests) != 5 {
+		t.Fatalf("prerequisite: outcome %q after %d requests, want success after 5", result.Outcome, len(prov.requests))
+	}
+
+	var turn3 []tracetest.SpanStub
+	for _, s := range spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6") {
+		if got, _ := spanAttr(s, "turn.number"); got == "3" {
+			turn3 = append(turn3, s)
+		}
+	}
+	if len(turn3) != 2 {
+		t.Fatalf("turn 3 has %d chat spans, want 2 (rejected request and retry)", len(turn3))
+	}
+	if got, _ := spanAttr(turn3[0], "error.type"); got != "context_overflow" {
+		t.Errorf("rejected request error.type = %q, want context_overflow", got)
+	}
+	if _, ok := spanAttr(turn3[1], "error.type"); ok {
+		t.Error("successful retry carries error.type")
+	}
+}
+
+// ctxBlockingProvider blocks each Stream until its context is done, then
+// reports what it saw.
+type ctxBlockingProvider struct {
+	entered chan struct{}
+	done    chan error
+}
+
+func (p *ctxBlockingProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	close(p.entered)
+	<-ctx.Done()
+	p.done <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	prov := &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
+	loop.Provider = prov
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan *types.RunTrace, 1)
+	go func() {
+		rt, _ := loop.Run(ctx, buildTestConfig())
+		result <- rt
+	}()
+
+	<-prov.entered
+	cancel()
+	select {
+	case err := <-prov.done:
+		if err == nil {
+			t.Error("provider context finished without an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider request was not cancelled with the run")
+	}
+	rt := <-result
+	if rt.Outcome != "cancelled" {
+		t.Errorf("outcome = %q, want cancelled", rt.Outcome)
+	}
+	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+	if len(chats) != 1 {
+		t.Fatalf("found %d chat spans, want 1", len(chats))
+	}
+	if got, _ := spanAttr(chats[0], "error.type"); got != "cancelled" {
+		t.Errorf("chat error.type = %q, want cancelled", got)
+	}
+}

@@ -131,23 +131,33 @@ type otelChatSpan struct {
 }
 
 // End stamps the request's usage, finish reason, failure and (when
-// capture is on) scrubbed content on the span, then ends it.
+// capture is on) scrubbed content on the span, then ends it. A failed
+// request that reported no usage carries no usage attributes, and its
+// "error" stop reason is not a model finish reason: error.type alone
+// names the failure.
 func (h *otelChatSpan) End(end ChatSpanEnd) {
 	h.once.Do(func() {
 		e := h.e
+		failed := end.ErrorType != "" || (end.Summary != nil && end.Summary.StopReason == "error")
 		var attrs []attribute.KeyValue
 		stopReason := ""
 		if s := end.Summary; s != nil {
 			stopReason = s.StopReason
 			attrs = append(attrs,
-				attribute.Int(genAIUsageInputTokens, s.Tokens.Input),
-				attribute.Int(genAIUsageOutputTokens, s.Tokens.Output),
 				attribute.Int("turn.tool_calls", s.ToolCalls),
-				// The semconv attribute is a string array; stirrup streams
-				// one choice per request, so it carries one element.
-				attribute.StringSlice(genAIFinishReasonsKey, []string{s.StopReason}),
 				attribute.Int64("turn.duration_ms", s.DurationMs),
 			)
+			if !failed || s.Tokens.Input > 0 || s.Tokens.Output > 0 {
+				attrs = append(attrs,
+					attribute.Int(genAIUsageInputTokens, s.Tokens.Input),
+					attribute.Int(genAIUsageOutputTokens, s.Tokens.Output),
+				)
+			}
+			if s.StopReason != "" && s.StopReason != "error" {
+				// The semconv attribute is a string array; stirrup streams
+				// one choice per request, so it carries one element.
+				attrs = append(attrs, attribute.StringSlice(genAIFinishReasonsKey, []string{s.StopReason}))
+			}
 			if s.ResponseModel != "" {
 				attrs = append(attrs, attribute.String(genAIResponseModelKey, s.ResponseModel))
 			}
@@ -183,7 +193,6 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 			attrs = append(attrs, content.attributes(systemInstructions)...)
 		}
 
-		failed := end.ErrorType != "" || (end.Summary != nil && end.Summary.StopReason == "error")
 		if failed {
 			errorType := end.ErrorType
 			if errorType == "" {

@@ -173,6 +173,61 @@ func TestChatSpan_ErrorScrubbed(t *testing.T) {
 	}
 }
 
+func TestChatSpan_FailedRequestWithoutUsage(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
+		Summary:   &types.TurnTrace{StopReason: "error", DurationMs: 40},
+		ErrorType: "provider_request_failed",
+		ErrorText: "connection refused",
+	})
+	finishLiveRun(t, emitter)
+
+	span := findSpan(t, exporter, "chat m")
+	assertAttribute(t, span, errorTypeKey, "provider_request_failed")
+	assertAttributesAbsent(t, span, genAIUsageInputTokens, genAIUsageOutputTokens, genAIFinishReasonsKey)
+}
+
+func TestChatSpan_FailedRequestKeepsDiscardedUsage(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
+		Summary:   &types.TurnTrace{StopReason: "error", Tokens: types.TokenUsage{Input: 90, Output: 12}},
+		ErrorType: "provider_stream_failed",
+	})
+	finishLiveRun(t, emitter)
+
+	span := findSpan(t, exporter, "chat m")
+	if got := intAttr(t, span, genAIUsageInputTokens); got != 90 {
+		t.Errorf("input tokens = %d, want 90", got)
+	}
+	if got := intAttr(t, span, genAIUsageOutputTokens); got != 12 {
+		t.Errorf("output tokens = %d, want 12", got)
+	}
+	assertAttributesAbsent(t, span, genAIFinishReasonsKey)
+}
+
+func TestChatSpan_FailedRequestCarriesScrubbedInputOnly(t *testing.T) {
+	emitter, exporter := startLiveRun(t, true)
+	record := captureTurnRecord()
+	record.ModelInput.Messages[0].Content[0].Text = "list files, key " + liveSecret
+	record.ModelOutput = nil
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
+		Summary:   &types.TurnTrace{StopReason: "error"},
+		Record:    &record,
+		ErrorType: "provider_request_failed",
+	})
+	finishLiveRun(t, emitter)
+
+	span := findSpan(t, exporter, "chat m")
+	input, ok := spanAttrString(span, genAIInputMessagesKey)
+	if !ok || !strings.Contains(input, "list files") {
+		t.Errorf("input messages = %q, want the request that failed", input)
+	}
+	if strings.Contains(input, liveSecret) {
+		t.Error("input messages leak the secret")
+	}
+	assertAttributesAbsent(t, span, genAIOutputMessagesKey)
+}
+
 func TestChatSpan_ContentCapture(t *testing.T) {
 	emitter, exporter := startLiveRun(t, true)
 	emitter.RecordSystemInstructions("system prompt with " + liveSecret)
