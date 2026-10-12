@@ -36,6 +36,7 @@ const (
 	genAIUsageOutputTokens = "gen_ai.usage.output_tokens"
 	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
 	genAIToolNameKey       = "gen_ai.tool.name"
+	genAIAgentNameKey      = "gen_ai.agent.name"
 
 	// Usage breakdown attributes, emitted on a turn span only when
 	// non-zero so providers that report no breakdown keep the base set.
@@ -45,8 +46,9 @@ const (
 	tokensInputReportedKey             = "stirrup.tokens.input_reported"
 
 	// errorTypeKey is the stable (non-Development) semconv error
-	// attribute, emitted on failed tool spans with the bounded
-	// observability.ToolFailureCategory vocabulary as its value.
+	// attribute. Every value is from a bounded vocabulary: the run
+	// outcome on agent spans, observability.ToolFailureCategory on tool
+	// spans.
 	errorTypeKey = "error.type"
 
 	// Message-content attributes, emitted only when captureContent is on;
@@ -72,6 +74,7 @@ const (
 type OTelTraceEmitter struct {
 	provider *sdktrace.TracerProvider
 	tracer   oteltrace.Tracer
+	scope    *runScopeProcessor
 
 	// captureContent opts the emitter into recording prompt/completion
 	// content on turn spans via the GenAI semconv attributes. Immutable
@@ -187,7 +190,7 @@ type pendingToolCall struct {
 //
 // redactionDisabled is the --debug bypass: production callers pass the
 // factory's already debugbuild-gated value, every other caller passes false.
-func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent, redactionDisabled bool) (*OTelTraceEmitter, error) {
+func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent, redactionDisabled bool, opts ...OTelOption) (*OTelTraceEmitter, error) {
 	exporter, err := buildOTLPTraceExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP exporter: %w", err)
@@ -197,14 +200,28 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(observability.BuildResource(resourceOpts)),
 	)
-	tracer := tp.Tracer("stirrup-harness")
+	return newOTelTraceEmitter(tp, captureContent, redactionDisabled, opts...), nil
+}
 
+// newOTelTraceEmitter registers the run-scope processor, then any extra
+// processors, on tp and builds the emitter around it.
+func newOTelTraceEmitter(tp *sdktrace.TracerProvider, captureContent, redactionDisabled bool, opts ...OTelOption) *OTelTraceEmitter {
+	var o otelOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	scope := newRunScopeProcessor()
+	tp.RegisterSpanProcessor(scope)
+	for _, p := range o.spanProcessors {
+		tp.RegisterSpanProcessor(p)
+	}
 	return &OTelTraceEmitter{
 		provider:          tp,
-		tracer:            tracer,
+		tracer:            tp.Tracer("stirrup-harness"),
+		scope:             scope,
 		captureContent:    captureContent,
 		redactionDisabled: redactionDisabled,
-	}, nil
+	}
 }
 
 // buildOTLPTraceExporter dispatches on the configured wire protocol and
@@ -307,12 +324,8 @@ func isInsecureEndpoint(endpoint string) bool {
 // newOTelTraceEmitterForTest creates an OTel trace emitter backed by the
 // given TracerProvider, used in tests to capture spans in-memory.
 // captureContent must not be mutated post-construction, as in production.
-func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool) *OTelTraceEmitter {
-	return &OTelTraceEmitter{
-		provider:       tp,
-		tracer:         tp.Tracer("stirrup-harness"),
-		captureContent: captureContent,
-	}
+func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool, opts ...OTelOption) *OTelTraceEmitter {
+	return newOTelTraceEmitter(tp, captureContent, false, opts...)
 }
 
 // NewOTelTraceEmitterForTest lets tests in other packages build an
@@ -323,7 +336,7 @@ func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 }
 
 // Start initialises a new trace with the given run ID and configuration.
-// It creates the root "run" span.
+// It creates the root "invoke_agent stirrup" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -346,37 +359,20 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.pendingTurns = nil
 	e.pendingToolCalls = nil
 
-	ctx := context.Background()
-	// gen_ai.agent.id and the semconv "invoke_agent {gen_ai.agent.name}"
-	// span name are not emitted: stirrup has no first-class named-agent
-	// identity, and backends type observations from the operation-name
-	// attribute rather than the span name.
-	ctx, span := e.tracer.Start(ctx, "run",
-		oteltrace.WithAttributes(
-			attribute.String("run.id", runID),
-			attribute.String("harness.version", version.Version()),
-			attribute.String(genAIOperationNameKey, "invoke_agent"),
-		),
-	)
-
+	conversationID := ""
 	if config != nil {
-		span.SetAttributes(
-			attribute.String("run.mode", config.Mode),
-			// gen_ai.provider.name is the semconv enum value.
-			attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type)),
-		)
-		if config.ModelRouter.Model != "" {
-			span.SetAttributes(
-				attribute.String(genAIRequestModelKey, config.ModelRouter.Model),
-			)
-		}
-		if config.SessionName != "" {
-			// Skipped when empty so we don't stamp an empty attribute.
-			span.SetAttributes(
-				attribute.String(genAIConversationIDKey, config.SessionName),
-			)
-		}
+		conversationID = config.SessionName
 	}
+	e.scope.setRun(conversationID)
+
+	attrs := []attribute.KeyValue{
+		attribute.String("run.id", runID),
+		attribute.String("harness.version", version.Version()),
+	}
+	attrs = append(attrs, agentSpanAttributes(agentNameRun, config)...)
+	ctx, span := e.tracer.Start(context.Background(), "invoke_agent "+agentNameRun,
+		oteltrace.WithAttributes(attrs...),
+	)
 
 	e.rootSpan = span
 	e.rootCtx = ctx
@@ -482,6 +478,27 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		span.SetStatus(codes.Error, "error")
 	}
 	span.End(oteltrace.WithTimestamp(spanEnd))
+}
+
+// agentSpanAttributes returns the creation-time attributes shared by the
+// run span and sub-agent spans. gen_ai.agent.name is set at creation so
+// the run-scope processor's OnStart sees it and descendants inherit it.
+func agentSpanAttributes(agentName string, config *types.RunConfig) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String(genAIOperationNameKey, "invoke_agent"),
+		attribute.String(genAIAgentNameKey, agentName),
+	}
+	if config == nil {
+		return attrs
+	}
+	attrs = append(attrs,
+		attribute.String("run.mode", config.Mode),
+		attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type)),
+	)
+	if config.ModelRouter.Model != "" {
+		attrs = append(attrs, attribute.String(genAIRequestModelKey, config.ModelRouter.Model))
+	}
+	return attrs
 }
 
 // turnUsageBreakdownAttributes returns the optional per-turn usage
@@ -875,6 +892,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		// cancellation from failure. Outcome is a bounded enum, so the
 		// status description needs no scrubbing.
 		if outcome != "success" {
+			e.rootSpan.SetAttributes(attribute.String(errorTypeKey, outcome))
 			e.rootSpan.SetStatus(codes.Error, outcome)
 		}
 		e.rootSpan.End()

@@ -496,7 +496,7 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	root := findSpan(t, exporter, "run")
+	root := findSpan(t, exporter, "invoke_agent stirrup")
 
 	input, ok := spanAttrString(root, genAIInputMessagesKey)
 	if !ok {
@@ -771,7 +771,7 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testi
 		t.Fatalf("Finish: %v", err)
 	}
 
-	root := findSpan(t, exporter, "run")
+	root := findSpan(t, exporter, "invoke_agent stirrup")
 	for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
 		if val, ok := spanAttrString(root, key); ok {
 			t.Errorf("root span carries %q (%q) with no records", key, val)

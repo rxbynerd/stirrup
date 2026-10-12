@@ -121,8 +121,8 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	for _, s := range spans {
 		spanNames[s.Name]++
 	}
-	if spanNames["run"] != 1 {
-		t.Errorf("expected 1 'run' span, got %d", spanNames["run"])
+	if spanNames["invoke_agent stirrup"] != 1 {
+		t.Errorf("expected 1 root span, got %d", spanNames["invoke_agent stirrup"])
 	}
 	if spanNames["turn[1]"] != 1 {
 		t.Errorf("expected 1 'turn[1]' span, got %d", spanNames["turn[1]"])
@@ -139,7 +139,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 
 	var rootSpan tracetest.SpanStub
 	for _, s := range spans {
-		if s.Name == "run" {
+		if s.Name == "invoke_agent stirrup" {
 			rootSpan = s
 			break
 		}
@@ -195,8 +195,8 @@ func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
 	if len(spans) != 1 {
 		t.Errorf("expected 1 span for empty run, got %d", len(spans))
 	}
-	if len(spans) > 0 && spans[0].Name != "run" {
-		t.Errorf("expected root span name 'run', got %q", spans[0].Name)
+	if len(spans) > 0 && spans[0].Name != "invoke_agent stirrup" {
+		t.Errorf("expected root span name invoke_agent stirrup, got %q", spans[0].Name)
 	}
 }
 
@@ -230,65 +230,6 @@ func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
 	}
 
 	assertAttribute(t, toolSpan, genAIToolNameKey, "shell")
-}
-
-// TestOTelTraceEmitter_SessionNameAttribute verifies that SessionName, when
-// set on the RunConfig, appears as gen_ai.conversation.id on the root span.
-// Child spans inherit access to it via context, so setting it on the root
-// is sufficient.
-func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-
-	timeout := 60
-	config := &types.RunConfig{
-		RunID:       "run-session-1",
-		Mode:        "execution",
-		SessionName: "nightly-eval",
-		MaxTurns:    5,
-		Timeout:     &timeout,
-		Provider:    types.ProviderConfig{Type: "anthropic"},
-	}
-	emitter.Start("run-session-1", config)
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	spans := exporter.GetSpans()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-	assertAttribute(t, spans[0], genAIConversationIDKey, "nightly-eval")
-}
-
-// TestOTelTraceEmitter_SessionNameAbsentWhenEmpty pins the inverse: when
-// no session name is set, the gen_ai.conversation.id attribute must not
-// appear on the root span. Empty attributes pollute downstream filtering
-// and would cost real money on usage-billed backends.
-func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-
-	timeout := 60
-	config := &types.RunConfig{
-		RunID:    "run-no-session",
-		Mode:     "execution",
-		MaxTurns: 5,
-		Timeout:  &timeout,
-		Provider: types.ProviderConfig{Type: "anthropic"},
-	}
-	emitter.Start("run-no-session", config)
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	spans := exporter.GetSpans()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-	for _, attr := range spans[0].Attributes {
-		if string(attr.Key) == genAIConversationIDKey {
-			t.Errorf("%s should be absent when SessionName is empty, found value %q", genAIConversationIDKey, attr.Value.AsString())
-		}
-	}
 }
 
 // TestOTelTraceEmitter_ResourceAttributes is the regression test for the
@@ -486,7 +427,7 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	)
 	for _, s := range spans {
 		switch s.Name {
-		case "run":
+		case "invoke_agent stirrup":
 			root = s
 		case "turn[1]":
 			turn = s
@@ -753,13 +694,14 @@ func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 			if _, err := emitter.Finish(context.Background(), outcome); err != nil {
 				t.Fatalf("Finish: %v", err)
 			}
-			span := findSpanByName(t, exporter.GetSpans(), "run")
+			span := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 			if span.Status.Code != codes.Error {
 				t.Errorf("outcome %q: root status = %v, want Error", outcome, span.Status.Code)
 			}
 			if span.Status.Description != outcome {
 				t.Errorf("outcome %q: root status description = %q, want the outcome", outcome, span.Status.Description)
 			}
+			assertAttribute(t, span, errorTypeKey, outcome)
 		}
 	})
 
@@ -769,10 +711,11 @@ func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 			t.Fatalf("Finish: %v", err)
 		}
-		span := findSpanByName(t, exporter.GetSpans(), "run")
+		span := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 		if span.Status.Code != codes.Unset {
 			t.Errorf("root status = %v, want Unset", span.Status.Code)
 		}
+		assertAttributesAbsent(t, span, errorTypeKey)
 	})
 
 	t.Run("turn error on error stop reason", func(t *testing.T) {
@@ -856,7 +799,7 @@ func TestOTelTraceEmitter_RecordPromptResolution(t *testing.T) {
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
-	root := findSpanByName(t, exporter.GetSpans(), "run")
+	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 	assertAttribute(t, root, promptModelKey, "claude-fable-5")
 	assertAttribute(t, root, promptTierKey, "frontier")
 }

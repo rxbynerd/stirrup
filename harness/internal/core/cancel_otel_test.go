@@ -55,7 +55,7 @@ func (p *fireAndCloseProvider) Stream(_ context.Context, _ types.StreamParams) (
 // newInMemoryOTelEmitter wires an OTelTraceEmitter to an in-memory span
 // exporter so tests can assert on emitted span attributes without touching
 // the network. The returned exporter captures spans as they are ended; the
-// root "run" span is ended inside Finish, so GetSpans() after Run returns
+// root "invoke_agent stirrup" span is ended inside Finish, so GetSpans() after Run returns
 // includes the root span and its attributes.
 func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	t.Helper()
@@ -69,7 +69,7 @@ func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.I
 // either the span or the attribute is absent.
 func findRootRunSpanAttribute(spans []tracetest.SpanStub, key string) (string, bool) {
 	for _, s := range spans {
-		if s.Name != "run" {
+		if s.Name != "invoke_agent stirrup" {
 			continue
 		}
 		for _, attr := range s.Attributes {
