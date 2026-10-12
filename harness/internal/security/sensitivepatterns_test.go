@@ -281,6 +281,27 @@ func TestDetectSensitive_BasicAuthProse(t *testing.T) {
 	}
 }
 
+// TestBasicAuth_DetectorAndScrubberAgree pins that every long Basic payload
+// the detector latches on is also redacted by the scrubber.
+func TestBasicAuth_DetectorAndScrubberAgree(t *testing.T) {
+	for name, raw := range map[string]string{
+		"latin-1 password": "user:p\xe4ssword12345",
+		"tab in password":  "user:pass\tword12345",
+		"trailing newline": "user:password12345\n",
+		"binary password":  "user:\x00\x01\xff\xfepassword",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(raw))
+			if !hasFinding(DetectSensitive(input), "secret/basic_auth") {
+				t.Fatalf("detector missed %q", input)
+			}
+			if got, want := Scrub(input), "Authorization: [REDACTED]"; got != want {
+				t.Errorf("Scrub(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+}
+
 func TestDetectSensitive_GrafanaDocExampleAllowlisted(t *testing.T) {
 	fs := DetectSensitive(`auth: "Basic MTIzNDU2OmdsY18uLi4="`)
 	if hasFinding(fs, "secret/basic_auth") {

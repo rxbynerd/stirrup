@@ -59,7 +59,12 @@ covering:
 - Slack tokens
 - GCP API keys and OAuth2 access tokens
 - Key/value-anchored Azure storage keys
-- Bearer tokens including JWTs (Authorization headers; Basic auth)
+- Bearer tokens including JWTs (Authorization headers)
+- Basic-auth credentials (`Basic <base64>`), redacted only when the
+  payload decodes to bytes containing the `user:password` colon, so
+  prose such as "basic documentation" is left intact. A payload cut off
+  mid-token is still redacted. A payload with no colon, such as a bare
+  vendor API key sent as the whole Basic value, is not recognised
 - PEM-encoded private keys
 - API-key header values
 - Key/value-anchored 32-character hex secrets
