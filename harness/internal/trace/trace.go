@@ -204,8 +204,11 @@ type ToolSpanStart struct {
 	Name string
 	// Known is false for a name that resolved to no registered tool; the
 	// span name then omits the model-controlled name.
-	Known       bool
-	InputSize   int
+	Known     bool
+	InputSize int
+	// Turn is the turn.number of the chat span whose response made the
+	// call.
+	Turn        int
 	RunID       string
 	ParentRunID string
 }

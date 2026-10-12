@@ -99,6 +99,13 @@ func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
 	if got, _ := spanAttr(chats[0], "turn.tool_calls"); got != "1" {
 		t.Errorf("turn.tool_calls = %s, want 1", got)
 	}
+	tools := spansNamed(spans, "execute_tool test_tool")
+	if len(tools) != 1 {
+		t.Fatalf("found %d execute_tool spans, want 1", len(tools))
+	}
+	if got, _ := spanAttr(tools[0], "turn.number"); got != "0" {
+		t.Errorf("tool span turn.number = %s, want the emitting chat span's 0", got)
+	}
 	if got, _ := spanAttr(chats[1], "gen_ai.usage.input_tokens"); got != "12" {
 		t.Errorf("second chat input tokens = %s, want 12", got)
 	}

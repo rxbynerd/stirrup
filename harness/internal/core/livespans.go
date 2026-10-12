@@ -10,6 +10,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -44,6 +45,10 @@ func (l *AgenticLoop) startToolSpan(ctx context.Context, call types.ToolCall, kn
 		Name:      call.Name,
 		Known:     known,
 		InputSize: toolInputSize(call),
+	}
+	// The call context numbers turns from 1; turn.number counts from 0.
+	if meta := tool.CallContextFrom(ctx); meta.Turn > 0 {
+		start.Turn = meta.Turn - 1
 	}
 	var ts trace.ToolSpan
 	if starter, ok := l.Trace.(trace.LiveSpanStarter); ok {
@@ -130,6 +135,7 @@ func (l *AgenticLoop) startFallbackToolSpan(ctx context.Context, start trace.Too
 			attribute.String("gen_ai.operation.name", "execute_tool"),
 			attribute.String("gen_ai.tool.name", start.Name),
 			attribute.Int("tool.input_size", start.InputSize),
+			attribute.Int("turn.number", start.Turn),
 		),
 	)
 	return &fallbackToolSpan{fallbackSpan{span: span}}

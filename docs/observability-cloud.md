@@ -233,9 +233,10 @@ a `chat` span covers inference only, so its duration is model latency.
 A request re-sent after a context-overflow compaction has different
 input and gets its own `chat` span; a transient-error retry stays
 inside one, as another `provider.stream` child. `turn.number` on
-`chat` spans, and the `gen_ai.tool.call.id` that links a tool span to
-the `tool_call` part of the preceding request's output, reconstruct
-the turns.
+both `chat` and `execute_tool` spans reconstructs the turns: a tool
+span carries the number of the request whose response made the call.
+With content capture on, `gen_ai.tool.call.id` also links a tool span
+to the `tool_call` part of that request's output.
 
 Every span in the run carries:
 
@@ -250,7 +251,7 @@ Span-specific attributes:
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
 | `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature`, `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
-| `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool`. |
+| `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool`. |
 
 Failures set error status with a scrubbed description and an
 `error.type` from a bounded vocabulary: the run outcome on

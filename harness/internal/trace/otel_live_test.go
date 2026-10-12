@@ -289,7 +289,7 @@ func TestChatSpan_NoContentWithoutCapture(t *testing.T) {
 func TestToolSpan_Attributes(t *testing.T) {
 	emitter, exporter := startLiveRun(t, false)
 	start := time.Now()
-	tool := emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-1", Name: "read_file", Known: true, InputSize: 17})
+	tool := emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-1", Name: "read_file", Known: true, InputSize: 17, Turn: 2})
 	endAt := start.Add(5 * time.Millisecond)
 	tool.End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{ID: "tu-1", Name: "read_file", Success: true, DurationMs: 5, OutputSize: 40},
@@ -304,6 +304,9 @@ func TestToolSpan_Attributes(t *testing.T) {
 	assertAttribute(t, span, genAIToolTypeKey, "function")
 	if got := intAttr(t, span, "tool.input_size"); got != 17 {
 		t.Errorf("tool.input_size = %d", got)
+	}
+	if got := intAttr(t, span, "turn.number"); got != 2 {
+		t.Errorf("turn.number = %d, want 2", got)
 	}
 	if got := intAttr(t, span, "tool.output_size"); got != 40 {
 		t.Errorf("tool.output_size = %d", got)

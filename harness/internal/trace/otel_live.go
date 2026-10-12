@@ -256,6 +256,7 @@ func (e *OTelTraceEmitter) StartToolSpan(parent context.Context, start ToolSpanS
 		attribute.String(genAIToolNameKey, start.Name),
 		attribute.String(genAIToolTypeKey, "function"),
 		attribute.Int("tool.input_size", start.InputSize),
+		attribute.Int("turn.number", start.Turn),
 	}
 	if start.CallID != "" {
 		attrs = append(attrs, attribute.String(genAIToolCallIDKey, scrubOrPass(start.CallID, e.redactionDisabled)))
