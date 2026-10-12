@@ -139,3 +139,10 @@ type SubRunRecorder interface {
 	RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig)
 	RecordSubRunFinished(summary types.SubRunSummary)
 }
+
+// RootContextProvider is an optional capability for emitters that open a
+// span for the run. The loop parents its component spans on the returned
+// context. A nil return means the emitter records no run span.
+type RootContextProvider interface {
+	RootContext() context.Context
+}

@@ -162,7 +162,7 @@ func TestLoop_CancelAttribute_Deadline(t *testing.T) {
 }
 
 // TestSetRootCancelAttribute_NoStartedRunSpan covers the defensive
-// !span.SpanContext().IsValid() early-return branch: if the OTel emitter
+// early return when there is no run span: if the OTel emitter
 // has not yet been Started (no root span), setRootCancelAttribute must be
 // a safe no-op. Cannot happen on the Run() path; the guard is defence in
 // depth.
@@ -171,9 +171,7 @@ func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	emitter := trace.NewOTelTraceEmitterForTest(tp)
 
-	// Build a loop with the uninitialised OTel emitter — Start is never
-	// called, so RootContext() returns context.Background() and the span
-	// extracted from it has an invalid SpanContext.
+	// Start is never called, so RootContext() returns nil.
 	loop := buildTestLoop(nil)
 	loop.Trace = emitter
 

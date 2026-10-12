@@ -144,6 +144,7 @@ var (
 	_ WorkspaceExportRecorder      = (*OTelTraceEmitter)(nil)
 	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
+	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -953,15 +954,12 @@ func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {
 	return e.tracer
 }
 
-// RootContext returns the context containing the root run span,
-// for use as the parent of loop-level spans.
+// RootContext returns the context containing the root run span, for use
+// as the parent of loop-level spans, or nil before Start.
 func (e *OTelTraceEmitter) RootContext() context.Context {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.rootCtx != nil {
-		return e.rootCtx
-	}
-	return context.Background()
+	return e.rootCtx
 }
 
 // Close shuts down the tracer provider and exporter.

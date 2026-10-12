@@ -177,9 +177,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// so a follow-up run on the same loop must not inherit the previous
 	// run's (by then cancelled) context.
 	if l.TraceContext == nil {
-		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
-			l.TraceContext = otelEmitter.RootContext()
-		} else {
+		l.TraceContext = l.runSpanContext()
+		if l.TraceContext == nil {
 			l.TraceContext = runCtx
 		}
 		defer func() { l.TraceContext = nil }()
@@ -600,11 +599,11 @@ func setupOutcome(runCtx context.Context, fallback string) string {
 //	                                   (plain cancel(), SIGINT, etc.)
 //	(no attribute)                   — non-nil unrecognised cause ("error")
 func (l *AgenticLoop) setRootCancelAttribute(cause error) {
-	otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter)
-	if !ok {
+	runCtx := l.runSpanContext()
+	if runCtx == nil {
 		return
 	}
-	span := oteltrace.SpanFromContext(otelEmitter.RootContext())
+	span := oteltrace.SpanFromContext(runCtx)
 	if !span.SpanContext().IsValid() {
 		return
 	}
@@ -623,6 +622,15 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 		return
 	}
 	span.SetAttributes(attribute.String("run.cancelled_by", reason))
+}
+
+// runSpanContext returns the context carrying the trace emitter's run
+// span, or nil when the emitter records none.
+func (l *AgenticLoop) runSpanContext() context.Context {
+	if p, ok := l.Trace.(trace.RootContextProvider); ok {
+		return p.RootContext()
+	}
+	return nil
 }
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
