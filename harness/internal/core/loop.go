@@ -889,7 +889,7 @@ func (l *AgenticLoop) runInnerLoop(
 		rejected := 0
 		for {
 			var chatCtx context.Context
-			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, params)
+			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, selectedProvider, params)
 			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)

@@ -237,6 +237,27 @@ func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
 	}
 }
 
+func TestLoop_OTelChatSpanCarriesProviderEndpoint(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = endpointProvider{&scriptedTurnProvider{scripts: []turnScript{{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}}}}}
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+	if len(chats) != 1 {
+		t.Fatalf("found %d chat spans, want 1", len(chats))
+	}
+	if got, _ := spanAttr(chats[0], "server.address"); got != "api.anthropic.com" {
+		t.Errorf("server.address = %q", got)
+	}
+	if got, _ := spanAttr(chats[0], "server.port"); got != "443" {
+		t.Errorf("server.port = %q", got)
+	}
+}
+
 // ctxBlockingProvider blocks each Stream until its context is done, then
 // reports what it saw.
 type ctxBlockingProvider struct {

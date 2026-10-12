@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -16,7 +17,7 @@ import (
 // startChatSpan opens the span for one provider request under the run
 // span. The returned context carries the new span but descends from ctx,
 // so the request is still cancelled with the run.
-func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig, turn int, selection router.ModelSelection, params types.StreamParams) (context.Context, trace.ChatSpan) {
+func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig, turn int, selection router.ModelSelection, selectedProvider provider.ProviderAdapter, params types.StreamParams) (context.Context, trace.ChatSpan) {
 	start := trace.ChatSpanStart{
 		Turn:         turn,
 		ProviderType: providerTypeFor(config, selection.Provider),
@@ -24,6 +25,7 @@ func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig
 		MaxTokens:    params.MaxTokens,
 		Temperature:  params.Temperature,
 	}
+	start.ServerAddress, start.ServerPort = provider.ServerEndpointOf(selectedProvider)
 	var chat trace.ChatSpan
 	if starter, ok := l.Trace.(trace.LiveSpanStarter); ok {
 		chat = starter.StartChatSpan(l.traceCtx(ctx), start)
