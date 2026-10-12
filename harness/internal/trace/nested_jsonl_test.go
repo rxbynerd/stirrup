@@ -72,7 +72,7 @@ func (r *recordingEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 	parent := &recordingEmitter{}
-	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
 	child.Start("sub-run-1", &types.RunConfig{Mode: "execution"})
 
@@ -121,7 +121,7 @@ func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 
 func TestNestedJSONLEmitter_DoesNotCallParentStartOrFinish(t *testing.T) {
 	parent := &recordingEmitter{}
-	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
 	child.Start("sub-run-1", &types.RunConfig{Mode: "execution"})
 
@@ -140,7 +140,7 @@ func TestNestedJSONLEmitter_DoesNotCallParentStartOrFinish(t *testing.T) {
 
 func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	parent := &recordingEmitter{}
-	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
 	cfg := &types.RunConfig{
 		RunID: "sub-run-1",
@@ -237,7 +237,7 @@ func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
 		{Type: "text", Text: "done"},
 	}
 
-	child := NewNestedJSONLEmitter(parent, "parent-run-1")
+	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 	child.Start("sub-run-1", nil)
 	child.RecordTurnRecord(types.TurnRecord{
 		Turn: 1,
@@ -271,7 +271,7 @@ func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
 func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
 	// A nil parent must not panic. This protects against accidental
 	// construction paths in tests or future callers.
-	child := NewNestedJSONLEmitter(nil, "parent-run-1")
+	child := NewNestedJSONLEmitter(nil, "parent-run-1", context.Background())
 	child.Start("sub-run-1", nil)
 	child.RecordTurn(types.TurnTrace{Turn: 0})
 	child.RecordToolCall(types.ToolCallTrace{Name: "t"})

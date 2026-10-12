@@ -186,18 +186,22 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	// A non-nil TraceContext here means the caller (e.g. SpawnSubAgent)
-	// already set one so child spans nest correctly; otherwise establish
-	// the OTel root or a plain ctx as the span parent for this run only.
-	// The span parent is also what provider and tool calls descend from,
-	// so a follow-up run on the same loop must not inherit the previous
-	// run's (by then cancelled) context.
+	// A non-nil TraceContext here was set by the caller; otherwise
+	// establish the emitter's run span or a plain ctx as the span parent
+	// for this run only, so a follow-up run on the same loop does not
+	// inherit the previous run's (by then cancelled) context.
 	if l.TraceContext == nil {
 		l.TraceContext = l.runSpanContext()
 		if l.TraceContext == nil {
 			l.TraceContext = runCtx
 		}
 		defer func() { l.TraceContext = nil }()
+	}
+	// The run context carries the run span, so a span parented on it
+	// never attaches to a span the caller's ctx held, such as a
+	// sub-agent's spawning tool call.
+	if span := oteltrace.SpanFromContext(l.TraceContext); span.SpanContext().IsValid() {
+		runCtx = oteltrace.ContextWithSpan(runCtx, span)
 	}
 
 	// Lets the control plane know the run is alive during long turns.

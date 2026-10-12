@@ -23,9 +23,11 @@ const (
 )
 
 var (
-	_ LiveSpanStarter = (*OTelTraceEmitter)(nil)
-	_ ChatSpan        = (*otelChatSpan)(nil)
-	_ ToolSpan        = (*otelToolSpan)(nil)
+	_ LiveSpanStarter     = (*OTelTraceEmitter)(nil)
+	_ SubAgentSpanStarter = (*OTelTraceEmitter)(nil)
+	_ ChatSpan            = (*otelChatSpan)(nil)
+	_ ToolSpan            = (*otelToolSpan)(nil)
+	_ AgentSpan           = (*otelAgentSpan)(nil)
 )
 
 // liveHandle is an open span handle the emitter can end at Finish when
@@ -313,5 +315,62 @@ func (h *otelToolSpan) End(end ToolSpanEnd) {
 		} else {
 			h.span.End(oteltrace.WithTimestamp(end.EndTime))
 		}
+	})
+}
+
+// StartSubAgentSpan opens the "invoke_agent stirrup.subagent" span for a
+// sub-agent run under parent, the spawning tool call's context.
+func (e *OTelTraceEmitter) StartSubAgentSpan(parent context.Context, start SubAgentSpanStart) AgentSpan {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rootCtx == nil {
+		return nil
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("run.id", start.RunID),
+		attribute.String("run.parent_id", start.ParentRunID),
+	}
+	attrs = append(attrs, agentSpanAttributes(agentNameSubAgent, start.Config)...)
+	ctx, span := e.tracer.Start(parent, "invoke_agent "+agentNameSubAgent, oteltrace.WithAttributes(attrs...))
+	h := &otelAgentSpan{liveSpan: liveSpan{span: span, e: e, runID: start.RunID}, ctx: ctx}
+	e.trackLocked(h)
+	return h
+}
+
+type otelAgentSpan struct {
+	liveSpan
+	ctx context.Context //nolint:containedctx // the span's context, handed to the child run as its span parent
+}
+
+func (h *otelAgentSpan) Context() context.Context { return h.ctx }
+
+// End stamps the sub-agent's outcome and (when capture is on) its seed
+// prompt and final answer on the span, then ends it.
+func (h *otelAgentSpan) End(end AgentSpanEnd) {
+	h.once.Do(func() {
+		e := h.e
+		e.mu.Lock()
+		delete(e.open, liveHandle(h))
+		content := e.runContent[h.runID]
+		delete(e.runContent, h.runID)
+		e.mu.Unlock()
+
+		attrs := []attribute.KeyValue{
+			attribute.String("run.outcome", end.Outcome),
+			attribute.Int("run.turns", end.Turns),
+		}
+		if content != nil {
+			attrs = append(attrs, content.attributes("")...)
+		}
+		failed := end.Outcome != "success"
+		if failed {
+			attrs = append(attrs, attribute.String(errorTypeKey, end.Outcome))
+		}
+		h.span.SetAttributes(attrs...)
+		if failed {
+			// Outcome is a bounded enum, so it needs no scrubbing.
+			h.span.SetStatus(codes.Error, end.Outcome)
+		}
+		h.span.End()
 	})
 }

@@ -226,3 +226,29 @@ type ToolSpan interface {
 	Span() oteltrace.Span
 	End(ToolSpanEnd)
 }
+
+// SubAgentSpanStarter is an optional capability for emitters that record a
+// sub-agent run as its own agent span beneath the spawning tool call.
+type SubAgentSpanStarter interface {
+	StartSubAgentSpan(parent context.Context, start SubAgentSpanStart) AgentSpan
+}
+
+// SubAgentSpanStart identifies a sub-agent run at its start.
+type SubAgentSpanStart struct {
+	RunID       string
+	ParentRunID string
+	Config      *types.RunConfig
+}
+
+// AgentSpanEnd describes how a sub-agent run finished.
+type AgentSpanEnd struct {
+	Outcome string
+	Turns   int
+}
+
+// AgentSpan is one live sub-agent run. Context carries the span for the
+// child run's own spans to nest under; End is idempotent.
+type AgentSpan interface {
+	Context() context.Context
+	End(AgentSpanEnd)
+}

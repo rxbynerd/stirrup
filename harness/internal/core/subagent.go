@@ -126,7 +126,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 
 	// Forwards every Turn/ToolCall the child records to the parent's
 	// TraceEmitter, tagged with the child's and parent's runIDs.
-	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID)
+	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID, ctx)
 
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
@@ -167,10 +167,6 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}
 
 	childLoop.StructuredResults = parent.StructuredResults
-
-	// Nests every child span under the parent's tool.spawn_agent span;
-	// Run() preserves a pre-set TraceContext rather than overwriting it.
-	childLoop.TraceContext = ctx
 	childLoop.ContextWindows = parent.ContextWindows
 
 	start := time.Now()

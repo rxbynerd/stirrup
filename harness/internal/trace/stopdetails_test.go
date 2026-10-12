@@ -33,7 +33,7 @@ func stopDetailsEmitterBuilders(t *testing.T) map[string]func(t *testing.T) stop
 			return NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 		},
 		"nested": func(*testing.T) stopDetailsEmitter {
-			return NewNestedJSONLEmitter(NewJSONLTraceEmitter(&bytes.Buffer{}, false), "parent-run")
+			return NewNestedJSONLEmitter(NewJSONLTraceEmitter(&bytes.Buffer{}, false), "parent-run", context.Background())
 		},
 		"otel": func(t *testing.T) stopDetailsEmitter {
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
@@ -160,7 +160,7 @@ func TestNestedJSONLEmitter_StopDetailsNotForwardedToParent(t *testing.T) {
 	parent := NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 	parent.Start("parent-run", &types.RunConfig{RunID: "parent-run"})
 
-	child := NewNestedJSONLEmitter(parent, "parent-run")
+	child := NewNestedJSONLEmitter(parent, "parent-run", context.Background())
 	child.Start("child-run", &types.RunConfig{RunID: "child-run"})
 	child.RecordStopDetails(&types.StopDetails{Type: "refusal"})
 	if _, err := child.Finish(context.Background(), "refusal"); err != nil {

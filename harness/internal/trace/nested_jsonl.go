@@ -12,11 +12,9 @@ import (
 // forwards events to it live, tagging each event with the child's runID
 // and the parentRunID, so a single trace file (or OTel stream) carries
 // the full call graph rather than discarding sub-agent observations.
-//
-// TODO(#89): when the parent emitter is an OTelTraceEmitter, forwarded
-// turn[N] spans still parent off its internal rootCtx
-// (context.Background()) rather than the caller's spawn_agent span.
-// Fix: inject a parentCtx into OTelTraceEmitter for child emitters.
+// When the parent records live spans, the child run gets its own agent
+// span beneath the spawning tool call, and the child's request and tool
+// spans nest under it.
 //
 // The wrapped emitter is NOT started or finished by NestedJSONLEmitter:
 //
@@ -34,6 +32,9 @@ import (
 type NestedJSONLEmitter struct {
 	parent      TraceEmitter
 	parentRunID string
+	// spanParent is the spawning tool call's context, the parent of the
+	// child's agent span.
+	spanParent context.Context //nolint:containedctx // span parent captured at spawn
 
 	mu                 sync.Mutex
 	runID              string
@@ -44,30 +45,45 @@ type NestedJSONLEmitter struct {
 	permissionDenials  int
 	finalAssistantText string
 	stopDetails        *types.StopDetails
+	agentSpan          AgentSpan
 }
 
 var _ FinalAssistantTextRecorder = (*NestedJSONLEmitter)(nil)
 var _ StopDetailsRecorder = (*NestedJSONLEmitter)(nil)
 var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
 var _ SubRunRecorder = (*NestedJSONLEmitter)(nil)
+var _ RootContextProvider = (*NestedJSONLEmitter)(nil)
+var _ LiveSpanStarter = (*NestedJSONLEmitter)(nil)
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
 // events to parent, tagged with parentRunID and the child's runID set
 // at Start time. parent must be non-nil; the child is responsible for
 // calling Finish on the returned emitter to obtain the *RunTrace
-// describing its own run.
-func NewNestedJSONLEmitter(parent TraceEmitter, parentRunID string) *NestedJSONLEmitter {
+// describing its own run. spanParent is the spawning tool call's
+// context.
+func NewNestedJSONLEmitter(parent TraceEmitter, parentRunID string, spanParent context.Context) *NestedJSONLEmitter {
 	return &NestedJSONLEmitter{
 		parent:      parent,
 		parentRunID: parentRunID,
+		spanParent:  spanParent,
 	}
 }
 
-// Start records the child's runID and config and reports the child's
-// start to a parent implementing SubRunRecorder. It does NOT call
+// Start records the child's runID and config, reports the child's start
+// to a parent implementing SubRunRecorder, and opens the child's agent
+// span on a parent implementing SubAgentSpanStarter. It does NOT call
 // parent.Start: the parent already started its own root run when the
 // outer Run() began, and re-starting would reset its accumulated state.
 func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
+	var agentSpan AgentSpan
+	if starter, ok := e.parent.(SubAgentSpanStarter); ok && e.spanParent != nil {
+		agentSpan = starter.StartSubAgentSpan(e.spanParent, SubAgentSpanStart{
+			RunID:       runID,
+			ParentRunID: e.parentRunID,
+			Config:      config,
+		})
+	}
+
 	e.mu.Lock()
 	e.runID = runID
 	e.config = config
@@ -77,12 +93,56 @@ func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
 	e.stopDetails = nil
+	e.agentSpan = agentSpan
 	startedAt := e.startedAt
 	e.mu.Unlock()
 
 	if recorder, ok := e.parent.(SubRunRecorder); ok {
 		recorder.RecordSubRunStarted(runID, e.parentRunID, startedAt, config)
 	}
+}
+
+// RootContext returns the child's agent span context when one was
+// opened, else the spawn context.
+func (e *NestedJSONLEmitter) RootContext() context.Context {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.agentSpan != nil {
+		return e.agentSpan.Context()
+	}
+	return e.spanParent
+}
+
+// StartChatSpan forwards to a parent that records live spans, tagging
+// the request with the child's run IDs; nil otherwise.
+func (e *NestedJSONLEmitter) StartChatSpan(parent context.Context, start ChatSpanStart) ChatSpan {
+	starter, ok := e.parent.(LiveSpanStarter)
+	if !ok {
+		return nil
+	}
+	start.RunID, start.ParentRunID = e.tagRunIDs(start.RunID, start.ParentRunID)
+	return starter.StartChatSpan(parent, start)
+}
+
+// StartToolSpan forwards like StartChatSpan.
+func (e *NestedJSONLEmitter) StartToolSpan(parent context.Context, start ToolSpanStart) ToolSpan {
+	starter, ok := e.parent.(LiveSpanStarter)
+	if !ok {
+		return nil
+	}
+	start.RunID, start.ParentRunID = e.tagRunIDs(start.RunID, start.ParentRunID)
+	return starter.StartToolSpan(parent, start)
+}
+
+// tagRunIDs fills empty run IDs with the child's, leaving a deeper
+// sub-run's own tags in place.
+func (e *NestedJSONLEmitter) tagRunIDs(runID, parentRunID string) (string, string) {
+	if runID != "" {
+		return runID, parentRunID
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.runID, e.parentRunID
 }
 
 // RecordTurn appends to the child's local trace and forwards a tagged
@@ -111,10 +171,6 @@ func (e *NestedJSONLEmitter) RecordTurn(turn types.TurnTrace) {
 // stream as the parent's. The child does not retain a local copy:
 // TurnRecord is the streaming-only surface, distinct from the summary
 // RunTrace the child's Finish returns.
-//
-// The tag is load-bearing for the OTel emitter's content capture: it
-// pairs turn records with turn summaries by RunID+Turn, so an untagged
-// child record could merge onto the parent's same-numbered turn span.
 func (e *NestedJSONLEmitter) RecordTurnRecord(turn types.TurnRecord) {
 	if e.parent == nil {
 		return
@@ -202,6 +258,13 @@ func (e *NestedJSONLEmitter) RecordSubRunFinished(summary types.SubRunSummary) {
 // truncate the parent's trace mid-run.
 func (e *NestedJSONLEmitter) Finish(_ context.Context, outcome string) (*types.RunTrace, error) {
 	runTrace := e.buildRunTrace(outcome)
+	e.mu.Lock()
+	agentSpan := e.agentSpan
+	e.agentSpan = nil
+	e.mu.Unlock()
+	if agentSpan != nil {
+		agentSpan.End(AgentSpanEnd{Outcome: runTrace.Outcome, Turns: runTrace.Turns})
+	}
 	if recorder, ok := e.parent.(SubRunRecorder); ok {
 		recorder.RecordSubRunFinished(types.SubRunSummary{
 			RunID:       runTrace.ID,

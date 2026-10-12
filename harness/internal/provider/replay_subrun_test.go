@@ -92,7 +92,7 @@ func TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly(t *testing.T) {
 	var buf bytes.Buffer
 	parent := trace.NewJSONLTraceEmitter(&buf, false)
 	parent.Start("run-p", nil)
-	child := trace.NewNestedJSONLEmitter(parent, "run-p")
+	child := trace.NewNestedJSONLEmitter(parent, "run-p", context.Background())
 	child.Start("run-p/sub-1", nil)
 
 	record := func(e trace.TraceEmitter, turn int, text string) {

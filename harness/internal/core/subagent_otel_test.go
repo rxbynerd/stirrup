@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -46,13 +47,11 @@ func (p *multiCallProviderForOTel) Stream(_ context.Context, _ types.StreamParam
 	return ch, nil
 }
 
-// TestSpawnSubAgent_OTelSpansNestUnderToolSpan pins that spans emitted by
-// the sub-agent loop nest under the parent's tool.spawn_agent span, not
-// the parent run root: SpawnSubAgent sets the child loop's TraceContext
-// to the parent's tool-span ctx so provider.stream/context.prepare/
-// permission.check/tool.<name> spans parent correctly. (Turn[N] spans
-// synthesized in OTelTraceEmitter.RecordTurn are parented from the
-// emitter's rootCtx and are not exercised here; see otel.go:RecordTurn.)
+// TestSpawnSubAgent_OTelSpansNestUnderToolSpan pins the sub-agent span
+// tree: the child run is an "invoke_agent stirrup.subagent" span under
+// the parent's execute_tool spawn_agent span, and the child's chat and
+// provider.stream spans nest beneath it rather than under the parent
+// root.
 func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -114,6 +113,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		Tracer:      tracer,
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),
+		GuardRail:   &phaseSpecificDenyGuard{denyPhase: "none"},
 	}
 
 	parentConfig := buildTestConfig()
@@ -155,43 +155,88 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		t.Fatal("expected at least one OTel span, got none")
 	}
 
-	var toolSpan tracetest.SpanStub
-	for _, s := range spans {
-		if s.Name == "execute_tool spawn_agent" {
-			toolSpan = s
-			break
+	one := func(name string) tracetest.SpanStub {
+		t.Helper()
+		found := spansNamed(spans, name)
+		if len(found) != 1 {
+			for _, s := range spans {
+				t.Logf("  %-32s parent=%s span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
+			}
+			t.Fatalf("found %d %q spans, want 1", len(found), name)
 		}
+		return found[0]
 	}
-	if toolSpan.Name == "" {
-		t.Fatal("no execute_tool spawn_agent span found in exported spans")
-	}
-	toolSpanID := toolSpan.SpanContext.SpanID()
-	if !toolSpanID.IsValid() {
-		t.Fatal("tool.spawn_agent span has invalid SpanID")
-	}
+	root := one("invoke_agent stirrup")
+	spawn := one("execute_tool spawn_agent")
+	sub := one("invoke_agent stirrup.subagent")
+	requireParent(t, spawn, root)
+	requireParent(t, sub, spawn)
 
-	// Assert at least one child-loop span (provider.stream / context.prepare,
-	// the only ones exercised by the child's single turn) has tool.spawn_agent
-	// as its parent, not the parent's run span.
-	childSpanNames := map[string]bool{
-		"provider.stream": true,
-		"context.prepare": true,
+	chats := spansNamed(spans, "chat claude-sonnet-4-6")
+	if len(chats) != 3 {
+		t.Fatalf("found %d chat spans, want 3 (two parent requests, one child)", len(chats))
 	}
-	var nestedChildSpans int
+	var childChats int
+	for _, chat := range chats {
+		agent, _ := spanAttr(chat, "gen_ai.agent.name")
+		switch chat.Parent.SpanID() {
+		case sub.SpanContext.SpanID():
+			childChats++
+			if agent != "stirrup.subagent" {
+				t.Errorf("child chat gen_ai.agent.name = %q", agent)
+			}
+		case root.SpanContext.SpanID():
+			if agent != "stirrup" {
+				t.Errorf("parent chat gen_ai.agent.name = %q", agent)
+			}
+		default:
+			t.Errorf("chat span parented on %s, neither run span", chat.Parent.SpanID())
+		}
+	}
+	if childChats != 1 {
+		t.Errorf("found %d chat spans under the sub-agent span, want 1", childChats)
+	}
+	for _, stream := range spansNamed(spans, "provider.stream") {
+		parentIsChat := false
+		for _, chat := range chats {
+			if stream.Parent.SpanID() == chat.SpanContext.SpanID() {
+				parentIsChat = true
+			}
+		}
+		if !parentIsChat {
+			t.Errorf("provider.stream %s is not a child of a chat span", stream.SpanContext.SpanID())
+		}
+	}
 	for _, s := range spans {
-		if !childSpanNames[s.Name] {
-			continue
+		if strings.HasPrefix(s.Name, "turn[") || strings.HasPrefix(s.Name, "tool.") || s.Name == "run" {
+			t.Errorf("legacy span %q exported", s.Name)
 		}
-		if s.Parent.SpanID() == toolSpanID {
-			nestedChildSpans++
+		if s.Parent.SpanID() == root.SpanContext.SpanID() {
+			if runID, _ := spanAttr(s, "run.parent_id"); runID != "" {
+				t.Errorf("sub-agent span %q attached to the parent root", s.Name)
+			}
 		}
 	}
-	if nestedChildSpans == 0 {
-		t.Errorf("expected at least one child loop span (provider.stream / context.prepare) parented under tool.spawn_agent; found %d", nestedChildSpans)
-		t.Log("tool.spawn_agent SpanID:", toolSpanID)
-		t.Log("emitted spans (name → parent.SpanID → span.SpanID):")
-		for _, s := range spans {
-			t.Logf("  %-24s  parent=%s  span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
+	if got, _ := spanAttr(sub, "run.parent_id"); got != "parent-run-otel" {
+		t.Errorf("sub-agent run.parent_id = %q", got)
+	}
+	if got, _ := spanAttr(sub, "run.outcome"); got != "success" {
+		t.Errorf("sub-agent run.outcome = %q", got)
+	}
+	// The child's run context descends from the spawn tool call's
+	// context, but its turn-level guard spans belong to the child run.
+	for _, name := range []string{"guard.pre_turn", "guard.post_turn"} {
+		var underSub, underSpawn int
+		for _, g := range spansNamed(spans, name) {
+			switch g.Parent.SpanID() {
+			case sub.SpanContext.SpanID():
+				underSub++
+			case spawn.SpanContext.SpanID():
+				underSpawn++
+			}
+		}
+		if underSub != 1 || underSpawn != 0 {
+			t.Errorf("%s: %d under the sub-agent span and %d under the spawn tool span, want 1 and 0", name, underSub, underSpawn)
 		}
 	}
 }
