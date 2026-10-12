@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -789,6 +790,49 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 		if s.EndTime.IsZero() {
 			t.Errorf("tool span %d has zero EndTime — stall-tail cleanup did not close it", i)
 		}
+	}
+}
+
+// A call past the stall point has already run, so its span keeps the
+// call's failure even though its trace and metrics are dropped.
+func TestParallelDispatch_StallTrips_RemainingSpansKeepTheirOutcome(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	loop := buildParallelDispatchLoop(t, newAsyncTestTransport(), sleepingSyncTool("sync_tool", 0))
+	loop.Tracer = tp.Tracer("test")
+	sameInput := json.RawMessage(`{"k":"v"}`)
+	stall := &stallDetector{lastToolCall: "sync_tool:" + string(sameInput), repeatCount: maxRepeatedToolCalls - 1}
+	calls := []types.ToolCall{
+		{ID: "tc_stall", Name: "sync_tool", Input: sameInput},
+		{ID: "tc_after", Name: "no_such_tool", Input: json.RawMessage(`{}`)},
+	}
+
+	_, _, outcome := loop.planAndDispatch(context.Background(), configWithMaxParallel(1), calls, stall, "", "")
+	if outcome != "stalled" {
+		t.Fatalf("expected outcome 'stalled', got %q", outcome)
+	}
+	var after []tracetest.SpanStub
+	for _, s := range exporter.GetSpans() {
+		if s.Name == "execute_tool" {
+			after = append(after, s)
+		}
+	}
+	if len(after) != 1 {
+		t.Fatalf("found %d spans for the call past the stall point, want 1", len(after))
+	}
+	if after[0].Status.Code != codes.Error {
+		t.Errorf("status = %v, want Error", after[0].Status.Code)
+	}
+	var errorType string
+	for _, kv := range after[0].Attributes {
+		if kv.Key == "error.type" {
+			errorType = kv.Value.AsString()
+		}
+	}
+	if errorType != observability.ToolFailureUnknownTool.String() {
+		t.Errorf("error.type = %q, want %q", errorType, observability.ToolFailureUnknownTool)
 	}
 }
 

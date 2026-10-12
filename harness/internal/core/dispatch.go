@@ -239,41 +239,8 @@ func (l *AgenticLoop) planAndDispatch(
 	for i := range plan {
 		p := &plan[i]
 		callDuration := p.duration()
-
-		// The bounded failure category feeds the span's error.type and the
-		// tool_failures metric emission below.
-		errorCategory := ""
-		if !p.success && p.failureCategory.IsValid() {
-			errorCategory = p.failureCategory.String()
-		}
-
-		// Guard-denial and invalid arguments carry their own reason;
-		// other failures carry the scrubbed dispatch output (raw error
-		// text can echo IAM paths, schema fields, secret-shaped inputs).
-		errorReason := ""
-		switch {
-		case p.errorReason != "":
-			errorReason = p.errorReason
-		case !p.success:
-			errorReason = security.Scrub(p.output)
-		}
-		// Emit InternalName only when an alias was actually resolved, so
-		// the trace wire shape is unchanged under the default profile.
-		internalForTrace := ""
-		if p.internalName != p.call.Name {
-			internalForTrace = p.internalName
-		}
-		callTrace := types.ToolCallTrace{
-			ID:            p.call.ID,
-			Name:          p.call.Name,
-			InternalName:  internalForTrace,
-			DurationMs:    callDuration.Milliseconds(),
-			Success:       p.success,
-			ErrorReason:   errorReason,
-			InputSize:     toolInputSize(p.call),
-			OutputSize:    len(p.output),
-			ErrorCategory: errorCategory,
-		}
+		callTrace := p.toolCallTrace(callDuration)
+		internalForTrace := callTrace.InternalName
 
 		metricToolName := l.emitToolCallMetrics(ctx, p, callDuration, providerType, providerModel, config.Mode)
 
@@ -339,11 +306,14 @@ func (l *AgenticLoop) planAndDispatch(
 					attribute.String("run.mode", config.Mode),
 				))
 			}
-			// Close spans for calls past the stall point (Phase 2 already
-			// dispatched them). Their trace/metric/transport side effects
-			// are intentionally dropped to match the sequential code.
+			// Close spans for calls past the stall point, which already ran
+			// in Phase 1 or 2. Their spans keep the outcome, but their
+			// trace/metric/transport side effects are intentionally dropped
+			// to match the sequential code.
 			for j := i + 1; j < len(plan); j++ {
-				plan[j].span.End(trace.ToolSpanEnd{EndTime: plan[j].finishedAt})
+				dropped := &plan[j]
+				droppedTrace := dropped.toolCallTrace(dropped.duration())
+				dropped.span.End(trace.ToolSpanEnd{Summary: &droppedTrace, EndTime: dropped.finishedAt, Queued: dropped.queued})
 			}
 			// Truncate to the calls actually observed by the stall
 			// detector, matching the sequential code's early return.
@@ -358,6 +328,44 @@ func (l *AgenticLoop) planAndDispatch(
 // time an async call spent queued.
 func (p *pendingCall) duration() time.Duration {
 	return p.finishedAt.Sub(p.startedAt) - p.queued
+}
+
+// toolCallTrace builds the call's trace summary from its settled outcome.
+func (p *pendingCall) toolCallTrace(duration time.Duration) types.ToolCallTrace {
+	// The bounded failure category feeds the span's error.type and the
+	// tool_failures metric.
+	errorCategory := ""
+	if !p.success && p.failureCategory.IsValid() {
+		errorCategory = p.failureCategory.String()
+	}
+
+	// Guard-denial and invalid arguments carry their own reason; other
+	// failures carry the scrubbed dispatch output (raw error text can echo
+	// IAM paths, schema fields, secret-shaped inputs).
+	errorReason := ""
+	switch {
+	case p.errorReason != "":
+		errorReason = p.errorReason
+	case !p.success:
+		errorReason = security.Scrub(p.output)
+	}
+	// Emit InternalName only when an alias was actually resolved, so the
+	// trace wire shape is unchanged under the default profile.
+	internalForTrace := ""
+	if p.internalName != p.call.Name {
+		internalForTrace = p.internalName
+	}
+	return types.ToolCallTrace{
+		ID:            p.call.ID,
+		Name:          p.call.Name,
+		InternalName:  internalForTrace,
+		DurationMs:    duration.Milliseconds(),
+		Success:       p.success,
+		ErrorReason:   errorReason,
+		InputSize:     toolInputSize(p.call),
+		OutputSize:    len(p.output),
+		ErrorCategory: errorCategory,
+	}
 }
 
 // emitToolCallMetrics records the per-call observability counters for a

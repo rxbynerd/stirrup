@@ -212,10 +212,10 @@ type ToolSpanStart struct {
 
 // ToolSpanEnd describes how a tool call finished.
 type ToolSpanEnd struct {
-	// Summary is nil for a call dropped after a stall.
 	Summary *types.ToolCallTrace
 	// Record carries the raw input and output; the emitter scrubs it
-	// before recording content.
+	// before recording content. It is nil for a call dropped after a
+	// stall.
 	Record *types.ToolCallRecord
 	// EndTime is when the call finished; zero means now.
 	EndTime time.Time
