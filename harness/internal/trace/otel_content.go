@@ -81,15 +81,16 @@ type genAIMessage struct {
 
 // genAIPart is the union of the schema part shapes. Type selects the
 // variant: "text" carries Content; "tool_call" carries ID/Name/Arguments;
-// "tool_call_response" carries ID/Result. omitempty keeps each variant's
-// unused fields off the wire.
+// "tool_call_response" carries ID/Response. omitempty keeps each variant's
+// unused fields off the wire; Response is a pointer because the schema
+// requires the key even when the tool output is empty.
 type genAIPart struct {
 	Type      string          `json:"type"`
 	Content   string          `json:"content,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Result    string          `json:"result,omitempty"`
+	Response  *string         `json:"response,omitempty"`
 }
 
 // genAIInputMessagesJSON serialises the turn's message history as the
@@ -173,10 +174,11 @@ func genAIParts(blocks []types.ContentBlock) []genAIPart {
 				Arguments: validRawJSON(b.Input),
 			})
 		case "tool_result":
+			response := b.Content
 			parts = append(parts, genAIPart{
-				Type:   "tool_call_response",
-				ID:     b.ToolUseID,
-				Result: b.Content,
+				Type:     "tool_call_response",
+				ID:       b.ToolUseID,
+				Response: &response,
 			})
 		}
 	}

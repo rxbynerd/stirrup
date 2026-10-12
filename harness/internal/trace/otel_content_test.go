@@ -182,12 +182,12 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 	var input []struct {
 		Role  string `json:"role"`
 		Parts []struct {
-			Type    string          `json:"type"`
-			Content string          `json:"content"`
-			ID      string          `json:"id"`
-			Result  string          `json:"result"`
-			Name    string          `json:"name"`
-			Args    json.RawMessage `json:"arguments"`
+			Type     string          `json:"type"`
+			Content  string          `json:"content"`
+			ID       string          `json:"id"`
+			Response string          `json:"response"`
+			Name     string          `json:"name"`
+			Args     json.RawMessage `json:"arguments"`
 		} `json:"parts"`
 	}
 	if err := json.Unmarshal([]byte(inputJSON), &input); err != nil {
@@ -199,7 +199,7 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 	if input[0].Parts[0].Type != "text" || input[0].Parts[0].Content != "list the workspace files" {
 		t.Errorf("first input part wrong: %+v", input[0].Parts[0])
 	}
-	if input[1].Parts[0].Type != "tool_call_response" || input[1].Parts[0].ID != "tu-1" || input[1].Parts[0].Result != "main.go\nREADME.md" {
+	if input[1].Parts[0].Type != "tool_call_response" || input[1].Parts[0].ID != "tu-1" || input[1].Parts[0].Response != "main.go\nREADME.md" {
 		t.Errorf("tool_call_response part wrong: %+v", input[1].Parts[0])
 	}
 
@@ -795,5 +795,32 @@ func TestGenAIParts_DropsThinkingBlocks(t *testing.T) {
 		if strings.Contains(string(raw), leaked) {
 			t.Errorf("span content carries %q: %s", leaked, raw)
 		}
+	}
+}
+
+// TestGenAIParts_ToolResponseKeyAlwaysPresent pins that a
+// tool_call_response part carries the schema-required "response" key,
+// including when the tool produced no output.
+func TestGenAIParts_ToolResponseKeyAlwaysPresent(t *testing.T) {
+	for name, content := range map[string]string{"output": "ok", "empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			parts := genAIParts([]types.ContentBlock{
+				{Type: "tool_result", ToolUseID: "tu-1", Content: content},
+			})
+			raw, err := json.Marshal(parts)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded []map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got, ok := decoded[0]["response"]; !ok || got != content {
+				t.Errorf("response = %v (present=%v), want %q", got, ok, content)
+			}
+			if _, ok := decoded[0]["result"]; ok {
+				t.Errorf("legacy result key present: %s", raw)
+			}
+		})
 	}
 }
