@@ -251,15 +251,19 @@ Span-specific attributes:
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
 | `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the run config sets `temperature` (an adapter that omits sampling parameters for the model does not send it), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
-| `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool` and its `gen_ai.tool.name` is scrubbed and cut to 128 bytes. |
+| `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`, and `tool.queue_ms` when the call waited to run. A control-plane tool call's span opens at dispatch but the call runs only after the turn's synchronous tool calls have run and a parallel slot is free; `tool.queue_ms` is that wait, which the span covers and `tool.duration_ms` excludes. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool` and its `gen_ai.tool.name` is scrubbed and cut to 128 bytes. |
 
 Failures set error status with a scrubbed description and an
 `error.type` from a bounded vocabulary: the run outcome on
 `invoke_agent` spans; `provider_request_failed`,
 `provider_stream_failed`, `context_overflow`, `cancelled`, or
 `timeout` on `chat` and `provider.stream` spans; the tool failure
-category on `execute_tool` spans. Exception events carry the Go type
-of the underlying error in `exception.type`.
+category on `execute_tool` spans. The `context_overflow`, `cancelled`
+and `timeout` values are span-only: the
+`gen_ai.client.operation.duration` metric labels the same failed
+request `provider_request_failed` or `provider_stream_failed`, so its
+label set stays the failure categories. Exception events carry the Go
+type of the underlying error in `exception.type`.
 
 ## Token usage on chat spans
 
