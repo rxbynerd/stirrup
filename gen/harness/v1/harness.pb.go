@@ -2085,7 +2085,12 @@ type ObservabilityConfig struct {
 	// Optional. Ships the run's structured logs to an OTLP collector in
 	// addition to stderr. Absent (or type "none") keeps stderr-only
 	// behaviour, so an empty ObservabilityConfig changes nothing.
-	LogsExport    *LogsExportConfig `protobuf:"bytes,3,opt,name=logs_export,json=logsExport,proto3" json:"logs_export,omitempty"`
+	LogsExport *LogsExportConfig `protobuf:"bytes,3,opt,name=logs_export,json=logsExport,proto3" json:"logs_export,omitempty"`
+	// Optional. The OTel service.name resource attribute, which backends use
+	// to list and separate agents. When empty the resource builder falls
+	// back to the OTEL_SERVICE_NAME environment variable, then to "stirrup".
+	// Values must match ^[A-Za-z0-9._-]{1,64}$.
+	ServiceName   string `protobuf:"bytes,4,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2139,6 +2144,13 @@ func (x *ObservabilityConfig) GetLogsExport() *LogsExportConfig {
 		return x.LogsExport
 	}
 	return nil
+}
+
+func (x *ObservabilityConfig) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution
@@ -5447,12 +5459,13 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x13CustomCriteriaEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +
-	"\x06_think\"\xab\x01\n" +
+	"\x06_think\"\xce\x01\n" +
 	"\x13ObservabilityConfig\x12 \n" +
 	"\venvironment\x18\x01 \x01(\tR\venvironment\x12+\n" +
 	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\x12E\n" +
 	"\vlogs_export\x18\x03 \x01(\v2$.stirrup.harness.v1.LogsExportConfigR\n" +
-	"logsExport\"\x82\x05\n" +
+	"logsExport\x12!\n" +
+	"\fservice_name\x18\x04 \x01(\tR\vserviceName\"\x82\x05\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +

@@ -1131,11 +1131,16 @@ func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
 		Timeout:               600,
 		TransportType:         "stdio",
 		LogLevel:              "info",
+		ServiceName:           "triage-agent",
 		DeploymentEnvironment: "production",
 		ServiceNamespace:      "stirrup-eval",
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	if cfg.Observability.ServiceName != "triage-agent" {
+		t.Errorf("Observability.ServiceName: got %q, want %q", cfg.Observability.ServiceName, "triage-agent")
 	}
 
 	if cfg.Observability.Environment != "production" {
@@ -1187,12 +1192,16 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Observability = types.ObservabilityConfig{
+		ServiceName:      "from-file-name",
 		Environment:      "from-file-env",
 		ServiceNamespace: "from-file-ns",
 	}
 
 	if err := cmd.Flags().Set("service-namespace", "from-flag-ns"); err != nil {
 		t.Fatalf("set service-namespace: %v", err)
+	}
+	if err := cmd.Flags().Set("service-name", "from-flag-name"); err != nil {
+		t.Fatalf("set service-name: %v", err)
 	}
 	// deployment-environment deliberately not set — file value should survive.
 
@@ -1202,6 +1211,9 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 
 	if cfg.Observability.ServiceNamespace != "from-flag-ns" {
 		t.Errorf("Observability.ServiceNamespace: explicit flag should win, got %q", cfg.Observability.ServiceNamespace)
+	}
+	if cfg.Observability.ServiceName != "from-flag-name" {
+		t.Errorf("Observability.ServiceName: explicit flag should win, got %q", cfg.Observability.ServiceName)
 	}
 	if cfg.Observability.Environment != "from-file-env" {
 		t.Errorf("Observability.Environment: file value should survive when flag unset, got %q", cfg.Observability.Environment)

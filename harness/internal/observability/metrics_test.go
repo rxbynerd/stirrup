@@ -211,6 +211,7 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 // explicit-options path is exercised by
 // TestMetricsRecording_ResourceWithExplicitOptions.
 func TestMetricsRecording_Resource(t *testing.T) {
+	t.Setenv(envServiceName, "")
 
 	t.Setenv(envEnvironment, "")
 	t.Setenv(envServiceNamespace, "")
@@ -241,8 +242,8 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	for _, kv := range rm.Resource.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["service.name"] != ServiceName {
-		t.Errorf("service.name=%q, want %q", got["service.name"], ServiceName)
+	if got["service.name"] != DefaultServiceName {
+		t.Errorf("service.name=%q, want %q", got["service.name"], DefaultServiceName)
 	}
 	if got["service.version"] == "" {
 		t.Errorf("service.version missing from metrics resource")

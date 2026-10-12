@@ -181,6 +181,7 @@ func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
 // back to that placeholder. We assert here that every emitted span carries
 // service.name=stirrup so this can never silently regress.
 func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
+	t.Setenv("OTEL_SERVICE_NAME", "")
 	emitter, exporter := newTestOTelEmitter()
 
 	emitter.Start("run-resource", nil)
@@ -203,9 +204,9 @@ func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 		for _, kv := range span.Resource.Attributes() {
 			got[string(kv.Key)] = kv.Value.AsString()
 		}
-		if got["service.name"] != observability.ServiceName {
+		if got["service.name"] != observability.DefaultServiceName {
 			t.Errorf("span %q: service.name=%q, want %q",
-				span.Name, got["service.name"], observability.ServiceName)
+				span.Name, got["service.name"], observability.DefaultServiceName)
 		}
 		if got["service.version"] == "" {
 			t.Errorf("span %q: service.version missing", span.Name)

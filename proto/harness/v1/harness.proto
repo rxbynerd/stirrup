@@ -992,6 +992,12 @@ message ObservabilityConfig {
   // addition to stderr. Absent (or type "none") keeps stderr-only
   // behaviour, so an empty ObservabilityConfig changes nothing.
   LogsExportConfig logs_export = 3;
+
+  // Optional. The OTel service.name resource attribute, which backends use
+  // to list and separate agents. When empty the resource builder falls
+  // back to the OTEL_SERVICE_NAME environment variable, then to "stirrup".
+  // Values must match ^[A-Za-z0-9._-]{1,64}$.
+  string service_name = 4;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

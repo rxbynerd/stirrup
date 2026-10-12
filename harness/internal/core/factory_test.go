@@ -2872,11 +2872,13 @@ func TestResourceOptionsFromConfig(t *testing.T) {
 		got := resourceOptionsFromConfig(&types.RunConfig{
 			Mode: "planning",
 			Observability: types.ObservabilityConfig{
+				ServiceName:      "agent-a",
 				Environment:      "prod",
 				ServiceNamespace: "eval",
 			},
 		})
 		want := observability.ResourceOptions{
+			ServiceName:      "agent-a",
 			Environment:      "prod",
 			ServiceNamespace: "eval",
 			RunMode:          "planning",

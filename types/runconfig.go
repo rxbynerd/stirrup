@@ -230,6 +230,9 @@ type RunConfig struct {
 // stored defaults — see docs/observability-cloud.md for the precedence
 // chain and the derived-vs-operator-metadata split.
 type ObservabilityConfig struct {
+	// ServiceName is the OTel service.name resource attribute. Empty falls
+	// back to OTEL_SERVICE_NAME, then "stirrup".
+	ServiceName      string `json:"serviceName,omitempty"`
 	Environment      string `json:"environment,omitempty"`
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
 
@@ -4830,6 +4833,9 @@ func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
 // constrain values to a list because operators legitimately want labels
 // like "stirrup-eval", "production-eu", "shadow-canary".
 func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
+	if cfg.ServiceName != "" && !observabilityLabelPattern.MatchString(cfg.ServiceName) {
+		*errs = append(*errs, fmt.Sprintf("observability.serviceName %q must match %s", cfg.ServiceName, observabilityLabelPattern))
+	}
 	if cfg.Environment != "" && !observabilityLabelPattern.MatchString(cfg.Environment) {
 		*errs = append(*errs, fmt.Sprintf("observability.environment %q must match %s", cfg.Environment, observabilityLabelPattern))
 	}

@@ -5022,13 +5022,14 @@ func TestValidateRunConfig_ObservabilityValid(t *testing.T) {
 		{},
 		{Environment: "production"},
 		{ServiceNamespace: "stirrup-eval"},
+		{ServiceName: "triage-agent"},
 		{Environment: "staging-eu", ServiceNamespace: "stirrup_team-a"},
 		{Environment: strings.Repeat("a", 64), ServiceNamespace: strings.Repeat("b", 64)},
 		{LogsExport: LogsExportConfig{Type: "none"}},
 		{LogsExport: LogsExportConfig{Type: "otlp", Endpoint: "localhost:4317"}},
 	}
 	for _, obs := range cases {
-		t.Run(fmt.Sprintf("env=%q ns=%q", obs.Environment, obs.ServiceNamespace), func(t *testing.T) {
+		t.Run(fmt.Sprintf("name=%q env=%q ns=%q", obs.ServiceName, obs.Environment, obs.ServiceNamespace), func(t *testing.T) {
 			c := validConfig()
 			c.Observability = obs
 			if err := ValidateRunConfig(c); err != nil {
@@ -5053,6 +5054,8 @@ func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
 		"newline in ns":       {ServiceNamespace: "stirrup\neval"},
 		"colon in ns":         {ServiceNamespace: "stirrup:eval"},
 		"too long ns":         {ServiceNamespace: strings.Repeat("a", 65)},
+		"space in name":       {ServiceName: "triage agent"},
+		"too long name":       {ServiceName: strings.Repeat("a", 65)},
 		"both fields invalid": {Environment: "x y", ServiceNamespace: "x y"},
 	}
 	for name, obs := range cases {

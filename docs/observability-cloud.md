@@ -48,11 +48,24 @@ and `/v1/logs` per signal.
     }
   },
   "observability": {
+    "serviceName": "stirrup",
     "environment": "production",
     "serviceNamespace": "stirrup"
   }
 }
 ```
+
+`observability.serviceName` (CLI: `--service-name`) sets the
+`service.name` resource attribute, which backends use to list and
+separate services and agents. Every run reports `stirrup` unless it is
+set here or through `OTEL_SERVICE_NAME`, so deployments of different
+agents merge into one service until each sets its own name. The
+explicit field wins over the environment variable. An
+`OTEL_SERVICE_NAME` that does not match `^[A-Za-z0-9._-]{1,64}$` is
+ignored with a warning naming the variable, and `stirrup` is used
+instead. A `service.name` in `OTEL_RESOURCE_ATTRIBUTES` does not
+apply, because Stirrup's own resource attributes win over that
+variable.
 
 The `Authorization` header value resolves through the SecretStore at
 exporter init time:

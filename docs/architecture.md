@@ -733,7 +733,10 @@ Resource attributes (`service.name`, `service.namespace`,
 `deployment.environment.name`, `service.instance.id`,
 `harness.run.mode`) are built once per process by
 `observability.BuildResource`, which merges the OTel SDK's
-`resource.Default()` with Stirrup's overlay; if the merge fails
+`resource.Default()` with Stirrup's overlay. `service.name` comes from
+`observability.serviceName`, then `OTEL_SERVICE_NAME`, then
+`stirrup`; the overlay reads `OTEL_SERVICE_NAME` itself because it
+would otherwise mask the SDK's own reading of it. If the merge fails
 (e.g. a future SDK change), it falls back to a schemaless resource
 carrying just the Stirrup attributes. The deployment-environment
 attribute is emitted under `deployment.environment.name`, the key

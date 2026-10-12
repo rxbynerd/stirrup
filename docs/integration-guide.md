@@ -879,9 +879,12 @@ Four independent channels; use the ones the topology supports:
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
 For OTel specifically: `sessionName` labels the run in logs, traces,
-and root spans; `observability.environment` / `serviceNamespace`
-ride the OTel Resource; `traceEmitter.captureContent` opts spans
-into GenAI message-content attributes (off by default, PII).
+and root spans; `observability.serviceName` / `environment` /
+`serviceNamespace` ride the OTel Resource, and `serviceName` is how
+backends tell one agent deployment from another;
+`traceEmitter.captureContent` opts spans into GenAI message-content
+attributes (off by default, PII), and `captureContentMaxBytes` caps
+each content attribute.
 Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
 

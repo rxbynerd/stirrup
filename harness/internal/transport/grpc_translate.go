@@ -287,6 +287,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	// deployment.environment.name=local).
 	if pc.Observability != nil {
 		rc.Observability = types.ObservabilityConfig{
+			ServiceName:      pc.Observability.GetServiceName(),
 			Environment:      pc.Observability.GetEnvironment(),
 			ServiceNamespace: pc.Observability.GetServiceNamespace(),
 		}

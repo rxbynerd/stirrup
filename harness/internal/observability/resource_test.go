@@ -1,6 +1,9 @@
 package observability
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,10 +17,11 @@ import (
 // any go missing, downstream backends fall back to
 // "unknown_service:<binary>".
 func TestBuildResource_PreservesExistingIdentity(t *testing.T) {
+	t.Setenv(envServiceName, "")
 	got := attrMap(BuildResource(ResourceOptions{}))
 
-	if v := got["service.name"]; v != ServiceName {
-		t.Errorf("service.name: got %q, want %q", v, ServiceName)
+	if v := got["service.name"]; v != DefaultServiceName {
+		t.Errorf("service.name: got %q, want %q", v, DefaultServiceName)
 	}
 	if v := got["service.version"]; v != version.Version() {
 		t.Errorf("service.version: got %q, want %q", v, version.Version())
@@ -78,6 +82,32 @@ func TestBuildResource_ExplicitWins(t *testing.T) {
 	}
 	if v := got["harness.run.mode"]; v != "execution" {
 		t.Errorf("harness.run.mode: got %q, want execution", v)
+	}
+}
+
+// TestBuildResource_ServiceNamePrecedence pins explicit > OTEL_SERVICE_NAME
+// > default for service.name, and that an invalid env value falls back to
+// the default rather than reaching the resource.
+func TestBuildResource_ServiceNamePrecedence(t *testing.T) {
+	cases := []struct {
+		name     string
+		explicit string
+		env      string
+		want     string
+	}{
+		{"default", "", "", DefaultServiceName},
+		{"env fallback", "", "env-agent", "env-agent"},
+		{"explicit wins", "explicit-agent", "env-agent", "explicit-agent"},
+		{"invalid env sanitised", "", "bad name\n", DefaultServiceName},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envServiceName, tc.env)
+			got := attrMap(BuildResource(ResourceOptions{ServiceName: tc.explicit}))
+			if v := got["service.name"]; v != tc.want {
+				t.Errorf("service.name: got %q, want %q", v, tc.want)
+			}
+		})
 	}
 }
 
@@ -166,6 +196,34 @@ func TestBuildResource_EnvVarSanitisation(t *testing.T) {
 			t.Errorf("service.namespace: env value with '=' should be rejected, got %q want %q", v, DefaultServiceNamespace)
 		}
 	})
+}
+
+// A rejected env value is reported by variable name, without the value,
+// so an operator sees why the default label was used.
+func TestBuildResource_RejectedEnvValueWarns(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	t.Setenv(envServiceName, "my org/agent")
+	t.Setenv(envEnvironment, "")
+	t.Setenv(envServiceNamespace, "valid-ns")
+
+	got := attrMap(BuildResource(ResourceOptions{}))
+	if v := got["service.name"]; v != DefaultServiceName {
+		t.Errorf("service.name = %q, want %q", v, DefaultServiceName)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "variable="+envServiceName) {
+		t.Errorf("warning does not name %s: %q", envServiceName, out)
+	}
+	if strings.Contains(out, "my org/agent") {
+		t.Errorf("warning echoes the rejected value: %q", out)
+	}
+	if strings.Contains(out, envServiceNamespace) {
+		t.Errorf("valid %s must not warn: %q", envServiceNamespace, out)
+	}
 }
 
 // TestInstanceID_Stable proves the instance ID is generated once per

@@ -86,6 +86,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
 
 	f.String("deployment-environment", "", "OTel deployment.environment.name resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
+	f.String("service-name", "", "OTel service.name resource attribute; backends list agents by it (e.g. triage-agent). Empty falls through to OTEL_SERVICE_NAME, then to \"stirrup\". Mirrors observability.serviceName.")
 	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")
 	f.String("log-export", "none", "Structured-log export: none (stderr only, the default) or otlp (stderr plus an OTLP log exporter using --otel-protocol and --otel-header). Endpoint defaults to --otel-endpoint; OTEL_EXPORTER_OTLP_LOGS_ENDPOINT overrides it. Mirrors observability.logsExport.")
 

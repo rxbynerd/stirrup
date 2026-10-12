@@ -485,12 +485,17 @@ func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
 func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 	pc := &pb.RunConfig{
 		Observability: &pb.ObservabilityConfig{
+			ServiceName:      "agent-a",
 			Environment:      "staging",
 			ServiceNamespace: "eval",
 		},
 	}
 
 	rc := runConfigFromProto(pc)
+
+	if rc.Observability.ServiceName != "agent-a" {
+		t.Errorf("Observability.ServiceName: got %q, want agent-a", rc.Observability.ServiceName)
+	}
 
 	if rc.Observability.Environment != "staging" {
 		t.Errorf("Observability.Environment: got %q, want staging", rc.Observability.Environment)

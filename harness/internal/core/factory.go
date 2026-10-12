@@ -1920,6 +1920,7 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 		return observability.ResourceOptions{}
 	}
 	return observability.ResourceOptions{
+		ServiceName:      cfg.Observability.ServiceName,
 		Environment:      cfg.Observability.Environment,
 		ServiceNamespace: cfg.Observability.ServiceNamespace,
 		RunMode:          cfg.Mode,

@@ -237,8 +237,9 @@ type harnessCLIOptions struct {
 	GuardRailFailOpen bool
 
 	// Observability resource attributes. Empty values fall through to
-	// env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
+	// env-var fallbacks (OTEL_SERVICE_NAME, OTEL_DEPLOYMENT_ENVIRONMENT,
 	// OTEL_SERVICE_NAMESPACE) and then to defaults.
+	ServiceName           string
 	DeploymentEnvironment string
 	ServiceNamespace      string
 
@@ -470,8 +471,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	if logExport == "none" {
 		logExport = ""
 	}
-	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" || logExport != "" || opts.LogExportEndpoint != "" {
+	if opts.ServiceName != "" || opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" || logExport != "" || opts.LogExportEndpoint != "" {
 		config.Observability = types.ObservabilityConfig{
+			ServiceName:      opts.ServiceName,
 			Environment:      opts.DeploymentEnvironment,
 			ServiceNamespace: opts.ServiceNamespace,
 			LogsExport: types.LogsExportConfig{
@@ -1106,6 +1108,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// restating the rest of the file's observability block.
 	if changed("deployment-environment") {
 		cfg.Observability.Environment, _ = f.GetString("deployment-environment")
+	}
+	if changed("service-name") {
+		cfg.Observability.ServiceName, _ = f.GetString("service-name")
 	}
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")

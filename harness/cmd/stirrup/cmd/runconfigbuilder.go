@@ -333,6 +333,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
+	serviceName, _ := f.GetString("service-name")
 	serviceNamespace, _ := f.GetString("service-namespace")
 	logExport, _ := f.GetString("log-export")
 	// Read here, not in the factory, to preserve the agentic loop's "no
@@ -457,6 +458,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		GuardRailModel:               guardRailModel,
 		GuardRailFailOpen:            guardRailFailOpen,
 		DeploymentEnvironment:        deploymentEnvironment,
+		ServiceName:                  serviceName,
 		ServiceNamespace:             serviceNamespace,
 		LogExport:                    logExport,
 		LogExportEndpoint:            logExportEndpoint,
