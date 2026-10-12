@@ -311,7 +311,20 @@ func TestToolSpan_Attributes(t *testing.T) {
 	if !span.EndTime.Equal(endAt) {
 		t.Errorf("end time = %v, want %v", span.EndTime, endAt)
 	}
-	assertAttributesAbsent(t, span, "tool.name", "tool.failure_category", genAIToolCallArgumentsKey, genAIToolCallResultKey)
+	assertAttributesAbsent(t, span, "tool.name", "tool.failure_category", "tool.queue_ms", genAIToolCallArgumentsKey, genAIToolCallResultKey)
+}
+
+func TestToolSpan_QueueTime(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "control_plane_tool", Known: true}).End(ToolSpanEnd{
+		Summary: &types.ToolCallTrace{Name: "control_plane_tool", Success: true, DurationMs: 5},
+		Queued:  42 * time.Millisecond,
+	})
+	finishLiveRun(t, emitter)
+	span := findSpan(t, exporter, "execute_tool control_plane_tool")
+	if got := intAttr(t, span, "tool.queue_ms"); got != 42 {
+		t.Errorf("tool.queue_ms = %d, want 42", got)
+	}
 }
 
 func TestToolSpan_UnknownToolNameBounded(t *testing.T) {

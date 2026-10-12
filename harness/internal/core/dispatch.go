@@ -33,8 +33,13 @@ type pendingCall struct {
 	spanCtx   context.Context //nolint:containedctx // span parent ctx threaded into dispatch
 	startedAt time.Time
 	// finishedAt is when the call's outcome was settled, so a call's span
-	// does not include the calls dispatched after it.
+	// and recorded duration exclude the calls dispatched after it.
 	finishedAt time.Time
+	// queuedAt is when an async call left Phase 1; queued is how long it
+	// then waited for Phase 2 to start it, behind later sync calls and the
+	// dispatch semaphore.
+	queuedAt time.Time
+	queued   time.Duration
 	// internalName is the canonical internal tool ID call.Name resolves to
 	// under the active toolset profile. Equal to call.Name under the
 	// default profile and for unknown tools.
@@ -160,6 +165,7 @@ func (l *AgenticLoop) planAndDispatch(
 		}
 
 		if t.AsyncHandler != nil {
+			plan[i].queuedAt = time.Now()
 			asyncIndices = append(asyncIndices, i)
 			continue
 		}
@@ -186,6 +192,7 @@ func (l *AgenticLoop) planAndDispatch(
 			wg.Add(1)
 			sem <- struct{}{}
 			go func() {
+				plan[idx].queued = time.Since(plan[idx].queuedAt)
 				defer wg.Done()
 				defer func() { <-sem }()
 				defer func() {
@@ -231,7 +238,7 @@ func (l *AgenticLoop) planAndDispatch(
 	toolRecords := make([]types.ToolCallRecord, len(toolCalls))
 	for i := range plan {
 		p := &plan[i]
-		callDuration := time.Since(p.startedAt)
+		callDuration := p.duration()
 
 		// The bounded failure category feeds the span's error.type and the
 		// tool_failures metric emission below.
@@ -295,7 +302,7 @@ func (l *AgenticLoop) planAndDispatch(
 			Kind:         p.structured.kind,
 			IsError:      !p.success,
 		}
-		p.span.End(trace.ToolSpanEnd{Summary: &callTrace, Record: &toolRecords[i], EndTime: p.finishedAt})
+		p.span.End(trace.ToolSpanEnd{Summary: &callTrace, Record: &toolRecords[i], EndTime: p.finishedAt, Queued: p.queued})
 		l.Trace.RecordToolCall(callTrace)
 
 		if err := l.Transport.Emit(types.HarnessEvent{
@@ -345,6 +352,12 @@ func (l *AgenticLoop) planAndDispatch(
 	}
 
 	return toolResults, toolRecords, ""
+}
+
+// duration is the call's own run time: dispatch to settlement, less the
+// time an async call spent queued.
+func (p *pendingCall) duration() time.Duration {
+	return p.finishedAt.Sub(p.startedAt) - p.queued
 }
 
 // emitToolCallMetrics records the per-call observability counters for a

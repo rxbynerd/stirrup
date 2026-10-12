@@ -287,6 +287,9 @@ func (h *otelToolSpan) End(end ToolSpanEnd) {
 				attribute.Int64("tool.duration_ms", s.DurationMs),
 				attribute.Int("tool.output_size", s.OutputSize),
 			)
+			if end.Queued > 0 {
+				attrs = append(attrs, attribute.Int64("tool.queue_ms", end.Queued.Milliseconds()))
+			}
 			if !s.Success {
 				failed = true
 				if s.ErrorCategory != "" {

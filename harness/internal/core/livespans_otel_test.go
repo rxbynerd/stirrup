@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -192,6 +194,46 @@ func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
 	}
 	if got, _ := spanAttr(slow[0], "gen_ai.tool.call.id"); got != "tc_0" {
 		t.Errorf("gen_ai.tool.call.id = %q", got)
+	}
+}
+
+func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
+	var traceBuf bytes.Buffer
+	loop := buildTestLoop(nil)
+	loop.Trace = trace.NewJSONLTraceEmitter(&traceBuf, false)
+	loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:        "slow_tool",
+		Description: "sleeps then succeeds",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			time.Sleep(60 * time.Millisecond)
+			return "ok", nil
+		},
+	})
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
+		{
+			{Type: "tool_call", ID: "tc_fast", Name: "test_tool", Input: map[string]any{}},
+			{Type: "tool_call", ID: "tc_slow", Name: "slow_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}}
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	durations := map[string]int64{}
+	for _, call := range runTrace.ToolCalls {
+		durations[call.ID] = call.DurationMs
+	}
+	if durations["tc_slow"] < 60 {
+		t.Fatalf("prerequisite: slow call took %dms, want at least 60ms", durations["tc_slow"])
+	}
+	if durations["tc_fast"] >= 60 {
+		t.Errorf("fast call recorded %dms, which includes the slow call after it", durations["tc_fast"])
 	}
 }
 

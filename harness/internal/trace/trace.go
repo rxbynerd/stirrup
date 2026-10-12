@@ -219,6 +219,9 @@ type ToolSpanEnd struct {
 	Record *types.ToolCallRecord
 	// EndTime is when the call finished; zero means now.
 	EndTime time.Time
+	// Queued is how long the call waited for a dispatch slot after its
+	// span opened; the span's duration includes it, Summary's does not.
+	Queued time.Duration
 }
 
 // ToolSpan is one live tool call. End is idempotent.
