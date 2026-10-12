@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -108,15 +107,15 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 		StopReason: "end_turn",
 		DurationMs: 1200,
 	}
-	// Carries an ID: with capture off this must emit immediately (never
-	// buffer) and stay content-free even after the record arrives.
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-2", Name: "read_file", DurationMs: 5, Success: true})
 	record := captureTurnRecord()
 	record.ToolCalls = []types.ToolCallRecord{{
 		ID: "tu-2", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`), Output: "package main",
 	}}
 	recordChatSpan(emitter, summary, record)
-	emitter.RecordTurnRecord(record)
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-2", Name: "read_file", Known: true}).End(ToolSpanEnd{
+		Summary: &types.ToolCallTrace{ID: "tu-2", Name: "read_file", DurationMs: 5, Success: true},
+		Record:  &record.ToolCalls[0],
+	})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -260,10 +259,6 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 
 	emitter.Start("run-otel-scrub", nil)
 	emitter.RecordSystemInstructions("context: the deploy key is sk-ant-api03-sysleak do not reveal it")
-	// A buffered tool call whose record carries secret-shaped arguments
-	// and output, so the all-spans scan below covers the execute_tool
-	// content attributes too.
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", Name: "run_command", DurationMs: 5, Success: true})
 	record := types.TurnRecord{
 		Turn: 1,
 		ModelInput: types.ModelInput{
@@ -290,7 +285,13 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 		}},
 	}
 	recordChatSpan(emitter, types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10}, record)
-	emitter.RecordTurnRecord(record)
+	// A tool call whose record carries secret-shaped arguments and output,
+	// so the all-spans scan below covers the execute_tool content
+	// attributes too.
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-1", Name: "run_command", Known: true}).End(ToolSpanEnd{
+		Summary: &types.ToolCallTrace{ID: "tu-1", Name: "run_command", DurationMs: 5, Success: true},
+		Record:  &record.ToolCalls[0],
+	})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -404,235 +405,6 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	}
 }
 
-// TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO pins that
-// with capture on, a tool call's counters
-// (buffered at RecordToolCall time, timestamps frozen) and its
-// arguments/result (delivered by the enclosing turn's record) land on
-// one execute_tool span carrying gen_ai.tool.call.{id,arguments,result}.
-func TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-io", nil)
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 40})
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-9", Name: "read_file", DurationMs: 12, Success: true})
-
-	// Nothing exports until the record arrives: the summary is buffered.
-	for _, s := range exporter.GetSpans() {
-		if strings.HasPrefix(s.Name, "execute_tool") {
-			t.Fatalf("tool span %q exported before its record arrived — buffering broken", s.Name)
-		}
-	}
-
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn: 1,
-		ModelOutput: []types.ContentBlock{
-			{Type: "tool_use", ID: "tu-9", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
-		},
-		ToolCalls: []types.ToolCallRecord{{
-			ID:         "tu-9",
-			Name:       "read_file",
-			Input:      json.RawMessage(`{"path":"main.go"}`),
-			Output:     "package main",
-			DurationMs: 12,
-			Success:    true,
-		}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	span := findSpan(t, exporter, "execute_tool read_file")
-
-	// Counters from the buffered summary.
-	assertAttribute(t, span, genAIToolNameKey, "read_file")
-	assertAttribute(t, span, genAIOperationNameKey, "execute_tool")
-
-	// Content from the record.
-	assertAttribute(t, span, genAIToolCallIDKey, "tu-9")
-	args, _ := spanAttrString(span, genAIToolCallArgumentsKey)
-	if args != `{"path":"main.go"}` {
-		t.Errorf("gen_ai.tool.call.arguments = %q, want the call input", args)
-	}
-	result, _ := spanAttrString(span, genAIToolCallResultKey)
-	if result != "package main" {
-		t.Errorf("gen_ai.tool.call.result = %q, want the call output", result)
-	}
-
-	// Timing frozen at RecordToolCall time: a real 12ms duration, not
-	// the zero-duration record-delivery fallback.
-	if got := span.EndTime.Sub(span.StartTime); got != 12*time.Millisecond {
-		t.Errorf("span duration = %v, want the frozen 12ms from the buffered summary", got)
-	}
-
-	// Exactly one execute_tool span: pairing must not double-emit.
-	var toolSpans int
-	for _, s := range exporter.GetSpans() {
-		if strings.HasPrefix(s.Name, "execute_tool") {
-			toolSpans++
-		}
-	}
-	if toolSpans != 1 {
-		t.Errorf("expected exactly 1 execute_tool span, got %d", toolSpans)
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_EmptyIDToolEmitsImmediately pins
-// the un-keyable path: a call without a tool_use ID cannot pair, so it
-// emits a plain span at RecordToolCall time, and the record walk skips
-// ID-less entries rather than emitting a duplicate content span.
-func TestOTelTraceEmitter_CaptureContent_EmptyIDToolEmitsImmediately(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-noid", nil)
-	emitter.RecordToolCall(types.ToolCallTrace{Name: "shell", DurationMs: 3, Success: true})
-
-	span := findSpan(t, exporter, "execute_tool shell")
-	if _, ok := spanAttrString(span, genAIToolCallArgumentsKey); ok {
-		t.Error("immediate-path span must not carry content attributes")
-	}
-
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn:      1,
-		ToolCalls: []types.ToolCallRecord{{Name: "shell", Input: json.RawMessage(`{}`), Output: "ok"}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	var toolSpans int
-	for _, s := range exporter.GetSpans() {
-		if strings.HasPrefix(s.Name, "execute_tool") {
-			toolSpans++
-		}
-	}
-	if toolSpans != 1 {
-		t.Errorf("ID-less call must produce exactly 1 span, got %d", toolSpans)
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_DuplicateToolIDFlushesPrior pins
-// the defensive duplicate handling: a second summary under the same
-// (RunID, ID) before any record flushes the first as a plain span
-// (last-wins, mirroring RecordTurn's duplicate-summary handling), and
-// the record then pairs with the survivor.
-func TestOTelTraceEmitter_CaptureContent_DuplicateToolIDFlushesPrior(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-dup", nil)
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 5})
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-dup", Name: "first_call", DurationMs: 1, Success: true})
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-dup", Name: "second_call", DurationMs: 2, Success: true})
-
-	// The stale first summary flushed plain.
-	flushed := findSpan(t, exporter, "execute_tool first_call")
-	if _, ok := spanAttrString(flushed, genAIToolCallResultKey); ok {
-		t.Error("flushed duplicate must not carry content")
-	}
-
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn:      1,
-		ToolCalls: []types.ToolCallRecord{{ID: "tu-dup", Name: "second_call", Output: "paired"}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	paired := findSpan(t, exporter, "execute_tool second_call")
-	result, _ := spanAttrString(paired, genAIToolCallResultKey)
-	if result != "paired" {
-		t.Errorf("surviving summary should pair with the record, result = %q", result)
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedToolAtFinish pins
-// the Finish-time flush: a buffered tool call whose turn record never
-// arrives (the loop's error returns skip RecordTurnRecord) still
-// produces its counter span — buffering must never lose a call.
-func TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedToolAtFinish(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-flush", nil)
-	emitter.RecordToolCall(types.ToolCallTrace{
-		ID: "tu-orphan", Name: "run_command", DurationMs: 7, Success: false,
-		ErrorReason: "exit status 1", ErrorCategory: "handler_error",
-	})
-	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	span := findSpan(t, exporter, "execute_tool run_command")
-	assertAttribute(t, span, errorTypeKey, "handler_error")
-	if _, ok := spanAttrString(span, genAIToolCallResultKey); ok {
-		t.Error("flushed unmatched tool call must not carry content attributes")
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_UnpairedToolRecordSynthesisesSpan
-// pins the inverse fallback: a record entry with no buffered summary (a
-// forwarded sub-agent record arriving unpaired) emits a content span
-// with counters synthesised from the record — which, unlike the
-// unpaired-turn fallback, carries a real duration to derive timing from.
-func TestOTelTraceEmitter_CaptureContent_UnpairedToolRecordSynthesisesSpan(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-unpaired", nil)
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn: 2, RunID: "child-run", ParentRunID: "run-tool-unpaired",
-		ToolCalls: []types.ToolCallRecord{{
-			ID: "tu-x", Name: "write_file", Input: json.RawMessage(`{"path":"a"}`),
-			Output: "written", DurationMs: 30, Success: true,
-		}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	span := findSpan(t, exporter, "execute_tool write_file")
-	result, _ := spanAttrString(span, genAIToolCallResultKey)
-	if result != "written" {
-		t.Errorf("synthesised span result = %q, want the record output", result)
-	}
-	if got := span.EndTime.Sub(span.StartTime); got != 30*time.Millisecond {
-		t.Errorf("span duration = %v, want the record's 30ms", got)
-	}
-}
-
-// TestOTelTraceEmitter_CaptureContent_ToolPairsByRunID pins the
-// sub-agent disambiguation on the tool path: a parent call and a
-// forwarded child call sharing a tool_use ID value pair independently —
-// only the (RunID, ID) composite key keeps them apart.
-func TestOTelTraceEmitter_CaptureContent_ToolPairsByRunID(t *testing.T) {
-	emitter, exporter := newTestOTelEmitterWithCapture()
-
-	emitter.Start("run-tool-runs", nil)
-	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 5})
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", Name: "parent_tool", DurationMs: 1, Success: true})
-	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", RunID: "child-run", Name: "child_tool", DurationMs: 2, Success: true})
-
-	// Child record first: must pair with the child's buffered call only.
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn: 1, RunID: "child-run", ParentRunID: "run-tool-runs",
-		ToolCalls: []types.ToolCallRecord{{ID: "tu-1", Name: "child_tool", Output: "child result"}},
-	})
-	emitter.RecordTurnRecord(types.TurnRecord{
-		Turn:      1,
-		ToolCalls: []types.ToolCallRecord{{ID: "tu-1", Name: "parent_tool", Output: "parent result"}},
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	child := findSpan(t, exporter, "execute_tool child_tool")
-	if result, _ := spanAttrString(child, genAIToolCallResultKey); result != "child result" {
-		t.Errorf("child span result = %q, want %q", result, "child result")
-	}
-	parent := findSpan(t, exporter, "execute_tool parent_tool")
-	if result, _ := spanAttrString(parent, genAIToolCallResultKey); result != "parent result" {
-		t.Errorf("parent span result = %q, want %q", result, "parent result")
-	}
-}
-
 // TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords
 // pins the degraded shape: a run that produced no transcript records
 // (every loop error path) finishes with a bare root span — no content
@@ -714,62 +486,51 @@ func countSpanAttr(span tracetest.SpanStub, key string) int {
 	return n
 }
 
-// TestOTelTraceEmitter_ToolCallID_EmittedOncePerEmissionPath pins that every
-// path that creates an execute_tool span sets gen_ai.tool.call.id exactly
-// once when the call has an ID, and omits it otherwise.
-func TestOTelTraceEmitter_ToolCallID_EmittedOncePerEmissionPath(t *testing.T) {
+// TestOTelTraceEmitter_ToolCallID_EmittedOnce pins that the execute_tool
+// span sets gen_ai.tool.call.id exactly once when the call has an ID,
+// with capture on or off, and omits it otherwise.
+func TestOTelTraceEmitter_ToolCallID_EmittedOnce(t *testing.T) {
 	const id = "tu-path"
-	paths := []struct {
+	cases := []struct {
 		name    string
 		capture bool
-		drive   func(e *OTelTraceEmitter)
-		want    string
+		id      string
 	}{
-		{"immediate with capture off", false, func(e *OTelTraceEmitter) {
-			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
-		}, id},
-		{"immediate without id", false, func(e *OTelTraceEmitter) {
-			e.RecordToolCall(types.ToolCallTrace{Name: "tool", Success: true})
-		}, ""},
-		{"captured and paired", true, func(e *OTelTraceEmitter) {
-			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
-			e.RecordTurnRecord(types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{{ID: id, Name: "tool", Output: "ok"}}})
-		}, id},
-		{"captured and flushed at finish", true, func(e *OTelTraceEmitter) {
-			e.RecordToolCall(types.ToolCallTrace{ID: id, Name: "tool", Success: true})
-		}, id},
-		{"captured record without summary", true, func(e *OTelTraceEmitter) {
-			e.RecordTurnRecord(types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{{ID: id, Name: "tool", Output: "ok"}}})
-		}, id},
+		{"capture off", false, id},
+		{"capture on with record", true, id},
+		{"without id", false, ""},
 	}
-	for _, p := range paths {
-		t.Run(p.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			emitter, exporter := newTestOTelEmitter()
-			if p.capture {
+			if tc.capture {
 				emitter, exporter = newTestOTelEmitterWithCapture()
 			}
 			emitter.Start("run-id-paths", nil)
-			p.drive(emitter)
+			emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: tc.id, Name: "tool", Known: true}).End(ToolSpanEnd{
+				Summary: &types.ToolCallTrace{ID: tc.id, Name: "tool", Success: true},
+				Record:  &types.ToolCallRecord{ID: tc.id, Name: "tool", Output: "ok"},
+			})
 			if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 				t.Fatalf("Finish: %v", err)
 			}
 			span := findSpan(t, exporter, "execute_tool tool")
 			wantCount := 1
-			if p.want == "" {
+			if tc.id == "" {
 				wantCount = 0
 			}
 			if got := countSpanAttr(span, genAIToolCallIDKey); got != wantCount {
 				t.Fatalf("%s emitted %d times, want %d", genAIToolCallIDKey, got, wantCount)
 			}
-			if got, _ := spanAttrString(span, genAIToolCallIDKey); got != p.want {
-				t.Errorf("%s = %q, want %q", genAIToolCallIDKey, got, p.want)
+			if got, _ := spanAttrString(span, genAIToolCallIDKey); got != tc.id {
+				t.Errorf("%s = %q, want %q", genAIToolCallIDKey, got, tc.id)
 			}
 		})
 	}
 }
 
-// TestOTelTraceEmitter_ToolCallID_Scrubbed pins that a secret-shaped call ID
-// is redacted unless redaction is disabled.
+// TestOTelTraceEmitter_ToolCallID_Scrubbed pins that a secret-shaped call
+// ID is scrubbed on the span unless redaction is disabled.
 func TestOTelTraceEmitter_ToolCallID_Scrubbed(t *testing.T) {
 	const secretID = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	for _, disabled := range []bool{false, true} {
@@ -777,7 +538,9 @@ func TestOTelTraceEmitter_ToolCallID_Scrubbed(t *testing.T) {
 			emitter, exporter := newTestOTelEmitter()
 			emitter.redactionDisabled = disabled
 			emitter.Start("run-id-scrub", nil)
-			emitter.RecordToolCall(types.ToolCallTrace{ID: secretID, Name: "tool", Success: true})
+			emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: secretID, Name: "tool", Known: true}).End(ToolSpanEnd{
+				Summary: &types.ToolCallTrace{ID: secretID, Name: "tool", Success: true},
+			})
 			if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 				t.Fatalf("Finish: %v", err)
 			}

@@ -117,12 +117,6 @@ type OTelTraceEmitter struct {
 	// open holds live span handles not yet ended, so Finish can end any
 	// the loop left open.
 	open map[liveHandle]struct{}
-
-	// pendingToolCalls buffers tool call summaries between RecordToolCall
-	// and the enclosing turn's RecordTurnRecord while capture is on, keyed
-	// by (RunID, tool_use ID). Calls without an ID are un-keyable and emit
-	// immediately instead of buffering.
-	pendingToolCalls map[pendingToolKey]pendingToolCall
 }
 
 // Compile-time interface satisfaction guards: the loop discovers the
@@ -143,21 +137,6 @@ var (
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 )
-
-// pendingToolKey pairs a buffered tool call summary with its later
-// transcript entry. See OTelTraceEmitter.pendingToolCalls.
-type pendingToolKey struct {
-	runID string
-	id    string
-}
-
-// pendingToolCall is a tool call summary awaiting its transcript entry,
-// with the span timing frozen at RecordToolCall time.
-type pendingToolCall struct {
-	call      types.ToolCallTrace
-	spanStart time.Time
-	spanEnd   time.Time
-}
 
 // NewOTelTraceEmitter creates an OTel trace emitter that exports spans to
 // the given OTLP endpoint over the chosen wire protocol ("" or "grpc" for
@@ -334,7 +313,6 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
-	e.pendingToolCalls = nil
 
 	conversationID := ""
 	if config != nil {
@@ -403,83 +381,9 @@ func turnUsageBreakdownAttributes(turn types.TurnTrace) []attribute.KeyValue {
 	return attrs
 }
 
-// RecordTurnRecord attaches each captured tool call's arguments and
-// result to its execute_tool span; a no-op without content capture. The
-// request's own content reaches its chat span through ChatSpan.End.
-func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
-	if !e.captureContent {
-		return
-	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.rootCtx == nil {
-		return
-	}
-	e.emitCapturedToolSpansLocked(scrubTurnRecord(turn, e.redactionDisabled))
-}
-
-// emitCapturedToolSpansLocked emits execute_tool spans for a captured
-// turn record's tool calls, merging each with the summary buffered by
-// RecordToolCall under (RunID, tool_use ID). Must be called with e.mu
-// held.
-//
-// Entries without an ID are skipped: their plain span was already
-// emitted on RecordToolCall's immediate path, and a content span here
-// would double-count the call. Entries with no buffered summary
-// synthesise counters from the record itself, which carries a real
-// duration unlike the unpaired-turn fallback.
-func (e *OTelTraceEmitter) emitCapturedToolSpansLocked(scrubbed types.TurnRecord) {
-	for _, tc := range scrubbed.ToolCalls {
-		if tc.ID == "" {
-			continue
-		}
-		content := &toolContent{
-			arguments: validRawJSON(tc.Input),
-			result:    tc.Output,
-		}
-		key := pendingToolKey{runID: scrubbed.RunID, id: tc.ID}
-		if pending, ok := e.pendingToolCalls[key]; ok {
-			delete(e.pendingToolCalls, key)
-			e.emitToolSpanLocked(pending.call, pending.spanStart, pending.spanEnd, content)
-			continue
-		}
-		spanEnd := time.Now()
-		spanStart := spanEnd.Add(-time.Duration(tc.DurationMs) * time.Millisecond)
-		e.emitToolSpanLocked(types.ToolCallTrace{
-			ID:           tc.ID,
-			Name:         tc.Name,
-			InternalName: tc.InternalName,
-			DurationMs:   tc.DurationMs,
-			Success:      tc.Success,
-			RunID:        scrubbed.RunID,
-			ParentRunID:  scrubbed.ParentRunID,
-		}, spanStart, spanEnd, content)
-	}
-}
-
-// retainRunContentLocked feeds a captured request's content into its
-// run's I/O slot. Input is set-once (the first request's seed prompt);
-// output overwrites so the final assistant message wins, and an empty
-// serialisation never clobbers earlier content. Must be called with e.mu
-// held.
-func (e *OTelTraceEmitter) retainRunContentLocked(runID string, content *turnContent) {
-	if e.runContent == nil {
-		e.runContent = map[string]*turnContent{}
-	}
-	run, ok := e.runContent[runID]
-	if !ok {
-		run = &turnContent{}
-		e.runContent[runID] = run
-	}
-	if run.inputMessages == "" {
-		run.inputMessages = content.inputMessages
-	}
-	if content.outputMessages != "" {
-		run.outputMessages = content.outputMessages
-	}
-}
+// RecordTurnRecord is a no-op: request and tool content reach their
+// spans through ChatSpan.End and ToolSpan.End.
+func (e *OTelTraceEmitter) RecordTurnRecord(types.TurnRecord) {}
 
 // RecordSystemInstructions stores the run's built system prompt,
 // scrubbed and serialised once, for emission as gen_ai.system_instructions
@@ -593,91 +497,12 @@ func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	}
 }
 
-// RecordToolCall creates a child span for a tool invocation.
-//
-// When content capture is on and the call carries a tool_use ID, the
-// span is not emitted here: the summary is buffered (timestamps frozen)
-// until the enclosing turn's RecordTurnRecord delivers the call's
-// arguments and result, so one execute_tool span carries counters and
-// content together. Calls without an ID are un-keyable for pairing and
-// emit immediately; unmatched entries are flushed as plain spans at
-// Finish.
+// RecordToolCall appends a tool call summary to the run aggregate. Tool
+// calls are recorded as spans through StartToolSpan.
 func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
 	e.toolCalls = append(e.toolCalls, call)
-
-	if e.rootCtx == nil {
-		return
-	}
-
-	spanEnd := time.Now()
-	spanStart := spanEnd.Add(-time.Duration(call.DurationMs) * time.Millisecond)
-
-	if e.captureContent && call.ID != "" {
-		key := pendingToolKey{runID: call.RunID, id: call.ID}
-		if prev, ok := e.pendingToolCalls[key]; ok {
-			// A second summary under the same key without an intervening
-			// record; defensive (mirroring RecordTurn). Flush the stale
-			// entry as a plain span rather than dropping it.
-			e.emitToolSpanLocked(prev.call, prev.spanStart, prev.spanEnd, nil)
-		}
-		if e.pendingToolCalls == nil {
-			e.pendingToolCalls = map[pendingToolKey]pendingToolCall{}
-		}
-		e.pendingToolCalls[key] = pendingToolCall{call: call, spanStart: spanStart, spanEnd: spanEnd}
-		return
-	}
-
-	e.emitToolSpanLocked(call, spanStart, spanEnd, nil)
-}
-
-// emitToolSpanLocked creates and ends the execute_tool child span,
-// mirroring emitTurnSpanLocked's nil-content contract. Must be called
-// with e.mu held.
-//
-// The span name follows the semconv "execute_tool {gen_ai.tool.name}"
-// form, except for unknown-tool failures: the model-requested name is
-// unbounded, so those spans use the bare operation name and carry the
-// raw name only in the bounded-cardinality-safe gen_ai.tool.name
-// attribute.
-func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStart, spanEnd time.Time, content *toolContent) {
-	name := "execute_tool " + call.Name
-	if call.ErrorCategory == string(observability.ToolFailureUnknownTool) {
-		name = "execute_tool"
-	}
-
-	attrs := []attribute.KeyValue{
-		attribute.String(genAIToolNameKey, call.Name),
-		attribute.String(genAIOperationNameKey, "execute_tool"),
-		attribute.Bool("tool.success", call.Success),
-		attribute.Int64("tool.duration_ms", call.DurationMs),
-	}
-	if call.ID != "" {
-		attrs = append(attrs, attribute.String(genAIToolCallIDKey, scrubOrPass(call.ID, e.redactionDisabled)))
-	}
-	if !call.Success && call.ErrorCategory != "" {
-		attrs = append(attrs, attribute.String(errorTypeKey, call.ErrorCategory))
-	}
-	if content != nil {
-		attrs = append(attrs, content.attributes()...)
-	}
-
-	_, span := e.tracer.Start(e.rootCtx, name,
-		oteltrace.WithTimestamp(spanStart),
-		oteltrace.WithAttributes(attrs...),
-	)
-	if !call.Success {
-		// ErrorReason is scrubbed at dispatch time; the second pass here
-		// is defence-in-depth since span status strings bypass ScrubHandler.
-		desc := scrubOrPass(call.ErrorReason, e.redactionDisabled)
-		if desc == "" {
-			desc = "tool call failed"
-		}
-		span.SetStatus(codes.Error, desc)
-	}
-	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
 // RecordPermissionDenial increments the run-level permission denial count.
@@ -700,12 +525,6 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	defer e.mu.Unlock()
 
 	now := time.Now()
-
-	// Flush tool call summaries whose transcript entry never arrived.
-	for _, pending := range e.pendingToolCalls {
-		e.emitToolSpanLocked(pending.call, pending.spanStart, pending.spanEnd, nil)
-	}
-	e.pendingToolCalls = nil
 
 	if e.rootSpan != nil && e.rootSpan.SpanContext().IsValid() {
 		e.rootSpan.SetAttributes(

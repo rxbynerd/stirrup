@@ -77,6 +77,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		DurationMs: 25,
 		Success:    false,
 	})
+	emitter.RecordTurnRecord(captureTurnRecord())
 
 	trace, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
@@ -109,10 +110,11 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatal("expected OTel spans to be exported, got none")
 	}
 
-	// RecordTurn feeds the aggregate only; model requests become spans
-	// through StartChatSpan. 2 tool spans + 1 root span.
-	if len(spans) != 3 {
-		t.Errorf("expected 3 spans, got %d", len(spans))
+	// The Record* methods feed the aggregate only; requests and tool
+	// calls become spans through the live handles, so only the root span
+	// is exported.
+	if len(spans) != 1 {
+		t.Errorf("expected 1 span, got %d", len(spans))
 		for _, s := range spans {
 			t.Logf("  span: %s", s.Name)
 		}
@@ -124,12 +126,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	}
 	if spanNames["invoke_agent stirrup"] != 1 {
 		t.Errorf("expected 1 root span, got %d", spanNames["invoke_agent stirrup"])
-	}
-	if spanNames["execute_tool read_file"] != 1 {
-		t.Errorf("expected 1 'execute_tool read_file' span, got %d", spanNames["execute_tool read_file"])
-	}
-	if spanNames["execute_tool write_file"] != 1 {
-		t.Errorf("expected 1 'execute_tool write_file' span, got %d", spanNames["execute_tool write_file"])
 	}
 
 	var rootSpan tracetest.SpanStub
@@ -178,38 +174,6 @@ func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
 	}
 }
 
-func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-
-	emitter.Start("run-tools", nil)
-
-	emitter.RecordToolCall(types.ToolCallTrace{
-		Name:       "shell",
-		DurationMs: 500,
-		Success:    true,
-	})
-
-	_, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	spans := exporter.GetSpans()
-	var toolSpan tracetest.SpanStub
-	for _, s := range spans {
-		if s.Name == "execute_tool shell" {
-			toolSpan = s
-			break
-		}
-	}
-
-	if toolSpan.Name == "" {
-		t.Fatal("no 'execute_tool shell' span found")
-	}
-
-	assertAttribute(t, toolSpan, genAIToolNameKey, "shell")
-}
-
 // TestOTelTraceEmitter_ResourceAttributes is the regression test for the
 // "unknown_service:stirrup" bug: when no Resource is attached to the
 // TracerProvider, OTel-aware backends (Zipkin, Jaeger, Tempo, ...) display
@@ -220,7 +184,7 @@ func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
 	emitter.Start("run-resource", nil)
-	emitter.RecordToolCall(types.ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true})
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "read_file", Known: true}).End(ToolSpanEnd{})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
@@ -390,10 +354,8 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 			Model:      "claude-opus-4-8",
 		},
 	})
-	emitter.RecordToolCall(types.ToolCallTrace{
-		Name:       "read_file",
-		DurationMs: 1,
-		Success:    true,
+	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "read_file", Known: true}).End(ToolSpanEnd{
+		Summary: &types.ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true},
 	})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
@@ -449,19 +411,6 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
 }
 
-func assertBoolAttribute(t *testing.T, span tracetest.SpanStub, key string, want bool) {
-	t.Helper()
-	for _, attr := range span.Attributes {
-		if string(attr.Key) == key {
-			if got := attr.Value.AsBool(); got != want {
-				t.Errorf("%s: %s = %v, want %v", span.Name, key, got, want)
-			}
-			return
-		}
-	}
-	t.Errorf("%s: attribute %s absent, want %v", span.Name, key, want)
-}
-
 func assertAttributesAbsent(t *testing.T, span tracetest.SpanStub, keys ...string) {
 	t.Helper()
 	for _, attr := range span.Attributes {
@@ -487,29 +436,6 @@ func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
 			t.Errorf("attribute key %q, want semconv %q", got, want)
 		}
 	}
-}
-
-// TestOTelTraceEmitter_UnknownToolSpanNameBounded pins the cardinality
-// bound on tool span names: an unknown-tool failure carries a
-// model-controlled tool name, which must not become an unbounded span
-// name. The raw requested name still rides the gen_ai.tool.name attribute.
-func TestOTelTraceEmitter_UnknownToolSpanNameBounded(t *testing.T) {
-	emitter, exporter := newTestOTelEmitter()
-
-	emitter.Start("run-unknown-tool", nil)
-	emitter.RecordToolCall(types.ToolCallTrace{
-		Name:          "totally_made_up_tool_9000",
-		DurationMs:    1,
-		Success:       false,
-		ErrorReason:   "unknown tool",
-		ErrorCategory: string(observability.ToolFailureUnknownTool),
-	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-
-	span := findSpanByName(t, exporter.GetSpans(), "execute_tool")
-	assertAttribute(t, span, genAIToolNameKey, "totally_made_up_tool_9000")
 }
 
 // findSpanByName fails the test when no span with the given name was
@@ -562,57 +488,6 @@ func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 		assertAttributesAbsent(t, span, errorTypeKey)
 	})
 
-	t.Run("tool error with reason and error.type", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-status-tool", nil)
-		emitter.RecordToolCall(types.ToolCallTrace{
-			Name:          "run_command",
-			DurationMs:    3,
-			Success:       false,
-			ErrorReason:   "exit status 1",
-			ErrorCategory: "execution_failed",
-		})
-		emitter.RecordToolCall(types.ToolCallTrace{
-			Name:       "read_file",
-			DurationMs: 1,
-			Success:    true,
-		})
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		spans := exporter.GetSpans()
-		failed := findSpanByName(t, spans, "execute_tool run_command")
-		if failed.Status.Code != codes.Error {
-			t.Errorf("failed tool status = %v, want Error", failed.Status.Code)
-		}
-		if failed.Status.Description != "exit status 1" {
-			t.Errorf("failed tool status description = %q, want the error reason", failed.Status.Description)
-		}
-		assertAttribute(t, failed, errorTypeKey, "execution_failed")
-
-		ok := findSpanByName(t, spans, "execute_tool read_file")
-		if ok.Status.Code != codes.Unset {
-			t.Errorf("successful tool status = %v, want Unset", ok.Status.Code)
-		}
-		for _, attr := range ok.Attributes {
-			if string(attr.Key) == errorTypeKey {
-				t.Errorf("%s should be absent on successful calls, found %q", errorTypeKey, attr.Value.AsString())
-			}
-		}
-	})
-
-	t.Run("failed tool with empty reason gets fallback description", func(t *testing.T) {
-		emitter, exporter := newTestOTelEmitter()
-		emitter.Start("run-status-tool-bare", nil)
-		emitter.RecordToolCall(types.ToolCallTrace{Name: "edit_file", DurationMs: 1, Success: false})
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
-		span := findSpanByName(t, exporter.GetSpans(), "execute_tool edit_file")
-		if span.Status.Code != codes.Error || span.Status.Description != "tool call failed" {
-			t.Errorf("status = %v %q, want Error with fallback description", span.Status.Code, span.Status.Description)
-		}
-	})
 }
 
 // RecordPromptResolution is config metadata, not content: the attributes
@@ -637,4 +512,3 @@ func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
 	emitter, _ := newTestOTelEmitter()
 	emitter.RecordPromptResolution("claude-fable-5", "frontier")
 }
-

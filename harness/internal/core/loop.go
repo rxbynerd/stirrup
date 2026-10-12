@@ -1329,14 +1329,7 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		return true, &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "none"}, false
 	}
 	start := time.Now()
-	// When the caller's ctx already carries an active span (PhasePreTool,
-	// via toolSpanCtx) nest the guard span under it; PreTurn/PostTurn carry
-	// no span, so fall back to the loop's run-root TraceContext.
-	spanParent := ctx
-	if !oteltrace.SpanFromContext(ctx).SpanContext().IsValid() {
-		spanParent = l.traceCtx(ctx)
-	}
-	_, span := l.Tracer.Start(spanParent, "guard."+string(in.Phase),
+	_, span := l.Tracer.Start(l.spanParent(ctx), "guard."+string(in.Phase),
 		oteltrace.WithAttributes(
 			attribute.String("guard.phase", string(in.Phase)),
 			attribute.String("guard.source", in.Source),

@@ -588,7 +588,7 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 }
 
 // TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn is the OTel shape
-// regression: concurrent async dispatch must create tool.<name> spans as
+// regression: concurrent async dispatch must create execute_tool spans as
 // SIBLINGS of one another (both children of the caller's trace context),
 // not nested. Nesting would mean a later span's "duration" appears to
 // include earlier siblings, breaking dashboards that aggregate tool
@@ -603,7 +603,7 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	loop.Tracer = tp.Tracer("test")
 	config := configWithMaxParallel(2)
 
-	// Open a synthetic "turn" span as the parent for the two tool.<name>
+	// Open a synthetic "turn" span as the parent for the two execute_tool
 	// spans. planAndDispatch reads its parent via l.traceCtx(ctx); we
 	// thread the turn ctx through both ctx and TraceContext to mirror the
 	// real loop's turn boundary.
@@ -632,14 +632,14 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	var turnStub tracetest.SpanStub
 	for _, s := range spans {
 		switch s.Name {
-		case "tool.async_echo":
+		case "execute_tool async_echo":
 			toolSpans = append(toolSpans, s)
 		case "turn[test]":
 			turnStub = s
 		}
 	}
 	if len(toolSpans) != 2 {
-		t.Fatalf("expected 2 tool.async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
+		t.Fatalf("expected 2 execute_tool async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
 	}
 	if turnStub.Name == "" {
 		t.Fatal("turn[test] span not found in exporter")
@@ -660,10 +660,10 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 
 // TestParallelDispatch_UnknownTool_SpanNameSentinel pins the span-name
 // cardinality bound: an unknown (unresolved) tool must open its OTel span
-// as "tool.__unknown__" rather than "tool.<model-controlled name>", so a
-// hostile or buggy provider response cannot pollute trace storage with
-// arbitrary span names. The model-supplied name is still preserved
-// verbatim in the tool.name attribute for debuggability.
+// as the bare "execute_tool" rather than "execute_tool <model-controlled
+// name>", so a hostile or buggy provider response cannot pollute trace
+// storage with arbitrary span names. The model-supplied name is still
+// preserved verbatim in the gen_ai.tool.name attribute for debuggability.
 func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -690,31 +690,31 @@ func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	spans := exporter.GetSpans()
 	var toolSpan *tracetest.SpanStub
 	for i := range spans {
-		if strings.HasPrefix(spans[i].Name, "tool.") {
+		if strings.HasPrefix(spans[i].Name, "execute_tool") {
 			toolSpan = &spans[i]
 			break
 		}
 	}
 	if toolSpan == nil {
-		t.Fatalf("no tool.* span found (spans=%v)", spanNames(spans))
+		t.Fatalf("no execute_tool span found (spans=%v)", spanNames(spans))
 	}
-	if toolSpan.Name != "tool.__unknown__" {
-		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must be substituted with the sentinel)",
-			toolSpan.Name, "tool.__unknown__")
+	if toolSpan.Name != "execute_tool" {
+		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must stay out of the span name)",
+			toolSpan.Name, "execute_tool")
 	}
 	// The raw model-supplied name must still be recorded on the attribute.
 	var sawName bool
 	for _, attr := range toolSpan.Attributes {
-		if string(attr.Key) == "tool.name" {
+		if string(attr.Key) == "gen_ai.tool.name" {
 			sawName = true
 			if attr.Value.AsString() != hostileName {
-				t.Errorf("tool.name attribute = %q, want raw model name %q",
+				t.Errorf("gen_ai.tool.name attribute = %q, want raw model name %q",
 					attr.Value.AsString(), hostileName)
 			}
 		}
 	}
 	if !sawName {
-		t.Error("tool.name attribute missing from unknown-tool span")
+		t.Error("gen_ai.tool.name attribute missing from unknown-tool span")
 	}
 }
 
@@ -773,12 +773,12 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
 	for _, s := range spans {
-		if s.Name == "tool.async_echo" {
+		if s.Name == "execute_tool async_echo" {
 			toolSpans = append(toolSpans, s)
 		}
 	}
 	if len(toolSpans) != n {
-		t.Fatalf("expected %d tool.async_echo spans (one per dispatched call), got %d (names=%v)",
+		t.Fatalf("expected %d execute_tool async_echo spans (one per dispatched call), got %d (names=%v)",
 			n, len(toolSpans), spanNames(spans))
 	}
 	// Every span must be closed: tracetest.SpanStub only appears in

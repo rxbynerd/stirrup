@@ -2,12 +2,16 @@ package core
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -133,6 +137,61 @@ func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
 	}
 	if _, ok := spanAttr(turn3[1], "error.type"); ok {
 		t.Error("successful retry carries error.type")
+	}
+}
+
+func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Permissions = permission.NewAllowAll()
+	loop.Tools.(*tool.Registry).Register(&tool.Tool{
+		Name:              "slow_mutating_tool",
+		Description:       "sleeps then succeeds",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: true,
+		Handler: func(context.Context, json.RawMessage) (string, error) {
+			time.Sleep(20 * time.Millisecond)
+			return "ok", nil
+		},
+	})
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
+		{
+			{Type: "tool_call", ID: "tc_0", Name: "slow_mutating_tool", Input: map[string]any{}},
+			{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}}
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	root := spansNamed(spans, "invoke_agent stirrup")[0]
+	slow := spansNamed(spans, "execute_tool slow_mutating_tool")
+	fast := spansNamed(spans, "execute_tool test_tool")
+	if len(slow) != 1 || len(fast) != 1 {
+		t.Fatalf("found %d and %d execute_tool spans, want one per call", len(slow), len(fast))
+	}
+	for _, s := range spans {
+		if strings.HasPrefix(s.Name, "tool.") {
+			t.Errorf("legacy tool span %q exported", s.Name)
+		}
+	}
+	requireParent(t, slow[0], root)
+	requireParent(t, fast[0], root)
+	perm := spansNamed(spans, "permission.check")
+	if len(perm) != 1 {
+		t.Fatalf("found %d permission.check spans, want 1", len(perm))
+	}
+	requireParent(t, perm[0], slow[0])
+	if slow[0].EndTime.After(fast[0].StartTime) {
+		t.Errorf("first call's span ends at %v, after the second call's span starts at %v", slow[0].EndTime, fast[0].StartTime)
+	}
+	if got, _ := spanAttr(slow[0], "gen_ai.tool.call.id"); got != "tc_0" {
+		t.Errorf("gen_ai.tool.call.id = %q", got)
 	}
 }
 

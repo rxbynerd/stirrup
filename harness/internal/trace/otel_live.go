@@ -76,6 +76,28 @@ func (e *OTelTraceEmitter) takeOpenHandles() []liveHandle {
 	return handles
 }
 
+// retainRunContentLocked feeds a captured request's content into its
+// run's I/O slot. Input is set-once (the first request's seed prompt);
+// output overwrites so the final assistant message wins, and an empty
+// serialisation never clobbers earlier content. Must be called with e.mu
+// held.
+func (e *OTelTraceEmitter) retainRunContentLocked(runID string, content *turnContent) {
+	if e.runContent == nil {
+		e.runContent = map[string]*turnContent{}
+	}
+	run, ok := e.runContent[runID]
+	if !ok {
+		run = &turnContent{}
+		e.runContent[runID] = run
+	}
+	if run.inputMessages == "" {
+		run.inputMessages = content.inputMessages
+	}
+	if content.outputMessages != "" {
+		run.outputMessages = content.outputMessages
+	}
+}
+
 // StartChatSpan opens a CLIENT span for one model request under parent.
 func (e *OTelTraceEmitter) StartChatSpan(parent context.Context, start ChatSpanStart) ChatSpan {
 	e.mu.Lock()

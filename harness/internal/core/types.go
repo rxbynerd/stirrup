@@ -342,6 +342,16 @@ func (l *AgenticLoop) traceCtx(fallback context.Context) context.Context {
 	return fallback
 }
 
+// spanParent returns ctx when it carries an active span (a tool call's
+// span, for example), so the new span nests under it; otherwise the run
+// span's context.
+func (l *AgenticLoop) spanParent(ctx context.Context) context.Context {
+	if oteltrace.SpanFromContext(ctx).SpanContext().IsValid() {
+		return ctx
+	}
+	return l.traceCtx(ctx)
+}
+
 // metricAttrs returns a metric.MeasurementOption that combines the loop's
 // MetricAttrs (set per-run, e.g. subagent=true on child loops) with the
 // supplied per-call extras. Used at every metric instrument call site so
@@ -440,7 +450,7 @@ func (l *AgenticLoop) executeToolCall(ctx context.Context, t *tool.Tool, call ty
 	// Check permissions for tools that mutate the workspace or otherwise
 	// require upstream approval (e.g. web_fetch, spawn_agent).
 	if t.WorkspaceMutating || t.RequiresApproval {
-		_, permSpan := l.Tracer.Start(l.traceCtx(ctx), "permission.check",
+		_, permSpan := l.Tracer.Start(l.spanParent(ctx), "permission.check",
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
 			),

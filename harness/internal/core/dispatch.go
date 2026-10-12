@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -30,9 +29,12 @@ const unknownToolMetricName = "__unknown__"
 // caller of planAndDispatch.
 type pendingCall struct {
 	call      types.ToolCall
-	span      oteltrace.Span
+	span      trace.ToolSpan
 	spanCtx   context.Context //nolint:containedctx // span parent ctx threaded into dispatch
 	startedAt time.Time
+	// finishedAt is when the call's outcome was settled, so a call's span
+	// does not include the calls dispatched after it.
+	finishedAt time.Time
 	// internalName is the canonical internal tool ID call.Name resolves to
 	// under the active toolset profile. Equal to call.Name under the
 	// default profile and for unknown tools.
@@ -46,7 +48,6 @@ type pendingCall struct {
 	structured  structuredOutput // optional typed result payload + kind; zero value for text-only tools and every failure path
 	success     bool
 	errorReason string // trace reason overriding the scrubbed output (guard deny, invalid arguments); apply security.Scrub before setting
-	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
 	// failureCategory is the bounded ToolFailureCategory describing why
 	// this call failed; empty when success is true.
 	failureCategory observability.ToolFailureCategory
@@ -88,25 +89,10 @@ func (l *AgenticLoop) planAndDispatch(
 		// internal tool ID rather than the model-facing alias.
 		t := l.Tools.Resolve(call.Name)
 
-		// Bound the span name's cardinality the same way as the metric
-		// label below: an unknown tool's name is model-controlled, so the
-		// span name uses the __unknown__ sentinel while the raw name is
-		// still preserved in the tool.name attribute.
-		spanName := "tool." + call.Name
-		if t == nil {
-			spanName = "tool." + unknownToolMetricName
-		}
-		// Span parented under l.traceCtx(ctx) (nests under the trace
-		// emitter's root) but the propagated span ctx is rooted in the
-		// cancellable ctx — otherwise the dispatch goroutines below would
-		// not observe run cancellation until the async tool timeout expires.
-		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), spanName,
-			oteltrace.WithAttributes(
-				attribute.String("tool.name", call.Name),
-				attribute.Int("tool.input_size", toolInputSize(call)),
-			),
-		)
-		toolSpanCtx := oteltrace.ContextWithSpan(ctx, toolSpan)
+		// The span nests under the run span, but toolSpanCtx descends from
+		// the cancellable ctx so the dispatch goroutines below observe run
+		// cancellation.
+		toolSpanCtx, toolSpan := l.startToolSpan(ctx, call, t != nil)
 		callMeta := tool.CallContextFrom(ctx)
 		callMeta.ToolUseID = call.ID
 		toolSpanCtx = tool.WithCallContext(toolSpanCtx, callMeta)
@@ -135,13 +121,14 @@ func (l *AgenticLoop) planAndDispatch(
 			if rejectCategory == observability.ToolFailureInvalidArguments {
 				plan[i].errorReason = invalidArgsTraceReason(call.Name, call.InvalidInput)
 			}
+			plan[i].finishedAt = time.Now()
 			continue
 		}
 		plan[i].tool = t
 		plan[i].input = input
 
 		// PhasePreTool guard. Passes the tool-span ctx so guard.pre_tool
-		// nests under tool.<name>. ToolName is the internal ID so a rule
+		// nests under execute_tool. ToolName is the internal ID so a rule
 		// written against an internal name fires under any toolset
 		// profile. A deny short-circuits dispatch as a tool failure.
 		preToolIn := guard.Input{
@@ -164,11 +151,11 @@ func (l *AgenticLoop) planAndDispatch(
 			if preToolDecision != nil && preToolDecision.Reason != "" {
 				reason = blockedToolMessage + ": " + security.Scrub(preToolDecision.Reason)
 			}
-			plan[i].denied = true
 			plan[i].output = blockedToolMessage
 			plan[i].success = false
 			plan[i].errorReason = reason
 			plan[i].failureCategory = observability.ToolFailureGuardrailDenied
+			plan[i].finishedAt = time.Now()
 			continue
 		}
 
@@ -182,6 +169,7 @@ func (l *AgenticLoop) planAndDispatch(
 		plan[i].structured = structured
 		plan[i].success = success
 		plan[i].failureCategory = category
+		plan[i].finishedAt = time.Now()
 	}
 
 	// Phase 2: fan out async calls under a bounded semaphore. Defend
@@ -212,6 +200,7 @@ func (l *AgenticLoop) planAndDispatch(
 						plan[idx].output = msg
 						plan[idx].success = false
 						plan[idx].failureCategory = observability.ToolFailureAsyncPanic
+						plan[idx].finishedAt = time.Now()
 						l.Logger.Error(
 							"async tool panic recovered",
 							"tool", plan[idx].call.Name,
@@ -225,6 +214,7 @@ func (l *AgenticLoop) planAndDispatch(
 				plan[idx].structured = structured
 				plan[idx].success = success
 				plan[idx].failureCategory = category
+				plan[idx].finishedAt = time.Now()
 			}()
 		}
 		// Wait under cancellation: ctx cancellation propagates through
@@ -243,31 +233,12 @@ func (l *AgenticLoop) planAndDispatch(
 		p := &plan[i]
 		callDuration := time.Since(p.startedAt)
 
-		// Compute the bounded failure category up front: it feeds both the
-		// span attribute set and the tool_failures metric emission below.
+		// The bounded failure category feeds the span's error.type and the
+		// tool_failures metric emission below.
 		errorCategory := ""
 		if !p.success && p.failureCategory.IsValid() {
 			errorCategory = p.failureCategory.String()
 		}
-
-		// Attributes MUST be set before End() — OTel SDKs typically drop
-		// SetAttributes on an already-ended span.
-		spanAttrs := []attribute.KeyValue{
-			attribute.Bool("tool.success", p.success),
-			attribute.Int("tool.output_size", len(p.output)),
-			attribute.Int64("tool.duration_ms", callDuration.Milliseconds()),
-		}
-		if errorCategory != "" {
-			spanAttrs = append(spanAttrs, attribute.String("tool.failure_category", errorCategory))
-		}
-		p.span.SetAttributes(spanAttrs...)
-		switch {
-		case p.denied:
-			p.span.SetStatus(codes.Error, "guardrail_denied")
-		case !p.success:
-			p.span.SetStatus(codes.Error, "tool call failed")
-		}
-		p.span.End()
 
 		// Guard-denial and invalid arguments carry their own reason;
 		// other failures carry the scrubbed dispatch output (raw error
@@ -285,7 +256,7 @@ func (l *AgenticLoop) planAndDispatch(
 		if p.internalName != p.call.Name {
 			internalForTrace = p.internalName
 		}
-		l.Trace.RecordToolCall(types.ToolCallTrace{
+		callTrace := types.ToolCallTrace{
 			ID:            p.call.ID,
 			Name:          p.call.Name,
 			InternalName:  internalForTrace,
@@ -295,7 +266,7 @@ func (l *AgenticLoop) planAndDispatch(
 			InputSize:     toolInputSize(p.call),
 			OutputSize:    len(p.output),
 			ErrorCategory: errorCategory,
-		})
+		}
 
 		metricToolName := l.emitToolCallMetrics(ctx, p, callDuration, providerType, providerModel, config.Mode)
 
@@ -324,6 +295,8 @@ func (l *AgenticLoop) planAndDispatch(
 			Kind:         p.structured.kind,
 			IsError:      !p.success,
 		}
+		p.span.End(trace.ToolSpanEnd{Summary: &callTrace, Record: &toolRecords[i], EndTime: p.finishedAt})
+		l.Trace.RecordToolCall(callTrace)
 
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type:      "tool_result",
@@ -363,7 +336,7 @@ func (l *AgenticLoop) planAndDispatch(
 			// dispatched them). Their trace/metric/transport side effects
 			// are intentionally dropped to match the sequential code.
 			for j := i + 1; j < len(plan); j++ {
-				plan[j].span.End()
+				plan[j].span.End(trace.ToolSpanEnd{EndTime: plan[j].finishedAt})
 			}
 			// Truncate to the calls actually observed by the stall
 			// detector, matching the sequential code's early return.

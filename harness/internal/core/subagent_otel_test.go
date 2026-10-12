@@ -157,13 +157,13 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 
 	var toolSpan tracetest.SpanStub
 	for _, s := range spans {
-		if s.Name == "tool.spawn_agent" {
+		if s.Name == "execute_tool spawn_agent" {
 			toolSpan = s
 			break
 		}
 	}
 	if toolSpan.Name == "" {
-		t.Fatal("no tool.spawn_agent span found in exported spans")
+		t.Fatal("no execute_tool spawn_agent span found in exported spans")
 	}
 	toolSpanID := toolSpan.SpanContext.SpanID()
 	if !toolSpanID.IsValid() {
@@ -197,7 +197,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 }
 
 // TestLoop_PreToolGuardSpanNestsUnderToolSpan pins that the guard.pre_tool
-// span created inside guardCheck is parented to the tool.<name> span, not
+// span created inside guardCheck is parented to the execute_tool span, not
 // the run root, so traces show "tool dispatch -> guard pre-tool denied"
 // as a nested operation.
 func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
@@ -258,21 +258,21 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 	var toolSpan, guardSpan tracetest.SpanStub
 	for _, s := range spans {
 		switch s.Name {
-		case "tool.test_tool":
+		case "execute_tool test_tool":
 			toolSpan = s
 		case "guard.pre_tool":
 			guardSpan = s
 		}
 	}
 	if toolSpan.Name == "" {
-		t.Fatal("no tool.test_tool span found in exported spans")
+		t.Fatal("no execute_tool test_tool span found in exported spans")
 	}
 	if guardSpan.Name == "" {
 		t.Fatal("no guard.pre_tool span found in exported spans")
 	}
 
 	if guardSpan.Parent.SpanID() != toolSpan.SpanContext.SpanID() {
-		t.Errorf("guard.pre_tool.Parent.SpanID = %s, want tool.test_tool SpanID %s",
+		t.Errorf("guard.pre_tool.Parent.SpanID = %s, want execute_tool test_tool SpanID %s",
 			guardSpan.Parent.SpanID(), toolSpan.SpanContext.SpanID())
 		t.Log("emitted spans (name -> parent.SpanID -> span.SpanID):")
 		for _, s := range spans {
