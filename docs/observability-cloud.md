@@ -224,6 +224,40 @@ carry the same cache figures as metrics, and
 sub-agent's totals under the parent's `parent.mode`. Each cache
 counter records only non-zero figures.
 
+## GenAI client metrics
+
+Alongside the `stirrup.*` instruments, every run exports the
+OpenTelemetry GenAI client metrics, which managed APMs read for their
+out-of-the-box GenAI dashboards and cost views. The metric names and
+attributes follow semantic conventions v1.41, while the Go semconv
+package the harness imports is pinned at v1.40.0:
+
+| Metric | Unit | Recorded |
+|---|---|---|
+| `gen_ai.client.token.usage` | `{token}` | Per provider request attempt, as reported by the provider: `gen_ai.token.type=input` (total input including cached tokens) and `gen_ai.token.type=output`. A count the provider did not report is not recorded, and harness estimates never appear. A failed attempt records the usage it reported before failing. |
+| `gen_ai.client.operation.duration` | `s` | Once per provider request attempt. Turn-level retries appear as separate points; HTTP retries inside an adapter (429 and 5xx responses) and their backoff are part of one point's duration. Failed attempts carry `error.type` (`provider_request_failed` or `provider_stream_failed`). |
+| `gen_ai.client.operation.time_to_first_chunk` | `s` | Once per streamed request, when the first chunk arrives. |
+
+All three carry `gen_ai.operation.name` (always `chat`),
+`gen_ai.provider.name`, `gen_ai.request.model`, and, when known,
+`gen_ai.response.model`, `server.address` and `server.port`. The
+response model is unknown when the first chunk arrives, so
+`time_to_first_chunk` omits it. The server attributes derive from the
+provider endpoint and are omitted for Bedrock. Run IDs, conversation
+IDs, and tool names are never attached, which keeps the series count
+proportional to the configured providers and models. Sub-agent turns
+and the auxiliary model calls made outside the agentic loop (the
+`summarise` context strategy, the `llm-judge` verifier, and the
+`cloud-judge` guard) are inference calls and record the same metrics.
+
+The histograms use the specification's advisory bucket boundaries.
+Durations are in seconds, whereas the `stirrup.*` duration histograms
+(`stirrup.harness.provider_latency`, `provider_ttfb`, and the rest)
+are in milliseconds and are unchanged. The token counters
+`stirrup.harness.tokens.*` and `stirrup.subagent.tokens.*` also carry
+`gen_ai.provider.name` and `gen_ai.request.model`, so token totals
+split by provider and model without the histograms.
+
 ## Span content capture (opt-in)
 
 By default the otel emitter records turn-level counters (tokens,

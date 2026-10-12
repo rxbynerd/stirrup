@@ -690,10 +690,15 @@ them `stirrup.harness.runs`, `.turns`, `.tokens.input`,
 `.provider.errors`, `.context.compactions`, `.security.events`,
 `.verification.attempts`, `.stalls`, and the `stirrup.subagent.*`
 component counters), 5 histograms (run, turn, tool-call duration; provider
-latency; TTFB), and 1 UpDownCounter (context token estimate). All
+latency; TTFB), the three OpenTelemetry GenAI client histograms
+(`gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
+`gen_ai.client.operation.time_to_first_chunk`; see
+[`observability-cloud.md`](observability-cloud.md#genai-client-metrics)),
+and 1 UpDownCounter (context token estimate). The `stirrup.*`
 instruments use standard attributes (`run.mode`, `provider.type`,
-`tool.name`). `NewNoopMetrics()` provides a zero-cost no-op when
-metrics are disabled.
+`tool.name`); the token counters also carry `gen_ai.provider.name` and
+`gen_ai.request.model`. `NewNoopMetrics()` provides a zero-cost no-op
+when metrics are disabled.
 
 `stirrup.harness.tool_failures` decomposes `.tool_errors` by a
 bounded `category` label drawn from the `ToolFailureCategory` enum
