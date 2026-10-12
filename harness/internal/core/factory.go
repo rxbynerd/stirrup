@@ -389,9 +389,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
 		metrics, err = observability.NewMetrics(ctx, otlp.Settings{
-			Protocol: config.TraceEmitter.Protocol,
-			Endpoint: metricsEndpoint,
-			Headers:  resolvedHeaders,
+			Protocol:    config.TraceEmitter.Protocol,
+			Endpoint:    metricsEndpoint,
+			Headers:     resolvedHeaders,
+			Temporality: config.TraceEmitter.MetricsTemporality,
 		}, resourceOpts)
 		if err != nil {
 			cleanup()

@@ -938,8 +938,14 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		if err := cmd.Flags().Set("otel-metrics-endpoint", "https://metrics.example/otlp"); err != nil {
 			t.Fatalf("set otel-metrics-endpoint: %v", err)
 		}
+		if err := cmd.Flags().Set("otel-metrics-temporality", "delta"); err != nil {
+			t.Fatalf("set otel-metrics-temporality: %v", err)
+		}
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.MetricsTemporality != "delta" {
+			t.Errorf("MetricsTemporality override failed: %q", cfg.TraceEmitter.MetricsTemporality)
 		}
 
 		if !cfg.TraceEmitter.CaptureContent {
@@ -954,13 +960,17 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
-			Type:            "otel",
-			CaptureContent:  true,
-			MetricsEndpoint: "https://metrics.from-file/otlp",
+			Type:               "otel",
+			CaptureContent:     true,
+			MetricsEndpoint:    "https://metrics.from-file/otlp",
+			MetricsTemporality: "cumulative",
 		}
 
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.MetricsTemporality != "cumulative" {
+			t.Errorf("MetricsTemporality from file should survive, got %q", cfg.TraceEmitter.MetricsTemporality)
 		}
 
 		if !cfg.TraceEmitter.CaptureContent {
@@ -978,22 +988,23 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 // the jsonl emitter (matching how OTelEndpoint is already scoped).
 func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	base := harnessCLIOptions{
-		RunID:               "test-run",
-		Mode:                "execution",
-		Prompt:              "test",
-		ProviderType:        "anthropic",
-		APIKeyRef:           "secret://ANTHROPIC_API_KEY",
-		Model:               "claude-sonnet-4-6",
-		MaxTurns:            20,
-		Timeout:             600,
-		TransportType:       "stdio",
-		LogLevel:            "info",
-		TraceEmitterType:    "otel",
-		OTelEndpoint:        "https://gw.example/otlp",
-		OTelProtocol:        "http/protobuf",
-		OTelHeaders:         map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
-		OTelMetricsEndpoint: "https://gw.example/otlp",
-		OTelCaptureContent:  true,
+		RunID:                  "test-run",
+		Mode:                   "execution",
+		Prompt:                 "test",
+		ProviderType:           "anthropic",
+		APIKeyRef:              "secret://ANTHROPIC_API_KEY",
+		Model:                  "claude-sonnet-4-6",
+		MaxTurns:               20,
+		Timeout:                600,
+		TransportType:          "stdio",
+		LogLevel:               "info",
+		TraceEmitterType:       "otel",
+		OTelEndpoint:           "https://gw.example/otlp",
+		OTelProtocol:           "http/protobuf",
+		OTelHeaders:            map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
+		OTelMetricsEndpoint:    "https://gw.example/otlp",
+		OTelMetricsTemporality: "delta",
+		OTelCaptureContent:     true,
 	}
 
 	cfg, err := buildHarnessRunConfig(base)
@@ -1009,6 +1020,9 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if !cfg.TraceEmitter.CaptureContent {
 		t.Error("CaptureContent should propagate on otel emitter")
 	}
+	if cfg.TraceEmitter.MetricsTemporality != "delta" {
+		t.Errorf("MetricsTemporality should propagate, got %q", cfg.TraceEmitter.MetricsTemporality)
+	}
 
 	jsonlOpts := base
 	jsonlOpts.TraceEmitterType = "jsonl"
@@ -1016,7 +1030,7 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig (jsonl): %v", err)
 	}
-	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" {
+	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" || cfg.TraceEmitter.MetricsTemporality != "" {
 		t.Errorf("otel-only fields must not leak onto the jsonl emitter, got %+v", cfg.TraceEmitter)
 	}
 }

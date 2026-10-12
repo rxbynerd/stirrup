@@ -14,6 +14,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -287,6 +288,47 @@ func (c *countingTransport) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.n
+}
+
+func TestNewMetricExporter_Temporality(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name        string
+		temporality string
+		env         string
+		want        metricdata.Temporality
+	}{
+		{"default is cumulative", "", "", metricdata.CumulativeTemporality},
+		{"env applies when unset", "", "delta", metricdata.DeltaTemporality},
+		{"explicit delta", TemporalityDelta, "", metricdata.DeltaTemporality},
+		{"explicit field beats env", TemporalityCumulative, "delta", metricdata.CumulativeTemporality},
+	}
+	for _, tc := range cases {
+		for _, protocol := range []string{ProtocolGRPC, ProtocolHTTPProtobuf} {
+			t.Run(tc.name+"/"+protocol, func(t *testing.T) {
+				t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", tc.env)
+				exp, err := NewMetricExporter(ctx, Settings{
+					Protocol:    protocol,
+					Endpoint:    "127.0.0.1:1",
+					Temporality: tc.temporality,
+				})
+				if err != nil {
+					t.Fatalf("NewMetricExporter: %v", err)
+				}
+				defer func() { _ = exp.Shutdown(ctx) }()
+				if got := exp.Temporality(sdkmetric.InstrumentKindCounter); got != tc.want {
+					t.Errorf("counter temporality = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestNewMetricExporter_RejectsUnknownTemporality(t *testing.T) {
+	_, err := NewMetricExporter(context.Background(), Settings{Endpoint: "127.0.0.1:1", Temporality: "lowmemory"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported metrics temporality") {
+		t.Errorf("err = %v, want an unsupported metrics temporality error", err)
+	}
 }
 
 func TestConstructors_RejectUnknownProtocol(t *testing.T) {

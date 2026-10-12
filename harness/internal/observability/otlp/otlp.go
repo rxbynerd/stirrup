@@ -60,6 +60,34 @@ type Settings struct {
 	// caller wrap the transport. It must carry an explicit timeout.
 	// Rejected for gRPC, which has no HTTP transport to wrap.
 	HTTPClient *http.Client
+
+	// Temporality is the metric aggregation temporality: "",
+	// TemporalityCumulative, or TemporalityDelta. Empty leaves the choice
+	// to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and then the SDK
+	// default (cumulative); the SDK reads that variable only when no
+	// selector is passed. Consulted by NewMetricExporter only.
+	Temporality string
+}
+
+// Metric aggregation temporalities accepted on Settings.Temporality.
+const (
+	TemporalityCumulative = "cumulative"
+	TemporalityDelta      = "delta"
+)
+
+// temporalitySelector maps Settings.Temporality to the SDK selector, or nil
+// when the SDK should apply its environment and default.
+func temporalitySelector(t string) (sdkmetric.TemporalitySelector, error) {
+	switch t {
+	case "":
+		return nil, nil
+	case TemporalityCumulative:
+		return sdkmetric.CumulativeTemporalitySelector, nil
+	case TemporalityDelta:
+		return sdkmetric.DeltaTemporalitySelector, nil
+	default:
+		return nil, fmt.Errorf("unsupported metrics temporality %q (allowed: cumulative, delta)", t)
+	}
 }
 
 // endpoint is Settings.Endpoint split into the pieces the SDK options take.
@@ -155,6 +183,10 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 	if err != nil {
 		return nil, err
 	}
+	selector, err := temporalitySelector(s.Temporality)
+	if err != nil {
+		return nil, err
+	}
 	if grpc {
 		var opts []otlpmetricgrpc.Option
 		if s.Endpoint != "" {
@@ -166,6 +198,9 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlpmetricgrpc.WithHeaders(s.Headers))
+		}
+		if selector != nil {
+			opts = append(opts, otlpmetricgrpc.WithTemporalitySelector(selector))
 		}
 		return otlpmetricgrpc.New(ctx, opts...)
 	}
@@ -185,6 +220,9 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 	}
 	if s.HTTPClient != nil {
 		opts = append(opts, otlpmetrichttp.WithHTTPClient(s.HTTPClient))
+	}
+	if selector != nil {
+		opts = append(opts, otlpmetrichttp.WithTemporalitySelector(selector))
 	}
 	return otlpmetrichttp.New(ctx, opts...)
 }

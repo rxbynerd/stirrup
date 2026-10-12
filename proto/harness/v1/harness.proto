@@ -2060,6 +2060,12 @@ message TraceEmitterConfig {
   // validation for the jsonl and gcs emitters.
   bool capture_content = 9;
 
+  // For "otel": aggregation temporality of exported metrics. Closed set:
+  //   "" | "cumulative" | "delta"
+  // Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and
+  // then the SDK default (cumulative). Rejected for jsonl and gcs.
+  string metrics_temporality = 10;
+
   // For "gcs": joined with the run ID at write time to form the final
   // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
   // allowed; trailing slash is normalised by validation. Only consulted

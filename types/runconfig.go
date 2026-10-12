@@ -1247,6 +1247,11 @@ type TraceEmitterConfig struct {
 	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
 
+	// MetricsTemporality selects the aggregation temporality of exported
+	// metrics: "" (OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE, then
+	// cumulative), "cumulative", or "delta". Only valid when type=="otel".
+	MetricsTemporality string `json:"metricsTemporality,omitempty"`
+
 	// Bucket is the GCS bucket the "gcs" emitter writes the run's JSONL
 	// trace to. Required when Type == "gcs"; rejected for every other type.
 	Bucket string `json:"bucket,omitempty"`
@@ -1797,6 +1802,15 @@ var validTraceEmitterProtocols = map[string]bool{
 	"":              true,
 	"grpc":          true,
 	"http/protobuf": true,
+}
+
+// validTraceEmitterMetricsTemporalities is the closed set of
+// TraceEmitterConfig.MetricsTemporality values. Empty defers to the OTel
+// SDK's environment variable and its cumulative default.
+var validTraceEmitterMetricsTemporalities = map[string]bool{
+	"":           true,
+	"cumulative": true,
+	"delta":      true,
 }
 
 // validLogsExportTypes is the closed set of
@@ -4845,6 +4859,12 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			cfg.Protocol,
 		))
 	}
+	if !validTraceEmitterMetricsTemporalities[cfg.MetricsTemporality] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported traceEmitter.metricsTemporality %q (allowed: \"\", cumulative, delta)",
+			cfg.MetricsTemporality,
+		))
+	}
 	// Protocol/Headers/CaptureContent are otel-only. The jsonl and gcs
 	// emitters do not negotiate a wire protocol, send HTTP headers, or
 	// promote content onto spans; carrying these fields on a non-otel
@@ -4866,6 +4886,12 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 		if cfg.CaptureContent {
 			*errs = append(*errs, fmt.Sprintf(
 				"traceEmitter.captureContent is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.MetricsTemporality != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.metricsTemporality is only valid when traceEmitter.type is \"otel\" (got type %q)",
 				cfg.Type,
 			))
 		}

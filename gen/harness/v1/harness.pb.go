@@ -4873,6 +4873,13 @@ type TraceEmitterConfig struct {
 	// secret-shaped substrings before any attribute is set. Rejected by
 	// validation for the jsonl and gcs emitters.
 	CaptureContent bool `protobuf:"varint,9,opt,name=capture_content,json=captureContent,proto3" json:"capture_content,omitempty"`
+	// For "otel": aggregation temporality of exported metrics. Closed set:
+	//
+	//	"" | "cumulative" | "delta"
+	//
+	// Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and
+	// then the SDK default (cumulative). Rejected for jsonl and gcs.
+	MetricsTemporality string `protobuf:"bytes,10,opt,name=metrics_temporality,json=metricsTemporality,proto3" json:"metrics_temporality,omitempty"`
 	// For "gcs": joined with the run ID at write time to form the final
 	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
 	// allowed; trailing slash is normalised by validation. Only consulted
@@ -4966,6 +4973,13 @@ func (x *TraceEmitterConfig) GetCaptureContent() bool {
 		return x.CaptureContent
 	}
 	return false
+}
+
+func (x *TraceEmitterConfig) GetMetricsTemporality() string {
+	if x != nil {
+		return x.MetricsTemporality
+	}
+	return ""
 }
 
 func (x *TraceEmitterConfig) GetObjectPrefix() string {
@@ -5630,7 +5644,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\x99\x03\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\xca\x03\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -5639,7 +5653,9 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
 	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x12\x16\n" +
 	"\x06bucket\x18\a \x01(\tR\x06bucket\x12'\n" +
-	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12#\n" +
+	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12/\n" +
+	"\x13metrics_temporality\x18\n" +
+	" \x01(\tR\x12metricsTemporality\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +

@@ -317,6 +317,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	otelProtocol, _ := f.GetString("otel-protocol")
 	otelHeaderRaw, _ := f.GetStringArray("otel-header")
 	otelMetricsEndpoint, _ := f.GetString("otel-metrics-endpoint")
+	otelMetricsTemporality, _ := f.GetString("otel-metrics-temporality")
 	otelCaptureContent, _ := f.GetBool("otel-capture-content")
 	containerRuntime, _ := f.GetString("container-runtime")
 	k8sNamespace, _ := f.GetString("k8s-namespace")
@@ -439,6 +440,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		OTelProtocol:                 otelProtocol,
 		OTelHeaders:                  otelHeaders,
 		OTelMetricsEndpoint:          otelMetricsEndpoint,
+		OTelMetricsTemporality:       otelMetricsTemporality,
 		OTelCaptureContent:           otelCaptureContent,
 		ContainerRuntime:             containerRuntime,
 		K8sNamespace:                 k8sNamespace,

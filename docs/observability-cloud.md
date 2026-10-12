@@ -350,6 +350,15 @@ are in milliseconds and are unchanged. The token counters
 `gen_ai.provider.name` and `gen_ai.request.model`, so token totals
 split by provider and model without the histograms.
 
+Metrics are exported with cumulative temporality unless configured
+otherwise. `traceEmitter.metricsTemporality` (CLI:
+`--otel-metrics-temporality`) selects `cumulative` or `delta`; when it
+is empty, the SDK reads
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. An explicit field
+wins over the environment variable. Under `delta`, counters and
+histograms report deltas and up-down counters stay cumulative, as the
+OpenTelemetry specification defines for that preference.
+
 ## Span content capture (opt-in)
 
 By default the otel emitter records per-request counters (tokens,

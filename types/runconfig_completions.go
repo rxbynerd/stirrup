@@ -53,6 +53,12 @@ func ValidTraceEmitterProtocolValues() []string {
 	return sortedNonEmptyKeys(validTraceEmitterProtocols)
 }
 
+// ValidTraceEmitterMetricsTemporalityValues returns the metric aggregation
+// temporalities accepted on RunConfig.TraceEmitter.MetricsTemporality.
+func ValidTraceEmitterMetricsTemporalityValues() []string {
+	return sortedNonEmptyKeys(validTraceEmitterMetricsTemporalities)
+}
+
 // ValidLogsExportTypeValues returns the log-export types accepted on
 // RunConfig.Observability.LogsExport.Type.
 func ValidLogsExportTypeValues() []string {

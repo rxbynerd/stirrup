@@ -5185,6 +5185,32 @@ func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_MetricsTemporality pins the closed set of
+// traceEmitter.metricsTemporality values and its otel-only scope.
+func TestValidateRunConfig_MetricsTemporality(t *testing.T) {
+	for _, temporality := range []string{"", "cumulative", "delta"} {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: temporality}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("metricsTemporality %q on otel must be valid: %v", temporality, err)
+		}
+	}
+
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: "lowmemory"}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "unsupported traceEmitter.metricsTemporality") {
+		t.Errorf("expected an unsupported metricsTemporality error, got: %v", err)
+	}
+
+	c = validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", MetricsTemporality: "delta"}
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "traceEmitter.metricsTemporality is only valid") {
+		t.Errorf("expected an otel-only metricsTemporality error, got: %v", err)
+	}
+}
+
 // TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins that the gRPC OTLP
 // exporters dial host:port endpoints in plaintext, so a bearer/Basic credential
 // in Headers would transmit unencrypted; the validator rejects the combination

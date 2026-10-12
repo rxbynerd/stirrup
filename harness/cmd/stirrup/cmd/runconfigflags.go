@@ -67,6 +67,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
 	f.StringArray("otel-header", nil, "Repeatable key=value HTTP header attached to every OTLP export request (e.g. --otel-header Authorization=secret://LANGFUSE_AUTH). Values may be secret:// references resolved at exporter init; never pass raw secrets. Requires --otel-protocol=http/protobuf (the gRPC path would send credentials in plaintext). Mirrors traceEmitter.headers; the OTEL_EXPORTER_OTLP_HEADERS env var is the SDK-native fallback when no headers are configured.")
 	f.String("otel-metrics-endpoint", "", "OTLP endpoint for the otel metrics exporter when metrics target a different collector than traces. Defaults to --otel-endpoint when unset. Mirrors traceEmitter.metricsEndpoint.")
+	f.String("otel-metrics-temporality", "", "Aggregation temporality for otel metrics: cumulative or delta. Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE, then cumulative. Mirrors traceEmitter.metricsTemporality.")
 	f.Bool("otel-capture-content", false, "Opt the otel trace emitter into recording prompt/completion content on spans via the GenAI semconv attributes (gen_ai.input.messages, gen_ai.output.messages, gen_ai.system_instructions). OFF by default: message content is likely to contain PII. Content is scrubbed for secret-shaped substrings before export. Mirrors traceEmitter.captureContent.")
 
 	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc, kata-clh. Empty means the platform default — for container the engine default (typically runc), for k8s the cluster-default RuntimeClass, which may be unsandboxed; set this (e.g. gvisor for k8s) for guaranteed isolation. Requires the runtime to be registered with the host Docker/Podman daemon — see docs/safety-rings.md. For the k8s executor this same field maps to the Pod RuntimeClassName (closed set: runc, gvisor, kata-qemu, kata-fc, kata-clh); note shell completions list the container set only, so gvisor is valid for k8s but not offered. The k8s-sandbox executor is gVisor-only: leave this empty or set it to gvisor (any other value is rejected).")
@@ -129,6 +130,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("transport", types.ValidTransportTypeValues())
 	staticValues("trace-emitter", types.ValidTraceEmitterTypeValues())
 	staticValues("otel-protocol", types.ValidTraceEmitterProtocolValues())
+	staticValues("otel-metrics-temporality", types.ValidTraceEmitterMetricsTemporalityValues())
 	staticValues("log-export", types.ValidLogsExportTypeValues())
 	staticValues("container-runtime", types.ValidExecutorRuntimeValues())
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())

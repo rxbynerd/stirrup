@@ -261,15 +261,16 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		// Credential is intentionally not on the proto yet; see
 		// harness.proto TraceEmitterConfig.
 		rc.TraceEmitter = types.TraceEmitterConfig{
-			Type:            pc.TraceEmitter.Type,
-			FilePath:        pc.TraceEmitter.FilePath,
-			Endpoint:        pc.TraceEmitter.Endpoint,
-			MetricsEndpoint: pc.TraceEmitter.MetricsEndpoint,
-			Protocol:        pc.TraceEmitter.Protocol,
-			Headers:         pc.TraceEmitter.Headers,
-			Bucket:          pc.TraceEmitter.Bucket,
-			ObjectPrefix:    pc.TraceEmitter.ObjectPrefix,
-			CaptureContent:  pc.TraceEmitter.CaptureContent,
+			Type:               pc.TraceEmitter.Type,
+			FilePath:           pc.TraceEmitter.FilePath,
+			Endpoint:           pc.TraceEmitter.Endpoint,
+			MetricsEndpoint:    pc.TraceEmitter.MetricsEndpoint,
+			MetricsTemporality: pc.TraceEmitter.MetricsTemporality,
+			Protocol:           pc.TraceEmitter.Protocol,
+			Headers:            pc.TraceEmitter.Headers,
+			Bucket:             pc.TraceEmitter.Bucket,
+			ObjectPrefix:       pc.TraceEmitter.ObjectPrefix,
+			CaptureContent:     pc.TraceEmitter.CaptureContent,
 		}
 	}
 	if pc.Tools != nil {

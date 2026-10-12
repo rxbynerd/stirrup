@@ -199,6 +199,10 @@ type harnessCLIOptions struct {
 	// defers to the trace endpoint.
 	OTelMetricsEndpoint string
 
+	// OTelMetricsTemporality sets traceEmitter.metricsTemporality. Empty
+	// defers to the OTel SDK's environment variable and default.
+	OTelMetricsTemporality string
+
 	// OTelCaptureContent opts the otel emitter into GenAI semconv
 	// content capture; see types.TraceEmitterConfig.CaptureContent for
 	// the PII rationale.
@@ -327,6 +331,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		traceEmitter.Protocol = opts.OTelProtocol
 		traceEmitter.Headers = opts.OTelHeaders
 		traceEmitter.MetricsEndpoint = opts.OTelMetricsEndpoint
+		traceEmitter.MetricsTemporality = opts.OTelMetricsTemporality
 		traceEmitter.CaptureContent = opts.OTelCaptureContent
 	}
 
@@ -987,6 +992,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("otel-metrics-endpoint") {
 		cfg.TraceEmitter.MetricsEndpoint, _ = f.GetString("otel-metrics-endpoint")
+	}
+	if changed("otel-metrics-temporality") {
+		cfg.TraceEmitter.MetricsTemporality, _ = f.GetString("otel-metrics-temporality")
 	}
 	if changed("otel-capture-content") {
 		cfg.TraceEmitter.CaptureContent, _ = f.GetBool("otel-capture-content")

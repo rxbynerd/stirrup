@@ -728,6 +728,18 @@ func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T
 	}
 }
 
+// TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved guards
+// TraceEmitterConfig.MetricsTemporality against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", MetricsTemporality: "delta"},
+	})
+	if got, want := rc.TraceEmitter.MetricsTemporality, "delta"; got != want {
+		t.Errorf("TraceEmitter.MetricsTemporality: got %q, want %q", got, want)
+	}
+}
+
 // TestRunConfigFromProto_ProviderRetryConfigPreserved guards the
 // ProviderRetryConfig wire fields against silent drop. The non-nil case
 // checks all four fields round-trip; the nil case checks that a
