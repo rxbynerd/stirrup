@@ -75,6 +75,12 @@ defence in depth against recognised credential formats — it runs
 before any handler (JSON, text, OTel log exporter) sees the
 attribute. A secret with no recognisable format is not redacted.
 
+The `user:password` check on Basic-auth matches runs in the log
+scrubber, which also covers captured OTel span content, and in the
+Rule-of-Two detector. The code scanner's hardcoded-secret rules reuse
+the same pattern set without that check, so they still match prose such
+as "basic documentation" in a written file (issue #773).
+
 ### Command-output scrub-on-write
 
 `run_command` capture redacts each stream on the way to its spool file

@@ -878,17 +878,17 @@ Four independent channels; use the ones the topology supports:
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
-For OTel specifically: `sessionName` labels the run in logs, traces,
-and root spans; `observability.serviceName` / `environment` /
-`serviceNamespace` ride the OTel Resource, and `serviceName` is how
-backends tell one agent deployment from another;
-`traceEmitter.captureContent` opts spans into GenAI message-content
-attributes (off by default, PII), and `captureContentMaxBytes` caps
-each content attribute. `traceEmitter.platform` and `platformOptions`
-select a backend profile that fills unset exporter settings; option
-keys are checked when the harness builds its exporters, so an unknown
-key fails the run at start rather than at `ValidateRunConfig`.
-Backends and protocol matrix:
+For OTel specifically: `sessionName` labels the run in logs and
+carries on every span as `gen_ai.conversation.id` and `session.id`.
+`observability.serviceName` / `environment` / `serviceNamespace` ride
+the OTel Resource, and `serviceName` is how backends tell one agent
+deployment from another. `traceEmitter.captureContent` opts spans into
+GenAI message-content attributes (off by default, PII), and
+`captureContentMaxBytes` caps each content attribute.
+`traceEmitter.platform` and `platformOptions` select a backend profile
+that fills unset exporter settings; option keys are checked when the
+harness builds its exporters, so an unknown key fails the run at start
+rather than at `ValidateRunConfig`. Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
 
 ### Safety posture quick reference
@@ -930,7 +930,10 @@ Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
 `registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
-`toolChoiceEscalation`, and `observability.logsExport`.
+`toolChoiceEscalation`, `observability.logsExport`,
+`observability.serviceName`, and the `traceEmitter` fields
+`metricsTemporality`, `captureContentMaxBytes`, `platform`, and
+`platformOptions`.
 
 When a field in this table becomes load-bearing for a control plane,
 the project invariant is that it ships with its proto mirror and

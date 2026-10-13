@@ -667,6 +667,19 @@ back as a user message. Three implementations ship:
   [`observability-cloud.md`](observability-cloud.md#span-tree) for the
   tree and cloud backend setup.
 
+The OTLP exporters for traces, metrics, and logs are built in one
+package, `harness/internal/observability/otlp/`, so endpoint, TLS,
+header, and transport rules are the same for all three signals. An
+optional platform profile (`traceEmitter.platform`, implemented in
+`harness/internal/observability/platform/`, the only package that
+names a vendor) fills the settings a backend needs beyond an endpoint
+and a header, such as SigV4 request signing and backend-specific span
+attributes. The factory resolves the profile once per run, in
+`core/factory.go::resolveTelemetry`, so the three exporters and the
+resource agree. An explicit `RunConfig` field always wins over a
+profile default. See
+[`observability-cloud.md`](observability-cloud.md#platform-profiles).
+
 The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution
 observability through both slog records and OTel span attributes
@@ -745,7 +758,8 @@ that is stable in semconv from v1.41.0. The older
 is not emitted; dashboards, derived metrics, and collector
 processors that still filter on it must switch to the new key.
 Stirrup's overlay wins over
-`OTEL_RESOURCE_ATTRIBUTES` on key conflicts. High-cardinality fields
+`OTEL_RESOURCE_ATTRIBUTES` on key conflicts, and a platform profile's
+resource attributes rank below both. High-cardinality fields
 (`run.id`, `run.provider`, `run.model`) stay at span/instrument level
 to avoid metric series cardinality explosion. `tool_failures` keeps
 its label set bounded because `category` is a closed enum and
@@ -842,10 +856,10 @@ trees. The accepted exceptions and their justifications:
 |---|---|
 | `github.com/spf13/cobra` | CLI framework |
 | `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema Draft 2020-12 validation for tool inputs |
-| `aws-sdk-go-v2` | Bedrock (SigV4), STS (`AssumeRoleWithWebIdentity`), SSM SecretStore |
+| `aws-sdk-go-v2` | Bedrock (SigV4), STS (`AssumeRoleWithWebIdentity`), SSM SecretStore, and SigV4 signing of OTLP exports for the `cloudwatch` platform profile |
 | `k8s.io/client-go` (with `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/utils`) | Kubernetes API server authentication (in-cluster service-account tokens, kubeconfig OIDC/exec credential plugins) and API discovery are materially harder to hand-roll than Docker's UNIX-socket REST. The client-go transport layer is also the only supported path for TLS client certificates issued by the cluster CA. Accepted trade-off: ~25 indirect transitive deps. |
 | `google.golang.org/grpc` + `google.golang.org/protobuf` | gRPC transport |
-| `go.opentelemetry.io/otel` + OTLP exporter | Traces and metrics (gRPC and HTTP/protobuf) |
+| `go.opentelemetry.io/otel` + OTLP exporter | Traces, metrics, and logs (gRPC and HTTP/protobuf) |
 | `golang.org/x/oauth2` | GCP ADC, GCP service-account JWT flow, WIF token refresh |
 | `github.com/cedar-policy/cedar-go` | Cedar policy engine |
 | `github.com/hashicorp/hcl/v2` | Eval suite parsing (eval module only; harness binary unaffected) |
