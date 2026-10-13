@@ -59,8 +59,8 @@ func main() {
 // shelling out to a built binary or fighting global state.
 //
 // args is the slice of arguments AFTER the program name (i.e. os.Args[1:]),
-// stdout is where short-circuit output is written, and the return value is
-// the process exit code.
+// stdout receives the output of subcommands that take a writer (version,
+// completion, compare), and the return value is the process exit code.
 func run(args []string, stdout io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprint(os.Stderr, usage)
@@ -74,7 +74,7 @@ func run(args []string, stdout io.Writer) int {
 	case "run":
 		cmdRun(args[1:])
 	case "compare":
-		cmdCompare(args[1:])
+		return cmdCompare(args[1:], stdout)
 	case "baseline":
 		cmdBaseline(args[1:])
 	case "mine-failures":
@@ -120,7 +120,9 @@ func cmdRun(args []string) {
 	suitePath := fs.String("suite", "", "Path to eval suite HCL file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
-	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
+	concurrency := fs.Int("concurrency", 1, "Maximum number of task trials to run in parallel (values <= 0 are treated as 1)")
+	trials := fs.Int("trials", 1, fmt.Sprintf("Independent runs per task (1-%d), each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.", eval.MaxTrials))
+	requireHealthy := fs.Bool("require-healthy", false, "Make the comparison gate count a judge pass only when the run was healthy (the harness exited zero and the trace outcome is success). Task outcomes and the pass rate stay judge-based; the choice is recorded in the result. Also settable per suite with the require_healthy attribute.")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
@@ -148,6 +150,17 @@ func cmdRun(args []string) {
 	judgeOpts, err := judgeFlagSet.options()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	runTrials := 0
+	if isFlagSet(fs, "trials") {
+		if *trials < 1 {
+			log.Fatalf("-trials must be at least 1, got %d", *trials)
+		}
+		if *trials > eval.MaxTrials {
+			log.Fatalf("-trials must be at most %d, got %d", eval.MaxTrials, *trials)
+		}
+		runTrials = *trials
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -189,15 +202,17 @@ func cmdRun(args []string) {
 	defer cancel()
 
 	result, err := runner.RunSuite(ctx, suite, runner.RunConfig{
-		HarnessPath: *harnessPath,
-		OutputDir:   *outputDir,
-		Concurrency: *concurrency,
-		DryRun:      *dryRun,
-		Model:       *model,
-		PromptModel: *promptModel,
-		Provider:    *provider,
-		BaseURL:     *baseURL,
-		APIKeyRef:   *apiKeyRef,
+		HarnessPath:    *harnessPath,
+		OutputDir:      *outputDir,
+		Concurrency:    *concurrency,
+		Trials:         runTrials,
+		DryRun:         *dryRun,
+		RequireHealthy: *requireHealthy,
+		Model:          *model,
+		PromptModel:    *promptModel,
+		Provider:       *provider,
+		BaseURL:        *baseURL,
+		APIKeyRef:      *apiKeyRef,
 		AnthropicWIF: runner.AnthropicWIFConfig{
 			FederationRuleID:  *anthropicFederationRuleID,
 			OrganizationID:    *anthropicOrganizationID,
@@ -211,7 +226,7 @@ func cmdRun(args []string) {
 	}
 
 	if *dryRun {
-		printSummary(result)
+		printSummary(os.Stdout, result, true)
 		return
 	}
 
@@ -239,9 +254,20 @@ func cmdRun(args []string) {
 		}
 	}
 
-	printSummary(result)
+	printSummary(os.Stdout, result, false)
 	warnJudgeCache(os.Stderr, judgeOpts.CacheStats)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
+}
+
+// isFlagSet reports whether name was passed explicitly on the command line.
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // writeJUnit serialises a SuiteResult to path as JUnit XML using the
@@ -296,36 +322,59 @@ func cmdConvert(args []string) {
 	fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *toJUnit)
 }
 
-func cmdCompare(args []string) {
+// cmdCompare prints the comparison report and returns the exit code: 1
+// when the gate blocks, 2 for a usage, load, or write error, and 0
+// otherwise (warn and inconclusive are reported but do not fail).
+func cmdCompare(args []string, stdout io.Writer) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	currentPath := fs.String("current", "", "Path to current result JSON (required)")
 	baselinePath := fs.String("baseline", "", "Path to baseline result JSON (required)")
+	warnMargin := fs.Float64("warn-margin", reporter.DefaultWarnMargin, "Mean pass-fraction drop that reports `warn` (non-blocking) when the drop is not statistically confirmed")
+	flipThreshold := fs.Float64("flip-threshold", reporter.DefaultFlipThreshold, "Current pass fraction at or below which a task that passed every baseline trial is listed as a regression (and the mirror for improvements)")
+	outputPath := fs.String("output", "", "Write the comparison report JSON to this path (default: text report only)")
 	if err := fs.Parse(args); err != nil {
-		log.Fatalf("parsing flags: %v", err)
+		log.Printf("parsing flags: %v", err)
+		return 2
 	}
 
 	if *currentPath == "" {
-		log.Fatal("-current is required")
+		log.Print("-current is required")
+		return 2
 	}
 	if *baselinePath == "" {
-		log.Fatal("-baseline is required")
+		log.Print("-baseline is required")
+		return 2
+	}
+	opts := reporter.Options{WarnMargin: *warnMargin, FlipThreshold: *flipThreshold}
+	if err := opts.Validate(); err != nil {
+		log.Printf("invalid compare options: %v", err)
+		return 2
 	}
 
 	current, err := loadResult(*currentPath)
 	if err != nil {
-		log.Fatalf("loading current result: %v", err)
+		log.Printf("loading current result: %v", err)
+		return 2
 	}
 	baseline, err := loadResult(*baselinePath)
 	if err != nil {
-		log.Fatalf("loading baseline result: %v", err)
+		log.Printf("loading baseline result: %v", err)
+		return 2
 	}
 
-	report := reporter.Compare(baseline, current)
-	fmt.Print(reporter.FormatText(report))
-
-	if report.Summary.HasRegressions {
-		os.Exit(1)
+	report := reporter.Compare(baseline, current, opts)
+	if *outputPath != "" {
+		if err := writeJSON(*outputPath, report); err != nil {
+			log.Printf("writing comparison report: %v", err)
+			return 2
+		}
 	}
+	_, _ = fmt.Fprint(stdout, reporter.FormatText(report))
+
+	if report.Summary.Gate == eval.GateBlock {
+		return 1
+	}
+	return 0
 }
 
 // loadSuite reads a suite HCL file at path and returns the parsed
@@ -358,7 +407,11 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func printSummary(result eval.SuiteResult) {
+// printSummary writes the run summary. With more than one trial per task
+// the task counts are majority outcomes and the pass rate is the mean
+// per-task pass fraction; a dry run validates each task once, so it keeps
+// the single-run counts and notes the planned runs.
+func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 	passed := 0
 	failed := 0
 	errored := 0
@@ -373,12 +426,46 @@ func printSummary(result eval.SuiteResult) {
 		}
 	}
 
-	fmt.Printf("Suite: %s (run: %s)\n", result.SuiteID, result.RunID)
-	fmt.Printf("Tasks: %d total, %d passed, %d failed, %d errors\n",
+	_, _ = fmt.Fprintf(w, "Suite: %s (run: %s)\n", result.SuiteID, result.RunID)
+	if result.Trials > 1 {
+		if dryRun {
+			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs planned; the dry run validates each task once)\n",
+				result.Trials, result.Trials*len(result.Tasks))
+		} else {
+			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs)\n", result.Trials, result.Trials*len(result.Tasks))
+			_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
+				len(result.Tasks), passed, failed, errored)
+			_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
+			printHealthyPassRate(w, result)
+			printJudgeCache(w, result)
+			return
+		}
+	}
+	_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
-	fmt.Printf("Pass rate: %.1f%%\n", result.PassRate*100)
+	_, _ = fmt.Fprintf(w, "Pass rate: %.1f%%\n", result.PassRate*100)
+	printHealthyPassRate(w, result)
+	printJudgeCache(w, result)
+}
+
+// printHealthyPassRate writes the share of trials whose judge passed and
+// whose run was healthy, with the sample it covers, beside the judge-based
+// pass rate. Results without run health print nothing.
+func printHealthyPassRate(w io.Writer, result eval.SuiteResult) {
+	if result.HealthyPassRate == nil {
+		return
+	}
+	trials := max(result.Trials, 1)
+	_, _ = fmt.Fprintf(w, "Healthy pass rate: %.1f%% (judge passed and run healthy; %d tasks, %d trials each)\n",
+		*result.HealthyPassRate*100, len(result.Tasks), trials)
+	if result.RequireHealthy {
+		_, _ = fmt.Fprintln(w, "require_healthy: the comparison gate counts only healthy judge passes")
+	}
+}
+
+func printJudgeCache(w io.Writer, result eval.SuiteResult) {
 	if result.JudgeCache != nil {
-		fmt.Println(formatJudgeCache(*result.JudgeCache))
+		_, _ = fmt.Fprintln(w, formatJudgeCache(*result.JudgeCache))
 	}
 }
 
@@ -1045,6 +1132,7 @@ func printDriftReport(report types.DriftReport) bool {
 
 	fmt.Printf("%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 		"Pass rate", report.Current.PassRate*100, report.Baseline.PassRate*100, report.Deltas.PassRateDelta*100)
+	fmt.Printf("%-16s %12s %12s\n", "  95% Wilson", reporter.FormatWilson95(report.Current.PassRate, report.Current.Count), reporter.FormatWilson95(report.Baseline.PassRate, report.Baseline.Count))
 	fmt.Printf("%-16s %12.1f %12.1f %+12.1f\n",
 		"Mean turns", report.Current.MeanTurns, report.Baseline.MeanTurns, report.Deltas.MeanTurnsDelta)
 	fmt.Printf("%-16s %11.0fms %11.0fms %+11.0fms\n",

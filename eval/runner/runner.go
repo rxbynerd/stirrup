@@ -30,16 +30,26 @@ type RunConfig struct {
 	// If empty, defaults to "stirrup" on PATH.
 	HarnessPath string
 
-	// OutputDir, when non-empty, enables per-task artifact retention. The
+	// OutputDir, when non-empty, enables per-task artifact retention: the
 	// runner writes trace.jsonl, harness.stdout.txt, and harness.stderr.txt
-	// for every task under <OutputDir>/<suiteID>/<taskID>/. The temporary
-	// workspace itself is not copied.
+	// under <OutputDir>/<suiteID>/<taskID>/ (trial-<n>/ below that when a
+	// task runs more than once). The temporary workspace is not copied.
 	OutputDir string
 
-	// Concurrency caps the number of tasks executed in parallel. Values <= 0
-	// fall back to 1 (sequential). Values larger than the task count are
-	// capped at len(tasks) so we never spawn idle workers.
+	// Concurrency caps the number of task trials executed in parallel.
+	// Values <= 0 fall back to 1 (sequential). Values larger than the
+	// number of task trials are capped so we never spawn idle workers.
 	Concurrency int
+
+	// Trials is the number of independent runs per task, each with a fresh
+	// workspace and harness subprocess. Values <= 0 defer to the suite's
+	// trials attribute, then to 1.
+	Trials int
+
+	// RequireHealthy makes the comparison gate count a judge pass only when
+	// the run was healthy, in addition to a suite's require_healthy
+	// attribute.
+	RequireHealthy bool
 
 	// DryRun if true, validates the suite without executing tasks.
 	DryRun bool
@@ -116,6 +126,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	if err := validateSuite(suite); err != nil {
 		return eval.SuiteResult{}, err
 	}
+	if cfg.Trials > eval.MaxTrials {
+		return eval.SuiteResult{}, fmt.Errorf("trials must be at most %d, got %d", eval.MaxTrials, cfg.Trials)
+	}
 	if err := judge.PreflightSuite(ctx, suite.Tasks, cfg.JudgeOptions); err != nil {
 		return eval.SuiteResult{}, err
 	}
@@ -161,20 +174,13 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		return eval.SuiteResult{}, baselineErr
 	}
 
+	trials := resolveTrials(cfg, suite)
+
 	if cfg.DryRun {
+		// A dry run validates each task once regardless of trials.
 		tasks := make([]eval.TaskResult, len(suite.Tasks))
 		for i, t := range suite.Tasks {
-			tasks[i] = dryRunTask(t, baseline)
-		}
-		passCount := 0
-		for _, tr := range tasks {
-			if tr.Outcome == "pass" {
-				passCount++
-			}
-		}
-		passRate := float64(0)
-		if len(tasks) > 0 {
-			passRate = float64(passCount) / float64(len(tasks))
+			tasks[i] = aggregateTrials(t.ID, []eval.TaskResult{dryRunTask(t, baseline)})
 		}
 		return eval.SuiteResult{
 			SuiteID:     suite.ID,
@@ -182,7 +188,8 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 			StartedAt:   startedAt,
 			CompletedAt: time.Now(),
 			Tasks:       tasks,
-			PassRate:    passRate,
+			PassRate:    suitePassRate(tasks),
+			Trials:      trials,
 		}, nil
 	}
 
@@ -194,19 +201,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		cfg.JudgeOptions.CacheStats = &judge.CacheStats{}
 	}
 
-	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline)
-
-	passCount := 0
-	for _, tr := range results {
-		if tr.Outcome == "pass" {
-			passCount++
-		}
-	}
-
-	passRate := float64(0)
-	if len(results) > 0 {
-		passRate = float64(passCount) / float64(len(results))
-	}
+	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline, trials)
 
 	result := eval.SuiteResult{
 		SuiteID:     suite.ID,
@@ -214,7 +209,11 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		StartedAt:   startedAt,
 		CompletedAt: time.Now(),
 		Tasks:       results,
-		PassRate:    passRate,
+		PassRate:    suitePassRate(results),
+		Trials:      trials,
+
+		HealthyPassRate: eval.HealthyPassRate(results),
+		RequireHealthy:  cfg.RequireHealthy || suite.RequireHealthy,
 	}
 	if !cacheMode.IsLive() {
 		summary := cfg.JudgeOptions.CacheStats.Summary(cacheMode)
@@ -223,25 +222,28 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	return result, nil
 }
 
-// runTasksConcurrently dispatches tasks across a bounded worker pool while
-// preserving the input order in the returned slice. Concurrency is capped at
-// len(tasks) so we never spawn idle workers; values <= 0 collapse to 1
-// (the historical sequential behaviour). Per-task errors do not abort
-// siblings — every task contributes a TaskResult.
-func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) []eval.TaskResult {
+// runTasksConcurrently dispatches every (task, trial) pair across a bounded
+// worker pool, trial-major, and returns one aggregated result per task in
+// input order. Concurrency is capped at the pair count; values <= 0
+// collapse to 1. Per-trial errors do not abort siblings.
+func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int) []eval.TaskResult {
+	pairs := len(tasks) * trials
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 1
 	}
-	if concurrency > len(tasks) {
-		concurrency = len(tasks)
+	if concurrency > pairs {
+		concurrency = pairs
 	}
 
-	results := make([]eval.TaskResult, len(tasks))
+	runs := make([][]eval.TaskResult, len(tasks))
+	for i := range runs {
+		runs[i] = make([]eval.TaskResult, trials)
+	}
 
 	type job struct {
-		idx  int
-		task types.EvalTask
+		task  int
+		trial int
 	}
 	jobs := make(chan job)
 
@@ -249,30 +251,35 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 	for range concurrency {
 		wg.Go(func() {
 			for j := range jobs {
-				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir, baseline)
+				runs[j.task][j.trial] = runTrial(ctx, tasks[j.task], cfg, suiteArtifactDir, baseline, j.trial+1, trials)
 			}
 		})
 	}
 
 	// Feed jobs; honour ctx cancellation so the dispatcher doesn't
 	// deadlock if all workers have exited.
-	for i, t := range tasks {
+dispatch:
+	for n := range pairs {
+		trial, task := n/len(tasks), n%len(tasks)
 		select {
 		case <-ctx.Done():
-			// Drain remaining tasks as cancellation errors so the result
-			// slice stays in sync with the input slice.
-			for ; i < len(tasks); i++ {
-				results[i] = errorResult(tasks[i].ID, time.Now(), ctx.Err())
+			// Record every undispatched pair as a cancellation error so
+			// each task still aggregates a full set of trials.
+			for rest := n; rest < pairs; rest++ {
+				trial, task := rest/len(tasks), rest%len(tasks)
+				runs[task][trial] = errorResult(tasks[task].ID, time.Now(), ctx.Err())
 			}
-			close(jobs)
-			wg.Wait()
-			return results
-		case jobs <- job{idx: i, task: t}:
+			break dispatch
+		case jobs <- job{task: task, trial: trial}:
 		}
 	}
 	close(jobs)
 	wg.Wait()
 
+	results := make([]eval.TaskResult, len(tasks))
+	for i, t := range tasks {
+		results[i] = aggregateTrials(t.ID, runs[i])
+	}
 	return results
 }
 
@@ -289,6 +296,12 @@ func validateSuite(suite types.EvalSuite) error {
 	}
 	if len(suite.Tasks) == 0 {
 		return fmt.Errorf("suite must contain at least one task")
+	}
+	if suite.Trials < 0 {
+		return fmt.Errorf("suite trials must not be negative, got %d", suite.Trials)
+	}
+	if suite.Trials > eval.MaxTrials {
+		return fmt.Errorf("suite trials must be at most %d, got %d", eval.MaxTrials, suite.Trials)
 	}
 	seen := make(map[string]struct{}, len(suite.Tasks))
 	for _, t := range suite.Tasks {
@@ -519,7 +532,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if judgeErr != nil {
 			return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed after harness error: %w", judgeErr))
 		}
-		return buildResult(task.ID, start, trace, verdict)
+		return buildResult(task.ID, start, trace, verdict, true)
 	}
 
 	trace, err := parseTraceFile(traceFile)
@@ -537,7 +550,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return judgeErrorResult(task.ID, start, trace, verdict, fmt.Errorf("judge failed: %w", err))
 	}
 
-	return buildResult(task.ID, start, trace, verdict)
+	return buildResult(task.ID, start, trace, verdict, false)
 }
 
 // judgeErrorResult is errorResult for a judge that could not rule. An
@@ -546,6 +559,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 func judgeErrorResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, err error) eval.TaskResult {
 	result := errorResult(taskID, start, err)
 	result.Trace = trace
+	result.Verification = types.LastVerification(trace)
 	if verdict.Status == types.JudgeStatusError {
 		result.JudgeVerdict = verdict
 	}
@@ -629,21 +643,36 @@ func seedWorkspaceFiles(workspaceDir string, files map[string]string) error {
 	return nil
 }
 
-// cloneRepo clones a git repository at the given ref into the target directory.
+// cloneRepo materialises a git repository in targetDir. With an empty ref it
+// takes a depth-1 clone of the default branch. With a ref (a branch, a tag, or
+// a full commit SHA) it fetches exactly that commit by name, because a
+// depth-1 clone holds only the default branch tip and cannot check out any
+// other commit. The server must permit fetching the object by SHA, which
+// GitHub does.
 func cloneRepo(ctx context.Context, repo, ref, targetDir string) error {
-	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repo, targetDir)
-	if output, err := cloneCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone: %w\n%s", err, output)
+	if strings.HasPrefix(repo, "-") || strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("repo %q and ref %q must not start with %q", repo, ref, "-")
+	}
+	if ref == "" {
+		cloneCmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repo, targetDir)
+		if output, err := cloneCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git clone: %w\n%s", err, output)
+		}
+		return nil
 	}
 
-	if ref != "" {
-		checkoutCmd := exec.CommandContext(ctx, "git", "checkout", ref)
-		checkoutCmd.Dir = targetDir
-		if output, err := checkoutCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git checkout %s: %w\n%s", ref, err, output)
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"remote", "add", "origin", repo},
+		{"fetch", "--quiet", "--depth", "1", "origin", ref},
+		{"checkout", "--quiet", "--detach", "FETCH_HEAD"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = targetDir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w\n%s", args[0], err, output)
 		}
 	}
-
 	return nil
 }
 
@@ -658,12 +687,16 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	return r.Last()
 }
 
-// errorResult builds a TaskResult with outcome "error".
+// errorResult builds a TaskResult with outcome "error". The run counts as
+// failed whatever the cause: no judge verdict exists for it.
 func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 	return eval.TaskResult{
-		TaskID:  taskID,
-		Outcome: "error",
-		Error:   err.Error(),
+		TaskID:       taskID,
+		Outcome:      "error",
+		Error:        err.Error(),
+		RunHealth:    types.RunFailed,
+		Verification: types.VerificationNone,
+		Delivery:     eval.DeliveryNotMeasured,
 		JudgeVerdict: eval.JudgeVerdict{
 			Passed: false,
 			Status: types.JudgeStatusError,
@@ -802,13 +835,18 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 // buildResult constructs a TaskResult from a trace and verdict. A verdict
 // whose status is "error" is the error outcome whatever its Passed field
 // says, so a judge that could not rule never counts as a pass or a fail.
-func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict) eval.TaskResult {
+// The outcome is the verdict alone; harnessFailed, the trace, and the
+// verifier results only fill the run health fields beside it.
+func buildResult(taskID string, start time.Time, trace *types.RunTrace, verdict eval.JudgeVerdict, harnessFailed bool) eval.TaskResult {
 	result := eval.TaskResult{
 		TaskID:       taskID,
 		Outcome:      "fail",
 		Trace:        trace,
 		JudgeVerdict: verdict,
 		DurationMs:   time.Since(start).Milliseconds(),
+		RunHealth:    types.RunHealthFor(trace, harnessFailed),
+		Verification: types.LastVerification(trace),
+		Delivery:     eval.DeliveryNotMeasured,
 	}
 	switch {
 	case verdict.Status == types.JudgeStatusError:

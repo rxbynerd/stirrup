@@ -1259,3 +1259,15 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 		t.Errorf("BatchP95DurationDelta = %f, want 6000", report.Deltas.BatchP95DurationDelta)
 	}
 }
+
+// TestCmdRun_DryRunAcceptanceSuite pins that the shipped acceptance suite
+// passes `eval run --dry-run` without a credential or a network.
+func TestCmdRun_DryRunAcceptanceSuite(t *testing.T) {
+	suitePath, err := filepath.Abs("../../suites/acceptance.hcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitCode := run([]string{"run", "--suite", suitePath, "--dry-run"}, io.Discard); exitCode != 0 {
+		t.Fatalf("run() exit code = %d, want 0", exitCode)
+	}
+}

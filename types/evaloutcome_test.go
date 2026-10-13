@@ -93,3 +93,79 @@ func TestEvalOutcomeFor(t *testing.T) {
 		})
 	}
 }
+
+func TestRunHealthFor(t *testing.T) {
+	cases := []struct {
+		outcome string
+		want    RunHealth
+	}{
+		{"success", RunHealthy},
+		{"error", RunFailed},
+		{"tool_failures", RunFailed},
+		{"verification_failed", RunFailed},
+		{"verification_error", RunFailed},
+		{"setup_failed", RunFailed},
+		{"hook_failed", RunFailed},
+		{"structured_output_failed", RunFailed},
+		{"max_turns", RunDegraded},
+		{"timeout", RunDegraded},
+		{"max_tokens", RunDegraded},
+		{"budget_exceeded", RunDegraded},
+		{"stalled", RunDegraded},
+		{"cancelled", RunDegraded},
+		{"refusal", RunDegraded},
+		{"some_future_outcome", RunDegraded},
+		{"", RunDegraded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.outcome, func(t *testing.T) {
+			if got := RunHealthFor(&RunTrace{Outcome: tc.outcome}, false); got != tc.want {
+				t.Errorf("RunHealthFor(%q, false) = %q, want %q", tc.outcome, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunHealthFor_HarnessFailureAndMissingTrace(t *testing.T) {
+	for _, outcome := range []string{"success", "max_turns", "error"} {
+		if got := RunHealthFor(&RunTrace{Outcome: outcome}, true); got != RunFailed {
+			t.Errorf("a non-zero exit with outcome %q = %q, want %q", outcome, got, RunFailed)
+		}
+	}
+	if got := RunHealthFor(nil, false); got != RunFailed {
+		t.Errorf("a nil trace = %q, want %q", got, RunFailed)
+	}
+}
+
+func TestRunHealthFor_SuccessWithFailedVerifierStaysHealthy(t *testing.T) {
+	trace := &RunTrace{Outcome: "success", VerificationResults: []VerificationResult{{Passed: false}}}
+	if got := RunHealthFor(trace, false); got != RunHealthy {
+		t.Errorf("health = %q, want %q (the verifier verdict is reported separately)", got, RunHealthy)
+	}
+	if got := EvalOutcomeFor(*trace); got != EvalFailed {
+		t.Errorf("EvalOutcomeFor = %q, want %q (unchanged)", got, EvalFailed)
+	}
+}
+
+func TestLastVerification(t *testing.T) {
+	pass, fail := VerificationResult{Passed: true}, VerificationResult{Passed: false}
+	cases := []struct {
+		name  string
+		trace *RunTrace
+		want  VerificationStatus
+	}{
+		{"nil trace", nil, VerificationNone},
+		{"no results", &RunTrace{}, VerificationNone},
+		{"single pass", &RunTrace{VerificationResults: []VerificationResult{pass}}, VerificationPassed},
+		{"single fail", &RunTrace{VerificationResults: []VerificationResult{fail}}, VerificationFailed},
+		{"fail then pass", &RunTrace{VerificationResults: []VerificationResult{fail, pass}}, VerificationPassed},
+		{"pass then fail", &RunTrace{VerificationResults: []VerificationResult{pass, fail}}, VerificationFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := LastVerification(tc.trace); got != tc.want {
+				t.Errorf("LastVerification = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

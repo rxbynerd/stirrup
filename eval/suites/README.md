@@ -9,8 +9,17 @@ baseline in `../baselines/`:
   the baselined suites on pushes to `main` (and on manual
   `workflow_dispatch`), pinned to a cheap model (GPT-5.6 Luna over
   OpenRouter, selected by `stirrup-eval run`'s `--provider` /
-  `--base-url` / `--api-key-ref` / `--model` flags), compares each
-  result to its baseline, and fails the gate on a regression.
+  `--base-url` / `--api-key-ref` / `--model` flags), runs every task
+  three times (`--trials 3`), and compares each result to its
+  baseline. `compare` reports one of four gate results (see
+  [Gate semantics](../../docs/eval.md#gate-semantics)): `block` (a
+  task that passed every baseline trial failed or errored every
+  current trial, or the paired upper bound on the mean pass-fraction
+  change is below zero) fails the gate; `warn` (a mean drop beyond
+  0.10 that the data do not confirm, a listed regression, or a
+  baseline task missing from the current run) and `inconclusive` (too
+  few paired tasks for the interval) are raised as workflow warnings
+  without failing it; `pass` is silent.
 
   The `main`-and-dispatch scoping is a cost control, not an
   oversight: live eval runs spend real tokens per invocation, and a
@@ -34,12 +43,17 @@ baseline in `../baselines/`:
   CI invokes them with **no** `--model` / `--provider` / `--base-url`
   override, so their inline `run_config` decides the wire posture.
   That is the point: a quirk test whose model can be swapped from the
-  command line tests nothing.
+  command line tests nothing. They also run without `--trials`, one
+  trial per task, to keep their cost down.
 - **Release sweep** — `.github/workflows/release.yml::eval-extended`
   re-runs the same baselined suites against stronger models
   (Claude Sonnet 5 and Claude Opus 4.8) on every release tag. The
-  sweep is non-blocking-but-visible: a regression turns the matrix
-  cell red without holding the release.
+  sweep is non-blocking-but-visible: a blocking comparison turns the
+  matrix cell red without holding the release. Every suite is
+  compared before the cell fails, each cell publishes a per-suite
+  table (pass rate, healthy pass rate, sample size) to the job
+  summary, and `provider-quirks-*` suites are skipped because the
+  sweep's `--model` would override their pin.
 
 Suites without a baseline are never executed in CI — they are
 opt-in local runs (see the per-suite notes below).
@@ -60,6 +74,7 @@ its verdicts without changing any outcome. See
 
 | Suite | Source | Notes |
 |---|---|---|
+| `acceptance.hcl` | Hand-authored | Opt-in acceptance suite: eight realistic tasks on pinned revisions of small public Go repositories, plus a verifier that fails once before it passes. Deterministic judges, live provider, no CI baseline. See [Acceptance suite](#acceptance-suite-acceptancehcl). |
 | `command-output-ab-{on,off}.hcl` | Hand-authored (PR #495) | A/B pair for the command-output capture pipeline: byte-identical tasks, differing only in `tools.command_output`. Run both arms, then `stirrup-eval compare -baseline <off>/result.json -current <on>/result.json` — the feature's context-saving claim holds iff the on arm lowers mean tokens at an equal-or-better pass rate. Opt-in, live-provider, no CI baseline. |
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
@@ -118,6 +133,72 @@ part of default CI. No baseline ships for this suite, so the eval
 gate neither runs nor compares it until an operator promotes one
 (see "Promoting a mined suite" for the baseline workflow).
 
+## Acceptance suite (`acceptance.hcl`)
+
+`acceptance.hcl` measures how often an unattended run completes a
+realistic task on a real repository, and whether the run recovers when
+something around it fails. It is an opt-in local run: it has no
+baseline, CI never executes it, and it gates nothing.
+
+Each task clones one of four small public Go modules at a full commit
+SHA (`mitchellh/go-wordwrap` and `rs/xid` under MIT, `google/shlex`
+under Apache-2.0, `dustin/go-humanize` under MIT) and is judged by a
+deterministic command or trace check. Every `ref` must be a 40-character
+SHA; `TestSuites_PinClonedReposToAFullCommitSHA` enforces this for every
+shipped suite. The runner fetches the SHA directly, so it does not have
+to be a branch tip. The tasks:
+
+| Task | Exercises |
+|---|---|
+| `fix-multibyte-wrap`, `fix-json-unmarshal-panic`, `fix-negative-ordinal-suffix` | Fix a failing test. The test is seeded into the workspace; the first two pin the parent of a real upstream fix. |
+| `add-quote-function-with-test` | Add exported functions and tests. A hidden judge-owned test round-trips awkward strings. |
+| `add-function-with-verifier-retry` | A `test-runner` verifier rejects the first submission and runs the real tests afterwards. The judge requires at least two verifier runs, so it passes only when the run recovers from a failed verification. |
+| `move-shared-helper-to-own-file` | A multi-file edit that must change exactly two files. |
+| `comment-only-edit-leaves-code-alone` | A narrow edit; any code change or second file fails. |
+| `answer-question-from-source` | Read-only navigation of an unfamiliar repository; the trace must show no `edit_file` call. |
+
+Because a per-task verifier override needs a suite baseline, the suite
+pins a complete `run_config`: Sonnet 5, `allow-all`, 30 turns, and a
+Go-only tool set without `web_fetch`, so the agent cannot read the
+upstream fix. The `--provider`, `--base-url`, `--api-key-ref` and
+`--model` flags of `stirrup-eval run` retarget the provider and model.
+
+**Requirements.** A Go toolchain, `git`, network access to
+`github.com`, and a provider credential. The harness binary must be
+built first (`just build`).
+
+**Cost.** One trial is eight task runs of up to 30 turns each, so
+`--trials 3` is 24 task runs. Each task's token usage is in the
+`trace` object of `result.json`; take the cost of a run from there
+rather than from an estimate.
+
+```bash
+ANTHROPIC_API_KEY=... ./stirrup-eval run \
+  --suite eval/suites/acceptance.hcl \
+  --harness "$PWD/stirrup" \
+  --output eval/results/acceptance \
+  --trials 3
+```
+
+Baselines for this suite should be taken with repeated trials, as above,
+so a flaky task records a fractional pass rate. The result reports run
+health next to the judge verdict (`healthyPassRate`, `runHealth`).
+
+### Failure-injection coverage
+
+Only the cases the runner can express without new infrastructure are
+tasks. The runner drives a real `stirrup` binary with a task prompt, so
+it has no fake control plane, artifact store or gRPC stream to cut.
+
+| Case | Status |
+|---|---|
+| Failed verifier | Task: `add-function-with-verifier-retry`. |
+| Remote workspace export | Follow-up. Needs an export destination the eval can inspect. |
+| Control-plane restart or stream loss | Follow-up. Needs a fake control plane. |
+| Context compaction | Follow-up. No trace field records that a compaction happened, so a judge cannot assert it, and a task cannot force one deterministically. |
+| Required MCP server missing | Follow-up, with #663. |
+| Budgeted delegation (sub-agent under a small token budget) | Follow-up, with #665. |
+
 ## Authoring a self-pinned suite
 
 Two constraints catch every author writing one for the first time.
@@ -170,13 +251,19 @@ The v0.1 demo narrative (#277) is:
 4. `stirrup-eval run --suite eval/suites/mined.hcl --output
    results/ --concurrency 8` runs the mined suite at real cadence.
 5. Commit `eval/suites/mined.hcl` and the produced `result.json`
-   as `eval/baselines/mined.json` once you're satisfied with the
-   coverage and the baseline reflects an intentional reference
-   state. Generate the baseline with the provider and model the
-   per-push gate runs (see [Provider credentials](#provider-credentials)
-   for the exact invocation) so the committed expectations match what
-   CI actually executes; committing a baseline auto-enrols the suite in
-   both CI eval surfaces.
+   as `eval/baselines/mined.json` once the coverage is sufficient
+   and the baseline reflects an intentional reference state.
+   Generate the baseline with the provider, model, and
+   `--trials 3` the per-push gate runs (see
+   [Provider credentials](#provider-credentials) for the exact
+   invocation) so the committed expectations match what CI actually
+   executes. Three trials record a fractional pass rate for a flaky
+   task, so the gate compares like with like instead of against one
+   lucky run. This applies to the suites the per-push gate runs:
+   `provider-quirks-*` suites run one trial in CI, so their baselines
+   are single-run files. A single-run baseline still loads and
+   compares as one trial per task. Committing a baseline auto-enrols
+   the suite in both CI eval surfaces.
 
 The seed suite (`dogfood-seed.hcl`) exists to give the eval-gate
 non-empty work while the dogfood corpus matures. When the mined
@@ -196,6 +283,7 @@ Reproduce the gate's exact invocation locally with:
 OPENROUTER_API_KEY=... ./stirrup-eval run \
   --suite eval/suites/<name>.hcl \
   --harness "$PWD/stirrup" \
+  --trials 3 \
   --provider openai-compatible \
   --base-url https://openrouter.ai/api/v1 \
   --api-key-ref secret://OPENROUTER_API_KEY \

@@ -97,6 +97,7 @@ func cmdReplay(args []string) {
 		// Tag with the source recording's runId; the bare task ID
 		// would collapse when one task replays N recordings.
 		result.TaskID = fmt.Sprintf("%s/%s", task.ID, rec.RunID)
+		result.PassFraction = result.Counts().PassFraction()
 		if result.Outcome == "pass" {
 			pass++
 		}
@@ -114,6 +115,8 @@ func cmdReplay(args []string) {
 		CompletedAt: time.Now(),
 		Tasks:       tasks,
 		PassRate:    passRate,
+
+		HealthyPassRate: eval.HealthyPassRate(tasks),
 	}
 	if !judgeOpts.CacheMode.IsLive() {
 		summary := judgeOpts.CacheStats.Summary(judgeOpts.CacheMode)

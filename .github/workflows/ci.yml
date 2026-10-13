@@ -19,6 +19,7 @@ jobs:
     name: Eval Gate
     runs-on: ubuntu-latest
     needs: verify
+    timeout-minutes: 30
     # SCOPED TO main AND workflow_dispatch ON PURPOSE — this is a cost
     # control, not an oversight. Live eval runs spend real tokens on
     # every invocation, and running them per-push across every active
@@ -58,6 +59,9 @@ jobs:
       # cost alone: ~$0.10/M input and ~$0.60/M output against Haiku
       # 4.5's ~$1/$5 and GPT-5.6 Terra's ~$1/$6, which works out at
       # roughly $0.01 per full dogfood-seed run instead of ~$0.09.
+      #
+      # The gate runs every task three times (--trials 3); the rationale
+      # and false-alarm figures are in docs/eval.md#statistics.
       #
       # It is NOT the fix for the flake that had this gate red on main
       # from run 30163743698. That was a false positive in the
@@ -221,6 +225,10 @@ jobs:
             # produces the result.json a baseline is minimised from.
             # Once baselined, the compare step gates it like any other
             # suite; until then compare skips it with a message.
+            #
+            # Quirk suites run a single trial: three Terra/Sol trials
+            # would triple an already materially larger bill, and with
+            # one trial compare falls back to the single-run flip rule.
             case "$name" in
               provider-quirks-*)
                 if [ "${RUN_QUIRKS:-false}" != "true" ]; then
@@ -260,6 +268,8 @@ jobs:
             ./stirrup-eval run \
               --suite "$suite" \
               --harness "$GITHUB_WORKSPACE/stirrup" \
+              --trials 3 \
+              --concurrency 3 \
               --provider "$EVAL_PROVIDER" \
               --base-url "$EVAL_BASE_URL" \
               --api-key-ref "$EVAL_API_KEY_REF" \
@@ -276,25 +286,66 @@ jobs:
         # explicit gate makes the dependency between the steps
         # readable in the job log.
         if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true' && steps.preflight.outputs.preflight_ok == 'true'
+        # Every suite is compared before the step exits, so one failure does
+        # not hide another. compare exits 1 on a block and 2 when it could
+        # not run; both fail the step. warn and inconclusive stay
+        # non-blocking and are annotated; non-pass reports go to the summary.
         shell: bash
         run: |
           shopt -s nullglob
+          worst=0
           for result_dir in eval/results/*/; do
             name=$(basename "$result_dir")
             result="${result_dir}result.json"
             baseline="eval/baselines/${name}.json"
-            if [ -f "$baseline" ]; then
-              ./stirrup-eval compare \
-                --current "$result" \
-                --baseline "$baseline"
-            else
+            if [ ! -f "$baseline" ]; then
               echo "No baseline found at $baseline — skipping comparison"
+              continue
+            fi
+
+            report="${result_dir}compare.txt"
+            rc=0
+            ./stirrup-eval compare \
+              --current "$result" \
+              --baseline "$baseline" \
+              --output "${result_dir}comparison.json" > "$report" 2>&1 || rc=$?
+            cat "$report"
+
+            gate=error
+            if [ -f "${result_dir}comparison.json" ]; then
+              gate=$(jq -r '.summary.gate' "${result_dir}comparison.json")
+            fi
+            case "$gate" in
+              warn|inconclusive)
+                echo "::warning::Eval gate for ${name}: ${gate} (non-blocking; see the compare report in the job log)"
+                ;;
+              block)
+                echo "::error::Eval gate for ${name}: block"
+                ;;
+            esac
+            if [ "$rc" -ge 2 ]; then
+              echo "::error::Eval gate for ${name}: compare did not run (exit ${rc})"
+            fi
+
+            if [ "$gate" != pass ]; then
+              {
+                echo "### Eval gate: ${name}: ${gate}"
+                echo
+                echo '```text'
+                cat "$report"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            if [ "$rc" -gt "$worst" ]; then
+              worst=$rc
             fi
           done
+          exit "$worst"
 
       - name: Upload eval results
         # Always upload whatever made it to disk so result.json survives
-        # an unrelated failure (e.g. compare step regression exit, future
+        # an unrelated failure (e.g. a compare-step block, future
         # secondary-artifact steps). The eval-gate's pass/fail signal is
         # carried by the compare step's exit code, not artifact presence.
         # Gated on has_credentials and preflight_ok so a skipped run

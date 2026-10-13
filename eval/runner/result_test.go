@@ -27,7 +27,7 @@ func TestBuildResult_ErrorStatusIsTheErrorOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildResult("t1", time.Now(), nil, tc.verdict)
+			got := buildResult("t1", time.Now(), nil, tc.verdict, false)
 			if got.Outcome != tc.wantOutcome || got.Error != tc.wantError {
 				t.Fatalf("outcome %q error %q, want %q / %q", got.Outcome, got.Error, tc.wantOutcome, tc.wantError)
 			}
