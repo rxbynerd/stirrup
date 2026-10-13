@@ -212,6 +212,11 @@ type harnessCLIOptions struct {
 	// 0 leaves captured content uncapped.
 	OTelCaptureContentMaxBytes int
 
+	// OTelPlatform and OTelPlatformOptions set traceEmitter.platform and
+	// the parsed --otel-platform-option key=value entries.
+	OTelPlatform        string
+	OTelPlatformOptions map[string]string
+
 	// Safety-ring escape hatches. Empty string leaves the field unset so
 	// ValidateRunConfig's mode-aware defaulting can take over.
 	ContainerRuntime     string
@@ -339,6 +344,8 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		traceEmitter.MetricsTemporality = opts.OTelMetricsTemporality
 		traceEmitter.CaptureContent = opts.OTelCaptureContent
 		traceEmitter.CaptureContentMaxBytes = opts.OTelCaptureContentMaxBytes
+		traceEmitter.Platform = opts.OTelPlatform
+		traceEmitter.PlatformOptions = opts.OTelPlatformOptions
 	}
 
 	config := &types.RunConfig{
@@ -1008,6 +1015,24 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("otel-capture-content-max-bytes") {
 		cfg.TraceEmitter.CaptureContentMaxBytes, _ = f.GetInt("otel-capture-content-max-bytes")
+	}
+	if changed("otel-platform") {
+		cfg.TraceEmitter.Platform, _ = f.GetString("otel-platform")
+	}
+	if changed("otel-platform-option") {
+		// Replace rather than merge, mirroring --otel-header.
+		raw, _ := f.GetStringArray("otel-platform-option")
+		cfg.TraceEmitter.PlatformOptions = nil
+		for _, entry := range raw {
+			k, v, err := parseQueryParam(entry)
+			if err != nil {
+				return fmt.Errorf("--otel-platform-option %q: %w", entry, err)
+			}
+			if cfg.TraceEmitter.PlatformOptions == nil {
+				cfg.TraceEmitter.PlatformOptions = map[string]string{}
+			}
+			cfg.TraceEmitter.PlatformOptions[k] = v
+		}
 	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")

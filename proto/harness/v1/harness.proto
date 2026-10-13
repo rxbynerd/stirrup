@@ -2088,6 +2088,21 @@ message TraceEmitterConfig {
   // and gcs.
   int32 capture_content_max_bytes = 11;
 
+  // For "otel": backend platform profile that fills unset OTLP settings
+  // (per-signal endpoints, headers, request signing, resource and span
+  // attributes) for one observability platform. Closed set:
+  //   "" | "cloudwatch" | "phoenix"
+  // Explicit fields always win over a profile's defaults. Rejected for
+  // jsonl and gcs. See docs/observability-cloud.md#platform-profiles.
+  string platform = 12;
+
+  // For "otel": settings for the selected platform (for example a region
+  // or project name). At most 8 entries; keys match
+  // ^[a-z][A-Za-z0-9]{0,31}$; values are at most 256 bytes of printable
+  // UTF-8 and never secret:// references. Which keys a platform
+  // accepts is checked when the exporters are built. Requires platform.
+  map<string, string> platform_options = 13;
+
   // For "gcs": joined with the run ID at write time to form the final
   // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
   // allowed; trailing slash is normalised by validation. Only consulted

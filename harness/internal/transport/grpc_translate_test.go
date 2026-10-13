@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"reflect"
 	"strings"
@@ -757,6 +758,26 @@ func TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved(t *testi
 	}
 	if got, want := rc.TraceEmitter.CaptureContentMaxBytes, 2048; got != want {
 		t.Errorf("TraceEmitter.CaptureContentMaxBytes: got %d, want %d", got, want)
+	}
+}
+
+// TestRunConfigFromProto_TraceEmitterPlatformPreserved guards
+// TraceEmitterConfig.Platform and PlatformOptions against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterPlatformPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        "example-platform",
+			PlatformOptions: map[string]string{"region": "eu-west-2", "project": "agents"},
+		},
+	})
+	if got, want := rc.TraceEmitter.Platform, "example-platform"; got != want {
+		t.Errorf("TraceEmitter.Platform: got %q, want %q", got, want)
+	}
+	want := map[string]string{"region": "eu-west-2", "project": "agents"}
+	if !maps.Equal(rc.TraceEmitter.PlatformOptions, want) {
+		t.Errorf("TraceEmitter.PlatformOptions: got %v, want %v", rc.TraceEmitter.PlatformOptions, want)
 	}
 }
 

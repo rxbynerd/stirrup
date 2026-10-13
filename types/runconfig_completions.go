@@ -59,6 +59,12 @@ func ValidTraceEmitterMetricsTemporalityValues() []string {
 	return sortedNonEmptyKeys(validTraceEmitterMetricsTemporalities)
 }
 
+// ValidTraceEmitterPlatformValues returns the platform profiles accepted
+// on RunConfig.TraceEmitter.Platform.
+func ValidTraceEmitterPlatformValues() []string {
+	return sortedNonEmptyKeys(validTraceEmitterPlatforms)
+}
+
 // ValidLogsExportTypeValues returns the log-export types accepted on
 // RunConfig.Observability.LogsExport.Type.
 func ValidLogsExportTypeValues() []string {

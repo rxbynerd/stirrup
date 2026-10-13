@@ -68,6 +68,8 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.StringArray("otel-header", nil, "Repeatable key=value HTTP header attached to every OTLP export request (e.g. --otel-header Authorization=secret://LANGFUSE_AUTH). Values may be secret:// references resolved at exporter init; never pass raw secrets. Requires --otel-protocol=http/protobuf (the gRPC path would send credentials in plaintext). Mirrors traceEmitter.headers; the OTEL_EXPORTER_OTLP_HEADERS env var is the SDK-native fallback when no headers are configured.")
 	f.String("otel-metrics-endpoint", "", "OTLP endpoint for the otel metrics exporter when metrics target a different collector than traces. Defaults to --otel-endpoint when unset. Mirrors traceEmitter.metricsEndpoint.")
 	f.String("otel-metrics-temporality", "", "Aggregation temporality for otel metrics: cumulative or delta. Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE, then cumulative. Mirrors traceEmitter.metricsTemporality.")
+	f.String("otel-platform", "", "Observability platform profile for the otel trace emitter. The profile fills unset OTLP settings (per-signal endpoints, headers, request signing, resource and span attributes); explicit flags and fields always win. Shell completion lists the supported values. Mirrors traceEmitter.platform; see docs/observability-cloud.md#platform-profiles.")
+	f.StringArray("otel-platform-option", nil, "Repeatable key=value setting for the selected --otel-platform (e.g. --otel-platform-option region=us-east-1). Values are at most 256 bytes of printable UTF-8 and are never secrets. Replaces, rather than merges with, platformOptions from a config file. Mirrors traceEmitter.platformOptions.")
 	f.Bool("otel-capture-content", false, "Opt the otel trace emitter into recording prompt/completion content on spans via the GenAI semconv attributes (gen_ai.input.messages, gen_ai.output.messages, gen_ai.system_instructions). OFF by default: message content is likely to contain PII. Content is scrubbed for secret-shaped substrings before export. Mirrors traceEmitter.captureContent.")
 	f.Int("otel-capture-content-max-bytes", 0, "Cap each captured content attribute (gen_ai.input.messages, gen_ai.output.messages, gen_ai.system_instructions, gen_ai.tool.call.arguments/result) at this many bytes, shortening at a message or part boundary so JSON stays valid and marking the span with stirrup.<attribute>.truncated. 0 (the default) means no cap; otherwise at least 256. Requires --otel-capture-content. Mirrors traceEmitter.captureContentMaxBytes.")
 
@@ -133,6 +135,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("trace-emitter", types.ValidTraceEmitterTypeValues())
 	staticValues("otel-protocol", types.ValidTraceEmitterProtocolValues())
 	staticValues("otel-metrics-temporality", types.ValidTraceEmitterMetricsTemporalityValues())
+	staticValues("otel-platform", types.ValidTraceEmitterPlatformValues())
 	staticValues("log-export", types.ValidLogsExportTypeValues())
 	staticValues("container-runtime", types.ValidExecutorRuntimeValues())
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())

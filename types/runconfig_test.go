@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"reflect"
 	"strings"
@@ -213,6 +214,26 @@ func TestRedact_TraceEmitterHeaders(t *testing.T) {
 	// Original unchanged.
 	if rc.TraceEmitter.Headers["Authorization"] != "secret://GRAFANA_CLOUD_AUTH" {
 		t.Error("Redact mutated original TraceEmitter.Headers")
+	}
+}
+
+// TestRedact_TraceEmitterPlatformOptionsUnchanged pins that Redact() leaves
+// the platform and its options untouched: options are validated never to be
+// secrets, so a persisted trace shows exactly what the operator declared.
+func TestRedact_TraceEmitterPlatformOptionsUnchanged(t *testing.T) {
+	rc := RunConfig{
+		TraceEmitter: TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        "cloudwatch",
+			PlatformOptions: map[string]string{"region": "us-east-1", "logGroup": "/stirrup/agents"},
+		},
+	}
+	redacted := rc.Redact()
+	if redacted.TraceEmitter.Platform != "cloudwatch" {
+		t.Errorf("Platform = %q, want cloudwatch", redacted.TraceEmitter.Platform)
+	}
+	if !maps.Equal(redacted.TraceEmitter.PlatformOptions, rc.TraceEmitter.PlatformOptions) {
+		t.Errorf("PlatformOptions = %v, want %v", redacted.TraceEmitter.PlatformOptions, rc.TraceEmitter.PlatformOptions)
 	}
 }
 
@@ -5185,6 +5206,59 @@ func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
 		if err := ValidateRunConfig(c); err != nil {
 			t.Errorf("captureContent on otel emitter (protocol %q) must be valid: %v", protocol, err)
 		}
+	}
+}
+
+// TestValidateRunConfig_TraceEmitterPlatform pins the closed platform set,
+// its otel-only scope, and the shape rules on platformOptions.
+func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
+	valid := map[string]TraceEmitterConfig{
+		"no platform":   {Type: "otel"},
+		"cloudwatch":    {Type: "otel", Platform: "cloudwatch", PlatformOptions: map[string]string{"region": "us-east-1", "logGroup": "/stirrup/agents"}},
+		"phoenix":       {Type: "otel", Platform: "phoenix"},
+		"8 options":     {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8"}},
+		"max value len": {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 256)}},
+		"max key len":   {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("A", 31): "v"}},
+		"empty value":   {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": ""}},
+	}
+	for name, te := range valid {
+		t.Run("valid/"+name, func(t *testing.T) {
+			c := validConfig()
+			c.TraceEmitter = te
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("expected valid, got: %v", err)
+			}
+		})
+	}
+
+	invalid := map[string]struct {
+		te   TraceEmitterConfig
+		want string
+	}{
+		"unknown platform":       {TraceEmitterConfig{Type: "otel", Platform: "datadog"}, `unsupported traceEmitter.platform "datadog"`},
+		"platform on jsonl":      {TraceEmitterConfig{Type: "jsonl", Platform: "phoenix"}, "traceEmitter.platform is only valid when traceEmitter.type is \"otel\""},
+		"options on gcs":         {TraceEmitterConfig{Type: "gcs", Bucket: "b-123", Platform: "", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions is only valid when traceEmitter.type is \"otel\""},
+		"options without name":   {TraceEmitterConfig{Type: "otel", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions requires traceEmitter.platform"},
+		"too many options":       {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8", "i": "9"}}, "has 9 entries (max 8)"},
+		"uppercase key start":    {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"Project": "p"}}, `key "Project" must match`},
+		"key with dash":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"log-group": "p"}}, `key "log-group" must match`},
+		"key too long":           {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("a", 32): "v"}}, "must match"},
+		"value too long":         {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 257)}}, "is 257 bytes (max 256)"},
+		"value with LF":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\nb"}}, "must be printable text without CR or LF"},
+		"value with CR":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\rb"}}, "must be printable text without CR or LF"},
+		"value with control":     {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\x00b"}}, "must be printable text without CR or LF"},
+		"value invalid utf8":     {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\xffb"}}, "must be printable text without CR or LF"},
+		"secret reference value": {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "secret://PROJECT"}}, "must not be a secret:// reference"},
+	}
+	for name, tc := range invalid {
+		t.Run("invalid/"+name, func(t *testing.T) {
+			c := validConfig()
+			c.TraceEmitter = tc.te
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got: %v", tc.want, err)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -900,6 +901,105 @@ func TestApplyOverrides_OTelHeaderMalformedRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--otel-header") {
 		t.Errorf("error should name the offending flag, got: %v", err)
+	}
+}
+
+// TestApplyOverrides_OTelPlatformFlags pins that --otel-platform overrides
+// the file's platform and that --otel-platform-option replaces, rather than
+// merges with, the file's options, as --otel-header does.
+func TestApplyOverrides_OTelPlatformFlags(t *testing.T) {
+	platform := types.ValidTraceEmitterPlatformValues()[0]
+
+	t.Run("flags replace file values", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.TraceEmitter = types.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        "from-file",
+			PlatformOptions: map[string]string{"stale": "from-file"},
+		}
+		if err := cmd.Flags().Set("otel-platform", platform); err != nil {
+			t.Fatalf("set otel-platform: %v", err)
+		}
+		for _, entry := range []string{"region=us-east-1", "logGroup=/a=b"} {
+			if err := cmd.Flags().Set("otel-platform-option", entry); err != nil {
+				t.Fatalf("set otel-platform-option: %v", err)
+			}
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.Platform != platform {
+			t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
+		}
+		want := map[string]string{"region": "us-east-1", "logGroup": "/a=b"}
+		if !maps.Equal(cfg.TraceEmitter.PlatformOptions, want) {
+			t.Errorf("PlatformOptions: got %v, want %v", cfg.TraceEmitter.PlatformOptions, want)
+		}
+	})
+
+	t.Run("file values survive unset flags", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.TraceEmitter = types.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        platform,
+			PlatformOptions: map[string]string{"project": "agents"},
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.Platform != platform || cfg.TraceEmitter.PlatformOptions["project"] != "agents" {
+			t.Errorf("file platform settings should survive, got %+v", cfg.TraceEmitter)
+		}
+	})
+
+	t.Run("malformed option rejected", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		if err := cmd.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
+			t.Fatalf("set otel-platform-option: %v", err)
+		}
+		err := applyOverrides(cmd, cfg, nil)
+		if err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
+			t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
+		}
+	})
+}
+
+// TestBuildFlagOnlyRunConfig_OTelPlatform pins that the flag-only builder
+// parses --otel-platform-option entries onto the otel emitter.
+func TestBuildFlagOnlyRunConfig_OTelPlatform(t *testing.T) {
+	platform := types.ValidTraceEmitterPlatformValues()[0]
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info", "trace-emitter": "otel",
+		"otel-protocol": "http/protobuf", "otel-platform": platform,
+		"otel-platform-option": "project=agents",
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.TraceEmitter.Platform != platform {
+		t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
+	}
+	if got := cfg.TraceEmitter.PlatformOptions["project"]; got != "agents" {
+		t.Errorf("PlatformOptions[project]: got %q, want agents", got)
+	}
+
+	malformed := newTestHarnessCommand()
+	if err := malformed.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
+		t.Fatalf("set otel-platform-option: %v", err)
+	}
+	if _, err := buildFlagOnlyRunConfig(malformed, nil); err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
+		t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
 	}
 }
 

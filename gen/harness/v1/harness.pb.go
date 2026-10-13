@@ -4908,6 +4908,21 @@ type TraceEmitterConfig struct {
 	// least 256. Rejected unless capture_content is true, and for jsonl
 	// and gcs.
 	CaptureContentMaxBytes int32 `protobuf:"varint,11,opt,name=capture_content_max_bytes,json=captureContentMaxBytes,proto3" json:"capture_content_max_bytes,omitempty"`
+	// For "otel": backend platform profile that fills unset OTLP settings
+	// (per-signal endpoints, headers, request signing, resource and span
+	// attributes) for one observability platform. Closed set:
+	//
+	//	"" | "cloudwatch" | "phoenix"
+	//
+	// Explicit fields always win over a profile's defaults. Rejected for
+	// jsonl and gcs. See docs/observability-cloud.md#platform-profiles.
+	Platform string `protobuf:"bytes,12,opt,name=platform,proto3" json:"platform,omitempty"`
+	// For "otel": settings for the selected platform (for example a region
+	// or project name). At most 8 entries; keys match
+	// ^[a-z][A-Za-z0-9]{0,31}$; values are at most 256 bytes of printable
+	// UTF-8 and never secret:// references. Which keys a platform
+	// accepts is checked when the exporters are built. Requires platform.
+	PlatformOptions map[string]string `protobuf:"bytes,13,rep,name=platform_options,json=platformOptions,proto3" json:"platform_options,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// For "gcs": joined with the run ID at write time to form the final
 	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
 	// allowed; trailing slash is normalised by validation. Only consulted
@@ -5015,6 +5030,20 @@ func (x *TraceEmitterConfig) GetCaptureContentMaxBytes() int32 {
 		return x.CaptureContentMaxBytes
 	}
 	return 0
+}
+
+func (x *TraceEmitterConfig) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
+}
+
+func (x *TraceEmitterConfig) GetPlatformOptions() map[string]string {
+	if x != nil {
+		return x.PlatformOptions
+	}
+	return nil
 }
 
 func (x *TraceEmitterConfig) GetObjectPrefix() string {
@@ -5680,7 +5709,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\x85\x04\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\xcd\x05\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -5692,9 +5721,14 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12/\n" +
 	"\x13metrics_temporality\x18\n" +
 	" \x01(\tR\x12metricsTemporality\x129\n" +
-	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12#\n" +
+	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12\x1a\n" +
+	"\bplatform\x18\f \x01(\tR\bplatform\x12f\n" +
+	"\x10platform_options\x18\r \x03(\v2;.stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntryR\x0fplatformOptions\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
+	"\x14PlatformOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x01\n" +
 	"\vToolsConfig\x12\x19\n" +
@@ -5730,7 +5764,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),               // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),               // 1: stirrup.harness.v1.ControlEvent
@@ -5783,7 +5817,8 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	nil,                                // 48: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
 	nil,                                // 49: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
 	nil,                                // 50: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	(*structpb.Struct)(nil),            // 51: google.protobuf.Struct
+	nil,                                // 51: stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
+	(*structpb.Struct)(nil),            // 52: google.protobuf.Struct
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	16, // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
@@ -5811,7 +5846,7 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	9,  // 22: stirrup.harness.v1.RunConfig.hooks:type_name -> stirrup.harness.v1.HooksConfig
 	7,  // 23: stirrup.harness.v1.RunConfig.result_sink:type_name -> stirrup.harness.v1.ResultSinkConfig
 	6,  // 24: stirrup.harness.v1.RunConfig.tool_choice_escalation:type_name -> stirrup.harness.v1.ToolChoiceEscalationConfig
-	51, // 25: stirrup.harness.v1.RunConfig.output_schema:type_name -> google.protobuf.Struct
+	52, // 25: stirrup.harness.v1.RunConfig.output_schema:type_name -> google.protobuf.Struct
 	45, // 26: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
 	10, // 27: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
 	10, // 28: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
@@ -5837,18 +5872,19 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	31, // 48: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
 	36, // 49: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
 	50, // 50: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	42, // 51: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	41, // 52: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
-	51, // 53: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
-	4,  // 54: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	20, // 55: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 56: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 57: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	57, // [57:58] is the sub-list for method output_type
-	56, // [56:57] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	51, // 51: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
+	42, // 52: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	41, // 53: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	52, // 54: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	4,  // 55: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	20, // 56: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 57: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 58: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	58, // [58:59] is the sub-list for method output_type
+	57, // [57:58] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -5871,7 +5907,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   51,
+			NumMessages:   52,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

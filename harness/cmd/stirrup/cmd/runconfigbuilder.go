@@ -320,6 +320,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	otelMetricsTemporality, _ := f.GetString("otel-metrics-temporality")
 	otelCaptureContent, _ := f.GetBool("otel-capture-content")
 	otelCaptureContentMaxBytes, _ := f.GetInt("otel-capture-content-max-bytes")
+	otelPlatform, _ := f.GetString("otel-platform")
+	otelPlatformOptionRaw, _ := f.GetStringArray("otel-platform-option")
 	containerRuntime, _ := f.GetString("container-runtime")
 	k8sNamespace, _ := f.GetString("k8s-namespace")
 	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
@@ -390,6 +392,18 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		otelHeaders[k] = v
 	}
 
+	var otelPlatformOptions map[string]string
+	for _, entry := range otelPlatformOptionRaw {
+		k, v, err := parseQueryParam(entry)
+		if err != nil {
+			return nil, fmt.Errorf("--otel-platform-option %q: %w", entry, err)
+		}
+		if otelPlatformOptions == nil {
+			otelPlatformOptions = map[string]string{}
+		}
+		otelPlatformOptions[k] = v
+	}
+
 	temperature := optionalFloat64Flag(cmd, "temperature")
 
 	// buildHarnessRunConfigCore (not buildHarnessRunConfig) keeps
@@ -445,6 +459,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		OTelMetricsTemporality:       otelMetricsTemporality,
 		OTelCaptureContent:           otelCaptureContent,
 		OTelCaptureContentMaxBytes:   otelCaptureContentMaxBytes,
+		OTelPlatform:                 otelPlatform,
+		OTelPlatformOptions:          otelPlatformOptions,
 		ContainerRuntime:             containerRuntime,
 		K8sNamespace:                 k8sNamespace,
 		K8sKubeconfig:                k8sKubeconfig,

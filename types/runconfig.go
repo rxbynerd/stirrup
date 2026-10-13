@@ -1295,6 +1295,21 @@ type TraceEmitterConfig struct {
 	// at least MinCaptureContentMaxBytes. Only valid with CaptureContent.
 	CaptureContentMaxBytes int `json:"captureContentMaxBytes,omitempty"`
 
+	// Platform selects a backend profile that fills unset OTLP settings
+	// (per-signal endpoints, headers, request signing, resource and span
+	// attributes) for one observability platform. Closed set, see
+	// ValidTraceEmitterPlatformValues; empty selects none. Explicit fields
+	// always win over a profile's defaults. Only valid when type=="otel".
+	// See docs/observability-cloud.md#platform-profiles.
+	Platform string `json:"platform,omitempty"`
+
+	// PlatformOptions are the selected platform's settings (for example a
+	// region or project name). Keys are validated by the platform at
+	// factory time. Values are at most 256 bytes of printable UTF-8 and
+	// are never secrets, so secret:// references are rejected. Requires
+	// Platform.
+	PlatformOptions map[string]string `json:"platformOptions,omitempty"`
+
 	// Archive configures durable storage for command-output sidecars. When
 	// omitted, JSONL traces place the archive beside FilePath; GCS traces place
 	// it beside the trace object; all other configurations retain a local
@@ -1827,6 +1842,25 @@ var validTraceEmitterMetricsTemporalities = map[string]bool{
 	"cumulative": true,
 	"delta":      true,
 }
+
+// validTraceEmitterPlatforms is the closed set of
+// TraceEmitterConfig.Platform values. It lists only implemented profiles;
+// the profile registry in harness/internal/observability/platform must
+// carry exactly these names.
+var validTraceEmitterPlatforms = map[string]bool{
+	"":           true,
+	"cloudwatch": true,
+	"phoenix":    true,
+}
+
+// Shape limits for TraceEmitterConfig.PlatformOptions. Per-key rules
+// belong to the platform that reads them.
+const (
+	maxTraceEmitterPlatformOptions        = 8
+	maxTraceEmitterPlatformOptionValueLen = 256
+)
+
+var traceEmitterPlatformOptionKeyPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,31}$`)
 
 // validLogsExportTypes is the closed set of
 // ObservabilityConfig.LogsExport.Type values. The empty string is the unset
@@ -4960,6 +4994,7 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			*errs = append(*errs, "traceEmitter.captureContentMaxBytes is only valid when traceEmitter.captureContent is true")
 		}
 	}
+	validateTraceEmitterPlatform(cfg, errs)
 	// gcs-specific field validation. Bucket is required for gcs and
 	// rejected on every other type so a stale value cannot silently
 	// keep a bucket reference alive across a type change.
@@ -5049,6 +5084,90 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			))
 		}
 	}
+}
+
+// validateTraceEmitterPlatform checks the platform name against the closed
+// set and the shape of platformOptions. Which keys a platform accepts, and
+// how options combine with the rest of the config, is decided by the
+// platform package when the exporters are built.
+func validateTraceEmitterPlatform(cfg *TraceEmitterConfig, errs *[]string) {
+	if !validTraceEmitterPlatforms[cfg.Platform] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported traceEmitter.platform %q (allowed: %s)",
+			cfg.Platform, strings.Join(ValidTraceEmitterPlatformValues(), ", "),
+		))
+	}
+	if cfg.Type != "otel" {
+		if cfg.Platform != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platform is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if len(cfg.PlatformOptions) > 0 {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	}
+	if len(cfg.PlatformOptions) == 0 {
+		return
+	}
+	if cfg.Platform == "" {
+		*errs = append(*errs, "traceEmitter.platformOptions requires traceEmitter.platform")
+	}
+	if len(cfg.PlatformOptions) > maxTraceEmitterPlatformOptions {
+		*errs = append(*errs, fmt.Sprintf(
+			"traceEmitter.platformOptions has %d entries (max %d)",
+			len(cfg.PlatformOptions), maxTraceEmitterPlatformOptions,
+		))
+	}
+	keys := make([]string, 0, len(cfg.PlatformOptions))
+	for k := range cfg.PlatformOptions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfg.PlatformOptions[k]
+		if !traceEmitterPlatformOptionKeyPattern.MatchString(k) {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions key %q must match %s",
+				k, traceEmitterPlatformOptionKeyPattern,
+			))
+		}
+		switch {
+		case len(v) > maxTraceEmitterPlatformOptionValueLen:
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q is %d bytes (max %d)",
+				k, len(v), maxTraceEmitterPlatformOptionValueLen,
+			))
+		case !isPrintableOptionValue(v):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q must be printable text without CR or LF",
+				k,
+			))
+		case strings.HasPrefix(v, "secret://"):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q must not be a secret:// reference; platform options are never secrets (put credentials in traceEmitter.headers)",
+				k,
+			))
+		}
+	}
+}
+
+// isPrintableOptionValue reports whether v is valid UTF-8 made only of
+// printable characters (which excludes CR, LF and other controls).
+func isPrintableOptionValue(v string) bool {
+	if !utf8.ValidString(v) {
+		return false
+	}
+	for _, r := range v {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateResultSinkConfig enforces the closed set of resultSink types

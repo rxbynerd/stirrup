@@ -884,7 +884,10 @@ and root spans; `observability.serviceName` / `environment` /
 backends tell one agent deployment from another;
 `traceEmitter.captureContent` opts spans into GenAI message-content
 attributes (off by default, PII), and `captureContentMaxBytes` caps
-each content attribute.
+each content attribute. `traceEmitter.platform` and `platformOptions`
+select a backend profile that fills unset exporter settings; option
+keys are checked when the harness builds its exporters, so an unknown
+key fails the run at start rather than at `ValidateRunConfig`.
 Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
 

@@ -272,6 +272,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			ObjectPrefix:           pc.TraceEmitter.ObjectPrefix,
 			CaptureContent:         pc.TraceEmitter.CaptureContent,
 			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
+			Platform:               pc.TraceEmitter.Platform,
+			PlatformOptions:        pc.TraceEmitter.PlatformOptions,
 		}
 	}
 	if pc.Tools != nil {
