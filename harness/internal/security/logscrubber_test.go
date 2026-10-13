@@ -1,6 +1,7 @@
 package security
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -191,6 +192,57 @@ func TestScrub_BasicAuth_LongBase64(t *testing.T) {
 	want := "Authorization: [REDACTED]"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_BasicAuth_RedactsOnlyCredentials pins that the basic_auth
+// pattern redacts payloads that decode to "user:password" (padded and raw
+// base64, any scheme case, newline separator) and leaves prose that merely
+// starts with the word "basic" untouched.
+func TestScrub_BasicAuth_RedactsOnlyCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"padded credential", "Authorization: Basic c3RpcnJ1cDpzdXBlcnNlY3JldA==", "Authorization: [REDACTED]"},
+		{"raw credential", "Authorization: Basic c3RpcnJ1cDpzdXBlcnNlY3JldA", "Authorization: [REDACTED]"},
+		{"lowercase scheme", "authorization: basic c3RpcnJ1cDpzdXBlcnNlY3JldA==", "authorization: [REDACTED]"},
+		{"newline separator", "Basic\nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "[REDACTED]"},
+		{"credential after prose", "basic documentation, then Basic dXNlcjpwYXNz", "basic documentation, then [REDACTED]"},
+		{"prose documentation", "See the basic documentation for details", "See the basic documentation for details"},
+		{"prose auth", "Basic auth is used by the gateway", "Basic auth is used by the gateway"},
+		{"prose configuration", "Basic configuration is required", "Basic configuration is required"},
+		{"base64 without colon", "Basic " + base64.StdEncoding.EncodeToString([]byte("justonetokenvalue")), "Basic " + base64.StdEncoding.EncodeToString([]byte("justonetokenvalue"))},
+		{"credential with trailing newline", "Authorization: Basic dXNlcjpwYXNzCg==", "Authorization: [REDACTED]"},
+		{"latin-1 password", "Basic " + base64.StdEncoding.EncodeToString([]byte("user:p\xe4ssword")), "[REDACTED]"},
+		{"tab in password", "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pa\tss")), "[REDACTED]"},
+		{"credential after rejected basic", "Basic Basic dXNlcjpwYXNzd29yZA==", "Basic [REDACTED]"},
+		{"credential after rejected lowercase basic", "auth=basic\nBasic dXNlcjpwYXNzd29yZA==", "auth=basic\n[REDACTED]"},
+		{"credential after repeated basic", "Basic Basic Basic dXNlcjpwYXNzd29yZA==", "Basic Basic [REDACTED]"},
+		{"truncated one char short", "Authorization: Basic YWxpY2U6czNjcjN0LXBAc3Mtd29yZ", "Authorization: [REDACTED]"},
+		{"truncated single padding", "Authorization: Basic YWxpY2U6czNjcjN0LXBAc3Mtd29yZA=", "Authorization: [REDACTED]"},
+		{"over-padded", "Authorization: Basic YWxpY2U6czNjcjN0LXBAc3Mtd29yZA==== [truncated", "Authorization: [REDACTED] [truncated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Scrub(tt.input); got != tt.want {
+				t.Errorf("Scrub(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestScrubWithStats_BasicAuthCountsOnlyRedactions pins that prose matches
+// neither inflate the redaction count nor list the pattern.
+func TestScrubWithStats_BasicAuthCountsOnlyRedactions(t *testing.T) {
+	_, stats := ScrubWithStats("Basic documentation and Basic auth")
+	if stats.Count != 0 || len(stats.Patterns) != 0 {
+		t.Errorf("stats = %+v, want zero for prose", stats)
+	}
+	_, stats = ScrubWithStats("Basic documentation and Basic dXNlcjpwYXNz")
+	if stats.Count != 1 || len(stats.Patterns) != 1 || stats.Patterns[0] != "basic_auth" {
+		t.Errorf("stats = %+v, want one basic_auth redaction", stats)
 	}
 }
 

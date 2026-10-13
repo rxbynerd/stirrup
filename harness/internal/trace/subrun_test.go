@@ -151,13 +151,13 @@ func TestJSONLTraceEmitter_SubRunLines(t *testing.T) {
 
 func TestNestedJSONLEmitter_ReportsSubRunLifecycle(t *testing.T) {
 	root := &subRunRecordingEmitter{}
-	child := NewNestedJSONLEmitter(root, "run-p")
+	child := NewNestedJSONLEmitter(root, "run-p", context.Background())
 	config := &types.RunConfig{Mode: "research"}
 	child.Start("run-p/sub-1", config)
 	child.RecordTurn(types.TurnTrace{Turn: 0, Tokens: types.TokenUsage{Input: 7, Output: 3}})
 	child.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 5, Output: 1}})
 
-	grandchild := NewNestedJSONLEmitter(child, "run-p/sub-1")
+	grandchild := NewNestedJSONLEmitter(child, "run-p/sub-1", context.Background())
 	grandchild.Start("run-p/sub-1/sub-1", nil)
 	if _, err := grandchild.Finish(context.Background(), "error"); err != nil {
 		t.Fatalf("grandchild Finish: %v", err)
@@ -222,10 +222,10 @@ func TestNestedJSONLEmitter_InterleavedChildrenRoundTrip(t *testing.T) {
 		})
 	}
 
-	childA := NewNestedJSONLEmitter(parent, "run-p")
+	childA := NewNestedJSONLEmitter(parent, "run-p", context.Background())
 	childA.Start("run-p/sub-1", &types.RunConfig{RunID: "run-p/sub-1", Mode: "research"})
 	turn(childA, 0, "a0", "a-call-0")
-	childB := NewNestedJSONLEmitter(parent, "run-p")
+	childB := NewNestedJSONLEmitter(parent, "run-p", context.Background())
 	childB.Start("run-p/sub-2", &types.RunConfig{RunID: "run-p/sub-2", Mode: "review"})
 	turn(childB, 0, "b0", "b-call-0")
 	turn(childA, 1, "a1", "a-call-1")
@@ -325,7 +325,7 @@ func TestJSONLTraceEmitter_ConfigPromptIsScrubbed(t *testing.T) {
 			var buf bytes.Buffer
 			parent := NewJSONLTraceEmitter(&buf, tc.redactionDisabled)
 			parent.Start("run-p", config)
-			child := NewNestedJSONLEmitter(parent, "run-p")
+			child := NewNestedJSONLEmitter(parent, "run-p", context.Background())
 			child.Start("run-p/sub-1", config)
 			if _, err := child.Finish(context.Background(), "success"); err != nil {
 				t.Fatalf("child Finish: %v", err)

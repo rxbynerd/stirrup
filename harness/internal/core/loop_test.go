@@ -409,6 +409,77 @@ func TestLoop_ToolUseAndContinue(t *testing.T) {
 	}
 }
 
+// TestLoop_TurnTraceCountsToolCalls pins that each TurnTrace carries the
+// number of tool calls its turn dispatched.
+func TestLoop_TurnTraceCountsToolCalls(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	rec := &recordingTraceEmitter{}
+	loop.Trace = rec
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	rec.mu.Lock()
+	turns := append([]types.TurnTrace(nil), rec.turns...)
+	rec.mu.Unlock()
+	if len(turns) != 2 {
+		t.Fatalf("got %d turn traces, want 2", len(turns))
+	}
+	if turns[0].ToolCalls != 2 {
+		t.Errorf("tool-calling turn ToolCalls = %d, want 2", turns[0].ToolCalls)
+	}
+	if turns[1].ToolCalls != 0 {
+		t.Errorf("final turn ToolCalls = %d, want 0", turns[1].ToolCalls)
+	}
+}
+
+// TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop pins that a turn which
+// stops for a reason other than tool_use reports zero tool calls even when
+// the response carries a tool block, because the loop never dispatches it.
+func TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "max_tokens"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	rec := &recordingTraceEmitter{}
+	loop.Trace = rec
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	rec.mu.Lock()
+	turns := append([]types.TurnTrace(nil), rec.turns...)
+	rec.mu.Unlock()
+	if len(turns) != 1 {
+		t.Fatalf("got %d turn traces, want 1", len(turns))
+	}
+	if turns[0].ToolCalls != 0 {
+		t.Errorf("max_tokens turn ToolCalls = %d, want 0", turns[0].ToolCalls)
+	}
+}
+
 // TestLoop_ToolCallEventsPrecedeMatchingToolResults is the regression test
 // for issue #593: the transport must see a tool_call event for every
 // dispatched tool, carrying the same id the matching tool_result later

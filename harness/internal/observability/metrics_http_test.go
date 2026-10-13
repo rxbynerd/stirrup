@@ -12,6 +12,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 )
 
 // fakeOTLPMetricsServer is the metrics-side counterpart to the trace
@@ -72,13 +74,11 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	m, err := NewMetrics(
-		ctx,
-		srv.URL,
-		"http/protobuf",
-		map[string]string{authHeader: authValue},
-		ResourceOptions{},
-	)
+	m, err := NewMetrics(ctx, otlp.Settings{
+		Protocol: otlp.ProtocolHTTPProtobuf,
+		Endpoint: srv.URL,
+		Headers:  map[string]string{authHeader: authValue},
+	}, ResourceOptions{})
 	if err != nil {
 		t.Fatalf("NewMetrics: %v", err)
 	}
@@ -110,68 +110,5 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 	}
 	if got.bodyLen == 0 {
 		t.Errorf("expected non-empty protobuf body, got 0 bytes")
-	}
-}
-
-// TestNewMetrics_HTTPProtocol_PreservesGatewayPath pins that a
-// Grafana-Cloud–style URL ending in /otlp produces metrics POSTs to
-// /otlp/v1/metrics so the gateway's tenant routing is preserved.
-func TestNewMetrics_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
-	if path := joinMetricsPath("/otlp"); path != "/otlp/v1/metrics" {
-		t.Errorf("joinMetricsPath(/otlp) = %q, want /otlp/v1/metrics", path)
-	}
-	if path := joinMetricsPath("/otlp/"); path != "/otlp/v1/metrics" {
-		t.Errorf("joinMetricsPath(/otlp/) = %q (trailing slash should be normalised)", path)
-	}
-	gatewayURL := "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"
-	if got := stripURLScheme(gatewayURL); got != "otlp-gateway-prod-us-east-0.grafana.net" {
-		t.Errorf("stripURLScheme(%q) = %q (must be host only)", gatewayURL, got)
-	}
-	if isInsecureEndpoint(gatewayURL) {
-		t.Errorf("isInsecureEndpoint(%q) = true; an https:// URL must use TLS", gatewayURL)
-	}
-	if !isInsecureEndpoint("http://localhost:4318") {
-		t.Errorf("isInsecureEndpoint(http://...) must be true (plaintext)")
-	}
-	if !isInsecureEndpoint("localhost:4318") {
-		t.Errorf("isInsecureEndpoint(no scheme) must be true (plaintext local-collector flow)")
-	}
-}
-
-// TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol pins that an unknown
-// wire-protocol value surfaces as a clear error rather than falling back.
-func TestNewMetrics_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
-	_, err := NewMetrics(
-		context.Background(),
-		"localhost:4318",
-		"json", // not supported
-		nil,
-		ResourceOptions{},
-	)
-	if err == nil {
-		t.Fatalf("expected error for unsupported protocol, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported OTLP protocol") {
-		t.Errorf("error must call out the bad protocol, got %q", err.Error())
-	}
-}
-
-// TestNewMetrics_GRPCProtocol_AcceptsHeaders is a smoke test that the gRPC
-// path accepts a non-empty headers map without erroring on option
-// construction; catches a regression that drops WithHeaders from the slice.
-func TestNewMetrics_GRPCProtocol_AcceptsHeaders(t *testing.T) {
-	// Direct exporter construction avoids the OTel SDK's connection
-	// timeout on Close.
-	exp, err := buildOTLPMetricExporter(
-		context.Background(),
-		"127.0.0.1:1",
-		"grpc",
-		map[string]string{"X-Tenant": "team-a"},
-	)
-	if err != nil {
-		t.Fatalf("buildOTLPMetricExporter(grpc with headers): %v", err)
-	}
-	if exp == nil {
-		t.Fatalf("expected non-nil exporter")
 	}
 }

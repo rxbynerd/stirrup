@@ -657,11 +657,28 @@ back as a user message. Three implementations ship:
   local development and replay.
 - **`otel`** — OpenTelemetry traces via OTLP/gRPC (default) or
   OTLP/HTTP (`http/protobuf`). Default endpoint: `localhost:4317` for
-  gRPC. The trace emitter creates a root `run` span with child spans
-  for turns, tool calls, provider streaming, context compaction,
-  verification, permission checks, and git operations. See
-  [`observability-cloud.md`](observability-cloud.md) for cloud
-  backend setup.
+  gRPC. The trace emitter creates a root `invoke_agent stirrup`
+  span with a `chat {model}` span per provider request (its
+  `provider.stream` attempts beneath it), an `execute_tool {name}`
+  span per tool call, and child spans for context compaction,
+  verification, permission checks, guardrails, and git operations. A
+  sub-agent run is an `invoke_agent stirrup.subagent` span beneath
+  its `execute_tool spawn_agent` span. See
+  [`observability-cloud.md`](observability-cloud.md#span-tree) for the
+  tree and cloud backend setup.
+
+The OTLP exporters for traces, metrics, and logs are built in one
+package, `harness/internal/observability/otlp/`, so endpoint, TLS,
+header, and transport rules are the same for all three signals. An
+optional platform profile (`traceEmitter.platform`, implemented in
+`harness/internal/observability/platform/`, the only package that
+names a vendor) fills the settings a backend needs beyond an endpoint
+and a header, such as SigV4 request signing and backend-specific span
+attributes. The factory resolves the profile once per run, in
+`core/factory.go::resolveTelemetry`, so the three exporters and the
+resource agree. An explicit `RunConfig` field always wins over a
+profile default. See
+[`observability-cloud.md`](observability-cloud.md#platform-profiles).
 
 The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution
@@ -690,10 +707,15 @@ them `stirrup.harness.runs`, `.turns`, `.tokens.input`,
 `.provider.errors`, `.context.compactions`, `.security.events`,
 `.verification.attempts`, `.stalls`, and the `stirrup.subagent.*`
 component counters), 5 histograms (run, turn, tool-call duration; provider
-latency; TTFB), and 1 UpDownCounter (context token estimate). All
+latency; TTFB), the three OpenTelemetry GenAI client histograms
+(`gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
+`gen_ai.client.operation.time_to_first_chunk`; see
+[`observability-cloud.md`](observability-cloud.md#genai-client-metrics)),
+and 1 UpDownCounter (context token estimate). The `stirrup.*`
 instruments use standard attributes (`run.mode`, `provider.type`,
-`tool.name`). `NewNoopMetrics()` provides a zero-cost no-op when
-metrics are disabled.
+`tool.name`); the token counters also carry `gen_ai.provider.name` and
+`gen_ai.request.model`. `NewNoopMetrics()` provides a zero-cost no-op
+when metrics are disabled.
 
 `stirrup.harness.tool_failures` decomposes `.tool_errors` by a
 bounded `category` label drawn from the `ToolFailureCategory` enum
@@ -721,19 +743,23 @@ observation alongside the N per-call failure observations, so
 double-count is intentional and load-bearing for stall alerts.
 
 Resource attributes (`service.name`, `service.namespace`,
-`deployment.environment`, `service.instance.id`, `harness.run.mode`)
-are built once per process by `observability.BuildResource`, which
-merges the OTel SDK's `resource.Default()` with Stirrup's overlay;
-if the merge fails (e.g. a future SDK change), it falls back to a
-schemaless resource carrying just the Stirrup attributes. The
-deployment-environment attribute is emitted under the legacy stable
-key `deployment.environment`, not the newer
-`deployment.environment.name` that semconv v1.40.0 exposes via
-`DeploymentEnvironmentName` — the legacy key is what existing
-Grafana dashboards, Tempo derived metrics, and OTel collector
-processors (e.g. `resourcedetectionprocessor`) look for. Stirrup's
-overlay wins over
-`OTEL_RESOURCE_ATTRIBUTES` on key conflicts. High-cardinality fields
+`deployment.environment.name`, `service.instance.id`,
+`harness.run.mode`) are built once per process by
+`observability.BuildResource`, which merges the OTel SDK's
+`resource.Default()` with Stirrup's overlay. `service.name` comes from
+`observability.serviceName`, then `OTEL_SERVICE_NAME`, then
+`stirrup`; the overlay reads `OTEL_SERVICE_NAME` itself because it
+would otherwise mask the SDK's own reading of it. If the merge fails
+(e.g. a future SDK change), it falls back to a schemaless resource
+carrying just the Stirrup attributes. The deployment-environment
+attribute is emitted under `deployment.environment.name`, the key
+that is stable in semconv from v1.41.0. The older
+`deployment.environment` key has been deprecated since v1.28.0 and
+is not emitted; dashboards, derived metrics, and collector
+processors that still filter on it must switch to the new key.
+Stirrup's overlay wins over
+`OTEL_RESOURCE_ATTRIBUTES` on key conflicts, and a platform profile's
+resource attributes rank below both. High-cardinality fields
 (`run.id`, `run.provider`, `run.model`) stay at span/instrument level
 to avoid metric series cardinality explosion. `tool_failures` keeps
 its label set bounded because `category` is a closed enum and
@@ -830,10 +856,10 @@ trees. The accepted exceptions and their justifications:
 |---|---|
 | `github.com/spf13/cobra` | CLI framework |
 | `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema Draft 2020-12 validation for tool inputs |
-| `aws-sdk-go-v2` | Bedrock (SigV4), STS (`AssumeRoleWithWebIdentity`), SSM SecretStore |
+| `aws-sdk-go-v2` | Bedrock (SigV4), STS (`AssumeRoleWithWebIdentity`), SSM SecretStore, and SigV4 signing of OTLP exports for the `cloudwatch` platform profile |
 | `k8s.io/client-go` (with `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/utils`) | Kubernetes API server authentication (in-cluster service-account tokens, kubeconfig OIDC/exec credential plugins) and API discovery are materially harder to hand-roll than Docker's UNIX-socket REST. The client-go transport layer is also the only supported path for TLS client certificates issued by the cluster CA. Accepted trade-off: ~25 indirect transitive deps. |
 | `google.golang.org/grpc` + `google.golang.org/protobuf` | gRPC transport |
-| `go.opentelemetry.io/otel` + OTLP exporter | Traces and metrics (gRPC and HTTP/protobuf) |
+| `go.opentelemetry.io/otel` + OTLP exporter | Traces, metrics, and logs (gRPC and HTTP/protobuf) |
 | `golang.org/x/oauth2` | GCP ADC, GCP service-account JWT flow, WIF token refresh |
 | `github.com/cedar-policy/cedar-go` | Cedar policy engine |
 | `github.com/hashicorp/hcl/v2` | Eval suite parsing (eval module only; harness binary unaffected) |

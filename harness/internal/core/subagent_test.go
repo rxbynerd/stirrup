@@ -804,7 +804,7 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 // TestSpawnSubAgent_RecordsSubagentMetrics asserts that one
 // SpawnSubAgent invocation records exactly one stirrup.subagent.spawns
 // observation (with parent.mode + success), at least one
-// stirrup.subagent.duration_ms observation, and the input/output
+// stirrup.subagent.duration observation, and the input/output
 // token counters are populated from the child's RunTrace.
 func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
@@ -853,9 +853,9 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 		t.Errorf("success = %q, want true", spawns.attrs["success"])
 	}
 
-	// stirrup.subagent.duration_ms: at least one observation.
-	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration_ms") {
-		t.Error("stirrup.subagent.duration_ms recorded no observations")
+	// stirrup.subagent.duration: at least one observation.
+	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration") {
+		t.Error("stirrup.subagent.duration recorded no observations")
 	}
 
 	// Token counters fire (their value can be zero on a mock provider
@@ -866,6 +866,62 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	}
 	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.output").attrs["parent.mode"] != "execution" {
 		t.Error("stirrup.subagent.tokens.output missing parent.mode=execution attribute")
+	}
+	for _, name := range []string{"stirrup.subagent.tokens.input", "stirrup.subagent.tokens.output"} {
+		attrs := findSubagentCounter(t, rm, name).attrs
+		if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-sonnet-4-6" {
+			t.Errorf("%s provider/model attributes = %q/%q, want anthropic/claude-sonnet-4-6",
+				name, attrs["gen_ai.provider.name"], attrs["gen_ai.request.model"])
+		}
+	}
+}
+
+// The sub-agent token counters are labelled with the router's selection for
+// the sub-agent's mode, so they are correct when modelRouter.provider and
+// modelRouter.model are unset and when per-mode routing picks another model.
+func TestSpawnSubAgent_TokenCountersLabelledWithRoutedSelection(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok."},
+			{Type: "message_complete", StopReason: "end_turn", InputTokens: 10, OutputTokens: 2},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Metrics = metrics
+	parentLoop.Router = router.NewPerModeRouter(
+		router.ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		map[string]router.ModelSelection{"research": {Provider: "anthropic", Model: "claude-haiku-4-5"}},
+	)
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-subagent-routed-1"
+	parentConfig.Mode = "execution"
+	parentConfig.ModelRouter = types.ModelRouterConfig{}
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "research a thing",
+		Mode:   "research",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	attrs := findSubagentCounter(t, rm, "stirrup.subagent.tokens.input").attrs
+	if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-haiku-4-5" {
+		t.Errorf("provider/model = %q/%q, want anthropic/claude-haiku-4-5",
+			attrs["gen_ai.provider.name"], attrs["gen_ai.request.model"])
 	}
 }
 

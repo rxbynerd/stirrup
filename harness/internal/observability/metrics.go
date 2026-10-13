@@ -2,16 +2,14 @@ package observability
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 )
 
 // Metrics holds all OTel metric instruments for the harness. When metrics are
@@ -68,6 +66,12 @@ type Metrics struct {
 	GuardDuration    metric.Float64Histogram
 	SensitiveScan    metric.Float64Histogram
 
+	// OpenTelemetry GenAI client metrics (see inference.go); recorded
+	// alongside the stirrup.* provider instruments.
+	GenAITokenUsage        metric.Int64Histogram
+	GenAIOperationDuration metric.Float64Histogram
+	GenAITimeToFirstChunk  metric.Float64Histogram
+
 	// Component-level histograms
 	SubagentDuration metric.Float64Histogram
 	MCPDuration      metric.Float64Histogram
@@ -86,22 +90,15 @@ type Metrics struct {
 	ctxTokenCallbacks map[*ctxTokenCallback]metric.Registration
 }
 
-// NewMetrics creates a Metrics instance backed by an OTLP metric exporter
-// connected to the given endpoint over the chosen wire protocol.
-//
-// protocol selects the OTLP wire protocol: "" or "grpc" for OTLP/gRPC
-// (endpoint is host:port), or "http/protobuf" for OTLP/HTTP (endpoint is
-// the gateway base URL; the SDK appends "/v1/metrics"). TLS follows the
-// endpoint scheme.
-//
-// headers must already have any "secret://" references resolved (see
-// ResolveHeaders) — the SDK sees them unchanged.
+// NewMetrics creates a Metrics instance backed by the OTLP metric exporter
+// that settings describes (see otlp.Settings for endpoint, protocol, TLS,
+// and header handling).
 //
 // resourceOpts threads the run-scoped resource attributes so metrics share
 // a consistent resource identity with traces from the same run; a zero
 // value falls through to env-var and documented defaults.
-func NewMetrics(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts ResourceOptions) (*Metrics, error) {
-	exporter, err := buildOTLPMetricExporter(ctx, endpoint, protocol, headers)
+func NewMetrics(ctx context.Context, settings otlp.Settings, resourceOpts ResourceOptions) (*Metrics, error) {
+	exporter, err := otlp.NewMetricExporter(ctx, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -118,100 +115,6 @@ func NewMetrics(ctx context.Context, endpoint, protocol string, headers map[stri
 		return nil, err
 	}
 	return m, nil
-}
-
-// buildOTLPMetricExporter dispatches on the configured wire protocol and
-// returns the matching OTel SDK metric exporter. Mirrors the trace
-// counterpart in harness/internal/trace/otel.go so an operator who sets
-// --otel-protocol=http/protobuf gets identical routing for both signals.
-func buildOTLPMetricExporter(ctx context.Context, endpoint, protocol string, headers map[string]string) (sdkmetric.Exporter, error) {
-	switch protocol {
-	case "", "grpc":
-		opts := []otlpmetricgrpc.Option{
-			otlpmetricgrpc.WithEndpoint(endpoint),
-			otlpmetricgrpc.WithInsecure(),
-		}
-		if len(headers) > 0 {
-			opts = append(opts, otlpmetricgrpc.WithHeaders(headers))
-		}
-		return otlpmetricgrpc.New(ctx, opts...)
-	case "http/protobuf":
-		opts := []otlpmetrichttp.Option{
-			otlpmetrichttp.WithEndpoint(stripURLScheme(endpoint)),
-		}
-		if path := urlPath(endpoint); path != "" {
-			opts = append(opts, otlpmetrichttp.WithURLPath(joinMetricsPath(path)))
-		}
-		if isInsecureEndpoint(endpoint) {
-			opts = append(opts, otlpmetrichttp.WithInsecure())
-		}
-		if len(headers) > 0 {
-			opts = append(opts, otlpmetrichttp.WithHeaders(headers))
-		}
-		return otlpmetrichttp.New(ctx, opts...)
-	default:
-		return nil, fmt.Errorf("unsupported OTLP protocol %q (allowed: grpc, http/protobuf)", protocol)
-	}
-}
-
-// stripURLScheme returns the host:port portion of an OTLP endpoint URL
-// for use with otlpmetrichttp.WithEndpoint, which expects a bare host and
-// toggles TLS via WithInsecure(). Path components are dropped here and
-// re-applied separately via WithURLPath. Duplicated from the trace package
-// rather than exported, to avoid adding public API surface for a small
-// amount of code.
-func stripURLScheme(endpoint string) string {
-	for _, scheme := range []string{"https://", "http://"} {
-		if strings.HasPrefix(endpoint, scheme) {
-			rest := strings.TrimPrefix(endpoint, scheme)
-			if i := strings.IndexByte(rest, '/'); i >= 0 {
-				return rest[:i]
-			}
-			return rest
-		}
-	}
-	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
-		return endpoint[:i]
-	}
-	return endpoint
-}
-
-// urlPath returns the path component of an OTLP endpoint URL, or the
-// empty string when the endpoint has no path beyond the host.
-func urlPath(endpoint string) string {
-	rest := endpoint
-	for _, scheme := range []string{"https://", "http://"} {
-		if strings.HasPrefix(endpoint, scheme) {
-			rest = strings.TrimPrefix(endpoint, scheme)
-			break
-		}
-	}
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return rest[i:]
-	}
-	return ""
-}
-
-// joinMetricsPath appends the per-signal "/v1/metrics" suffix to a base
-// gateway path. See joinTracesPath in the trace package for the
-// rationale; symmetrical here so an operator pointing at
-// "https://otlp-gateway-prod-us-east-0.grafana.net/otlp" gets traces
-// shipped to .../otlp/v1/traces and metrics to .../otlp/v1/metrics.
-func joinMetricsPath(basePath string) string {
-	return strings.TrimRight(basePath, "/") + "/v1/metrics"
-}
-
-// isInsecureEndpoint returns true for plain "http://" or scheme-less
-// endpoints. Mirrors the trace-side logic so a Grafana Cloud HTTPS URL
-// never falls back to an unencrypted POST.
-func isInsecureEndpoint(endpoint string) bool {
-	if strings.HasPrefix(endpoint, "https://") {
-		return false
-	}
-	if strings.HasPrefix(endpoint, "http://") {
-		return true
-	}
-	return true
 }
 
 // NewNoopMetrics returns a Metrics instance where all instruments are no-ops.
@@ -567,7 +470,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration_ms",
+	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of guard.Check calls"),
 	)
@@ -575,9 +478,36 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration_ms",
+	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of Rule-of-Two sensitive-content scans"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAITokenUsage, err = meter.Int64Histogram(metricGenAITokenUsage,
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Number of input and output tokens used per model inference"),
+		metric.WithExplicitBucketBoundaries(genAITokenBuckets...),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAIOperationDuration, err = meter.Float64Histogram(metricGenAIOperationDuration,
+		metric.WithUnit("s"),
+		metric.WithDescription("Duration of one model inference request, recorded per attempt"),
+		metric.WithExplicitBucketBoundaries(genAIDurationBuckets...),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GenAITimeToFirstChunk, err = meter.Float64Histogram(metricGenAITimeToFirstChunk,
+		metric.WithUnit("s"),
+		metric.WithDescription("Time from sending a model inference request to receiving the first streamed chunk"),
+		metric.WithExplicitBucketBoundaries(genAIDurationBuckets...),
 	)
 	if err != nil {
 		return nil, err
@@ -587,7 +517,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	// bucket configuration is deferred until call-site wiring reveals
 	// the actual latency distribution.
 
-	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration_ms",
+	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Sub-agent run duration"),
 	)
@@ -595,7 +525,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.MCPDuration, err = meter.Float64Histogram("stirrup.mcp.duration_ms",
+	m.MCPDuration, err = meter.Float64Histogram("stirrup.mcp.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("MCP call duration"),
 	)
@@ -603,7 +533,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.EditDuration, err = meter.Float64Histogram("stirrup.edit.duration_ms",
+	m.EditDuration, err = meter.Float64Histogram("stirrup.edit.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Edit strategy duration"),
 	)
@@ -611,7 +541,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.VerifierDuration, err = meter.Float64Histogram("stirrup.verifier.duration_ms",
+	m.VerifierDuration, err = meter.Float64Histogram("stirrup.verifier.duration",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Verifier run duration"),
 	)

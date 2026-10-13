@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -495,8 +496,8 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 	for _, kv := range res.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["deployment.environment"] != "production-eu" {
-		t.Errorf("deployment.environment should fall through to env var; got %q want production-eu", got["deployment.environment"])
+	if got["deployment.environment.name"] != "production-eu" {
+		t.Errorf("deployment.environment.name should fall through to env var; got %q want production-eu", got["deployment.environment.name"])
 	}
 }
 
@@ -903,6 +904,105 @@ func TestApplyOverrides_OTelHeaderMalformedRejected(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_OTelPlatformFlags pins that --otel-platform overrides
+// the file's platform and that --otel-platform-option replaces, rather than
+// merges with, the file's options, as --otel-header does.
+func TestApplyOverrides_OTelPlatformFlags(t *testing.T) {
+	platform := types.ValidTraceEmitterPlatformValues()[0]
+
+	t.Run("flags replace file values", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.TraceEmitter = types.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        "from-file",
+			PlatformOptions: map[string]string{"stale": "from-file"},
+		}
+		if err := cmd.Flags().Set("otel-platform", platform); err != nil {
+			t.Fatalf("set otel-platform: %v", err)
+		}
+		for _, entry := range []string{"region=us-east-1", "logGroup=/a=b"} {
+			if err := cmd.Flags().Set("otel-platform-option", entry); err != nil {
+				t.Fatalf("set otel-platform-option: %v", err)
+			}
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.Platform != platform {
+			t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
+		}
+		want := map[string]string{"region": "us-east-1", "logGroup": "/a=b"}
+		if !maps.Equal(cfg.TraceEmitter.PlatformOptions, want) {
+			t.Errorf("PlatformOptions: got %v, want %v", cfg.TraceEmitter.PlatformOptions, want)
+		}
+	})
+
+	t.Run("file values survive unset flags", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.TraceEmitter = types.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        platform,
+			PlatformOptions: map[string]string{"project": "agents"},
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.Platform != platform || cfg.TraceEmitter.PlatformOptions["project"] != "agents" {
+			t.Errorf("file platform settings should survive, got %+v", cfg.TraceEmitter)
+		}
+	})
+
+	t.Run("malformed option rejected", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		if err := cmd.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
+			t.Fatalf("set otel-platform-option: %v", err)
+		}
+		err := applyOverrides(cmd, cfg, nil)
+		if err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
+			t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
+		}
+	})
+}
+
+// TestBuildFlagOnlyRunConfig_OTelPlatform pins that the flag-only builder
+// parses --otel-platform-option entries onto the otel emitter.
+func TestBuildFlagOnlyRunConfig_OTelPlatform(t *testing.T) {
+	platform := types.ValidTraceEmitterPlatformValues()[0]
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info", "trace-emitter": "otel",
+		"otel-protocol": "http/protobuf", "otel-platform": platform,
+		"otel-platform-option": "project=agents",
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.TraceEmitter.Platform != platform {
+		t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
+	}
+	if got := cfg.TraceEmitter.PlatformOptions["project"]; got != "agents" {
+		t.Errorf("PlatformOptions[project]: got %q, want agents", got)
+	}
+
+	malformed := newTestHarnessCommand()
+	if err := malformed.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
+		t.Fatalf("set otel-platform-option: %v", err)
+	}
+	if _, err := buildFlagOnlyRunConfig(malformed, nil); err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
+		t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
+	}
+}
+
 // TestApplyOverrides_OTelHeaderFilePreserved guards the precedence rule:
 // when --otel-header is not passed, headers loaded from --config survive
 // applyOverrides intact.
@@ -938,8 +1038,20 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		if err := cmd.Flags().Set("otel-metrics-endpoint", "https://metrics.example/otlp"); err != nil {
 			t.Fatalf("set otel-metrics-endpoint: %v", err)
 		}
+		if err := cmd.Flags().Set("otel-metrics-temporality", "delta"); err != nil {
+			t.Fatalf("set otel-metrics-temporality: %v", err)
+		}
+		if err := cmd.Flags().Set("otel-capture-content-max-bytes", "2048"); err != nil {
+			t.Fatalf("set otel-capture-content-max-bytes: %v", err)
+		}
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.MetricsTemporality != "delta" {
+			t.Errorf("MetricsTemporality override failed: %q", cfg.TraceEmitter.MetricsTemporality)
+		}
+		if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
+			t.Errorf("CaptureContentMaxBytes override failed: %d", cfg.TraceEmitter.CaptureContentMaxBytes)
 		}
 
 		if !cfg.TraceEmitter.CaptureContent {
@@ -954,13 +1066,21 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
-			Type:            "otel",
-			CaptureContent:  true,
-			MetricsEndpoint: "https://metrics.from-file/otlp",
+			Type:                   "otel",
+			CaptureContent:         true,
+			MetricsEndpoint:        "https://metrics.from-file/otlp",
+			MetricsTemporality:     "cumulative",
+			CaptureContentMaxBytes: 4096,
 		}
 
 		if err := applyOverrides(cmd, cfg, nil); err != nil {
 			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.TraceEmitter.CaptureContentMaxBytes != 4096 {
+			t.Errorf("CaptureContentMaxBytes from file should survive, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
+		}
+		if cfg.TraceEmitter.MetricsTemporality != "cumulative" {
+			t.Errorf("MetricsTemporality from file should survive, got %q", cfg.TraceEmitter.MetricsTemporality)
 		}
 
 		if !cfg.TraceEmitter.CaptureContent {
@@ -978,22 +1098,24 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 // the jsonl emitter (matching how OTelEndpoint is already scoped).
 func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	base := harnessCLIOptions{
-		RunID:               "test-run",
-		Mode:                "execution",
-		Prompt:              "test",
-		ProviderType:        "anthropic",
-		APIKeyRef:           "secret://ANTHROPIC_API_KEY",
-		Model:               "claude-sonnet-4-6",
-		MaxTurns:            20,
-		Timeout:             600,
-		TransportType:       "stdio",
-		LogLevel:            "info",
-		TraceEmitterType:    "otel",
-		OTelEndpoint:        "https://gw.example/otlp",
-		OTelProtocol:        "http/protobuf",
-		OTelHeaders:         map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
-		OTelMetricsEndpoint: "https://gw.example/otlp",
-		OTelCaptureContent:  true,
+		RunID:                      "test-run",
+		Mode:                       "execution",
+		Prompt:                     "test",
+		ProviderType:               "anthropic",
+		APIKeyRef:                  "secret://ANTHROPIC_API_KEY",
+		Model:                      "claude-sonnet-4-6",
+		MaxTurns:                   20,
+		Timeout:                    600,
+		TransportType:              "stdio",
+		LogLevel:                   "info",
+		TraceEmitterType:           "otel",
+		OTelEndpoint:               "https://gw.example/otlp",
+		OTelProtocol:               "http/protobuf",
+		OTelHeaders:                map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
+		OTelMetricsEndpoint:        "https://gw.example/otlp",
+		OTelMetricsTemporality:     "delta",
+		OTelCaptureContent:         true,
+		OTelCaptureContentMaxBytes: 2048,
 	}
 
 	cfg, err := buildHarnessRunConfig(base)
@@ -1009,6 +1131,12 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if !cfg.TraceEmitter.CaptureContent {
 		t.Error("CaptureContent should propagate on otel emitter")
 	}
+	if cfg.TraceEmitter.MetricsTemporality != "delta" {
+		t.Errorf("MetricsTemporality should propagate, got %q", cfg.TraceEmitter.MetricsTemporality)
+	}
+	if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
+		t.Errorf("CaptureContentMaxBytes should propagate, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
+	}
 
 	jsonlOpts := base
 	jsonlOpts.TraceEmitterType = "jsonl"
@@ -1016,7 +1144,7 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig (jsonl): %v", err)
 	}
-	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" {
+	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" || cfg.TraceEmitter.MetricsTemporality != "" || cfg.TraceEmitter.CaptureContentMaxBytes != 0 {
 		t.Errorf("otel-only fields must not leak onto the jsonl emitter, got %+v", cfg.TraceEmitter)
 	}
 }
@@ -1103,11 +1231,16 @@ func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
 		Timeout:               600,
 		TransportType:         "stdio",
 		LogLevel:              "info",
+		ServiceName:           "triage-agent",
 		DeploymentEnvironment: "production",
 		ServiceNamespace:      "stirrup-eval",
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	if cfg.Observability.ServiceName != "triage-agent" {
+		t.Errorf("Observability.ServiceName: got %q, want %q", cfg.Observability.ServiceName, "triage-agent")
 	}
 
 	if cfg.Observability.Environment != "production" {
@@ -1159,12 +1292,16 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Observability = types.ObservabilityConfig{
+		ServiceName:      "from-file-name",
 		Environment:      "from-file-env",
 		ServiceNamespace: "from-file-ns",
 	}
 
 	if err := cmd.Flags().Set("service-namespace", "from-flag-ns"); err != nil {
 		t.Fatalf("set service-namespace: %v", err)
+	}
+	if err := cmd.Flags().Set("service-name", "from-flag-name"); err != nil {
+		t.Fatalf("set service-name: %v", err)
 	}
 	// deployment-environment deliberately not set — file value should survive.
 
@@ -1174,6 +1311,9 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 
 	if cfg.Observability.ServiceNamespace != "from-flag-ns" {
 		t.Errorf("Observability.ServiceNamespace: explicit flag should win, got %q", cfg.Observability.ServiceNamespace)
+	}
+	if cfg.Observability.ServiceName != "from-flag-name" {
+		t.Errorf("Observability.ServiceName: explicit flag should win, got %q", cfg.Observability.ServiceName)
 	}
 	if cfg.Observability.Environment != "from-file-env" {
 		t.Errorf("Observability.Environment: file value should survive when flag unset, got %q", cfg.Observability.Environment)

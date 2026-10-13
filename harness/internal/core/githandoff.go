@@ -35,7 +35,7 @@ func (l *AgenticLoop) finaliseGit(ctx context.Context, outcome string) string {
 	if err != nil {
 		scrubbed := recordSpanError(span, err)
 		handoff.Error = capFailureText(scrubbed)
-		l.Logger.Warn("git finalise failed", "error", scrubbed)
+		l.Logger.WarnContext(l.traceCtx(ctx), "git finalise failed", "error", scrubbed)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
 			Message: fmt.Sprintf("git finalise: %s", scrubbed),

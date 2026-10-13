@@ -652,7 +652,7 @@ func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
 }
 
 // TestMCPCall_RecordsMetrics_Success asserts that a successful tools/call
-// records stirrup.mcp.calls (with success=true) and stirrup.mcp.duration_ms
+// records stirrup.mcp.calls (with success=true) and stirrup.mcp.duration
 // when the client has a Metrics instance attached.
 func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	tools := []mcpTool{{
@@ -705,9 +705,9 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 		t.Errorf("success = %q, want %q", got.attrs["success"], "true")
 	}
 
-	dur := findFloat64Histogram(t, rm, "stirrup.mcp.duration_ms")
+	dur := findFloat64Histogram(t, rm, "stirrup.mcp.duration")
 	if dur.count == 0 {
-		t.Error("stirrup.mcp.duration_ms recorded no observations")
+		t.Error("stirrup.mcp.duration recorded no observations")
 	}
 	if dur.attrs["server.name"] != "metrics-srv" {
 		t.Errorf("duration server.name = %q, want %q", dur.attrs["server.name"], "metrics-srv")

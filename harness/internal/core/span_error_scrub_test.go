@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -195,6 +196,43 @@ func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
 	}
 }
 
+func TestLoop_OTelChatSpanCarriesScrubbedProviderFailure(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = &errorProvider{err: errSpanProbe}
+	_, _ = loop.Run(context.Background(), buildTestConfig())
+
+	spans := exporter.GetSpans()
+	chats := spansNamed(spans, "chat claude-sonnet-4-6")
+	if len(chats) != 1 {
+		t.Fatalf("found %d chat spans, want 1", len(chats))
+	}
+	chat := chats[0]
+	if got, _ := spanAttr(chat, "error.type"); got != "provider_request_failed" {
+		t.Errorf("chat error.type = %q, want provider_request_failed", got)
+	}
+	if chat.Status.Code != codes.Error || !strings.Contains(chat.Status.Description, "upstream echoed key") {
+		t.Errorf("chat status = %v %q, want Error with the readable error text", chat.Status.Code, chat.Status.Description)
+	}
+	assertSpanErrorScrubbed(t, spanByName(t, exporter, "provider.stream"), true)
+	root := spanByName(t, exporter, "invoke_agent stirrup")
+	if got, _ := spanAttr(root, "error.type"); got != "provider_request_failed" {
+		t.Errorf("root error.type = %q, want provider_request_failed", got)
+	}
+	if root.Status.Code != codes.Error || !strings.Contains(root.Status.Description, "upstream echoed key") {
+		t.Errorf("root status = %v %q, want Error with the readable error text", root.Status.Code, root.Status.Description)
+	}
+	for _, s := range spans {
+		if strings.Contains(s.Status.Description, spanProbeKey) {
+			t.Errorf("%s status description leaks the probe: %q", s.Name, s.Status.Description)
+		}
+		for _, attr := range s.Attributes {
+			if strings.Contains(attr.Value.String(), spanProbeKey) {
+				t.Errorf("%s attribute %s leaks the probe", s.Name, attr.Key)
+			}
+		}
+	}
+}
+
 func TestDispatchToolCall_PermissionErrorSpanIsScrubbed(t *testing.T) {
 	loop, exporter := newSpanProbeLoop(&mockProvider{})
 	registry := tool.NewRegistry()
@@ -214,6 +252,49 @@ func TestDispatchToolCall_PermissionErrorSpanIsScrubbed(t *testing.T) {
 		ID: "tc1", Name: "mutating_tool", Input: json.RawMessage(`{}`),
 	})
 	assertSpanErrorScrubbed(t, spanByName(t, exporter, "permission.check"), true)
+}
+
+type spanProbeTypedError struct{ msg string }
+
+func (e *spanProbeTypedError) Error() string { return e.msg }
+
+func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"plain", errSpanProbe, "*errors.errorString"},
+		{"typed", &spanProbeTypedError{msg: errSpanProbe.Error()}, "*core.spanProbeTypedError"},
+		{"wrapped typed", fmt.Errorf("stream: %w", &spanProbeTypedError{msg: errSpanProbe.Error()}), "*core.spanProbeTypedError"},
+		{"wrapped plain", fmt.Errorf("stream: %w", errSpanProbe), "*fmt.wrapError"},
+		{"multi-wrapped typed", fmt.Errorf("%w: %w", errSpanProbe, &spanProbeTypedError{msg: "x"}), "*core.spanProbeTypedError"},
+		{"joined typed", errors.Join(errSpanProbe, fmt.Errorf("inner: %w", &spanProbeTypedError{msg: "x"})), "*core.spanProbeTypedError"},
+		{"joined plain", errors.Join(errSpanProbe, errSpanProbe), "*errors.joinError"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			_, span := tp.Tracer("test").Start(context.Background(), "probe")
+			recordSpanError(span, tc.err)
+			span.End()
+
+			stub := spanByName(t, exporter, "probe")
+			assertSpanErrorScrubbed(t, stub, true)
+			var got string
+			for _, ev := range stub.Events {
+				for _, attr := range ev.Attributes {
+					if ev.Name == "exception" && attr.Key == "exception.type" {
+						got = attr.Value.AsString()
+					}
+				}
+			}
+			if got != tc.want {
+				t.Errorf("exception.type = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 // TestCoreSpanErrorsGoThroughScrubbingHelpers fails when core code records

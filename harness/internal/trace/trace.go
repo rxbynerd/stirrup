@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -138,4 +140,121 @@ type StructuredOutputRecorder interface {
 type SubRunRecorder interface {
 	RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig)
 	RecordSubRunFinished(summary types.SubRunSummary)
+}
+
+// RootContextProvider is an optional capability for emitters that open a
+// span for the run. The loop parents its component spans on the returned
+// context. A nil return means the emitter records no run span.
+type RootContextProvider interface {
+	RootContext() context.Context
+}
+
+// LiveSpanStarter is an optional capability for emitters that record model
+// requests and tool calls as live spans. A nil handle means the emitter
+// cannot record this span (for example a NestedJSONLEmitter over a parent
+// without the capability); the caller then uses its own fallback.
+type LiveSpanStarter interface {
+	StartChatSpan(parent context.Context, start ChatSpanStart) ChatSpan
+	StartToolSpan(parent context.Context, start ToolSpanStart) ToolSpan
+}
+
+// ChatSpanStart describes one model request at the moment it is sent.
+type ChatSpanStart struct {
+	Turn int
+	// ProviderType is the stirrup provider type, e.g. "anthropic".
+	ProviderType string
+	Model        string
+	// ServerAddress and ServerPort locate the provider endpoint; empty
+	// and zero when the adapter does not report one.
+	ServerAddress string
+	ServerPort    int
+	MaxTokens     int
+	Temperature   *float64
+	// RunID and ParentRunID identify a sub-agent's request; both are
+	// empty for the top-level run.
+	RunID       string
+	ParentRunID string
+}
+
+// ChatSpanEnd describes how a model request finished.
+type ChatSpanEnd struct {
+	// Summary is nil when the request failed before a summary was built.
+	Summary *types.TurnTrace
+	// Record carries the request's input and output. A failed request
+	// carries the input it sent and no output.
+	Record *types.TurnRecord
+	// ErrorType is a bounded category; empty on success.
+	ErrorType string
+	// ErrorText is already scrubbed by the caller; the emitter scrubs it
+	// again before it reaches a span.
+	ErrorText string
+}
+
+// ChatSpan is one live model request. Span exposes the underlying span so
+// the caller can parent children on it; End is idempotent.
+type ChatSpan interface {
+	Span() oteltrace.Span
+	End(ChatSpanEnd)
+}
+
+// ToolSpanStart describes one tool call at dispatch.
+type ToolSpanStart struct {
+	CallID string
+	// Name is the model-facing tool name.
+	Name string
+	// Known is false for a name that resolved to no registered tool; the
+	// span name then omits the model-controlled name.
+	Known     bool
+	InputSize int
+	// Turn is the turn.number of the chat span whose response made the
+	// call.
+	Turn        int
+	RunID       string
+	ParentRunID string
+}
+
+// ToolSpanEnd describes how a tool call finished.
+type ToolSpanEnd struct {
+	Summary *types.ToolCallTrace
+	// Record carries the raw input and output; the emitter scrubs it
+	// before recording content. It is nil for a call dropped after a
+	// stall.
+	Record *types.ToolCallRecord
+	// EndTime is when the call finished; zero means now.
+	EndTime time.Time
+	// Queued is how long the call waited for a dispatch slot after its
+	// span opened; the span's duration includes it, Summary's does not.
+	Queued time.Duration
+}
+
+// ToolSpan is one live tool call. End is idempotent.
+type ToolSpan interface {
+	Span() oteltrace.Span
+	End(ToolSpanEnd)
+}
+
+// SubAgentSpanStarter is an optional capability for emitters that record a
+// sub-agent run as its own agent span beneath the spawning tool call.
+type SubAgentSpanStarter interface {
+	StartSubAgentSpan(parent context.Context, start SubAgentSpanStart) AgentSpan
+}
+
+// SubAgentSpanStart identifies a sub-agent run at its start.
+type SubAgentSpanStart struct {
+	RunID       string
+	ParentRunID string
+	Config      *types.RunConfig
+}
+
+// AgentSpanEnd describes how a sub-agent run finished.
+type AgentSpanEnd struct {
+	Outcome string
+	Turns   int
+}
+
+// AgentSpan is one live sub-agent run. Context carries the span for the
+// child run's own spans to nest under; End is idempotent.
+type AgentSpan interface {
+	Context() context.Context
+	End(AgentSpanEnd)
 }

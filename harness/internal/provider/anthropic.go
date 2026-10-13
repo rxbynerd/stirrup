@@ -882,7 +882,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
 		if !ttfbRecorded && a.Metrics != nil {
-			a.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			a.Metrics.RecordFirstChunk(ctx, metricAttrs, inferenceAttrs("anthropic", model, a.baseURL), time.Since(streamStart))
 			ttfbRecorded = true
 		}
 		ch <- ev

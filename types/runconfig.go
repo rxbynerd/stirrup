@@ -230,6 +230,9 @@ type RunConfig struct {
 // stored defaults — see docs/observability-cloud.md for the precedence
 // chain and the derived-vs-operator-metadata split.
 type ObservabilityConfig struct {
+	// ServiceName is the OTel service.name resource attribute. Empty falls
+	// back to OTEL_SERVICE_NAME, then "stirrup".
+	ServiceName      string `json:"serviceName,omitempty"`
 	Environment      string `json:"environment,omitempty"`
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
 
@@ -249,11 +252,13 @@ type ObservabilityConfig struct {
 // trace and metric exporters use).
 type LogsExportConfig struct {
 	// Type is "none" (default — stderr only) or "otlp" (stderr plus an
-	// OTLP/gRPC log exporter). The empty string is treated as "none" so an
-	// unset field keeps stderr-only behaviour.
+	// OTLP log exporter using TraceEmitter.Protocol and TraceEmitter.Headers).
+	// The empty string is treated as "none" so an unset field keeps
+	// stderr-only behaviour.
 	Type string `json:"type,omitempty"`
 
-	// Endpoint is the OTLP/gRPC collector address for the log signal. When
+	// Endpoint is the OTLP collector address for the log signal, in the
+	// same form as TraceEmitter.Endpoint for the configured protocol. When
 	// empty it defaults to TraceEmitter.Endpoint at factory-build time so a
 	// single --otel-endpoint covers traces, metrics, and logs.
 	Endpoint string `json:"endpoint,omitempty"`
@@ -1245,6 +1250,11 @@ type TraceEmitterConfig struct {
 	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
 
+	// MetricsTemporality selects the aggregation temporality of exported
+	// metrics: "" (OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE, then
+	// cumulative), "cumulative", or "delta". Only valid when type=="otel".
+	MetricsTemporality string `json:"metricsTemporality,omitempty"`
+
 	// Bucket is the GCS bucket the "gcs" emitter writes the run's JSONL
 	// trace to. Required when Type == "gcs"; rejected for every other type.
 	Bucket string `json:"bucket,omitempty"`
@@ -1277,6 +1287,28 @@ type TraceEmitterConfig struct {
 	// scrubbing layer (security.Scrub) the jsonl emitter uses. Only
 	// consulted when type=="otel". See docs/observability-cloud.md.
 	CaptureContent bool `json:"captureContent,omitempty"`
+
+	// CaptureContentMaxBytes caps the size of each captured content
+	// attribute value. A longer value is shortened at a message or part
+	// boundary so JSON stays valid, and is marked with a sibling
+	// "stirrup.<attribute>.truncated" attribute. 0 means no cap; otherwise
+	// at least MinCaptureContentMaxBytes. Only valid with CaptureContent.
+	CaptureContentMaxBytes int `json:"captureContentMaxBytes,omitempty"`
+
+	// Platform selects a backend profile that fills unset OTLP settings
+	// (per-signal endpoints, headers, request signing, resource and span
+	// attributes) for one observability platform. Closed set, see
+	// ValidTraceEmitterPlatformValues; empty selects none. Explicit fields
+	// always win over a profile's defaults. Only valid when type=="otel".
+	// See docs/observability-cloud.md#platform-profiles.
+	Platform string `json:"platform,omitempty"`
+
+	// PlatformOptions are the selected platform's settings (for example a
+	// region or project name). Keys are validated by the platform at
+	// factory time. Values are at most 256 bytes of printable UTF-8 and
+	// are never secrets, so secret:// references are rejected. Requires
+	// Platform.
+	PlatformOptions map[string]string `json:"platformOptions,omitempty"`
 
 	// Archive configures durable storage for command-output sidecars. When
 	// omitted, JSONL traces place the archive beside FilePath; GCS traces place
@@ -1580,7 +1612,7 @@ var apiKeyHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // observabilityLabelPattern bounds the character set of operator-supplied
-// OTel resource labels (deployment.environment, service.namespace) so an
+// OTel resource labels (deployment.environment.name, service.namespace) so an
 // errant value cannot inject path separators or wire-protocol delimiters
 // into the resource attributes that ride on every span and metric. The
 // 64-char cap matches what backends like Grafana truncate at in default
@@ -1797,11 +1829,44 @@ var validTraceEmitterProtocols = map[string]bool{
 	"http/protobuf": true,
 }
 
+// MinCaptureContentMaxBytes is the smallest non-zero
+// TraceEmitterConfig.CaptureContentMaxBytes: enough for a capped value to
+// keep its message and part envelope plus some content.
+const MinCaptureContentMaxBytes = 256
+
+// validTraceEmitterMetricsTemporalities is the closed set of
+// TraceEmitterConfig.MetricsTemporality values. Empty defers to the OTel
+// SDK's environment variable and its cumulative default.
+var validTraceEmitterMetricsTemporalities = map[string]bool{
+	"":           true,
+	"cumulative": true,
+	"delta":      true,
+}
+
+// validTraceEmitterPlatforms is the closed set of
+// TraceEmitterConfig.Platform values. It lists only implemented profiles;
+// the profile registry in harness/internal/observability/platform must
+// carry exactly these names.
+var validTraceEmitterPlatforms = map[string]bool{
+	"":           true,
+	"cloudwatch": true,
+	"phoenix":    true,
+}
+
+// Shape limits for TraceEmitterConfig.PlatformOptions. Per-key rules
+// belong to the platform that reads them.
+const (
+	maxTraceEmitterPlatformOptions        = 8
+	maxTraceEmitterPlatformOptionValueLen = 256
+)
+
+var traceEmitterPlatformOptionKeyPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9]{0,31}$`)
+
 // validLogsExportTypes is the closed set of
 // ObservabilityConfig.LogsExport.Type values. The empty string is the unset
 // form and is treated as "none" (stderr only) at factory-build time; it is
-// accepted here so an omitted field validates. "otlp" enables the OTLP/gRPC
-// log exporter as a second sink alongside stderr.
+// accepted here so an omitted field validates. "otlp" enables the OTLP log
+// exporter as a second sink alongside stderr.
 var validLogsExportTypes = map[string]bool{
 	"":     true,
 	"none": true,
@@ -4794,6 +4859,33 @@ func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
 	}
 }
 
+// validateOTLPEndpoint enforces the endpoint forms the OTLP exporters
+// accept: host:port or an http(s) URL (scheme case-insensitive) with no
+// userinfo, query, or fragment. Errors never echo the value, which may
+// carry credentials.
+func validateOTLPEndpoint(endpoint, path string, errs *[]string) {
+	if endpoint == "" {
+		return
+	}
+	normalised := endpoint
+	if !strings.Contains(endpoint, "://") {
+		normalised = "http://" + endpoint
+	}
+	u, err := url.Parse(normalised)
+	switch {
+	case err != nil:
+		*errs = append(*errs, path+" must be host:port or an http(s) URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		*errs = append(*errs, fmt.Sprintf("%s must use scheme http or https, got %q", path, u.Scheme))
+	case u.Host == "":
+		*errs = append(*errs, path+" must include a host")
+	case u.User != nil:
+		*errs = append(*errs, path+" must not embed user:password credentials; set them in traceEmitter.headers")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		*errs = append(*errs, path+" must not include a query string or fragment")
+	}
+}
+
 // validateObservabilityConfig rejects operator-supplied OTel resource
 // labels that would not survive round-tripping through the wire format
 // (CRLF, path separators, embedded quotes, etc.). Empty values are
@@ -4802,6 +4894,9 @@ func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
 // constrain values to a list because operators legitimately want labels
 // like "stirrup-eval", "production-eu", "shadow-canary".
 func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
+	if cfg.ServiceName != "" && !observabilityLabelPattern.MatchString(cfg.ServiceName) {
+		*errs = append(*errs, fmt.Sprintf("observability.serviceName %q must match %s", cfg.ServiceName, observabilityLabelPattern))
+	}
 	if cfg.Environment != "" && !observabilityLabelPattern.MatchString(cfg.Environment) {
 		*errs = append(*errs, fmt.Sprintf("observability.environment %q must match %s", cfg.Environment, observabilityLabelPattern))
 	}
@@ -4814,6 +4909,7 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 			cfg.LogsExport.Type,
 		))
 	}
+	validateOTLPEndpoint(cfg.LogsExport.Endpoint, "observability.logsExport.endpoint", errs)
 }
 
 // validateTraceEmitterProtocolAndHeaders enforces the closed set of OTLP
@@ -4843,6 +4939,14 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			cfg.Protocol,
 		))
 	}
+	validateOTLPEndpoint(cfg.Endpoint, "traceEmitter.endpoint", errs)
+	validateOTLPEndpoint(cfg.MetricsEndpoint, "traceEmitter.metricsEndpoint", errs)
+	if !validTraceEmitterMetricsTemporalities[cfg.MetricsTemporality] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported traceEmitter.metricsTemporality %q (allowed: \"\", cumulative, delta)",
+			cfg.MetricsTemporality,
+		))
+	}
 	// Protocol/Headers/CaptureContent are otel-only. The jsonl and gcs
 	// emitters do not negotiate a wire protocol, send HTTP headers, or
 	// promote content onto spans; carrying these fields on a non-otel
@@ -4867,7 +4971,30 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 				cfg.Type,
 			))
 		}
+		if cfg.MetricsTemporality != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.metricsTemporality is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.CaptureContentMaxBytes != 0 {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.captureContentMaxBytes is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	} else {
+		switch {
+		case cfg.CaptureContentMaxBytes < 0 || (cfg.CaptureContentMaxBytes > 0 && cfg.CaptureContentMaxBytes < MinCaptureContentMaxBytes):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.captureContentMaxBytes must be 0 (no cap) or at least %d (got %d)",
+				MinCaptureContentMaxBytes, cfg.CaptureContentMaxBytes,
+			))
+		case cfg.CaptureContentMaxBytes > 0 && !cfg.CaptureContent:
+			*errs = append(*errs, "traceEmitter.captureContentMaxBytes is only valid when traceEmitter.captureContent is true")
+		}
 	}
+	validateTraceEmitterPlatform(cfg, errs)
 	// gcs-specific field validation. Bucket is required for gcs and
 	// rejected on every other type so a stale value cannot silently
 	// keep a bucket reference alive across a type change.
@@ -4929,14 +5056,14 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			))
 		}
 	}
-	// Reject `headers` on the gRPC transport. The gRPC exporter path in
-	// harness/internal/trace/otel.go and observability/metrics.go
-	// unconditionally calls WithInsecure(), so any bearer/Basic credential
-	// supplied via headers would be transmitted in plaintext; only the
-	// HTTP protocol accepts headers today. Empty Protocol defaults to
-	// gRPC at exporter construction time, so the check applies there too.
+	// Reject `headers` on the gRPC transport. The gRPC exporters in
+	// harness/internal/observability/otlp dial the documented host:port
+	// endpoint form without TLS, so any bearer/Basic credential supplied
+	// via headers would be transmitted in plaintext; only the HTTP
+	// protocol accepts headers. Empty Protocol defaults to gRPC at
+	// exporter construction time, so the check applies there too.
 	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
-		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; gRPC transport uses WithInsecure() and would send credentials in plaintext")
+		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; the gRPC transport dials host:port endpoints in plaintext and would expose credentials")
 	}
 	// Header name and value validation. Block CRLF injection at
 	// config-load time rather than letting a "Bearer foo\r\nX-Inj: e"
@@ -4957,6 +5084,90 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			))
 		}
 	}
+}
+
+// validateTraceEmitterPlatform checks the platform name against the closed
+// set and the shape of platformOptions. Which keys a platform accepts, and
+// how options combine with the rest of the config, is decided by the
+// platform package when the exporters are built.
+func validateTraceEmitterPlatform(cfg *TraceEmitterConfig, errs *[]string) {
+	if !validTraceEmitterPlatforms[cfg.Platform] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported traceEmitter.platform %q (allowed: %s)",
+			cfg.Platform, strings.Join(ValidTraceEmitterPlatformValues(), ", "),
+		))
+	}
+	if cfg.Type != "otel" {
+		if cfg.Platform != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platform is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if len(cfg.PlatformOptions) > 0 {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	}
+	if len(cfg.PlatformOptions) == 0 {
+		return
+	}
+	if cfg.Platform == "" {
+		*errs = append(*errs, "traceEmitter.platformOptions requires traceEmitter.platform")
+	}
+	if len(cfg.PlatformOptions) > maxTraceEmitterPlatformOptions {
+		*errs = append(*errs, fmt.Sprintf(
+			"traceEmitter.platformOptions has %d entries (max %d)",
+			len(cfg.PlatformOptions), maxTraceEmitterPlatformOptions,
+		))
+	}
+	keys := make([]string, 0, len(cfg.PlatformOptions))
+	for k := range cfg.PlatformOptions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfg.PlatformOptions[k]
+		if !traceEmitterPlatformOptionKeyPattern.MatchString(k) {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions key %q must match %s",
+				k, traceEmitterPlatformOptionKeyPattern,
+			))
+		}
+		switch {
+		case len(v) > maxTraceEmitterPlatformOptionValueLen:
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q is %d bytes (max %d)",
+				k, len(v), maxTraceEmitterPlatformOptionValueLen,
+			))
+		case !isPrintableOptionValue(v):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q must be printable text without CR or LF",
+				k,
+			))
+		case strings.HasPrefix(v, "secret://"):
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.platformOptions value for key %q must not be a secret:// reference; platform options are never secrets (put credentials in traceEmitter.headers)",
+				k,
+			))
+		}
+	}
+}
+
+// isPrintableOptionValue reports whether v is valid UTF-8 made only of
+// printable characters (which excludes CR, LF and other controls).
+func isPrintableOptionValue(v string) bool {
+	if !utf8.ValidString(v) {
+		return false
+	}
+	for _, r := range v {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateResultSinkConfig enforces the closed set of resultSink types

@@ -199,10 +199,23 @@ type harnessCLIOptions struct {
 	// defers to the trace endpoint.
 	OTelMetricsEndpoint string
 
+	// OTelMetricsTemporality sets traceEmitter.metricsTemporality. Empty
+	// defers to the OTel SDK's environment variable and default.
+	OTelMetricsTemporality string
+
 	// OTelCaptureContent opts the otel emitter into GenAI semconv
 	// content capture; see types.TraceEmitterConfig.CaptureContent for
 	// the PII rationale.
 	OTelCaptureContent bool
+
+	// OTelCaptureContentMaxBytes sets traceEmitter.captureContentMaxBytes;
+	// 0 leaves captured content uncapped.
+	OTelCaptureContentMaxBytes int
+
+	// OTelPlatform and OTelPlatformOptions set traceEmitter.platform and
+	// the parsed --otel-platform-option key=value entries.
+	OTelPlatform        string
+	OTelPlatformOptions map[string]string
 
 	// Safety-ring escape hatches. Empty string leaves the field unset so
 	// ValidateRunConfig's mode-aware defaulting can take over.
@@ -229,15 +242,16 @@ type harnessCLIOptions struct {
 	GuardRailFailOpen bool
 
 	// Observability resource attributes. Empty values fall through to
-	// env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
+	// env-var fallbacks (OTEL_SERVICE_NAME, OTEL_DEPLOYMENT_ENVIRONMENT,
 	// OTEL_SERVICE_NAMESPACE) and then to defaults.
+	ServiceName           string
 	DeploymentEnvironment string
 	ServiceNamespace      string
 
 	// LogExport opts structured logs into OTLP export alongside the
-	// stderr default. "none"/empty keeps stderr-only; "otlp" adds the
-	// OTLP/gRPC log exporter. LogExportEndpoint defers to the trace
-	// emitter's endpoint when empty.
+	// stderr default. "none"/empty keeps stderr-only; "otlp" adds an
+	// OTLP log exporter on the trace emitter's protocol.
+	// LogExportEndpoint defers to the trace emitter's endpoint when empty.
 	LogExport         string
 	LogExportEndpoint string
 
@@ -327,7 +341,11 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		traceEmitter.Protocol = opts.OTelProtocol
 		traceEmitter.Headers = opts.OTelHeaders
 		traceEmitter.MetricsEndpoint = opts.OTelMetricsEndpoint
+		traceEmitter.MetricsTemporality = opts.OTelMetricsTemporality
 		traceEmitter.CaptureContent = opts.OTelCaptureContent
+		traceEmitter.CaptureContentMaxBytes = opts.OTelCaptureContentMaxBytes
+		traceEmitter.Platform = opts.OTelPlatform
+		traceEmitter.PlatformOptions = opts.OTelPlatformOptions
 	}
 
 	config := &types.RunConfig{
@@ -460,8 +478,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	if logExport == "none" {
 		logExport = ""
 	}
-	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" || logExport != "" || opts.LogExportEndpoint != "" {
+	if opts.ServiceName != "" || opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" || logExport != "" || opts.LogExportEndpoint != "" {
 		config.Observability = types.ObservabilityConfig{
+			ServiceName:      opts.ServiceName,
 			Environment:      opts.DeploymentEnvironment,
 			ServiceNamespace: opts.ServiceNamespace,
 			LogsExport: types.LogsExportConfig{
@@ -988,8 +1007,32 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("otel-metrics-endpoint") {
 		cfg.TraceEmitter.MetricsEndpoint, _ = f.GetString("otel-metrics-endpoint")
 	}
+	if changed("otel-metrics-temporality") {
+		cfg.TraceEmitter.MetricsTemporality, _ = f.GetString("otel-metrics-temporality")
+	}
 	if changed("otel-capture-content") {
 		cfg.TraceEmitter.CaptureContent, _ = f.GetBool("otel-capture-content")
+	}
+	if changed("otel-capture-content-max-bytes") {
+		cfg.TraceEmitter.CaptureContentMaxBytes, _ = f.GetInt("otel-capture-content-max-bytes")
+	}
+	if changed("otel-platform") {
+		cfg.TraceEmitter.Platform, _ = f.GetString("otel-platform")
+	}
+	if changed("otel-platform-option") {
+		// Replace rather than merge, mirroring --otel-header.
+		raw, _ := f.GetStringArray("otel-platform-option")
+		cfg.TraceEmitter.PlatformOptions = nil
+		for _, entry := range raw {
+			k, v, err := parseQueryParam(entry)
+			if err != nil {
+				return fmt.Errorf("--otel-platform-option %q: %w", entry, err)
+			}
+			if cfg.TraceEmitter.PlatformOptions == nil {
+				cfg.TraceEmitter.PlatformOptions = map[string]string{}
+			}
+			cfg.TraceEmitter.PlatformOptions[k] = v
+		}
 	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")
@@ -1090,6 +1133,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// restating the rest of the file's observability block.
 	if changed("deployment-environment") {
 		cfg.Observability.Environment, _ = f.GetString("deployment-environment")
+	}
+	if changed("service-name") {
+		cfg.Observability.ServiceName, _ = f.GetString("service-name")
 	}
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")

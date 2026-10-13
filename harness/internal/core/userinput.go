@@ -324,7 +324,7 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 		texts[i] = in.Text
 	}
 	*messages = injectUserInput(*messages, texts)
-	l.Logger.Info("user input injected", "turn", turn, "count", len(inputs))
+	l.Logger.InfoContext(ctx, "user input injected", "turn", turn, "count", len(inputs))
 
 	if det := l.observeSensitive(ctx, config, "user_response", turn, texts); det.Transition && l.ruleOfTwoAction() == "abort" {
 		l.recordRuleOfTwoAction(ctx, "abort")

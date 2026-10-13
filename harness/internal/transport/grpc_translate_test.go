@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"reflect"
 	"strings"
@@ -485,12 +486,17 @@ func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
 func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 	pc := &pb.RunConfig{
 		Observability: &pb.ObservabilityConfig{
+			ServiceName:      "agent-a",
 			Environment:      "staging",
 			ServiceNamespace: "eval",
 		},
 	}
 
 	rc := runConfigFromProto(pc)
+
+	if rc.Observability.ServiceName != "agent-a" {
+		t.Errorf("Observability.ServiceName: got %q, want agent-a", rc.Observability.ServiceName)
+	}
 
 	if rc.Observability.Environment != "staging" {
 		t.Errorf("Observability.Environment: got %q, want staging", rc.Observability.Environment)
@@ -725,6 +731,53 @@ func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T
 	}
 	if got, want := rc.TraceEmitter.Headers["X-Tenant"], "team-a"; got != want {
 		t.Errorf("TraceEmitter.Headers[X-Tenant]: got %q, want %q", got, want)
+	}
+}
+
+// TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved guards
+// TraceEmitterConfig.MetricsTemporality against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", MetricsTemporality: "delta"},
+	})
+	if got, want := rc.TraceEmitter.MetricsTemporality, "delta"; got != want {
+		t.Errorf("TraceEmitter.MetricsTemporality: got %q, want %q", got, want)
+	}
+}
+
+// TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved
+// guards TraceEmitterConfig.CaptureContentMaxBytes against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: 2048},
+	})
+	if !rc.TraceEmitter.CaptureContent {
+		t.Error("TraceEmitter.CaptureContent dropped")
+	}
+	if got, want := rc.TraceEmitter.CaptureContentMaxBytes, 2048; got != want {
+		t.Errorf("TraceEmitter.CaptureContentMaxBytes: got %d, want %d", got, want)
+	}
+}
+
+// TestRunConfigFromProto_TraceEmitterPlatformPreserved guards
+// TraceEmitterConfig.Platform and PlatformOptions against silent drop in
+// runConfigFromProto.
+func TestRunConfigFromProto_TraceEmitterPlatformPreserved(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{
+			Type:            "otel",
+			Platform:        "example-platform",
+			PlatformOptions: map[string]string{"region": "eu-west-2", "project": "agents"},
+		},
+	})
+	if got, want := rc.TraceEmitter.Platform, "example-platform"; got != want {
+		t.Errorf("TraceEmitter.Platform: got %q, want %q", got, want)
+	}
+	want := map[string]string{"region": "eu-west-2", "project": "agents"}
+	if !maps.Equal(rc.TraceEmitter.PlatformOptions, want) {
+		t.Errorf("TraceEmitter.PlatformOptions: got %v, want %v", rc.TraceEmitter.PlatformOptions, want)
 	}
 }
 

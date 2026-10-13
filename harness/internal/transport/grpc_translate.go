@@ -261,15 +261,19 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		// Credential is intentionally not on the proto yet; see
 		// harness.proto TraceEmitterConfig.
 		rc.TraceEmitter = types.TraceEmitterConfig{
-			Type:            pc.TraceEmitter.Type,
-			FilePath:        pc.TraceEmitter.FilePath,
-			Endpoint:        pc.TraceEmitter.Endpoint,
-			MetricsEndpoint: pc.TraceEmitter.MetricsEndpoint,
-			Protocol:        pc.TraceEmitter.Protocol,
-			Headers:         pc.TraceEmitter.Headers,
-			Bucket:          pc.TraceEmitter.Bucket,
-			ObjectPrefix:    pc.TraceEmitter.ObjectPrefix,
-			CaptureContent:  pc.TraceEmitter.CaptureContent,
+			Type:                   pc.TraceEmitter.Type,
+			FilePath:               pc.TraceEmitter.FilePath,
+			Endpoint:               pc.TraceEmitter.Endpoint,
+			MetricsEndpoint:        pc.TraceEmitter.MetricsEndpoint,
+			MetricsTemporality:     pc.TraceEmitter.MetricsTemporality,
+			Protocol:               pc.TraceEmitter.Protocol,
+			Headers:                pc.TraceEmitter.Headers,
+			Bucket:                 pc.TraceEmitter.Bucket,
+			ObjectPrefix:           pc.TraceEmitter.ObjectPrefix,
+			CaptureContent:         pc.TraceEmitter.CaptureContent,
+			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
+			Platform:               pc.TraceEmitter.Platform,
+			PlatformOptions:        pc.TraceEmitter.PlatformOptions,
 		}
 	}
 	if pc.Tools != nil {
@@ -282,9 +286,10 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	// Observability is value-typed internally but pointer-typed on the
 	// wire; the nil-guard keeps an absent sub-message from synthesising
 	// a zero-value ObservabilityConfig (which would silently resolve to
-	// deployment.environment=local).
+	// deployment.environment.name=local).
 	if pc.Observability != nil {
 		rc.Observability = types.ObservabilityConfig{
+			ServiceName:      pc.Observability.GetServiceName(),
 			Environment:      pc.Observability.GetEnvironment(),
 			ServiceNamespace: pc.Observability.GetServiceNamespace(),
 		}

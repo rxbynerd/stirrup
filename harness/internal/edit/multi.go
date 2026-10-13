@@ -68,7 +68,7 @@ type MultiStrategy struct {
 
 	// Metrics is optional. When set, every Apply records
 	// stirrup.edit.attempts (per candidate, with strategy + fell_back_from
-	// + success) and stirrup.edit.duration_ms (with strategy) once at the
+	// + success) and stirrup.edit.duration (with strategy) once at the
 	// end. Field-injected from the factory; nil is safe everywhere.
 	Metrics *observability.Metrics
 }
@@ -132,7 +132,7 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 	start := time.Now()
 	// appliedStrategy names the strategy that carried the work (the one
 	// that succeeded, or the final candidate that failed), for tagging
-	// the edit.duration_ms histogram. Empty if the candidate loop was
+	// the edit.duration histogram. Empty if the candidate loop was
 	// never reached (parse error or no candidates).
 	var appliedStrategy string
 	defer func() {

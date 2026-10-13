@@ -1,6 +1,9 @@
 package security
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // namedPattern pairs a regexp with a stable label used in ScrubStats.
 type namedPattern struct {
@@ -80,6 +83,46 @@ var secretPatterns = []namedPattern{
 	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
 
+// matchValidators narrows patterns whose regex also matches ordinary prose.
+// A match is redacted only when its validator returns true; patterns absent
+// from the map redact every match.
+var matchValidators = map[string]func(match string) bool{
+	"basic_auth": isBasicCredential,
+}
+
+// isBasicCredential reports whether a basic_auth match is a credential
+// rather than prose such as "basic documentation": the payload must decode
+// from base64 to bytes containing the "user:password" colon.
+func isBasicCredential(match string) bool {
+	_, ok := decodeBasicPayload(tokenAfterSpace(match))
+	return ok
+}
+
+// replaceValidated replaces every match of re that valid accepts. A rejected
+// match does not consume the text after its first byte, so a credential
+// directly following a rejected match is still examined.
+func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
+	var b strings.Builder
+	redacted := 0
+	for rest := value; ; {
+		loc := re.FindStringIndex(rest)
+		if loc == nil {
+			b.WriteString(rest)
+			break
+		}
+		if valid(rest[loc[0]:loc[1]]) {
+			b.WriteString(rest[:loc[0]])
+			b.WriteString(redactedPlaceholder)
+			redacted++
+			rest = rest[loc[1]:]
+			continue
+		}
+		b.WriteString(rest[:loc[0]+1])
+		rest = rest[loc[0]+1:]
+	}
+	return b.String(), redacted
+}
+
 // ScrubStats reports redactions performed by ScrubWithStats. Count is the
 // total number of replacements across all patterns; Patterns is the
 // deduplicated list of pattern names that matched at least once.
@@ -122,13 +165,23 @@ func Scrub(value string) string {
 func ScrubWithStats(value string) (string, ScrubStats) {
 	stats := ScrubStats{}
 	for _, p := range secretPatterns {
-		matches := p.re.FindAllStringIndex(value, -1)
-		if len(matches) == 0 {
+		valid := matchValidators[p.name]
+		if valid == nil {
+			matches := p.re.FindAllStringIndex(value, -1)
+			if len(matches) == 0 {
+				continue
+			}
+			stats.Count += len(matches)
+			stats.Patterns = append(stats.Patterns, p.name)
+			value = p.re.ReplaceAllString(value, redactedPlaceholder)
 			continue
 		}
-		stats.Count += len(matches)
-		stats.Patterns = append(stats.Patterns, p.name)
-		value = p.re.ReplaceAllString(value, redactedPlaceholder)
+		var redacted int
+		value, redacted = replaceValidated(p.re, value, valid)
+		if redacted > 0 {
+			stats.Count += redacted
+			stats.Patterns = append(stats.Patterns, p.name)
+		}
 	}
 	return value, stats
 }

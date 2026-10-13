@@ -450,13 +450,24 @@ func validBasicAuth(content string, start, end int) bool {
 	if len(payload) < 16 {
 		return false
 	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		if decoded, err = base64.RawStdEncoding.DecodeString(payload); err != nil {
-			return false
-		}
+	_, ok := decodeBasicPayload(payload)
+	return ok
+}
+
+// decodeBasicPayload decodes a Basic-auth payload and reports whether it
+// contains the "user:password" colon. Padding is ignored and a dangling final
+// character (length 1 mod 4) is dropped, so a payload cut off mid-token
+// still decodes to its leading bytes.
+func decodeBasicPayload(payload string) ([]byte, bool) {
+	payload = strings.TrimRight(payload, "=")
+	if len(payload)%4 == 1 {
+		payload = payload[:len(payload)-1]
 	}
-	return bytes.IndexByte(decoded, ':') >= 0
+	decoded, err := base64.RawStdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, false
+	}
+	return decoded, bytes.IndexByte(decoded, ':') >= 0
 }
 
 // validAPIKeyHeader drops the secret://-reference shape and nothing

@@ -36,8 +36,8 @@ func (h *SpanContextHandler) Enabled(ctx context.Context, level slog.Level) bool
 
 // Handle appends trace_id and span_id when ctx carries a valid span
 // context, then delegates to the inner handler. When no span is active
-// (the common case for boot-time and context-less logging) the record is
-// passed through unchanged so non-traced lines stay free of empty
+// (boot-time logging, or a run whose emitter records no spans) the record
+// is passed through unchanged so non-traced lines stay free of empty
 // correlation fields.
 func (h *SpanContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	sc := oteltrace.SpanContextFromContext(ctx)

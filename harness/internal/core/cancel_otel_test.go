@@ -55,7 +55,7 @@ func (p *fireAndCloseProvider) Stream(_ context.Context, _ types.StreamParams) (
 // newInMemoryOTelEmitter wires an OTelTraceEmitter to an in-memory span
 // exporter so tests can assert on emitted span attributes without touching
 // the network. The returned exporter captures spans as they are ended; the
-// root "run" span is ended inside Finish, so GetSpans() after Run returns
+// root "invoke_agent stirrup" span is ended inside Finish, so GetSpans() after Run returns
 // includes the root span and its attributes.
 func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	t.Helper()
@@ -64,12 +64,12 @@ func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.I
 	return trace.NewOTelTraceEmitterForTest(tp), exporter
 }
 
-// findRootRunSpanAttribute scans the recorded spans for the root "run"
-// span and returns the value of the given attribute, or an empty string if
-// either the span or the attribute is absent.
+// findRootRunSpanAttribute scans the recorded spans for the root
+// invoke_agent span and returns the value of the given attribute, or an
+// empty string if either the span or the attribute is absent.
 func findRootRunSpanAttribute(spans []tracetest.SpanStub, key string) (string, bool) {
 	for _, s := range spans {
-		if s.Name != "run" {
+		if s.Name != "invoke_agent stirrup" {
 			continue
 		}
 		for _, attr := range s.Attributes {
@@ -162,7 +162,7 @@ func TestLoop_CancelAttribute_Deadline(t *testing.T) {
 }
 
 // TestSetRootCancelAttribute_NoStartedRunSpan covers the defensive
-// !span.SpanContext().IsValid() early-return branch: if the OTel emitter
+// early return when there is no run span: if the OTel emitter
 // has not yet been Started (no root span), setRootCancelAttribute must be
 // a safe no-op. Cannot happen on the Run() path; the guard is defence in
 // depth.
@@ -171,9 +171,7 @@ func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	emitter := trace.NewOTelTraceEmitterForTest(tp)
 
-	// Build a loop with the uninitialised OTel emitter — Start is never
-	// called, so RootContext() returns context.Background() and the span
-	// extracted from it has an invalid SpanContext.
+	// Start is never called, so RootContext() returns nil.
 	loop := buildTestLoop(nil)
 	loop.Trace = emitter
 

@@ -157,6 +157,12 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		report.finalise()
 		return report, nil
 	}
+	exporters, resourceOpts, telErr := resolveTelemetry(ctx, config, resolvedHeaders)
+	if telErr != nil {
+		fail("trace-emitter", telErr, "check traceEmitter.platform and traceEmitter.platformOptions against docs/observability-cloud.md#platform-profiles")
+		report.finalise()
+		return report, nil
+	}
 
 	// buildComponents is the SAME constructor BuildLoopWithTransport calls —
 	// this is what makes the parity structural. A construction failure
@@ -179,7 +185,7 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	// debugRedactionDisabled is always false here: a --dry-run preflight
 	// never disables redaction, regardless of --debug (dry-run has no
 	// documented interaction with the debug-build flags).
-	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, resolvedHeaders, resourceOptionsFromConfig(config), sink, false)
+	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, exporters, resourceOpts, sink, false)
 	if err != nil {
 		// The sink already recorded the failed construction step; the
 		// wrapped error is for internal logging only and does not become a

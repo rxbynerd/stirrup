@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -109,6 +110,82 @@ func TestPreflight_BadCredentialFails(t *testing.T) {
 	st, ok := stepStatus(report, "credentials")
 	if !ok || st != PreflightFail {
 		t.Errorf("credentials step status = %v (found=%v), want fail", st, ok)
+	}
+}
+
+// TestPreflight_PlatformOptionErrorFails pins that a dry run reports a
+// platform option the selected profile does not accept, which
+// ValidateRunConfig cannot see.
+func TestPreflight_PlatformOptionErrorFails(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	for _, platform := range types.ValidTraceEmitterPlatformValues() {
+		t.Run(platform, func(t *testing.T) {
+			config := preflightTestConfig(t, srv.URL+"/v1")
+			config.TraceEmitter = types.TraceEmitterConfig{
+				Type:            "otel",
+				Protocol:        "http/protobuf",
+				Platform:        platform,
+				PlatformOptions: map[string]string{"notAnOption": "x"},
+			}
+			report, err := Preflight(context.Background(), config, PreflightOptions{})
+			if err != nil {
+				t.Fatalf("Preflight: %v", err)
+			}
+			if report.OK {
+				t.Fatal("expected report.OK == false for an unknown platform option")
+			}
+			for _, step := range report.Steps {
+				if step.Name != "trace-emitter" {
+					continue
+				}
+				if step.Status != PreflightFail || !strings.Contains(step.Detail, `does not accept option "notAnOption"`) {
+					t.Errorf("trace-emitter step = %+v, want a failure naming the option", step)
+				}
+				return
+			}
+			t.Errorf("no trace-emitter step in %+v", report.Steps)
+		})
+	}
+}
+
+// TestPreflight_PlatformMissingRequiredOptionFails pins that a dry run
+// reports the profile's own error for a platform selected without the
+// options it requires.
+func TestPreflight_PlatformMissingRequiredOptionFails(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	checked := 0
+	for _, name := range types.ValidTraceEmitterPlatformValues() {
+		_, resolveErr := platform.Resolve(context.Background(), name, nil, platform.Deps{})
+		if resolveErr == nil || !strings.Contains(resolveErr.Error(), "requires option") {
+			continue
+		}
+		checked++
+		t.Run(name, func(t *testing.T) {
+			config := preflightTestConfig(t, srv.URL+"/v1")
+			config.TraceEmitter = types.TraceEmitterConfig{Type: "otel", Protocol: "http/protobuf", Platform: name}
+			report, err := Preflight(context.Background(), config, PreflightOptions{})
+			if err != nil {
+				t.Fatalf("Preflight: %v", err)
+			}
+			for _, step := range report.Steps {
+				if step.Name == "trace-emitter" {
+					if report.OK || step.Status != PreflightFail || !strings.Contains(step.Detail, resolveErr.Error()) {
+						t.Errorf("trace-emitter step = %+v, want a failure carrying %q", step, resolveErr)
+					}
+					return
+				}
+			}
+			t.Errorf("no trace-emitter step in %+v", report.Steps)
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no registered platform has a required option to exercise")
 	}
 }
 

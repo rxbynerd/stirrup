@@ -317,7 +317,11 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	otelProtocol, _ := f.GetString("otel-protocol")
 	otelHeaderRaw, _ := f.GetStringArray("otel-header")
 	otelMetricsEndpoint, _ := f.GetString("otel-metrics-endpoint")
+	otelMetricsTemporality, _ := f.GetString("otel-metrics-temporality")
 	otelCaptureContent, _ := f.GetBool("otel-capture-content")
+	otelCaptureContentMaxBytes, _ := f.GetInt("otel-capture-content-max-bytes")
+	otelPlatform, _ := f.GetString("otel-platform")
+	otelPlatformOptionRaw, _ := f.GetStringArray("otel-platform-option")
 	containerRuntime, _ := f.GetString("container-runtime")
 	k8sNamespace, _ := f.GetString("k8s-namespace")
 	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
@@ -331,6 +335,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
+	serviceName, _ := f.GetString("service-name")
 	serviceNamespace, _ := f.GetString("service-namespace")
 	logExport, _ := f.GetString("log-export")
 	// Read here, not in the factory, to preserve the agentic loop's "no
@@ -387,6 +392,18 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		otelHeaders[k] = v
 	}
 
+	var otelPlatformOptions map[string]string
+	for _, entry := range otelPlatformOptionRaw {
+		k, v, err := parseQueryParam(entry)
+		if err != nil {
+			return nil, fmt.Errorf("--otel-platform-option %q: %w", entry, err)
+		}
+		if otelPlatformOptions == nil {
+			otelPlatformOptions = map[string]string{}
+		}
+		otelPlatformOptions[k] = v
+	}
+
 	temperature := optionalFloat64Flag(cmd, "temperature")
 
 	// buildHarnessRunConfigCore (not buildHarnessRunConfig) keeps
@@ -439,7 +456,11 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		OTelProtocol:                 otelProtocol,
 		OTelHeaders:                  otelHeaders,
 		OTelMetricsEndpoint:          otelMetricsEndpoint,
+		OTelMetricsTemporality:       otelMetricsTemporality,
 		OTelCaptureContent:           otelCaptureContent,
+		OTelCaptureContentMaxBytes:   otelCaptureContentMaxBytes,
+		OTelPlatform:                 otelPlatform,
+		OTelPlatformOptions:          otelPlatformOptions,
 		ContainerRuntime:             containerRuntime,
 		K8sNamespace:                 k8sNamespace,
 		K8sKubeconfig:                k8sKubeconfig,
@@ -453,6 +474,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		GuardRailModel:               guardRailModel,
 		GuardRailFailOpen:            guardRailFailOpen,
 		DeploymentEnvironment:        deploymentEnvironment,
+		ServiceName:                  serviceName,
 		ServiceNamespace:             serviceNamespace,
 		LogExport:                    logExport,
 		LogExportEndpoint:            logExportEndpoint,

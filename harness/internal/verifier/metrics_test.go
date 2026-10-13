@@ -43,8 +43,8 @@ func TestMetricRecorder_RecordsPassingRun(t *testing.T) {
 		t.Errorf("passed = %q, want true", dps[0].attrs["passed"])
 	}
 
-	if !histogramHasObservation(t, rm, "stirrup.verifier.duration_ms") {
-		t.Error("stirrup.verifier.duration_ms recorded no observations")
+	if !histogramHasObservation(t, rm, "stirrup.verifier.duration") {
+		t.Error("stirrup.verifier.duration recorded no observations")
 	}
 }
 

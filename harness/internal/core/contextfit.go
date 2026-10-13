@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -17,6 +18,7 @@ import (
 // touched. It returns the messages to send and their estimated size, or an
 // error naming the sizes involved when even full truncation does not fit.
 func (l *AgenticLoop) fitPreparedRequest(
+	ctx context.Context,
 	prepared []types.Message,
 	systemPrompt string,
 	toolDefs []types.ToolDefinition,
@@ -38,7 +40,7 @@ func (l *AgenticLoop) fitPreparedRequest(
 		before := tokens
 		tokens = estimateCurrentTokens(fitted, budget.structuredResults) + systemTokens + toolTokens
 		span.SetAttributes(attribute.Int("context.fit.truncated_results", cut))
-		l.Logger.Warn("tool results truncated to fit the context budget",
+		l.Logger.WarnContext(ctx, "tool results truncated to fit the context budget",
 			"toolResults", cut,
 			"tokens.before", before,
 			"tokens.after", tokens,

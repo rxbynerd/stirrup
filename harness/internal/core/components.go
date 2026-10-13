@@ -8,6 +8,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -33,10 +34,6 @@ type builtComponents struct {
 
 	permissionPolicy permission.PermissionPolicy `probe:"permission-policy-probe"`
 	traceEmitter     trace.TraceEmitter          `probe:"trace-emitter-probe"`
-
-	// resolvedHeaders are the dereferenced traceEmitter.Headers, reused
-	// for the metrics exporter so traces and metrics authenticate alike.
-	resolvedHeaders map[string]string
 }
 
 // componentStepSink lets buildComponents emit a per-component construction
@@ -93,10 +90,11 @@ func (b *builtComponents) probeSteps() []probeComponentStep {
 // policy, and trace emitter. The executor is supplied by the caller via
 // execResult (see builtComponents.executor).
 //
-// resolvedHeaders must already be secret://-dereferenced. When sink is
-// non-nil, buildComponents emits a construction step per component
-// (including execResult) so the dry-run report stays a property of this
-// shared constructor rather than a hand-maintained mirror.
+// exporters is the run's resolved OTLP configuration (see
+// resolveTelemetry). When sink is non-nil, buildComponents emits a
+// construction step per component (including execResult) so the dry-run
+// report stays a property of this shared constructor rather than a
+// hand-maintained mirror.
 //
 // A construction failure returns a nil struct and a wrapped error naming
 // the failing component; owned closers (trace emitter) are NOT closed
@@ -113,7 +111,7 @@ func buildComponents(
 	registry *tool.Registry,
 	tp transport.Transport,
 	execResult executorBuildResult,
-	resolvedHeaders map[string]string,
+	exporters platform.Exporters,
 	resourceOpts observability.ResourceOptions,
 	sink *componentStepSink,
 	debugRedactionDisabled bool,
@@ -151,7 +149,7 @@ func buildComponents(
 		sink.ok("permission-policy", permissionPolicyDetail(config.PermissionPolicy.Type, pp))
 	}
 
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts, debugRedactionDisabled)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter, exporters, resourceOpts, debugRedactionDisabled)
 	if err != nil {
 		if sink != nil {
 			sink.failStep("trace-emitter", err, traceHint(config.TraceEmitter.Type))
@@ -168,7 +166,6 @@ func buildComponents(
 		executor:         execResult.exec,
 		permissionPolicy: pp,
 		traceEmitter:     te,
-		resolvedHeaders:  resolvedHeaders,
 	}, nil
 }
 

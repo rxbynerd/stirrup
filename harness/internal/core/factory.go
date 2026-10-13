@@ -25,6 +25,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -204,27 +205,28 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	registry := buildToolRegistry(exec, es, config.Tools, commandOutputStore)
 
-	// resourceOpts and resolvedHeaders are shared by the log, trace, and
-	// metric exporters below so all three signals carry a consistent
-	// resource identity and authenticate identically; computed once here
-	// rather than re-resolved per signal.
-	resourceOpts := resourceOptionsFromConfig(config)
+	// exporters and resourceOpts are shared by the log, trace, and metric
+	// exporters below so all three signals carry a consistent resource
+	// identity and authenticate identically; the platform profile is
+	// resolved once here rather than per signal.
 	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
 	}
+	exporters, resourceOpts, err := resolveTelemetry(ctx, config, resolvedHeaders)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 
 	// Optional second log sink alongside stderr, opted into via
 	// observability.logsExport.type == "otlp"; falls back to the trace
-	// emitter's endpoint so one --otel-endpoint covers all three signals.
+	// emitter's endpoint and uses its protocol so one --otel-endpoint
+	// covers all three signals.
 	var logExportHandler slog.Handler
 	if config.Observability.LogsExport.Type == "otlp" {
-		logEndpoint := config.Observability.LogsExport.Endpoint
-		if logEndpoint == "" {
-			logEndpoint = config.TraceEmitter.Endpoint
-		}
-		logExporter, handler, lerr := observability.NewLogExporter(ctx, logEndpoint, resolvedHeaders, resourceOpts)
+		logExporter, handler, lerr := observability.NewLogExporter(ctx, exporters.Logs, resourceOpts)
 		if lerr != nil {
 			cleanup()
 			return nil, fmt.Errorf("build log exporter: %w", lerr)
@@ -244,6 +246,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// AgenticLoop.Logger below.
 		logger = logger.With("sessionName", config.SessionName)
 	}
+	logPlatformExporters(logger, config, exporters)
 
 	// 4b. Sandbox identity token refresh, started here rather than at 3b
 	// so its log lines ride the scrub-wrapped logger. Runs from now until
@@ -317,7 +320,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// emitter) via the shared buildComponents path — also used by
 	// Preflight; see docs/architecture.md. A nil sink here means no
 	// per-component construction steps are emitted.
-	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, resolvedHeaders, resourceOpts, nil, loopOpts.debugRedactionDisabled)
+	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, exporters, resourceOpts, nil, loopOpts.debugRedactionDisabled)
 	if err != nil {
 		cleanup()
 		// buildComponents already prefixes the failing component.
@@ -347,7 +350,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 		return presenter.InternalName(name)
 	}
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
+	// Auxiliary model calls (summarisation, llm-judge, cloud-judge) go
+	// through auxProv so they are counted in the GenAI client metrics.
+	auxProv := newMeteredProvider(prov, config.Provider.Type)
+	cs := buildContextStrategy(config.ContextStrategy, auxProv, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
 
 	// 9. Verifier. Construction is deferred to step 13, once metrics
 	// exists — buildVerifier wraps in a metric-recorder when metrics is
@@ -356,7 +362,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10. GuardRail, built after providers so cloud-judge can reuse the
 	// default ProviderAdapter.
-	gr, err := buildGuardRail(config.GuardRail, providers, prov)
+	gr, err := buildGuardRail(config.GuardRail, providers, auxProv)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
@@ -374,12 +380,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 13. OTel metrics.
 	var metrics *observability.Metrics
-	metricsEndpoint := config.TraceEmitter.MetricsEndpoint
-	if metricsEndpoint == "" {
-		metricsEndpoint = config.TraceEmitter.Endpoint
-	}
-	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
-		metrics, err = observability.NewMetrics(ctx, metricsEndpoint, config.TraceEmitter.Protocol, resolvedHeaders, resourceOpts)
+	if metricsEnabled(config, exporters) {
+		metrics, err = observability.NewMetrics(ctx, exporters.Metrics, resourceOpts)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build metrics: %w", err)
@@ -388,6 +390,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	} else {
 		metrics = observability.NewNoopMetrics()
 	}
+	auxProv.metrics = metrics
 
 	// 14. Wire the SecurityEvents counter so every Emit increments OTel
 	// metrics tagged by "event".
@@ -408,11 +411,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	wireEditMetrics(es, metrics)
 
 	// Build the verifier now that metrics is available so each Verify
-	// call records stirrup.verifier.runs / stirrup.verifier.duration_ms
+	// call records stirrup.verifier.runs / stirrup.verifier.duration
 	// with the appropriate type label. Construction is deferred to here
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.
-	v = buildVerifier(config.Verifier, prov, metrics)
+	v = buildVerifier(config.Verifier, auxProv, metrics)
 
 	// Applied before the metrics wrapper so gate denials still land in
 	// stirrup.permission.decisions under the policy label (true
@@ -1905,9 +1908,72 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 		return observability.ResourceOptions{}
 	}
 	return observability.ResourceOptions{
+		ServiceName:      cfg.Observability.ServiceName,
 		Environment:      cfg.Observability.Environment,
 		ServiceNamespace: cfg.Observability.ServiceNamespace,
 		RunMode:          cfg.Mode,
+	}
+}
+
+// resolveTelemetry resolves the run's observability platform profile
+// against its explicit exporter settings, returning each signal's exporter
+// settings and the resource options carrying the profile's attributes.
+// resolvedHeaders are traceEmitter.headers with secret:// references
+// resolved.
+func resolveTelemetry(ctx context.Context, config *types.RunConfig, resolvedHeaders map[string]string) (platform.Exporters, observability.ResourceOptions, error) {
+	profile, err := platform.Resolve(ctx, config.TraceEmitter.Platform, config.TraceEmitter.PlatformOptions, platform.Deps{})
+	if err != nil {
+		return platform.Exporters{}, observability.ResourceOptions{}, fmt.Errorf("resolve observability platform: %w", err)
+	}
+	exporters, err := platform.Apply(platform.Input{
+		TraceEmitter: config.TraceEmitter,
+		LogsEndpoint: config.Observability.LogsExport.Endpoint,
+		Headers:      resolvedHeaders,
+	}, profile)
+	if err != nil {
+		return platform.Exporters{}, observability.ResourceOptions{}, fmt.Errorf("resolve observability platform: %w", err)
+	}
+	resourceOpts := resourceOptionsFromConfig(config)
+	resourceOpts.Extra = exporters.ResourceAttrs
+	return exporters, resourceOpts, nil
+}
+
+// metricsEnabled reports whether the run exports metrics: an otel emitter
+// with a resolved metrics endpoint.
+func metricsEnabled(config *types.RunConfig, exporters platform.Exporters) bool {
+	return config.TraceEmitter.Type == "otel" && exporters.Metrics.Endpoint != ""
+}
+
+// logPlatformExporters records where a platform profile sends each
+// enabled signal. Headers are never logged.
+func logPlatformExporters(logger *slog.Logger, config *types.RunConfig, exporters platform.Exporters) {
+	if exporters.Platform == "" {
+		return
+	}
+	attrs := []any{"platform", exporters.Platform, "protocol", exporters.Traces.Protocol, "traces", exporters.Traces.Endpoint}
+	if metricsEnabled(config, exporters) {
+		attrs = append(attrs, "metrics", exporters.Metrics.Endpoint)
+	}
+	if config.Observability.LogsExport.Type == "otlp" {
+		logs := exporters.Logs.Endpoint
+		if logs == "" {
+			logs = "from OTEL_EXPORTER_OTLP environment"
+		}
+		attrs = append(attrs, "logs", logs)
+	}
+	logger.Info("observability platform exporters resolved", attrs...)
+}
+
+// otelEmitterOptions maps the otel trace emitter config and the run's
+// resolved trace exporter settings onto the emitter's options.
+func otelEmitterOptions(cfg types.TraceEmitterConfig, exporters platform.Exporters, resourceOpts observability.ResourceOptions, redactionDisabled bool) trace.OTelTraceEmitterOptions {
+	return trace.OTelTraceEmitterOptions{
+		Exporter:               exporters.Traces,
+		Resource:               resourceOpts,
+		CaptureContent:         cfg.CaptureContent,
+		CaptureContentMaxBytes: cfg.CaptureContentMaxBytes,
+		RedactionDisabled:      redactionDisabled,
+		WrapSpanExporter:       exporters.WrapSpanExporter,
 	}
 }
 
@@ -1915,15 +1981,11 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 // for every emitter type — so a release binary builds every emitter with
 // redaction on regardless of what a caller passes in. See
 // docs/security.md#debug-builds.
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, exporters platform.Exporters, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
 	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {
 	case "otel":
-		endpoint := cfg.Endpoint
-		if endpoint == "" {
-			endpoint = "localhost:4317"
-		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent, effectiveRedactionDisabled)
+		return trace.NewOTelTraceEmitter(ctx, otelEmitterOptions(cfg, exporters, resourceOpts, effectiveRedactionDisabled))
 	case "gcs":
 		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.
 		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)

@@ -544,7 +544,7 @@ message RunConfig {
   GuardRailConfig guard_rail = 28;
 
   // Optional. Run-scoped attributes that ride on the OTel Resource
-  // (deployment.environment, service.namespace) so traces and metrics
+  // (deployment.environment.name, service.namespace) so traces and metrics
   // emitted by this run share a consistent resource identity with
   // other runs in the same deployment. Only low-cardinality fields
   // belong here — high-cardinality identifiers (run_id, provider,
@@ -732,12 +732,14 @@ message ResultSinkConfig {
 message LogsExportConfig {
   // Optional. The log-export mode.
   // Valid values: "" (treated as "none"), "none" (stderr only), "otlp"
-  // (stderr plus an OTLP/gRPC log exporter).
+  // (stderr plus an OTLP log exporter using trace_emitter.protocol and
+  // trace_emitter.headers).
   string type = 1;
 
-  // Optional. OTLP/gRPC collector address for the log signal. When empty
-  // the harness falls back to trace_emitter.endpoint, so a single
-  // endpoint covers traces, metrics, and logs.
+  // Optional. OTLP collector address for the log signal, in the same form
+  // as trace_emitter.endpoint for the configured protocol. When empty the
+  // harness falls back to trace_emitter.endpoint, so a single endpoint
+  // covers traces, metrics, and logs.
   string endpoint = 2;
 }
 
@@ -990,6 +992,12 @@ message ObservabilityConfig {
   // addition to stderr. Absent (or type "none") keeps stderr-only
   // behaviour, so an empty ObservabilityConfig changes nothing.
   LogsExportConfig logs_export = 3;
+
+  // Optional. The OTel service.name resource attribute, which backends use
+  // to list and separate agents. When empty the resource builder falls
+  // back to the OTEL_SERVICE_NAME environment variable, then to "stirrup".
+  // Values must match ^[A-Za-z0-9._-]{1,64}$.
+  string service_name = 4;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution
@@ -2017,21 +2025,29 @@ message TraceEmitterConfig {
   // For "jsonl": filesystem path to the output trace file.
   string file_path = 2;
 
-  // For "otel": exporter address for traces.
-  //   - protocol "grpc" (default): host:port (default "localhost:4317").
+  // For "otel": exporter address for traces, and for logs when
+  // ObservabilityConfig.logs_export has no endpoint of its own.
+  //   - protocol "grpc" (default): host:port (default "localhost:4317")
+  //     or an http(s):// URL.
   //   - protocol "http/protobuf": full URL ending in the gateway base path
   //     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"). The
-  //     SDK appends "/v1/traces" and "/v1/metrics" per signal.
+  //     harness appends "/v1/traces", "/v1/metrics" and "/v1/logs" per
+  //     signal, unless the path already ends in that signal's segment.
+  // For both protocols "https://" selects TLS and "http://" or no scheme
+  // selects plaintext, whatever OTEL_EXPORTER_OTLP_* variables say.
+  // Userinfo, query strings and fragments are rejected by validation.
   string endpoint = 3;
 
   // For "otel": exporter address for metrics. Defaults to the value of
-  // endpoint if unset. Same protocol as `endpoint`.
+  // endpoint if unset. Same protocol and rules as `endpoint`.
   string metrics_endpoint = 4;
 
   // For "otel": OTLP wire protocol. Closed set:
   //   "" (defaults to "grpc") | "grpc" | "http/protobuf"
-  // HTTP/JSON is intentionally not supported. See
-  // docs/observability-cloud.md for the operator walkthrough.
+  // The same protocol and headers apply to traces, metrics, and logs
+  // exported through ObservabilityConfig.logs_export. HTTP/JSON is
+  // intentionally not supported. See docs/observability-cloud.md for the
+  // operator walkthrough.
   string protocol = 5;
 
   // For "otel": extra headers attached to every export request. Keys are
@@ -2057,6 +2073,35 @@ message TraceEmitterConfig {
   // secret-shaped substrings before any attribute is set. Rejected by
   // validation for the jsonl and gcs emitters.
   bool capture_content = 9;
+
+  // For "otel": aggregation temporality of exported metrics. Closed set:
+  //   "" | "cumulative" | "delta"
+  // Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and
+  // then the SDK default (cumulative). Rejected for jsonl and gcs.
+  string metrics_temporality = 10;
+
+  // For "otel": maximum size in bytes of each captured content attribute
+  // value. A longer value is shortened at a message or part boundary so
+  // JSON stays valid, and the span gains a sibling
+  // "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
+  // least 256. Rejected unless capture_content is true, and for jsonl
+  // and gcs.
+  int32 capture_content_max_bytes = 11;
+
+  // For "otel": backend platform profile that fills unset OTLP settings
+  // (per-signal endpoints, headers, request signing, resource and span
+  // attributes) for one observability platform. Closed set:
+  //   "" | "cloudwatch" | "phoenix"
+  // Explicit fields always win over a profile's defaults. Rejected for
+  // jsonl and gcs. See docs/observability-cloud.md#platform-profiles.
+  string platform = 12;
+
+  // For "otel": settings for the selected platform (for example a region
+  // or project name). At most 8 entries; keys match
+  // ^[a-z][A-Za-z0-9]{0,31}$; values are at most 256 bytes of printable
+  // UTF-8 and never secret:// references. Which keys a platform
+  // accepts is checked when the exporters are built. Requires platform.
+  map<string, string> platform_options = 13;
 
   // For "gcs": joined with the run ID at write time to form the final
   // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is

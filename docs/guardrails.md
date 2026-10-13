@@ -144,7 +144,7 @@ deterministic checks and a classifier would reject reports
 `security_guard_denied`, where releases that ran the guard first
 reported `guardrail_denied`. Such a call is never classified: it
 produces no `guard.pre_tool` span, no `stirrup.guard.checks` or
-`stirrup.guard.duration_ms` samples, and no `guard_*` security event,
+`stirrup.guard.duration` samples, and no `guard_*` security event,
 so the mix of tool-failure categories shifts towards the
 deterministic ones. Alerts that count `guard_denied` events to detect
 injection attempts no longer see calls the deterministic checks
@@ -552,8 +552,9 @@ Enable guardrails and you get a stable observability surface:
 ### OTel spans
 
 Each guard call produces a span named `guard.<phase>` (e.g.
-`guard.pre_turn`, `guard.pre_tool`, `guard.post_turn`), child of
-the corresponding `turn` / `tool.<name>` / `provider.stream` span.
+`guard.pre_turn`, `guard.pre_tool`, `guard.post_turn`). `pre_turn` and
+`post_turn` spans are children of the run's `invoke_agent` span;
+`pre_tool` spans are children of the call's `execute_tool` span.
 Standard attributes: `guard.id`, `guard.criterion`, `guard.score`,
 `guard.verdict`, `guard.latency_ms`.
 
@@ -567,7 +568,7 @@ Five instruments emitted by `harness/internal/observability/metrics.go`:
 | `stirrup.guard.errors` | counter | `guard.id`, `guard.phase` |
 | `stirrup.guard.skips` | counter | `guard.id`, `guard.phase`, `reason` |
 | `stirrup.guard.spotlights` | counter | `guard.id` |
-| `stirrup.guard.duration_ms` | histogram | `guard.id`, `guard.phase` |
+| `stirrup.guard.duration` | histogram | `guard.id`, `guard.phase` |
 
 A healthy production fleet sees `errors` and `skips` at low rates
 relative to `checks`. A sudden rise in `errors` is the operational

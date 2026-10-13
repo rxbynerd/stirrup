@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -303,7 +304,7 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 // cancelled, with every in-flight call marked as an error. The wall-time
 // bound is well under DefaultAsyncToolTimeout (60s) so a hang here is
 // instantly obvious. Wired with an in-memory OTel exporter to match the
-// tracer setup TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn uses.
+// tracer setup TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent uses.
 func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -587,13 +588,13 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 	}
 }
 
-// TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn is the OTel shape
-// regression: concurrent async dispatch must create tool.<name> spans as
+// TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent is the OTel shape
+// regression: concurrent async dispatch must create execute_tool spans as
 // SIBLINGS of one another (both children of the caller's trace context),
 // not nested. Nesting would mean a later span's "duration" appears to
 // include earlier siblings, breaking dashboards that aggregate tool
 // durations.
-func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
+func TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -603,12 +604,12 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	loop.Tracer = tp.Tracer("test")
 	config := configWithMaxParallel(2)
 
-	// Open a synthetic "turn" span as the parent for the two tool.<name>
-	// spans. planAndDispatch reads its parent via l.traceCtx(ctx); we
-	// thread the turn ctx through both ctx and TraceContext to mirror the
-	// real loop's turn boundary.
-	turnCtx, turnSpan := loop.Tracer.Start(context.Background(), "turn[test]")
-	loop.TraceContext = turnCtx
+	// Open a synthetic agent span as the parent for the two execute_tool
+	// spans. planAndDispatch reads its parent via l.traceCtx(ctx), so the
+	// agent ctx is threaded through both ctx and TraceContext as the real
+	// loop does with its run span.
+	agentCtx, agentSpan := loop.Tracer.Start(context.Background(), "invoke_agent test")
+	loop.TraceContext = agentCtx
 
 	calls := []types.ToolCall{
 		{ID: "tc_otel_0", Name: "async_echo", Input: json.RawMessage(`{}`)},
@@ -618,8 +619,8 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 50*time.Millisecond, "r0")
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 50*time.Millisecond, "r1")
 
-	results, _, outcome := loop.planAndDispatch(turnCtx, config, calls, &stallDetector{}, "", "")
-	turnSpan.End()
+	results, _, outcome := loop.planAndDispatch(agentCtx, config, calls, &stallDetector{}, "", "")
+	agentSpan.End()
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -629,26 +630,26 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
-	var turnStub tracetest.SpanStub
+	var agentStub tracetest.SpanStub
 	for _, s := range spans {
 		switch s.Name {
-		case "tool.async_echo":
+		case "execute_tool async_echo":
 			toolSpans = append(toolSpans, s)
-		case "turn[test]":
-			turnStub = s
+		case "invoke_agent test":
+			agentStub = s
 		}
 	}
 	if len(toolSpans) != 2 {
-		t.Fatalf("expected 2 tool.async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
+		t.Fatalf("expected 2 execute_tool async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
 	}
-	if turnStub.Name == "" {
-		t.Fatal("turn[test] span not found in exporter")
+	if agentStub.Name == "" {
+		t.Fatal("invoke_agent test span not found in exporter")
 	}
-	turnSpanID := turnStub.SpanContext.SpanID()
+	agentSpanID := agentStub.SpanContext.SpanID()
 	for i, s := range toolSpans {
-		if s.Parent.SpanID() != turnSpanID {
-			t.Errorf("tool span %d parent=%s, want turn span %s (siblings under turn, not nested)",
-				i, s.Parent.SpanID(), turnSpanID)
+		if s.Parent.SpanID() != agentSpanID {
+			t.Errorf("tool span %d parent=%s, want agent span %s (siblings under the agent span, not nested)",
+				i, s.Parent.SpanID(), agentSpanID)
 		}
 	}
 	// Cross-check: the two tool spans must not be parented under each other.
@@ -660,10 +661,10 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 
 // TestParallelDispatch_UnknownTool_SpanNameSentinel pins the span-name
 // cardinality bound: an unknown (unresolved) tool must open its OTel span
-// as "tool.__unknown__" rather than "tool.<model-controlled name>", so a
-// hostile or buggy provider response cannot pollute trace storage with
-// arbitrary span names. The model-supplied name is still preserved
-// verbatim in the tool.name attribute for debuggability.
+// as the bare "execute_tool" rather than "execute_tool <model-controlled
+// name>", so a hostile or buggy provider response cannot pollute trace
+// storage with arbitrary span names. The model-supplied name is still
+// preserved verbatim in the gen_ai.tool.name attribute for debuggability.
 func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -690,31 +691,31 @@ func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	spans := exporter.GetSpans()
 	var toolSpan *tracetest.SpanStub
 	for i := range spans {
-		if strings.HasPrefix(spans[i].Name, "tool.") {
+		if strings.HasPrefix(spans[i].Name, "execute_tool") {
 			toolSpan = &spans[i]
 			break
 		}
 	}
 	if toolSpan == nil {
-		t.Fatalf("no tool.* span found (spans=%v)", spanNames(spans))
+		t.Fatalf("no execute_tool span found (spans=%v)", spanNames(spans))
 	}
-	if toolSpan.Name != "tool.__unknown__" {
-		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must be substituted with the sentinel)",
-			toolSpan.Name, "tool.__unknown__")
+	if toolSpan.Name != "execute_tool" {
+		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must stay out of the span name)",
+			toolSpan.Name, "execute_tool")
 	}
 	// The raw model-supplied name must still be recorded on the attribute.
 	var sawName bool
 	for _, attr := range toolSpan.Attributes {
-		if string(attr.Key) == "tool.name" {
+		if string(attr.Key) == "gen_ai.tool.name" {
 			sawName = true
 			if attr.Value.AsString() != hostileName {
-				t.Errorf("tool.name attribute = %q, want raw model name %q",
+				t.Errorf("gen_ai.tool.name attribute = %q, want raw model name %q",
 					attr.Value.AsString(), hostileName)
 			}
 		}
 	}
 	if !sawName {
-		t.Error("tool.name attribute missing from unknown-tool span")
+		t.Error("gen_ai.tool.name attribute missing from unknown-tool span")
 	}
 }
 
@@ -773,12 +774,12 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
 	for _, s := range spans {
-		if s.Name == "tool.async_echo" {
+		if s.Name == "execute_tool async_echo" {
 			toolSpans = append(toolSpans, s)
 		}
 	}
 	if len(toolSpans) != n {
-		t.Fatalf("expected %d tool.async_echo spans (one per dispatched call), got %d (names=%v)",
+		t.Fatalf("expected %d execute_tool async_echo spans (one per dispatched call), got %d (names=%v)",
 			n, len(toolSpans), spanNames(spans))
 	}
 	// Every span must be closed: tracetest.SpanStub only appears in
@@ -789,6 +790,49 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 		if s.EndTime.IsZero() {
 			t.Errorf("tool span %d has zero EndTime — stall-tail cleanup did not close it", i)
 		}
+	}
+}
+
+// A call past the stall point has already run, so its span keeps the
+// call's failure even though its trace and metrics are dropped.
+func TestParallelDispatch_StallTrips_RemainingSpansKeepTheirOutcome(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	loop := buildParallelDispatchLoop(t, newAsyncTestTransport(), sleepingSyncTool("sync_tool", 0))
+	loop.Tracer = tp.Tracer("test")
+	sameInput := json.RawMessage(`{"k":"v"}`)
+	stall := &stallDetector{lastToolCall: "sync_tool:" + string(sameInput), repeatCount: maxRepeatedToolCalls - 1}
+	calls := []types.ToolCall{
+		{ID: "tc_stall", Name: "sync_tool", Input: sameInput},
+		{ID: "tc_after", Name: "no_such_tool", Input: json.RawMessage(`{}`)},
+	}
+
+	_, _, outcome := loop.planAndDispatch(context.Background(), configWithMaxParallel(1), calls, stall, "", "")
+	if outcome != "stalled" {
+		t.Fatalf("expected outcome 'stalled', got %q", outcome)
+	}
+	var after []tracetest.SpanStub
+	for _, s := range exporter.GetSpans() {
+		if s.Name == "execute_tool" {
+			after = append(after, s)
+		}
+	}
+	if len(after) != 1 {
+		t.Fatalf("found %d spans for the call past the stall point, want 1", len(after))
+	}
+	if after[0].Status.Code != codes.Error {
+		t.Errorf("status = %v, want Error", after[0].Status.Code)
+	}
+	var errorType string
+	for _, kv := range after[0].Attributes {
+		if kv.Key == "error.type" {
+			errorType = kv.Value.AsString()
+		}
+	}
+	if errorType != observability.ToolFailureUnknownTool.String() {
+		t.Errorf("error.type = %q, want %q", errorType, observability.ToolFailureUnknownTool)
 	}
 }
 

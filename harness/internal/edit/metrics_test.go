@@ -62,8 +62,8 @@ func TestMultiStrategy_RecordsAttemptsAndDuration(t *testing.T) {
 		t.Errorf("success = %q, want true", dps[0].attrs["success"])
 	}
 
-	if !histogramRecorded(t, rm, "stirrup.edit.duration_ms") {
-		t.Error("stirrup.edit.duration_ms recorded no observations")
+	if !histogramRecorded(t, rm, "stirrup.edit.duration") {
+		t.Error("stirrup.edit.duration recorded no observations")
 	}
 }
 

@@ -12,7 +12,9 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -80,7 +82,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		if parent.ToolProfile != nil {
 			profileName = parent.ToolProfile.Name
 		}
-		parent.Logger.Warn("child presenter build failed; sub-agent will use internal tool names",
+		parent.Logger.WarnContext(ctx, "child presenter build failed; sub-agent will use internal tool names",
 			"err", err, "profile", profileName)
 	}
 
@@ -118,13 +120,13 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		} else {
 			// Not rewrappable: keep the parent's full chain (fail toward
 			// more enforcement) rather than the per-child Cedar identity.
-			parent.Logger.Warn("permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
+			parent.Logger.WarnContext(ctx, "permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
 		}
 	}
 
 	// Forwards every Turn/ToolCall the child records to the parent's
 	// TraceEmitter, tagged with the child's and parent's runIDs.
-	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID)
+	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID, ctx)
 
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
@@ -165,18 +167,13 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}
 
 	childLoop.StructuredResults = parent.StructuredResults
-
-	// Nests every child span under the parent's tool.spawn_agent span;
-	// Run() preserves a pre-set TraceContext rather than overwriting it.
-	childLoop.TraceContext = ctx
 	childLoop.ContextWindows = parent.ContextWindows
 
 	start := time.Now()
 	runTrace, err := childLoop.Run(ctx, &childConfig)
 	elapsed := time.Since(start)
 
-	parentMode := parentConfig.Mode
-	recordSpawnMetrics(ctx, parent, parentMode, runTrace, elapsed, err == nil)
+	recordSpawnMetrics(ctx, parent, parentConfig, mode, runTrace, elapsed, err == nil)
 
 	if err != nil {
 		return &SubAgentResult{
@@ -197,21 +194,26 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	}, nil
 }
 
-// recordSpawnMetrics emits stirrup.subagent.{spawns,duration_ms,
+// recordSpawnMetrics emits stirrup.subagent.{spawns,duration,
 // tokens.input,tokens.output,tokens.cache_read,tokens.cache_write} for
 // one sub-agent run; the cache counters only when non-zero. parent.mode is
 // the *parent loop's* mode (not the sub-agent's), so dashboards can
 // attribute sub-agent activity to the calling run mode (e.g. an
 // execution-mode parent spawning a research-mode child still appears
-// under parent.mode=execution). A nil parent.Metrics short-circuits.
+// under parent.mode=execution). The token counters also carry the provider
+// and model the router selects for the sub-agent's mode on its first turn;
+// a router that switches models mid-run still attributes the sub-agent's
+// whole total to that first selection. childMode is the sub-agent's mode.
+// A nil parent.Metrics short-circuits.
 //
 // runTrace may be nil when the child loop returned an error before any
 // trace was assembled; in that case the spawn counter still fires
 // (with success=false) but token counters are skipped.
-func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode string, runTrace *types.RunTrace, elapsed time.Duration, success bool) {
+func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentConfig *types.RunConfig, childMode string, runTrace *types.RunTrace, elapsed time.Duration, success bool) {
 	if parent == nil || parent.Metrics == nil {
 		return
 	}
+	parentMode := parentConfig.Mode
 	// parent.metricAttrs prepends the loop's own MetricAttrs (e.g.
 	// run.parent_id when the parent is itself a sub-agent); bypassing it
 	// would break attribution on multi-level spawn trees.
@@ -225,21 +227,21 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode str
 	if runTrace == nil {
 		return
 	}
-	parent.Metrics.SubagentTokensInput.Add(ctx, int64(runTrace.TokenUsage.Input), parent.metricAttrs(
+	selection := parent.Router.Select(ctx, router.RouterContext{Mode: childMode})
+	tokenAttrs := parent.metricAttrs(append(
+		observability.ProviderModelAttributes(
+			providerTypeFor(parentConfig, selection.Provider),
+			selection.Model,
+		),
 		attribute.String("parent.mode", parentMode),
-	))
-	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), parent.metricAttrs(
-		attribute.String("parent.mode", parentMode),
-	))
+	)...)
+	parent.Metrics.SubagentTokensInput.Add(ctx, int64(runTrace.TokenUsage.Input), tokenAttrs)
+	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), tokenAttrs)
 	if runTrace.TokenUsage.CacheRead > 0 {
-		parent.Metrics.SubagentTokensCacheRead.Add(ctx, int64(runTrace.TokenUsage.CacheRead), parent.metricAttrs(
-			attribute.String("parent.mode", parentMode),
-		))
+		parent.Metrics.SubagentTokensCacheRead.Add(ctx, int64(runTrace.TokenUsage.CacheRead), tokenAttrs)
 	}
 	if runTrace.TokenUsage.CacheWrite > 0 {
-		parent.Metrics.SubagentTokensCacheWrite.Add(ctx, int64(runTrace.TokenUsage.CacheWrite), parent.metricAttrs(
-			attribute.String("parent.mode", parentMode),
-		))
+		parent.Metrics.SubagentTokensCacheWrite.Add(ctx, int64(runTrace.TokenUsage.CacheWrite), tokenAttrs)
 	}
 }
 

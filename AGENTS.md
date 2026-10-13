@@ -39,6 +39,8 @@ stirrup/
       guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
+      observability/otlp/    # OTLP exporter construction for traces, metrics, logs (endpoint, TLS, headers, HTTP client)
+      observability/platform/ # Platform profiles (traceEmitter.platform): registry, Resolve, Apply precedence, cloudwatch (SigV4), phoenix (OpenInference); the only package that names a vendor
       health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
       security/              # SecretStore, LogScrubber, input validation, judge-prompt data fences
       jsonextract/           # Nonce-bound JSON verdict extraction from free-form model output (guard + verifier)
@@ -266,9 +268,9 @@ Exceptions where external deps are accepted:
 
 - `github.com/spf13/cobra` for CLI framework
 - `github.com/santhosh-tekuri/jsonschema/v6` for full JSON Schema validation
-- `aws-sdk-go-v2` for Bedrock, STS, and SSM SecretStore
+- `aws-sdk-go-v2` for Bedrock, STS, SSM SecretStore, and the `cloudwatch` observability profile's SigV4 signing
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport
-- `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace and metrics (gRPC and HTTP/protobuf)
+- `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry traces, metrics, and logs (gRPC and HTTP/protobuf)
 - `golang.org/x/oauth2` for GCP ADC, GCP service-account JWT flow, and WIF token refresh
 - `github.com/cedar-policy/cedar-go` for the Cedar policy engine (`policy-engine` PermissionPolicy)
 - `github.com/hashicorp/hcl/v2` for eval suite HCL parsing (eval module only)

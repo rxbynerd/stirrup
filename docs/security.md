@@ -59,7 +59,12 @@ covering:
 - Slack tokens
 - GCP API keys and OAuth2 access tokens
 - Key/value-anchored Azure storage keys
-- Bearer tokens including JWTs (Authorization headers; Basic auth)
+- Bearer tokens including JWTs (Authorization headers)
+- Basic-auth credentials (`Basic <base64>`), redacted only when the
+  payload decodes to bytes containing the `user:password` colon, so
+  prose such as "basic documentation" is left intact. A payload cut off
+  mid-token is still redacted. A payload with no colon, such as a bare
+  vendor API key sent as the whole Basic value, is not recognised
 - PEM-encoded private keys
 - API-key header values
 - Key/value-anchored 32-character hex secrets
@@ -69,6 +74,12 @@ Because the scrubber sits at the `slog.Handler` boundary, it is
 defence in depth against recognised credential formats — it runs
 before any handler (JSON, text, OTel log exporter) sees the
 attribute. A secret with no recognisable format is not redacted.
+
+The `user:password` check on Basic-auth matches runs in the log
+scrubber, which also covers captured OTel span content, and in the
+Rule-of-Two detector. The code scanner's hardcoded-secret rules reuse
+the same pattern set without that check, so they still match prose such
+as "basic documentation" in a written file (issue #773).
 
 ### Command-output scrub-on-write
 

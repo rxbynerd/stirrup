@@ -69,9 +69,9 @@ for a provider that does not report them. A single run can mix
 provider-reported and estimated turns, so the aggregate carries no
 source flag. Per turn, the source is visible on the `turn completed`
 log line (`tokens.input_reported`), on the `provider.stream` span
-(`tokens.input_reported`), and on the OTel `turn[N]` span
+(`tokens.input_reported`), and on the OTel `chat {model}` span
 (`stirrup.tokens.input_reported`, see
-[`observability-cloud.md`](observability-cloud.md#token-usage-on-turn-spans)).
+[`observability-cloud.md`](observability-cloud.md#token-usage-on-chat-spans)).
 The `provider.stream` span carries `tokens.cache_read`,
 `tokens.cache_write`, and `tokens.reasoning` only when non-zero; the
 log line always carries all three.
