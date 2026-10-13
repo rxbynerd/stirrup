@@ -9,9 +9,9 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// sessionIDKey is the general semconv session attribute. Backends that
-// group spans into sessions (CloudWatch, Langfuse) read it rather than
-// gen_ai.conversation.id, so both carry the session name.
+// sessionIDKey is the general semconv session attribute. Some backends
+// group spans into sessions by it rather than by gen_ai.conversation.id,
+// so both carry the session name.
 const sessionIDKey = "session.id"
 
 const (
