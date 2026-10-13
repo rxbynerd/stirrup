@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -58,7 +59,12 @@ type SignalDefaults struct {
 
 // Deps carries the external dependencies a profile builder may use. The
 // zero value selects the production implementations.
-type Deps struct{}
+type Deps struct {
+	// LoadAWSConfig resolves the AWS SDK configuration through the default
+	// credential chain, pinned to region when it is non-empty. Nil uses
+	// config.LoadDefaultConfig.
+	LoadAWSConfig func(ctx context.Context, region string) (aws.Config, error)
+}
 
 // definition describes one registered platform: the option keys it
 // accepts (true marks a required key) and the builder that turns validated
@@ -70,7 +76,9 @@ type definition struct {
 
 // registry maps each traceEmitter.platform value to its definition. Its
 // keys must equal types.ValidTraceEmitterPlatformValues().
-var registry = map[string]definition{}
+var registry = map[string]definition{
+	"cloudwatch": cloudwatchDefinition,
+}
 
 // Resolve validates opts against the named platform and builds its
 // Profile. The empty name selects no platform and returns the zero
