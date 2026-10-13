@@ -2183,3 +2183,80 @@ func TestRunTraceToProto_StructuredOutputRoundTrip(t *testing.T) {
 		t.Errorf("structured_output = %q, want empty without a structured answer", bare.StructuredOutput)
 	}
 }
+
+// TestRunConfigFromProto_CommandOutputPreserved pins every
+// tools.commandOutput field through the wire format so a config arriving
+// over task_assignment keeps its compliance-capture bounds.
+func TestRunConfigFromProto_CommandOutputPreserved(t *testing.T) {
+	disabled := false
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			CommandOutput: &pb.CommandOutputConfig{
+				Enabled:               &disabled,
+				FailurePosture:        types.CommandOutputPostureBestEffort,
+				InlineMaxBytes:        1 << 14,
+				PreviewBytesPerStream: 1 << 11,
+				MaxBytesPerStream:     1 << 24,
+				MaxBytesPerRun:        1 << 26,
+			},
+		},
+	}
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	got := runConfigFromProto(&decoded).Tools.CommandOutput
+	if got.Enabled == nil || *got.Enabled {
+		t.Fatalf("Enabled: got %v, want explicit false", got.Enabled)
+	}
+	want := types.CommandOutputConfig{
+		Enabled:               got.Enabled,
+		FailurePosture:        types.CommandOutputPostureBestEffort,
+		InlineMaxBytes:        1 << 14,
+		PreviewBytesPerStream: 1 << 11,
+		MaxBytesPerStream:     1 << 24,
+		MaxBytesPerRun:        1 << 26,
+	}
+	if got != want {
+		t.Errorf("CommandOutput: got %+v, want %+v", got, want)
+	}
+
+	*decoded.Tools.CommandOutput.Enabled = true
+	if *got.Enabled {
+		t.Error("translated Enabled aliases the proto message's bool")
+	}
+}
+
+// TestRunConfigFromProto_CommandOutputUnsetKeepsDefaults pins that an
+// absent command_output leaves the zero value, so capture stays enabled
+// with the documented defaults.
+func TestRunConfigFromProto_CommandOutputUnsetKeepsDefaults(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{BuiltIn: []string{"run_command"}}})
+	if rc.Tools.CommandOutput != (types.CommandOutputConfig{}) {
+		t.Errorf("CommandOutput: got %+v, want zero value", rc.Tools.CommandOutput)
+	}
+	if !rc.Tools.CommandOutputCaptureEnabled() {
+		t.Error("capture must default to enabled when command_output is unset")
+	}
+}
+
+// TestRunConfigFromProto_MaxResultBytesPreserved pins the tools.maxResultBytes
+// mirror through the wire format.
+func TestRunConfigFromProto_MaxResultBytesPreserved(t *testing.T) {
+	raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{MaxResultBytes: 65536}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := runConfigFromProto(&decoded).Tools.MaxResultBytes; got != 65536 {
+		t.Errorf("MaxResultBytes: got %d, want 65536", got)
+	}
+}

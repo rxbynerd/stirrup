@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -29,7 +30,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	run := RunCommandToolWithStore(exec, store, cfg)
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 1, ToolUseID: "inline"})
 	inline, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"printf 12345"}`))
 	if err != nil {
@@ -55,7 +56,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 		t.Fatalf("structured=%+v", result)
 	}
 
-	reader := ReadCommandOutputTool(store, exec)
+	reader := ReadCommandOutputTool(store, exec, types.DefaultToolMaxResultBytes)
 	readCtx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 3, ToolUseID: "reader"})
 	input, _ := json.Marshal(map[string]any{"ref": result.StdoutRef, "offset": 1, "limit": 3})
 	chunk, err := reader.StructuredHandler(readCtx, input)
@@ -84,7 +85,7 @@ func TestRunCommandTimeoutReturnsCapturedErrorResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	run := RunCommandToolWithStore(exec, store, cfg)
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run-timeout", ToolUseID: "timeout"})
 	input := json.RawMessage([]byte("{\"command\":\"printf partial; sleep 5\",\"timeout\":1}"))
 	result, err := run.StructuredHandler(ctx, input)
@@ -115,14 +116,14 @@ func TestCommandOutputReplayUsesRecordedModelVisibleResultsVerbatim(t *testing.T
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	runResult, err := RunCommandToolWithStore(replay, store, types.CommandOutputConfig{}).StructuredHandler(context.Background(), runInput)
+	runResult, err := RunCommandToolWithStore(replay, store, types.CommandOutputConfig{}, types.DefaultToolMaxResultBytes).StructuredHandler(context.Background(), runInput)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if runResult.Text != "recorded initial preview" {
 		t.Fatalf("run replay=%q", runResult.Text)
 	}
-	readResult, err := ReadCommandOutputTool(store, replay).StructuredHandler(context.Background(), readInput)
+	readResult, err := ReadCommandOutputTool(store, replay, types.DefaultToolMaxResultBytes).StructuredHandler(context.Background(), readInput)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestRunCommandCaptureTimeoutKeepsSoftOutcomeMarker(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "timeout", Turn: 1, ToolUseID: "slow"})
-	got, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 30","timeout":1}`))
+	got, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 30","timeout":1}`))
 	if err != nil {
 		t.Fatalf("unexpected hard error for a timeout: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestRunCommandSpoolsScrubbedBytesForRealCommand(t *testing.T) {
 	secret := "gh" + "p_runCommandFixture0123456789"
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "scrub", ToolUseID: "cmd"})
 	input, _ := json.Marshal(map[string]any{"command": "printf 'token=" + secret + "\\n'"})
-	result, err := RunCommandToolWithStore(exec, store, cfg).StructuredHandler(ctx, input)
+	result, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,5 +230,93 @@ func TestRunCommandSpoolsScrubbedBytesForRealCommand(t *testing.T) {
 	}
 	if !redacted {
 		t.Fatal("no archive member carries the redaction, so the assertion proved nothing")
+	}
+}
+
+func TestReadCommandOutputFitsWithinMaxResultBytes(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := types.CommandOutputConfig{InlineMaxBytes: 16, PreviewBytesPerStream: 16, MaxBytesPerStream: 1 << 20, MaxBytesPerRun: 2 << 20}
+	store, err := commandoutput.New(commandoutput.Options{RunID: "run", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	run := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes)
+	if !run.SelfBoundedResult {
+		t.Fatal("run_command with a capture store must be self-bounded")
+	}
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", ToolUseID: "spill"})
+	// '<' JSON-encodes to six bytes, so the marshalled chunk is several
+	// times larger than the raw byte range.
+	spilled, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"head -c 131072 /dev/zero | tr '\\0' '<'"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result commandResult
+	if err := json.Unmarshal(spilled.Structured, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	const maxBytes = 2048
+	reader := ReadCommandOutputTool(store, exec, maxBytes)
+	if !reader.SelfBoundedResult {
+		t.Fatal("read_command_output must be self-bounded")
+	}
+	offset := int64(0)
+	for reads := 0; ; reads++ {
+		if reads > 2000 {
+			t.Fatal("pagination did not reach EOF")
+		}
+		readCtx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", ToolUseID: "reader"})
+		input, _ := json.Marshal(map[string]any{"ref": result.StdoutRef, "offset": offset, "limit": commandoutput.ReadMaxBytes})
+		chunk, err := reader.StructuredHandler(readCtx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(chunk.Text) > maxBytes {
+			t.Fatalf("chunk text is %d bytes, want <= %d", len(chunk.Text), maxBytes)
+		}
+		var payload commandOutputChunkResult
+		if err := json.Unmarshal(chunk.Structured, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Offset != offset || payload.EndOffset-payload.Offset != int64(len(payload.Content)) {
+			t.Fatalf("range [%d,%d) does not match %d content bytes at offset %d", payload.Offset, payload.EndOffset, len(payload.Content), offset)
+		}
+		if payload.EndOffset <= offset {
+			t.Fatalf("read made no progress at offset %d: %s", offset, chunk.Text)
+		}
+		offset = payload.EndOffset
+		if payload.EOF {
+			break
+		}
+	}
+	if offset != 131072 {
+		t.Fatalf("paginated %d bytes, want 131072", offset)
+	}
+}
+
+// TestFitCommandOutputChunk_CutsOnRuneBoundary checks that shortening a
+// chunk to fit the result budget never splits a multi-byte character.
+func TestFitCommandOutputChunk_CutsOnRuneBoundary(t *testing.T) {
+	content := []byte(strings.Repeat("€", 4000))
+	for _, budget := range []int{1 << 10, 1<<10 + 1, 1<<10 + 2, 4 << 10} {
+		read := commandoutput.ReadResult{Bytes: content, End: int64(len(content)), EOF: true, Stream: "stdout", Content: types.CommandOutputStreamRecord{ScrubbedBytes: int64(len(content))}}
+		got, structured, err := fitCommandOutputChunk("stirrup://command-output/x", read, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(structured) > budget {
+			t.Fatalf("budget %d: payload is %d bytes", budget, len(structured))
+		}
+		if !utf8.Valid(got.Bytes) || strings.ContainsRune(string(structured), utf8.RuneError) || strings.Contains(string(structured), `\ufffd`) {
+			t.Fatalf("budget %d: chunk was cut inside a character", budget)
+		}
+		if got.EOF || got.End != int64(len(got.Bytes)) {
+			t.Fatalf("budget %d: range not shortened: end %d, eof %t", budget, got.End, got.EOF)
+		}
 	}
 }

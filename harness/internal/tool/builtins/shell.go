@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -34,13 +35,15 @@ var runCommandSchema = json.RawMessage(`{
 
 // RunCommandTool returns a tool that executes a shell command in the workspace.
 func RunCommandTool(exec executor.Executor) *tool.Tool {
-	return RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{})
+	return RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{}, types.DefaultToolMaxResultBytes)
 }
 
 // RunCommandToolWithStore returns the compliance-capturing run_command tool.
-// A nil store preserves the legacy bounded path for embedders and unit-test
-// executors that do not expose streaming execution.
-func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store, cfg types.CommandOutputConfig) *tool.Tool {
+// A nil store selects the uncaptured path for embedders and executors that
+// do not expose streaming execution; that path bounds its text to
+// maxResultBytes (tools.maxResultBytes), keeping the head and tail of each
+// stream and the exit-code and timeout markers.
+func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store, cfg types.CommandOutputConfig, maxResultBytes int) *tool.Tool {
 	cfg = (types.ToolsConfig{CommandOutput: cfg}).EffectiveCommandOutput()
 	return &tool.Tool{
 		Name: "run_command",
@@ -55,6 +58,7 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
+		SelfBoundedResult: true,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			if res, found := replayResult(exec, "run_command", input); found {
 				return res, nil
@@ -97,9 +101,9 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 					if result == nil {
 						result = &executor.ExecResult{}
 					}
-					return buildCommandResult(result, timeoutSeconds, true)
+					return buildCommandResult(result, timeoutSeconds, true, maxResultBytes)
 				}
-				return buildCommandResult(result, timeoutSeconds, false)
+				return buildCommandResult(result, timeoutSeconds, false, maxResultBytes)
 			}
 
 			streaming, ok := exec.(executor.StreamingExecutor)
@@ -157,11 +161,22 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 	}
 }
 
-// buildCommandResult builds the StructuredResult for a run_command
-// invocation, covering both the clean-exit and timed-out cases. See
-// docs/architecture.md for the timeout/ExitCode contract.
-func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOut bool) (tool.StructuredResult, error) {
+// buildCommandResult builds the StructuredResult for an uncaptured
+// run_command invocation, covering both the clean-exit and timed-out cases.
+// Text longer than maxBytes is elided in the middle of each stream; the
+// structured envelope is dropped then because it would repeat the elided
+// output. See docs/architecture.md for the timeout/ExitCode contract.
+func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOut bool, maxBytes int) (tool.StructuredResult, error) {
 	stdout, stderr := security.Scrub(result.Stdout), security.Scrub(result.Stderr)
+	suffix := ""
+	if timedOut {
+		suffix = fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+	}
+	text, truncated := boundCommandText(stdout, stderr, result.ExitCode, suffix, maxBytes)
+	if truncated {
+		return tool.StructuredResult{Text: text}, nil
+	}
+
 	structured, marshalErr := json.Marshal(commandResult{
 		Stdout:         stdout,
 		Stderr:         stderr,
@@ -173,16 +188,55 @@ func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOu
 		return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 	}
 
-	text := formatRunCommand(stdout, stderr, result.ExitCode)
-	if timedOut {
-		text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
-	}
-
 	return tool.StructuredResult{
 		Text:       text,
 		Structured: structured,
 		Kind:       kindCommandResult,
 	}, nil
+}
+
+// boundCommandText renders formatRunCommand plus suffix within maxBytes. The
+// STDERR header, exit-code line and suffix are always kept; stderr is
+// guaranteed at least half of the remaining space when it needs it, and any
+// space one stream leaves unused passes to the other.
+func boundCommandText(stdout, stderr string, exitCode int, suffix string, maxBytes int) (string, bool) {
+	text := formatRunCommand(stdout, stderr, exitCode) + suffix
+	if len(text) <= maxBytes {
+		return text, false
+	}
+	avail := max(maxBytes-(len(text)-len(stdout)-len(stderr)), 0)
+	stderrShare := min(len(stderr), avail/2)
+	stdoutShare := min(len(stdout), avail-stderrShare)
+	stderrShare = min(len(stderr), avail-stdoutShare)
+	return formatRunCommand(elideMiddle(stdout, stdoutShare, "stdout"), elideMiddle(stderr, stderrShare, "stderr"), exitCode) + suffix, true
+}
+
+const elisionMarkerFmt = "\n[run_command %s truncated: %d of %d bytes omitted here]\n"
+
+// elideMiddle returns s within limit bytes, replacing its middle with a
+// marker and cutting on UTF-8 boundaries. When limit cannot hold the marker
+// it keeps only the tail, where failures are usually reported.
+func elideMiddle(s string, limit int, stream string) string {
+	if len(s) <= limit {
+		return s
+	}
+	keep := limit - len(fmt.Sprintf(elisionMarkerFmt, stream, len(s), len(s)))
+	if keep <= 0 {
+		start := len(s) - limit
+		for start < len(s) && !utf8.RuneStart(s[start]) {
+			start++
+		}
+		return s[start:]
+	}
+	headEnd := keep / 2
+	for headEnd > 0 && !utf8.RuneStart(s[headEnd]) {
+		headEnd--
+	}
+	tailStart := len(s) - (keep - keep/2)
+	for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+		tailStart++
+	}
+	return s[:headEnd] + fmt.Sprintf(elisionMarkerFmt, stream, tailStart-headEnd, len(s)) + s[tailStart:]
 }
 
 func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, timeoutSeconds int) (string, bool) {
@@ -259,14 +313,17 @@ func replayResult(exec executor.Executor, name string, input json.RawMessage) (t
 }
 
 // ReadCommandOutputTool returns a read-only, approval-free paginator over
-// scrubbed command streams.
-func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *tool.Tool {
+// scrubbed command streams. Each response is shortened to fit within
+// maxResultBytes (tools.maxResultBytes); end_offset reports where it stopped.
+func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor, maxResultBytes int) *tool.Tool {
 	return &tool.Tool{
 		Name: "read_command_output",
 		Description: fmt.Sprintf(
-			"Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to %d KiB and permits at most %d KiB per call.",
+			"Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to %d KiB and permits at most %d KiB per call. "+
+				"A response may stop short of the requested limit to fit the tool result size limit; continue from its end_offset.",
 			commandoutput.ReadDefaultBytes>>10, commandoutput.ReadMaxBytes>>10),
-		InputSchema: readCommandOutputSchema,
+		InputSchema:       readCommandOutputSchema,
+		SelfBoundedResult: true,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			if res, found := replayResult(exec, "read_command_output", input); found {
 				return res, nil
@@ -283,8 +340,7 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
-			payload := commandOutputChunkResult{Reference: params.Ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
-			structured, err := json.Marshal(payload)
+			read, structured, err := fitCommandOutputChunk(params.Ref, read, maxResultBytes)
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
@@ -295,6 +351,43 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *
 			}
 			return tool.StructuredResult{Text: text, Structured: structured, Kind: kindCommandOutputChunk}, nil
 		},
+	}
+}
+
+// fitCommandOutputChunk marshals the read_command_output payload for read,
+// dropping trailing content bytes, on a UTF-8 boundary where one exists,
+// until the JSON fits within maxBytes. The returned ReadResult carries the
+// shortened range so the access ledger records exactly what the model
+// received.
+func fitCommandOutputChunk(ref string, read commandoutput.ReadResult, maxBytes int) (commandoutput.ReadResult, []byte, error) {
+	for {
+		payload := commandOutputChunkResult{Reference: ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
+		structured, err := json.Marshal(payload)
+		if err != nil {
+			return read, nil, err
+		}
+		over := len(structured) - maxBytes
+		if over <= 0 || len(read.Bytes) == 0 {
+			return read, structured, nil
+		}
+		// JSON escaping expands some bytes up to six-fold, so shrink in
+		// proportion to the encoded content length rather than by the raw
+		// overshoot.
+		encoded, err := json.Marshal(payload.Content)
+		if err != nil {
+			return read, nil, err
+		}
+		keep := len(read.Bytes) * max(len(encoded)-over, 0) / len(encoded)
+		keep = min(keep, len(read.Bytes)-1)
+		for cut := keep; cut > 0; cut-- {
+			if utf8.RuneStart(read.Bytes[cut]) {
+				keep = cut
+				break
+			}
+		}
+		read.Bytes = read.Bytes[:keep]
+		read.End = read.Offset + int64(keep)
+		read.EOF = read.End >= read.Content.ScrubbedBytes
 	}
 }
 

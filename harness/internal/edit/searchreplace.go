@@ -86,7 +86,7 @@ func (s *SearchReplaceStrategy) Apply(ctx context.Context, input json.RawMessage
 		return &EditResult{
 			Path:    params.Path,
 			Applied: false,
-			Error:   "old_string not found in file",
+			Error:   notFoundMessage(params.Path, content, params.OldString),
 		}, nil
 	}
 	if count > 1 {

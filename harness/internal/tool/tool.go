@@ -83,6 +83,12 @@ type Tool struct {
 	// MCP-imported tools leave it nil.
 	InputExamples []json.RawMessage
 
+	// SelfBoundedResult marks a tool whose handler bounds its own
+	// model-visible text and records that exact text for compliance.
+	// Dispatch passes such a result through without applying
+	// tools.maxResultBytes, so the recorded and delivered text agree.
+	SelfBoundedResult bool
+
 	// Annotations, when non-nil, supplies MCP-style behavioural hints
 	// verbatim and overrides the hints Definition() would otherwise derive
 	// from WorkspaceMutating. The MCP bridge sets it to the server-declared

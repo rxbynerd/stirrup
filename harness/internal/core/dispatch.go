@@ -236,8 +236,21 @@ func (l *AgenticLoop) planAndDispatch(
 	// tool_result sequence both depend on this ordering.
 	toolResults := make([]types.ToolResult, len(toolCalls))
 	toolRecords := make([]types.ToolCallRecord, len(toolCalls))
+	resultBudget := config.Tools.EffectiveMaxResultBytes()
 	for i := range plan {
 		p := &plan[i]
+		// Sync and async results converge here, so this is the single
+		// point that bounds what reaches history, trace and transport. A
+		// cut result drops its structured envelope, which would otherwise
+		// repeat the omitted data.
+		if p.tool == nil || !p.tool.SelfBoundedResult {
+			if bounded, cut := boundToolResult(p.output, resultBudget, p.internalName); cut {
+				p.span.Span().SetAttributes(attribute.Int("tool.output_truncated_from", len(p.output)))
+				p.output = bounded
+				p.structured = structuredOutput{}
+			}
+		}
+
 		callDuration := p.duration()
 		callTrace := p.toolCallTrace(callDuration)
 		internalForTrace := callTrace.InternalName

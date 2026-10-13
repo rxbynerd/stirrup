@@ -66,13 +66,14 @@ type commandOutputChunkResult struct {
 	RedactionCount int    `json:"redaction_count,omitempty"`
 }
 
-// searchMatch is a single hit from grep_files. Text is the full matched line,
-// verbatim.
+// searchMatch is a single hit from grep_files. Text is the matched line,
+// verbatim up to maxLineBytes; a longer line is shortened by capLine.
 //
-// Column is the 1-indexed *byte* offset of the leftmost match on the line —
-// ripgrep's convention, not a rune or display column, so a multi-byte prefix
-// counts its bytes. A line matching several times yields one entry, positioned
-// at the first span. A zero-width match at end of line gives len(Text)+1.
+// Column is the 1-indexed *byte* offset of the leftmost match on the original
+// line — ripgrep's convention, not a rune or display column, so a multi-byte
+// prefix counts its bytes. A line matching several times yields one entry,
+// positioned at the first span. A zero-width match at end of line gives the
+// original line length plus one.
 // It is present only on the rg --json search path; every other search path
 // omits it (column 0).
 //
@@ -108,8 +109,9 @@ type findResult struct {
 // rendering. Truncated reports whether the file had more lines than the
 // returned window (start_line+limit did not reach end of file). Lines holds
 // the excerpt content without the line-number prefixes the text rendering
-// adds. PastEOF is set when start_line was beyond the end of the file, in
-// which case Lines is empty and the text rendering is the past-EOF notice.
+// adds, each shortened by capLine as in the text. PastEOF is set when
+// start_line was beyond the end of the file, in which case Lines is empty
+// and the text rendering is the past-EOF notice.
 type fileExcerpt struct {
 	Path      string   `json:"path"`
 	StartLine int      `json:"start_line"`

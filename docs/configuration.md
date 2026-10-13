@@ -700,6 +700,7 @@ configuration space — the common cases. Anything below requires
 | `tools.mcpServers` | Remote MCP server registration. |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
 | `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
+| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command` and `read_command_output` bound their own output and are exempt. |
 | `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.

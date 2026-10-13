@@ -651,7 +651,8 @@ func dynamicContextFromProto(pc map[string]*pb.DynamicContextValue) map[string]t
 
 func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	tc := types.ToolsConfig{
-		BuiltIn: pc.BuiltIn,
+		BuiltIn:        pc.BuiltIn,
+		MaxResultBytes: int(pc.MaxResultBytes),
 	}
 	for _, srv := range pc.McpServers {
 		tc.MCPServers = append(tc.MCPServers, types.MCPServerConfig{
@@ -670,6 +671,19 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			TimeoutSeconds:   int(ct.TimeoutSeconds),
 			RequiresApproval: ct.RequiresApproval,
 		})
+	}
+	if co := pc.CommandOutput; co != nil {
+		tc.CommandOutput = types.CommandOutputConfig{
+			FailurePosture:        co.FailurePosture,
+			InlineMaxBytes:        co.InlineMaxBytes,
+			PreviewBytesPerStream: co.PreviewBytesPerStream,
+			MaxBytesPerStream:     co.MaxBytesPerStream,
+			MaxBytesPerRun:        co.MaxBytesPerRun,
+		}
+		if co.Enabled != nil {
+			enabled := *co.Enabled
+			tc.CommandOutput.Enabled = &enabled
+		}
 	}
 	return tc
 }
