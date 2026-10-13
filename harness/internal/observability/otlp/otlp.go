@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -46,8 +47,9 @@ type Settings struct {
 	Protocol string
 
 	// Endpoint is host:port or an http(s):// URL. An "https://" scheme
-	// always selects TLS; "http://" or no scheme selects plaintext. For
-	// OTLP/HTTP a URL path is kept as a gateway prefix and the signal
+	// always selects TLS and "http://" or no scheme selects plaintext,
+	// overriding any OTEL_EXPORTER_OTLP_* endpoint or insecure variable.
+	// For OTLP/HTTP a URL path is kept as a gateway prefix and the signal
 	// segment is appended to it. Empty defers to the SDK's
 	// OTEL_EXPORTER_OTLP_* environment variables and defaults.
 	Endpoint string
@@ -92,27 +94,38 @@ func temporalitySelector(t string) (sdkmetric.TemporalitySelector, error) {
 
 // endpoint is Settings.Endpoint split into the pieces the SDK options take.
 type endpoint struct {
-	host     string
+	// url is the normalised "scheme://host[:port]" passed to the SDK's
+	// WithEndpointURL, which sets the TLS mode from the scheme after the
+	// OTEL_EXPORTER_OTLP_* environment has been applied.
+	url      string
 	basePath string
-	insecure bool
 }
 
-func parseEndpoint(raw string) endpoint {
-	ep := endpoint{insecure: true}
-	rest := raw
+// parseEndpoint rejects anything but a plain http(s) host and path. Errors
+// never echo the input, which may carry credentials.
+func parseEndpoint(raw string) (endpoint, error) {
+	normalised := raw
+	if !strings.Contains(raw, "://") {
+		normalised = "http://" + raw
+	}
+	u, err := url.Parse(normalised)
+	if err != nil {
+		return endpoint{}, errors.New("OTLP endpoint is not a valid host:port or URL")
+	}
 	switch {
-	case strings.HasPrefix(raw, "https://"):
-		rest = strings.TrimPrefix(raw, "https://")
-		ep.insecure = false
-	case strings.HasPrefix(raw, "http://"):
-		rest = strings.TrimPrefix(raw, "http://")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return endpoint{}, errors.New("OTLP endpoint scheme must be http or https")
+	case u.Host == "":
+		return endpoint{}, errors.New("OTLP endpoint has no host")
+	case u.User != nil:
+		return endpoint{}, errors.New("OTLP endpoint must not carry userinfo; send credentials as headers")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return endpoint{}, errors.New("OTLP endpoint must not carry a query or fragment")
 	}
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		ep.host, ep.basePath = rest[:i], rest[i:]
-	} else {
-		ep.host = rest
-	}
-	return ep
+	return endpoint{
+		url:      u.Scheme + "://" + u.Host,
+		basePath: u.Path,
+	}, nil
 }
 
 // urlPath returns the OTLP/HTTP request path for sig under basePath,
@@ -137,20 +150,28 @@ func (s Settings) useGRPC() (bool, error) {
 	}
 }
 
+// endpoint parses s.Endpoint. The zero endpoint means none is configured.
+func (s Settings) endpoint() (endpoint, error) {
+	if s.Endpoint == "" {
+		return endpoint{}, nil
+	}
+	return parseEndpoint(s.Endpoint)
+}
+
 // NewTraceExporter returns the OTLP span exporter described by s.
 func NewTraceExporter(ctx context.Context, s Settings) (sdktrace.SpanExporter, error) {
 	grpc, err := s.useGRPC()
 	if err != nil {
 		return nil, err
 	}
+	ep, err := s.endpoint()
+	if err != nil {
+		return nil, err
+	}
 	if grpc {
 		var opts []otlptracegrpc.Option
-		if s.Endpoint != "" {
-			ep := parseEndpoint(s.Endpoint)
-			opts = append(opts, otlptracegrpc.WithEndpoint(ep.host))
-			if ep.insecure {
-				opts = append(opts, otlptracegrpc.WithInsecure())
-			}
+		if ep.url != "" {
+			opts = append(opts, otlptracegrpc.WithEndpointURL(ep.url))
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlptracegrpc.WithHeaders(s.Headers))
@@ -158,15 +179,11 @@ func NewTraceExporter(ctx context.Context, s Settings) (sdktrace.SpanExporter, e
 		return otlptracegrpc.New(ctx, opts...)
 	}
 	var opts []otlptracehttp.Option
-	if s.Endpoint != "" {
-		ep := parseEndpoint(s.Endpoint)
+	if ep.url != "" {
 		opts = append(opts,
-			otlptracehttp.WithEndpoint(ep.host),
+			otlptracehttp.WithEndpointURL(ep.url),
 			otlptracehttp.WithURLPath(SignalTraces.urlPath(ep.basePath)),
 		)
-		if ep.insecure {
-			opts = append(opts, otlptracehttp.WithInsecure())
-		}
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(s.Headers))
@@ -183,18 +200,18 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 	if err != nil {
 		return nil, err
 	}
+	ep, err := s.endpoint()
+	if err != nil {
+		return nil, err
+	}
 	selector, err := temporalitySelector(s.Temporality)
 	if err != nil {
 		return nil, err
 	}
 	if grpc {
 		var opts []otlpmetricgrpc.Option
-		if s.Endpoint != "" {
-			ep := parseEndpoint(s.Endpoint)
-			opts = append(opts, otlpmetricgrpc.WithEndpoint(ep.host))
-			if ep.insecure {
-				opts = append(opts, otlpmetricgrpc.WithInsecure())
-			}
+		if ep.url != "" {
+			opts = append(opts, otlpmetricgrpc.WithEndpointURL(ep.url))
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlpmetricgrpc.WithHeaders(s.Headers))
@@ -205,15 +222,11 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 		return otlpmetricgrpc.New(ctx, opts...)
 	}
 	var opts []otlpmetrichttp.Option
-	if s.Endpoint != "" {
-		ep := parseEndpoint(s.Endpoint)
+	if ep.url != "" {
 		opts = append(opts,
-			otlpmetrichttp.WithEndpoint(ep.host),
+			otlpmetrichttp.WithEndpointURL(ep.url),
 			otlpmetrichttp.WithURLPath(SignalMetrics.urlPath(ep.basePath)),
 		)
-		if ep.insecure {
-			opts = append(opts, otlpmetrichttp.WithInsecure())
-		}
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(s.Headers))
@@ -233,14 +246,14 @@ func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
+	ep, err := s.endpoint()
+	if err != nil {
+		return nil, err
+	}
 	if grpc {
 		var opts []otlploggrpc.Option
-		if s.Endpoint != "" {
-			ep := parseEndpoint(s.Endpoint)
-			opts = append(opts, otlploggrpc.WithEndpoint(ep.host))
-			if ep.insecure {
-				opts = append(opts, otlploggrpc.WithInsecure())
-			}
+		if ep.url != "" {
+			opts = append(opts, otlploggrpc.WithEndpointURL(ep.url))
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlploggrpc.WithHeaders(s.Headers))
@@ -248,15 +261,11 @@ func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 		return otlploggrpc.New(ctx, opts...)
 	}
 	var opts []otlploghttp.Option
-	if s.Endpoint != "" {
-		ep := parseEndpoint(s.Endpoint)
+	if ep.url != "" {
 		opts = append(opts,
-			otlploghttp.WithEndpoint(ep.host),
+			otlploghttp.WithEndpointURL(ep.url),
 			otlploghttp.WithURLPath(SignalLogs.urlPath(ep.basePath)),
 		)
-		if ep.insecure {
-			opts = append(opts, otlploghttp.WithInsecure())
-		}
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlploghttp.WithHeaders(s.Headers))

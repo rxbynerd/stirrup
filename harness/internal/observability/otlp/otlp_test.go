@@ -128,16 +128,59 @@ func TestParseEndpoint(t *testing.T) {
 		raw  string
 		want endpoint
 	}{
-		{"localhost:4317", endpoint{host: "localhost:4317", insecure: true}},
-		{"http://collector:4318", endpoint{host: "collector:4318", insecure: true}},
-		{"https://gateway.example", endpoint{host: "gateway.example"}},
-		{"https://gateway.example/otlp", endpoint{host: "gateway.example", basePath: "/otlp"}},
-		{"http://collector:4318/prefix/", endpoint{host: "collector:4318", basePath: "/prefix/", insecure: true}},
-		{"collector:4318/prefix", endpoint{host: "collector:4318", basePath: "/prefix", insecure: true}},
+		{"localhost:4317", endpoint{url: "http://localhost:4317"}},
+		{"http://collector:4318", endpoint{url: "http://collector:4318"}},
+		{"https://gateway.example", endpoint{url: "https://gateway.example"}},
+		{"https://gateway.example/otlp", endpoint{url: "https://gateway.example", basePath: "/otlp"}},
+		{"HTTPS://gateway.example/otlp", endpoint{url: "https://gateway.example", basePath: "/otlp"}},
+		{"http://collector:4318/prefix/", endpoint{url: "http://collector:4318", basePath: "/prefix/"}},
+		{"collector:4318/prefix", endpoint{url: "http://collector:4318", basePath: "/prefix"}},
 	}
 	for _, tc := range cases {
-		if got := parseEndpoint(tc.raw); got != tc.want {
+		got, err := parseEndpoint(tc.raw)
+		if err != nil {
+			t.Errorf("parseEndpoint(%q): %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
 			t.Errorf("parseEndpoint(%q) = %+v, want %+v", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestParseEndpoint_RejectsWithoutEchoingInput(t *testing.T) {
+	cases := []string{
+		"ftp://collector:4318",
+		"grpcs://collector:4317",
+		"https://",
+		"https://user:SEKRIT@collector",
+		"https://collector/otlp?token=SEKRIT",
+		"https://collector/otlp#SEKRIT",
+		"http://collector:4318/%zz",
+	}
+	for _, raw := range cases {
+		_, err := parseEndpoint(raw)
+		if err == nil {
+			t.Errorf("parseEndpoint(%q): want an error", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "SEKRIT") {
+			t.Errorf("parseEndpoint(%q) error %q echoes the input", raw, err)
+		}
+	}
+}
+
+func TestConstructors_RejectInvalidEndpoint(t *testing.T) {
+	ctx := context.Background()
+	for _, protocol := range []string{ProtocolGRPC, ProtocolHTTPProtobuf} {
+		s := Settings{Protocol: protocol, Endpoint: "ftp://collector:4318"}
+		_, traceErr := NewTraceExporter(ctx, s)
+		_, metricErr := NewMetricExporter(ctx, s)
+		_, logErr := NewLogExporter(ctx, s)
+		for name, err := range map[string]error{"trace": traceErr, "metric": metricErr, "log": logErr} {
+			if err == nil || !strings.Contains(err.Error(), "scheme must be http or https") {
+				t.Errorf("%s exporter (%s): err = %v, want a scheme error", name, protocol, err)
+			}
 		}
 	}
 }

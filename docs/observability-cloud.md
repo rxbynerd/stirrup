@@ -492,10 +492,17 @@ that prefix). Honeycomb expects no extra path; their gateway routes
 on the dataset header.
 
 TLS is on by default for `https://` URLs. The exporter falls back to
-plaintext (`WithInsecure()`) only for `http://` URLs or scheme-less
-endpoints (the typical local-collector flow). An `https://` URL never
-silently downgrades. The rule is the same for every signal and both
-protocols, so an `https://` gRPC endpoint also dials with TLS.
+plaintext only for `http://` URLs or scheme-less endpoints (the
+typical local-collector flow). The scheme of a configured endpoint
+decides the TLS mode even when the environment says otherwise: an
+`https://` URL never silently downgrades, including when a sidecar
+injector sets `OTEL_EXPORTER_OTLP_INSECURE=true` or an `http://`
+`OTEL_EXPORTER_OTLP_ENDPOINT`. The rule is the same for every signal
+and both protocols, so an `https://` gRPC endpoint also dials with
+TLS. The scheme is matched case-insensitively. An endpoint with any
+other scheme, embedded `user:password@` credentials, a query string,
+or a fragment fails exporter construction; credentials belong in
+`traceEmitter.headers`.
 
 ## Kubernetes Job — native HTTP, no Alloy sidecar
 
