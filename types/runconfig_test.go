@@ -6310,6 +6310,36 @@ func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
 	}
 }
 
+// TestValidateExecutorWorkspaceExportTo_ArchiverTable pins that the export
+// destination is accepted exactly for the executor types that can archive
+// their workspace, so a new executor type cannot silently pass validation
+// and then export nothing.
+func TestValidateExecutorWorkspaceExportTo_ArchiverTable(t *testing.T) {
+	for typ := range validExecutorTypes {
+		if _, ok := executorWorkspaceArchiver[typ]; !ok {
+			t.Errorf("executor type %q has no executorWorkspaceArchiver entry", typ)
+		}
+		t.Run(typ, func(t *testing.T) {
+			var errs []string
+			validateExecutorWorkspaceExportTo(ExecutorConfig{Type: typ, WorkspaceExportTo: "gs://bucket/path"}, &errs)
+			want := ExecutorCanArchiveWorkspace(typ)
+			if want && len(errs) != 0 {
+				t.Errorf("archiver executor %q rejected: %v", typ, errs)
+			}
+			if !want {
+				if len(errs) != 1 || !strings.Contains(errs[0], "cannot archive its workspace") {
+					t.Errorf("non-archiver executor %q: errs = %v, want one cannot-archive rejection", typ, errs)
+				}
+			}
+		})
+	}
+	for _, typ := range []string{"local", "container", "k8s", "k8s-sandbox"} {
+		if !ExecutorCanArchiveWorkspace(typ) {
+			t.Errorf("ExecutorCanArchiveWorkspace(%q) = false, want true", typ)
+		}
+	}
+}
+
 func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *testing.T) {
 	c := validConfig()
 	// validConfig sets no Executor; assign just WorkspaceExportTo.

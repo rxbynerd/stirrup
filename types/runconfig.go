@@ -946,11 +946,13 @@ type ExecutorConfig struct {
 	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
 
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
-	// executor's workspace at the end of every run, before "done", and
-	// upload it to the named URI. Currently only "gs://bucket/path" is
-	// accepted. A workspace with no files uploads an empty archive and
-	// reports export status "empty"; a missing workspace is an export
-	// failure.
+	// executor's workspace at the end of every run, before "done",
+	// archived inside the executor's own boundary, and upload it to the
+	// named URI. Currently only "gs://bucket/path" is accepted, and only
+	// for executors that can archive their workspace (see
+	// ExecutorCanArchiveWorkspace). A workspace with no files uploads an
+	// empty archive and reports export status "empty"; a missing workspace
+	// root is an export failure.
 	// Future S3 / Azure Blob support will broaden the scheme set.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 
@@ -1729,6 +1731,28 @@ var executorExecCapable = map[string]bool{
 // fail at runtime.
 func ExecutorCanExec(executorType string) bool {
 	return executorExecCapable[executorType]
+}
+
+// executorWorkspaceArchiver is the types-side mirror of which executors
+// implement harness/internal/executor.WorkspaceArchiver, the capability
+// workspace export reads the sandbox through. A parity test in the executor
+// package pins it against the implementations. "" maps to the factory's
+// default (local) executor.
+var executorWorkspaceArchiver = map[string]bool{
+	"":            true,
+	"local":       true,
+	"container":   true,
+	"k8s":         true,
+	"k8s-sandbox": true,
+	"api":         false,
+	"none":        false,
+}
+
+// ExecutorCanArchiveWorkspace reports whether executorType can stream its
+// workspace as an archive, which executor.workspaceExportTo requires. A new
+// executor type must be added to executorWorkspaceArchiver.
+func ExecutorCanArchiveWorkspace(executorType string) bool {
+	return executorWorkspaceArchiver[executorType]
 }
 
 // validContainerRuntimes is the closed set of OCI runtimes the container
@@ -5560,18 +5584,14 @@ func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 		}
 		return
 	}
-	// Neither the api executor (read-only, backed by a VCS API) nor the
-	// none executor (no execution surface at all) has a workspace to
-	// export. Rejecting here catches a config-typo before the run
-	// no-ops at end-of-run with a silent skip.
-	if cfg.Type == "api" || cfg.Type == "none" {
-		*errs = append(*errs, fmt.Sprintf(
-			"executor.workspaceExportTo is not valid for executor.type=%q (%s executor has no workspace)",
-			cfg.Type, cfg.Type))
-		return
-	}
 	if cfg.Type == "" {
 		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api' or 'none'")
+		return
+	}
+	if !ExecutorCanArchiveWorkspace(cfg.Type) {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo is not valid for executor.type=%q (the %s executor cannot archive its workspace)",
+			cfg.Type, cfg.Type))
 		return
 	}
 	// Only gs:// is accepted today. Future S3 / Azure Blob support
