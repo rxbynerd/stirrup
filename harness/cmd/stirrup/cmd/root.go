@@ -301,25 +301,28 @@ var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 	})
 }
 
-// exportWorkspace tars + gzips the executor's workspace dir, uploads it
-// to dest and returns the exporter's receipt.
-func exportWorkspace(ctx context.Context, cfg *types.RunConfig, dest string) (types.ExportReceipt, error) {
+// exportWorkspace archives the run's workspace through exec, so the
+// tarball reflects the sandbox rather than the harness host, uploads it to
+// dest and returns the exporter's receipt.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exec executor.Executor, dest string) (types.ExportReceipt, error) {
+	failed := types.ExportReceipt{URI: dest, Status: types.ExportStatusFailed}
+	executorType := cfg.Executor.Type
+	if executorType == "" {
+		executorType = "local"
+	}
+	archiver, ok := exec.(executor.WorkspaceArchiver)
+	if !ok {
+		return failed, fmt.Errorf("export workspace to %s: the %s executor cannot archive its workspace", dest, executorType)
+	}
 	// v1 supports only the GCS exporter.
 	exp, err := newWorkspaceExporter()
 	if err != nil {
-		return types.ExportReceipt{URI: dest, Status: types.ExportStatusFailed}, fmt.Errorf("build workspace exporter: %w", err)
+		return failed, fmt.Errorf("build workspace exporter: %w", err)
 	}
 
-	workspaceDir := cfg.Executor.Workspace
-	if workspaceDir == "" {
-		// Mirrors the local executor's defaulting in factory.go.
-		wd, _ := os.Getwd()
-		workspaceDir = wd
-	}
-
-	receipt, err := exp.Export(ctx, workspaceDir, dest)
+	receipt, err := exp.Export(ctx, archiver, dest)
 	if err != nil {
-		return receipt, fmt.Errorf("export workspace to %s: %w", dest, err)
+		return receipt, fmt.Errorf("export workspace from %s executor to %s: %w", executorType, dest, err)
 	}
 	return receipt, nil
 }
@@ -334,7 +337,7 @@ type workspaceHandoff struct {
 
 var _ core.WorkspaceHandoff = workspaceHandoff{}
 
-func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, _ executor.Executor) (*types.ExportReceipt, error) {
+func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, exec executor.Executor) (*types.ExportReceipt, error) {
 	dest := cfg.Executor.WorkspaceExportTo
 	if cfg.RunID != h.primaryRunID {
 		dest = followUpExportURI(dest, cfg.RunID)
@@ -342,7 +345,7 @@ func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, _ e
 	if dest == "" {
 		return nil, nil
 	}
-	receipt, err := exportWorkspace(ctx, cfg, dest)
+	receipt, err := exportWorkspace(ctx, cfg, exec, dest)
 	return &receipt, err
 }
 

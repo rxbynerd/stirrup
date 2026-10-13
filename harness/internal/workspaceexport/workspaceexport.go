@@ -4,40 +4,36 @@
 package workspaceexport
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/gcs"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// MaxArchiveBytes caps the uploaded tarball size, guarding against a
-// runaway workspace saturating upload bandwidth. Hard-coded for v1.
+// MaxArchiveBytes caps both the workspace's uncompressed tar stream and the
+// uploaded tarball, guarding against a runaway workspace exhausting memory
+// or upload bandwidth. Hard-coded for v1.
 const MaxArchiveBytes = 1 << 30
 
 // uploadTimeout bounds the GCS PUT round-trip.
 const uploadTimeout = 5 * time.Minute
 
-// Exporter uploads a workspace directory to a remote destination URI.
+// Exporter uploads an executor's workspace to a remote destination URI.
 type Exporter interface {
-	// Export tars + gzips workspaceDir and PUTs it to destURI. The
-	// receipt's Status is uploaded, empty (the workspace had no files; an
-	// empty archive was still uploaded) or failed. A non-nil error always
-	// comes with a failed receipt; a missing workspaceDir is an error.
-	Export(ctx context.Context, workspaceDir, destURI string) (types.ExportReceipt, error)
+	// Export archives src's workspace and uploads it to destURI as a
+	// gzipped tarball. The receipt's Status is uploaded, empty (the
+	// workspace had no files; an empty archive was still uploaded) or
+	// failed. A non-nil error always comes with a failed receipt, and a
+	// missing workspace root wraps executor.ErrWorkspaceRootMissing.
+	Export(ctx context.Context, src executor.WorkspaceArchiver, destURI string) (types.ExportReceipt, error)
 }
 
 // GCSExporter implements Exporter against a gs:// destination URI.
@@ -85,28 +81,19 @@ func NewGCSExporter(opts GCSExporterOptions) (*GCSExporter, error) {
 	}, nil
 }
 
-// Export tars + gzips workspaceDir into an in-memory buffer (subject
-// to MaxArchiveBytes) and uploads it to destURI, which must be a
-// gs:// URI.
-func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) (types.ExportReceipt, error) {
+// Export reads src's tar stream through repackArchive (subject to
+// MaxArchiveBytes), gzips it into memory and uploads it to destURI, which
+// must be a gs:// URI.
+func (e *GCSExporter) Export(ctx context.Context, src executor.WorkspaceArchiver, destURI string) (types.ExportReceipt, error) {
 	receipt := types.ExportReceipt{URI: destURI, Status: types.ExportStatusFailed}
 	bucket, object, err := parseGCSURI(destURI)
 	if err != nil {
 		return receipt, fmt.Errorf("workspace exporter: %w", err)
 	}
 
-	info, err := os.Stat(workspaceDir)
+	archive, err := archiveWorkspace(ctx, src, MaxArchiveBytes)
 	if err != nil {
-		return receipt, fmt.Errorf("workspace exporter: stat workspace %q: %w", workspaceDir, err)
-	}
-	if !info.IsDir() {
-		return receipt, fmt.Errorf("workspace exporter: workspace %q is not a directory", workspaceDir)
-	}
-
-	buf := &bytes.Buffer{}
-	files, err := writeTarGz(workspaceDir, buf, MaxArchiveBytes)
-	if err != nil {
-		return receipt, fmt.Errorf("workspace exporter: build tarball: %w", err)
+		return receipt, fmt.Errorf("workspace exporter: %w", err)
 	}
 
 	resolved, err := e.credentialSource.Resolve(ctx)
@@ -120,7 +107,7 @@ func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) 
 	if err := gcs.UploadObject(ctx, e.httpClient, gcs.UploadOptions{
 		Bucket:          bucket,
 		Object:          object,
-		Body:            buf.Bytes(),
+		Body:            archive.gz,
 		ContentType:     "application/gzip",
 		Bearer:          resolved.BearerToken,
 		EndpointBaseURL: e.endpointBaseURL,
@@ -128,12 +115,12 @@ func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) 
 		return receipt, fmt.Errorf("workspace exporter: upload tarball: %w", err)
 	}
 
-	sum := sha256.Sum256(buf.Bytes())
-	receipt.Bytes = int64(buf.Len())
+	sum := sha256.Sum256(archive.gz)
+	receipt.Bytes = int64(len(archive.gz))
 	receipt.SHA256 = hex.EncodeToString(sum[:])
-	receipt.Files = files
+	receipt.Files = archive.files
 	receipt.Status = types.ExportStatusUploaded
-	if files == 0 {
+	if archive.files == 0 {
 		receipt.Status = types.ExportStatusEmpty
 	}
 	return receipt, nil
@@ -186,166 +173,4 @@ func parseGCSURI(uri string) (bucket, object string, err error) {
 		return "", "", fmt.Errorf("destination URI %q: empty object path", uri)
 	}
 	return bucket, object, nil
-}
-
-// writeTarGz walks rootDir and writes a gzipped tar of every regular
-// file, symlink (recorded as a symlink entry, not followed), and
-// directory underneath it. Returns the number of non-directory entries
-// (regular files and symlinks) so the caller can distinguish an empty
-// archive from real content. Refuses any path that resolves outside rootDir; see
-// docs/security.md#path-traversal-prevention.
-func writeTarGz(rootDir string, w io.Writer, maxBytes int64) (int, error) {
-	absRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		return 0, fmt.Errorf("abs root %q: %w", rootDir, err)
-	}
-	// Resolved once at the root so a workspace passed via a symlink
-	// still has a stable trust boundary against intermediate escapes.
-	absRootResolved, err := filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return 0, fmt.Errorf("resolve root %q: %w", rootDir, err)
-	}
-
-	// Cap on compressed output, since that's what the GCS upload
-	// transmits.
-	limited := &limitWriter{w: w, max: maxBytes}
-	gz := gzip.NewWriter(limited)
-	tw := tar.NewWriter(gz)
-
-	files := 0
-	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Relative to the user-supplied rootDir, not the
-		// symlinks-resolved path, so the archive mirrors what the
-		// operator sees on disk.
-		archiveName, err := filepath.Rel(absRoot, path)
-		if err != nil {
-			return fmt.Errorf("relative path %q: %w", path, err)
-		}
-		if archiveName == "." {
-			return nil
-		}
-
-		if archiveName == ".." || strings.HasPrefix(archiveName, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("refusing path %q: escapes workspace root", path)
-		}
-
-		// A dangling symlink also trips EvalSymlinks with an error;
-		// treat that as a refusal too rather than skip the
-		// containment check, since it could otherwise smuggle a
-		// symlink-then-overwrite target past a downstream untar that
-		// dereferences links.
-		resolvedPath, evErr := filepath.EvalSymlinks(path)
-		if evErr != nil {
-			return fmt.Errorf("refusing path %q: cannot resolve symlink target: %w", path, evErr)
-		}
-		rel2, relErr := filepath.Rel(absRootResolved, resolvedPath)
-		if relErr == nil && (rel2 == ".." || strings.HasPrefix(rel2, ".."+string(filepath.Separator))) {
-			return fmt.Errorf("refusing path %q: resolves outside workspace root", path)
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("stat %q: %w", path, err)
-		}
-
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("readlink %q: %w", path, err)
-			}
-			hdr := &tar.Header{
-				Name:     filepath.ToSlash(archiveName),
-				Linkname: target,
-				Mode:     int64(info.Mode().Perm()),
-				ModTime:  info.ModTime(),
-				Typeflag: tar.TypeSymlink,
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return fmt.Errorf("write symlink header %q: %w", path, err)
-			}
-			files++
-
-		case info.IsDir():
-			hdr := &tar.Header{
-				Name:     filepath.ToSlash(archiveName) + "/",
-				Mode:     int64(info.Mode().Perm()),
-				ModTime:  info.ModTime(),
-				Typeflag: tar.TypeDir,
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return fmt.Errorf("write dir header %q: %w", path, err)
-			}
-
-		case info.Mode().IsRegular():
-			hdr := &tar.Header{
-				Name:     filepath.ToSlash(archiveName),
-				Mode:     int64(info.Mode().Perm()),
-				Size:     info.Size(),
-				ModTime:  info.ModTime(),
-				Typeflag: tar.TypeReg,
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return fmt.Errorf("write file header %q: %w", path, err)
-			}
-			f, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("open %q: %w", path, err)
-			}
-			_, copyErr := io.Copy(tw, f)
-			_ = f.Close()
-			if copyErr != nil {
-				return fmt.Errorf("copy %q: %w", path, copyErr)
-			}
-			files++
-
-		default:
-			// Skip block / char / fifo / socket entries.
-		}
-		return nil
-	})
-
-	if walkErr != nil {
-		_ = tw.Close()
-		_ = gz.Close()
-		return 0, walkErr
-	}
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
-		return 0, fmt.Errorf("close tar: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		return 0, fmt.Errorf("close gzip: %w", err)
-	}
-	if limited.exceeded {
-		return 0, fmt.Errorf("workspace tarball exceeds %d-byte cap", maxBytes)
-	}
-	return files, nil
-}
-
-// limitWriter wraps an io.Writer and refuses writes that would push
-// the cumulative byte count over max, reporting the breach via
-// exceeded so the caller can produce a clear error message.
-type limitWriter struct {
-	w        io.Writer
-	max      int64
-	written  int64
-	exceeded bool
-}
-
-func (l *limitWriter) Write(p []byte) (int, error) {
-	if l.exceeded {
-		return 0, io.ErrShortWrite
-	}
-	if l.written+int64(len(p)) > l.max {
-		l.exceeded = true
-		return 0, io.ErrShortWrite
-	}
-	n, err := l.w.Write(p)
-	l.written += int64(n)
-	return n, err
 }

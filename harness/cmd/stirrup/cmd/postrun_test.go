@@ -3,11 +3,13 @@ package cmd
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,11 +22,28 @@ type recordingExporter struct {
 	err   error
 }
 
-func (r *recordingExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
+func (r *recordingExporter) Export(_ context.Context, _ executor.WorkspaceArchiver, dest string) (types.ExportReceipt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dests = append(r.dests, dest)
 	return fakeExportResult(dest, "", r.err)
+}
+
+// archiverExecutor is an executor whose workspace archive is a fixed tar
+// stream, standing in for a sandbox executor. A nil stream archives an
+// empty workspace; err is returned after the stream is written.
+type archiverExecutor struct {
+	executor.NoneExecutor
+	stream []byte
+	err    error
+}
+
+func (a *archiverExecutor) ArchiveWorkspace(_ context.Context, w io.Writer, _ int64) (executor.ArchiveStats, error) {
+	n, err := w.Write(a.stream)
+	if err != nil {
+		return executor.ArchiveStats{Bytes: int64(n)}, err
+	}
+	return executor.ArchiveStats{Bytes: int64(n)}, a.err
 }
 
 func (r *recordingExporter) destinations() []string {

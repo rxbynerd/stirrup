@@ -408,7 +408,7 @@ The workspace exporter (`harness/internal/workspaceexport`) applies
 the same containment check when building the export tarball: any
 path that resolves outside the workspace root, including via a
 symlinked parent directory, is refused and fails the whole export.
-Dangling symlinks (whose target does not exist, so `EvalSymlinks`
+On the local executor, dangling symlinks (whose target does not exist, so `EvalSymlinks`
 itself errors) are refused rather than silently included — a
 downstream `tar -xzf` without `--no-dereference` could otherwise be
 exploited via a symlink-then-overwrite pattern targeting a path
