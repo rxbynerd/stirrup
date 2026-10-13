@@ -475,10 +475,175 @@ Structured-log export (`observability.logsExport.type: otlp`,
 `--log-export otlp`) uses the same protocol and headers as traces and
 metrics. Its endpoint is `observability.logsExport.endpoint`, falling
 back to `traceEmitter.endpoint`, so one `http/protobuf` gateway URL
-carries all three signals. With neither set and no
+carries all three signals. A platform profile that defines its own
+endpoint for a signal replaces that fallback (see
+[Platform profiles](#platform-profiles)). With neither set and no
 `OTEL_EXPORTER_OTLP_*` endpoint, insecure, or certificate variable,
 logs go in plaintext to the SDK's default local collector
 (`localhost:4317` for gRPC, `localhost:4318` for OTLP/HTTP).
+
+## Platform profiles
+
+Some backends need more than an endpoint and a header: Amazon
+CloudWatch requires SigV4-signed requests to a different host per
+signal, and Arize Phoenix reads OpenInference attributes that the
+GenAI semantic conventions do not carry. A platform profile supplies
+those settings so the harness can export to the backend directly,
+without a collector in between.
+
+`traceEmitter.platform` (CLI: `--otel-platform`) selects the profile
+and `traceEmitter.platformOptions` (CLI: repeatable
+`--otel-platform-option key=value`) configures it:
+
+```json
+"traceEmitter": {
+  "type": "otel",
+  "platform": "cloudwatch",
+  "platformOptions": {"region": "us-east-1", "logGroup": "/stirrup/agents"}
+}
+```
+
+Both fields require `type: "otel"`. Options are never secrets:
+`secret://` values are rejected, and credentials stay in
+`traceEmitter.headers` or in the platform's own credential chain.
+`ValidateRunConfig` (and so `stirrup run-config`) checks only the
+shape of the options. Which keys a platform accepts, whether required
+keys are present, and whether the options contradict the rest of the
+config are checked when the harness builds its exporters, so the run
+fails at start and `stirrup harness --dry-run` reports the problem
+under the `trace-emitter` step.
+
+### A profile only fills blanks
+
+A profile never overrides a field the operator set, and never writes
+back into the RunConfig: the `Redact()`-ed config stored with a trace
+shows only what was declared. Each exporter setting resolves in this
+order:
+
+1. The explicit RunConfig field (or CLI flag).
+2. A standard OpenTelemetry environment variable, where the exporter
+   already honours one: `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` and
+   `OTEL_EXPORTER_OTLP_ENDPOINT` for the log endpoint,
+   `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS` or `OTEL_EXPORTER_OTLP_HEADERS`
+   when `traceEmitter.headers` is empty,
+   `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`, and
+   `OTEL_RESOURCE_ATTRIBUTES`.
+3. The profile's default.
+4. The SDK default.
+
+Headers merge per key: a profile's header defaults for a signal are
+overridden by any header of the same name in `traceEmitter.headers`
+(compared case-insensitively). A profile's resource attributes rank
+below `OTEL_RESOURCE_ATTRIBUTES` and below stirrup's own identity
+attributes (`service.name` and the rest).
+
+**Per-signal endpoints.** Without a profile, `metricsEndpoint` and
+`logsExport.endpoint` fall back to `traceEmitter.endpoint`. When a
+profile defines its own endpoint for a signal, that signal stops
+inheriting `traceEmitter.endpoint`. For example, with the `cloudwatch`
+profile an explicit `endpoint` redirects traces only; metrics and logs
+still go to their CloudWatch hosts unless `metricsEndpoint` or
+`logsExport.endpoint` is set too.
+
+A profile's headers and request signing apply only to signals sent to
+the profile's own endpoint. A signal redirected elsewhere, by an
+explicit endpoint or, for logs, by `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+or `OTEL_EXPORTER_OTLP_ENDPOINT`, carries only `traceEmitter.headers`
+and is not signed, so the profile's credentials never reach that
+collector. A signing client does not follow HTTP redirects.
+
+The harness rejects these combinations at start:
+
+- an option key the platform does not accept, or a missing required
+  one;
+- `protocol: "grpc"` with a platform that requires `http/protobuf`;
+- a platform that signs requests or adds headers, on gRPC (signing
+  wraps the OTLP/HTTP transport, which gRPC does not use, and headers
+  are refused on gRPC as described under [Validation](#validation));
+- an `Authorization` entry in `traceEmitter.headers` with a platform
+  that signs requests, because the signature owns that header.
+
+When a platform is selected, the harness logs one
+`observability platform exporters resolved` line at start naming the
+protocol and the endpoint of each enabled signal. Headers are never
+logged.
+
+### `cloudwatch`
+
+Sends traces, metrics and logs to the Amazon CloudWatch OTLP
+endpoints, signed with SigV4.
+
+| Option | Required | Meaning |
+|---|---|---|
+| `region` | no | AWS region of the endpoints. Defaults to the region of the AWS SDK's default configuration (`AWS_REGION`, the shared config profile); with neither, the run fails at start. Only regions in the `aws` and `aws-us-gov` partitions are accepted: China, ISO and European Sovereign Cloud regions are rejected because their endpoints are not under `amazonaws.com`. |
+| `logGroup` | yes | Log group the logs signal writes to (`x-aws-log-group`). Also set as the `aws.log.group.names` resource attribute. |
+| `logStream` | no | Log stream within `logGroup` (`x-aws-log-stream`). Default `default`. |
+
+The profile sets:
+
+- protocol `http/protobuf` (CloudWatch has no gRPC intake);
+- endpoints `https://xray.<region>.amazonaws.com` for traces,
+  `https://monitoring.<region>.amazonaws.com` for metrics and
+  `https://logs.<region>.amazonaws.com` for logs, each with the
+  standard `/v1/<signal>` path appended;
+- SigV4 signing of every export attempt for the `xray`, `monitoring`
+  and `logs` services, with credentials from the AWS default
+  credential chain (environment, shared config and `AWS_PROFILE`, IRSA,
+  EKS Pod Identity, ECS, IMDS), the same chain the Bedrock provider
+  uses. No key material enters the RunConfig. The harness retrieves
+  credentials once while resolving the profile, so missing credentials
+  fail the run at start and `--dry-run` reports them;
+- the `x-aws-log-group` and `x-aws-log-stream` headers on the logs
+  signal only;
+- the resource attributes `aws.service.type=gen_ai_agent` and
+  `aws.log.group.names=<logGroup>`, which the AWS Distro for
+  OpenTelemetry sets for agent observability and which Application
+  Signals uses to register the service.
+
+Prerequisites, outside the harness:
+
+- CloudWatch Transaction Search enabled in the account and region,
+  with CloudWatch Logs as the trace segment destination. Without it,
+  the traces endpoint answers `400 The OTLP API is supported with
+  CloudWatch Logs as a Trace Segment Destination`.
+- The log group and log stream must already exist. The logs endpoint
+  answers `400 The specified log group does not exist` (or log
+  stream) and does not create them. Export failures are logged and do
+  not fail the run.
+- IAM permission for the credential chain's principal to write to
+  X-Ray, CloudWatch metrics and CloudWatch Logs.
+
+CloudWatch groups spans into sessions by the `session.id` attribute,
+which the harness sets on every span from `sessionName` (`--name`).
+Runs without a session name have no session.
+
+### `phoenix`
+
+Adds the OpenInference attributes Arize Phoenix reads beyond what it
+derives from the GenAI semantic conventions.
+
+| Option | Required | Meaning |
+|---|---|---|
+| `project` | no | Phoenix project, set as the `openinference.project.name` resource attribute. Without it, spans land in Phoenix's `default` project unless `OTEL_RESOURCE_ATTRIBUTES` names one. |
+
+At export time the profile adds, to attributes a span does not already
+carry:
+
+- `openinference.span.kind`: `AGENT` for `invoke_agent` spans, `LLM`
+  for `chat`, `TOOL` for `execute_tool`, `GUARDRAIL` for `guard.*`,
+  `EVALUATOR` for `verifier.verify`, and `CHAIN` for every other span;
+- on the root span, `input.value` (the first user message's text) and
+  `output.value` (the final assistant text), which Phoenix shows as
+  the trace's input and output. Both need `captureContent: true`;
+- on the root span, `metadata` with the run ID and mode.
+
+The profile sets no endpoint or protocol, so traces go to
+`traceEmitter.endpoint`, or to the usual default `localhost:4317` when
+it is unset. Phoenix accepts OTLP/gRPC on port 4317 and OTLP/HTTP on
+port 6006. An authenticated Phoenix needs `http/protobuf`, because only
+that protocol carries `traceEmitter.headers`. Phoenix ingests traces
+only; with no `metricsEndpoint`, metrics follow `endpoint` and Phoenix
+rejects them with `405`, which the metrics exporter does not report.
 
 ## URL appending
 

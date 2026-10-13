@@ -185,6 +185,8 @@ Quick map for "I need to change X" lookups:
 | `stirrup egress-proxy` subcommand | `harness/cmd/stirrup/cmd/egress_proxy.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |
 | Code scanner | `harness/internal/security/codescanner/` |
+| OTLP exporter construction (endpoint, TLS, headers, HTTP client, per signal) | `harness/internal/observability/otlp/` |
+| Observability platform profiles (`traceEmitter.platform`) and their precedence rules | `harness/internal/observability/platform/` (the only Go package outside `types/` that may name a vendor; a source-scan test enforces it); wiring in `core/factory.go::resolveTelemetry` (operator doc: `docs/observability-cloud.md#platform-profiles`) |
 | Result sink (RunResult payload) | `harness/internal/resultsink/` |
 | Workspace GCS export | `harness/internal/workspaceexport/` |
 | `RunConfig` validation | `types/runconfig.go` |
