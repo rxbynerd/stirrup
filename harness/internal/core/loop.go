@@ -254,8 +254,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	// Runs before Prompt.Build and Git.Setup: the deterministic git strategy
-	// assumes an existing checkout, so a clone hook must create it first. A
-	// nil Hooks is a no-op. See docs/configuration.md#lifecycle-hooks.
+	// commits into whatever repository the workspace holds, so a clone hook
+	// must run first. A nil Hooks is a no-op. See
+	// docs/configuration.md#lifecycle-hooks.
 	if l.Hooks != nil {
 		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
 		preResults, preErr := l.Hooks.RunPre(runCtx)
@@ -275,6 +276,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
+		Executor:       l.Executor,
 		MaxTurns:       config.MaxTurns,
 		Model:          promptModel,
 		DynamicContext: dynamicContext,

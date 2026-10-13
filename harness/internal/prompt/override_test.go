@@ -2,8 +2,6 @@ package prompt
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,25 +96,27 @@ func TestNewOverridePromptBuilder_AppendsDynamicContext(t *testing.T) {
 	}
 }
 
-func TestNewOverridePromptBuilder_AppendsWorkspaceTree(t *testing.T) {
+func TestNewOverridePromptBuilder_AppendsWorkspaceTreeAndGitStatus(t *testing.T) {
 	b := NewOverridePromptBuilder("Custom agent.")
 
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
+	ws := newFakeWorkspace("/workspace")
+	ws.entries = []string{"main.go"}
+	ws.toplevel = "/workspace"
+	ws.status = " M main.go\n"
 
 	result, err := b.Build(context.Background(), PromptContext{
-		Mode:      "execution",
-		Workspace: dir,
+		Mode:     "execution",
+		Executor: ws,
 	})
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	if !strings.Contains(result, "Workspace files:") {
-		t.Error("override builder should append workspace tree")
+	if !strings.Contains(result, "Workspace files:\n  main.go") {
+		t.Errorf("override builder should list workspace files, got %q", result)
 	}
-	if !strings.Contains(result, "main.go") {
-		t.Error("override builder should list workspace files")
+	if !strings.Contains(result, "Git status:\n M main.go") {
+		t.Errorf("override builder should append git status, got %q", result)
 	}
 }
 

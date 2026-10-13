@@ -3,11 +3,13 @@ package prompt
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
@@ -165,66 +167,143 @@ func (f *turnBudgetFragment) Render(_ context.Context, pc PromptContext) (string
 	return fmt.Sprintf("Turn budget: %d turns. Use them efficiently.", pc.MaxTurns), nil
 }
 
+// The listing holds names the agent chooses, so it is bounded before it
+// reaches the prompt.
+const (
+	workspaceTreeMaxEntries = 200
+	workspaceTreeMaxBytes   = 8 << 10
+)
+
 type workspaceTreeFragment struct{}
 
 // WorkspaceTreeFragment returns a fragment that lists the top-level files and
-// directories in the workspace. If Workspace is empty, the fragment produces
-// an empty string.
+// directories of the executor's workspace, directories marked with a
+// trailing slash. Names containing control characters are left out, and the
+// listing ends in a marker line when entries were left out or dropped past
+// the entry and byte bounds. It renders nothing when there is no executor,
+// when the executor cannot read, when listing fails, or when the workspace
+// is empty.
 func WorkspaceTreeFragment() PromptFragment {
 	return &workspaceTreeFragment{}
 }
 
-func (f *workspaceTreeFragment) Render(_ context.Context, pc PromptContext) (string, error) {
-	if pc.Workspace == "" {
+func (f *workspaceTreeFragment) Render(ctx context.Context, pc PromptContext) (string, error) {
+	if pc.Executor == nil || !pc.Executor.Capabilities().CanRead {
 		return "", nil
 	}
 
-	entries, err := os.ReadDir(pc.Workspace)
-	if err != nil {
-		return "", fmt.Errorf("read workspace directory: %w", err)
-	}
-
-	if len(entries) == 0 {
+	entries, err := pc.Executor.ListDirectory(ctx, ".")
+	if err != nil || len(entries) == 0 {
 		return "", nil
 	}
 
 	var sb strings.Builder
 	sb.WriteString("Workspace files:")
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			name += "/"
+	shown, size := 0, 0
+	for _, name := range entries {
+		if shown == workspaceTreeMaxEntries || size+len(name)+3 > workspaceTreeMaxBytes {
+			break
+		}
+		if strings.ContainsFunc(name, unicode.IsControl) {
+			continue
 		}
 		sb.WriteString("\n  ")
 		sb.WriteString(name)
+		shown++
+		size += len(name) + 3
+	}
+	if shown < len(entries) {
+		fmt.Fprintf(&sb, "\n[workspace listing truncated: %d of %d entries shown]", shown, len(entries))
 	}
 	return sb.String(), nil
 }
 
+const (
+	gitStatusTimeout = 30 * time.Second
+	// The status lists file names the agent chooses, so it is bounded
+	// before it reaches the prompt.
+	gitStatusMaxEntries = 200
+	gitStatusMaxBytes   = 8 << 10
+)
+
 type gitStatusFragment struct{}
 
-// GitStatusFragment returns a fragment that includes the short git status
-// of the workspace directory.
+// GitStatusFragment returns a fragment that includes the short-format git
+// status of the workspace, run inside the executor with the harness's git
+// hardening flags. It renders nothing when the executor cannot run
+// commands, when the workspace is not the top level of a repository (so an
+// enclosing repository's file names never appear), or when git fails.
 func GitStatusFragment() PromptFragment {
 	return &gitStatusFragment{}
 }
 
 func (f *gitStatusFragment) Render(ctx context.Context, pc PromptContext) (string, error) {
-	if pc.Workspace == "" {
+	if pc.Executor == nil || !pc.Executor.Capabilities().CanExec {
 		return "", nil
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "-C", pc.Workspace, "status", "--short")
-	out, err := cmd.Output()
+	root, err := git.WorkspaceRoot(ctx, pc.Executor)
 	if err != nil {
 		return "", nil
 	}
+	safeDirectory := "safe.directory=" + root
 
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		return "Git status: clean", nil
+	toplevel, ok := runGit(ctx, pc.Executor, "-c", safeDirectory, "rev-parse", "--show-toplevel")
+	if !ok || strings.TrimSuffix(toplevel.Stdout, "\n") != root {
+		return "", nil
 	}
-	return "Git status:\n" + trimmed, nil
+
+	status, ok := runGit(ctx, pc.Executor, "-c", safeDirectory, "--no-optional-locks",
+		"status", "--porcelain", "--untracked-files=normal")
+	if !ok {
+		return "", nil
+	}
+	return formatGitStatus(status.Stdout, status.OutputTruncated), nil
+}
+
+func runGit(ctx context.Context, exec WorkspaceReader, args ...string) (*executor.ExecResult, bool) {
+	res, err := exec.Exec(ctx, git.CommandLine(args...), gitStatusTimeout)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		return nil, false
+	}
+	return res, true
+}
+
+// formatGitStatus renders porcelain status output within the entry and
+// byte bounds, ending in a marker line when entries were dropped. When the
+// executor itself truncated the output, the last line may be partial and
+// the total is unknown.
+func formatGitStatus(out string, execTruncated bool) string {
+	out = strings.TrimRight(out, "\n")
+	if out == "" && !execTruncated {
+		return "Git status: clean"
+	}
+
+	lines := strings.Split(out, "\n")
+	if execTruncated {
+		lines = lines[:len(lines)-1]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Git status:")
+	shown, size := 0, 0
+	for _, line := range lines {
+		if shown == gitStatusMaxEntries || size+len(line)+1 > gitStatusMaxBytes {
+			break
+		}
+		sb.WriteString("\n")
+		sb.WriteString(line)
+		shown++
+		size += len(line) + 1
+	}
+
+	switch {
+	case execTruncated:
+		fmt.Fprintf(&sb, "\n[git status truncated: %d entries shown]", shown)
+	case shown < len(lines):
+		fmt.Fprintf(&sb, "\n[git status truncated: %d of %d entries shown]", shown, len(lines))
+	}
+	return sb.String()
 }
 
 // DefaultComposedFragments returns the standard set of fragments used by the

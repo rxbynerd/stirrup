@@ -5,13 +5,31 @@ package prompt
 import (
 	"context"
 	"encoding/json"
+	"time"
+
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
+
+// WorkspaceReader is the view of the run's executor that the workspace
+// fragments read through, so the file listing and git status come from the
+// sandbox rather than the harness host. executor.Executor satisfies it.
+type WorkspaceReader interface {
+	ListDirectory(ctx context.Context, path string) ([]string, error)
+	Exec(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error)
+	Capabilities() executor.ExecutorCapabilities
+}
 
 // PromptContext provides the information a prompt builder needs.
 type PromptContext struct {
-	Mode      string
+	Mode string
+	// Workspace is the configured workspace path. Only
+	// WorkspacePathFragment uses it; it never names a host directory to
+	// read.
 	Workspace string
-	MaxTurns  int
+	// Executor is the run's executor. When nil, as for `stirrup prompt
+	// render`, the workspace tree and git status fragments render nothing.
+	Executor WorkspaceReader
+	MaxTurns int
 	// Model is the resolved prompt model (RunConfig.EffectivePromptModel):
 	// the model identity the system prompt templates render against. It may
 	// differ from the wire model when promptBuilder.promptModel is set for

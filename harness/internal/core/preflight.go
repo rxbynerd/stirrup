@@ -231,6 +231,8 @@ func runProbeStep(
 		preflightExecutorProbe(ctx, config, step.component, opts, ok, skip, fail)
 	case step.name == "trace-emitter-probe":
 		probeComponent(ctx, step.name, step.component, opts.SkipTrace, "--no-probe-trace set", ok, skip, fail)
+	case step.name == "git-strategy-probe":
+		preflightGitStrategyProbe(ctx, config, step.component, ok, skip, fail)
 	case strings.HasPrefix(step.name, "provider-probe:"):
 		if step.component == nil {
 			skip(step.name, "provider not constructed")
@@ -386,6 +388,35 @@ func preflightExecutorProbe(
 		return
 	}
 	probeComponent(ctx, "executor-probe", exec, false, "", ok, skip, fail)
+}
+
+// preflightGitStrategyProbe runs the "git-strategy-probe" step. The
+// deterministic strategy runs `git --version` inside the executor. With
+// the container executor no container is started in a dry-run, so the
+// sandbox image's git cannot be probed and the step records a skip. The
+// none strategy exposes no Probe and skips through probeComponent.
+func preflightGitStrategyProbe(
+	ctx context.Context,
+	config *types.RunConfig,
+	gs any,
+	ok func(string, string),
+	skip func(string, string),
+	fail func(string, error, string),
+) {
+	if config.GitStrategy.Type == "deterministic" && config.Executor.Type == "container" {
+		skip("git-strategy-probe", "container is not started in a dry-run; git in the sandbox image is not probed")
+		return
+	}
+	probe, isProbe := gs.(Preflighter)
+	if !isProbe {
+		probeComponent(ctx, "git-strategy-probe", gs, false, "", ok, skip, fail)
+		return
+	}
+	if err := probe.Probe(ctx); err != nil {
+		fail("git-strategy-probe", err, "the sandbox image must contain git on PATH (Dockerfile.sandbox installs it)")
+		return
+	}
+	ok("git-strategy-probe", "git runs inside the executor")
 }
 
 // containerProbeConfig projects the RunConfig's executor block onto the

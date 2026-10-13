@@ -183,3 +183,17 @@ func TestRunResult_StructuredOutputSerialisesAsJSONValue(t *testing.T) {
 		t.Errorf("structuredOutput is not an embedded JSON value: %s", out)
 	}
 }
+
+func TestExportReceiptDelivered(t *testing.T) {
+	cases := map[string]bool{
+		ExportStatusUploaded: true,
+		ExportStatusEmpty:    true,
+		ExportStatusFailed:   false,
+		"":                   false,
+	}
+	for status, want := range cases {
+		if got := (ExportReceipt{Status: status}).Delivered(); got != want {
+			t.Errorf("Delivered() for status %q = %v, want %v", status, got, want)
+		}
+	}
+}

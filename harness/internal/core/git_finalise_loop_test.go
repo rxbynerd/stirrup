@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -109,7 +110,11 @@ func newGitFinaliseLoop(t *testing.T, repo string, prov *toolLoopProvider, probe
 	t.Helper()
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
-	loop.Git = git.NewDeterministicGitStrategy()
+	exec, err := executor.NewLocalExecutor(repo)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+	loop.Git = git.NewDeterministicGitStrategy(exec)
 	rec := &recordingTransport{}
 	loop.Transport = rec
 	registry := tool.NewRegistry()

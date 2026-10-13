@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -24,7 +25,7 @@ type slowExporter struct {
 	completed atomic.Int32
 }
 
-func (e *slowExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
+func (e *slowExporter) Export(_ context.Context, _ executor.WorkspaceArchiver, dest string) (types.ExportReceipt, error) {
 	time.Sleep(50 * time.Millisecond)
 	e.completed.Add(1)
 	return fakeExportResult(dest, "", e.err)

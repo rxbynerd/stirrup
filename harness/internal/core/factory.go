@@ -371,8 +371,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 10b. Rule-of-Two runtime monitor from the arming decision above.
 	rot := buildRuleOfTwoMonitor(ruleOfTwoArmingState)
 
-	// 11. Git strategy.
-	gs := buildGitStrategy(config.GitStrategy)
+	// 11. Git strategy, constructed by buildComponents around the run's
+	// executor so a dry-run probes the same component.
+	gs := components.gitStrategy
 
 	// 11b. Lifecycle hook runner; shares the run's Executor so hooks run
 	// under the same sandbox and egress posture as every tool call.
@@ -1905,10 +1906,12 @@ func buildTransport(ctx context.Context, cfg types.TransportConfig) (transport.T
 	}
 }
 
-func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
+// buildGitStrategy constructs the git strategy around exec; the
+// deterministic strategy runs every git command inside that executor.
+func buildGitStrategy(cfg types.GitStrategyConfig, exec executor.Executor) git.GitStrategy {
 	switch cfg.Type {
 	case "deterministic":
-		return git.NewDeterministicGitStrategy()
+		return git.NewDeterministicGitStrategy(exec)
 	case "none", "":
 		return git.NewNoneGitStrategy()
 	default:

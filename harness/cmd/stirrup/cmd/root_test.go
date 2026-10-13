@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -98,7 +99,7 @@ type fakeExporter struct {
 	status string
 }
 
-func (f fakeExporter) Export(_ context.Context, _, dest string) (types.ExportReceipt, error) {
+func (f fakeExporter) Export(_ context.Context, _ executor.WorkspaceArchiver, dest string) (types.ExportReceipt, error) {
 	return fakeExportResult(dest, f.status, f.err)
 }
 
@@ -526,10 +527,9 @@ func TestWorkspaceHandoff_SuccessfulExport(t *testing.T) {
 	rec := &recordingExporter{}
 	installRecordingExporter(t, rec)
 	cfg := &types.RunConfig{RunID: "run-1"}
-	cfg.Executor.Workspace = t.TempDir()
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
-	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
 	if err != nil {
 		t.Fatalf("Handoff() error: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestWorkspaceHandoff_EmptyWorkspaceIsAnEmptySuccess(t *testing.T) {
 	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
-	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
 	if err != nil {
 		t.Fatalf("Handoff() error = %v, want nil for an empty workspace", err)
 	}
@@ -562,7 +562,7 @@ func TestWorkspaceHandoff_ExportFailureReturnsReceiptAndError(t *testing.T) {
 	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
-	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("error = %v, want the export failure in the chain", err)
 	}
@@ -577,7 +577,7 @@ func TestWorkspaceHandoff_ExporterBuildFailure(t *testing.T) {
 	cfg := &types.RunConfig{RunID: "run-1"}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
-	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, nil)
+	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
 	if !errors.Is(err, build) || receipt == nil {
 		t.Errorf("Handoff() = %+v, %v; want a receipt and the build failure", receipt, err)
 	}
@@ -590,11 +590,11 @@ func TestWorkspaceHandoff_FollowUpExportsToRunScopedURI(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 	h := workspaceHandoff{primaryRunID: "primary"}
 
-	if _, err := h.Handoff(context.Background(), cfg, nil); err != nil {
+	if _, err := h.Handoff(context.Background(), cfg, &archiverExecutor{}); err != nil {
 		t.Fatal(err)
 	}
 	cfg.RunID = "run-2"
-	receipt, err := h.Handoff(context.Background(), cfg, nil)
+	receipt, err := h.Handoff(context.Background(), cfg, &archiverExecutor{})
 	if err != nil {
 		t.Fatal(err)
 	}

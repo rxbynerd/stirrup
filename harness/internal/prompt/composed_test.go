@@ -3,9 +3,6 @@ package prompt
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -198,119 +195,6 @@ func TestComposedPromptBuilder_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestComposedPromptBuilder_WorkspaceTreeFragment(t *testing.T) {
-	dir := t.TempDir()
-
-	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
-	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644)
-	_ = os.Mkdir(filepath.Join(dir, "pkg"), 0o755)
-
-	fragment := WorkspaceTreeFragment()
-	result, err := fragment.Render(context.Background(), PromptContext{
-		Mode:      "execution",
-		Workspace: dir,
-	})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-
-	if !strings.Contains(result, "Workspace files:") {
-		t.Error("missing header")
-	}
-	if !strings.Contains(result, "main.go") {
-		t.Error("missing main.go")
-	}
-	if !strings.Contains(result, "README.md") {
-		t.Error("missing README.md")
-	}
-	if !strings.Contains(result, "pkg/") {
-		t.Error("directories should have trailing slash")
-	}
-}
-
-func TestComposedPromptBuilder_WorkspaceTreeFragment_EmptyWorkspace(t *testing.T) {
-	fragment := WorkspaceTreeFragment()
-	result, err := fragment.Render(context.Background(), PromptContext{Mode: "execution"})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string for empty workspace, got %q", result)
-	}
-}
-
-func TestComposedPromptBuilder_GitStatusFragment(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	dir := t.TempDir()
-
-	cmds := [][]string{
-		{"git", "-C", dir, "init"},
-		{"git", "-C", dir, "config", "user.email", "test@test.com"},
-		{"git", "-C", dir, "config", "user.name", "Test"},
-		{"git", "-C", dir, "commit", "--allow-empty", "-m", "init"},
-	}
-	for _, args := range cmds {
-		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
-			t.Fatalf("setup command %v failed: %v\n%s", args, err, out)
-		}
-	}
-
-	fragment := GitStatusFragment()
-
-	result, err := fragment.Render(context.Background(), PromptContext{
-		Mode:      "execution",
-		Workspace: dir,
-	})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-	if !strings.Contains(result, "clean") {
-		t.Errorf("expected clean status, got %q", result)
-	}
-
-	_ = os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello"), 0o644)
-
-	result, err = fragment.Render(context.Background(), PromptContext{
-		Mode:      "execution",
-		Workspace: dir,
-	})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-	if !strings.Contains(result, "new.txt") {
-		t.Errorf("expected new.txt in status, got %q", result)
-	}
-}
-
-func TestComposedPromptBuilder_GitStatusFragment_NoWorkspace(t *testing.T) {
-	fragment := GitStatusFragment()
-	result, err := fragment.Render(context.Background(), PromptContext{Mode: "execution"})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string, got %q", result)
-	}
-}
-
-func TestComposedPromptBuilder_GitStatusFragment_NotARepo(t *testing.T) {
-	dir := t.TempDir()
-	fragment := GitStatusFragment()
-	result, err := fragment.Render(context.Background(), PromptContext{
-		Mode:      "execution",
-		Workspace: dir,
-	})
-	if err != nil {
-		t.Fatalf("Render() error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty string for non-repo, got %q", result)
-	}
-}
-
 func TestComposedPromptBuilder_WorkspacePathFragment(t *testing.T) {
 	fragment := WorkspacePathFragment()
 
@@ -371,9 +255,8 @@ func TestComposedPromptBuilder_DefaultFragments(t *testing.T) {
 		t.Fatal("DefaultComposedFragments() returned no fragments")
 	}
 
-	// Build with a temp workspace so workspace/git fragments can resolve.
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main"), 0o644)
+	ws := newFakeWorkspace("/workspace")
+	ws.entries = []string{"test.go"}
 
 	b := NewComposedPromptBuilder(WithFragments(fragments...))
 
@@ -392,7 +275,8 @@ func TestComposedPromptBuilder_DefaultFragments(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			result, err := b.Build(context.Background(), PromptContext{
 				Mode:      tc.mode,
-				Workspace: dir,
+				Workspace: "/workspace",
+				Executor:  ws,
 			})
 			if err != nil {
 				t.Fatalf("Build() error: %v", err)

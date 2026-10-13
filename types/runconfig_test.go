@@ -6310,6 +6310,36 @@ func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
 	}
 }
 
+// TestValidateExecutorWorkspaceExportTo_ArchiverTable pins that the export
+// destination is accepted exactly for the executor types that can archive
+// their workspace, so a new executor type cannot silently pass validation
+// and then export nothing.
+func TestValidateExecutorWorkspaceExportTo_ArchiverTable(t *testing.T) {
+	for typ := range validExecutorTypes {
+		if _, ok := executorWorkspaceArchiver[typ]; !ok {
+			t.Errorf("executor type %q has no executorWorkspaceArchiver entry", typ)
+		}
+		t.Run(typ, func(t *testing.T) {
+			var errs []string
+			validateExecutorWorkspaceExportTo(ExecutorConfig{Type: typ, WorkspaceExportTo: "gs://bucket/path"}, &errs)
+			want := ExecutorCanArchiveWorkspace(typ)
+			if want && len(errs) != 0 {
+				t.Errorf("archiver executor %q rejected: %v", typ, errs)
+			}
+			if !want {
+				if len(errs) != 1 || !strings.Contains(errs[0], "cannot archive its workspace") {
+					t.Errorf("non-archiver executor %q: errs = %v, want one cannot-archive rejection", typ, errs)
+				}
+			}
+		})
+	}
+	for _, typ := range []string{"local", "container", "k8s", "k8s-sandbox"} {
+		if !ExecutorCanArchiveWorkspace(typ) {
+			t.Errorf("ExecutorCanArchiveWorkspace(%q) = false, want true", typ)
+		}
+	}
+}
+
 func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *testing.T) {
 	c := validConfig()
 	// validConfig sets no Executor; assign just WorkspaceExportTo.
@@ -8316,6 +8346,43 @@ func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `gitStrategy.type="deterministic" is not valid with executor.type="none"`) {
 		t.Errorf("expected deterministic-git/none cross-field error, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor pins
+// that the deterministic strategy, which runs git inside the executor, is
+// accepted exactly for the executors that can run commands.
+func TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor(t *testing.T) {
+	cases := []struct {
+		name   string
+		exec   ExecutorConfig
+		reject bool
+	}{
+		{"unset", ExecutorConfig{}, false},
+		{"local", ExecutorConfig{Type: "local"}, false},
+		{"container", ExecutorConfig{Type: "container", Image: "img", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"k8s", ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"k8s-sandbox", ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}}, false},
+		{"api", ExecutorConfig{Type: "api"}, true},
+		{"none", ExecutorConfig{Type: "none"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = tc.exec
+			c.GitStrategy = GitStrategyConfig{Type: "deterministic"}
+			err := ValidateRunConfig(c)
+			want := fmt.Sprintf(`gitStrategy.type="deterministic" is not valid with executor.type=%q`, tc.exec.Type)
+			if tc.reject {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %q, got: %v", want, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected deterministic git to validate with executor.type=%q, got: %v", tc.exec.Type, err)
+			}
+		})
 	}
 }
 

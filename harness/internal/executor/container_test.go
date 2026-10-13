@@ -787,14 +787,18 @@ func TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout(t *test
 }
 
 func TestContainerExecutor_ListDirectory(t *testing.T) {
+	var gotCmd []string
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			var req execCreateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			gotCmd = req.Cmd
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-ls"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
-			writeDockerFrame(w, 1, []byte(".\n..\nfile.txt\nsubdir\n"))
+			writeDockerFrame(w, 1, []byte("file.txt\nsubdir/\n"))
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -808,7 +812,6 @@ func TestContainerExecutor_ListDirectory(t *testing.T) {
 		t.Fatalf("ListDirectory: %v", err)
 	}
 
-	// Should exclude . and ..
 	found := map[string]bool{}
 	for _, e := range entries {
 		found[e] = true
@@ -816,11 +819,11 @@ func TestContainerExecutor_ListDirectory(t *testing.T) {
 	if !found["file.txt"] {
 		t.Error("missing file.txt")
 	}
-	if !found["subdir"] {
-		t.Error("missing subdir")
+	if !found["subdir/"] {
+		t.Errorf("expected subdir/ marked as a directory, got %v", entries)
 	}
-	if found["."] || found[".."] {
-		t.Error(". and .. should be filtered out")
+	if want := []string{"ls", "-1Ap", "--", "/workspace"}; !slices.Equal(gotCmd, want) {
+		t.Errorf("exec Cmd = %q, want %q", gotCmd, want)
 	}
 }
 

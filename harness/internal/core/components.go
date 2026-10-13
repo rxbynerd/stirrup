@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -34,6 +35,10 @@ type builtComponents struct {
 
 	permissionPolicy permission.PermissionPolicy `probe:"permission-policy-probe"`
 	traceEmitter     trace.TraceEmitter          `probe:"trace-emitter-probe"`
+
+	// gitStrategy runs through the executor, so a dry-run can only probe
+	// it when the executor was constructed (see runProbeStep).
+	gitStrategy git.GitStrategy `probe:"git-strategy-probe"`
 }
 
 // componentStepSink lets buildComponents emit a per-component construction
@@ -70,6 +75,7 @@ func (b *builtComponents) probeSteps() []probeComponentStep {
 		{name: "executor-probe", component: b.executor},
 		{name: "permission-policy-probe", component: b.permissionPolicy},
 		{name: "trace-emitter-probe", component: b.traceEmitter},
+		{name: "git-strategy-probe", component: b.gitStrategy},
 	}
 	steps := make([]probeComponentStep, 0, len(b.providers)+len(nonProvider))
 
@@ -160,13 +166,28 @@ func buildComponents(
 		sink.ok("trace-emitter", fmt.Sprintf("%s trace emitter constructed", traceTypeName(config.TraceEmitter.Type)))
 	}
 
+	gs := buildGitStrategy(config.GitStrategy, execResult.exec)
+	if sink != nil {
+		sink.ok("git-strategy", fmt.Sprintf("%s git strategy constructed", gitStrategyTypeName(config.GitStrategy.Type)))
+	}
+
 	return &builtComponents{
 		defaultProvider:  defaultProvider,
 		providers:        providers,
 		executor:         execResult.exec,
 		permissionPolicy: pp,
 		traceEmitter:     te,
+		gitStrategy:      gs,
 	}, nil
+}
+
+// gitStrategyTypeName renders the configured git strategy type for the
+// report, defaulting an empty type to "none" to match buildGitStrategy.
+func gitStrategyTypeName(t string) string {
+	if t == "" {
+		return "none"
+	}
+	return t
 }
 
 // permissionPolicyDetail renders the permission-policy construction step.

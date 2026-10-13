@@ -206,9 +206,9 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 	return nil
 }
 
-// ListDirectory lists directory entries inside the Pod with `ls -A1`, which
-// emits one name per line excluding "." and "..". A missing directory maps
-// to fs.ErrNotExist.
+// ListDirectory lists directory entries inside the Pod with `ls -A1p`, which
+// emits one name per line excluding "." and ".." and marks directories with
+// a trailing slash. A missing directory maps to fs.ErrNotExist.
 func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]string, error) {
 	// Unlike ReadFile/WriteFile, the workspace root is a legitimate listing
 	// target, so this uses plain ResolvePath rather than resolveFilePath
@@ -225,7 +225,7 @@ func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]stri
 	stdout.limit = k8sMaxOutput
 	var stderr bytes.Buffer
 
-	execErr := e.streamExec(ctx, []string{"ls", "-A1", "--", resolved}, nil, &stdout, &stderr)
+	execErr := e.streamExec(ctx, []string{"ls", "-A1p", "--", resolved}, nil, &stdout, &stderr)
 	if stdout.exceeded {
 		return nil, errK8sOutputCap
 	}
@@ -408,11 +408,15 @@ func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io
 	})
 }
 
-// newRemoteExecutor builds a remotecommand.Executor that negotiates
+// newRemoteExecutor builds the pods/exec streamer; tests replace it to run
+// podExecCore without an API server.
+var newRemoteExecutor = newFallbackRemoteExecutor
+
+// newFallbackRemoteExecutor builds a remotecommand.Executor that negotiates
 // WebSocket first, falling back to SPDY only on a genuine upgrade/proxy
 // failure. See docs/executors/k8s.md. The WebSocket executor issues an
 // HTTP GET upgrade; the SPDY executor uses POST.
-func newRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
+func newFallbackRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
 	spdyExec, err := remotecommand.NewSPDYExecutor(config, "POST", u)
 	if err != nil {
 		return nil, err
