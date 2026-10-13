@@ -222,15 +222,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// covers all three signals.
 	var logExportHandler slog.Handler
 	if config.Observability.LogsExport.Type == "otlp" {
-		logEndpoint := config.Observability.LogsExport.Endpoint
-		if logEndpoint == "" {
-			logEndpoint = config.TraceEmitter.Endpoint
-		}
-		logExporter, handler, lerr := observability.NewLogExporter(ctx, otlp.Settings{
-			Protocol: config.TraceEmitter.Protocol,
-			Endpoint: logEndpoint,
-			Headers:  resolvedHeaders,
-		}, resourceOpts)
+		logExporter, handler, lerr := observability.NewLogExporter(ctx, logExportSettings(config, resolvedHeaders), resourceOpts)
 		if lerr != nil {
 			cleanup()
 			return nil, fmt.Errorf("build log exporter: %w", lerr)
@@ -383,17 +375,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 13. OTel metrics.
 	var metrics *observability.Metrics
-	metricsEndpoint := config.TraceEmitter.MetricsEndpoint
-	if metricsEndpoint == "" {
-		metricsEndpoint = config.TraceEmitter.Endpoint
-	}
-	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
-		metrics, err = observability.NewMetrics(ctx, otlp.Settings{
-			Protocol:    config.TraceEmitter.Protocol,
-			Endpoint:    metricsEndpoint,
-			Headers:     resolvedHeaders,
-			Temporality: config.TraceEmitter.MetricsTemporality,
-		}, resourceOpts)
+	if settings, ok := metricsSettings(config.TraceEmitter, resolvedHeaders); ok {
+		metrics, err = observability.NewMetrics(ctx, settings, resourceOpts)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build metrics: %w", err)
@@ -1927,6 +1910,58 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 	}
 }
 
+// logExportSettings resolves the OTLP log exporter's transport: its own
+// endpoint, else the trace endpoint, with the trace protocol and headers.
+func logExportSettings(config *types.RunConfig, headers map[string]string) otlp.Settings {
+	endpoint := config.Observability.LogsExport.Endpoint
+	if endpoint == "" {
+		endpoint = config.TraceEmitter.Endpoint
+	}
+	return otlp.Settings{
+		Protocol: config.TraceEmitter.Protocol,
+		Endpoint: endpoint,
+		Headers:  headers,
+	}
+}
+
+// metricsSettings resolves the OTLP metric exporter's transport. ok is
+// false when metrics are not exported: a non-otel emitter or no endpoint.
+func metricsSettings(cfg types.TraceEmitterConfig, headers map[string]string) (otlp.Settings, bool) {
+	endpoint := cfg.MetricsEndpoint
+	if endpoint == "" {
+		endpoint = cfg.Endpoint
+	}
+	if cfg.Type != "otel" || endpoint == "" {
+		return otlp.Settings{}, false
+	}
+	return otlp.Settings{
+		Protocol:    cfg.Protocol,
+		Endpoint:    endpoint,
+		Headers:     headers,
+		Temporality: cfg.MetricsTemporality,
+	}, true
+}
+
+// otelEmitterOptions maps the otel trace emitter config onto the emitter's
+// options, defaulting the endpoint to the local gRPC collector.
+func otelEmitterOptions(cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions, redactionDisabled bool) trace.OTelTraceEmitterOptions {
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "localhost:4317"
+	}
+	return trace.OTelTraceEmitterOptions{
+		Exporter: otlp.Settings{
+			Protocol: cfg.Protocol,
+			Endpoint: endpoint,
+			Headers:  headers,
+		},
+		Resource:               resourceOpts,
+		CaptureContent:         cfg.CaptureContent,
+		CaptureContentMaxBytes: cfg.CaptureContentMaxBytes,
+		RedactionDisabled:      redactionDisabled,
+	}
+}
+
 // debugRedactionDisabled is re-gated here — the single construction point
 // for every emitter type — so a release binary builds every emitter with
 // redaction on regardless of what a caller passes in. See
@@ -1935,21 +1970,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {
 	case "otel":
-		endpoint := cfg.Endpoint
-		if endpoint == "" {
-			endpoint = "localhost:4317"
-		}
-		return trace.NewOTelTraceEmitter(ctx, trace.OTelTraceEmitterOptions{
-			Exporter: otlp.Settings{
-				Protocol: cfg.Protocol,
-				Endpoint: endpoint,
-				Headers:  headers,
-			},
-			Resource:               resourceOpts,
-			CaptureContent:         cfg.CaptureContent,
-			CaptureContentMaxBytes: cfg.CaptureContentMaxBytes,
-			RedactionDisabled:      effectiveRedactionDisabled,
-		})
+		return trace.NewOTelTraceEmitter(ctx, otelEmitterOptions(cfg, headers, resourceOpts, effectiveRedactionDisabled))
 	case "gcs":
 		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.
 		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)
