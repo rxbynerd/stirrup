@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -51,7 +52,9 @@ type Settings struct {
 	// overriding any OTEL_EXPORTER_OTLP_* endpoint or insecure variable.
 	// For OTLP/HTTP a URL path is kept as a gateway prefix and the signal
 	// segment is appended to it. Empty defers to the SDK's
-	// OTEL_EXPORTER_OTLP_* environment variables and defaults.
+	// OTEL_EXPORTER_OTLP_* environment variables; with none of the
+	// endpoint, insecure, or certificate variables set, the SDK's default
+	// local collector address is dialled in plaintext.
 	Endpoint string
 
 	// Headers are sent on every export request. Values must already have
@@ -99,6 +102,10 @@ type endpoint struct {
 	// OTEL_EXPORTER_OTLP_* environment has been applied.
 	url      string
 	basePath string
+
+	// localPlaintext is set when no endpoint is configured anywhere, so
+	// the exporter dials the SDK's default local collector without TLS.
+	localPlaintext bool
 }
 
 // parseEndpoint rejects anything but a plain http(s) host and path. Errors
@@ -150,12 +157,28 @@ func (s Settings) useGRPC() (bool, error) {
 	}
 }
 
-// endpoint parses s.Endpoint. The zero endpoint means none is configured.
-func (s Settings) endpoint() (endpoint, error) {
+// endpoint parses s.Endpoint. An endpoint with an empty url leaves the
+// SDK to read its environment.
+func (s Settings) endpoint(sig Signal) (endpoint, error) {
 	if s.Endpoint == "" {
-		return endpoint{}, nil
+		return endpoint{localPlaintext: !envSelectsTransport(sig)}, nil
 	}
 	return parseEndpoint(s.Endpoint)
+}
+
+// envSelectsTransport reports whether an OTEL_EXPORTER_OTLP_* variable
+// chooses the endpoint or TLS mode for sig, matching the SDK's rule that
+// a blank value counts as unset.
+func envSelectsTransport(sig Signal) bool {
+	perSignal := "OTEL_EXPORTER_OTLP_" + strings.ToUpper(string(sig)) + "_"
+	for _, setting := range []string{"ENDPOINT", "INSECURE", "CERTIFICATE"} {
+		for _, name := range []string{"OTEL_EXPORTER_OTLP_" + setting, perSignal + setting} {
+			if strings.TrimSpace(os.Getenv(name)) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // NewTraceExporter returns the OTLP span exporter described by s.
@@ -164,7 +187,7 @@ func NewTraceExporter(ctx context.Context, s Settings) (sdktrace.SpanExporter, e
 	if err != nil {
 		return nil, err
 	}
-	ep, err := s.endpoint()
+	ep, err := s.endpoint(SignalTraces)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +195,8 @@ func NewTraceExporter(ctx context.Context, s Settings) (sdktrace.SpanExporter, e
 		var opts []otlptracegrpc.Option
 		if ep.url != "" {
 			opts = append(opts, otlptracegrpc.WithEndpointURL(ep.url))
+		} else if ep.localPlaintext {
+			opts = append(opts, otlptracegrpc.WithInsecure())
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlptracegrpc.WithHeaders(s.Headers))
@@ -184,6 +209,8 @@ func NewTraceExporter(ctx context.Context, s Settings) (sdktrace.SpanExporter, e
 			otlptracehttp.WithEndpointURL(ep.url),
 			otlptracehttp.WithURLPath(SignalTraces.urlPath(ep.basePath)),
 		)
+	} else if ep.localPlaintext {
+		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(s.Headers))
@@ -200,7 +227,7 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 	if err != nil {
 		return nil, err
 	}
-	ep, err := s.endpoint()
+	ep, err := s.endpoint(SignalMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +239,8 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 		var opts []otlpmetricgrpc.Option
 		if ep.url != "" {
 			opts = append(opts, otlpmetricgrpc.WithEndpointURL(ep.url))
+		} else if ep.localPlaintext {
+			opts = append(opts, otlpmetricgrpc.WithInsecure())
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlpmetricgrpc.WithHeaders(s.Headers))
@@ -227,6 +256,8 @@ func NewMetricExporter(ctx context.Context, s Settings) (sdkmetric.Exporter, err
 			otlpmetrichttp.WithEndpointURL(ep.url),
 			otlpmetrichttp.WithURLPath(SignalMetrics.urlPath(ep.basePath)),
 		)
+	} else if ep.localPlaintext {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(s.Headers))
@@ -246,7 +277,7 @@ func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	ep, err := s.endpoint()
+	ep, err := s.endpoint(SignalLogs)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +285,8 @@ func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 		var opts []otlploggrpc.Option
 		if ep.url != "" {
 			opts = append(opts, otlploggrpc.WithEndpointURL(ep.url))
+		} else if ep.localPlaintext {
+			opts = append(opts, otlploggrpc.WithInsecure())
 		}
 		if len(s.Headers) > 0 {
 			opts = append(opts, otlploggrpc.WithHeaders(s.Headers))
@@ -266,6 +299,8 @@ func NewLogExporter(ctx context.Context, s Settings) (sdklog.Exporter, error) {
 			otlploghttp.WithEndpointURL(ep.url),
 			otlploghttp.WithURLPath(SignalLogs.urlPath(ep.basePath)),
 		)
+	} else if ep.localPlaintext {
+		opts = append(opts, otlploghttp.WithInsecure())
 	}
 	if len(s.Headers) > 0 {
 		opts = append(opts, otlploghttp.WithHeaders(s.Headers))

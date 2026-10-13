@@ -475,7 +475,10 @@ Structured-log export (`observability.logsExport.type: otlp`,
 `--log-export otlp`) uses the same protocol and headers as traces and
 metrics. Its endpoint is `observability.logsExport.endpoint`, falling
 back to `traceEmitter.endpoint`, so one `http/protobuf` gateway URL
-carries all three signals.
+carries all three signals. With neither set and no
+`OTEL_EXPORTER_OTLP_*` endpoint, insecure, or certificate variable,
+logs go in plaintext to the SDK's default local collector
+(`localhost:4317` for gRPC, `localhost:4318` for OTLP/HTTP).
 
 ## URL appending
 
