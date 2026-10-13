@@ -136,9 +136,16 @@ func parseEndpoint(raw string) (endpoint, error) {
 }
 
 // urlPath returns the OTLP/HTTP request path for sig under basePath,
-// preserving a gateway prefix such as "/otlp".
+// preserving a gateway prefix such as "/otlp". A basePath that already
+// ends in the signal segment is a per-signal URL, such as an
+// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT value, and is used as given.
 func (sig Signal) urlPath(basePath string) string {
-	return strings.TrimRight(basePath, "/") + "/v1/" + string(sig)
+	base := strings.TrimRight(basePath, "/")
+	segment := "/v1/" + string(sig)
+	if strings.HasSuffix(base, segment) {
+		return base
+	}
+	return base + segment
 }
 
 // useGRPC reports whether s selects OTLP/gRPC, rejecting unknown protocols

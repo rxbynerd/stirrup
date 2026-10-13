@@ -490,6 +490,14 @@ The SDK appends per-signal segments to the configured base path:
 | `https://gateway` | `https://gateway/v1/traces` | `https://gateway/v1/metrics` | `https://gateway/v1/logs` |
 | `localhost:4318` | `http://localhost:4318/v1/traces` | `http://localhost:4318/v1/metrics` | `http://localhost:4318/v1/logs` |
 
+A path that already ends in the signal's own segment is used as given,
+so a per-signal URL such as
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://collector:4318/v1/logs` (the
+form the OTel specification defines for per-signal variables) posts
+to `/v1/logs`, not `/v1/logs/v1/logs`. Any other path is treated as a
+base, so a per-signal URL with a non-standard final segment still has
+the signal segment appended.
+
 Grafana Cloud expects `/otlp` (the gateway routes per-tenant from
 that prefix). Honeycomb expects no extra path; their gateway routes
 on the dataset header.

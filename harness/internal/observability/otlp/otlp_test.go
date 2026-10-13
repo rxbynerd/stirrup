@@ -194,6 +194,9 @@ func TestSignalURLPath(t *testing.T) {
 		{SignalTraces, "", "/v1/traces"},
 		{SignalMetrics, "/otlp", "/otlp/v1/metrics"},
 		{SignalLogs, "/otlp/", "/otlp/v1/logs"},
+		{SignalLogs, "/v1/logs", "/v1/logs"},
+		{SignalLogs, "/otlp/v1/logs/", "/otlp/v1/logs"},
+		{SignalMetrics, "/v1/logs", "/v1/logs/v1/metrics"},
 	}
 	for _, tc := range cases {
 		if got := tc.sig.urlPath(tc.base); got != tc.want {
@@ -251,6 +254,24 @@ func TestNewLogExporter_HTTPRoutesToV1LogsWithHeaders(t *testing.T) {
 	}
 	exportOneLog(t, exp)
 	assertOneRequest(t, c, "/v1/logs", map[string]string{"Authorization": "Basic dGVzdA=="})
+}
+
+// A per-signal URL, the form OTEL_EXPORTER_OTLP_LOGS_ENDPOINT carries, is
+// posted to as given rather than gaining a second signal segment.
+func TestNewLogExporter_HTTPPerSignalURLUsedAsGiven(t *testing.T) {
+	c := &collector{}
+	srv := httptest.NewServer(c.handler())
+	defer srv.Close()
+
+	exp, err := NewLogExporter(context.Background(), Settings{
+		Protocol: ProtocolHTTPProtobuf,
+		Endpoint: srv.URL + "/otlp/v1/logs",
+	})
+	if err != nil {
+		t.Fatalf("NewLogExporter: %v", err)
+	}
+	exportOneLog(t, exp)
+	assertOneRequest(t, c, "/otlp/v1/logs", nil)
 }
 
 // An https:// gateway URL keeps its path prefix and is reached over TLS:
