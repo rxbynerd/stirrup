@@ -2025,21 +2025,29 @@ message TraceEmitterConfig {
   // For "jsonl": filesystem path to the output trace file.
   string file_path = 2;
 
-  // For "otel": exporter address for traces.
-  //   - protocol "grpc" (default): host:port (default "localhost:4317").
+  // For "otel": exporter address for traces, and for logs when
+  // ObservabilityConfig.logs_export has no endpoint of its own.
+  //   - protocol "grpc" (default): host:port (default "localhost:4317")
+  //     or an http(s):// URL.
   //   - protocol "http/protobuf": full URL ending in the gateway base path
   //     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"). The
-  //     SDK appends "/v1/traces" and "/v1/metrics" per signal.
+  //     harness appends "/v1/traces", "/v1/metrics" and "/v1/logs" per
+  //     signal, unless the path already ends in that signal's segment.
+  // For both protocols "https://" selects TLS and "http://" or no scheme
+  // selects plaintext, whatever OTEL_EXPORTER_OTLP_* variables say.
+  // Userinfo, query strings and fragments are rejected by validation.
   string endpoint = 3;
 
   // For "otel": exporter address for metrics. Defaults to the value of
-  // endpoint if unset. Same protocol as `endpoint`.
+  // endpoint if unset. Same protocol and rules as `endpoint`.
   string metrics_endpoint = 4;
 
   // For "otel": OTLP wire protocol. Closed set:
   //   "" (defaults to "grpc") | "grpc" | "http/protobuf"
-  // HTTP/JSON is intentionally not supported. See
-  // docs/observability-cloud.md for the operator walkthrough.
+  // The same protocol and headers apply to traces, metrics, and logs
+  // exported through ObservabilityConfig.logs_export. HTTP/JSON is
+  // intentionally not supported. See docs/observability-cloud.md for the
+  // operator walkthrough.
   string protocol = 5;
 
   // For "otel": extra headers attached to every export request. Keys are
@@ -2066,18 +2074,19 @@ message TraceEmitterConfig {
   // validation for the jsonl and gcs emitters.
   bool capture_content = 9;
 
-  // For "otel": maximum size in bytes of each captured content attribute
-  // value. A longer value is shortened at a message or part boundary so
-  // JSON stays valid, and the span gains a sibling
-  // "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
-  // least 256. Rejected unless capture_content is true.
-  int32 capture_content_max_bytes = 11;
-
   // For "otel": aggregation temporality of exported metrics. Closed set:
   //   "" | "cumulative" | "delta"
   // Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and
   // then the SDK default (cumulative). Rejected for jsonl and gcs.
   string metrics_temporality = 10;
+
+  // For "otel": maximum size in bytes of each captured content attribute
+  // value. A longer value is shortened at a message or part boundary so
+  // JSON stays valid, and the span gains a sibling
+  // "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
+  // least 256. Rejected unless capture_content is true, and for jsonl
+  // and gcs.
+  int32 capture_content_max_bytes = 11;
 
   // For "gcs": joined with the run ID at write time to form the final
   // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is

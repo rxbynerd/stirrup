@@ -4848,21 +4848,30 @@ type TraceEmitterConfig struct {
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// For "jsonl": filesystem path to the output trace file.
 	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
-	// For "otel": exporter address for traces.
-	//   - protocol "grpc" (default): host:port (default "localhost:4317").
+	// For "otel": exporter address for traces, and for logs when
+	// ObservabilityConfig.logs_export has no endpoint of its own.
+	//   - protocol "grpc" (default): host:port (default "localhost:4317")
+	//     or an http(s):// URL.
 	//   - protocol "http/protobuf": full URL ending in the gateway base path
 	//     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"). The
-	//     SDK appends "/v1/traces" and "/v1/metrics" per signal.
+	//     harness appends "/v1/traces", "/v1/metrics" and "/v1/logs" per
+	//     signal, unless the path already ends in that signal's segment.
+	//
+	// For both protocols "https://" selects TLS and "http://" or no scheme
+	// selects plaintext, whatever OTEL_EXPORTER_OTLP_* variables say.
+	// Userinfo, query strings and fragments are rejected by validation.
 	Endpoint string `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	// For "otel": exporter address for metrics. Defaults to the value of
-	// endpoint if unset. Same protocol as `endpoint`.
+	// endpoint if unset. Same protocol and rules as `endpoint`.
 	MetricsEndpoint string `protobuf:"bytes,4,opt,name=metrics_endpoint,json=metricsEndpoint,proto3" json:"metrics_endpoint,omitempty"`
 	// For "otel": OTLP wire protocol. Closed set:
 	//
 	//	"" (defaults to "grpc") | "grpc" | "http/protobuf"
 	//
-	// HTTP/JSON is intentionally not supported. See
-	// docs/observability-cloud.md for the operator walkthrough.
+	// The same protocol and headers apply to traces, metrics, and logs
+	// exported through ObservabilityConfig.logs_export. HTTP/JSON is
+	// intentionally not supported. See docs/observability-cloud.md for the
+	// operator walkthrough.
 	Protocol string `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
 	// For "otel": extra headers attached to every export request. Keys are
 	// header names; values may be plaintext or a "secret://" reference
@@ -4885,12 +4894,6 @@ type TraceEmitterConfig struct {
 	// secret-shaped substrings before any attribute is set. Rejected by
 	// validation for the jsonl and gcs emitters.
 	CaptureContent bool `protobuf:"varint,9,opt,name=capture_content,json=captureContent,proto3" json:"capture_content,omitempty"`
-	// For "otel": maximum size in bytes of each captured content attribute
-	// value. A longer value is shortened at a message or part boundary so
-	// JSON stays valid, and the span gains a sibling
-	// "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
-	// least 256. Rejected unless capture_content is true.
-	CaptureContentMaxBytes int32 `protobuf:"varint,11,opt,name=capture_content_max_bytes,json=captureContentMaxBytes,proto3" json:"capture_content_max_bytes,omitempty"`
 	// For "otel": aggregation temporality of exported metrics. Closed set:
 	//
 	//	"" | "cumulative" | "delta"
@@ -4898,6 +4901,13 @@ type TraceEmitterConfig struct {
 	// Empty defers to OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE and
 	// then the SDK default (cumulative). Rejected for jsonl and gcs.
 	MetricsTemporality string `protobuf:"bytes,10,opt,name=metrics_temporality,json=metricsTemporality,proto3" json:"metrics_temporality,omitempty"`
+	// For "otel": maximum size in bytes of each captured content attribute
+	// value. A longer value is shortened at a message or part boundary so
+	// JSON stays valid, and the span gains a sibling
+	// "stirrup.<attribute>.truncated" boolean. 0 means no cap; otherwise at
+	// least 256. Rejected unless capture_content is true, and for jsonl
+	// and gcs.
+	CaptureContentMaxBytes int32 `protobuf:"varint,11,opt,name=capture_content_max_bytes,json=captureContentMaxBytes,proto3" json:"capture_content_max_bytes,omitempty"`
 	// For "gcs": joined with the run ID at write time to form the final
 	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
 	// allowed; trailing slash is normalised by validation. Only consulted
@@ -4993,18 +5003,18 @@ func (x *TraceEmitterConfig) GetCaptureContent() bool {
 	return false
 }
 
-func (x *TraceEmitterConfig) GetCaptureContentMaxBytes() int32 {
-	if x != nil {
-		return x.CaptureContentMaxBytes
-	}
-	return 0
-}
-
 func (x *TraceEmitterConfig) GetMetricsTemporality() string {
 	if x != nil {
 		return x.MetricsTemporality
 	}
 	return ""
+}
+
+func (x *TraceEmitterConfig) GetCaptureContentMaxBytes() int32 {
+	if x != nil {
+		return x.CaptureContentMaxBytes
+	}
+	return 0
 }
 
 func (x *TraceEmitterConfig) GetObjectPrefix() string {
@@ -5679,10 +5689,10 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
 	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x12\x16\n" +
 	"\x06bucket\x18\a \x01(\tR\x06bucket\x12'\n" +
-	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x129\n" +
-	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12/\n" +
+	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12/\n" +
 	"\x13metrics_temporality\x18\n" +
-	" \x01(\tR\x12metricsTemporality\x12#\n" +
+	" \x01(\tR\x12metricsTemporality\x129\n" +
+	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
