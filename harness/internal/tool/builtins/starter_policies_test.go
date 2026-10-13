@@ -1,12 +1,15 @@
 package builtins
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // TestStarterPolicies_PassTheLoadTimeLinter runs the shipped Cedar
@@ -79,5 +82,55 @@ func TestBuiltinSchemasAreClosed(t *testing.T) {
 		if !schema.Closed {
 			t.Errorf("tool %q does not set additionalProperties:false; the policy linter cannot prove a clause keyed on an undeclared attribute is dead", def.Name)
 		}
+	}
+}
+
+// TestAutonomousAllowListStarter_Decisions pins what the autonomous
+// allow-list starter grants, forbids, and leaves to the deny-all fallback.
+func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "examples", "policies", "autonomous-allow-list.cedar")
+	ps, err := permission.LoadPolicySetFromFile(path)
+	if err != nil {
+		t.Fatalf("load %s: %v", path, err)
+	}
+	policy, err := permission.NewPolicyEnginePolicy(permission.PolicyEngineConfig{
+		PolicySet: ps,
+		Fallback:  permission.NewDenyAll(),
+		RunID:     "run-test",
+		Mode:      "execution",
+		Workspace: "/workspace",
+	})
+	if err != nil {
+		t.Fatalf("NewPolicyEnginePolicy: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		tool  string
+		input string
+		allow bool
+	}{
+		{"read_file", "read_file", `{"path":"main.go"}`, true},
+		{"list_directory", "list_directory", `{"path":"."}`, true},
+		{"grep_files", "grep_files", `{"pattern":"TODO"}`, true},
+		{"find_files", "find_files", `{"pattern":"*.go"}`, true},
+		{"read_command_output", "read_command_output", `{"ref":"cmd-1"}`, true},
+		{"edit_file", "edit_file", `{"path":"main.go"}`, true},
+		{"benign command", "run_command", `{"command":"go test ./..."}`, true},
+		{"recursive remove", "run_command", `{"command":"rm -rf /workspace"}`, false},
+		{"force push", "run_command", `{"command":"git push --force origin main"}`, false},
+		{"web_fetch falls to deny-all", "web_fetch", `{"url":"https://example.com/"}`, false},
+		{"spawn_agent falls to deny-all", "spawn_agent", `{"prompt":"x"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := policy.Check(context.Background(), types.ToolDefinition{Name: tc.tool}, json.RawMessage(tc.input))
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if result.Allowed != tc.allow {
+				t.Errorf("Allowed = %v, want %v (reason: %q)", result.Allowed, tc.allow, result.Reason)
+			}
+		})
 	}
 }

@@ -62,10 +62,11 @@ jobs:
 
       - name: Run golangci-lint
         # Mirrors `just lint` (golangci-lint run ./harness/... ./types/...
-        # ./eval/...). The recipe is invoked directly rather than via
-        # `just` to match the existing `_verify.yml` convention of
-        # running go tooling without an extra wrapper install step.
-        run: golangci-lint run ./harness/... ./types/... ./eval/...
+        # ./eval/... ./examples/controlplane/...). The recipe is
+        # invoked directly rather than via `just` to match the existing
+        # `_verify.yml` convention of running go tooling without an
+        # extra wrapper install step.
+        run: golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 
   govulncheck:
     name: govulncheck
@@ -83,6 +84,7 @@ jobs:
             types/go.mod
             eval/go.mod
             gen/go.mod
+            examples/controlplane/go.mod
 
       - name: Install govulncheck
         env:
@@ -108,4 +110,8 @@ jobs:
 
       - name: Run govulncheck (eval)
         working-directory: eval
+        run: govulncheck ./...
+
+      - name: Run govulncheck (examples/controlplane)
+        working-directory: examples/controlplane
         run: govulncheck ./...

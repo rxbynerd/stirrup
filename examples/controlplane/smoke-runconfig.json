@@ -1,0 +1,50 @@
+{
+  "runId": "controlplane-smoke",
+  "mode": "planning",
+  "prompt": "Say hello.",
+  "provider": {
+    "type": "openai-compatible",
+    "apiKeyRef": "secret://STUB_API_KEY",
+    "baseUrl": "http://__STUB_ADDR__"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "openai-compatible",
+    "model": "scripted"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local",
+    "workspace": "__WORKSPACE__"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "deny-side-effects"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "traceEmitter": {
+    "type": "jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory"
+    ]
+  },
+  "maxTurns": 3,
+  "timeout": 60,
+  "logLevel": "info"
+}

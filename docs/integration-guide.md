@@ -216,43 +216,15 @@ The smallest correct `RunTask` implementation:
 5. On `done`, record `stop_reason` and close. (A server that supports
    follow-up runs keeps the stream open instead.)
 
-This sketch supports one run with optional `ask-upstream` approvals; it
-does not opt into sandbox identity, batching, async results, or
-follow-ups. Add handlers for those events before enabling the
+[`examples/controlplane/`](../examples/controlplane) is a runnable
+implementation of these steps built on the generated stubs. It assigns a
+`RunConfig` from a file, answers permission requests by flag (allow, deny, or
+ask on the terminal), prints events and exits with a status that reflects the
+outcome. Its `smoke.sh` runs one task through `stirrup job` against a scripted
+provider with no API key. The example is plaintext and unauthenticated; it
+supports one run and does not opt into sandbox identity, batching, async
+results, or follow-ups. Add handlers for those events before enabling the
 corresponding config.
-
-Sketch (server side, generated stubs from `buf generate`):
-
-```go
-func (s *Server) RunTask(stream pb.HarnessService_RunTaskServer) error {
-	for {
-		ev, err := stream.Recv()
-		if err != nil {
-			return err // stream closed: harness exited
-		}
-		switch ev.Type {
-		case "ready":
-			if err := stream.Send(&pb.ControlEvent{
-				Type: "task_assignment",
-				Task: s.nextRunConfig(),
-			}); err != nil {
-				return err
-			}
-		case "permission_request":
-			if err := stream.Send(&pb.ControlEvent{
-				Type:      "permission_response",
-				RequestId: ev.RequestId,
-				Allowed:   &pb.OptionalBool{Value: s.decide(ev.ToolName, ev.Input)},
-			}); err != nil {
-				return err
-			}
-		case "done":
-			s.recordOutcome(ev.StopReason)
-			return nil
-		}
-	}
-}
-```
 
 Launch the harness as a Kubernetes Job running `stirrup job` with
 `CONTROL_PLANE_ADDR` pointing at this server. Set

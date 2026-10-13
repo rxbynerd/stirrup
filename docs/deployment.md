@@ -459,6 +459,8 @@ Before deploying:
    `permissionPolicy.type=policy-engine` with a starter policy from
    [`examples/policies/`](../examples/policies/), `codeScanner.type=patterns`,
    and Rule of Two enforcement on (the default).
+   [`autonomous-preset.md`](autonomous-preset.md) describes a tested
+   `RunConfig` that sets all of these.
 2. Wire credentials through the credential federation layer rather
    than baking API keys into Pod env vars. See
    [`credential-federation.md`](credential-federation.md).
