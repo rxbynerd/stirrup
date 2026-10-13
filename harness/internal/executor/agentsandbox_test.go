@@ -218,7 +218,7 @@ func TestBuildSandboxObject(t *testing.T) {
 	applyAgentSandboxAdmissionDeltas(&spec)
 
 	before := time.Now()
-	obj, err := buildSandboxObject(ns, name, spec, before.Add(agentSandboxMaxTTL))
+	obj, err := buildSandboxObject(ns, name, "", spec, before.Add(agentSandboxMaxTTL))
 	if err != nil {
 		t.Fatalf("buildSandboxObject: %v", err)
 	}

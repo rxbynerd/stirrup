@@ -116,7 +116,7 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 // controller propagates podTemplate labels to the Pod so the per-pod
 // stirrup.dev/pod label set by podLabels lands on it and the egress
 // NetworkPolicy binds to it.
-func buildSandboxObject(namespace, name string, podSpec corev1.PodSpec, shutdownTime time.Time) (*metav1unstructured.Unstructured, error) {
+func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, shutdownTime time.Time) (*metav1unstructured.Unstructured, error) {
 	specMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podSpec)
 	if err != nil {
 		return nil, fmt.Errorf("convert pod spec to unstructured: %w", err)
@@ -126,8 +126,13 @@ func buildSandboxObject(namespace, name string, podSpec corev1.PodSpec, shutdown
 	// rebuild the labels inline and risk drift from the NetworkPolicy's
 	// selector.
 	labels := map[string]any{}
-	for k, v := range podLabels(name) {
+	for k, v := range podLabels(name, runID) {
 		labels[k] = v
+	}
+
+	crLabels := map[string]any{}
+	for k, v := range sandboxLabels(runID) {
+		crLabels[k] = v
 	}
 
 	return &metav1unstructured.Unstructured{
@@ -137,9 +142,7 @@ func buildSandboxObject(namespace, name string, podSpec corev1.PodSpec, shutdown
 			"metadata": map[string]any{
 				"name":      name,
 				"namespace": namespace,
-				"labels": map[string]any{
-					k8sSandboxLabel: "true",
-				},
+				"labels":    crLabels,
 			},
 			"spec": map[string]any{
 				"shutdownPolicy": "Delete",
@@ -211,7 +214,7 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
 	applyAgentSandboxAdmissionDeltas(&spec)
 
-	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, name)
+	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, name, cfg.Lifecycle.RunID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +222,7 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		return nil, fmt.Errorf("install egress NetworkPolicy for sandbox %s/%s: %w", cfg.Namespace, name, err)
 	}
 
-	obj, err := buildSandboxObject(cfg.Namespace, name, spec, time.Now().Add(agentSandboxMaxTTL))
+	obj, err := buildSandboxObject(cfg.Namespace, name, cfg.Lifecycle.RunID, spec, time.Now().Add(agentSandboxMaxTTL))
 	if err != nil {
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		return nil, fmt.Errorf("build sandbox object: %w", err)

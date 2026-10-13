@@ -42,6 +42,9 @@ type podExecCore struct {
 	// sandboxIdentity records whether the token volume was mounted on the
 	// Pod; WriteSandboxIdentityToken refuses to run without it.
 	sandboxIdentity bool
+	// execFn replaces the pods/exec round trip when set; unit tests use it to
+	// observe the exec calls without a cluster.
+	execFn func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
 // WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
@@ -281,9 +284,14 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	stdout.limit = k8sMaxOutput
 	stderr.limit = k8sMaxOutput
 
-	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, &stdout, &stderr)
+	grouped, err := newGroupedCommand("/bin/sh", command)
+	if err != nil {
+		return nil, err
+	}
+	err = e.streamExec(ctx, grouped.runArgv(), nil, &stdout, &stderr)
 
 	if ctx.Err() != nil {
+		e.killGroup(grouped)
 		return timeoutExecResult(&stdout, &stderr), classifyExecCtxErr(ctx, timeout)
 	}
 	if stdout.exceeded || stderr.exceeded {
@@ -322,8 +330,13 @@ func (e *podExecCore) ExecStream(ctx context.Context, command string, timeout ti
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, stdout, stderr)
+	grouped, err := newGroupedCommand("/bin/sh", command)
+	if err != nil {
+		return nil, err
+	}
+	err = e.streamExec(ctx, grouped.runArgv(), nil, stdout, stderr)
 	if ctx.Err() != nil {
+		e.killGroup(grouped)
 		return &ExecResult{ExitCode: -1}, classifyExecCtxErr(ctx, timeout)
 	}
 	exitCode := 0
@@ -337,11 +350,37 @@ func (e *podExecCore) ExecStream(ctx context.Context, command string, timeout ti
 	return &ExecResult{ExitCode: exitCode}, nil
 }
 
+// killGroup kills the process group of a command whose exec ended with its
+// ctx. Cancelling the pods/exec stream does not reliably stop the process
+// inside the container, so a follow-up exec signals the group. It runs on its
+// own deadline because the command's deadline has expired; failures are
+// logged, not returned, so the command's timeout or cancellation result is
+// never replaced.
+func (e *podExecCore) killGroup(g groupedCommand) {
+	ctx, cancel := context.WithTimeout(context.Background(), groupKillTimeout)
+	defer cancel()
+
+	var stderr writeCapBuffer
+	stderr.limit = 4096
+	err := e.streamExec(ctx, g.killArgv(), nil, io.Discard, &stderr)
+	if err == nil {
+		return
+	}
+	logger := e.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("k8s executor could not kill timed-out command", "pod", e.podName, "err", err, "stderr", strings.TrimSpace(stderr.String()))
+}
+
 // streamExec runs a pods/exec request against the agent container,
 // wiring the supplied stdin/stdout/stderr streams. It is the single
 // SPDY/remotecommand chokepoint shared by Exec and the tar-based file
 // I/O methods. A nil stdin omits the stdin stream from the request.
 func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if e.execFn != nil {
+		return e.execFn(ctx, command, stdin, stdout, stderr)
+	}
 	req := e.clientset.CoreV1().RESTClient().
 		Post().
 		Resource("pods").

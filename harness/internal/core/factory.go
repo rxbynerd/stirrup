@@ -159,7 +159,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 3. Executor (built early because context strategy may need it).
 	// secLogger is threaded into the container executor so its in-process
 	// egress proxy can emit egress_allowed/egress_blocked events.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv)
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -1015,12 +1015,36 @@ func warnUnknownExcludedTools(names []string, tools tool.ToolRegistry, logger *s
 	}
 }
 
-// buildExecutor constructs the run's executor. extraEnv carries the composed
+// sandboxLifecycle derives the run label and lifetime bound handed to
+// sandbox-creating executors: the longer of the run timeout and the session
+// budget, plus the postRun hook budget, plus executor.SandboxGCMargin. The
+// postRun hooks execute in the sandbox on a context detached from the run
+// deadline, so their budget extends the span. The bound is zero (unbounded)
+// only for a config without a timeout, which ValidateRunConfig rejects.
+func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) executor.Lifecycle {
+	span := sessionBudget
+	if config.Timeout != nil {
+		if t := time.Duration(*config.Timeout) * time.Second; t > span {
+			span = t
+		}
+	}
+	if span > 0 && config.Hooks != nil && len(config.Hooks.PostRun) > 0 {
+		span += postHookBudget(config.Hooks)
+	}
+	life := executor.Lifecycle{RunID: config.RunID}
+	if span > 0 {
+		life.MaxLifetime = span + executor.SandboxGCMargin
+	}
+	return life
+}
+
+// buildExecutor constructs the run's executor. life labels and bounds any
+// sandbox the executor creates. extraEnv carries the composed
 // sandbox identity / git-proxy environment and, with the token mount it
 // implies, is honoured only by the container and k8s cases;
 // ValidateRunConfig confines SandboxIdentity and GitProxy to those types,
 // so it is empty elsewhere by construction.
-func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair) (executor.Executor, error) {
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair, life executor.Lifecycle) (executor.Executor, error) {
 	sandboxIdentityToken := cfg.SandboxIdentity != nil
 	switch cfg.Type {
 	case "local", "":
@@ -1055,6 +1079,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			EgressSecurity:       secLogger,
 			ExtraEnv:             extraEnv,
 			SandboxIdentityToken: sandboxIdentityToken,
+			Lifecycle:            life,
 		})
 	case "k8s", "k8s-sandbox":
 		// Both types share the K8s* config surface and differ only in
@@ -1081,6 +1106,8 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Security:             secLogger,
 			ExtraEnv:             extraEnv,
 			SandboxIdentityToken: sandboxIdentityToken,
+			Lifecycle:            life,
+			HarnessPod:           executor.HarnessPodFromEnv(os.Getenv),
 		}
 		if cfg.Type == "k8s-sandbox" {
 			return executor.NewAgentSandboxExecutor(ctx, k8sCfg)

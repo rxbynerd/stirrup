@@ -1,0 +1,58 @@
+# Reference Job for a harness that runs the k8s executor from inside the
+# cluster, as the stirrup-orchestrator ServiceAccount (rbac.yaml) in the same
+# namespace as the sandbox Pods (namespace.yaml).
+#
+# The three STIRRUP_POD_* variables come from the downward API. With all three
+# set and the sandbox Pod in this namespace, the sandbox Pod is owned by the
+# harness Pod, so deleting the harness Pod (or letting the Job's
+# ttlSecondsAfterFinished do so) garbage-collects any sandbox it left behind.
+# Owner references cannot cross namespaces: a sandbox in another namespace has
+# none and relies on its own activeDeadlineSeconds.
+#
+# `stirrup harness` sizes the sandbox's own lifetime from RunConfig.timeout and
+# its follow-up window. A `stirrup job` pod should additionally set
+# STIRRUP_SESSION_DEADLINE to the Job's activeDeadlineSeconds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stirrup-run
+  namespace: stirrup-sandbox
+spec:
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: stirrup-orchestrator
+      # The ServiceAccount refuses a default token automount; the harness needs
+      # one to reach the API server.
+      automountServiceAccountToken: true
+      containers:
+        - name: stirrup
+          image: ghcr.io/rxbynerd/stirrup:main
+          args:
+            - harness
+            - --config
+            - /etc/stirrup/run.json
+          env:
+            - name: STIRRUP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: STIRRUP_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: STIRRUP_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: run-config
+              mountPath: /etc/stirrup
+              readOnly: true
+      volumes:
+        - name: run-config
+          configMap:
+            name: stirrup-run-config

@@ -89,6 +89,14 @@ type K8sExecutorConfig struct {
 	// outside the workspace to deliver tokens. Set by the factory alongside
 	// ExtraEnv when executor.sandboxIdentity is configured.
 	SandboxIdentityToken bool
+	// Lifecycle stamps the run ID on the sandbox Pod and NetworkPolicy and,
+	// for the k8s executor, sets the Pod's activeDeadlineSeconds from
+	// MaxLifetime.
+	Lifecycle Lifecycle
+	// HarnessPod, when set and in Namespace, makes the sandbox Pod owned by
+	// the harness's own pod so deleting that pod garbage-collects the
+	// sandbox. Only the k8s executor honours it.
+	HarnessPod *HarnessPod
 }
 
 // K8sExecutor implements Executor by running operations inside a sandbox
@@ -153,20 +161,13 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("generate pod name: %w", err)
 	}
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: cfg.Namespace,
-			Labels:    podLabels(podName),
-		},
-		Spec: buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv),
-	}
+	pod := buildSandboxPod(cfg, podName, proxyEnv)
 
 	// Install the egress NetworkPolicy BEFORE creating the Pod: installing
 	// after readiness would leave a Running Pod with unrestricted egress in
 	// the window between creation and policy install, defeating the
 	// deny-all/allowlist posture. A failure to install is fatal.
-	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, podName)
+	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, podName, cfg.Lifecycle.RunID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +202,26 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		},
 		networkPolicyName: policy.Name,
 	}, nil
+}
+
+// buildSandboxPod builds the k8s executor's sandbox Pod. Beyond the shared
+// spec it carries the run-ID label, the lifetime bound as
+// activeDeadlineSeconds, and an owner reference to the harness pod when that
+// pod shares the sandbox's namespace.
+func buildSandboxPod(cfg K8sExecutorConfig, podName string, proxyEnv []corev1.EnvVar) *corev1.Pod {
+	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
+	if secs, ok := cfg.Lifecycle.seconds(); ok {
+		spec.ActiveDeadlineSeconds = &secs
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            podName,
+			Namespace:       cfg.Namespace,
+			Labels:          podLabels(podName, cfg.Lifecycle.RunID),
+			OwnerReferences: cfg.HarnessPod.ownerReferences(cfg.Namespace),
+		},
+		Spec: spec,
+	}
 }
 
 // buildSandboxPodSpec builds the hardened agent Pod spec shared by the k8s and

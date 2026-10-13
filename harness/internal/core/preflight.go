@@ -347,7 +347,7 @@ func preflightExecutorConstruct(
 
 	// extraEnv is nil: Preflight is structural/metadata-only, so a dry run
 	// performs no live token exchange and has nothing to compose.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, nil)
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, nil, executor.Lifecycle{})
 	if err != nil {
 		return executorBuildResult{err: err, hint: executorHint(config.Executor.Type)}
 	}

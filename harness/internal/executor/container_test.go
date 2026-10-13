@@ -7,13 +7,16 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,6 +259,9 @@ func newMockContainerExecutor(t *testing.T, extraHandlers map[string]http.Handle
 	}
 
 	sock, sockCleanup := mockEngineServer(t, handlers)
+	// Mock exec handlers that hang would otherwise stall the follow-up kill
+	// exec for the full production bound.
+	withShortTimeout(t, &groupKillTimeout, time.Second)
 
 	exec := &ContainerExecutor{
 		api:         newContainerAPIClient(sock),
@@ -467,9 +473,10 @@ func TestContainerExecutor_Exec(t *testing.T) {
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			// Verify it wraps in sh -c
-			if len(req.Cmd) != 3 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" {
-				t.Errorf("exec cmd should be sh -c ..., got %v", req.Cmd)
+			// The command runs through the process-group wrapper, which
+			// passes the original command as its last argument.
+			if len(req.Cmd) != 7 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" || req.Cmd[6] != "echo output" {
+				t.Errorf("exec cmd should be the sh -c group wrapper around the command, got %v", req.Cmd)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-run"})
@@ -841,6 +848,115 @@ func TestContainerExecutor_Capabilities(t *testing.T) {
 		if caps.MaxTimeout != maxTimeout {
 			t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
 		}
+	}
+}
+
+func TestContainerExecutor_CreateRequestCarriesLifecycle(t *testing.T) {
+	var got containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"POST /containers/*/stop":  func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"DELETE /containers/*":     func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Lifecycle:  Lifecycle{RunID: "run-42", MaxLifetime: 90*time.Minute + 500*time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if want := []string{"sleep", "5401"}; !slices.Equal(got.Cmd, want) {
+		t.Errorf("Cmd = %v, want %v (lifetime rounded up to whole seconds)", got.Cmd, want)
+	}
+	if !got.HostConfig.AutoRemove {
+		t.Error("HostConfig.AutoRemove = false, want true")
+	}
+	if got.Labels["stirrup.sandbox"] != "true" || got.Labels["stirrup.run-id"] != "run-42" {
+		t.Errorf("Labels = %v, want stirrup.sandbox=true and stirrup.run-id=run-42", got.Labels)
+	}
+}
+
+func TestContainerExecutor_CreateRequestWithoutLifetimeKeepsAlive(t *testing.T) {
+	var got containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"POST /containers/*/stop":  func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		"DELETE /containers/*":     func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if want := []string{"sleep", "infinity"}; !slices.Equal(got.Cmd, want) {
+		t.Errorf("Cmd = %v, want %v", got.Cmd, want)
+	}
+	if _, ok := got.Labels["stirrup.run-id"]; ok {
+		t.Errorf("Labels = %v, want no run-id label for an empty run ID", got.Labels)
+	}
+}
+
+// TestContainerExecutor_CloseToleratesAutoRemovedContainer covers the engine
+// having already reaped the container (its keep-alive sleep ended, or the
+// stop triggered auto-removal) before the explicit delete arrives.
+func TestContainerExecutor_CloseToleratesAutoRemovedContainer(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr bool
+	}{
+		{"not found", http.StatusNotFound, `{"message":"No such container: test-container-id"}`, false},
+		{"removal already in progress", http.StatusConflict, `{"message":"removal of container test-container-id is already in progress"}`, false},
+		{"other conflict", http.StatusConflict, `{"message":"container is paused"}`, true},
+		{"server error", http.StatusInternalServerError, `{"message":"boom"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+				"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusNotFound)
+				},
+				"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tt.status)
+					_, _ = w.Write([]byte(tt.body))
+				},
+			})
+			defer cleanup()
+
+			err := exec.Close()
+			if tt.wantErr && err == nil {
+				t.Fatal("Close succeeded, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		})
 	}
 }
 
@@ -1771,5 +1887,131 @@ func TestContainerExecutor_ExecStream_WriterErrorAborts(t *testing.T) {
 	_, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &failAfterWriter{remaining: 4096, err: limitErr}, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "capture limit exceeded") {
 		t.Fatalf("expected writer failure to surface, got %v", err)
+	}
+}
+
+// recordedExecs collects the Cmd of every exec the mock engine is asked to
+// create, in order, so tests can see the follow-up kill exec.
+type recordedExecs struct {
+	mu   sync.Mutex
+	cmds [][]string
+}
+
+func (r *recordedExecs) add(cmd []string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cmds = append(r.cmds, cmd)
+	return len(r.cmds)
+}
+
+func (r *recordedExecs) all() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.cmds...)
+}
+
+// killTrackingHandlers serves a first exec that hangs (the command) and
+// answers any later exec (the kill) immediately with exit 0.
+func killTrackingHandlers(execs *recordedExecs) map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			var req execCreateRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			n := execs.add(req.Cmd)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: fmt.Sprintf("exec-%d", n)})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/start"), "exec-1") {
+				hangingExecStartHandler("partial\n")(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+		},
+	}
+}
+
+func assertKillExecFollowsRun(t *testing.T, cmds [][]string) {
+	t.Helper()
+	if len(cmds) != 2 {
+		t.Fatalf("execs = %d, want the command plus one kill exec: %v", len(cmds), cmds)
+	}
+	run, kill := cmds[0], cmds[1]
+	if len(run) != 7 || run[6] != "sleep 600" {
+		t.Fatalf("run exec = %v, want the group wrapper around %q", run, "sleep 600")
+	}
+	if len(kill) != 5 || kill[0] != "sh" || kill[1] != "-c" || kill[2] != groupKillScript {
+		t.Fatalf("kill exec = %v, want the group kill script", kill)
+	}
+	if kill[4] != run[5] || !strings.HasPrefix(kill[4], groupPidFileDir+"/.stirrup-exec-") {
+		t.Errorf("kill pid file %q must match the run pid file %q under %s", kill[4], run[5], groupPidFileDir)
+	}
+}
+
+func TestContainerExecutor_Exec_TimeoutKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	_, err := exec.Exec(context.Background(), "sleep 600", 200*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_Exec_CancelKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+	_, err := exec.Exec(ctx, "sleep 600", 60*time.Second)
+	if err == nil || errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want a plain cancellation", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_ExecStream_TimeoutKillsProcessGroup(t *testing.T) {
+	execs := &recordedExecs{}
+	exec, cleanup := newMockContainerExecutor(t, killTrackingHandlers(execs))
+	defer cleanup()
+
+	var stdout, stderr bytes.Buffer
+	_, err := exec.ExecStream(context.Background(), "sleep 600", 200*time.Millisecond, &stdout, &stderr)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	assertKillExecFollowsRun(t, execs.all())
+}
+
+func TestContainerExecutor_Exec_CompletedCommandIssuesNoKill(t *testing.T) {
+	execs := &recordedExecs{}
+	handlers := killTrackingHandlers(execs)
+	handlers["POST /exec/*/start"] = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		writeDockerFrame(w, 1, []byte("done\n"))
+	}
+	exec, cleanup := newMockContainerExecutor(t, handlers)
+	defer cleanup()
+
+	result, err := exec.Exec(context.Background(), "echo done", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "done\n" {
+		t.Errorf("result = %+v", result)
+	}
+	if n := len(execs.all()); n != 1 {
+		t.Errorf("execs = %d, want only the command itself", n)
 	}
 }

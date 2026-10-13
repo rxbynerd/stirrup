@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -612,5 +614,134 @@ func TestCapabilities(t *testing.T) {
 func TestMaxTimeout_Is30Minutes(t *testing.T) {
 	if maxTimeout != 30*time.Minute {
 		t.Errorf("maxTimeout = %v, want 30m (issue #461 raised the shared executor cap from 5m)", maxTimeout)
+	}
+}
+
+// processRunning reports whether pid is a live, non-zombie process.
+func processRunning(t *testing.T, pid int) bool {
+	t.Helper()
+	out, err := osexec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	stat := strings.TrimSpace(string(out))
+	return stat != "" && !strings.HasPrefix(stat, "Z")
+}
+
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(path); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+				return pid
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid file %s was not written", path)
+	return 0
+}
+
+func requirePS(t *testing.T) {
+	t.Helper()
+	if _, err := osexec.LookPath("ps"); err != nil {
+		t.Skip("ps not available")
+	}
+}
+
+func TestExec_TimeoutKillsBackgroundGrandchild(t *testing.T) {
+	exec, dir := newTestExecutor(t)
+
+	// The detached grandchild holds no pipe, so only a process-group kill
+	// stops it from writing the marker after the command timed out.
+	command := "sh -c 'sleep 2; touch after-timeout' >/dev/null 2>&1 & sleep 600"
+	_, err := exec.Exec(context.Background(), command, 500*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+
+	time.Sleep(3 * time.Second)
+	if _, statErr := os.Stat(filepath.Join(dir, "after-timeout")); statErr == nil {
+		t.Fatal("background grandchild survived the timeout and wrote its marker")
+	}
+}
+
+func TestExec_TimeoutKillsProcessTree(t *testing.T) {
+	requirePS(t)
+	exec, dir := newTestExecutor(t)
+
+	pidFile := filepath.Join(dir, "sleeper.pid")
+	command := "sleep 600 & echo $! > sleeper.pid; wait"
+	go func() { _, _ = exec.Exec(context.Background(), command, 1500*time.Millisecond) }()
+
+	pid := readPid(t, pidFile)
+	if !processRunning(t, pid) {
+		t.Fatalf("sleeper %d is not running before the timeout", pid)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for processRunning(t, pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("sleeper %d still running after the command timed out", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestExec_CancelKillsTermIgnoringProcessTree(t *testing.T) {
+	requirePS(t)
+	exec, dir := newTestExecutor(t)
+
+	pidFile := filepath.Join(dir, "stubborn.pid")
+	command := "trap '' TERM; sleep 600 & echo $! > stubborn.pid; wait"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := exec.Exec(ctx, command, 60*time.Second)
+		done <- err
+	}()
+
+	pid := readPid(t, pidFile)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || errors.Is(err, ErrTimeout) {
+			t.Fatalf("err = %v, want a plain cancellation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Exec did not return after cancellation")
+	}
+
+	// Exec returns only after the group has been SIGKILLed.
+	deadline := time.Now().Add(2 * time.Second)
+	for processRunning(t, pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("SIGTERM-ignoring process %d survived cancellation", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestExec_NormalCompletionLeavesBackgroundProcessAndExitCode(t *testing.T) {
+	exec, dir := newTestExecutor(t)
+
+	result, err := exec.Exec(context.Background(), "(sleep 1; touch detached) >/dev/null 2>&1 & echo out; echo err >&2; exit 7", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 7 || result.Stdout != "out\n" || result.Stderr != "err\n" {
+		t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", result, "out\n", "err\n")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "detached")); statErr == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a command that finished normally must not kill the background processes it left behind")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

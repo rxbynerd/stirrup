@@ -1201,7 +1201,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:      "local",
 		Workspace: workspace,
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1213,7 +1213,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Workspace: t.TempDir(),
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1223,7 +1223,7 @@ func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 }
 
 func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil, nil, executor.Lifecycle{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1233,7 +1233,7 @@ func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
 }
 
 func TestBuildExecutor_API_MissingVcsBackend(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for api without vcsBackend")
 	}
@@ -1295,7 +1295,7 @@ func TestBuildExecutor_API_DispatchesOnBackendType(t *testing.T) {
 			exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 				Type:       "api",
 				VcsBackend: &tt.backend,
-			}, secrets, nil, nil)
+			}, secrets, nil, nil, executor.Lifecycle{})
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -1337,7 +1337,7 @@ func TestBuildExecutor_API_EmptyAPIKeyRefSkipsSecretResolution(t *testing.T) {
 					Repo: backend.repo,
 					Ref:  "main",
 				},
-			}, &stubSecretStore{}, nil, nil)
+			}, &stubSecretStore{}, nil, nil, executor.Lifecycle{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1359,7 +1359,7 @@ func TestBuildExecutor_API_SecretResolutionFailureNamesTheField(t *testing.T) {
 			APIKeyRef: "secret://missing",
 			Repo:      "owner/repo",
 		},
-	}, &stubSecretStore{}, nil, nil)
+	}, &stubSecretStore{}, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for an unresolvable apiKeyRef")
 	}
@@ -1369,7 +1369,7 @@ func TestBuildExecutor_API_SecretResolutionFailureNamesTheField(t *testing.T) {
 }
 
 func TestBuildExecutor_Container_MissingImage(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for container without image")
 	}
@@ -1379,7 +1379,7 @@ func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 }
 
 func TestBuildExecutor_None_ValidConfig(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "none"}, nil, nil, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "none"}, nil, nil, nil, executor.Lifecycle{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestBuildExecutor_None_ValidConfig(t *testing.T) {
 }
 
 func TestBuildExecutor_UnsupportedType(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -1406,7 +1406,7 @@ func TestBuildExecutor_K8s_MissingImage(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:         "k8s",
 		K8sNamespace: "default",
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for k8s without image")
 	}
@@ -1419,7 +1419,7 @@ func TestBuildExecutor_K8s_MissingNamespace(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:  "k8s",
 		Image: "busybox",
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for k8s without namespace")
 	}
@@ -1440,7 +1440,7 @@ func TestBuildExecutor_K8s_TakesK8sPath(t *testing.T) {
 		Image:         "busybox",
 		K8sNamespace:  "default",
 		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		// A success would mean a cluster was reachable; that is fine but not
 		// the cluster-free case this test targets.
@@ -1455,7 +1455,7 @@ func TestBuildExecutor_K8sSandbox_MissingImage(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:         "k8s-sandbox",
 		K8sNamespace: "default",
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for k8s-sandbox without image")
 	}
@@ -1468,7 +1468,7 @@ func TestBuildExecutor_K8sSandbox_MissingNamespace(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:  "k8s-sandbox",
 		Image: "busybox",
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		t.Fatal("expected error for k8s-sandbox without namespace")
 	}
@@ -1491,7 +1491,7 @@ func TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath(t *testing.T) {
 		K8sNamespace:  "default",
 		Network:       &types.NetworkConfig{Mode: "none"},
 		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
-	}, nil, nil, nil)
+	}, nil, nil, nil, executor.Lifecycle{})
 	if err == nil {
 		// A success would mean a cluster was reachable; that is fine but not
 		// the cluster-free case this test targets.
@@ -3738,4 +3738,68 @@ func TestBuildCommandOutputStore_Gating(t *testing.T) {
 
 func testOTLPSettings(endpoint string, headers map[string]string) otlp.Settings {
 	return otlp.Settings{Protocol: otlp.ProtocolHTTPProtobuf, Endpoint: endpoint, Headers: headers}
+}
+
+func TestSandboxLifecycle(t *testing.T) {
+	timeout := func(s int) *int { return &s }
+
+	t.Run("run timeout plus margin", func(t *testing.T) {
+		life := sandboxLifecycle(&types.RunConfig{RunID: "run-1", Timeout: timeout(600)}, 0)
+		if want := 10*time.Minute + executor.SandboxGCMargin; life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+		if life.RunID != "run-1" {
+			t.Errorf("RunID = %q, want run-1", life.RunID)
+		}
+	})
+
+	t.Run("longer session budget wins", func(t *testing.T) {
+		life := sandboxLifecycle(&types.RunConfig{Timeout: timeout(600)}, 5*time.Hour)
+		if want := 5*time.Hour + executor.SandboxGCMargin; life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("budget shorter than the timeout is raised to it", func(t *testing.T) {
+		life := sandboxLifecycle(&types.RunConfig{Timeout: timeout(600)}, time.Minute)
+		if want := 10*time.Minute + executor.SandboxGCMargin; life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("no timeout and no budget stays unbounded", func(t *testing.T) {
+		if life := sandboxLifecycle(&types.RunConfig{}, 0); life.MaxLifetime != 0 {
+			t.Errorf("MaxLifetime = %v, want 0", life.MaxLifetime)
+		}
+	})
+
+	t.Run("postRun hook budget extends the run timeout", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PostRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 1800},
+			{Command: "true", TimeoutSeconds: 60},
+		}}}
+		want := 10*time.Minute + postHookBudget(cfg.Hooks) + executor.SandboxGCMargin
+		if life := sandboxLifecycle(cfg, 0); life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("postRun hook budget extends the session budget", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PostRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 300},
+		}}}
+		want := 5*time.Hour + (300+30)*time.Second + executor.SandboxGCMargin
+		if life := sandboxLifecycle(cfg, 5*time.Hour); life.MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", life.MaxLifetime, want)
+		}
+	})
+
+	t.Run("hooks without postRun entries leave the span unchanged", func(t *testing.T) {
+		cfg := &types.RunConfig{Timeout: timeout(600), Hooks: &types.HooksConfig{PreRun: []types.HookConfig{
+			{Command: "true", TimeoutSeconds: 900},
+		}}}
+		if want := 10*time.Minute + executor.SandboxGCMargin; sandboxLifecycle(cfg, 0).MaxLifetime != want {
+			t.Errorf("MaxLifetime = %v, want %v", sandboxLifecycle(cfg, 0).MaxLifetime, want)
+		}
+	})
 }

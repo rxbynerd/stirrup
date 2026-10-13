@@ -26,7 +26,12 @@ runs the agentic loop with the pre-established transport.
 Required environment variables:
   CONTROL_PLANE_ADDR          gRPC address of the control plane
   CONTROL_PLANE_SESSION_ID    Session ID for correlation (optional)
-  STIRRUP_FOLLOWUP_GRACE      Follow-up grace period in seconds (optional)`,
+  STIRRUP_FOLLOWUP_GRACE      Follow-up grace period in seconds (optional)
+  STIRRUP_SESSION_DEADLINE    Session length in seconds the sandbox must outlive;
+                              set to the Job's activeDeadlineSeconds (optional)
+  STIRRUP_POD_NAME,           Downward-API identity of this pod; with all three
+  STIRRUP_POD_UID,            set, a k8s sandbox in the same namespace is owned
+  STIRRUP_POD_NAMESPACE       by it (optional)`,
 	Args: cobra.NoArgs,
 	RunE: runJob,
 }
@@ -150,7 +155,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 	buildCtx, cancelBuild := context.WithCancelCause(runCtx)
 	defer cancelBuild(nil)
 	stopBuildWatch := watchControlStream(tp, cancelBuild)
-	loop, err := buildJobLoop(buildCtx, config, tp)
+	graceSecs := followUpGraceSeconds(config)
+	loop, err := buildJobLoop(buildCtx, config, tp,
+		core.WithSessionBudget(jobSessionBudget(runTimeout, graceSecs)),
+	)
 	stopBuildWatch()
 	if lossErr := controlStreamErr(tp); lossErr != nil {
 		if loop != nil {
@@ -201,14 +209,6 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	graceSecs := 0
-	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
-		graceSecs = *config.FollowUpGrace
-	} else if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			graceSecs = n
-		}
-	}
 	// Called even with no grace window so user_response events that
 	// arrived after the run's last turn boundary are rejected with a
 	// warning rather than lost at exit.
@@ -225,6 +225,35 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.
 	return runOutcomeError(runTrace)
+}
+
+// followUpGraceSeconds resolves the follow-up window: the task's
+// FollowUpGrace, else STIRRUP_FOLLOWUP_GRACE, else zero (no window).
+func followUpGraceSeconds(config *types.RunConfig) int {
+	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
+		return *config.FollowUpGrace
+	}
+	if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// jobSessionBudget is how long the sandbox must stay usable for a job.
+// STIRRUP_SESSION_DEADLINE (seconds), which operators set to the Job's
+// activeDeadlineSeconds, is the session cap when present. Otherwise the
+// session is sized like a `stirrup harness` session: the primary run plus the
+// follow-up allowance, which is the run alone when no follow-up window is
+// configured.
+func jobSessionBudget(runTimeout time.Duration, graceSecs int) time.Duration {
+	if v := os.Getenv("STIRRUP_SESSION_DEADLINE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return runTimeout + cliSessionBudget(runTimeout, graceSecs)
 }
 
 // emitTerminalFailure sends the "error" then "done" pair that the
