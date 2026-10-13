@@ -78,6 +78,7 @@ type definition struct {
 // keys must equal types.ValidTraceEmitterPlatformValues().
 var registry = map[string]definition{
 	"cloudwatch": cloudwatchDefinition,
+	"phoenix":    phoenixDefinition,
 }
 
 // Resolve validates opts against the named platform and builds its
