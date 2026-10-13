@@ -45,7 +45,11 @@ func buildComponentsForParity(t *testing.T, config *types.RunConfig) *builtCompo
 		t.Fatalf("resolve headers: %v", err)
 	}
 	tp := transport.NewStdioTransport(io.Discard, nil)
-	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), tp, execResult, resolvedHeaders, resourceOptionsFromConfig(config), nil, false)
+	exporters, resourceOpts, err := resolveTelemetry(ctx, config, resolvedHeaders)
+	if err != nil {
+		t.Fatalf("resolve telemetry: %v", err)
+	}
+	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), tp, execResult, exporters, resourceOpts, nil, false)
 	if err != nil {
 		t.Fatalf("buildComponents: %v", err)
 	}

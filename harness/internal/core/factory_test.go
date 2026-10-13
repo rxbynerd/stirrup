@@ -30,6 +30,8 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
+	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -982,7 +984,7 @@ func TestBuildHookRunner_PostRunOnlyReturnsExecRunner(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, nil, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, platform.Exporters{}, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -993,7 +995,7 @@ func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 
 func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, nil, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, platform.Exporters{}, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1007,7 +1009,7 @@ func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, nil, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, platform.Exporters{}, observability.ResourceOptions{}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1017,7 +1019,7 @@ func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
-	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, nil, observability.ResourceOptions{}, false)
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, platform.Exporters{}, observability.ResourceOptions{}, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -1026,11 +1028,169 @@ func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
 	}
 }
 
+func TestResolveTelemetry_WithoutPlatformKeepsTheExplicitConfig(t *testing.T) {
+	config := &types.RunConfig{
+		Mode: "planning",
+		TraceEmitter: types.TraceEmitterConfig{
+			Type:            "otel",
+			Protocol:        "http/protobuf",
+			Endpoint:        "https://gw.example/otlp",
+			MetricsEndpoint: "https://metrics.example/otlp",
+		},
+		Observability: types.ObservabilityConfig{ServiceName: "agent-a"},
+	}
+	headers := map[string]string{"Authorization": "Bearer t"}
+	exporters, resourceOpts, err := resolveTelemetry(context.Background(), config, headers)
+	if err != nil {
+		t.Fatalf("resolveTelemetry: %v", err)
+	}
+	if exporters.Traces.Endpoint != "https://gw.example/otlp" || exporters.Metrics.Endpoint != "https://metrics.example/otlp" || exporters.Logs.Endpoint != "https://gw.example/otlp" {
+		t.Errorf("endpoints = %q %q %q", exporters.Traces.Endpoint, exporters.Metrics.Endpoint, exporters.Logs.Endpoint)
+	}
+	if exporters.Traces.Headers["Authorization"] != "Bearer t" || exporters.Traces.HTTPClient != nil {
+		t.Errorf("trace settings = %+v, want the explicit headers and the SDK client", exporters.Traces)
+	}
+	if resourceOpts.ServiceName != "agent-a" || resourceOpts.RunMode != "planning" || resourceOpts.Extra != nil {
+		t.Errorf("resource options = %+v", resourceOpts)
+	}
+}
+
+func TestResolveTelemetry_RejectsUnknownPlatformOption(t *testing.T) {
+	config := &types.RunConfig{TraceEmitter: types.TraceEmitterConfig{
+		Type:            "otel",
+		Protocol:        "http/protobuf",
+		Platform:        types.ValidTraceEmitterPlatformValues()[0],
+		PlatformOptions: map[string]string{"notAnOption": "x"},
+	}}
+	_, _, err := resolveTelemetry(context.Background(), config, nil)
+	if err == nil || !strings.Contains(err.Error(), "resolve observability platform") {
+		t.Errorf("got %v", err)
+	}
+}
+
+// platformTestOptions are option sets tried in turn to resolve each
+// platform without naming it here.
+var platformTestOptions = []map[string]string{
+	{"project": "stirrup-tests"},
+	{"logGroup": "/stirrup/tests"},
+}
+
+// isolateCloudCredentials gives the AWS default chain static environment
+// credentials and a region, with no shared config and no instance
+// metadata lookup.
+func isolateCloudCredentials(t *testing.T) {
+	t.Helper()
+	missing := filepath.Join(t.TempDir(), "absent")
+	for name, value := range map[string]string{
+		"AWS_ACCESS_KEY_ID":                      "AKIDEXAMPLE",
+		"AWS_SECRET_ACCESS_KEY":                  "secret-key",
+		"AWS_SESSION_TOKEN":                      "",
+		"AWS_REGION":                             "eu-west-1",
+		"AWS_PROFILE":                            "",
+		"AWS_CONFIG_FILE":                        missing,
+		"AWS_SHARED_CREDENTIALS_FILE":            missing,
+		"AWS_WEB_IDENTITY_TOKEN_FILE":            "",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI":     "",
+		"AWS_EC2_METADATA_DISABLED":              "true",
+	} {
+		t.Setenv(name, value)
+	}
+}
+
+// TestResolveTelemetry_WiresEachPlatformIntoTheBuilders pins that a real
+// profile's resource attributes, span decoration and wrapped HTTP clients
+// reach the inputs of the trace, metric and log builders.
+func TestResolveTelemetry_WiresEachPlatformIntoTheBuilders(t *testing.T) {
+	isolateCloudCredentials(t)
+	var decorated, wrapped bool
+	for _, name := range types.ValidTraceEmitterPlatformValues() {
+		t.Run(name, func(t *testing.T) {
+			config := &types.RunConfig{
+				TraceEmitter:  types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolHTTPProtobuf, Platform: name},
+				Observability: types.ObservabilityConfig{LogsExport: types.LogsExportConfig{Type: "otlp"}},
+			}
+			var (
+				exporters    platform.Exporters
+				resourceOpts observability.ResourceOptions
+				err          error
+			)
+			for _, opts := range platformTestOptions {
+				config.TraceEmitter.PlatformOptions = opts
+				if exporters, resourceOpts, err = resolveTelemetry(context.Background(), config, nil); err == nil {
+					break
+				}
+			}
+			if err != nil {
+				t.Fatalf("no test option set resolves platform %q: %v", name, err)
+			}
+
+			if len(exporters.ResourceAttrs) == 0 || !reflect.DeepEqual(resourceOpts.Extra, exporters.ResourceAttrs) {
+				t.Errorf("resource Extra = %v, want the profile's attributes %v", resourceOpts.Extra, exporters.ResourceAttrs)
+			}
+			opts := otelEmitterOptions(config.TraceEmitter, exporters, resourceOpts, false)
+			if (opts.WrapSpanExporter != nil) != (exporters.WrapSpanExporter != nil) {
+				t.Error("the trace emitter must receive the profile's span exporter wrapper")
+			}
+			if !reflect.DeepEqual(opts.Resource.Extra, exporters.ResourceAttrs) {
+				t.Errorf("trace emitter resource Extra = %v, want %v", opts.Resource.Extra, exporters.ResourceAttrs)
+			}
+			decorated = decorated || exporters.WrapSpanExporter != nil
+			if opts.Exporter.HTTPClient == nil {
+				return
+			}
+			wrapped = true
+			for sig, s := range map[string]otlp.Settings{"traces": opts.Exporter, "metrics": exporters.Metrics, "logs": exporters.Logs} {
+				if s.HTTPClient == nil || s.HTTPClient.Timeout <= 0 {
+					t.Errorf("%s must use the profile's bounded HTTP client, got %+v", sig, s.HTTPClient)
+				}
+			}
+			if !metricsEnabled(config, exporters) {
+				t.Error("a profile with a metrics endpoint must enable metric export")
+			}
+		})
+	}
+	if !decorated || !wrapped {
+		t.Errorf("the registered platforms must exercise span decoration (%v) and wrapped transports (%v)", decorated, wrapped)
+	}
+}
+
+func TestLogPlatformExporters_NamesEndpointsNotHeaders(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	config := &types.RunConfig{
+		TraceEmitter:  types.TraceEmitterConfig{Type: "otel"},
+		Observability: types.ObservabilityConfig{LogsExport: types.LogsExportConfig{Type: "otlp"}},
+	}
+	headers := map[string]string{"Authorization": "Bearer header-value-must-not-appear"}
+	logPlatformExporters(logger, config, platform.Exporters{
+		Platform: "example",
+		Traces:   testOTLPSettings("https://traces.example", headers),
+		Metrics:  testOTLPSettings("https://metrics.example", headers),
+		Logs:     testOTLPSettings("", headers),
+	})
+	out := buf.String()
+	for _, want := range []string{"platform=example", "traces=https://traces.example", "metrics=https://metrics.example", "OTEL_EXPORTER_OTLP environment"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log line %q lacks %q", out, want)
+		}
+	}
+	if strings.Contains(out, "header-value-must-not-appear") {
+		t.Errorf("log line leaks a header value: %q", out)
+	}
+
+	buf.Reset()
+	logPlatformExporters(logger, config, platform.Exporters{})
+	if buf.Len() != 0 {
+		t.Errorf("no platform must log nothing, got %q", buf.String())
+	}
+}
+
 func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
 		Type:     "jsonl",
 		FilePath: "/nonexistent/deeply/nested/dir/trace.jsonl",
-	}, nil, observability.ResourceOptions{}, false)
+	}, platform.Exporters{}, observability.ResourceOptions{}, false)
 	if err == nil {
 		t.Fatal("expected error for bad trace file path")
 	}
@@ -3574,4 +3734,8 @@ func TestBuildCommandOutputStore_Gating(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testOTLPSettings(endpoint string, headers map[string]string) otlp.Settings {
+	return otlp.Settings{Protocol: otlp.ProtocolHTTPProtobuf, Endpoint: endpoint, Headers: headers}
 }

@@ -13,7 +13,18 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestLogExportSettings(t *testing.T) {
+// logsSettings resolves cfg's telemetry without a platform and returns
+// the log exporter settings.
+func logsSettings(t *testing.T, cfg *types.RunConfig, headers map[string]string) otlp.Settings {
+	t.Helper()
+	exporters, _, err := resolveTelemetry(context.Background(), cfg, headers)
+	if err != nil {
+		t.Fatalf("resolveTelemetry: %v", err)
+	}
+	return exporters.Logs
+}
+
+func TestResolveTelemetry_LogsSettings(t *testing.T) {
 	headers := map[string]string{"Authorization": "Bearer t"}
 	cfg := &types.RunConfig{
 		TraceEmitter: types.TraceEmitterConfig{
@@ -24,7 +35,7 @@ func TestLogExportSettings(t *testing.T) {
 		Observability: types.ObservabilityConfig{LogsExport: types.LogsExportConfig{Type: "otlp"}},
 	}
 
-	got := logExportSettings(cfg, headers)
+	got := logsSettings(t, cfg, headers)
 	if got.Protocol != otlp.ProtocolHTTPProtobuf {
 		t.Errorf("Protocol = %q, want the trace emitter's %q", got.Protocol, otlp.ProtocolHTTPProtobuf)
 	}
@@ -36,7 +47,7 @@ func TestLogExportSettings(t *testing.T) {
 	}
 
 	cfg.Observability.LogsExport.Endpoint = "https://logs.example/otlp"
-	if got := logExportSettings(cfg, headers); got.Endpoint != "https://logs.example/otlp" {
+	if got := logsSettings(t, cfg, headers); got.Endpoint != "https://logs.example/otlp" {
 		t.Errorf("Endpoint = %q, want logsExport.endpoint to win", got.Endpoint)
 	}
 }
@@ -62,7 +73,7 @@ func TestLogExport_HTTPTraceProtocolPostsLogsToV1Logs(t *testing.T) {
 		},
 		Observability: types.ObservabilityConfig{LogsExport: types.LogsExportConfig{Type: "otlp"}},
 	}
-	exporter, handler, err := observability.NewLogExporter(context.Background(), logExportSettings(cfg, nil), observability.ResourceOptions{})
+	exporter, handler, err := observability.NewLogExporter(context.Background(), logsSettings(t, cfg, nil), observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("NewLogExporter: %v", err)
 	}
@@ -78,17 +89,29 @@ func TestLogExport_HTTPTraceProtocolPostsLogsToV1Logs(t *testing.T) {
 	}
 }
 
-func TestMetricsSettings(t *testing.T) {
+// metricsSettings resolves te's telemetry without a platform. ok is false
+// when metrics are not exported.
+func metricsSettings(t *testing.T, te types.TraceEmitterConfig, headers map[string]string) (otlp.Settings, bool) {
+	t.Helper()
+	cfg := &types.RunConfig{TraceEmitter: te}
+	exporters, _, err := resolveTelemetry(context.Background(), cfg, headers)
+	if err != nil {
+		t.Fatalf("resolveTelemetry: %v", err)
+	}
+	return exporters.Metrics, metricsEnabled(cfg, exporters)
+}
+
+func TestResolveTelemetry_MetricsSettings(t *testing.T) {
 	headers := map[string]string{"Authorization": "Bearer t"}
 
-	if _, ok := metricsSettings(types.TraceEmitterConfig{Type: "jsonl", Endpoint: "localhost:4317"}, headers); ok {
+	if _, ok := metricsSettings(t, types.TraceEmitterConfig{Type: "jsonl", Endpoint: "localhost:4317"}, headers); ok {
 		t.Error("jsonl emitter: metrics must not be exported")
 	}
-	if _, ok := metricsSettings(types.TraceEmitterConfig{Type: "otel"}, headers); ok {
+	if _, ok := metricsSettings(t, types.TraceEmitterConfig{Type: "otel"}, headers); ok {
 		t.Error("otel emitter without an endpoint: metrics must not be exported")
 	}
 
-	got, ok := metricsSettings(types.TraceEmitterConfig{
+	got, ok := metricsSettings(t, types.TraceEmitterConfig{
 		Type:               "otel",
 		Protocol:           otlp.ProtocolHTTPProtobuf,
 		Endpoint:           "https://traces.example/otlp",
@@ -105,10 +128,10 @@ func TestMetricsSettings(t *testing.T) {
 		Temporality: otlp.TemporalityDelta,
 	}
 	if got.Protocol != want.Protocol || got.Endpoint != want.Endpoint || got.Temporality != want.Temporality || got.Headers["Authorization"] != "Bearer t" {
-		t.Errorf("metricsSettings = %+v, want %+v", got, want)
+		t.Errorf("metrics settings = %+v, want %+v", got, want)
 	}
 
-	got, _ = metricsSettings(types.TraceEmitterConfig{Type: "otel", Endpoint: "localhost:4317"}, nil)
+	got, _ = metricsSettings(t, types.TraceEmitterConfig{Type: "otel", Endpoint: "localhost:4317"}, nil)
 	if got.Endpoint != "localhost:4317" {
 		t.Errorf("Endpoint = %q, want the trace endpoint fallback", got.Endpoint)
 	}
@@ -117,14 +140,19 @@ func TestMetricsSettings(t *testing.T) {
 func TestOTelEmitterOptions(t *testing.T) {
 	headers := map[string]string{"Authorization": "Bearer t"}
 	resourceOpts := observability.ResourceOptions{ServiceName: "agent-a"}
-
-	got := otelEmitterOptions(types.TraceEmitterConfig{
+	cfg := types.TraceEmitterConfig{
 		Type:                   "otel",
 		Protocol:               otlp.ProtocolHTTPProtobuf,
 		Endpoint:               "https://gateway.example/otlp",
 		CaptureContent:         true,
 		CaptureContentMaxBytes: 256,
-	}, headers, resourceOpts, true)
+	}
+	exporters, _, err := resolveTelemetry(context.Background(), &types.RunConfig{TraceEmitter: cfg}, headers)
+	if err != nil {
+		t.Fatalf("resolveTelemetry: %v", err)
+	}
+
+	got := otelEmitterOptions(cfg, exporters, resourceOpts, true)
 
 	if got.Exporter.Protocol != otlp.ProtocolHTTPProtobuf || got.Exporter.Endpoint != "https://gateway.example/otlp" || got.Exporter.Headers["Authorization"] != "Bearer t" {
 		t.Errorf("Exporter = %+v, want the configured protocol, endpoint and headers", got.Exporter)
@@ -136,7 +164,12 @@ func TestOTelEmitterOptions(t *testing.T) {
 		t.Errorf("Resource = %+v, RedactionDisabled = %v, want the passed values", got.Resource, got.RedactionDisabled)
 	}
 
-	if got := otelEmitterOptions(types.TraceEmitterConfig{Type: "otel"}, nil, resourceOpts, false); got.Exporter.Endpoint != "localhost:4317" {
+	defaults := types.TraceEmitterConfig{Type: "otel"}
+	exporters, _, err = resolveTelemetry(context.Background(), &types.RunConfig{TraceEmitter: defaults}, nil)
+	if err != nil {
+		t.Fatalf("resolveTelemetry: %v", err)
+	}
+	if got := otelEmitterOptions(defaults, exporters, resourceOpts, false); got.Exporter.Endpoint != "localhost:4317" {
 		t.Errorf("default Endpoint = %q, want localhost:4317", got.Exporter.Endpoint)
 	}
 }
