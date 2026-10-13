@@ -113,3 +113,41 @@ func TestSpanContextHandler_StillScrubs(t *testing.T) {
 		t.Errorf("expected trace_id alongside the scrubbed value: %s", output)
 	}
 }
+
+// TestScopedLogger_FallsBackToScopeSpan asserts that a record without a
+// span of its own carries the scope's span, a record with one keeps
+// it, and an invalid scope span stops the fallback.
+func TestScopedLogger_FallsBackToScopeSpan(t *testing.T) {
+	const (
+		scopeTrace = "0102030405060708090a0b0c0d0e0f10"
+		scopeSpan  = "0102030405060708"
+		ownTrace   = "a1a2a3a4a5a6a7a8a9aaabacadaeafb0"
+		ownSpan    = "b1b2b3b4b5b6b7b8"
+	)
+	var buf bytes.Buffer
+	scope := NewRunScope("run-1")
+	scope.SetSpanContext(oteltrace.SpanContextFromContext(ctxWithSpan(t, scopeTrace, scopeSpan)))
+	logger := NewScopedLoggerWithExport(scope, slog.LevelInfo, &buf, nil, nil)
+
+	logger.Info("no context")
+	logger.InfoContext(ctxWithSpan(t, ownTrace, ownSpan), "own span")
+	scope.SetSpanContext(oteltrace.SpanContext{})
+	logger.Info("cleared")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d records, want 3:\n%s", len(lines), buf.String())
+	}
+	want := [][2]string{{scopeTrace, scopeSpan}, {ownTrace, ownSpan}, {"", ""}}
+	for i, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal record %d: %v", i, err)
+		}
+		traceID, _ := record["trace_id"].(string)
+		spanID, _ := record["span_id"].(string)
+		if traceID != want[i][0] || spanID != want[i][1] {
+			t.Errorf("record %q: trace_id=%q span_id=%q, want %q %q", record["msg"], traceID, spanID, want[i][0], want[i][1])
+		}
+	}
+}

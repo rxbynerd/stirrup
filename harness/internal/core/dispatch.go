@@ -88,7 +88,6 @@ func (l *AgenticLoop) planAndDispatch(
 	// async survivors queue for the fan-out in Phase 2.
 	asyncIndices := make([]int, 0, len(toolCalls))
 	for i, call := range toolCalls {
-		l.Logger.Info("tool dispatched", "tool", call.Name)
 		callStart := time.Now()
 		// Resolve up front so every gating surface below keys on the
 		// internal tool ID rather than the model-facing alias.
@@ -98,6 +97,7 @@ func (l *AgenticLoop) planAndDispatch(
 		// the cancellable ctx so the dispatch goroutines below observe run
 		// cancellation.
 		toolSpanCtx, toolSpan := l.startToolSpan(ctx, call, t != nil)
+		l.Logger.InfoContext(toolSpanCtx, "tool dispatched", "tool", call.Name)
 		callMeta := tool.CallContextFrom(ctx)
 		callMeta.ToolUseID = call.ID
 		toolSpanCtx = tool.WithCallContext(toolSpanCtx, callMeta)
@@ -208,7 +208,7 @@ func (l *AgenticLoop) planAndDispatch(
 						plan[idx].success = false
 						plan[idx].failureCategory = observability.ToolFailureAsyncPanic
 						plan[idx].finishedAt = time.Now()
-						l.Logger.Error(
+						l.Logger.ErrorContext(plan[idx].spanCtx,
 							"async tool panic recovered",
 							"tool", plan[idx].call.Name,
 							"recovered", fmt.Sprintf("%v", r),

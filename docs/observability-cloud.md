@@ -193,15 +193,36 @@ config.
 
 ## Log-trace correlation
 
-Log records emitted inside an active span carry `trace_id` and
+When the trace emitter records spans (`traceEmitter.type: "otel"`),
+every log record emitted during a run is correlated with a span of
+that run's trace. On stderr the record carries `trace_id` and
 `span_id` attributes in lowercase snake_case, rather than the
 camelCase the rest of the Stirrup log schema uses. This spelling is
 the OTel/Loki convention that the Tempo↔Loki "Logs for trace"
 correlation derived-field is keyed on; any other casing silently
 breaks the correlation in Grafana and other OTel/Loki-aware
 backends. IDs are the 32-hex-char trace ID and 16-hex-char span ID
-forms. Records emitted outside an active span (boot-time,
-context-less logging) carry no correlation fields.
+forms. Records exported with `--log-export otlp`
+(`observability.logsExport`) carry the same IDs in the OTLP log
+record's native trace and span ID fields, which Grafana, Datadog, and
+CloudWatch key their log-to-trace links on.
+
+The span a record correlates with depends on what it describes:
+
+| Records | Correlated span |
+|---|---|
+| One provider request: `turn completed`, `provider turn retry`, `provider stream failed`, the context-overflow retry and its exhaustion, an empty or refused stop | that request's `chat {model}` span |
+| One tool call: `tool dispatched`, a recovered async tool panic | that call's `execute_tool {name}` span |
+| A sub-agent spawn warning | the spawning `execute_tool spawn_agent` span |
+| The rest of a sub-agent run's loop records (`run started`, `turn started`, `run finished`, …) | the sub-agent's `invoke_agent stirrup.subagent` span |
+| Every other record during a run: the rest of the loop's records, and component records (provider adapters, executors, MCP clients, hooks) logged without a span of their own, including those from components a sub-agent shares with its parent | the run's root `invoke_agent stirrup` span |
+
+Records emitted before the first run's span opens (boot-time and
+component construction), and every record of a run whose trace emitter
+records no spans, carry no correlation fields. Between follow-up runs,
+records keep the previous run's `runId` and root span. Security event
+lines are written by a separate writer and carry `runId` but no
+correlation fields.
 
 ## Span tree
 

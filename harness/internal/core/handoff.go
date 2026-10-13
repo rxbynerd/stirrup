@@ -111,7 +111,7 @@ func (l *AgenticLoop) handoffWorkspace(ctx context.Context, config *types.RunCon
 		scrubbed := recordSpanError(span, err)
 		receipt.Status = types.ExportStatusFailed
 		receipt.Error = capFailureText(scrubbed)
-		l.Logger.Warn("workspace export failed", "uri", receipt.URI, "required", receipt.Required, "error", scrubbed)
+		l.Logger.WarnContext(l.traceCtx(ctx), "workspace export failed", "uri", receipt.URI, "required", receipt.Required, "error", scrubbed)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
 			Message: fmt.Sprintf("workspace export: %s", scrubbed),

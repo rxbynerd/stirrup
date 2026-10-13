@@ -82,7 +82,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		if parent.ToolProfile != nil {
 			profileName = parent.ToolProfile.Name
 		}
-		parent.Logger.Warn("child presenter build failed; sub-agent will use internal tool names",
+		parent.Logger.WarnContext(ctx, "child presenter build failed; sub-agent will use internal tool names",
 			"err", err, "profile", profileName)
 	}
 
@@ -120,7 +120,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		} else {
 			// Not rewrappable: keep the parent's full chain (fail toward
 			// more enforcement) rather than the per-child Cedar identity.
-			parent.Logger.Warn("permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
+			parent.Logger.WarnContext(ctx, "permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
 		}
 	}
 

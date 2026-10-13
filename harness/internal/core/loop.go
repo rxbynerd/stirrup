@@ -174,17 +174,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.Trace.Start(config.RunID, config)
 	l.failure = runFailure{}
-	l.resetCommandOutput(config.RunID)
-	// Sub-agents share the parent's loggers and run concurrently with
-	// it, so only a top-level run re-attributes them.
-	if l.ParentRunID == "" {
-		if l.LogScope != nil {
-			l.LogScope.Set(config.RunID)
-		}
-		if l.Security != nil {
-			l.Security.SetRunID(config.RunID)
-		}
-	}
 
 	// A non-nil TraceContext here was set by the caller; otherwise
 	// establish the emitter's run span or a plain ctx as the span parent
@@ -203,6 +192,20 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if span := oteltrace.SpanFromContext(l.TraceContext); span.SpanContext().IsValid() {
 		runCtx = oteltrace.ContextWithSpan(runCtx, span)
 	}
+
+	// Sub-agents share the parent's loggers and run concurrently with
+	// it, so only a top-level run re-attributes them; a sub-agent's own
+	// records correlate with its span through the context they log with.
+	if l.ParentRunID == "" {
+		if l.LogScope != nil {
+			l.LogScope.Set(config.RunID)
+			l.LogScope.SetSpanContext(oteltrace.SpanContextFromContext(runCtx))
+		}
+		if l.Security != nil {
+			l.Security.SetRunID(config.RunID)
+		}
+	}
+	l.resetCommandOutput(config.RunID)
 
 	// Lets the control plane know the run is alive during long turns.
 	stopHeartbeat := l.startHeartbeat(runCtx, 30*time.Second)
@@ -314,7 +317,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 
-	l.Logger.Info("run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
+	l.Logger.InfoContext(runCtx, "run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
 	runStart := time.Now()
 	l.Metrics.Runs.Add(runCtx, 1,
@@ -340,7 +343,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		return l.lastContextTokens.Load(), attrs
 	})
 	if err != nil {
-		l.Logger.Warn("register context_tokens callback failed", "error", err)
+		l.Logger.WarnContext(runCtx, "register context_tokens callback failed", "error", err)
 	}
 	defer unregisterCtxTokens()
 
@@ -398,7 +401,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 					break
 				}
 				structuredCorrections++
-				l.Logger.Info("final answer failed the output schema; requesting a correction",
+				l.Logger.InfoContext(runCtx, "final answer failed the output schema; requesting a correction",
 					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
 				messages = append(messages, structuredOutputCorrection(violation))
 				continue
@@ -498,7 +501,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	outcome = l.handoffWorkspace(ctx, config, outcome)
 
-	l.Logger.Info("run finished", "outcome", outcome)
+	l.Logger.InfoContext(runCtx, "run finished", "outcome", outcome)
 
 	l.Metrics.RunDuration.Record(ctx, float64(time.Since(runStart).Milliseconds()),
 		l.metricAttrs(
@@ -691,7 +694,7 @@ func (l *AgenticLoop) runInnerLoop(
 	for *nextTurn < config.MaxTurns {
 		turn := *nextTurn
 		*nextTurn = turn + 1
-		l.Logger.Info("turn started", "turn", turn)
+		l.Logger.InfoContext(ctx, "turn started", "turn", turn)
 
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
@@ -785,7 +788,7 @@ func (l *AgenticLoop) runInnerLoop(
 			estimateToolDefinitionTokens(toolDefs)
 		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
 		if turn == 0 && window.cappedFrom > 0 {
-			l.Logger.Warn("contextStrategy.maxTokens exceeds the model's registered context window",
+			l.Logger.WarnContext(ctx, "contextStrategy.maxTokens exceeds the model's registered context window",
 				"maxTokens", window.cappedFrom,
 				"contextWindow", window.tokens,
 				"model", selection.Model,
@@ -800,7 +803,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if turn == 0 && responseReserve < defaultReserveForResponse {
 			// Once per run (turn 0): the window is constant, so
 			// re-emitting this every turn would be noise.
-			l.Logger.Warn("context response reserve scaled down for small context budget",
+			l.Logger.WarnContext(ctx, "context response reserve scaled down for small context budget",
 				"maxTokens", window.tokens,
 				"reserve", responseReserve,
 				"defaultReserve", defaultReserveForResponse,
@@ -886,9 +889,9 @@ func (l *AgenticLoop) runInnerLoop(
 		// Each request has its own chat span, ended on every path below.
 		var attempt providerAttempt
 		var chat trace.ChatSpan
+		var chatCtx context.Context
 		rejected := 0
 		for {
-			var chatCtx context.Context
 			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, selectedProvider, params)
 			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
 			if attempt.err == nil && attempt.inputReported {
@@ -900,7 +903,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				summary := l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
+				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
@@ -909,11 +912,11 @@ func (l *AgenticLoop) runInnerLoop(
 				chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})
 			}
 			if rejected > 0 {
-				l.reportContextExhausted(overflowExhaustedError(rejected, requestTokens))
+				l.reportContextExhausted(chatCtx, overflowExhaustedError(rejected, requestTokens))
 				return messages, "context_exhausted", finalAssistantText, nil
 			}
 			rejected = requestTokens
-			l.reportOverflowRetry(turn, selection, attempt, rejected)
+			l.reportOverflowRetry(chatCtx, turn, selection, attempt, rejected)
 			preparedMessages, requestTokens, prepOutcome = l.prepareRequest(ctx, messages, systemPrompt, toolDefs, budget.forcedCompaction(rejected), rejected)
 			if prepOutcome != "" {
 				return messages, prepOutcome, finalAssistantText, nil
@@ -938,7 +941,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason == "tool_use" {
 			dispatched = len(toolCalls)
 		}
-		summary := l.recordAttemptUsage(ctx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
+		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -1015,7 +1018,7 @@ func (l *AgenticLoop) runInnerLoop(
 				}
 				if spotlight {
 
-					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
+					l.Logger.InfoContext(ctx, "postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
 			// The run does not end while unconsumed operator input
@@ -1032,7 +1035,7 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
-				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
+				l.Logger.WarnContext(chatCtx, "provider returned empty stop reason", "turn", turn)
 				l.noteFailure("error", "provider returned an empty stop reason")
 				return messages, "error", finalAssistantText, nil
 			}
@@ -1041,7 +1044,7 @@ func (l *AgenticLoop) runInnerLoop(
 				if sr.StopDetails != nil {
 					category, explanation = sr.StopDetails.Category, sr.StopDetails.Explanation
 				}
-				l.Logger.Warn("provider refused to respond",
+				l.Logger.WarnContext(chatCtx, "provider refused to respond",
 					"turn", turn,
 					"provider", selection.Provider,
 					"model", selection.Model,
@@ -1090,7 +1093,7 @@ func (l *AgenticLoop) runInnerLoop(
 		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
 			recordSpanException(checkpointSpan, err)
-			l.Logger.Warn("git checkpoint failed", "error", err)
+			l.Logger.WarnContext(ctx, "git checkpoint failed", "error", err)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:    "warning",
 				Message: fmt.Sprintf("git checkpoint: %v", err),
@@ -1160,7 +1163,7 @@ func (l *AgenticLoop) applyEscalation(
 	)
 	span.End()
 
-	l.Logger.Info("tool-choice escalation",
+	l.Logger.InfoContext(ctx, "tool-choice escalation",
 		"mode", config.Mode,
 		"kind", decision.Kind.String(),
 		"reason", scrubbedReason,
@@ -1874,7 +1877,7 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunCo
 	outcome = l.handoffWorkspace(ctx, config, outcome)
 	runTrace, traceErr := l.finishRun(ctx, config, outcome, stopHeartbeat)
 	if traceErr != nil {
-		l.Logger.Warn("trace finish failed", "error", traceErr)
+		l.Logger.WarnContext(l.traceCtx(ctx), "trace finish failed", "error", traceErr)
 	}
 	return runTrace, err
 }
@@ -1922,7 +1925,7 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 		}
 	}
 	if err != nil {
-		l.Logger.Error("command output archive finalization failed", "error", err, "archive", archive)
+		l.Logger.ErrorContext(l.traceCtx(ctx), "command output archive finalization failed", "error", err, "archive", archive)
 	}
 	// Under the bestEffort posture failures are recorded (manifest,
 	// per-command records, the log line above) but never claim the run's

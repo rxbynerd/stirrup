@@ -69,7 +69,7 @@ func (l *AgenticLoop) prepareRequest(
 	if compaction != nil {
 		l.historyRewritten = true
 		for _, warning := range compaction.Warnings {
-			l.Logger.Warn("context strategy degraded", "strategy", compaction.Strategy, "warning", warning)
+			l.Logger.WarnContext(ctx, "context strategy degraded", "strategy", compaction.Strategy, "warning", warning)
 			_ = l.Transport.Emit(types.HarnessEvent{Type: "warning", Message: warning})
 		}
 	}
@@ -78,14 +78,14 @@ func (l *AgenticLoop) prepareRequest(
 		// none is replayed once the run has sent a rewritten history.
 		preparedMessages = types.StripThinkingBlocks(preparedMessages)
 	}
-	preparedMessages, tokens, fitErr := l.fitPreparedRequest(preparedMessages, systemPrompt, toolDefs, budget, contextSpan)
+	preparedMessages, tokens, fitErr := l.fitPreparedRequest(ctx, preparedMessages, systemPrompt, toolDefs, budget, contextSpan)
 	// Feeds the ContextTokens observable gauge registered in Run;
 	// compaction shrinks this value, new messages grow it.
 	l.lastContextTokens.Store(int64(tokens))
 	contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
 	if fitErr != nil {
 		recordSpanError(contextSpan, fitErr)
-		l.reportContextExhausted(fitErr)
+		l.reportContextExhausted(ctx, fitErr)
 		return nil, 0, "context_exhausted"
 	}
 	if compaction != nil {
@@ -107,27 +107,27 @@ func (l *AgenticLoop) prepareRequest(
 		l.Metrics.ContextCompactions.Add(ctx, 1,
 			l.metricAttrs(attribute.String("context.strategy", compaction.Strategy)),
 		)
-		l.Logger.Info("context compacted", logAttrs...)
+		l.Logger.InfoContext(ctx, "context compacted", logAttrs...)
 	}
 	return preparedMessages, tokens, ""
 }
 
 // reportContextExhausted logs and emits the error that ends a run as
 // context_exhausted.
-func (l *AgenticLoop) reportContextExhausted(err error) {
-	l.Logger.Error("context budget exhausted", "error", err)
+func (l *AgenticLoop) reportContextExhausted(ctx context.Context, err error) {
+	l.Logger.ErrorContext(ctx, "context budget exhausted", "error", err)
 	_ = l.Transport.Emit(types.HarnessEvent{Type: "warning", Message: err.Error()})
 }
 
 // reportOverflowRetry logs and emits that a turn exceeded the context
 // window and is retried after a forced compaction.
-func (l *AgenticLoop) reportOverflowRetry(turn int, selection router.ModelSelection, attempt providerAttempt, rejected int) {
+func (l *AgenticLoop) reportOverflowRetry(ctx context.Context, turn int, selection router.ModelSelection, attempt providerAttempt, rejected int) {
 	cause := "the provider rejected the request"
 	if attempt.err == nil {
 		cause = "the response filled the window, and its streamed output is discarded"
 	}
 	target := rejected * overflowCompactionPercent / 100
-	l.Logger.Warn("context window exceeded; compacting and retrying the turn",
+	l.Logger.WarnContext(ctx, "context window exceeded; compacting and retrying the turn",
 		"turn", turn,
 		"provider", selection.Provider,
 		"model", selection.Model,
@@ -313,7 +313,7 @@ func (l *AgenticLoop) requestProvider(
 			delay, outcome, retry := retrier.next(time.Now())
 			retryOutcome = outcome
 			if retry {
-				l.Logger.Warn("provider turn retry",
+				l.Logger.WarnContext(ctx, "provider turn retry",
 					"provider", selection.Provider,
 					"model", selection.Model,
 					"turn", turn,
@@ -345,7 +345,7 @@ func (l *AgenticLoop) requestProvider(
 		// Skipped when ctx is already cancelled: the cancel/timeout
 		// path reports instead.
 		if ctx.Err() == nil {
-			l.Logger.Error("provider stream failed",
+			l.Logger.ErrorContext(ctx, "provider stream failed",
 				"provider", selection.Provider,
 				"model", selection.Model,
 				"error", scrubbedErr,
@@ -488,7 +488,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 	}
 	l.Metrics.TurnDuration.Record(ctx, float64(attempt.duration.Milliseconds()), modeAttr)
 
-	l.Logger.Info("turn completed", "turn", turn,
+	l.Logger.InfoContext(ctx, "turn completed", "turn", turn,
 		"tokens.input", tokens.Input,
 		"tokens.input_reported", attempt.inputReported,
 		"tokens.output", tokens.Output,

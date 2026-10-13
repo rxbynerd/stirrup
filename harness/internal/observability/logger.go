@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"sync/atomic"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
@@ -238,9 +240,11 @@ func NewScopedLoggerWithExport(scope *RunScope, level slog.Level, w io.Writer, s
 }
 
 // RunScope is the mutable run identity a scoped logger stamps on every
-// record. Safe for concurrent use.
+// record: the run ID, and the run span that correlates a record whose
+// context carries no span of its own. Safe for concurrent use.
 type RunScope struct {
 	runID atomic.Pointer[string]
+	span  atomic.Pointer[oteltrace.SpanContext]
 }
 
 // NewRunScope returns a scope initially naming runID.
@@ -263,10 +267,25 @@ func (s *RunScope) RunID() string {
 	return ""
 }
 
+// SetSpanContext changes the span a record without one of its own is
+// correlated with. An invalid span context stops the correlation.
+func (s *RunScope) SetSpanContext(sc oteltrace.SpanContext) {
+	s.span.Store(&sc)
+}
+
+// SpanContext returns the span records without one are correlated with.
+func (s *RunScope) SpanContext() oteltrace.SpanContext {
+	if p := s.span.Load(); p != nil {
+		return *p
+	}
+	return oteltrace.SpanContext{}
+}
+
 // runScopeHandler adds the scope's current runId to each record as it
 // is handled. It is a record attribute, so it follows any With-bound
 // attributes and would nest inside an opened group; no logger in the
-// harness opens one.
+// harness opens one. A record whose context carries no span is handled
+// under the scope's span, so both sinks correlate it with the run.
 type runScopeHandler struct {
 	inner slog.Handler
 	scope *RunScope
@@ -277,6 +296,11 @@ func (h *runScopeHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *runScopeHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !oteltrace.SpanContextFromContext(ctx).IsValid() {
+		if sc := h.scope.SpanContext(); sc.IsValid() {
+			ctx = oteltrace.ContextWithSpanContext(ctx, sc)
+		}
+	}
 	scoped := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
 	scoped.AddAttrs(slog.String("runId", h.scope.RunID()))
 	r.Attrs(func(a slog.Attr) bool {
