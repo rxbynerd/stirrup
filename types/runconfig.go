@@ -4825,6 +4825,33 @@ func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
 	}
 }
 
+// validateOTLPEndpoint enforces the endpoint forms the OTLP exporters
+// accept: host:port or an http(s) URL (scheme case-insensitive) with no
+// userinfo, query, or fragment. Errors never echo the value, which may
+// carry credentials.
+func validateOTLPEndpoint(endpoint, path string, errs *[]string) {
+	if endpoint == "" {
+		return
+	}
+	normalised := endpoint
+	if !strings.Contains(endpoint, "://") {
+		normalised = "http://" + endpoint
+	}
+	u, err := url.Parse(normalised)
+	switch {
+	case err != nil:
+		*errs = append(*errs, path+" must be host:port or an http(s) URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		*errs = append(*errs, fmt.Sprintf("%s must use scheme http or https, got %q", path, u.Scheme))
+	case u.Host == "":
+		*errs = append(*errs, path+" must include a host")
+	case u.User != nil:
+		*errs = append(*errs, path+" must not embed user:password credentials; set them in traceEmitter.headers")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		*errs = append(*errs, path+" must not include a query string or fragment")
+	}
+}
+
 // validateObservabilityConfig rejects operator-supplied OTel resource
 // labels that would not survive round-tripping through the wire format
 // (CRLF, path separators, embedded quotes, etc.). Empty values are
@@ -4848,6 +4875,7 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 			cfg.LogsExport.Type,
 		))
 	}
+	validateOTLPEndpoint(cfg.LogsExport.Endpoint, "observability.logsExport.endpoint", errs)
 }
 
 // validateTraceEmitterProtocolAndHeaders enforces the closed set of OTLP
@@ -4877,6 +4905,8 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			cfg.Protocol,
 		))
 	}
+	validateOTLPEndpoint(cfg.Endpoint, "traceEmitter.endpoint", errs)
+	validateOTLPEndpoint(cfg.MetricsEndpoint, "traceEmitter.metricsEndpoint", errs)
 	if !validTraceEmitterMetricsTemporalities[cfg.MetricsTemporality] {
 		*errs = append(*errs, fmt.Sprintf(
 			"unsupported traceEmitter.metricsTemporality %q (allowed: \"\", cumulative, delta)",

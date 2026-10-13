@@ -512,8 +512,10 @@ injector sets `OTEL_EXPORTER_OTLP_INSECURE=true` or an `http://`
 and both protocols, so an `https://` gRPC endpoint also dials with
 TLS. The scheme is matched case-insensitively. An endpoint with any
 other scheme, embedded `user:password@` credentials, a query string,
-or a fragment fails exporter construction; credentials belong in
-`traceEmitter.headers`.
+or a fragment is rejected when the RunConfig is validated (for
+`traceEmitter.endpoint`, `traceEmitter.metricsEndpoint`, and
+`observability.logsExport.endpoint`) and again at exporter
+construction; credentials belong in `traceEmitter.headers`.
 
 ## Kubernetes Job — native HTTP, no Alloy sidecar
 

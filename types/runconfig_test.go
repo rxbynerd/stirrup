@@ -5214,6 +5214,55 @@ func TestValidateRunConfig_MetricsTemporality(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_OTLPEndpoints pins the endpoint forms accepted on
+// every OTLP endpoint field and that rejections never echo the value.
+func TestValidateRunConfig_OTLPEndpoints(t *testing.T) {
+	set := map[string]func(c *RunConfig, v string){
+		"traceEmitter.endpoint":             func(c *RunConfig, v string) { c.TraceEmitter.Endpoint = v },
+		"traceEmitter.metricsEndpoint":      func(c *RunConfig, v string) { c.TraceEmitter.MetricsEndpoint = v },
+		"observability.logsExport.endpoint": func(c *RunConfig, v string) { c.Observability.LogsExport.Endpoint = v },
+	}
+	valid := []string{
+		"localhost:4317",
+		"collector:4318/prefix",
+		"http://collector:4318",
+		"https://gateway.example/otlp",
+		"HTTPS://gateway.example/otlp",
+		"https://collector:4318/v1/logs",
+	}
+	invalid := map[string]string{
+		"ftp://collector:4318":                "must use scheme http or https",
+		"https://":                            "must include a host",
+		"https://user:SEKRIT@collector":       "must not embed user:password credentials",
+		"https://collector/otlp?token=SEKRIT": "must not include a query string or fragment",
+		"https://collector/otlp#SEKRIT":       "must not include a query string or fragment",
+		"http://collector/%zzSEKRIT":          "must be host:port or an http(s) URL",
+	}
+	for field, apply := range set {
+		for _, v := range valid {
+			c := validConfig()
+			c.TraceEmitter.Type = "otel"
+			apply(c, v)
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("%s %q must be valid: %v", field, v, err)
+			}
+		}
+		for v, want := range invalid {
+			c := validConfig()
+			c.TraceEmitter.Type = "otel"
+			apply(c, v)
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), field+" "+want) {
+				t.Errorf("%s %q: want an error containing %q, got: %v", field, v, want, err)
+				continue
+			}
+			if strings.Contains(err.Error(), "SEKRIT") {
+				t.Errorf("%s %q: error echoes the value: %v", field, v, err)
+			}
+		}
+	}
+}
+
 // TestValidateRunConfig_CaptureContentMaxBytes pins the cap's range and
 // its dependency on captureContent.
 func TestValidateRunConfig_CaptureContentMaxBytes(t *testing.T) {
