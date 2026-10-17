@@ -280,6 +280,11 @@ the model — and the verifier feedback that opens a verification retry, *before
 later guard scrub cannot un-trip the latch). Once the latch trips,
 rescans are skipped for the rest of the run (except under the `redact`
 action, which keeps scanning so it can rewrite every later result).
+The pre-turn guard then receives those tool results after the `redact`
+rewrite and with the log scrubber applied, so a remote guard model is
+never sent a span either one recognises. The scrub applies to the
+guard's input only; the model sees the tool result as redaction left
+it.
 
 **Two confidence tiers.** A *latch-tier* finding is high-confidence
 sensitive data and trips the latch. A *warn-tier* finding (a bare

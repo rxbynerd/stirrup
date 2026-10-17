@@ -1753,16 +1753,23 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	case "redact":
 		if n := l.redactSensitiveSpans(messages); n > 0 {
 			l.recordRuleOfTwoAction(ctx, "redact")
+			chunks = arrivedUntrustedChunks(messages)
 		}
 	}
+	// The guard sees content after redaction and scrubbing, never the
+	// raw chunks the Rule-of-Two scan observed, so a remote classifier
+	// never receives a secret.
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
 	if feedback {
-		// Scrubbed after the Rule-of-Two scan so a secret in the
-		// feedback still trips the latch, and before the guard so a
-		// remote classifier never receives it.
+		// Feedback is scrubbed in history too; tool results keep their
+		// content for the model and are scrubbed for the guard alone.
 		scrubVerifierFeedback(&messages[len(messages)-1])
 		chunks = arrivedUntrustedChunks(messages)
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
+	} else {
+		for i := range chunks {
+			chunks[i] = security.Scrub(chunks[i])
+		}
 	}
 	in := guard.Input{
 		Phase:   guard.PhasePreTurn,
