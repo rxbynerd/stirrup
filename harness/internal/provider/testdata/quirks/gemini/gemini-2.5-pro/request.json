@@ -12,10 +12,7 @@
   ],
   "generationConfig": {
     "maxOutputTokens": 4096,
-    "temperature": 0.5,
-    "thinkingConfig": {
-      "includeThoughts": true
-    }
+    "temperature": 0.5
   },
   "safetySettings": [
     {

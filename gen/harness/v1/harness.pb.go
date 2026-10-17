@@ -1131,8 +1131,9 @@ type RunConfig struct {
 	// before any wire bytes are sent.
 	ReasoningEffort string `protobuf:"bytes,33,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
 	// Optional. Provider-neutral switch for the model's reasoning text:
-	// "auto" requests it from providers with a probed control and streams
-	// it as thinking_delta events; "off" requests none and streams none.
+	// "auto" requests it from providers with a probed control (on Gemini,
+	// only for models that accept a thinking config) and streams it as
+	// thinking_delta events; "off" requests none and streams none.
 	// Empty is "auto" on every adapter except openai-responses, which
 	// requests no summary. Conversation history is unaffected.
 	ReasoningSummary string `protobuf:"bytes,59,opt,name=reasoning_summary,json=reasoningSummary,proto3" json:"reasoning_summary,omitempty"`

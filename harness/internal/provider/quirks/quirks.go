@@ -399,6 +399,13 @@ type GeminiBehaviourFlags struct {
 	// unvalidated, so a model whose acceptance has not been probed is never
 	// blocked by a guess.
 	ThinkingLevels []string `json:"thinkingLevels"`
+
+	// IncludeThoughts marks a model probed to accept
+	// generationConfig.thinkingConfig.includeThoughts without a configured
+	// thinking level. The adapter requests thought summaries by default
+	// only for such a model or one with a ThinkingLevels allow-list;
+	// models that do not think reject a thinkingConfig.
+	IncludeThoughts bool `json:"includeThoughts"`
 }
 
 // GeminiToolResultRole enumerates the contents[].role values a tool result

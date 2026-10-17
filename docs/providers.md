@@ -573,8 +573,12 @@ Key implementation notes:
   allow-list and the adapter fails the request before any wire bytes
   are sent. See [`provider-quirks.md`](provider-quirks.md).
 - **Thought summaries.** Unless `reasoningSummary` is `off`, the request
-  sets `generationConfig.thinkingConfig.includeThoughts: true`, and each
-  response part marked `thought: true` streams as a `thinking_delta`.
+  sets `generationConfig.thinkingConfig.includeThoughts: true` for a
+  model whose quirks accept a thinking config (Gemini 3.6, 3.7 and 3.8,
+  3.1 Pro, and 2.5 Flash) and for any request with a `reasoningEffort`;
+  other models receive no `thinkingConfig`, because a model that does
+  not think rejects one. Each response part marked `thought: true`
+  streams as a `thinking_delta`.
   Thought parts never become answer text or tool input and are not kept
   in history; the `thoughtSignature` rides on the `functionCall` part
   and round-trips unchanged. Probed on Vertex AI and AI Studio for

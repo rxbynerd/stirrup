@@ -159,7 +159,8 @@ type RunConfig struct {
 	// requested and streamed to the transport as thinking_delta events:
 	// "auto" or "off". Provider-neutral like ReasoningEffort: each adapter
 	// projects "auto" onto its native control (Gemini
-	// thinkingConfig.includeThoughts, OpenAI Responses reasoning.summary),
+	// thinkingConfig.includeThoughts for models that accept a thinking
+	// config, OpenAI Responses reasoning.summary),
 	// "off" requests none, and each adapter decides what empty means
 	// (openai-responses treats it as "off", the rest as "auto"). History
 	// is unchanged either way.

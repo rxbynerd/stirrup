@@ -754,8 +754,7 @@ effort allow-list, so an effort there is dropped with the warning above.
 ### 3.3 Reasoning summaries
 
 `RunConfig.reasoningSummary` (`auto` or `off`) is projected per adapter
-the same way. No probed model rejects the control, so the registry has
-no flag for it. Each adapter also decides what an unset value projects
+the same way. Each adapter also decides what an unset value projects
 to; the knob stays provider-neutral because the unset case is part of
 the projection, not a provider-specific field:
 
@@ -764,7 +763,17 @@ the projection, not a provider-specific field:
 | `anthropic` | nothing; thinking is configured by `reasoningEffort` | as `auto` | n/a |
 | `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | as `auto` | no request control exists |
 | `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | documented, not probed |
-| `gemini` | `generationConfig.thinkingConfig.includeThoughts: true` | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+| `gemini` | `generationConfig.thinkingConfig.includeThoughts: true`, for models whose quirks accept a thinking config or when `reasoningEffort` is set | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+
+Gemini models that do not think reject a `thinkingConfig`, so the
+Gemini adapter sends `includeThoughts` by default only where the
+registry says the model accepts one: a model with a `thinkingLevels`
+allow-list (the `gemini-3.6*`, `gemini-3.7*` and `gemini-3.8*` rules),
+or one whose rule sets `includeThoughts` (`gemini-3.1-pro*`, and
+`gemini-2.5-flash`, whose probe covered the first turn only, not a
+replayed tool-calling turn). Any other model receives `includeThoughts`
+only beside a configured `reasoningEffort`, which already sends a
+`thinkingConfig`.
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -129,5 +130,56 @@ func TestGeminiAdapter_ReasoningSummaryOffAndReplay(t *testing.T) {
 	}
 	if !strings.Contains(sent[0], `"thoughtSignature":"sig"`) {
 		t.Errorf("replayed functionCall lost its signature: %s", sent[0])
+	}
+}
+
+// TestBuildGenerateContentRequest_IncludeThoughtsGate pins which requests
+// ask for thought summaries: a model whose quirks accept a thinking
+// config, or any model given a reasoningEffort. A model with neither
+// receives no thinkingConfig, since models that do not think reject one.
+func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
+	cases := []struct {
+		model, effort, summary string
+		want                   string
+	}{
+		{model: "gemini-2.0-flash", want: ""},
+		{model: "gemini-2.5-pro", want: ""},
+		{model: "gemini-2.5-flash-lite", want: ""},
+		{model: "gemini-2.0-flash", effort: "low", want: `{"thinkingLevel":"LOW","includeThoughts":true}`},
+		{model: "gemini-2.0-flash", effort: "low", summary: types.ReasoningSummaryOff, want: `{"thinkingLevel":"LOW"}`},
+		{model: "gemini-3.8-flash", want: `{"includeThoughts":true}`},
+		{model: "gemini-3.6-flash", want: `{"includeThoughts":true}`},
+		{model: "gemini-3.1-pro-preview", want: `{"includeThoughts":true}`},
+		{model: "gemini-2.5-flash", want: `{"includeThoughts":true}`},
+		{model: "gemini-3.8-flash", summary: types.ReasoningSummaryOff, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s effort=%q summary=%q", tc.model, tc.effort, tc.summary), func(t *testing.T) {
+			params := types.StreamParams{
+				Model:            tc.model,
+				ReasoningEffort:  tc.effort,
+				ReasoningSummary: tc.summary,
+				Messages:         []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+			}
+			body, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", tc.model))
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			var req struct {
+				GenerationConfig *struct {
+					ThinkingConfig json.RawMessage `json:"thinkingConfig"`
+				} `json:"generationConfig"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			var got string
+			if req.GenerationConfig != nil {
+				got = string(req.GenerationConfig.ThinkingConfig)
+			}
+			if got != tc.want {
+				t.Errorf("thinkingConfig = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
