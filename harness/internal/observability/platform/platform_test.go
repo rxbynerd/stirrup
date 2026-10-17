@@ -316,7 +316,7 @@ func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
 			return rt
 		},
 	}
-	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, p)
+	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://backend.example"}, Getenv: noEnv}, p)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -405,6 +405,11 @@ func TestApply_RejectsContradictions(t *testing.T) {
 			cfg:     types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolGRPC},
 			profile: headerProfile,
 			want:    "requires protocol http/protobuf",
+		},
+		"http platform without a trace endpoint": {
+			cfg:     types.TraceEmitterConfig{Type: "otel"},
+			profile: Profile{name: "http-platform", RequiredProtocol: otlp.ProtocolHTTPProtobuf},
+			want:    `platform "http-platform" exports over http/protobuf and has no trace endpoint`,
 		},
 		"explicit Authorization with signing": {
 			cfg:     types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolHTTPProtobuf},

@@ -125,6 +125,25 @@ func TestLangfuse_ApplyRoutesTracesToTheHost(t *testing.T) {
 	}
 }
 
+func TestLangfuse_ApplyWithoutHost(t *testing.T) {
+	p, err := Resolve(context.Background(), "langfuse", nil, Deps{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, p)
+	if err == nil || !strings.Contains(err.Error(), "has no trace endpoint") {
+		t.Errorf("no host and no endpoint must fail instead of exporting to the default gRPC address, got %v", err)
+	}
+
+	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://gateway.example.com/api/public/otel"}, Getenv: noEnv}, p)
+	if err != nil {
+		t.Fatalf("Apply with an explicit endpoint: %v", err)
+	}
+	if got.Traces.Endpoint != "https://gateway.example.com/api/public/otel" || got.Traces.Headers[langfuseIngestionVersionHeader] != "4" {
+		t.Errorf("traces = %+v, want the explicit endpoint with the ingestion header", got.Traces)
+	}
+}
+
 // exportThroughLangfuse records the spans built by fn through the langfuse
 // span decorator, under a resource carrying res, and returns what reached
 // the downstream exporter.

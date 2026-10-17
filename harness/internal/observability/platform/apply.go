@@ -86,6 +86,11 @@ func Apply(in Input, p Profile) (Exporters, error) {
 				p.name, p.RequiredProtocol, protocol)
 		}
 	}
+	traces := p.Signals[otlp.SignalTraces]
+	if p.RequiredProtocol == otlp.ProtocolHTTPProtobuf && cfg.Endpoint == "" && traces.Endpoint == "" {
+		return Exporters{}, fmt.Errorf("platform %q exports over %s and has no trace endpoint; set traceEmitter.endpoint or the platform option that names the backend",
+			p.name, otlp.ProtocolHTTPProtobuf)
+	}
 	if protocol == "" || protocol == otlp.ProtocolGRPC {
 		if p.WrapTransport != nil || profileAddsHeaders(p) {
 			return Exporters{}, fmt.Errorf("platform %q signs or adds headers to export requests, which requires protocol %s",
@@ -97,7 +102,6 @@ func Apply(in Input, p Profile) (Exporters, error) {
 			p.name)
 	}
 
-	traces := p.Signals[otlp.SignalTraces]
 	metrics := p.Signals[otlp.SignalMetrics]
 	logs := p.Signals[otlp.SignalLogs]
 
