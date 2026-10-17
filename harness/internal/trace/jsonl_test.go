@@ -901,10 +901,10 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hooks", nil)
 
-	emitter.RecordHookExecution(types.HookExecution{
+	emitter.RecordHookExecution(context.Background(), types.HookExecution{
 		Phase: "preRun", Index: 0, Name: "clone", Command: "git clone . .", ExitCode: 0, DurationMs: 10,
 	})
-	emitter.RecordHookExecution(types.HookExecution{
+	emitter.RecordHookExecution(context.Background(), types.HookExecution{
 		Phase: "postRun", Index: 0, Name: "smoke-test", Command: "test -f marker", ExitCode: 0, DurationMs: 5,
 	})
 
@@ -954,7 +954,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hook-scrub", nil)
 
-	emitter.RecordHookExecution(types.HookExecution{
+	emitter.RecordHookExecution(context.Background(), types.HookExecution{
 		Phase:      "preRun",
 		Index:      0,
 		Command:    "curl -H \"Authorization: Bearer $TOKEN\"", // no secret-shaped literal
@@ -1006,7 +1006,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 			emitter := NewJSONLTraceEmitter(&buf, false)
 			emitter.Start("run-hook-case-bypass", nil)
 
-			emitter.RecordHookExecution(types.HookExecution{
+			emitter.RecordHookExecution(context.Background(), types.HookExecution{
 				Phase:   "preRun",
 				Index:   0,
 				Command: tc.command,

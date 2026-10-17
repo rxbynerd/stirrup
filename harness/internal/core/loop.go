@@ -245,9 +245,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// may create. A nil Hooks is a no-op. See
 	// docs/configuration.md#lifecycle-hooks.
 	if l.Hooks != nil {
-		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
+		preSpanCtx, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
 		preResults, preErr := l.Hooks.RunPre(runCtx)
-		l.recordHookExecutions(preResults)
+		l.recordHookExecutions(preSpanCtx, preResults)
 		if preErr != nil {
 			recordSpanError(preHookSpan, preErr)
 		}
@@ -518,9 +518,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// docs/cloud-run-jobs.md for the outcome-override and SIGTERM detail.
 	if l.Hooks != nil {
 		postCtx, postCancel := l.detachedContext(ctx, postHookBudget(config.Hooks))
-		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
+		postSpanCtx, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
-		l.recordHookExecutions(postResults)
+		l.recordHookExecutions(postSpanCtx, postResults)
 		var scrubbedPostErr string
 		if postErr != nil {
 			scrubbedPostErr = recordSpanError(postHookSpan, postErr)
@@ -2023,11 +2023,11 @@ func lastAssistantText(blocks []types.ContentBlock) string {
 // trace emitter's optional HookRecorder capability and emits a
 // transport "warning" for any continueOnError failure — visible to
 // the control plane even though it never touches the run's outcome.
-func (l *AgenticLoop) recordHookExecutions(execs []types.HookExecution) {
+func (l *AgenticLoop) recordHookExecutions(spanCtx context.Context, execs []types.HookExecution) {
 	recorder, hasRecorder := l.Trace.(trace.HookRecorder)
 	for _, exec := range execs {
 		if hasRecorder {
-			recorder.RecordHookExecution(exec)
+			recorder.RecordHookExecution(spanCtx, exec)
 		}
 		if !exec.ContinuedOnError {
 			continue
