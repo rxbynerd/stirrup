@@ -2307,6 +2307,29 @@ func TestBuildFlagOnlyRunConfig_FollowupHistory(t *testing.T) {
 	}
 }
 
+// TestBuildFlagOnlyRunConfig_ReasoningSummary pins the flag-only path for
+// --reasoning-summary onto the top-level RunConfig field.
+func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+		"reasoning-summary": types.ReasoningSummaryOff,
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, types.ReasoningSummaryOff)
+	}
+}
+
 // TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
 // follows the Changed() discipline: a config file's
 // promptBuilder.promptModel survives when the flag is unset, and an
@@ -3258,6 +3281,33 @@ func TestBuildHarnessRunConfig_ReasoningSummary(t *testing.T) {
 	}
 	if cfg.ReasoningSummary != "off" {
 		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, "off")
+	}
+}
+
+// TestBuildHarnessRunConfig_ReasoningSummaryInvalid confirms a value the
+// flag accepts but the schema does not is rejected before the run starts.
+func TestBuildHarnessRunConfig_ReasoningSummaryInvalid(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:            "test-run",
+		Mode:             "execution",
+		Prompt:           "test",
+		ProviderType:     "anthropic",
+		Model:            "claude-sonnet-5-5",
+		MaxTurns:         20,
+		Timeout:          600,
+		TransportType:    "stdio",
+		LogLevel:         "info",
+		ReasoningSummary: "detailed",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	err = types.ValidateRunConfig(cfg)
+	if err == nil {
+		t.Fatal("expected rejection of an unknown reasoningSummary value")
+	}
+	if !strings.Contains(err.Error(), "reasoningSummary") {
+		t.Errorf("error must name the offending field: %v", err)
 	}
 }
 

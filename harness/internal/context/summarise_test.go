@@ -138,6 +138,9 @@ func TestSummarise_OverBudget_SummarisesOldMessages(t *testing.T) {
 	if mock.lastParams.Temperature == nil || *mock.lastParams.Temperature != 0.0 {
 		t.Errorf("temperature = %v, want *=0.0 (greedy decoding)", mock.lastParams.Temperature)
 	}
+	if mock.lastParams.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Errorf("reasoning summary = %q, want off", mock.lastParams.ReasoningSummary)
+	}
 }
 
 func TestSummarise_RecentMessagesPreservedVerbatim(t *testing.T) {

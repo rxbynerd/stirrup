@@ -592,3 +592,221 @@ func TestRunFollowUpLoop_ContinueWithheldWarningFollowsRunStarted(t *testing.T) 
 		t.Errorf("withheld-history warning missing from the follow-up's own events: %v", eventTypeList(third))
 	}
 }
+
+// phaseMarkerGuard denies content of the given phase that contains
+// marker and allows everything else.
+type phaseMarkerGuard struct {
+	phase  guard.Phase
+	marker string
+}
+
+func (g phaseMarkerGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	if in.Phase == g.phase && strings.Contains(in.Content, g.marker) {
+		return &guard.Decision{Verdict: guard.VerdictDeny, GuardID: "phase-marker", Reason: "blocked"}, nil
+	}
+	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "phase-marker"}, nil
+}
+
+// TestRunFollowUpLoop_ContinueCarriesNothingAfterScreeningEndsARun pins
+// that a run ended by the guard or the Rule-of-Two monitor, at any of the
+// points screening runs, passes no history on: the follow-up's request
+// holds its prompt alone, and the warning saying so follows the
+// follow-up's run_started.
+func TestRunFollowUpLoop_ContinueCarriesNothingAfterScreeningEndsARun(t *testing.T) {
+	cases := []struct {
+		name        string
+		script      [][]types.StreamEvent
+		prompt      string
+		arm         func(t *testing.T, l *AgenticLoop)
+		wantOutcome string
+	}{
+		{
+			name:   "pre-turn guard denies the prompt",
+			script: [][]types.StreamEvent{scriptEndTurn},
+			prompt: "BLOCK-MARKER do the thing",
+			arm: func(_ *testing.T, l *AgenticLoop) {
+				l.GuardRail = phaseMarkerGuard{phase: guard.PhasePreTurn, marker: "BLOCK-MARKER"}
+			},
+			wantOutcome: "guardrail_blocked",
+		},
+		{
+			name: "post-turn guard denies the answer",
+			script: [][]types.StreamEvent{
+				{{Type: "text_delta", Text: "LEAK-MARKER answer"}, stopWith("end_turn")},
+				scriptEndTurn,
+			},
+			prompt: "do the thing",
+			arm: func(_ *testing.T, l *AgenticLoop) {
+				l.GuardRail = phaseMarkerGuard{phase: guard.PhasePostTurn, marker: "LEAK-MARKER"}
+			},
+			wantOutcome: "guardrail_blocked",
+		},
+		{
+			name:   "Rule-of-Two abort on a later turn's tool result",
+			script: emitToolScript,
+			prompt: "do the thing",
+			arm: func(t *testing.T, l *AgenticLoop) {
+				registerEmitTool(t, l, "AWS_ACCESS_KEY_ID="+fakeLiveAWSKey)
+				l.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, false)
+			},
+			wantOutcome: "rule_of_two_violation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &recordingScriptProvider{script: tc.script}
+			loop, tr := buildUserInputTestLoop(prov)
+			tc.arm(t, loop)
+			config := buildTestConfig()
+			config.Prompt = tc.prompt
+			config.FollowUpHistory = types.FollowUpHistoryContinue
+
+			traces := followUpSession(t, loop, tr, config, "start over")
+			if traces[0].Outcome != tc.wantOutcome || traces[1].Outcome != "success" {
+				t.Fatalf("outcomes = %q, %q, want %q then success", traces[0].Outcome, traces[1].Outcome, tc.wantOutcome)
+			}
+			calls := prov.params()
+			if got := calls[len(calls)-1].Messages; len(got) != 1 || !reflect.DeepEqual(textBlocks(got[0]), []string{"start over"}) {
+				t.Errorf("follow-up request = %+v, want the prompt alone", got)
+			}
+			followUp := eventsFromRun(tr.Events(), 1)
+			var warned bool
+			for _, ev := range followUp {
+				if ev.Type == "warning" && strings.Contains(ev.Message, "followUpHistory") && strings.Contains(ev.Message, tc.wantOutcome) {
+					warned = true
+				}
+			}
+			if len(followUp) == 0 || followUp[0].Type != "run_started" || !warned {
+				t.Errorf("follow-up events = %v, want run_started first and the withheld-history warning", eventTypeList(followUp))
+			}
+		})
+	}
+}
+
+// TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce pins
+// that verifier feedback ending the previous run is scrubbed and screened
+// once before the follow-up's first request, and that the follow-up
+// prompt merged into that message is not treated as feedback.
+func TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn", InputTokens: 1000, OutputTokens: 10},
+	}}}
+	loop, tr := buildUserInputTestLoop(prov)
+	loop.Verifier = &feedbackVerifier{feedback: "tests fail; the fixture key is " + fakeAnthropicKey, failures: 1}
+	g := &feedbackVerdictGuard{verdict: guard.VerdictAllow}
+	loop.GuardRail = g
+	config := buildTestConfig()
+	budget := 500
+	config.MaxTokenBudget = &budget
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	const prompt = "carry on; the issue is ghp_abcdef1234567890"
+	traces := followUpSession(t, loop, tr, config, prompt)
+	if traces[0].Outcome != "budget_exceeded" {
+		t.Fatalf("primary outcome = %q, want budget_exceeded with the feedback unanswered", traces[0].Outcome)
+	}
+	if n := len(g.feedbackChecks()); n != 1 {
+		t.Errorf("verifier feedback screened %d times, want 1", n)
+	}
+	calls := prov.params()
+	followUp := calls[len(calls)-1].Messages
+	last := followUp[len(followUp)-1]
+	if last.Origin != types.MessageOriginVerifierFeedback {
+		t.Errorf("merged message origin = %q, want verifier_feedback", last.Origin)
+	}
+	text := strings.Join(textBlocks(last), "\n")
+	if strings.Contains(text, fakeAnthropicKey) || !strings.Contains(text, "[REDACTED]") {
+		t.Errorf("carried feedback reached the model unscrubbed: %q", text)
+	}
+	if !strings.Contains(text, prompt) {
+		t.Errorf("follow-up prompt was rewritten as feedback: %q", text)
+	}
+}
+
+// TestRunFollowUpLoop_ContinueSpotlightsCarriedToolResultOnce pins that a
+// carried tool result the guard spotlights reaches the follow-up's
+// request wrapped exactly once.
+func TestRunFollowUpLoop_ContinueSpotlightsCarriedToolResultOnce(t *testing.T) {
+	prov := &recordingScriptProvider{script: emitToolScript}
+	loop, tr := buildUserInputTestLoop(prov)
+	registerEmitTool(t, loop, "SPOT-MARKER output")
+	loop.GuardRail = &markerGuard{markers: []string{"SPOT-MARKER"}, verdict: guard.VerdictAllowSpot}
+	config := buildTestConfig()
+	config.MaxTurns = 1
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	followUpSession(t, loop, tr, config, "carry on")
+
+	results := toolResultContents(prov.params()[1].Messages)
+	if len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
+		t.Errorf("follow-up tool result = %q, want it spotlighted exactly once", results)
+	}
+}
+
+// TestRunFollowUpLoop_ContinueScreeningLeavesThePreviousHistoryIntact pins
+// that redacting a carried tail rewrites the follow-up's copy of its
+// blocks, not the blocks the previous run's history holds.
+func TestRunFollowUpLoop_ContinueScreeningLeavesThePreviousHistoryIntact(t *testing.T) {
+	prov := &recordingScriptProvider{script: emitToolScript}
+	loop, tr := buildUserInputTestLoop(prov)
+	output := "AWS_ACCESS_KEY_ID=" + fakeLiveAWSKey + " end of output"
+	registerEmitTool(t, loop, output)
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+	config := buildTestConfig()
+	config.MaxTurns = 1
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("primary Run: %v", err)
+	}
+	if loop.carried == nil || !loop.carried.unscreened {
+		t.Fatalf("carried = %+v, want an unscreened tail", loop.carried)
+	}
+	kept := loop.carried.messages
+	keptTail := kept[len(kept)-1].Content
+
+	completed := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(*types.RunConfig, *types.RunTrace, error) { completed <- struct{}{} },
+		})
+	}()
+	tr.FireControl(userResponse("carry on", "r1"))
+	select {
+	case <-completed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("follow-up did not complete")
+	}
+	cancel()
+	<-done
+
+	if got := toolResultContents(prov.params()[1].Messages); len(got) != 1 || !strings.Contains(got[0], ruleoftwo.RedactionPlaceholder) {
+		t.Fatalf("follow-up tool result = %q, want it redacted", got)
+	}
+	if len(keptTail) != 1 || keptTail[0].Content != output {
+		t.Errorf("the previous run's tool-result blocks were rewritten in place: %+v", keptTail)
+	}
+}
+
+func TestRunFollowUpLoop_ContinueRestartsTurnNumbering(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	followUpSession(t, loop, tr, config, "carry on")
+
+	for _, ev := range eventsFromRun(tr.Events(), 1) {
+		if ev.Type == "turn_started" {
+			if *ev.Turn != 0 {
+				t.Errorf("follow-up's first turn_started turn = %d, want 0", *ev.Turn)
+			}
+			return
+		}
+	}
+	t.Error("follow-up sent no turn_started")
+}

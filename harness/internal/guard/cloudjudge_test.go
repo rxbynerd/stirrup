@@ -198,6 +198,9 @@ func TestCloudJudgeStreamParamsAreClassifierShaped(t *testing.T) {
 	if fp.params.ReasoningEffort != "low" {
 		t.Fatalf("reasoning effort = %q, want low", fp.params.ReasoningEffort)
 	}
+	if fp.params.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Fatalf("reasoning summary = %q, want off", fp.params.ReasoningSummary)
+	}
 }
 
 func TestCloudJudgeRejectsNilProvider(t *testing.T) {

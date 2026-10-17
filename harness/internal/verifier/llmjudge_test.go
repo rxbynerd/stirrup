@@ -91,6 +91,9 @@ func TestLLMJudgeVerifier_Pass(t *testing.T) {
 	if prov.lastParams.MaxTokens != judgeMaxTokens {
 		t.Errorf("expected maxTokens %d, got %d", judgeMaxTokens, prov.lastParams.MaxTokens)
 	}
+	if prov.lastParams.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Errorf("expected reasoning summary off, got %q", prov.lastParams.ReasoningSummary)
+	}
 	if prov.lastParams.Temperature == nil || *prov.lastParams.Temperature != judgeTemperature {
 		t.Errorf("expected temperature *=%v, got %v", judgeTemperature, prov.lastParams.Temperature)
 	}
