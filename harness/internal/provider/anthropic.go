@@ -975,6 +975,9 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 					!appendThinking(&bs.signature, cbs.ContentBlock.Signature) {
 					return
 				}
+				if cbs.ContentBlock.Thinking != "" {
+					emitEvent(types.StreamEvent{Type: "thinking_delta", Text: cbs.ContentBlock.Thinking})
+				}
 			case "redacted_thinking":
 				if !appendThinking(&bs.signature, cbs.ContentBlock.Data) {
 					return
@@ -1007,6 +1010,9 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			case "thinking_delta":
 				if !appendThinking(&bs.thinking, cbd.Delta.Thinking) {
 					return
+				}
+				if bs.blockType == "thinking" && cbd.Delta.Thinking != "" {
+					emitEvent(types.StreamEvent{Type: "thinking_delta", Text: cbd.Delta.Thinking})
 				}
 			case "signature_delta":
 				if !appendThinking(&bs.signature, cbd.Delta.Signature) {

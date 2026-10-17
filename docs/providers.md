@@ -68,6 +68,13 @@ its thinking blocks exceed 10 MiB in total (reasoning text, signatures
 and redacted data counted together) or when it opens more than 64
 content blocks at once. Batch results are parsed into the same shape.
 
+While a block streams, the adapter also forwards each fragment of its
+reasoning text as it arrives, which the loop sends to the control
+plane as `thinking_delta` events; the complete block remains the only
+thing persisted. A block whose reasoning text is empty, the
+`claude-sonnet-5-5` default, produces no `thinking_delta`. See
+[Watching a run live](integration-guide.md#watching-a-run-live).
+
 Replayed thinking is billed as input. In one probe against
 `claude-sonnet-5-5` on 2026-09-30, a continuation cost 668 input tokens
 with the prior turn's thinking block replayed and 558 without it, a

@@ -11,8 +11,9 @@ import (
 )
 
 // TestAnthropicAdapter_StreamThinkingBlock pins capture of a thinking block
-// ahead of the text and tool call it precedes: text and signature arrive as
-// deltas and are emitted as one event when the block stops.
+// ahead of the text and tool call it precedes: each text delta is forwarded
+// as it arrives, and the whole block, signature included, is emitted as
+// one event when it stops.
 func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
@@ -33,7 +34,7 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 
 	events := streamAnthropicSSE(t, body)
 
-	wantTypes := []string{"thinking", "text_delta", "tool_call", "message_complete"}
+	wantTypes := []string{"thinking_delta", "thinking_delta", "thinking", "text_delta", "tool_call", "message_complete"}
 	if len(events) != len(wantTypes) {
 		t.Fatalf("got %d events, want %d: %+v", len(events), len(wantTypes), events)
 	}
@@ -42,14 +43,48 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
 		}
 	}
-	if events[0].Text != "Let me check." {
-		t.Errorf("thinking text = %q, want %q", events[0].Text, "Let me check.")
+	if events[0].Text != "Let me " || events[1].Text != "check." {
+		t.Errorf("thinking deltas = %q, %q, want %q, %q", events[0].Text, events[1].Text, "Let me ", "check.")
 	}
-	if events[0].ThoughtSignature != "EqQBCkYIBRgC" {
-		t.Errorf("thinking signature = %q, want %q", events[0].ThoughtSignature, "EqQBCkYIBRgC")
+	if events[0].ThoughtSignature != "" || events[1].ThoughtSignature != "" {
+		t.Error("a thinking_delta carried a signature; only the complete block may")
 	}
-	if events[2].ThoughtSignature != "" {
-		t.Errorf("tool_call carried a signature %q; only thinking events may", events[2].ThoughtSignature)
+	if events[2].Text != "Let me check." {
+		t.Errorf("thinking text = %q, want %q", events[2].Text, "Let me check.")
+	}
+	if events[2].ThoughtSignature != "EqQBCkYIBRgC" {
+		t.Errorf("thinking signature = %q, want %q", events[2].ThoughtSignature, "EqQBCkYIBRgC")
+	}
+	if events[4].ThoughtSignature != "" {
+		t.Errorf("tool_call carried a signature %q; only thinking events may", events[4].ThoughtSignature)
+	}
+}
+
+// TestAnthropicAdapter_StreamThinkingTextOnBlockStart pins that thinking
+// text carried by the block start is forwarded as a delta like the text
+// that follows it, so the deltas always add up to the complete block.
+func TestAnthropicAdapter_StreamThinkingTextOnBlockStart(t *testing.T) {
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"Start. ","signature":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"Then."}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"sig"}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	))
+
+	var deltas strings.Builder
+	var block string
+	for _, ev := range events {
+		switch ev.Type {
+		case "thinking_delta":
+			deltas.WriteString(ev.Text)
+		case "thinking":
+			block = ev.Text
+		}
+	}
+	if deltas.String() != "Start. Then." || block != "Start. Then." {
+		t.Errorf("deltas = %q, block = %q, want both %q (events %v)", deltas.String(), block, "Start. Then.", eventTypes(events))
 	}
 }
 
@@ -84,6 +119,7 @@ func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
 	events := streamAnthropicSSE(t, body)
 
 	want := []types.StreamEvent{
+		{Type: "thinking_delta", Text: "first"},
 		{Type: "thinking", Text: "first", ThoughtSignature: "sig-A"},
 		{Type: "text_delta", Text: "Reading."},
 		{Type: "thinking", ThoughtSignature: "sig-B"},
@@ -259,10 +295,10 @@ func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
 			makeSSE("content_block_stop", `{"index":0}`),
 			end,
 		))
-		if got := eventTypes(events); len(got) != 2 || got[0] != "thinking" || got[1] != "message_complete" {
-			t.Fatalf("event types = %v, want [thinking message_complete]", got)
+		if got := eventTypes(events); len(got) != 3 || got[0] != "thinking_delta" || got[1] != "thinking" || got[2] != "message_complete" {
+			t.Fatalf("event types = %v, want [thinking_delta thinking message_complete]", got)
 		}
-		if n := len(events[0].Text) + len(events[0].ThoughtSignature); n != capBytes {
+		if n := len(events[1].Text) + len(events[1].ThoughtSignature); n != capBytes {
 			t.Errorf("thinking event carried %d bytes, want %d", n, capBytes)
 		}
 	})
