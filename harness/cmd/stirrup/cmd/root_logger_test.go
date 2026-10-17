@@ -69,7 +69,10 @@ func TestEgressProxy_LoggerScrubsSecrets(t *testing.T) {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Errorf("serveEgressProxy returned %v on shutdown, want nil", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("serveEgressProxy did not shut down within 10s")
 		}
