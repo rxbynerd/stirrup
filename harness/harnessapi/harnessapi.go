@@ -37,6 +37,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp Tra
 // Run executes the agentic loop to completion and returns the run trace.
 // A non-nil trace returned with a non-nil error means the run completed
 // but its trace could not be persisted.
+//
+// With the otel trace emitter, a valid OpenTelemetry span context on ctx
+// becomes the parent of the run span, so the run joins the caller's trace
+// and follows its sampling decision. Only the span context is used, never
+// ctx's cancellation or deadline. To start a new trace, pass a ctx without
+// a span, such as one derived from context.Background.
 func (l *Loop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	return l.inner.Run(ctx, config)
 }
