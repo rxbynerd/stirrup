@@ -33,8 +33,20 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	if e.Trace != nil {
 		pe.Trace = runTraceToProto(e.Trace)
 	}
+	pe.TraceReference = traceReferenceToProto(e.TraceReference)
 
 	return pe
+}
+
+func traceReferenceToProto(r *types.TraceReference) *pb.TraceReference {
+	if r == nil {
+		return nil
+	}
+	return &pb.TraceReference{
+		TraceId:   r.TraceID,
+		RunSpanId: r.SpanID,
+		Sampled:   r.Sampled,
+	}
 }
 
 // controlEventFromProto translates a proto ControlEvent to the internal
@@ -117,6 +129,7 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	}
 	pt.Error = t.Error
 	pt.StructuredOutput = string(t.StructuredOutput)
+	pt.TraceReference = traceReferenceToProto(t.TraceReference)
 	for _, dc := range t.DegradedCapabilities {
 		pt.DegradedCapabilities = append(pt.DegradedCapabilities, &pb.DegradedCapability{
 			Kind:  dc.Kind,

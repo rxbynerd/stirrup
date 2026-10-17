@@ -137,15 +137,18 @@ service HarnessService {
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
-  //              "warning", "heartbeat", "ready", "permission_request",
-  //              "tool_result_request", "batch_submission", "batch_waiting",
-  //              "batch_cancel_request", "sandbox_token_request".
+  //              "warning", "heartbeat", "ready", "run_started",
+  //              "permission_request", "tool_result_request",
+  //              "batch_submission", "batch_waiting", "batch_cancel_request",
+  //              "sandbox_token_request".
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events.
   string text = 2;
 
   // Unique tool-use ID assigned by the model. Set on "tool_call" events.
+  // On "run_started" events, the run ID (RunConfig.run_id) of the run that
+  // started.
   string id = 3;
 
   // Tool name. Set on "tool_call" events.
@@ -200,6 +203,27 @@ message HarnessEvent {
   // "sandbox_token_request" events. Informational to the control plane,
   // which may override it when minting the token.
   string audience = 14;
+
+  // The run span's OTel identity. Set on "run_started" events, which the
+  // harness sends once per run, after "ready" and before the run's first
+  // model event, only when the run records an OTel span. The "done"
+  // summary carries the same value in RunTrace.trace_reference.
+  TraceReference trace_reference = 15;
+}
+
+// TraceReference mirrors types.TraceReference: the identity of a run's
+// OTel root span, which a control plane uses as the target of later
+// operations such as a feedback score.
+message TraceReference {
+  // The W3C trace ID as 32 lowercase hex characters.
+  string trace_id = 1;
+
+  // The run span's ID as 16 lowercase hex characters.
+  string run_span_id = 2;
+
+  // The trace flags' sampled bit. False means the span was not exported,
+  // so the observability backend holds no trace for this reference.
+  bool sampled = 3;
 }
 
 // ControlEvent is sent from the control plane to the harness.
@@ -1171,6 +1195,10 @@ message RunTrace {
 
   // Counts of tools.post_edit check executions. Absent when no check ran.
   PostEditCheckSummary post_edit_checks = 35;
+
+  // The run span's OTel identity, the same value "run_started" carried.
+  // Absent when the run recorded no OTel span.
+  TraceReference trace_reference = 37;
 }
 
 // GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
