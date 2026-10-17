@@ -293,10 +293,16 @@ failure):
   OTel error status and `error.type`, which Langfuse maps to
   `level: ERROR` with the status message. Filter traces and
   observations by level to triage failures.
-- **Sessions.** `--name` is emitted on every span as both
-  `gen_ai.conversation.id` and `session.id`. Langfuse v4 filters
-  sessions per observation, so the id on every span is what makes the
-  session filter match. Without a session name there is no session.
+- **Sessions.** `correlation.sessionId`, or `--name` when no session
+  ID is set, is emitted on every span as both `gen_ai.conversation.id`
+  and `session.id`. Langfuse v4 filters sessions per observation, so
+  the id on every span is what makes the session filter match. Without
+  either there is no session. Langfuse drops session IDs of 200
+  characters or more, which is why validation caps
+  `correlation.sessionId` at 199.
+- **Users.** `correlation.userId` is emitted on every span as
+  `user.id`, which Langfuse reads natively. Without it there is no
+  user. See [Correlation](configuration.md#correlation).
 - **Environments.** `observability.environment` reaches Langfuse via
   the `deployment.environment.name` resource attribute.
 - **Chat rendering.** Stirrup serialises message content in the
@@ -306,11 +312,14 @@ failure):
   stored data. How the Langfuse web interface draws those messages
   was not viewed in a browser.
 
-Backend-native concepts beyond these (Langfuse users, tags, trace
-name, release, metadata, and observation types) live in the
-`langfuse.*` attribute namespace, which Stirrup deliberately does not
-emit. An OpenTelemetry Collector `transform` processor sets them while
-keeping the vendor mapping in operator config. This configuration
+Langfuse reads `user.id` and `session.id` natively, so the run
+correlation block alone populates users and sessions
+([attribute mapping](https://langfuse.com/integrations/native/opentelemetry)).
+The remaining backend-native concepts (tags, trace name, release,
+filterable metadata, and observation types) live in the `langfuse.*`
+attribute namespace, which Stirrup deliberately does not emit. An
+OpenTelemetry Collector `transform` processor sets them while keeping
+the vendor mapping in operator config. This configuration
 populated the trace name, user, release, tags, filterable metadata,
 and the guardrail, evaluator, and chain observation types in a
 self-hosted v4.57.0 (collector contrib 0.162.0):
@@ -442,8 +451,8 @@ API.
 
   The `phoenix` profile's `project` option sets the same attribute.
 - **Sessions.** Phoenix maps `gen_ai.conversation.id`, which the
-  harness sets from `--name` on every span, to its session id. A run
-  without `--name` has no session. Phoenix keys a session on the id
+  harness sets on every span from `correlation.sessionId` or else
+  `--name`, to its session id. A run with neither has no session. Phoenix keys a session on the id
   alone, so a trace in a second project that reuses the id joins the
   first project's session.
 
@@ -497,9 +506,12 @@ carry the attribute:
 
 The profile sets no endpoint or protocol, so traces go to
 `traceEmitter.endpoint`, or to the default `localhost:4317` over gRPC
-when it is unset. It sets no user or tag attributes, and Phoenix's user filter and tag
-display stay empty (see issue #775). A collector `transform` processor
-set `user.id`, `metadata`, and tags in the assessment.
+when it is unset. It sets no tag attributes, and Phoenix's tag display
+stays empty (see issue #775). `correlation.userId` stamps `user.id`,
+the OpenInference user attribute, on every span without the profile;
+Phoenix's user filter has not been checked against it. A collector
+`transform` processor set `user.id`, `metadata`, and tags in the
+assessment.
 
 ## Amazon CloudWatch
 
@@ -669,8 +681,8 @@ What CloudWatch does with the spans, read back from the stored
 - **Sessions.** CloudWatch does not derive sessions from
   `gen_ai.conversation.id`; it keeps a `session.id` span attribute, by
   which a sessions-and-traces aggregation worked. The harness sets
-  `session.id` on every span from `sessionName`. A run without a
-  session name has no session.
+  `session.id` on every span from `correlation.sessionId`, or else
+  `sessionName`. A run with neither has no session.
 - **Agent identity.** The service is `service.name`, so deployments
   that share the default `stirrup` name merge into one service. Set
   `observability.serviceName` per agent.
@@ -899,7 +911,15 @@ Every span in the run carries:
 | Attribute | Value |
 |---|---|
 | `gen_ai.agent.name` | `stirrup`, or `stirrup.subagent` for spans inside a sub-agent run. |
-| `gen_ai.conversation.id`, `session.id` | The `--session-name`, when one is set. |
+| `gen_ai.conversation.id`, `session.id` | `correlation.sessionId`, else the `--name` session name, when either is set. |
+| `user.id` | `correlation.userId`, when set. |
+| `stirrup.task.id`, `stirrup.attempt.id` | `correlation.taskId` and `correlation.attemptId`, when set. |
+| `stirrup.control_plane.url` | `correlation.url`, when set. |
+| `stirrup.label.<key>` | One per `correlation.labels` entry. |
+
+These run identity attributes are span attributes only: they are not
+resource attributes, metric labels, or prompt content. See
+[Correlation](configuration.md#correlation).
 
 Span-specific attributes:
 

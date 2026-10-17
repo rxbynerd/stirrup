@@ -516,6 +516,46 @@ the none executor has no capability to back the rest.
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 | `--log-export` | `none` | Structured-log export: `none` (stderr only) or `otlp` (stderr plus an OTLP log exporter, `observability.logsExport.type`). The exporter uses the traces protocol and headers, over gRPC or `http/protobuf`. The endpoint defaults to `--otel-endpoint` (or the platform profile's logs endpoint); `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` overrides it. With the otel trace emitter, every record emitted during a run carries `trace_id` and `span_id`; see [`observability-cloud.md`](observability-cloud.md#log-trace-correlation). |
 
+#### Correlation
+
+The `correlation` block carries the identifiers a control plane uses
+for the run in its own UI. The harness stamps each set value on every
+span of the run and treats every value as opaque. The values never
+enter the model's context, and they are not resource attributes or
+metric labels. The block has no CLI flags; it is set in a `--config`
+file, on stdin, or in a gRPC `task_assignment`.
+
+```json
+"correlation": {
+  "sessionId": "conversation-8841",
+  "taskId": "task-2207",
+  "attemptId": "attempt-2",
+  "userId": "u-5c1f0e",
+  "url": "https://cp.example.com/tasks/2207/attempts/2",
+  "labels": { "agent_profile": "reviewer" }
+}
+```
+
+| Field | Span attribute | Validation |
+|---|---|---|
+| `sessionId` | `session.id` and `gen_ai.conversation.id`; takes precedence over `sessionName` (`--name`), which remains the fallback | 1–199 printable US-ASCII characters. Langfuse drops session IDs of 200 characters or more. |
+| `taskId` | `stirrup.task.id` | At most 255 bytes of printable UTF-8. |
+| `attemptId` | `stirrup.attempt.id` | At most 255 bytes of printable UTF-8. |
+| `userId` | `user.id` | At most 255 bytes of printable UTF-8. The control plane chooses a pseudonymous value; the harness never interprets it. |
+| `url` | `stirrup.control_plane.url` | Absolute `http` or `https` URL with a host and no userinfo, at most 1500 bytes. |
+| `labels` | `stirrup.label.<key>`, one per entry | At most 16 entries. Keys match `^[a-z][a-z0-9_]{0,63}$`; values are at most 255 bytes of printable UTF-8. |
+
+`labels` carries slicing dimensions the harness cannot name in
+advance, such as an agent profile or an upstream execution mode. The
+run's own mode is already stamped as `run.mode` and needs no label.
+The key pattern keeps every key a valid metadata path segment, so a key
+can never spell `__proto__`, `constructor`, or `prototype`.
+
+The block holds no secrets and survives `RunConfig.Redact()`, so it
+appears in persisted traces and recordings. A follow-up run in the same
+session reuses the block. The span attributes are listed in
+[`observability-cloud.md`](observability-cloud.md#span-tree).
+
 ### Run output
 
 At end-of-run the harness emits a post-run summary. The `--output`

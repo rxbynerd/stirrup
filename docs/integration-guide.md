@@ -869,7 +869,8 @@ Four independent channels; use the ones the topology supports:
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
 For OTel specifically: `sessionName` labels the run in logs and
-carries on every span as `gen_ai.conversation.id` and `session.id`.
+carries on every span as `gen_ai.conversation.id` and `session.id`
+unless `correlation.sessionId` is set (see the next recipe).
 `observability.serviceName` / `environment` / `serviceNamespace` ride
 the OTel Resource, and `serviceName` is how backends tell one agent
 deployment from another. `traceEmitter.captureContent` opts spans into
@@ -880,6 +881,47 @@ that fills unset exporter settings; option keys are checked when the
 harness builds its exporters, so an unknown key fails the run at start
 rather than at `ValidateRunConfig`. Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
+
+### Linking a run to the control plane's own page
+
+Goal: find a run's spans in the observability backend by the
+identifiers the control plane already uses, and get from a span back
+to the control plane's page for the run.
+
+```json
+"correlation": {
+  "sessionId": "conversation-8841",
+  "taskId": "task-2207",
+  "attemptId": "attempt-2",
+  "userId": "u-5c1f0e",
+  "url": "https://cp.example.com/tasks/2207/attempts/2",
+  "labels": { "agent_profile": "reviewer", "execution_mode": "batch" }
+}
+```
+
+- Every span of the run carries `session.id` and
+  `gen_ai.conversation.id` (from `sessionId`, which takes precedence
+  over `sessionName`), `user.id`, `stirrup.task.id`,
+  `stirrup.attempt.id`, `stirrup.control_plane.url`, and one
+  `stirrup.label.<key>` per label. Langfuse reads `user.id` and
+  `session.id` natively, so users and sessions populate without a
+  collector.
+- The values never reach the model. They are not resource attributes
+  or metric labels either, so per-run values cannot inflate metric
+  cardinality.
+- Every value is opaque to the harness. `userId` belongs to the
+  control plane to pseudonymise before it is sent; the harness never
+  interprets it.
+- `url` is the control plane's canonical page for the run: an absolute
+  `http` or `https` URL without userinfo. A configured public origin
+  with an ordinary authenticated route works; a signed or
+  token-bearing URL does not belong here, because traces persist it.
+- `labels` carries the control plane's own slicing dimensions. Keys
+  are lower-case identifiers, so they stay valid metadata path
+  segments in backends that index them.
+- The block survives `Redact()` and so appears in persisted traces
+  and recordings. Bounds:
+  [Correlation](configuration.md#correlation).
 
 ### Safety posture quick reference
 
@@ -920,7 +962,7 @@ Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
 `registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
-`toolChoiceEscalation`, `observability.logsExport`,
+`toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`, and
 `platformOptions`.
