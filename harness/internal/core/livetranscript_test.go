@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -226,6 +227,188 @@ func TestLoop_UserMessageReportsOutputLimitRecovery(t *testing.T) {
 	msgs := userMessages(h.transport.Events())
 	if len(msgs) != 2 || msgs[1].Source != types.UserMessageSourceOutputLimitRecovery || msgs[1].Text != outputLimitContinueText {
 		t.Errorf("user_message events = %+v, want the initial prompt then the continue instruction", msgs)
+	}
+}
+
+// TestLoop_TurnEventsBracketEachTurn pins the event order of a tool turn
+// followed by a final answer: every turn opens with turn_started naming
+// the routed model and provider, its stream and tool events follow, and
+// turn_committed closes it with the stop reason, usage and result count.
+func TestLoop_TurnEventsBracketEachTurn(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
+		{
+			{Type: "thinking", Text: "plan", ThoughtSignature: "sig"},
+			{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use", InputTokens: 120, OutputTokens: 7},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn", InputTokens: 150, OutputTokens: 3},
+		},
+	}}
+	tp := &recordingTransport{}
+	loop.Transport = tp
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := []string{
+		"run_started", "user_message",
+		"turn_started", "thinking_delta", "tool_call", "tool_result", "turn_committed",
+		"turn_started", "text_delta", "turn_committed",
+		"done",
+	}
+	if got := eventTypeList(tp.events); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("event types = %v\nwant %v", got, want)
+	}
+
+	started := eventsOfType(tp, "turn_started")
+	for i, ev := range started {
+		if ev.Turn == nil || *ev.Turn != i || ev.Model != "claude-sonnet-4-6" || ev.Provider != "anthropic" {
+			t.Errorf("turn_started %d = turn %v model %q provider %q", i, ev.Turn, ev.Model, ev.Provider)
+		}
+	}
+	committed := eventsOfType(tp, "turn_committed")
+	wantCommits := []struct {
+		stop          string
+		results       int
+		input, output int
+	}{{"tool_use", 1, 120, 7}, {"end_turn", 0, 150, 3}}
+	for i, w := range wantCommits {
+		ev := committed[i]
+		if ev.Turn == nil || *ev.Turn != i || ev.StopReason != w.stop || ev.ToolResultCount != w.results {
+			t.Errorf("turn_committed %d = turn %v stop %q results %d, want %d %q %d", i, ev.Turn, ev.StopReason, ev.ToolResultCount, i, w.stop, w.results)
+		}
+		if ev.Usage == nil || ev.Usage.Input != w.input || ev.Usage.Output != w.output {
+			t.Errorf("turn_committed %d usage = %+v, want input %d output %d", i, ev.Usage, w.input, w.output)
+		}
+	}
+}
+
+// TestLoop_TurnNotCommitted pins the turns that open without committing:
+// their output was discarded, a stall cut their dispatch short, or a
+// guardrail rejected their answer.
+func TestLoop_TurnNotCommitted(t *testing.T) {
+	t.Run("dispatch cut short by consecutive failures", func(t *testing.T) {
+		var calls []types.StreamEvent
+		for i := range maxConsecutiveFailures + 1 {
+			calls = append(calls, types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", i), Name: "no_such_tool", Input: map[string]any{"n": i}})
+		}
+		loop := buildTestLoop(nil)
+		loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{append(calls, stopWith("tool_use"))}}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		rt, err := loop.Run(context.Background(), buildTestConfig())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rt.Outcome != "tool_failures" {
+			t.Fatalf("outcome = %q, want tool_failures", rt.Outcome)
+		}
+		if n := len(eventsOfType(tp, "tool_result")); n != maxConsecutiveFailures {
+			t.Fatalf("got %d tool_result events, want %d", n, maxConsecutiveFailures)
+		}
+		if got := eventsOfType(tp, "turn_committed"); len(got) != 0 {
+			t.Errorf("turn with unanswered calls committed: %+v", got)
+		}
+	})
+
+	t.Run("answer rejected by the post-turn guard", func(t *testing.T) {
+		loop := buildTestLoop(&mockProvider{events: scriptEndTurn})
+		loop.GuardRail = &phaseAwareFakeGuard{verdicts: map[guard.Phase]guard.Verdict{
+			guard.PhasePreTurn:  guard.VerdictAllow,
+			guard.PhasePostTurn: guard.VerdictDeny,
+		}}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(eventsOfType(tp, "turn_started")) != 1 || len(eventsOfType(tp, "turn_committed")) != 0 {
+			t.Errorf("event types = %v, want a turn_started without a turn_committed", eventTypeList(tp.events))
+		}
+	})
+
+	t.Run("output-limit turn with no text is discarded", func(t *testing.T) {
+		h := newOutputLimitHarness(
+			[]types.StreamEvent{{Type: "thinking", Text: "long", ThoughtSignature: "sig"}, stopWith("max_tokens")},
+			scriptEndTurn,
+		)
+		if _, err := h.loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		committed := userTurnCommits(h.transport.Events())
+		if fmt.Sprint(committed) != "[1]" {
+			t.Errorf("committed turns = %v, want only turn 1", committed)
+		}
+	})
+
+	t.Run("output-limit turn with text commits before its recovery instruction", func(t *testing.T) {
+		h := newOutputLimitHarness(
+			[]types.StreamEvent{{Type: "text_delta", Text: "partial"}, stopWith("max_tokens")},
+			scriptEndTurn,
+		)
+		if _, err := h.loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		events := h.transport.Events()
+		var order []string
+		for _, ev := range events {
+			switch {
+			case ev.Type == "turn_committed":
+				order = append(order, fmt.Sprintf("commit:%d:%s", *ev.Turn, ev.StopReason))
+			case ev.Type == "user_message" && ev.Source == types.UserMessageSourceOutputLimitRecovery:
+				order = append(order, "recovery")
+			}
+		}
+		if want := "[commit:0:max_tokens recovery commit:1:end_turn]"; fmt.Sprint(order) != want {
+			t.Errorf("order = %v, want %s", order, want)
+		}
+	})
+}
+
+func userTurnCommits(events []types.HarnessEvent) []int {
+	var turns []int
+	for _, ev := range events {
+		if ev.Type == "turn_committed" {
+			turns = append(turns, *ev.Turn)
+		}
+	}
+	return turns
+}
+
+// TestLoop_TurnStartedOncePerTurnAcrossRetries pins that a turn re-issued
+// after a retryable provider failure reports one turn_started, with the
+// discarded attempt's text preceding the retry's in the same turn.
+func TestLoop_TurnStartedOncePerTurnAcrossRetries(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.Provider = &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}
+	tp := &recordingTransport{}
+	loop.Transport = tp
+
+	rt, err := loop.Run(context.Background(), retryConfig(3))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rt.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success after a retry", rt.Outcome)
+	}
+	if n := len(eventsOfType(tp, "turn_started")); n != 1 {
+		t.Errorf("got %d turn_started events, want 1 for a retried turn", n)
+	}
+	if n := len(eventsOfType(tp, "turn_committed")); n != 1 {
+		t.Errorf("got %d turn_committed events, want 1", n)
+	}
+	var texts []string
+	for _, ev := range eventsOfType(tp, "text_delta") {
+		texts = append(texts, ev.Text)
+	}
+	if fmt.Sprint(texts) != "[discarded partial All done.]" {
+		t.Errorf("text_delta texts = %q, want the discarded attempt's then the retry's", texts)
 	}
 }
 

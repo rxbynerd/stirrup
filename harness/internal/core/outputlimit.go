@@ -43,14 +43,16 @@ func withoutToolUse(blocks []types.ContentBlock) []types.ContentBlock {
 // The assistant message is kept only when it carries text: a turn of
 // thinking alone may have been cut before its signature arrived, and
 // providers reject an assistant message with no content. It reports
-// whether the model was told to continue its cut-off text.
-func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit int, sr *streamResult, messages []types.Message) ([]types.Message, bool) {
+// whether the model was told to continue its cut-off text. A turn whose
+// assistant message is kept commits with usage; one discarded does not.
+func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit int, sr *streamResult, usage types.TokenUsage, messages []types.Message) ([]types.Message, bool) {
 	l.outputLimitRecoveries++
 
 	kept := withoutToolUse(sr.Blocks)
 	hasText := lastAssistantText(kept) != ""
 	if hasText {
 		messages = appendAssistantContent(messages, kept, sr.ReplayFields)
+		l.emitTurnCommitted(turn, sr.StopReason, usage, 0)
 	}
 
 	dropped := 0

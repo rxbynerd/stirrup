@@ -992,6 +992,8 @@ func (l *AgenticLoop) runInnerLoop(
 			ToolChoice:      turnToolChoice,
 			CacheKey:        cacheKey,
 		}
+		l.emitTurnStarted(turn, selection)
+
 		// A request that exceeds the context window gets one forced
 		// compaction and retry per turn; a second overflow ends the run.
 		// Each request has its own chat span, ended on every path below.
@@ -1084,7 +1086,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if outputLimitRecovery {
 			l.Trace.RecordTurnRecord(turnRecord)
 			var continues bool
-			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, summary.Tokens, messages)
 			if continues {
 				continuedText, preContinuationText = finalText, priorFinalText
 			}
@@ -1120,6 +1122,7 @@ func (l *AgenticLoop) runInnerLoop(
 				// replay/mining still sees the rejected answer. The retry
 				// turn is recorded separately on its own iteration.
 				l.Trace.RecordTurnRecord(turnRecord)
+				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
 				messages = l.applyEscalation(ctx, config, decision, selection.Provider, selection.Model, messages, &pendingToolChoice)
 				escalationsSoFar++
 				continue
@@ -1152,6 +1155,7 @@ func (l *AgenticLoop) runInnerLoop(
 					l.Logger.InfoContext(ctx, "postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
+			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
 			// The run does not end while unconsumed operator input
 			// exists: queued user_response text becomes the next user
 			// turn instead of a "done".
@@ -1186,6 +1190,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// Non-tool-use, non-end-turn stop reasons still represent
 			// a completed exchange that replay/mining cares about.
 			l.Trace.RecordTurnRecord(turnRecord)
+			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
 			return messages, sr.StopReason, finalAssistantText, sr.StopDetails
 		}
 		if len(toolCalls) == 0 {
@@ -1209,6 +1214,11 @@ func (l *AgenticLoop) runInnerLoop(
 		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
+		// A stall that cuts the batch short leaves calls unanswered, so
+		// the turn is not valid to replay and does not commit.
+		if len(toolResults) == len(toolCalls) {
+			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, len(toolResults))
+		}
 		// Escalation triggers only on the first assistant turn with
 		// no prior tool calls; once non-zero, a later no-tool answer
 		// is a legitimate judgement and left alone.

@@ -349,20 +349,6 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 	return len(inputs), ""
 }
 
-// emitUserMessage reports text the loop just appended to the history as a
-// user-role message. Merged appends report only the appended text, so a
-// consumer sees each input once.
-func (l *AgenticLoop) emitUserMessage(source, text, requestID string) {
-	if err := l.Transport.Emit(types.HarnessEvent{
-		Type:      "user_message",
-		Source:    source,
-		Text:      text,
-		RequestID: requestID,
-	}); err != nil {
-		l.logEmitFailure("user_message", err)
-	}
-}
-
 // injectUserInput appends texts to the history as one paragraph-separated
 // text block. It goes onto the trailing user message when there is one —
 // merged into the text block that ends it (the turn-0 prompt), or after
