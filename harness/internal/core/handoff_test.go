@@ -525,3 +525,38 @@ func TestRunErrorText(t *testing.T) {
 		t.Errorf("error text length %d, want it capped at %d bytes plus the marker", len(got), maxFailureTextBytes)
 	}
 }
+
+func TestDoneSummary_CarriesTraceReference(t *testing.T) {
+	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", SpanID: "00f067aa0ba902b7", Sampled: true}
+	if got := doneSummary(&types.RunTrace{Outcome: "success", TraceReference: ref}); got.TraceReference != ref {
+		t.Errorf("done summary TraceReference = %+v, want %+v", got.TraceReference, ref)
+	}
+	if got := doneSummary(&types.RunTrace{Outcome: "success"}); got.TraceReference != nil {
+		t.Errorf("done summary TraceReference = %+v, want nil", got.TraceReference)
+	}
+}
+
+func TestRun_SetupFailureReportsReferenceOnlyOnDone(t *testing.T) {
+	loop, _ := otelLoop(t, endTurnProvider())
+	tr := &cancellableTransport{}
+	loop.Transport = tr
+	loop.emitReady = true
+	loop.Hooks = &fakeHookRunner{preErr: errors.New("clone failed")}
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err == nil {
+		t.Fatal("Run() returned no error for a fatal pre-run hook")
+	}
+	for _, e := range tr.Events() {
+		if e.Type == "run_started" {
+			t.Errorf("run_started sent for a run that failed setup")
+		}
+	}
+	if runTrace.TraceReference == nil {
+		t.Fatal("RunTrace.TraceReference = nil, want the run span started before setup")
+	}
+	done := doneEvent(t, tr.Events())
+	if done.Trace == nil || done.Trace.TraceReference == nil || *done.Trace.TraceReference != *runTrace.TraceReference {
+		t.Errorf("done trace reference = %+v, want %+v", done.Trace, runTrace.TraceReference)
+	}
+}

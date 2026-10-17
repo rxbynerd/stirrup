@@ -185,5 +185,6 @@ func doneSummary(rt *types.RunTrace) *types.RunTrace {
 		Error:                rt.Error,
 		StructuredOutput:     rt.StructuredOutput,
 		DegradedCapabilities: rt.DegradedCapabilities,
+		TraceReference:       rt.TraceReference,
 	}
 }

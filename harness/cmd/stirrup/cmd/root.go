@@ -203,6 +203,7 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 		Git:                         rt.Git,
 		WorkspaceExport:             rt.WorkspaceExport,
 		DegradedCapabilities:        rt.DegradedCapabilities,
+		TraceReference:              rt.TraceReference,
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]

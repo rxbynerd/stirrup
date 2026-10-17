@@ -344,6 +344,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			l.logEmitFailure("ready", err)
 		}
 	}
+	l.emitRunStarted(config.RunID)
 
 	l.Logger.InfoContext(runCtx, "run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
@@ -693,6 +694,27 @@ func (l *AgenticLoop) runSpanContext() context.Context {
 		return p.RootContext()
 	}
 	return nil
+}
+
+// emitRunStarted tells the control plane the run span's identity before
+// the first model event, so it can address the run's trace while the run
+// is still in flight. Nothing is sent when the emitter records no span.
+func (l *AgenticLoop) emitRunStarted(runID string) {
+	p, ok := l.Trace.(trace.TraceReferenceProvider)
+	if !ok {
+		return
+	}
+	ref := p.TraceReference()
+	if ref == nil {
+		return
+	}
+	if err := l.Transport.Emit(types.HarnessEvent{
+		Type:           "run_started",
+		ID:             runID,
+		TraceReference: ref,
+	}); err != nil {
+		l.logEmitFailure("run_started", err)
+	}
 }
 
 // runInnerLoop runs the agentic loop turns until the model says "done",

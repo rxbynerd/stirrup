@@ -183,6 +183,22 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	}
 }
 
+func TestBuildRunResult_TraceReference(t *testing.T) {
+	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", SpanID: "00f067aa0ba902b7", Sampled: true}
+	got := buildRunResult(&types.RunTrace{ID: "run-ref", Outcome: "success", TraceReference: ref}, types.DefaultMaxFinalAssistantTextBytes)
+	if got.TraceReference == nil || *got.TraceReference != *ref {
+		t.Errorf("TraceReference = %+v, want %+v", got.TraceReference, ref)
+	}
+
+	raw, err := json.Marshal(buildRunResult(&types.RunTrace{ID: "run-jsonl", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "traceReference") {
+		t.Errorf("RunResult without an OTel span serialised a traceReference: %s", raw)
+	}
+}
+
 func TestBuildRunResult_VerificationOutcomesPopulateError(t *testing.T) {
 	cases := []struct {
 		name        string
