@@ -695,7 +695,7 @@ configuration space — the common cases. Anything below requires
 | `verifier` | `composite` (chains other verifiers). |
 | `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field (`allow-all`, `deny-all`, `deny-side-effects`, `ask-upstream`) defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
-| `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. |
+| `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. An empty `phases` runs the guard at all three phases, except that `shieldstral` then checks only `pre_turn` and `post_turn`; `pre_tool` is opt-in (see [`guardrails.md`](guardrails.md#shieldstral)). |
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |

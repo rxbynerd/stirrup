@@ -966,7 +966,8 @@ message GuardRailConfig {
   // validation time so failure modes stay tractable.
   repeated GuardRailConfig stages = 2;
 
-  // Restrict the guard to specific phases. Empty means all three.
+  // Restrict the guard to specific phases. Empty means all three, except
+  // for "shieldstral", where it means "pre_turn" and "post_turn".
   // Valid values: "pre_turn", "pre_tool", "post_turn". Duplicates are
   // rejected.
   repeated string phases = 3;

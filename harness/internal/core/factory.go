@@ -1657,6 +1657,11 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 	}
 }
 
+// shieldstralDefaultPhases applies to a shieldstral guard whose Phases is
+// empty. The pre_tool check classifies bare tool arguments and wrongly
+// denies harmless calls, so it stays opt-in.
+var shieldstralDefaultPhases = []string{"pre_turn", "post_turn"}
+
 // buildGuardRail constructs the operator-configured GuardRail. A nil cfg
 // or an explicit "none" type returns the package-level Noop so the
 // loop's call sites can be unconditional. Cloud-judge reuses the default
@@ -1726,7 +1731,11 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 		if err != nil {
 			return nil, err
 		}
-		return wrapWithPhases(s, cfg.Phases), nil
+		phases := cfg.Phases
+		if len(phases) == 0 {
+			phases = shieldstralDefaultPhases
+		}
+		return wrapWithPhases(s, phases), nil
 	case "cloud-judge":
 		// v1: always use the default provider. A future revision could
 		// route to a named provider in `providers` based on a future

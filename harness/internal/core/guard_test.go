@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
@@ -789,7 +792,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 		if g == nil {
 			t.Fatal("expected non-nil GuardRail")
 		}
-		if _, ok := g.(*guard.Shieldstral); !ok {
+		if _, ok := unwrapPhaseGated(g).(*guard.Shieldstral); !ok {
 			t.Errorf("expected *guard.Shieldstral, got %T", g)
 		}
 	})
@@ -807,7 +810,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildGuardRail: %v", err)
 		}
-		if _, ok := g.(*guard.Shieldstral); !ok {
+		if _, ok := unwrapPhaseGated(g).(*guard.Shieldstral); !ok {
 			t.Errorf("expected *guard.Shieldstral, got %T", g)
 		}
 	})
@@ -826,6 +829,86 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 			t.Errorf("expected error to mention secret store, got: %v", err)
 		}
 	})
+}
+
+func unwrapPhaseGated(g guard.GuardRail) guard.GuardRail {
+	if pg, ok := g.(*guard.PhaseGated); ok {
+		return pg.Inner
+	}
+	return g
+}
+
+// newShieldstralCountingServer returns a classifier endpoint that answers
+// "safe" and counts the requests it receives.
+func newShieldstralCountingServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"<score>no</score>"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// TestBuildGuardRail_ShieldstralPhaseDefault asserts that shieldstral
+// classifies pre_turn and post_turn but skips pre_tool unless phases
+// lists it, including when the stage sits inside a composite.
+func TestBuildGuardRail_ShieldstralPhaseDefault(t *testing.T) {
+	ctx := context.Background()
+	phases := []guard.Phase{guard.PhasePreTurn, guard.PhasePreTool, guard.PhasePostTurn}
+
+	tests := []struct {
+		name      string
+		cfg       func(endpoint string) *types.GuardRailConfig
+		wantCalls map[guard.Phase]int32
+	}{
+		{
+			name: "empty phases default to pre_turn and post_turn",
+			cfg: func(endpoint string) *types.GuardRailConfig {
+				return &types.GuardRailConfig{Type: "shieldstral", Endpoint: endpoint, Model: "m"}
+			},
+			wantCalls: map[guard.Phase]int32{guard.PhasePreTurn: 1, guard.PhasePreTool: 0, guard.PhasePostTurn: 1},
+		},
+		{
+			name: "explicit phases including pre_tool classify it",
+			cfg: func(endpoint string) *types.GuardRailConfig {
+				return &types.GuardRailConfig{Type: "shieldstral", Endpoint: endpoint, Model: "m", Phases: []string{"pre_tool", "post_turn"}}
+			},
+			wantCalls: map[guard.Phase]int32{guard.PhasePreTurn: 0, guard.PhasePreTool: 1, guard.PhasePostTurn: 1},
+		},
+		{
+			name: "composite stage with empty phases uses the default",
+			cfg: func(endpoint string) *types.GuardRailConfig {
+				return &types.GuardRailConfig{
+					Type:   "composite",
+					Stages: []types.GuardRailConfig{{Type: "shieldstral", Endpoint: endpoint, Model: "m"}},
+				}
+			},
+			wantCalls: map[guard.Phase]int32{guard.PhasePreTurn: 1, guard.PhasePreTool: 0, guard.PhasePostTurn: 1},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, phase := range phases {
+				srv, calls := newShieldstralCountingServer(t)
+				g, err := buildGuardRail(ctx, tc.cfg(srv.URL), nil, nil, nil, nil)
+				if err != nil {
+					t.Fatalf("buildGuardRail: %v", err)
+				}
+				d, err := g.Check(ctx, guard.Input{Phase: phase, Content: strings.Repeat("some content ", 20)})
+				if err != nil {
+					t.Fatalf("Check(%s): %v", phase, err)
+				}
+				if d.Verdict != guard.VerdictAllow {
+					t.Errorf("Check(%s) verdict = %q, want allow", phase, d.Verdict)
+				}
+				if got := calls.Load(); got != tc.wantCalls[phase] {
+					t.Errorf("classifier calls at %s = %d, want %d", phase, got, tc.wantCalls[phase])
+				}
+			}
+		})
+	}
 }
 
 // TestBuildGuardRail_CloudJudge asserts that the cloud-judge arm of
@@ -892,7 +975,7 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 	if _, ok := seq.Guards[0].(*guard.GraniteGuardian); !ok {
 		t.Errorf("Guards[0]: expected *guard.GraniteGuardian, got %T", seq.Guards[0])
 	}
-	if _, ok := seq.Guards[1].(*guard.Shieldstral); !ok {
+	if _, ok := unwrapPhaseGated(seq.Guards[1]).(*guard.Shieldstral); !ok {
 		t.Errorf("Guards[1]: expected *guard.Shieldstral, got %T", seq.Guards[1])
 	}
 	if _, ok := seq.Guards[2].(*guard.CloudJudge); !ok {

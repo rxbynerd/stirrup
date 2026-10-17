@@ -249,6 +249,18 @@ LM Studio serving MLX conversions of `mistralai/Shieldstral-1.0-3B`.
 vLLM, Ollama, and TGI are expected to work through the
 OpenAI-compatible chat-completions API but are untested.
 
+**Phases.** A `shieldstral` guard with no `phases` checks `pre_turn`
+and `post_turn` only; `pre_tool` is skipped without a classifier
+call. The `pre_tool` check receives only the tool's JSON arguments,
+and the built-in `function_call` criterion wrongly denied harmless
+read and search calls (such as `{"path":"README.md"}`) in testing
+against the 3B MLX builds: 2 of 8 harmless calls on the 4-bit build
+and 3 of 8 on the MXFP8 build, while all 7 malicious calls were
+denied on both. With the fail-closed default, each false positive
+blocks the tool call. Listing `pre_tool` in `phases` opts in, for
+example `"phases": ["pre_turn", "pre_tool", "post_turn"]`. The
+default applies to `shieldstral` stages inside a `composite` as well.
+
 **Availability.** Shieldstral is not available on Mistral AI's hosted
 API (`api.mistral.ai`) or on OpenRouter; both were checked live and
 neither serves a `shieldstral*` model. The `endpoint` / `apiKeyRef`
@@ -598,7 +610,9 @@ Composite config skeleton:
 ```
 
 Each stage can carry its own `phases` restriction; an unset
-`phases` means the stage runs at every phase. Stages run
+`phases` means the stage runs at every phase, except that a
+`shieldstral` stage then skips `pre_tool` (see
+[`shieldstral`](#shieldstral)). Stages run
 sequentially: the first deny short-circuits.
 
 To add an adapter type, implement the `GuardRail` interface in a

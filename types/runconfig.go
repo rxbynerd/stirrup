@@ -465,7 +465,7 @@ type CodeScannerConfig struct {
 type GuardRailConfig struct {
 	Type   string            `json:"type"`             // "none" | "granite-guardian" | "shieldstral" | "composite" | "cloud-judge"
 	Stages []GuardRailConfig `json:"stages,omitempty"` // composite only
-	Phases []string          `json:"phases,omitempty"` // restrict to phases; default = all three
+	Phases []string          `json:"phases,omitempty"` // restrict to phases; default = all three (shieldstral: pre_turn, post_turn)
 
 	// Composites always wire as Sequential (first-deny-wins); the guard
 	// package's Parallel implementation has no config field and requires

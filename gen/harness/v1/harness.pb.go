@@ -2059,7 +2059,8 @@ type GuardRailConfig struct {
 	// non-composite type. composite-of-composite is rejected at
 	// validation time so failure modes stay tractable.
 	Stages []*GuardRailConfig `protobuf:"bytes,2,rep,name=stages,proto3" json:"stages,omitempty"`
-	// Restrict the guard to specific phases. Empty means all three.
+	// Restrict the guard to specific phases. Empty means all three, except
+	// for "shieldstral", where it means "pre_turn" and "post_turn".
 	// Valid values: "pre_turn", "pre_tool", "post_turn". Duplicates are
 	// rejected.
 	Phases []string `protobuf:"bytes,3,rep,name=phases,proto3" json:"phases,omitempty"`
