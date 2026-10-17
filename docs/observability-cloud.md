@@ -1058,7 +1058,10 @@ invoke_agent stirrup                       root span
 ├─ git.checkpoint
 ├─ chat {model}                CLIENT      next turn
 ├─ guard.post_turn
-└─ verifier.verify, git.finalise, hooks.postRun, workspace.handoff
+├─ verifier.verify, git.finalise
+├─ hooks.postRun                           hooks.preRun runs before turn 0
+│  └─ hook                                 one per hook execution
+└─ workspace.handoff
 ```
 
 The structure follows the GenAI agent conventions: `chat` and
@@ -1093,6 +1096,8 @@ Span-specific attributes:
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
 | `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the run config sets `temperature` (an adapter that omits sampling parameters for the model does not send it), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
+| `hooks.preRun` / `hooks.postRun` | None; a phase that fails the run sets error status. A `continueOnError` failure marks only its `hook` span. |
+| `hook` | `hook.phase`, `hook.index`, `hook.name` when the hook has one, `hook.command` (scrubbed), `hook.exit_code`, `hook.duration_ms`, `hook.timed_out`, `hook.skipped`, `hook.continued_on_error`, `hook.output_truncated`. Error status with the scrubbed hook error when the hook failed. |
 | `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`, and `tool.queue_ms` when the call waited to run. A control-plane tool call's span opens at dispatch but the call runs only after the turn's synchronous tool calls have run and a parallel slot is free; `tool.queue_ms` is that wait, which the span covers and `tool.duration_ms` excludes. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool` and its `gen_ai.tool.name` is scrubbed and cut to 128 bytes. |
 
 Failures set error status with a scrubbed description and an
@@ -1227,6 +1232,7 @@ semantic-convention attributes those backends read natively:
 | `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
 | `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup.subagent` | The sub-agent's seed prompt and final assistant message. |
 | `gen_ai.tool.call.arguments` / `.result` | `execute_tool {name}` | Each tool call's input arguments and result text. |
+| `hook.output_tail` | `hook` | The last 4 KB of a lifecycle hook's combined output. Not a GenAI attribute. |
 
 The tool call identifier (`gen_ai.tool.call.id`) is a correlation key
 rather than content and is emitted on every `execute_tool` span
@@ -1274,6 +1280,7 @@ stays valid JSON:
 - `gen_ai.tool.call.arguments` becomes a JSON string holding the
   leading bytes of the arguments; `gen_ai.tool.call.result` keeps its
   leading bytes.
+- `hook.output_tail` keeps its trailing bytes.
 
 Each capped attribute is accompanied by a boolean
 `stirrup.<attribute>.truncated` (for example
