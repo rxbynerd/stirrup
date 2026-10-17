@@ -7,7 +7,7 @@ baseline in `../baselines/`:
 
 - **Main-push gate** — `.github/workflows/ci.yml::eval-gate` runs
   the baselined suites on pushes to `main` (and on manual
-  `workflow_dispatch`), pinned to a cheap model (GPT-5.6 Luna over
+  `workflow_dispatch`), pinned to a cheap model (GPT-6 Luna over
   OpenRouter, selected by `stirrup-eval run`'s `--provider` /
   `--base-url` / `--api-key-ref` / `--model` flags), runs every task
   three times (`--trials 3`), and compares each result to its
@@ -289,7 +289,7 @@ OPENROUTER_API_KEY=... ./stirrup-eval run \
   --provider openai-compatible \
   --base-url https://openrouter.ai/api/v1 \
   --api-key-ref secret://OPENROUTER_API_KEY \
-  --model openai/gpt-5.6-luna
+  --model openai/gpt-6-luna
 ```
 
 The **release sweep** authenticates via Anthropic Workload Identity

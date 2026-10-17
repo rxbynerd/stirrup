@@ -448,7 +448,7 @@ The labels are injected via `-ldflags` against
   reusable `_verify.yml` workflow.
 - **`eval-gate`** — runs the baselined suites in `eval/suites/`
   against `eval/baselines/` on every push, pinned to a cheap model
-  (GPT-5.6 Luna over OpenRouter), exits non-zero on regressions, uploads
+  (GPT-6 Luna over OpenRouter), exits non-zero on regressions, uploads
   results as artifacts. A stronger-model sweep (Sonnet 5, Opus 4.8)
   runs at release time via `release.yml::eval-extended`.
 - **`publish-container`** — builds and pushes the image to GHCR on

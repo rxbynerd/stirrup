@@ -21,7 +21,7 @@ name: Release
 #   eval-extended       → runs the baselined eval suites against the
 #                         stronger models (Sonnet 5, Opus 4.8) that the
 #                         per-push cheap gate (ci.yml::eval-gate,
-#                         GPT-5.6 Luna) deliberately skips. It also
+#                         GPT-6 Luna) deliberately skips. It also
 #                         differs by provider: the gate runs over
 #                         OpenRouter, this job over Anthropic WIF, so
 #                         a release still exercises the first-party
@@ -778,7 +778,7 @@ jobs:
       mode: warn
 
   # Extended eval sweep: the same baselined suites the per-push gate
-  # runs on openai/gpt-5.6-luna (ci.yml::eval-gate), re-run against the
+  # runs on openai/gpt-6-luna (ci.yml::eval-gate), re-run against the
   # stronger models a release is expected to work well with.
   # Self-pinned provider-quirks-* suites are not part of the sweep: a
   # --model override would replace the model they pin, so they stay
