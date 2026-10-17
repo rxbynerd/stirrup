@@ -735,7 +735,7 @@ func TestDiffReviewConfigHash_Golden(t *testing.T) {
 	}
 	// Any change to the prompt, schema, request rendering or diff arguments
 	// changes this value and invalidates every cached verdict.
-	if want := "6f02fd686ee44988430c4b3d78dbf3c95c7180949807fd997deea690814c920d"; got != want {
+	if want := "eb7163809fe46b0b373055f1e3e21893be5e19dbe0475a35a42bc282018c9dda"; got != want {
 		t.Errorf("config hash = %s, want %s", got, want)
 	}
 }

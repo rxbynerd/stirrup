@@ -308,7 +308,7 @@ judge {
   criteria = "The change adds a retry loop around the HTTP call without changing the exported function signature."
   llm {
     provider    = "anthropic"
-    model       = "claude-haiku-4-5-20251001"
+    model       = "claude-haiku-5-5"
     api_key_ref = "secret://ANTHROPIC_API_KEY"
   }
 }
@@ -375,7 +375,7 @@ replay-strict`, which never calls a model. The key never appears in
 suite files, results, verdict records, or the judge cache.
 
 **Defaults and the `--judge-*` flags.** A `diff-review` judge without an
-`llm` block uses `anthropic`, `claude-haiku-4-5-20251001`, and
+`llm` block uses `anthropic`, `claude-haiku-5-5`, and
 `secret://ANTHROPIC_API_KEY`. That default is a continuity choice for
 existing suites, not a recommendation. The `--judge-provider`,
 `--judge-model`, `--judge-base-url`, and `--judge-api-key-ref` flags on
@@ -1489,7 +1489,7 @@ Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 ```bash
 ./stirrup-eval judge-calibrate \
   --golden eval/golden/diff-review-seed.json \
-  --judge-model claude-haiku-4-5-20251001 \
+  --judge-model claude-haiku-5-5 \
   --output results/calibration/haiku.json
 ```
 

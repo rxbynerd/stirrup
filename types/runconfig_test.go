@@ -4074,7 +4074,7 @@ func TestValidateGuardRailConfig(t *testing.T) {
 		},
 		{
 			name:    "cloud-judge without endpoint allowed",
-			guard:   &GuardRailConfig{Type: "cloud-judge", Model: "claude-haiku-4-5"},
+			guard:   &GuardRailConfig{Type: "cloud-judge", Model: "claude-haiku-5-5"},
 			wantErr: false,
 		},
 		{

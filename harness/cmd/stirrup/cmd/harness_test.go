@@ -2918,7 +2918,7 @@ func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
 		FailOpen: true,
 	}
 
-	if err := cmd.Flags().Set("guardrail-model", "us.anthropic.claude-haiku-4-5-20251001-v1:0"); err != nil {
+	if err := cmd.Flags().Set("guardrail-model", "anthropic.claude-haiku-5-5"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	if err := applyOverrides(cmd, cfg, nil); err != nil {
@@ -2928,7 +2928,7 @@ func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
 	if cfg.GuardRail == nil {
 		t.Fatalf("GuardRail should remain non-nil")
 	}
-	if cfg.GuardRail.Model != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
+	if cfg.GuardRail.Model != "anthropic.claude-haiku-5-5" {
 		t.Errorf("Model override failed: got %q", cfg.GuardRail.Model)
 	}
 	// Other fields must survive untouched.

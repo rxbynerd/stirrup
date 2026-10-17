@@ -1825,7 +1825,7 @@ message ModelRouterConfig {
 
   // For "per-mode" and "dynamic": mode-specific overrides.
   // Keys are mode names (e.g. "planning", "review"); values are
-  // "provider/model" strings (e.g. "anthropic/claude-haiku-4-5-20251001").
+  // "provider/model" strings (e.g. "anthropic/claude-haiku-5-5").
   map<string, string> mode_models = 4;
 
   // For "dynamic": the provider to use for cheaper/simpler turns.
@@ -2182,7 +2182,7 @@ message VerifierConfig {
   string criteria = 5;
 
   // For "llm-judge": model identifier to use as the judge
-  // (e.g. "claude-haiku-4-5-20251001"). Defaults to a cheap model.
+  // (e.g. "claude-haiku-5-5"). Defaults to a cheap model.
   string model = 6;
 }
 

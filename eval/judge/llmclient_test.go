@@ -24,7 +24,7 @@ func TestResolveLLMConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Provider != "anthropic" || cfg.Model != "claude-haiku-4-5-20251001" || cfg.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
+		if cfg.Provider != "anthropic" || cfg.Model != "claude-haiku-5-5" || cfg.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
 			t.Errorf("cfg = %+v", cfg)
 		}
 	})

@@ -27,12 +27,18 @@ import (
 const (
 	// defaultCloudJudgeModel is cheap, low-latency, and reliably emits
 	// JSON when asked. Operators on other providers override via Model.
-	defaultCloudJudgeModel = "claude-haiku-4-5-20251001"
+	defaultCloudJudgeModel = "claude-haiku-5-5"
 
-	// cloudJudgeMaxTokens caps the verdict response; the schema is three
-	// short fields (nonce, verdict, reason), so 256 covers verbose
-	// reasons plus quoting overhead.
-	cloudJudgeMaxTokens = 256
+	// cloudJudgeMaxTokens caps the verdict response, including any
+	// thinking the model does before it: the verdict itself is three short
+	// fields (nonce, verdict, reason), but models that think by default
+	// spend most of the budget before writing it.
+	cloudJudgeMaxTokens = 1024
+
+	// cloudJudgeReasoningEffort keeps thinking short on models that think
+	// by default, so the verdict fits the token cap and the pre_tool
+	// timeout. Models without an effort control ignore it.
+	cloudJudgeReasoningEffort = "low"
 
 	// cloudJudgeSystem primes the model towards classification; the
 	// real instructions live in the user message so the same template
@@ -50,7 +56,7 @@ const (
 	// the full stream drain of one check, not the time to first token,
 	// when CloudJudgeConfig.Timeout is zero. pre_tool runs once per tool
 	// call, so it gets the tighter budget.
-	defaultCloudJudgePreToolTimeout = 2 * time.Second
+	defaultCloudJudgePreToolTimeout = 4 * time.Second
 	defaultCloudJudgeTimeout        = 5 * time.Second
 
 	// cloudJudgePreToolMaxContentBytes caps the pre_tool content sent for
@@ -173,10 +179,11 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 	defer cancel()
 
 	events, err := c.provider.Stream(streamCtx, types.StreamParams{
-		Model:     c.model,
-		System:    cloudJudgeSystem,
-		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
-		MaxTokens: cloudJudgeMaxTokens,
+		Model:           c.model,
+		System:          cloudJudgeSystem,
+		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
+		MaxTokens:       cloudJudgeMaxTokens,
+		ReasoningEffort: cloudJudgeReasoningEffort,
 		// Greedy decoding is transmitted as an explicit 0.0 via the
 		// pointer type, distinguishing "guard asked for greedy" from
 		// "unset" on the wire.

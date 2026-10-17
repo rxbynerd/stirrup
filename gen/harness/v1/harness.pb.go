@@ -4383,7 +4383,7 @@ type ModelRouterConfig struct {
 	Model string `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
 	// For "per-mode" and "dynamic": mode-specific overrides.
 	// Keys are mode names (e.g. "planning", "review"); values are
-	// "provider/model" strings (e.g. "anthropic/claude-haiku-4-5-20251001").
+	// "provider/model" strings (e.g. "anthropic/claude-haiku-5-5").
 	ModeModels map[string]string `protobuf:"bytes,4,rep,name=mode_models,json=modeModels,proto3" json:"mode_models,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// For "dynamic": the provider to use for cheaper/simpler turns.
 	CheapProvider string `protobuf:"bytes,5,opt,name=cheap_provider,json=cheapProvider,proto3" json:"cheap_provider,omitempty"`
@@ -5407,7 +5407,7 @@ type VerifierConfig struct {
 	// constitutes a passing result.
 	Criteria string `protobuf:"bytes,5,opt,name=criteria,proto3" json:"criteria,omitempty"`
 	// For "llm-judge": model identifier to use as the judge
-	// (e.g. "claude-haiku-4-5-20251001"). Defaults to a cheap model.
+	// (e.g. "claude-haiku-5-5"). Defaults to a cheap model.
 	Model         string `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

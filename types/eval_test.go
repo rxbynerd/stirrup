@@ -9,7 +9,7 @@ import (
 
 func TestJudgeLLMConfigValidate(t *testing.T) {
 	temp := func(v float64) *float64 { return &v }
-	valid := JudgeLLMConfig{Model: "claude-haiku-4-5-20251001"}
+	valid := JudgeLLMConfig{Model: "claude-haiku-5-5"}
 
 	cases := []struct {
 		name    string
