@@ -2532,6 +2532,55 @@ func TestRunConfigFromProto_RepositoryGuidancePreserved(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_CorrelationPreserved pins every CorrelationConfig
+// field across a wire round-trip and checks the translated label map does
+// not alias the proto-owned map.
+func TestRunConfigFromProto_CorrelationPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Correlation: &pb.CorrelationConfig{
+			SessionId: "session-42",
+			TaskId:    "task-7",
+			AttemptId: "attempt-3",
+			UserId:    "user-9f2c",
+			Url:       "https://cp.example.com/runs/42",
+			Labels:    map[string]string{"agent_profile": "reviewer", "execution_mode": "batch"},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	got := runConfigFromProto(&decoded).Correlation
+	want := &types.CorrelationConfig{
+		SessionID: "session-42",
+		TaskID:    "task-7",
+		AttemptID: "attempt-3",
+		UserID:    "user-9f2c",
+		URL:       "https://cp.example.com/runs/42",
+		Labels:    map[string]string{"agent_profile": "reviewer", "execution_mode": "batch"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Correlation: got %+v, want %+v", got, want)
+	}
+
+	decoded.Correlation.Labels["agent_profile"] = "mutated"
+	if got.Labels["agent_profile"] != "reviewer" {
+		t.Error("Correlation.Labels shares the proto-owned map")
+	}
+}
+
+func TestRunConfigFromProto_CorrelationAbsentStaysNil(t *testing.T) {
+	if got := runConfigFromProto(&pb.RunConfig{}).Correlation; got != nil {
+		t.Errorf("Correlation should be nil when proto field absent, got %+v", got)
+	}
+}
+
 // TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil documents that an
 // absent sub-message leaves guidance off rather than synthesising an empty
 // block that fails validation.

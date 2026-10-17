@@ -666,6 +666,11 @@ message RunConfig {
   // RepositoryGuidanceConfig.
   RepositoryGuidanceConfig repository_guidance = 53;
 
+  // Optional. Control-plane identifiers stamped on every span of the
+  // run. Never injected into the model's prompt or conversation
+  // history. See CorrelationConfig.
+  CorrelationConfig correlation = 58;
+
   // RunConfig.transport is intentionally NOT mirrored. The transport is
   // a property of how the harness was launched, not of the work being
   // assigned: a config that arrives in a TaskAssignment arrived over
@@ -674,7 +679,7 @@ message RunConfig {
   // would let a control plane declare a transport that contradicts the
   // stream carrying the declaration.
   //
-  // Next available field number: 36.
+  // Next available field number: 59.
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -732,6 +737,38 @@ message ToolChoiceEscalationConfig {
   // missed-tool recovery. Values outside that range are rejected by
   // ValidateRunConfig.
   int32 max_retries = 2;
+}
+
+// CorrelationConfig carries the identifiers a control plane uses for the
+// run in its own UI. The harness stamps each set value on every span
+// (session.id and gen_ai.conversation.id, user.id, stirrup.task.id,
+// stirrup.attempt.id, stirrup.control_plane.url, stirrup.label.<key>)
+// and treats every value as opaque. Values are never resource
+// attributes, metric labels, or prompt content.
+message CorrelationConfig {
+  // Optional. Groups runs into one session; takes precedence over
+  // RunConfig.session_name for session.id. 1-199 printable US-ASCII
+  // characters.
+  string session_id = 1;
+
+  // Optional. At most 255 bytes of printable UTF-8.
+  string task_id = 2;
+
+  // Optional. At most 255 bytes of printable UTF-8.
+  string attempt_id = 3;
+
+  // Optional. Opaque end-user identifier; the control plane chooses a
+  // pseudonymous value. At most 255 bytes of printable UTF-8.
+  string user_id = 4;
+
+  // Optional. The control plane's canonical page for the run: an
+  // absolute http or https URL without userinfo, at most 1500 bytes.
+  string url = 5;
+
+  // Optional. The control plane's slicing dimensions. At most 16
+  // entries; keys match ^[a-z][a-z0-9_]{0,63}$ and values are at most
+  // 255 bytes of printable UTF-8.
+  map<string, string> labels = 6;
 }
 
 // WindDownConfig configures the wind-down instruction. When enabled, the

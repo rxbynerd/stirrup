@@ -417,6 +417,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.RepositoryGuidance != nil {
 		rc.RepositoryGuidance = repositoryGuidanceConfigFromProto(pc.RepositoryGuidance)
 	}
+	if pc.Correlation != nil {
+		rc.Correlation = correlationConfigFromProto(pc.Correlation)
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
@@ -676,6 +679,25 @@ func repositoryGuidanceConfigFromProto(pc *pb.RepositoryGuidanceConfig) *types.R
 		}
 	}
 	return rg
+}
+
+// correlationConfigFromProto copies the proto-owned label map so later
+// mutations to the wire payload cannot reach internal config state.
+func correlationConfigFromProto(pc *pb.CorrelationConfig) *types.CorrelationConfig {
+	cc := &types.CorrelationConfig{
+		SessionID: pc.GetSessionId(),
+		TaskID:    pc.GetTaskId(),
+		AttemptID: pc.GetAttemptId(),
+		UserID:    pc.GetUserId(),
+		URL:       pc.GetUrl(),
+	}
+	if labels := pc.GetLabels(); len(labels) > 0 {
+		cc.Labels = make(map[string]string, len(labels))
+		for k, v := range labels {
+			cc.Labels[k] = v
+		}
+	}
+	return cc
 }
 
 // hooksConfigFromProto translates a proto HooksConfig to the internal
