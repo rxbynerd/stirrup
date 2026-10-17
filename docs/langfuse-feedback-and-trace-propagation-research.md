@@ -275,6 +275,20 @@ Langfuse v4 needs the attributes on relevant observations for filtering; generic
 unmapped attributes do not provide the same explicit metadata mapping.
 [OTLP attribute mapping](https://langfuse.com/integrations/native/opentelemetry).
 
+Langfuse's own guidance for getting trace-level attributes onto every span is
+OpenTelemetry baggage plus a `BaggageSpanProcessor` in the emitting process. The
+OTLP endpoint reads span attributes only, never baggage. Stirrup's run-scope
+processor already stamps every span at start, so the recommendation is met
+in-process without baggage. Across service boundaries, baggage would only let
+downstream spans match observation-level session and user filters, and the same
+page warns that baggage propagates to third-party APIs and must carry no personal
+data, which is the haybale concern above. Langfuse also reads `user.id` and
+`session.id` natively beside its `langfuse.*` keys, filters only top-level
+`langfuse.trace.metadata.*` keys, drops session IDs of 200 characters or more,
+and names a trace after its root span unless `langfuse.trace.name` is set.
+[Propagation guidance](https://langfuse.com/integrations/native/opentelemetry),
+[session limits](https://langfuse.com/docs/observability/features/sessions).
+
 The outermost control plane should supply its canonical URL. Hairpin's
 [`/jobs/{id}` route](https://github.com/rxbynerd/hairpin/blob/5421cde927477b58ce03ede2624901ac210cd9c7/internal/web/web.go#L77)
 is a useful secondary operator link, but may not be the user's session surface.

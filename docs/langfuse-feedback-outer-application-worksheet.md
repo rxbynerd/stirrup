@@ -19,8 +19,8 @@ not depend on Hairpin itself.
 | Surface | Package | Shape |
 |---|---|---|
 | Trace reference | S1 | `{ traceId, runSpanId, sampled }` on the `run_started` event, on `done.trace`, on `RunTrace` and on `RunResult`; absent when the run records no OTel span |
-| Correlation block | S2 | `RunConfig.correlation { sessionId, taskId, attemptId, userId, url }`, stamped on every span; `userId` is opaque to Stirrup |
-| Langfuse mapping | S3 | With the `langfuse` profile, `user.id` becomes `langfuse.user.id`, `url` becomes `langfuse.trace.metadata.control_plane_url`, task and attempt IDs become trace metadata |
+| Correlation block | S2 | `RunConfig.correlation { sessionId, taskId, attemptId, userId, url, labels }`, stamped on every span; `userId` is opaque to Stirrup; `labels` carries the application's own slicing dimensions (agent profile, execution mode) |
+| Langfuse mapping | S3 | Langfuse reads `user.id` and `session.id` natively. With the `langfuse` profile, `url` becomes `langfuse.trace.metadata.control_plane_url`, task and attempt IDs and every label become filterable trace metadata (`langfuse.trace.metadata.<key>`), and the trace is named `stirrup <mode>` |
 | Sampling signal | S1/S6 | `sampled: false` means the run's spans were not exported; feedback can be stored but has no trace to land on |
 
 ## Responsibilities
@@ -34,18 +34,30 @@ not depend on Hairpin itself.
 2. **Submission.** Set `correlation` on each job: `sessionId` = the
    application's session, `taskId` and `attemptId` = its own
    identifiers, `userId` = its pseudonymous user key, `url` = the
-   canonical page for that attempt under the configured public origin.
-   Pseudonymise before setting `userId`; nothing downstream does it.
+   canonical page for that attempt under the configured public origin,
+   `labels` = the dimensions its operators slice by, for example
+   `agent_profile` and `execution_mode`. Keep `sessionId` under 200
+   US-ASCII characters; Langfuse drops longer ones. Pseudonymise before
+   setting `userId`; nothing downstream does it.
 3. **Rating endpoint.** `POST .../feedback { value, comment }`,
    authenticated by the application. Resolve the attempt to its stored
    reference; never accept a browser-supplied trace ID as the subject.
    Persist a row keyed by attempt and reviewer before any delivery
-   attempt. Derive the Langfuse score `id` from that key so retries and
-   edits upsert and two reviewers never overwrite each other.
+   attempt, and record the timestamp of the first submission. Derive
+   the Langfuse score `id` from that key so two reviewers never
+   overwrite each other. Langfuse replaces an existing score only when
+   `id`, `name` and the score's date all match, and partial updates
+   are deprecated, so an edit must resend the full score with the
+   original timestamp; an edit on a later day without it creates a
+   second score. The pinned stack verifies that `POST /api/public/scores`
+   accepts a client timestamp; if it does not, the application reads
+   the latest score by timestamp and tolerates the duplicate.
 4. **Delivery.** An outbox worker posts
    `POST {host}/api/public/scores` with `id`, `traceId`,
    `observationId` = run span ID, `name: "helpfulness"`, `value`,
-   `comment`, and Basic auth from the project key pair. An attempt with
+   `comment`, `dataType: "NUMERIC"`, the original timestamp, and Basic
+   auth from the project key pair. The score object has no
+   `environment` field; environment comes from the trace. An attempt with
    `sampled == false` or no reference keeps the row and marks delivery
    "no trace". Delivery failure leaves the row and retries. Scores may
    arrive before the trace and link later; that is not an error.
@@ -67,7 +79,11 @@ not depend on Hairpin itself.
   a minimal stub of it).
 - Submit two attempts, rate the second, edit the rating, restart both
   the application and Hairpin, confirm the score sits on the second
-  attempt's run span in Langfuse.
+  attempt's run span in Langfuse. Edit the rating again with a
+  timestamp on a later day and confirm exactly one score remains.
+- Filter the Langfuse trace table by `agent_profile` and by
+  `execution_mode` and confirm each returns only the matching
+  attempts.
 - Browser path: application page → Langfuse trace; trace metadata
   `control_plane_url` → application page.
 - Negative paths: feedback on an attempt with `sampled: false` (row

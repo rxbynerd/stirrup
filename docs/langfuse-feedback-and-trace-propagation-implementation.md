@@ -35,7 +35,8 @@ The rejected alternative is recorded so the reasoning is not lost.
 | Where non-Stirrup work is specified | Each component's work lives in its own worksheet or as issues on its repository (table above) | One cross-repository worksheet here | A Stirrup document cannot be the source of truth for another repository's backlog |
 | Where Langfuse-specific attributes are produced | A `langfuse` platform profile in `harness/internal/observability/platform/`, the vendor-mapping mechanism introduced by [#777](https://github.com/rxbynerd/stirrup/pull/777) | The collector `transform` recipe already in `docs/observability-cloud.md#langfuse` | The platform package is the one place allowed to name a vendor; a profile removes the collector from the feedback pilot and makes the OTLP/HTTP requirement a validation error instead of a silent drop |
 | `correlation.userId` | Accepted in the first cut as an opaque value | Deferred until a pseudonymisation policy exists | Pseudonymisation is the upstream application's responsibility; Stirrup treats the value as opaque |
-| Carrier shape on the wire | One shared proto message `TraceContext { traceparent, tracestate }` reused on `HarnessEvent` and `ControlEvent` | Two bare string fields per message | One type, one translate helper, one validator; `baggage` is excluded on purpose |
+| Carrier shape on the wire | One shared proto message `TraceContext { traceparent, tracestate }` reused on `HarnessEvent` and `ControlEvent`, with field 3 reserved for `baggage` | Two bare string fields per message; carrying `baggage` in wave one | One type, one translate helper, one validator. Langfuse's OTLP endpoint never reads baggage; its recommended `BaggageSpanProcessor` pattern only copies baggage onto spans inside a process, which Stirrup's run-scope processor already does for every span it emits. Baggage would only let Billet and Hairpin spans match observation-level session filters, and the same docs warn that baggage reaches third-party APIs, so it is deferred, not excluded |
+| Upstream slicing dimensions | A bounded `correlation.labels` map (S2), stamped as `stirrup.label.<key>` and mapped by the profile to filterable `langfuse.trace.metadata.<key>` | A typed field per upstream concept; an unrestricted attribute bag | The upstream application has its own dimensions (an agent profile, an execution mode) that must be filterable in Langfuse. Only top-level `langfuse.trace.metadata.*` keys are filterable there, and Stirrup cannot know the dimension names in advance. A map with bounded size, key shape and value length gives the application the keys it needs without a schema change per dimension |
 | Who may set an upstream parent | The gRPC task assignment and the Go embedding caller's `ctx` (S6); CLI flags that set the context, not the config (S8) | A `traceContext` block inside `RunConfig` | A replayed `RunConfig` must not re-parent a new run onto an old trace |
 | Feedback subject in Langfuse | Observation score on the Stirrup run span (`traceId` + `observationId`) | Trace score | The run span is the execution; a trace may later contain Hairpin or other work |
 | Delivery waves | Wave 1: S1, S2, S3 (what the feedback pilot needs from Stirrup). Wave 2: S6 and S4/S5, independent of the pilot's outcome. S8 as its own follow-up PR. S7 last | Upstream parenting first, or upstream parenting gated on the pilot | Feedback needs only S1; upstream parenting is wanted regardless of how the pilot goes, so it is sequenced, not conditional |
@@ -200,14 +201,25 @@ type CorrelationConfig struct {
     AttemptID string `json:"attemptId,omitempty"`
     UserID    string `json:"userId,omitempty"`    // opaque; operators choose pseudonymous values
     URL       string `json:"url,omitempty"`       // canonical control-plane page for this run
+    Labels    map[string]string `json:"labels,omitempty"` // upstream slicing dimensions, e.g. agent_profile, execution_mode
 }
 ```
 
+`Labels` carries the dimensions the upstream application slices by and
+Stirrup cannot name in advance. The agent profile and the execution
+mode discussed for the outer application are two such keys; Stirrup's
+own `mode` is stamped separately as `run.mode` and needs no label.
+
 Validation (`types/runconfig.go`, beside `validateSessionName` at
-`:3636`): each ID ≤ 255 bytes, printable, no control characters; `URL`
-absolute, scheme `http` or `https`, no userinfo, ≤ 1500 bytes (the
-Langfuse metadata renderer limit the research cites). The block survives
-`Redact()`; it holds no secrets.
+`:3636`): `SessionID` 1–199 US-ASCII printable characters (Langfuse
+silently drops session IDs of 200 characters or more); the other IDs
+≤ 255 bytes, printable, no control characters; `URL` absolute, scheme
+`http` or `https`, no userinfo, ≤ 1500 bytes (the Langfuse metadata
+renderer limit the research cites). `Labels`: at most 16 entries, keys
+matching `^[a-z][a-z0-9_]{0,63}$` (so they are valid metadata path
+segments and can never spell `__proto__`, `constructor` or
+`prototype`, which Langfuse drops), values ≤ 255 bytes, printable, no
+control characters. The block survives `Redact()`; it holds no secrets.
 
 Proto: `message CorrelationConfig` with the five strings; field 35 on
 `RunConfig`; copy in `runConfigFromProto` (`grpc_translate.go:170`).
@@ -227,6 +239,7 @@ every span:
 | `user.id` | `Correlation.UserID` |
 | `stirrup.task.id`, `stirrup.attempt.id` | the matching fields |
 | `stirrup.control_plane.url` | `Correlation.URL` |
+| `stirrup.label.<key>` | each `Correlation.Labels` entry |
 
 Not resource attributes, not metric labels (`metricAttrs` stays as it
 is), not the prompt. `OTelTraceEmitter.Start` (`otel.go:262`) passes the
@@ -234,11 +247,12 @@ struct in.
 
 ### Tests
 
-- `trace/otel_scope_test.go`: every span carries the five attributes;
-  `SessionID` wins over `SessionName`; neither set yields no
-  `session.id`.
+- `trace/otel_scope_test.go`: every span carries the five attributes
+  and one `stirrup.label.<key>` per label; `SessionID` wins over
+  `SessionName`; neither set yields no `session.id`.
 - `types/runconfig_test.go`: validation table, including a `javascript:`
-  URL, a URL with userinfo, and an over-long ID.
+  URL, a URL with userinfo, a 200-character session ID, an over-long
+  ID, a seventeenth label, and a label key of `__proto__`.
 - `prompt` package: render each mode's system prompt with a fully
   populated `Correlation` and assert none of the values appear.
 - `observability` metrics test: the attribute set used for metrics
@@ -249,7 +263,10 @@ struct in.
 
 `docs/configuration.md`: new "Correlation" subsection under the
 observability settings. `docs/observability-cloud.md`: the Sessions
-bullet under Langfuse now names `correlation.sessionId`.
+bullet under Langfuse now names `correlation.sessionId`, and the
+sentence saying Langfuse users live only in the `langfuse.*` namespace
+is corrected: Langfuse reads `user.id` and `session.id` natively, so
+S2 alone populates users and sessions without the S3 profile.
 `docs/integration-guide.md`: cookbook entry "Linking a run to the
 control plane's own page". Note on
 [#775](https://github.com/rxbynerd/stirrup/issues/775): its Phoenix
@@ -286,17 +303,39 @@ var langfuseDefinition = definition{
 
 | Set | From |
 |---|---|
-| `langfuse.user.id` | `user.id` |
+| `langfuse.trace.name` | `"stirrup " + run.mode` on the run span. Without it the trace is named after the root span, which under S6 is the upstream parent's span, not Stirrup's |
 | `langfuse.trace.metadata.control_plane_url` | `stirrup.control_plane.url` |
 | `langfuse.trace.metadata.task_id`, `...attempt_id` | the `stirrup.*` keys |
-| `langfuse.trace.metadata.run_mode` | `run.mode` |
+| `langfuse.trace.metadata.run_mode` | resource `harness.run.mode` |
+| `langfuse.trace.metadata.<key>` and `langfuse.observation.metadata.<key>` | each `stirrup.label.<key>`; the trace key makes the label a trace filter, the observation key makes it an observation filter |
 | `langfuse.release` | resource `service.version` |
-| `langfuse.trace.tags` | `["stirrup", <run.mode>]` |
+| `langfuse.trace.tags` | `["stirrup", <harness.run.mode>]` |
 | `langfuse.observation.type` | `guardrail` for `guard.*`; `evaluator` for `verifier.verify`; `chain` for `context.prepare`, `hooks.*`, `git.*`, `workspace.*` |
 
 That is the collector transform in `docs/observability-cloud.md`
-(verified live on v4.57.0) moved into Go. `session.id` is read natively
-by Langfuse and needs no mapping. Metrics: Langfuse discards them; the
+(verified live on v4.57.0) moved into Go, plus the trace name the
+transform set and the label mapping. `user.id` and `session.id` are
+read natively by Langfuse beside `langfuse.user.id` and
+`langfuse.session.id`, so neither needs a mapping; the profile is not
+what delivers users and sessions. Trace-level `langfuse.*` attributes
+may be set on any span and apply to the whole trace; the profile sets
+them on every span for simplicity. Only top-level
+`langfuse.trace.metadata.*` keys are filterable in Langfuse; unmapped
+attributes land under `metadata.attributes` and are not.
+
+Slicing by the upstream application's dimensions therefore works like
+this: the application sets `correlation.labels` to, for example,
+`{"agent_profile": "triage-v3", "execution_mode": "autonomous"}`,
+Stirrup stamps `stirrup.label.agent_profile` on every span, and the
+profile emits `langfuse.trace.metadata.agent_profile`, which the
+Langfuse trace table filters on. Stirrup's own `mode` arrives as
+`langfuse.trace.metadata.run_mode` beside them. Langfuse's `version`
+field (`langfuse.version`, on every span) is designed for "which
+configuration produced this trace"; if the application wants that
+comparison as a first-class axis rather than a metadata key, a later
+cut can map a dedicated label onto it.
+
+Metrics: Langfuse discards them; the
 profile leaves metric export alone, as the doc already notes.
 
 Tests follow `phoenix_test.go`: a recorded span through the wrapped
@@ -329,6 +368,11 @@ propagation.TraceContext{}.Inject(ctx, carrier)
 params.Meta = carrier // traceparent, tracestate only
 ```
 
+MCP reserves `_meta.baggage` as well. Stirrup leaves it unset; when
+baggage is adopted (see the carrier decision above) it carries
+`session.id` only, never `user.id`, following Langfuse's warning that
+baggage reaches third-party APIs.
+
 `ctx` here is the per-call tool span context: `dispatch.go:221` passes
 `plan[idx].spanCtx`, and `registerMCPTool` forwards the handler `ctx`
 into `callTool` (`client.go:798`). `arguments` is untouched.
@@ -350,7 +394,7 @@ span when one exists.
 
 Goal: a control-plane-fulfilled tool call carries its tool span.
 
-Proto: `message TraceContext { string traceparent = 1; string tracestate = 2; }`;
+Proto: `message TraceContext { string traceparent = 1; string tracestate = 2; reserved 3; reserved "baggage"; }`;
 `TraceContext trace_context = 16` on `HarnessEvent`. Go:
 `TraceContext *TraceContext `json:"traceContext,omitempty"`` on
 `types.HarnessEvent` with the same two fields; map in
@@ -428,6 +472,30 @@ session context in `RunFollowUpLoop` (`loop.go:1312`), which carries no
 remote parent, so each follow-up starts a new root; a later change may
 let `user_response` carry its own `trace_context`.
 
+### What the Langfuse view loses under an upstream parent
+
+Langfuse builds a trace from the spans sharing a trace ID and requires
+the root span to reach it; the trace name and the trace-level input
+and output panels fall back to the root observation, and children of a
+span Langfuse never received appear as orphaned top-level traces. So
+when a run is parented on a Hairpin span there are two outcomes, and
+the integration has to pick one deliberately:
+
+- Hairpin's root exports to the same Langfuse project: the trace is
+  named after Hairpin's span unless the profile sets
+  `langfuse.trace.name` (it does, S3), and the trace-level input and
+  output panels come from Hairpin's root observation, which is empty.
+  Per-generation and per-tool panels are unaffected.
+- Hairpin's root does not export to Langfuse: Stirrup's run span
+  arrives with a parent Langfuse never sees and renders as an orphan.
+  Whether the root-observation fallbacks still apply to an orphan is
+  undocumented.
+
+Trace-level metadata, user, session and tags are unaffected either way,
+because Langfuse reads them from any span in the trace. The pinned
+stack must exercise both outcomes and record which one the deployment
+uses; the integration guide documents the choice.
+
 ### Sampling
 
 The provider has no explicit sampler (`otel.go:190`), so the SDK's
@@ -445,7 +513,10 @@ absent parent yields a new root; cancelling the caller's context does
 not cancel `RootContext()`. `core` tests: top-level run adopts the
 parent; sub-agent root unchanged; follow-up starts a new trace.
 `cmd/job_test.go`: a `task_assignment` with `trace_context` produces a
-run whose exported root has that parent.
+run whose exported root has that parent. Pinned stack: a parented run
+with and without the parent exported to Langfuse, asserting the trace
+name, the trace-level panels and the orphan rendering described
+above.
 
 ## S8. CLI flags (follow-up PR)
 
@@ -494,8 +565,11 @@ concurrent commands never share a parent.
 - Identity: the `traceId` and `runSpanId` on `run_started`, `done` and
   `RunResult` equal the root span Langfuse stored for that run.
 - Correlation: every stored observation of a run carries `session.id`,
-  `user.id` and the `stirrup.*` keys, and the profile's `langfuse.*`
-  mappings appear in the trace's metadata and user fields. Click the
+  `user.id`, the `stirrup.*` keys and one `stirrup.label.<key>` per
+  label, and the profile's `langfuse.*` mappings appear in the trace's
+  metadata and user fields. Filter the Langfuse trace table by
+  `agent_profile` and by `run_mode` and confirm each returns only the
+  matching runs. Click the
   `control_plane_url` metadata value in the trace view; that renderer
   claim is source-only until checked in a browser.
 - Negative paths: JSONL-only emitter (no reference anywhere); unsampled
