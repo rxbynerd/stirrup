@@ -510,6 +510,27 @@ func TestLoop_RunStartedAbsentWithoutOTelSpan(t *testing.T) {
 	}
 }
 
+func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
+	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+	loop.emitReady = false
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(tp.events) == 0 {
+		t.Fatal("loop emitted no events")
+	}
+	if first := tp.events[0]; first.Type != "run_started" || first.ID != config.RunID || first.TraceReference == nil {
+		t.Errorf("first event = %s (id %q, reference %+v), want run_started for %q with a reference", first.Type, first.ID, first.TraceReference, config.RunID)
+	}
+}
+
 // recordingControlTransport records emitted events and lets the test fire
 // control events, so a follow-up run's events can be observed.
 type recordingControlTransport struct {
@@ -559,6 +580,9 @@ func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
 	}
 	if started[0].ID != "test-run-1" || started[1].ID != followUpRunID {
 		t.Errorf("run_started IDs = %q, %q, want test-run-1, %q", started[0].ID, started[1].ID, followUpRunID)
+	}
+	if started[0].TraceReference == nil || started[1].TraceReference == nil {
+		t.Fatalf("run_started references = %+v, %+v, want both set", started[0].TraceReference, started[1].TraceReference)
 	}
 	if started[0].TraceReference.TraceID == started[1].TraceReference.TraceID {
 		t.Errorf("follow-up run reused trace ID %s", started[1].TraceReference.TraceID)

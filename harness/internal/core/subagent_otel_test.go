@@ -177,6 +177,9 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("parent transport received %d run_started events, want only the parent run's", len(started))
 	}
+	if started[0].TraceReference == nil {
+		t.Fatal("parent run_started carries no trace reference")
+	}
 	if got := started[0]; got.ID != "parent-run-otel" || got.TraceReference.RunSpanID != root.SpanContext.SpanID().String() {
 		t.Errorf("run_started = id %q span %s, want the parent run and its root span %s", got.ID, got.TraceReference.RunSpanID, root.SpanContext.SpanID())
 	}
