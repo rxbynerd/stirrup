@@ -51,11 +51,11 @@ control plane sends over the bidi stream.
 
 ## Transport security posture (v0.1)
 
-> **The gRPC transport is plaintext and unauthenticated.** The
-> harness dials the control plane with
+> **The gRPC transport is plaintext and unauthenticated by default.**
+> The harness dials the control plane with
 > `insecure.NewCredentials()`, and `TransportConfig` exposes only
 > `{type, address}` — there is no TLS, token, or mTLS knob on the
-> config surface in v0.1.
+> `RunConfig` surface in v0.1.
 
 v0.1 targets single-operator, self-hosted deployment. The design
 assumes a trusted network path between job Pods and the control
@@ -80,11 +80,7 @@ except the sandbox identity token (`ControlEvent.token`), which is
 the raw signed JWT itself and receives no such protection — but the
 stream contents and the control channel itself are unprotected.
 
-Transport TLS configuration is planned post-v0.1. The internal
-transport constructor already accepts TLS credentials
-(`transport.WithTLSCredentials`); what is missing is the
-`RunConfig` / CLI surface to reach it, so today the option is
-available only to Go embedders wiring the transport directly.
+TLS 1.3 and mutual TLS are opt-in through the `CONTROL_PLANE_TLS_*` environment variables (`stirrup job --help`) and the `--transport-tls-*` flags on `stirrup harness --transport grpc`; they are deliberately not `RunConfig` fields because the job dials before any `RunConfig` arrives.
 
 ## The `stirrup job` subcommand
 
@@ -313,10 +309,8 @@ the same-host / private-network / mesh-mTLS posture described there:
 the token is a bearer credential and unencrypted by default, so it is
 a materially higher-value payload than the rest of the stream. Do not
 opt a run into the sandbox identity token flow across an untrusted
-network until transport TLS — the internal
-transport already accepts `transport.WithTLSCredentials`, but there
-is no `RunConfig` / CLI surface to reach it yet — is wired to a
-config surface.
+network without transport TLS configured (see
+[Transport security posture](#transport-security-posture-v01)).
 
 A control plane implementing this contract must:
 
@@ -476,7 +470,7 @@ Before deploying:
    harness's own wall-clock timeout fails to fire.
 6. Confirm the network path between job Pods and the control plane
    is trusted (private network or mesh mTLS) — the gRPC transport
-   itself is plaintext and unauthenticated in v0.1. See
+   itself is plaintext and unauthenticated unless transport TLS is configured. See
    [Transport security posture](#transport-security-posture-v01).
 
 ## Embedding the harness

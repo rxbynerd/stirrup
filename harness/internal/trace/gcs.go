@@ -81,10 +81,12 @@ type GCSTraceEmitter struct {
 	workspaceExport      *types.ExportReceipt
 	runError             string
 	structuredOutput     json.RawMessage
+	degradedCapabilities []types.DegradedCapability
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
+var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
@@ -174,6 +176,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.finalAssistantText = ""
 	e.stopDetails = nil
+	e.degradedCapabilities = nil
 	e.commandOutputArchive = ""
 	e.gitHandoff = nil
 	e.workspaceExport = nil
@@ -222,6 +225,14 @@ func (e *GCSTraceEmitter) RecordStopDetails(details *types.StopDetails) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stopDetails = details
+}
+
+// RecordDegradedCapabilities stores the capabilities the run proceeded
+// without so the uploaded trace object carries them.
+func (e *GCSTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCapability) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
 }
 
 func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
@@ -289,6 +300,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	workspaceExport := e.workspaceExport
 	runError := e.runError
 	structuredOutput := e.structuredOutput
+	degradedCapabilities := e.degradedCapabilities
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -329,6 +341,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		WorkspaceExport:      workspaceExport,
 		Error:                runError,
 		StructuredOutput:     structuredOutput,
+		DegradedCapabilities: degradedCapabilities,
 	}
 
 	data, err := json.Marshal(trace)

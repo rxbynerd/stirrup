@@ -13,6 +13,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -278,28 +279,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		sandboxRefresher = refresher
 	}
 
-	// 5. MCP tool discovery. Connection failures are non-fatal: the
-	// server's tools are skipped so the harness still runs with its
-	// built-in tools. mcpClient is retained so Metrics can be
-	// field-injected once the run's metrics instance exists below.
-	var mcpClient *mcp.Client
-	if len(config.Tools.MCPServers) > 0 {
-		mcpClient = mcp.NewClient(registry, nil)
-		// Metrics is field-injected later, once the run's metrics instance exists.
-		mcpClient.Logger = logger
-		ownedClosers = append(ownedClosers, mcpClient)
-		for _, srv := range config.Tools.MCPServers {
-			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
-				logger.Warn("MCP server unavailable, skipping its tools", "server", srv.Name, "error", err)
-			}
-		}
-	}
-
-	// 6. Transport — use the injected one if provided, otherwise build
+	// 5. Transport — use the injected one if provided, otherwise build
 	// from config; built before buildComponents because the ask-upstream
 	// permission policy needs it.
 	if tp == nil {
-		tp, err = buildTransport(ctx, config.Transport)
+		tp, err = buildTransport(ctx, config.Transport, loopOpts.transportTLS)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build transport: %w", err)
@@ -314,6 +298,24 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	case *transport.GRPCTransport:
 		t.Security = secLogger
+	}
+
+	// 6. MCP tool discovery, after the transport so an optional server's
+	// failure can be announced as a warning event. A required server's
+	// failure aborts construction; see connectMCPServers. mcpClient is
+	// retained so Metrics can be field-injected once the run's metrics
+	// instance exists below.
+	var mcpClient *mcp.Client
+	var degradedCapabilities []types.DegradedCapability
+	if len(config.Tools.MCPServers) > 0 {
+		mcpClient = mcp.NewClient(registry, nil)
+		mcpClient.Logger = logger
+		ownedClosers = append(ownedClosers, mcpClient)
+		degradedCapabilities, err = connectMCPServers(ctx, mcpClient, config.Tools.MCPServers, secrets, tp, logger)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
 	}
 
 	// 7. Probe-eligible components (providers, permission policy, trace
@@ -599,30 +601,31 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	loop := &AgenticLoop{
-		Provider:     prov,
-		Providers:    providers,
-		Router:       rtr,
-		Prompt:       pb,
-		Context:      cs,
-		Tools:        registry,
-		Executor:     exec,
-		Edit:         es,
-		Verifier:     v,
-		Permissions:  pp,
-		Git:          gs,
-		GuardRail:    gr,
-		RuleOfTwo:    rot,
-		Escalation:   escalation,
-		Hooks:        hooksRunner,
-		Transport:    tp,
-		Trace:        te,
-		Tracer:       tracer,
-		Metrics:      metrics,
-		Security:     secLogger,
-		Logger:       logger,
-		LogScope:     logScope,
-		emitReady:    emitReady,
-		ownedClosers: ownedClosers,
+		Provider:             prov,
+		Providers:            providers,
+		Router:               rtr,
+		Prompt:               pb,
+		Context:              cs,
+		Tools:                registry,
+		Executor:             exec,
+		Edit:                 es,
+		Verifier:             v,
+		Permissions:          pp,
+		Git:                  gs,
+		GuardRail:            gr,
+		RuleOfTwo:            rot,
+		Escalation:           escalation,
+		Hooks:                hooksRunner,
+		Transport:            tp,
+		Trace:                te,
+		DegradedCapabilities: degradedCapabilities,
+		Tracer:               tracer,
+		Metrics:              metrics,
+		Security:             secLogger,
+		Logger:               logger,
+		LogScope:             logScope,
+		emitReady:            emitReady,
+		ownedClosers:         ownedClosers,
 	}
 	// Compat profiles add no context windows, so the default registry
 	// serves every provider.
@@ -1892,13 +1895,20 @@ func approvalRequiredToolSet(registry *tool.Registry) map[string]bool {
 	return out
 }
 
-func buildTransport(ctx context.Context, cfg types.TransportConfig) (transport.Transport, error) {
+func buildTransport(ctx context.Context, cfg types.TransportConfig, tlsCreds credentials.TransportCredentials) (transport.Transport, error) {
+	if tlsCreds != nil && cfg.Type != "grpc" {
+		return nil, fmt.Errorf("transport TLS settings require the grpc transport, got %q", cfg.Type)
+	}
 	switch cfg.Type {
 	case "grpc":
 		if cfg.Address == "" {
 			return nil, fmt.Errorf("gRPC transport requires an address")
 		}
-		return transport.NewGRPCTransport(ctx, cfg.Address)
+		var opts []transport.GRPCTransportOption
+		if tlsCreds != nil {
+			opts = append(opts, transport.WithTLSCredentials(tlsCreds))
+		}
+		return transport.NewGRPCTransport(ctx, cfg.Address, opts...)
 	case "stdio", "":
 		return transport.NewStdioTransport(os.Stdout, os.Stdin), nil
 	default:

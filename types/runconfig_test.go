@@ -4946,6 +4946,36 @@ func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_GeminiRejectsClaudeModel pins that an Anthropic
+// model name cannot be paired with the gemini provider, for the default
+// model and for a per-mode override, and that non-claude names still pass.
+func TestValidateRunConfig_GeminiRejectsClaudeModel(t *testing.T) {
+	c := geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "claude-sonnet-4-6"}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "modelRouter.model") || !strings.Contains(err.Error(), "Anthropic model name") {
+		t.Fatalf("expected the claude- rejection on modelRouter.model, got: %v", err)
+	}
+
+	c = geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{
+		Type:       "per-mode",
+		Provider:   "gemini",
+		Model:      "gemini-2.5-pro",
+		ModeModels: map[string]string{"planning": "gemini/claude-opus-4-7"},
+	}
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "modelRouter.modeModels[planning]") {
+		t.Fatalf("expected the claude- rejection on the mode override, got: %v", err)
+	}
+
+	c = geminiValidConfig()
+	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-claude-lookalike"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("a model merely containing claude must pass, got: %v", err)
+	}
+}
+
 // TestValidateRunConfig_GeminiFieldsLeakRejected verifies that the four
 // gemini-only ProviderConfig fields cannot ride along on a non-gemini
 // provider. A stale value from an earlier provider-type choice would
@@ -9279,5 +9309,37 @@ func TestValidateRunConfig_ToolsMaxResultBytes(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestRedact_MCPServerOptionalPreserved(t *testing.T) {
+	rc := RunConfig{
+		Tools: ToolsConfig{
+			MCPServers: []MCPServerConfig{
+				{Name: "a", URI: "http://a", Optional: true},
+				{Name: "b", URI: "http://b"},
+			},
+		},
+	}
+	redacted := rc.Redact()
+	if !redacted.Tools.MCPServers[0].Optional || redacted.Tools.MCPServers[1].Optional {
+		t.Errorf("Redact changed Optional: %+v", redacted.Tools.MCPServers)
+	}
+}
+
+func TestMCPServerConfig_OptionalJSON(t *testing.T) {
+	raw, err := json.Marshal(MCPServerConfig{Name: "a", URI: "http://a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "optional") {
+		t.Errorf("a required server must omit the optional key, got %s", raw)
+	}
+	var decoded MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"a","uri":"http://a","optional":true}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Optional {
+		t.Error("optional:true did not decode")
 	}
 }

@@ -641,6 +641,7 @@ func newTestHarnessCommand() *cobra.Command {
 	// exercise validateDebugBuildFlags.
 	f.Bool("debug", false, "")
 	f.Bool("trace-wire", false, "")
+	addTransportTLSFlags(f)
 	return cmd
 }
 

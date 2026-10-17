@@ -188,7 +188,7 @@ Go.
 
 ### Transport security posture (v0.1)
 
-The gRPC transport is **plaintext and unauthenticated** — the
+The gRPC transport is **plaintext and unauthenticated** by default — the
 harness dials with insecure credentials and `TransportConfig`
 exposes only `{type, address}`. Acceptable deployment shapes are
 same-host loopback, a private network, or mesh-provided mTLS
@@ -196,8 +196,7 @@ same-host loopback, a private network, or mesh-provided mTLS
 `secret://` references and outbound events are scrubbed for
 secret-shaped strings), but prompts, tool results, and especially
 the raw sandbox identity JWT do. Do not point a harness at a control
-plane across an untrusted network. TLS at the binary/config surface is
-planned. The public embedding API accepts a caller-provided `Transport`,
+plane across an untrusted network without TLS, which `stirrup job` enables through `CONTROL_PLANE_TLS_*` environment variables and `stirrup harness` through `--transport-tls-*` flags (never `RunConfig` fields). The public embedding API accepts a caller-provided `Transport`,
 so an embedder can supply its own authenticated transport; the built-in
 TLS constructor is internal. Full discussion:
 [`deployment.md`](deployment.md#transport-security-posture-v01).
@@ -774,7 +773,7 @@ reads and what every refresh rewrites. Lifecycle hooks and any other
 consumer must read the file, not the variable.
 
 The token is the one intentionally raw credential on the stream —
-plaintext in v0.1 — so this flow requires the trusted-network posture.
+plaintext by default — so this flow requires transport TLS or the trusted-network posture.
 The feature requires a pre-established gRPC transport before the
 executor is built; `stirrup job` is the normal topology, while an
 embedder may supply an equivalent transport. Both `executor` blocks

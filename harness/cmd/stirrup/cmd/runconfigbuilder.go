@@ -59,7 +59,7 @@ type RunConfigSources struct {
 // runs Anthropic before OpenAI so a conflicting-type combination errors
 // on the second call rather than letting one silently win.
 func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
-	cfg, err := loadBaseRunConfig(sources)
+	cfg, fromDocument, err := loadBaseRunConfig(sources)
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +73,10 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	}
 
 	if err := applyOpenAIWIFOverrides(sources.Cmd, cfg); err != nil {
+		return nil, err
+	}
+
+	if err := applyProviderDefaults(sources.Cmd, cfg, fromDocument); err != nil {
 		return nil, err
 	}
 
@@ -110,7 +114,9 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 // loadBaseRunConfig picks the base RunConfig source — file, stdin, or
 // flag-derived — per the precedence documented in
 // docs/configuration.md#precedence. The sources are mutually exclusive.
-func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
+// fromDocument reports whether the base came from a file or stdin
+// document rather than from flags.
+func loadBaseRunConfig(sources RunConfigSources) (cfg *types.RunConfig, fromDocument bool, err error) {
 	stdinPiped := isStdinPiped(sources.Stdin)
 	explicitStdin := sources.ConfigPath == "-"
 	filePath := ""
@@ -141,7 +147,7 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	if stdinPiped && !explicitStdin {
 		data, err := readCappedStdin(sources.Stdin, "<stdin>")
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(data) == 0 {
 			stdinPiped = false
@@ -154,9 +160,9 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	// (exit 1): nothing was parsed and no I/O failed.
 	if filePath != "" && stdinPiped {
 		if envConfigSourced {
-			return nil, validationError(fmt.Errorf("ambiguous config sources: both env var STIRRUP_CONFIG=%q and piped stdin specify a base config; pick one", filePath))
+			return nil, false, validationError(fmt.Errorf("ambiguous config sources: both env var STIRRUP_CONFIG=%q and piped stdin specify a base config; pick one", filePath))
 		}
-		return nil, validationError(fmt.Errorf("ambiguous config sources: --config %q and piped stdin are both present; pick one", filePath))
+		return nil, false, validationError(fmt.Errorf("ambiguous config sources: --config %q and piped stdin are both present; pick one", filePath))
 	}
 
 	switch {
@@ -164,31 +170,34 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		if !stdinPiped {
 			if envConfigSourced {
 				if sources.Stdin == nil {
-					return nil, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but no stdin reader was provided"))
+					return nil, false, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but no stdin reader was provided"))
 				}
-				return nil, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal"))
+				return nil, false, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal"))
 			}
-			return nil, validationError(fmt.Errorf("--config - requires piped stdin but stdin is a terminal"))
+			return nil, false, validationError(fmt.Errorf("--config - requires piped stdin but stdin is a terminal"))
 		}
 		if envConfigSourced {
 			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", "-")
 		}
-		return readRunConfigFromReader(sources.Stdin, "<stdin>")
+		cfg, err := readRunConfigFromReader(sources.Stdin, "<stdin>")
+		return cfg, err == nil, err
 	case stdinPiped && filePath == "":
 		// pipedConfig is guaranteed non-empty here.
-		return decodeRunConfig(pipedConfig, "<stdin>")
+		cfg, err := decodeRunConfig(pipedConfig, "<stdin>")
+		return cfg, err == nil, err
 	case filePath != "":
 		if envConfigSourced {
 			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", filePath)
 		}
 		cfg, err := loadRunConfigFile(filePath)
 		if err != nil && envConfigSourced {
-			return nil, fmt.Errorf("STIRRUP_CONFIG: %w", err)
+			return nil, false, fmt.Errorf("STIRRUP_CONFIG: %w", err)
 		}
-		return cfg, err
+		return cfg, err == nil, err
 	}
 
-	return buildFlagOnlyRunConfig(sources.Cmd, sources.Args)
+	cfg, err = buildFlagOnlyRunConfig(sources.Cmd, sources.Args)
+	return cfg, false, err
 }
 
 // isStdinPiped reports whether the reader looks like a piped or

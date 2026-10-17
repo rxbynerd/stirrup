@@ -69,9 +69,12 @@ func printHarnessUsageHint(w io.Writer, color bool) {
 
 	heading("PROVIDER")
 	b.WriteString("  --provider " + dim("anthropic") + "     Provider adapter.\n")
-	b.WriteString("  --model " + dim("<model-id>") + "       Model to route to.\n")
-	b.WriteString("  --api-key-ref " + dim("secret://ANTHROPIC_API_KEY") + "\n")
-	b.WriteString("                           Secret reference resolved at runtime (never a raw key).\n\n")
+	b.WriteString("  --model " + dim("<model-id>") + "       Model to route to (default claude-sonnet-4-6 for\n")
+	b.WriteString("                           anthropic; required for every other provider).\n")
+	b.WriteString("  --api-key-ref " + dim("secret://<NAME>") + "\n")
+	b.WriteString("                           Secret reference resolved at runtime (never a raw key).\n")
+	b.WriteString("                           Defaults to ANTHROPIC_API_KEY for anthropic and\n")
+	b.WriteString("                           OPENAI_API_KEY for the openai-* providers.\n\n")
 
 	heading("CONFIGURATION")
 	b.WriteString("  --config <path>          Load a JSON RunConfig; flags then override fields.\n")

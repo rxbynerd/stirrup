@@ -144,6 +144,10 @@ type RunTrace struct {
 	// run whose trace could not be persisted, in which case only the
 	// returned trace carries it. Empty otherwise.
 	Error string `json:"error,omitempty"`
+	// DegradedCapabilities lists configured capabilities the run proceeded
+	// without, such as an optional MCP server that was unavailable at
+	// startup. Empty when nothing degraded.
+	DegradedCapabilities []DegradedCapability `json:"degradedCapabilities,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run
@@ -161,6 +165,20 @@ type GitHandoff struct {
 	// Error is the scrubbed, length-capped reason the final checkpoint
 	// failed or left the working tree dirty. Empty on success.
 	Error string `json:"error,omitempty"`
+}
+
+// DegradedCapabilityMCP is the DegradedCapability.Kind for an MCP server.
+const DegradedCapabilityMCP = "mcp"
+
+// DegradedCapability records one configured capability that was skipped at
+// startup because it was unavailable and marked optional.
+type DegradedCapability struct {
+	// Kind is the capability family, currently DegradedCapabilityMCP.
+	Kind string `json:"kind"`
+	// Name is the operator-supplied capability name (the MCP server name).
+	Name string `json:"name"`
+	// Error is the scrubbed, length-bounded reason it was unavailable.
+	Error string `json:"error"`
 }
 
 // CommandOutputStreamRecord describes one complete command stream without

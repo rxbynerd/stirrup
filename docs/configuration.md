@@ -291,9 +291,9 @@ reference.
 | Flag | Default | Notes |
 |---|---|---|
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
-| `--model` | `claude-sonnet-4-6` | Model id for the static / per-mode router. |
+| `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | A `secret://` reference. API keys never live in `RunConfig`. Ignored when `--provider=gemini` (Vertex uses GCP IAM). |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key (a keyless local server). Rejected for `gemini` (Vertex uses GCP IAM). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |

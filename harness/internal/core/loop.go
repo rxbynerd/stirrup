@@ -1884,6 +1884,17 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunCo
 	return runTrace, err
 }
 
+// recordDegradedCapabilities hands the capabilities skipped at construction
+// to the trace emitter before Finish serialises the RunTrace.
+func (l *AgenticLoop) recordDegradedCapabilities() {
+	if len(l.DegradedCapabilities) == 0 {
+		return
+	}
+	if recorder, ok := l.Trace.(trace.DegradedCapabilitiesRecorder); ok {
+		recorder.RecordDegradedCapabilities(l.DegradedCapabilities)
+	}
+}
+
 // commandOutputFinalizeBudget bounds end-of-run archive finalization: the
 // GCS uploader's HTTP client allows 5 minutes per attempt
 // (commandoutput/gcs.go), plus headroom for writing the tar.gz locally.

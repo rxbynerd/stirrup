@@ -92,6 +92,13 @@ type StopDetailsRecorder interface {
 	RecordStopDetails(details *types.StopDetails)
 }
 
+// DegradedCapabilitiesRecorder is an optional capability a TraceEmitter can
+// implement to receive RunTrace.DegradedCapabilities just before Finish, for
+// the same reason as FinalAssistantTextRecorder.
+type DegradedCapabilitiesRecorder interface {
+	RecordDegradedCapabilities(degraded []types.DegradedCapability)
+}
+
 // CommandOutputRecorder receives bounded metadata for complete command
 // captures. Full stream content remains in the sidecar archive.
 type CommandOutputRecorder interface {

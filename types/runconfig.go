@@ -1525,6 +1525,16 @@ type MCPServerConfig struct {
 	// It is an operator-side defence against a server URI being repointed at
 	// an unexpected host. Empty/unset applies no host pinning.
 	AllowedMCPHosts []string `json:"allowedMcpHosts,omitempty"`
+
+	// Optional marks the server as non-essential to the run. By default
+	// (false) a server is required: if it is unreachable, rejects its
+	// credentials, fails tools/list, or does not advertise every name in
+	// AllowedTools, the harness refuses to start the run. An optional
+	// server that fails is skipped with a transport warning and recorded
+	// in RunResult.DegradedCapabilities, and the run proceeds without its
+	// tools. Allowlisted tools dropped by the per-server tool cap are a
+	// logged warning, not a failure, for either kind of server.
+	Optional bool `json:"optional,omitempty"`
 }
 
 var validProviderTypes = map[string]bool{
@@ -4507,6 +4517,11 @@ func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]st
 //   - ModelRouter.ModeModels[*] contains "gemini-named-entry/<model>"
 //     overrides — each is checked individually.
 //
+// Names starting with "claude-" are also rejected: the Gemini adapter
+// speaks generateContent, so an Anthropic model name can only 404 on
+// Vertex. This catches the Anthropic default being carried across a
+// provider switch.
+//
 // We do not check CheapModel / ExpensiveModel here because the dynamic
 // router never targets gemini today; revisit when that lands.
 func validateGeminiModelName(config *RunConfig, errs *[]string) {
@@ -4538,6 +4553,13 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"%s %q must match %s for provider type %q (no slashes, percent signs, or special characters)",
 				label, model, geminiModelNamePattern.String(), "gemini"))
+			return
+		}
+		if strings.HasPrefix(model, "claude-") {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s %q is an Anthropic model name and cannot be served by provider type %q; "+
+					"pass a Gemini model id (e.g. --model gemini-3.1-pro-preview)",
+				label, model, "gemini"))
 		}
 	}
 

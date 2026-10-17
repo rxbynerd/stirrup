@@ -58,10 +58,12 @@ type JSONLTraceEmitter struct {
 	workspaceExport      *types.ExportReceipt
 	runError             string
 	structuredOutput     json.RawMessage
+	degradedCapabilities []types.DegradedCapability
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
+var _ DegradedCapabilitiesRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*JSONLTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*JSONLTraceEmitter)(nil)
@@ -120,6 +122,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.hookResults = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
+	e.degradedCapabilities = nil
 	e.commandOutputArchive = ""
 	e.gitHandoff = nil
 	e.workspaceExport = nil
@@ -274,6 +277,14 @@ func (e *JSONLTraceEmitter) RecordStopDetails(details *types.StopDetails) {
 	e.stopDetails = details
 }
 
+// RecordDegradedCapabilities stores the capabilities the run proceeded
+// without so the run_finished event's embedded RunTrace carries them.
+func (e *JSONLTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCapability) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
+}
+
 func (e *JSONLTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -415,6 +426,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		WorkspaceExport:      e.workspaceExport,
 		Error:                e.runError,
 		StructuredOutput:     e.structuredOutput,
+		DegradedCapabilities: e.degradedCapabilities,
 	}
 
 	ev := Event{

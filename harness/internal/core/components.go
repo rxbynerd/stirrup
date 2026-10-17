@@ -126,7 +126,7 @@ func buildComponents(
 	defaultProvider, providers, err := buildProviders(ctx, config, secrets)
 	if err != nil {
 		if sink != nil {
-			sink.failStep("credentials", err, "verify the credential source resolves (env var set, federation rule valid, key present)")
+			sink.failStep("credentials", err, credentialsHint(config))
 		}
 		return nil, fmt.Errorf("build providers: %w", err)
 	}
@@ -188,6 +188,19 @@ func gitStrategyTypeName(t string) string {
 		return "none"
 	}
 	return t
+}
+
+// credentialsHint returns the remediation hint for a failed credential
+// step. When a non-Anthropic provider still points at the Anthropic key
+// reference, the hint names the provider mismatch and the flag that
+// fixes it, because the resolution error alone only mentions the
+// Anthropic environment variable.
+func credentialsHint(config *types.RunConfig) string {
+	const anthropicKeyRef = "secret://ANTHROPIC_API_KEY"
+	if t := config.Provider.Type; t != "" && t != "anthropic" && config.Provider.APIKeyRef == anthropicKeyRef {
+		return fmt.Sprintf("provider %q is configured with the Anthropic key reference %s; pass --api-key-ref secret://<NAME> (or set provider.apiKeyRef) for this provider", t, anthropicKeyRef)
+	}
+	return "verify the credential source resolves (env var set, federation rule valid, key present)"
 }
 
 // permissionPolicyDetail renders the permission-policy construction step.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
@@ -357,8 +358,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 			Type: opts.ProviderType,
 			// Dropped for gemini (Vertex AI uses GCP IAM) and for Azure
 			// WIF (bearer comes from OAuth2 exchange); the validator
-			// rejects APIKeyRef in both cases, and the cobra default
-			// would otherwise trip it with a confusing error.
+			// rejects APIKeyRef in both cases.
 			APIKeyRef: func() string {
 				if opts.ProviderType == "gemini" || opts.AzureTenantID != "" {
 					return ""
@@ -731,6 +731,7 @@ func init() {
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "With --dry-run, the total wall-clock budget for the preflight. Meaningless without --dry-run (exit 4).")
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 	f.Bool("debug", false, "Disable redaction/scrubbing of trace and recording output (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. CLI-only — never representable in a RunConfig, so a control-plane submission cannot request it. See docs/security.md#debug-builds.")
+	addTransportTLSFlags(f)
 	f.Bool("trace-wire", false, "Dump raw, unredacted provider wire request/response to stderr (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. Bedrock traffic is not tapped (AWS SDK, no raw *http.Client seam). CLI-only — never representable in a RunConfig. See docs/security.md#debug-builds.")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
@@ -738,6 +739,9 @@ func init() {
 	// a literal one-character argument no completion engine needs to
 	// suggest, so the file-name completion alone is sufficient.
 	_ = harnessCmd.MarkFlagFilename("output-runconfig", "json")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSCAFile, "pem", "crt")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSCertFile, "pem", "crt")
+	_ = harnessCmd.MarkFlagFilename(flagTransportTLSKeyFile, "pem", "key")
 
 	// --output is a closed three-value set; pin the completion list so
 	// shells surface the same values the validator enforces.
@@ -1310,6 +1314,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err := validateDryRunFlags(f, dryRun); err != nil {
 		return err
 	}
+	tlsCfg, err := transportTLSFromFlags(f)
+	if err != nil {
+		return err
+	}
+	tlsCreds, err := resolveTransportTLSFlags(tlsCfg, cfg.Transport.Type)
+	if err != nil {
+		return err
+	}
 	if dryRun {
 		outPath, _ := f.GetString("output-runconfig")
 		return runDryRun(cmd, cfg, dryRunOptionsFromFlags(f), outputMode, outPath)
@@ -1327,10 +1339,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	// reaches here.
 	debugRedactionDisabled, _ := f.GetBool("debug")
 	wireTrace, _ := f.GetBool("trace-wire")
+	if cfg.Transport.Type == "grpc" {
+		logControlPlaneTransport(cmd.ErrOrStderr(), cfg.Transport.Address, tlsCfg)
+	}
 	return runWithConfig(cfg, runOptions{
 		outputMode:             outputMode,
 		debugRedactionDisabled: debugRedactionDisabled,
 		wireTrace:              wireTrace,
+		transportTLS:           tlsCreds,
 	})
 }
 
@@ -1409,7 +1425,7 @@ func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
 
 // runDryRun executes the preflight, renders the report, optionally
 // writes the captured RunConfig, and maps the aggregate to an exit
-// code (nil for all steps ok/skip, else a plain error). The config
+// code (nil when no step failed, else a plain error). The config
 // write happens only after a successfully-produced report, so a
 // dry-run that surfaces a misconfiguration still captures the config.
 //
@@ -1498,7 +1514,7 @@ func writePreflightText(w io.Writer, report *core.PreflightReport) {
 		}
 	}
 	if report.OK {
-		b.WriteString("Result: OK (all steps ok or skipped)\n")
+		b.WriteString("Result: OK (no step failed)\n")
 	} else {
 		fmt.Fprintf(&b, "Result: FAIL (%d of %d step(s) did not pass)\n", failedStepCount(report), len(report.Steps))
 	}
@@ -1602,7 +1618,7 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	}
 
 	// Only enforce on the anthropic provider with anthropic-wif
-	// credentials; reconciles the cobra default flag value against WIF
+	// credentials; reconciles a file-provided apiKeyRef against WIF
 	// before validateAnthropicProviderFields runs.
 	if cfg.Provider.Type == "anthropic" &&
 		cfg.Provider.Credential != nil &&
@@ -1615,9 +1631,9 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 					"via OAuth bearer tokens and a static API key would silently " +
 					"shadow the federated credential (issue #117 risk #4)")
 		}
-		// Default flag value carries no operator intent under WIF —
-		// clear it silently so validateAnthropicProviderFields does not
-		// reject the otherwise-valid config.
+		// A file-provided value is cleared silently so
+		// validateAnthropicProviderFields does not reject the
+		// otherwise-valid config; only an explicit flag is an error.
 		cfg.Provider.APIKeyRef = ""
 	}
 
@@ -1709,8 +1725,8 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 	}
 
-	// Reconciles the cobra default flag value (shared "secret://ANTHROPIC_API_KEY"
-	// across providers) against WIF before validateOpenAIWIFCrossField runs.
+	// Reconciles a file-provided apiKeyRef against WIF before
+	// validateOpenAIWIFCrossField runs.
 	if (cfg.Provider.Type == "openai-compatible" || cfg.Provider.Type == "openai-responses") &&
 		cfg.Provider.Credential != nil &&
 		cfg.Provider.Credential.Type == "openai-wif" &&
@@ -1722,9 +1738,9 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 					"via OAuth bearer tokens and a static API key would conflict with " +
 					"the federated credential")
 		}
-		// Default flag value carries no operator intent under WIF — clear it
-		// silently so validateOpenAIWIFCrossField does not reject the
-		// otherwise-valid config.
+		// A file-provided value is cleared silently so
+		// validateOpenAIWIFCrossField does not reject the otherwise-valid
+		// config; only an explicit flag is an error.
 		cfg.Provider.APIKeyRef = ""
 	}
 
@@ -1740,10 +1756,14 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // are doubly gated: validateDebugBuildFlags (PreRunE) rejects a release
 // binary before either can be true, and core.BuildLoop re-checks the
 // build tag at the point of effect. See docs/security.md#debug-builds.
+//
+// transportTLS carries the loaded --transport-tls-* credentials; nil
+// keeps the plaintext default.
 type runOptions struct {
 	outputMode             string
 	debugRedactionDisabled bool
 	wireTrace              bool
+	transportTLS           credentials.TransportCredentials
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1787,6 +1807,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
 		core.WithWireTrace(opts.wireTrace),
 		core.WithSessionBudget(runTimeout+cliSessionBudget(runTimeout, graceSecs)),
+		core.WithTransportTLS(opts.transportTLS),
 	)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)

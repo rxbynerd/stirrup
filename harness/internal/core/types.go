@@ -147,6 +147,9 @@ type AgenticLoop struct {
 	// tools.commandOutput.failurePosture; false is the strict default.
 	CommandOutputBestEffort bool
 	ParentRunID             string
+	// DegradedCapabilities lists optional capabilities the factory skipped
+	// at construction; they are recorded on the trace of every run.
+	DegradedCapabilities []types.DegradedCapability
 	// MetricAttrs is prepended to every metric observation from this loop.
 	// Empty for top-level runs; SpawnSubAgent populates it on child loops
 	// with subagent=true and parent.run_id so dashboards can decompose a

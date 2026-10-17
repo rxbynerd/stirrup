@@ -190,6 +190,42 @@ func TestPreflight_PlatformMissingRequiredOptionFails(t *testing.T) {
 	}
 }
 
+func TestPreflight_CredentialHintNamesAPIKeyRefOnProviderMismatch(t *testing.T) {
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	hintFor := func(cfg *types.RunConfig) string {
+		t.Helper()
+		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+		if err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		for _, s := range report.Steps {
+			if s.Name == "credentials" {
+				return s.Hint
+			}
+		}
+		t.Fatal("no credentials step in report")
+		return ""
+	}
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	hint := hintFor(cfg)
+	for _, want := range []string{"--api-key-ref", "openai-compatible", "secret://ANTHROPIC_API_KEY"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint %q should contain %q", hint, want)
+		}
+	}
+
+	cfg = preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Provider.APIKeyRef = "secret://TEST_PREFLIGHT_UNSET"
+	if hint := hintFor(cfg); strings.Contains(hint, "--api-key-ref") {
+		t.Errorf("hint %q should stay generic for a non-Anthropic key reference", hint)
+	}
+}
+
 func TestPreflight_SkipProvider(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
@@ -324,6 +360,105 @@ func TestPreflight_MCP_Fail(t *testing.T) {
 	st, _ := stepStatus(report, "mcp:docs")
 	if st != PreflightFail {
 		t.Errorf("mcp step = %v, want fail", st)
+	}
+}
+
+func TestPreflight_MCP_DetailIsScrubbedAndBounded(t *testing.T) {
+	const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := leakyMCPServer(t, secret)
+
+	for _, optional := range []bool{false, true} {
+		cfg := preflightTestConfig(t, srv.URL+"/v1")
+		cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: optional}}
+
+		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+		if err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+		var detail string
+		for _, st := range report.Steps {
+			if st.Name == "mcp:docs" {
+				detail = st.Detail
+			}
+		}
+		if detail == "" {
+			t.Fatalf("optional=%v: no detail on the mcp:docs step; steps: %+v", optional, report.Steps)
+		}
+		if strings.Contains(detail, secret) {
+			t.Errorf("optional=%v: detail leaked a secret: %q", optional, detail)
+		}
+		if len(detail) > maxDegradedErrorBytes+len("... [truncated by harness]") {
+			t.Errorf("optional=%v: detail is %d bytes, want it bounded near %d", optional, len(detail), maxDegradedErrorBytes)
+		}
+	}
+}
+
+func TestPreflight_MCP_OptionalUnreachableWarns(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpProbeServer(t, true)
+	defer mcpSrv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: true}}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if !report.OK {
+		t.Fatalf("an unreachable optional MCP server must not fail the report; steps: %+v", report.Steps)
+	}
+	if st, _ := stepStatus(report, "mcp:docs"); st != PreflightWarn {
+		t.Errorf("mcp step = %v, want warn", st)
+	}
+}
+
+func TestPreflight_MCP_MissingAllowedTool(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpToolsServer(t, "search")
+
+	for _, tc := range []struct {
+		name     string
+		optional bool
+		wantOK   bool
+		want     PreflightStatus
+	}{
+		{"required", false, false, PreflightFail},
+		{"optional", true, true, PreflightWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := preflightTestConfig(t, srv.URL+"/v1")
+			cfg.Tools.MCPServers = []types.MCPServerConfig{{
+				Name:         "docs",
+				URI:          mcpSrv.URL,
+				AllowedTools: []string{"search", "fetch"},
+				Optional:     tc.optional,
+			}}
+
+			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+			if err != nil {
+				t.Fatalf("Preflight: %v", err)
+			}
+			if report.OK != tc.wantOK {
+				t.Errorf("report.OK = %v, want %v", report.OK, tc.wantOK)
+			}
+			st, _ := stepStatus(report, "mcp:docs")
+			if st != tc.want {
+				t.Errorf("mcp step = %v, want %v", st, tc.want)
+			}
+			for _, step := range report.Steps {
+				if step.Name == "mcp:docs" && !strings.Contains(step.Detail, "fetch") {
+					t.Errorf("step detail should name the missing tool, got %q", step.Detail)
+				}
+			}
+		})
 	}
 }
 
@@ -661,5 +796,29 @@ permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fe
 	}
 	if !strings.Contains(detail, "warning") {
 		t.Errorf("permission-policy step detail = %q, want it to mark the finding as a warning", detail)
+	}
+}
+
+func TestCredentialsHint(t *testing.T) {
+	const anthropicRef = "secret://ANTHROPIC_API_KEY"
+	tests := []struct {
+		name         string
+		providerType string
+		apiKeyRef    string
+		wantMismatch bool
+	}{
+		{"anthropic provider with the Anthropic ref", "anthropic", anthropicRef, false},
+		{"empty provider type with the Anthropic ref", "", anthropicRef, false},
+		{"non-anthropic provider with the Anthropic ref", "openai-responses", anthropicRef, true},
+		{"non-anthropic provider with its own ref", "openai-responses", "secret://OPENAI_API_KEY", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &types.RunConfig{Provider: types.ProviderConfig{Type: tc.providerType, APIKeyRef: tc.apiKeyRef}}
+			hint := credentialsHint(cfg)
+			if got := strings.Contains(hint, "--api-key-ref"); got != tc.wantMismatch {
+				t.Errorf("credentialsHint = %q; mentions --api-key-ref = %v, want %v", hint, got, tc.wantMismatch)
+			}
+		})
 	}
 }
