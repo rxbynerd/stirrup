@@ -253,7 +253,7 @@ func (s *Shieldstral) Check(ctx context.Context, in Input) (*Decision, error) {
 
 	// PhasePreTurn skip: tiny chunks rarely contain prompt-injection payloads
 	// and dominate per-turn guard latency if classified.
-	if in.Phase == PhasePreTurn && s.minChunkChars > 0 && len(in.Content) < s.minChunkChars {
+	if in.Phase == PhasePreTurn && s.minChunkChars > 0 && !in.IgnoreMinChunk && len(in.Content) < s.minChunkChars {
 		return &Decision{
 			Verdict: VerdictAllow,
 			GuardID: shieldstralGuardID,
