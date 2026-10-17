@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // Shieldstral adapter for Mistral AI's Shieldstral content-safety and moderation
@@ -137,6 +138,10 @@ type ShieldstralConfig struct {
 
 	// Logger is consulted for startup warnings (Threshold notice). Optional; slog.Default() when nil.
 	Logger *slog.Logger
+
+	// ReportUsage, when set, receives the token usage each classifier
+	// response reports. Optional.
+	ReportUsage func(types.TokenUsage)
 }
 
 // Shieldstral is the concrete GuardRail implementation for Shieldstral classifiers.
@@ -148,6 +153,7 @@ type Shieldstral struct {
 	criteria      map[Phase]string
 	httpClient    *http.Client
 	minChunkChars int
+	reportUsage   func(types.TokenUsage)
 }
 
 // NewShieldstral constructs a Shieldstral adapter from cfg.
@@ -198,6 +204,7 @@ func NewShieldstral(cfg ShieldstralConfig) (*Shieldstral, error) {
 		criteria:      resolved,
 		httpClient:    &http.Client{Timeout: timeout},
 		minChunkChars: minChunk,
+		reportUsage:   cfg.ReportUsage,
 	}, nil
 }
 
@@ -308,7 +315,10 @@ func (s *Shieldstral) Check(ctx context.Context, in Input) (*Decision, error) {
 		return nil, fmt.Errorf("shieldstral: read response: %w", err)
 	}
 
-	verdict, err := parseShieldstralResponse(raw)
+	verdict, usage, err := parseShieldstralResponse(raw)
+	if s.reportUsage != nil && usage != (types.TokenUsage{}) {
+		s.reportUsage(usage)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -340,19 +350,32 @@ func buildShieldstralPrompt(criteriaText, content string) string {
 	)
 }
 
-// parseShieldstralResponse returns true when the classifier indicated unsafe/yes (deny),
-// false for safe/no (allow), and an error if parsing fails.
-func parseShieldstralResponse(raw []byte) (bool, error) {
+// parseShieldstralResponse returns the verdict (true for unsafe/yes, false for
+// safe/no) together with the token usage the response reports. The usage is
+// returned even when the verdict cannot be parsed, because the tokens were
+// spent regardless.
+func parseShieldstralResponse(raw []byte) (bool, types.TokenUsage, error) {
 	var resp chatCompletionResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return false, fmt.Errorf("%w: decode body: %v", ErrShieldstralParseFailed, err)
+		return false, types.TokenUsage{}, fmt.Errorf("%w: decode body: %v", ErrShieldstralParseFailed, err)
+	}
+	usage := types.TokenUsage{
+		Input:  max(resp.Usage.PromptTokens, 0),
+		Output: max(resp.Usage.CompletionTokens, 0),
 	}
 	if len(resp.Choices) == 0 {
-		return false, fmt.Errorf("%w: response had no choices", ErrShieldstralParseFailed)
+		return false, usage, fmt.Errorf("%w: response had no choices", ErrShieldstralParseFailed)
 	}
 	content := strings.TrimSpace(resp.Choices[0].Message.Content)
 	truncated := strings.EqualFold(resp.Choices[0].FinishReason, "length")
+	verdict, err := parseShieldstralVerdict(content, truncated)
+	return verdict, usage, err
+}
 
+// parseShieldstralVerdict returns true when content indicates unsafe/yes
+// (deny), false for safe/no (allow), and an error if no verdict is recognised.
+// truncated reports that the response was cut off by max_tokens.
+func parseShieldstralVerdict(content string, truncated bool) (bool, error) {
 	// The classified content is echoed into the prompt, so a classifier that
 	// quotes it back can surface an attacker-planted verdict alongside its
 	// own, in either order. A deny anywhere is honoured (an attacker gains

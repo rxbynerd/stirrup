@@ -1661,7 +1661,7 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 // or an explicit "none" type returns the package-level Noop so the
 // loop's call sites can be unconditional. Cloud-judge reuses the default
 // provider adapter; granite-guardian and shieldstral build their own HTTP
-// client, and granite-guardian hands the usage it reports to reportExternal
+// client, and both hand the usage they report to reportExternal
 // (which may be nil). The outer Phases gate (when non-empty) is applied
 // after the inner guard is built so a misconfigured PhaseGated does not
 // silently bypass the guard at non-listed phases.
@@ -1721,6 +1721,7 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 			Threshold:      cfg.Threshold,
 			Timeout:        time.Duration(cfg.TimeoutMs) * time.Millisecond,
 			MinChunkChars:  cfg.MinChunkChars,
+			ReportUsage:    reportExternal,
 		})
 		if err != nil {
 			return nil, err
