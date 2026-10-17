@@ -117,7 +117,7 @@ status.
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
-| `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. Sent once per turn, before the first provider request. |
+| `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
 | `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
@@ -728,7 +728,7 @@ it restarts at 0 for each follow-up run. `tool_use_id` joins a
 ```text
 run_started            id
 user_message           source: initial_prompt (or followup_prompt)
-turn_started           turn 0, model, provider
+turn_started           turn 0, model, provider (adapter type)
   thinking_delta …     reasoning text, where exposed
   text_delta …         answer text
   tool_call …          one per call the model made

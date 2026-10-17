@@ -160,10 +160,10 @@ type RunConfig struct {
 	// "auto" or "off". Provider-neutral like ReasoningEffort: each adapter
 	// projects "auto" onto its native control (Gemini
 	// thinkingConfig.includeThoughts for models that accept a thinking
-	// config, OpenAI Responses reasoning.summary),
-	// "off" requests none, and each adapter decides what empty means
-	// (openai-responses treats it as "off", the rest as "auto"). History
-	// is unchanged either way.
+	// config, OpenAI Responses reasoning.summary). "off" stops the
+	// streaming and, where the provider has a request control (Gemini,
+	// OpenAI Responses), does not request it. ResolveReasoningSummary
+	// decides what empty means. History is unchanged either way.
 	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 
 	// FollowUpGrace is the number of idle seconds to keep the transport
@@ -1795,6 +1795,20 @@ const (
 	ReasoningSummaryAuto = "auto"
 	ReasoningSummaryOff  = "off"
 )
+
+// ResolveReasoningSummary returns the ReasoningSummary value an adapter of
+// providerType applies when configured is the RunConfig value. Unset is
+// "off" on openai-responses, whose summaries can require organisation
+// verification, and "auto" on every other adapter.
+func ResolveReasoningSummary(providerType, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if providerType == "openai-responses" {
+		return ReasoningSummaryOff
+	}
+	return ReasoningSummaryAuto
+}
 
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
 // HTTP token characters so a user cannot inject CRLF / colon / whitespace

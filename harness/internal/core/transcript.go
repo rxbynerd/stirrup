@@ -1,7 +1,6 @@
 package core
 
 import (
-	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -19,14 +18,14 @@ func (l *AgenticLoop) emitUserMessage(source, text, requestID string) {
 	}
 }
 
-// emitTurnStarted reports the routed provider and model of a turn about to
-// send its first provider request.
-func (l *AgenticLoop) emitTurnStarted(turn int, selection router.ModelSelection) {
+// emitTurnStarted reports the routed model and provider type of a turn
+// about to send its first provider request.
+func (l *AgenticLoop) emitTurnStarted(turn int, model, providerType string) {
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:     "turn_started",
 		Turn:     &turn,
-		Model:    selection.Model,
-		Provider: selection.Provider,
+		Model:    model,
+		Provider: providerType,
 	}); err != nil {
 		l.logEmitFailure("turn_started", err)
 	}

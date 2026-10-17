@@ -943,6 +943,7 @@ func (l *AgenticLoop) runInnerLoop(
 		turnToolChoice := pendingToolChoice
 		pendingToolChoice = types.ToolChoiceAuto
 
+		providerType := selectedProviderType(config, selection.Provider)
 		params := types.StreamParams{
 			Model:            selection.Model,
 			System:           systemPrompt,
@@ -951,11 +952,11 @@ func (l *AgenticLoop) runInnerLoop(
 			MaxTokens:        responseReserve,
 			Temperature:      temperature,
 			ReasoningEffort:  config.ReasoningEffort,
-			ReasoningSummary: config.ReasoningSummary,
+			ReasoningSummary: types.ResolveReasoningSummary(providerType, config.ReasoningSummary),
 			ToolChoice:       turnToolChoice,
 			CacheKey:         cacheKey,
 		}
-		l.emitTurnStarted(turn, selection)
+		l.emitTurnStarted(turn, selection.Model, providerType)
 
 		// A request that exceeds the context window gets one forced
 		// compaction and retry per turn; a second overflow ends the run.

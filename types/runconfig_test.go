@@ -9597,3 +9597,19 @@ func TestRunConfig_WindDown(t *testing.T) {
 		t.Errorf("nil WindDown must be omitted from JSON, got %s", data)
 	}
 }
+
+func TestResolveReasoningSummary(t *testing.T) {
+	cases := []struct{ providerType, configured, want string }{
+		{"anthropic", "", ReasoningSummaryAuto},
+		{"gemini", "", ReasoningSummaryAuto},
+		{"openai-compatible", "", ReasoningSummaryAuto},
+		{"openai-responses", "", ReasoningSummaryOff},
+		{"openai-responses", ReasoningSummaryAuto, ReasoningSummaryAuto},
+		{"anthropic", ReasoningSummaryOff, ReasoningSummaryOff},
+	}
+	for _, tc := range cases {
+		if got := ResolveReasoningSummary(tc.providerType, tc.configured); got != tc.want {
+			t.Errorf("ResolveReasoningSummary(%q, %q) = %q, want %q", tc.providerType, tc.configured, got, tc.want)
+		}
+	}
+}

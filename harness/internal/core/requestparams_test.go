@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -249,6 +250,47 @@ func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
 				t.Fatalf("streamEventsToResult: %v", err)
 			}
 			tc.check(t, result.ResponseModel)
+		})
+	}
+}
+
+// TestRun_RecordsResolvedReasoningSummary pins that the recorded request
+// carries the reasoningSummary the selected adapter applies, so a trace
+// shows whether a summary was requested.
+func TestRun_RecordsResolvedReasoningSummary(t *testing.T) {
+	cases := []struct {
+		providerType, configured, want string
+	}{
+		{"anthropic", "", types.ReasoningSummaryAuto},
+		{"openai-responses", "", types.ReasoningSummaryOff},
+		{"openai-responses", types.ReasoningSummaryAuto, types.ReasoningSummaryAuto},
+		{"anthropic", types.ReasoningSummaryOff, types.ReasoningSummaryOff},
+	}
+	for _, tc := range cases {
+		t.Run(tc.providerType+"/"+tc.configured, func(t *testing.T) {
+			prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{
+				{{Type: "text_delta", Text: "hi"}, {Type: "message_complete", StopReason: "end_turn"}},
+			}}
+			loop, _ := buildEscalationLoop(&sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}, nil)
+			loop.Provider = prov
+			loop.Router = router.NewStaticRouter(tc.providerType, "some-model")
+			rec := &recordingTraceEmitter{}
+			loop.Trace = rec
+			config := escalationConfig("planning")
+			config.Provider.Type = tc.providerType
+			config.ReasoningSummary = tc.configured
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if len(rec.turnRecords) == 0 {
+				t.Fatal("no turn records")
+			}
+			if got := rec.turnRecords[0].ModelInput.Request.ReasoningSummary; got != tc.want {
+				t.Errorf("recorded reasoningSummary = %q, want %q", got, tc.want)
+			}
 		})
 	}
 }

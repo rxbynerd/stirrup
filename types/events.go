@@ -347,7 +347,7 @@ type HarnessEvent struct {
 	// "turn_committed"; a pointer so turn 0 is present on the wire.
 	Turn     *int   `json:"turn,omitempty"`
 	Model    string `json:"model,omitempty"`    // the routed model (turn_started only)
-	Provider string `json:"provider,omitempty"` // the routed provider, as RunConfig names it (turn_started only)
+	Provider string `json:"provider,omitempty"` // the routed provider's adapter type, never a providers-map key (turn_started only)
 	// Usage is the turn's token usage on "turn_committed"; nil when the
 	// turn reported none.
 	Usage           *TokenUsage `json:"usage,omitempty"`

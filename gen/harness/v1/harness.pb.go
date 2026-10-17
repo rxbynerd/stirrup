@@ -55,8 +55,8 @@ const (
 //	"turn_started"
 //	  - turn:     the run-scoped turn number, starting at 0.
 //	  - model:    the model the router selected for the turn.
-//	  - provider: the provider the router selected, as the RunConfig names
-//	              it (a providers key, or the provider type).
+//	  - provider: the adapter type of the provider the router selected,
+//	              never a providers-map key.
 //	  Sent once per turn, before the provider request. A retried or
 //	  compacted request within the turn sends no further "turn_started".
 //
@@ -276,7 +276,9 @@ type HarnessEvent struct {
 	Turn *int32 `protobuf:"varint,18,opt,name=turn,proto3,oneof" json:"turn,omitempty"`
 	// The model the router selected for the turn. Set on "turn_started".
 	Model string `protobuf:"bytes,19,opt,name=model,proto3" json:"model,omitempty"`
-	// The provider the router selected for the turn. Set on "turn_started".
+	// The adapter type of the provider the router selected for the turn
+	// (for example "anthropic" or "openai-responses"), never a providers-map
+	// key. Set on "turn_started".
 	Provider string `protobuf:"bytes,20,opt,name=provider,proto3" json:"provider,omitempty"`
 	// The turn's token usage. Set on "turn_committed" events; absent when
 	// the turn reported no usage.
@@ -1133,7 +1135,9 @@ type RunConfig struct {
 	// Optional. Provider-neutral switch for the model's reasoning text:
 	// "auto" requests it from providers with a probed control (on Gemini,
 	// only for models that accept a thinking config) and streams it as
-	// thinking_delta events; "off" requests none and streams none.
+	// thinking_delta events; "off" stops the harness streaming it and,
+	// where the provider has a request control (Gemini, OpenAI Responses),
+	// does not request it.
 	// Empty is "auto" on every adapter except openai-responses, which
 	// requests no summary. Conversation history is unaffected.
 	ReasoningSummary string `protobuf:"bytes,59,opt,name=reasoning_summary,json=reasoningSummary,proto3" json:"reasoning_summary,omitempty"`

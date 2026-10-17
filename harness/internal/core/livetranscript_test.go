@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -455,6 +457,47 @@ func TestLoop_TurnEventsBracketEachTurn(t *testing.T) {
 		if ev.Usage == nil || ev.Usage.Input != w.input || ev.Usage.Output != w.output {
 			t.Errorf("turn_committed %d usage = %+v, want input %d output %d", i, ev.Usage, w.input, w.output)
 		}
+	}
+}
+
+// TestLoop_TurnStartedReportsTheProviderType pins that turn_started names
+// the adapter type of the routed provider, never the operator's
+// providers-map key, including when the router names no provider.
+func TestLoop_TurnStartedReportsTheProviderType(t *testing.T) {
+	cases := []struct {
+		name      string
+		routeTo   string
+		providers map[string]types.ProviderConfig
+		want      string
+	}{
+		{name: "default provider", routeTo: "", want: "anthropic"},
+		{
+			name:      "named provider",
+			routeTo:   "fast",
+			providers: map[string]types.ProviderConfig{"fast": {Type: "openai-compatible", BaseURL: "https://example.test/v1"}},
+			want:      "openai-compatible",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loop := buildTestLoop(&mockProvider{events: scriptEndTurn})
+			if tc.routeTo != "" {
+				loop.Providers = map[string]provider.ProviderAdapter{tc.routeTo: loop.Provider}
+			}
+			loop.Router = router.NewStaticRouter(tc.routeTo, "some-model")
+			tp := &recordingTransport{}
+			loop.Transport = tp
+			config := buildTestConfig()
+			config.Providers = tc.providers
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			started := eventsOfType(tp, "turn_started")
+			if len(started) != 1 || started[0].Provider != tc.want {
+				t.Errorf("turn_started = %+v, want provider %q", started, tc.want)
+			}
+		})
 	}
 }
 
