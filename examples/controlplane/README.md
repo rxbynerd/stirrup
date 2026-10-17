@@ -48,6 +48,11 @@ Exit status:
 | 1 | The run finished with another outcome, or the stream closed without a `done` event. |
 | 2 | Usage or setup error (bad flag, unreadable config, address in use). |
 
+The model's answer text goes to stdout. Everything else goes to stderr as a
+live transcript: the user-role messages the harness appends, turn boundaries
+with token usage, reasoning text, and each tool call and result with its
+outcome and duration.
+
 Events that need a reply this example does not implement (`tool_result_request`,
 the `batch_*` events, `sandbox_token_request`) are reported on stderr and left
 unanswered. A `RunConfig` that opts into them stalls until the harness times

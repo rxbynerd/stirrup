@@ -153,12 +153,27 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 			if err := stream.Send(&harnessv1.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
 				return result{}, fmt.Errorf("send task_assignment: %w", err)
 			}
+		case "run_started":
+			writef(s.errOut, "[run_started] %s\n", ev.GetId())
+		case "user_message":
+			writef(s.errOut, "[user_message] %s: %s\n", ev.GetSource(), preview(ev.GetText()))
+		case "turn_started":
+			writef(s.errOut, "[turn_started] %d %s/%s\n", ev.GetTurn(), ev.GetProvider(), ev.GetModel())
+		case "thinking_delta":
+			writef(s.errOut, "%s", ev.GetText())
 		case "text_delta":
 			writef(s.out, "%s", ev.GetText())
 		case "tool_call":
 			writef(s.errOut, "\n[tool_call] %s %s\n", ev.GetName(), ev.GetInput())
 		case "tool_result":
-			writef(s.errOut, "[tool_result] %s\n", preview(ev.GetContent()))
+			status := "ok"
+			if ev.GetIsError() {
+				status = "error"
+			}
+			writef(s.errOut, "[tool_result] %s %s %dms %s\n", ev.GetName(), status, ev.GetDurationMs(), preview(ev.GetContent()))
+		case "turn_committed":
+			usage := ev.GetUsage()
+			writef(s.errOut, "\n[turn_committed] %d %s in=%d out=%d\n", ev.GetTurn(), ev.GetStopReason(), usage.GetInputTokens(), usage.GetOutputTokens())
 		case "permission_request":
 			allowed := s.decide(ctx, ev)
 			resp := &harnessv1.ControlEvent{
