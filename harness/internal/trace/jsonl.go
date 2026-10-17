@@ -81,6 +81,7 @@ var _ StructuredOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ SubRunRecorder = (*JSONLTraceEmitter)(nil)
 var _ SystemInstructionsRecorder = (*JSONLTraceEmitter)(nil)
 var _ PostEditCheckRecorder = (*JSONLTraceEmitter)(nil)
+var _ HookRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -258,15 +259,11 @@ func (e *JSONLTraceEmitter) RecordPermissionDenial() {
 // RecordToolCall's tool_call_record. OutputTail, Error, and Command are
 // all re-scrubbed here as defence-in-depth — the persisted trace must
 // not depend on upstream scrubbing/validation guards being airtight.
-func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
+func (e *JSONLTraceEmitter) RecordHookExecution(_ context.Context, exec types.HookExecution) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	scrubbed := exec
-	scrubbed.Command = scrubOrPass(exec.Command, e.redactionDisabled)
-	scrubbed.OutputTail = scrubOrPass(exec.OutputTail, e.redactionDisabled)
-	scrubbed.Error = scrubOrPass(exec.Error, e.redactionDisabled)
-
+	scrubbed := scrubHookExecution(exec, e.redactionDisabled)
 	e.hookResults = append(e.hookResults, scrubbed)
 
 	ev := Event{
@@ -684,6 +681,13 @@ func scrubPostEditCheck(r types.PostEditCheckRecord, redactionDisabled bool) typ
 	r.Command = scrubOrPass(r.Command, redactionDisabled)
 	r.Error = scrubOrPass(r.Error, redactionDisabled)
 	return r
+}
+
+func scrubHookExecution(h types.HookExecution, redactionDisabled bool) types.HookExecution {
+	h.Command = scrubOrPass(h.Command, redactionDisabled)
+	h.OutputTail = scrubOrPass(h.OutputTail, redactionDisabled)
+	h.Error = scrubOrPass(h.Error, redactionDisabled)
+	return h
 }
 
 // redactRunConfig returns config.Redact() with the correlation values

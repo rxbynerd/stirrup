@@ -77,12 +77,12 @@ type RepositoryGuidanceRecorder interface {
 }
 
 // HookRecorder is an optional capability a TraceEmitter can implement to
-// receive lifecycle hook results as each PreRun/PostRun hook completes.
-// Only the JSONL emitter implements it: it streams a hook_record line
-// per execution and folds the accumulated results into
-// RunTrace.HookResults at Finish, mirroring RecordToolCall.
+// receive lifecycle hook results once a PreRun/PostRun phase completes.
+// Every implementation folds the results into RunTrace.HookResults at
+// Finish. ctx carries the phase's span, so the OTel emitter parents a
+// per-hook span under it.
 type HookRecorder interface {
-	RecordHookExecution(exec types.HookExecution)
+	RecordHookExecution(ctx context.Context, exec types.HookExecution)
 }
 
 // FinalAssistantTextRecorder is an optional capability a TraceEmitter

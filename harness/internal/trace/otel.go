@@ -61,6 +61,10 @@ const (
 	genAIToolCallArgumentsKey = "gen_ai.tool.call.arguments"
 	genAIToolCallResultKey    = "gen_ai.tool.call.result"
 
+	// hookOutputTailKey carries a lifecycle hook's scrubbed output tail,
+	// emitted only when captureContent is on.
+	hookOutputTailKey = "hook.output_tail"
+
 	// Prompt-resolution attributes, stirrup-specific (no GenAI counterpart).
 	promptModelKey = "prompt.model"
 	promptTierKey  = "prompt.tier"
@@ -123,6 +127,7 @@ type OTelTraceEmitter struct {
 	auxiliaryTokens      types.TokenUsage
 	externalGuardTokens  types.TokenUsage
 	postEditChecks       []types.PostEditCheckRecord
+	hookResults          []types.HookExecution
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -255,6 +260,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 }
 
 var _ ContextStarter = (*OTelTraceEmitter)(nil)
+var _ HookRecorder = (*OTelTraceEmitter)(nil)
 
 // StartWithContext is Start with the run span parented on the span
 // context ctx carries, or a new trace when that is invalid. Only the span
@@ -290,6 +296,7 @@ func (e *OTelTraceEmitter) start(parent context.Context, runID string, config *t
 	e.runContent = nil
 	e.open = nil
 	e.postEditChecks = nil
+	e.hookResults = nil
 
 	e.scope.setRun(runIdentityFor(config, e.redactionDisabled))
 
@@ -550,6 +557,50 @@ func (e *OTelTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord)
 	span.End(oteltrace.WithTimestamp(end))
 }
 
+// RecordHookExecution emits a hook span under the phase span ctx carries
+// (the root span when it carries none) and accumulates the result for
+// the RunTrace aggregate. The output tail is content: it is attached
+// only under captureContent.
+func (e *OTelTraceEmitter) RecordHookExecution(ctx context.Context, exec types.HookExecution) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	scrubbed := scrubHookExecution(exec, e.redactionDisabled)
+	e.hookResults = append(e.hookResults, scrubbed)
+	if e.rootCtx == nil {
+		return
+	}
+	parent := ctx
+	if !oteltrace.SpanContextFromContext(parent).IsValid() {
+		parent = e.rootCtx
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("hook.phase", scrubbed.Phase),
+		attribute.Int("hook.index", scrubbed.Index),
+		attribute.String("hook.command", scrubbed.Command),
+		attribute.Int("hook.exit_code", scrubbed.ExitCode),
+		attribute.Int64("hook.duration_ms", scrubbed.DurationMs),
+		attribute.Bool("hook.timed_out", scrubbed.TimedOut),
+		attribute.Bool("hook.skipped", scrubbed.Skipped),
+		attribute.Bool("hook.continued_on_error", scrubbed.ContinuedOnError),
+		attribute.Bool("hook.output_truncated", scrubbed.Truncated),
+	}
+	if scrubbed.Name != "" {
+		attrs = append(attrs, attribute.String("hook.name", scrubbed.Name))
+	}
+	if e.captureContent && scrubbed.OutputTail != "" {
+		attrs = appendContentAttribute(attrs, hookOutputTailKey, scrubbed.OutputTail, e.captureContentMaxBytes)
+	}
+	end := time.Now()
+	_, span := e.tracer.Start(parent, "hook",
+		oteltrace.WithAttributes(attrs...),
+		oteltrace.WithTimestamp(end.Add(-time.Duration(scrubbed.DurationMs)*time.Millisecond)),
+	)
+	if scrubbed.Failed() {
+		span.SetStatus(codes.Error, scrubbed.Error)
+	}
+	span.End(oteltrace.WithTimestamp(end))
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -679,6 +730,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		AuxiliaryTokens:      e.auxiliaryTokens,
 		ExternalGuardTokens:  e.externalGuardTokens,
 		PostEditChecks:       e.postEditChecks,
+		HookResults:          e.hookResults,
 		TraceReference:       e.traceReferenceLocked(),
 	}
 

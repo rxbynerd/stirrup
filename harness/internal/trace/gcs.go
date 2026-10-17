@@ -87,6 +87,7 @@ type GCSTraceEmitter struct {
 	auxiliaryTokens      types.TokenUsage
 	externalGuardTokens  types.TokenUsage
 	postEditChecks       []types.PostEditCheckRecord
+	hookResults          []types.HookExecution
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
@@ -98,6 +99,7 @@ var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
 var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
+var _ HookRecorder = (*GCSTraceEmitter)(nil)
 var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
 var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
 var _ StructuredOutputRecorder = (*GCSTraceEmitter)(nil)
@@ -196,6 +198,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.auxiliaryTokens = types.TokenUsage{}
 	e.externalGuardTokens = types.TokenUsage{}
 	e.postEditChecks = nil
+	e.hookResults = nil
 }
 
 // RecordTurn appends a turn trace.
@@ -284,6 +287,14 @@ func (e *GCSTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) 
 	e.postEditChecks = append(e.postEditChecks, scrubPostEditCheck(record, e.redactionDisabled))
 }
 
+// RecordHookExecution accumulates a lifecycle hook result for the
+// uploaded trace object.
+func (e *GCSTraceEmitter) RecordHookExecution(_ context.Context, exec types.HookExecution) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hookResults = append(e.hookResults, scrubHookExecution(exec, e.redactionDisabled))
+}
+
 func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -353,6 +364,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	auxiliaryTokens := e.auxiliaryTokens
 	externalGuardTokens := e.externalGuardTokens
 	postEditChecks := append([]types.PostEditCheckRecord(nil), e.postEditChecks...)
+	hookResults := append([]types.HookExecution(nil), e.hookResults...)
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -400,6 +412,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		AuxiliaryTokens:      auxiliaryTokens,
 		ExternalGuardTokens:  externalGuardTokens,
 		PostEditChecks:       postEditChecks,
+		HookResults:          hookResults,
 	}
 
 	data, err := json.Marshal(trace)

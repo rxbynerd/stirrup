@@ -60,7 +60,7 @@ func TestJSONLTraceEmitter_TagsPerRunRecords(t *testing.T) {
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0, RunID: "run-p/sub-1", ParentRunID: "run-p"})
 	emitter.RecordToolCall(types.ToolCallTrace{ID: "own", Name: "read_file"})
 	emitter.RecordToolCall(types.ToolCallTrace{ID: "fwd", Name: "read_file", RunID: "run-p/sub-1", ParentRunID: "run-p"})
-	emitter.RecordHookExecution(types.HookExecution{Phase: "preRun"})
+	emitter.RecordHookExecution(context.Background(), types.HookExecution{Phase: "preRun"})
 	emitter.RecordCommandOutput(types.CommandOutputRecord{RunID: "run-p/sub-1", ParentRunID: "run-p", ToolUseID: "fwd"})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)

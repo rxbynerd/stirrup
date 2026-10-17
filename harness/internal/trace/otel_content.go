@@ -91,9 +91,12 @@ func appendContentAttribute(attrs []attribute.KeyValue, key, value string, maxBy
 // element cannot fit is its text shortened. Input history keeps its
 // newest messages; output and system instructions keep their leading
 // parts. Tool-call arguments become a JSON string of the truncated text.
+// A hook output tail keeps its trailing bytes.
 func capContentValue(key, value string, maxBytes int) string {
 	var capped, minimal string
 	switch key {
+	case hookOutputTailKey:
+		return truncateUTF8Tail(value, maxBytes)
 	case genAIInputMessagesKey:
 		capped, minimal = capMessagesJSON(value, maxBytes, true), "[]"
 	case genAIOutputMessagesKey:
@@ -275,6 +278,22 @@ func truncateUTF8(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// truncateUTF8Tail returns the last n bytes of s or fewer, starting on a
+// rune boundary.
+func truncateUTF8Tail(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	start := len(s) - n
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 // genAIMessage mirrors the ChatMessage / OutputMessage shape shared by

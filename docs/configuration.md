@@ -1300,6 +1300,12 @@ instead.
 | Same, but the run's outcome was already non-`success` (e.g. `max_turns`, `error`) | The original outcome, unchanged | A `postRun` failure never masks the primary failure cause; it is still visible in `RunTrace.HookResults` and `RunResult.hookFailures`. |
 | A hook with `continueOnError: true` fails or times out | The phase's outcome is unaffected | Recorded as a transport `warning` event and in `HookResults`; the remaining hooks in the phase still run. |
 
+Every trace emitter (`jsonl`, `otel`, `gcs`) records each hook's result
+in `RunTrace.HookResults`. The `otel` emitter also exports one `hook`
+span per execution under its `hooks.preRun` / `hooks.postRun` phase
+span, and attaches the output tail only when `captureContent` is on;
+see [Span tree](observability-cloud.md#span-tree).
+
 `postRun` hooks run on every outcome by default (`runOn: ""` /
 `"always"`) — including `timeout` and `cancelled` — on a context
 detached from the run's own cancellation and deadline
