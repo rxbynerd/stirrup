@@ -366,6 +366,14 @@ type TurnTrace struct {
 	// turn's response, which can differ from Model (the requested alias).
 	// Empty when the provider reports none.
 	ResponseModel string `json:"responseModel,omitempty"`
+	// OutputLimitRecovery is true when the turn stopped at the output
+	// limit (StopReason "max_tokens") and the run continued with a
+	// synthetic instruction instead of ending.
+	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
+	// WindDown names the budget threshold that made the harness send its
+	// wind-down instruction at the start of this turn: "turns", "tokens"
+	// or "time". Empty on every other turn.
+	WindDown string `json:"windDown,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.
@@ -422,6 +430,14 @@ type TurnRecord struct {
 	// answering with; empty when it reported none. The same value rides on
 	// TurnTrace.ResponseModel for emitters that keep only summaries.
 	ResponseModel string `json:"responseModel,omitempty"`
+	// OutputLimitRecovery mirrors TurnTrace.OutputLimitRecovery.
+	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
+	// StallNudge is true when the turn's tool calls completed a repeated
+	// call pattern and the next request carries a synthetic instruction
+	// to change approach instead of the run ending as stalled.
+	StallNudge bool `json:"stallNudge,omitempty"`
+	// WindDown mirrors TurnTrace.WindDown.
+	WindDown string `json:"windDown,omitempty"`
 }
 
 // ModelInput records what the model saw on a given turn. Request is nil

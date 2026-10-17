@@ -578,13 +578,14 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
 
-	expectedKey := "async_other:" + string(calls[2].Input)
-	if stall.lastToolCall != expectedKey {
-		t.Errorf("stall.lastToolCall = %q, want %q (records must run in call order, not resolution order)",
-			stall.lastToolCall, expectedKey)
+	if len(stall.window) != len(calls) {
+		t.Fatalf("stall window holds %d signatures, want %d", len(stall.window), len(calls))
 	}
-	if stall.repeatCount != 1 {
-		t.Errorf("stall.repeatCount = %d, want 1 (the trailing 'different' call must reset the streak)", stall.repeatCount)
+	for i, call := range calls {
+		want := stallSignatureOf(call.Name, call.Input, results[i].Content, !results[i].IsError)
+		if stall.window[i] != want {
+			t.Errorf("stall window[%d] does not match call %s (records must run in call order, not resolution order)", i, call.ID)
+		}
 	}
 }
 
@@ -731,9 +732,9 @@ func spanNames(spans []tracetest.SpanStub) []string {
 // stall-tail span-close loop in planAndDispatch: when stall trips at
 // index i mid-iteration, every plan[j].span for j > i must have End()
 // called so OTel spans for already-dispatched async calls beyond the
-// stall point do not leak. Four identical calls with MaxParallel=4 trip
-// the stall (threshold 3) at index 2, leaving index 3's span for the
-// cleanup loop to close.
+// stall point do not leak. With the nudge already spent, four identical
+// calls with MaxParallel=4 trip the stall (threshold 3) at index 2,
+// leaving index 3's span for the cleanup loop to close.
 func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -756,12 +757,10 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	}
 
 	for i := 0; i < n; i++ {
-		i := i
-		go fireResponseWhenEmitted(t, tr, calls[i].ID, 20*time.Millisecond,
-			fmt.Sprintf("result-%d", i))
+		go fireResponseWhenEmitted(t, tr, calls[i].ID, 20*time.Millisecond, "result")
 	}
 
-	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{nudged: true}, "", "")
 	if outcome != "stalled" {
 		t.Fatalf("expected outcome 'stalled', got %q", outcome)
 	}
@@ -803,8 +802,10 @@ func TestParallelDispatch_StallTrips_RemainingSpansKeepTheirOutcome(t *testing.T
 	loop := buildParallelDispatchLoop(t, newAsyncTestTransport(), sleepingSyncTool("sync_tool", 0))
 	loop.Tracer = tp.Tracer("test")
 	sameInput := json.RawMessage(`{"k":"v"}`)
-	stall := &stallDetector{lastToolCall: "sync_tool:" + string(sameInput), repeatCount: maxRepeatedToolCalls - 1}
+	stall := &stallDetector{nudged: true}
 	calls := []types.ToolCall{
+		{ID: "tc_1", Name: "sync_tool", Input: sameInput},
+		{ID: "tc_2", Name: "sync_tool", Input: sameInput},
 		{ID: "tc_stall", Name: "sync_tool", Input: sameInput},
 		{ID: "tc_after", Name: "no_such_tool", Input: json.RawMessage(`{}`)},
 	}
@@ -833,6 +834,50 @@ func TestParallelDispatch_StallTrips_RemainingSpansKeepTheirOutcome(t *testing.T
 	}
 	if errorType != observability.ToolFailureUnknownTool.String() {
 		t.Errorf("error.type = %q, want %q", errorType, observability.ToolFailureUnknownTool)
+	}
+}
+
+// TestParallelDispatch_StallNudge_KeepsWholeBatch pins that a first
+// repetition inside a batch does not truncate it: every call's result
+// and record is returned, paired with its call, and the nudge waits for
+// the caller.
+func TestParallelDispatch_StallNudge_KeepsWholeBatch(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
+	config := configWithMaxParallel(4)
+
+	const n = 5
+	sameInput := json.RawMessage(`{"k":"v"}`)
+	calls := make([]types.ToolCall, n)
+	for i := 0; i < n; i++ {
+		calls[i] = types.ToolCall{ID: fmt.Sprintf("tc_nudge_%d", i), Name: "async_echo", Input: sameInput}
+		go fireResponseWhenEmitted(t, tr, calls[i].ID, 10*time.Millisecond, "same")
+	}
+
+	stall := &stallDetector{}
+	results, records, outcome := loop.planAndDispatch(context.Background(), config, calls, stall, "", "")
+	if outcome != "" {
+		t.Fatalf("outcome = %q, want none: the first repetition nudges instead of ending the run", outcome)
+	}
+	if len(results) != n || len(records) != n {
+		t.Fatalf("got %d results and %d records, want %d of each", len(results), len(records), n)
+	}
+	for i, call := range calls {
+		if results[i].ToolUseID != call.ID || records[i].ID != call.ID {
+			t.Errorf("index %d: result %q, record %q; want both paired with %q", i, results[i].ToolUseID, records[i].ID, call.ID)
+		}
+	}
+	var toolResultEvents int
+	for _, ev := range tr.Events() {
+		if ev.Type == "tool_result" {
+			toolResultEvents++
+		}
+	}
+	if toolResultEvents != n {
+		t.Errorf("tool_result events = %d, want %d", toolResultEvents, n)
+	}
+	if _, ok := stall.takeNudge(); !ok {
+		t.Error("no pending nudge after the batch")
 	}
 }
 

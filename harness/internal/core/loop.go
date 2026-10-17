@@ -153,6 +153,8 @@ func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord 
 // A non-nil trace returned with a non-nil error means the run completed
 // but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
+	l.windDown = windDownState{start: l.now()}
+
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
 	// context.Cause().
@@ -332,6 +334,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.lastContextTokens.Store(0)
 	l.historyRewritten = false
 	l.subAgentSpawns.Store(0)
+	l.outputLimitRecoveries = 0
 
 	// Tagged with run.id and run.mode; unregistered at run end so the
 	// OTel SDK does not keep observing this run after it finishes.
@@ -684,6 +687,11 @@ func (l *AgenticLoop) runInnerLoop(
 	// finalAssistantText holds the last non-empty assistant text seen across
 	// all turns. Threaded onto RunTrace.FinalAssistantText at loop completion.
 	var finalAssistantText string
+	// continuedText is the answer a model was told to continue after an
+	// output-limit stop; the next turn's text extends it.
+	// preContinuationText is finalAssistantText from before that answer
+	// began, returned if the post-turn guard denies the joined answer.
+	var continuedText, preContinuationText string
 	stall := &stallDetector{}
 
 	// Tool-choice escalation state: priorToolCalls tracks whether the
@@ -793,6 +801,9 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 		}
 
+		var windDown string
+		messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
+
 		selection := l.Router.Select(ctx, router.RouterContext{
 			Mode:           config.Mode,
 			Turn:           turn,
@@ -860,6 +871,7 @@ func (l *AgenticLoop) runInnerLoop(
 					DurationMs: time.Since(turnStart).Milliseconds(),
 					Mode:       "",
 					Model:      selection.Model,
+					WindDown:   windDown,
 				})
 				l.noteFailure("error", fmt.Sprintf("model router selected unknown provider %q", selection.Provider))
 				return messages, "error", finalAssistantText, nil
@@ -874,6 +886,7 @@ func (l *AgenticLoop) runInnerLoop(
 				DurationMs: time.Since(turnStart).Milliseconds(),
 				Mode:       "",
 				Model:      selection.Model,
+				WindDown:   windDown,
 			})
 			l.noteFailure("error", "no provider is configured")
 			return messages, "error", finalAssistantText, nil
@@ -917,7 +930,7 @@ func (l *AgenticLoop) runInnerLoop(
 		rejected := 0
 		for {
 			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, selectedProvider, params)
-			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0)
+			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0, windDown)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
@@ -927,7 +940,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0)
+				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0, false, windDown)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
 					return messages, "budget_exceeded", finalAssistantText, nil
@@ -965,33 +978,56 @@ func (l *AgenticLoop) runInnerLoop(
 		if sr.StopReason == "tool_use" {
 			dispatched = len(toolCalls)
 		}
-		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched)
+		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
+		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
 		// calls are filled in after planAndDispatch runs below.
 		turnRecord := types.TurnRecord{
-			Turn:          turn,
-			ModelInput:    modelInputOf(selection.Model, params),
-			ModelOutput:   sr.Blocks,
-			ResponseModel: sr.ResponseModel,
+			Turn:                turn,
+			ModelInput:          modelInputOf(selection.Model, params),
+			ModelOutput:         sr.Blocks,
+			ResponseModel:       sr.ResponseModel,
+			OutputLimitRecovery: outputLimitRecovery,
+			WindDown:            windDown,
 		}
 		// The chat span covers inference only; tool spans are its
 		// siblings under the agent span.
 		chat.End(trace.ChatSpanEnd{Summary: &summary, Record: &turnRecord})
-
-		// Carries provider replay state so the next request can
-		// round-trip it.
-		messages = appendAssistantContent(messages, sr.Blocks, sr.ReplayFields)
 
 		// finalText feeds RunTrace.FinalAssistantText and the end_turn
 		// PhasePostTurn guard below. priorFinalText is the pre-commit
 		// snapshot the guard must return on deny — see docs/guardrails.md.
 		finalText := lastAssistantText(sr.Blocks)
 		priorFinalText := finalAssistantText
+		if continuedText != "" {
+			finalText = continuedText + finalText
+			priorFinalText = preContinuationText
+			continuedText = ""
+		}
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
+
+		if outputLimitRecovery {
+			l.Trace.RecordTurnRecord(turnRecord)
+			var continues bool
+			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			if continues {
+				continuedText, preContinuationText = finalText, priorFinalText
+			}
+			continue
+		}
+
+		// Carries provider replay state so the next request can
+		// round-trip it. A max_tokens turn is never dispatched, so its
+		// tool calls stay out of history.
+		assistantBlocks := sr.Blocks
+		if sr.StopReason == "max_tokens" {
+			assistantBlocks = withoutToolUse(sr.Blocks)
+		}
+		messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on
@@ -1097,7 +1133,9 @@ func (l *AgenticLoop) runInnerLoop(
 			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
 		})
 		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
+		nudge, nudged := stall.takeNudge()
 		turnRecord.ToolCalls = toolRecords
+		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
 		// Escalation triggers only on the first assistant turn with
@@ -1106,6 +1144,9 @@ func (l *AgenticLoop) runInnerLoop(
 		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
 			return messages, stallOutcome, finalAssistantText, nil
+		}
+		if nudged {
+			messages = l.nudgeStalledRun(ctx, config, turn, nudge, messages)
 		}
 
 		// Prevents the next turn from sending an over-budget context.

@@ -621,9 +621,9 @@ func TestSyncToolPath_Unchanged(t *testing.T) {
 }
 
 func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
-	// Three identical async resolutions should still trigger
-	// stallDetector — the dispatch path is still synchronous from the
-	// stall detector's point of view (one record per call).
+	// Three identical async resolutions should still trigger the
+	// stallDetector nudge — the dispatch path is still synchronous from
+	// the stall detector's point of view (one record per call).
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -637,7 +637,7 @@ func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
 		// iterations' (already resolved) requests.
 		expectedIndex := i + 1
 		done := make(chan struct{})
-		go func(turn int) {
+		go func() {
 			defer close(done)
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
@@ -648,14 +648,14 @@ func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
 						tr.FireControl(types.ControlEvent{
 							Type:      "tool_result_response",
 							RequestID: req.RequestID,
-							Content:   fmt.Sprintf("repeat-%d", turn),
+							Content:   "repeat",
 						})
 						return
 					}
 				}
 				time.Sleep(time.Millisecond)
 			}
-		}(i)
+		}()
 
 		output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{
 			ID:    fmt.Sprintf("tc_stall_%d", i),
@@ -666,12 +666,12 @@ func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
 		if !success {
 			t.Fatalf("turn %d: dispatch failed: %s", i, output)
 		}
-		outcome := stall.recordToolCall("async_echo", input, success)
-		if i < 2 && outcome != "" {
+		if outcome := stall.recordToolCall("async_echo", input, output, success); outcome != "" {
 			t.Fatalf("turn %d: unexpected stall outcome %q", i, outcome)
 		}
-		if i == 2 && outcome != "stalled" {
-			t.Fatalf("turn 2: expected 'stalled' outcome, got %q", outcome)
+		_, nudged := stall.takeNudge()
+		if nudged != (i == 2) {
+			t.Fatalf("turn %d: nudged = %v, want a nudge on the third identical call only", i, nudged)
 		}
 	}
 }

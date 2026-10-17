@@ -198,6 +198,12 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 			if s.Retries > 0 {
 				attrs = append(attrs, attribute.Int("turn.retries", s.Retries))
 			}
+			if s.OutputLimitRecovery {
+				attrs = append(attrs, attribute.Bool("turn.output_limit_recovery", true))
+			}
+			if s.WindDown != "" {
+				attrs = append(attrs, attribute.String("turn.wind_down", s.WindDown))
+			}
 		}
 
 		var content *turnContent

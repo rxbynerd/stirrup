@@ -270,6 +270,12 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 			wantKind: EscalationNone,
 		},
 		{
+			name:     "no_escalation_on_max_tokens",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.StopReason = "max_tokens" },
+			wantKind: EscalationNone,
+		},
+		{
 			name:     "no_escalation_when_no_tools",
 			policy:   newDefaultEscalationPolicy(1, nativeCaps),
 			mutate:   func(in *EscalationInput) { in.ToolsAvailable = false },
@@ -469,6 +475,73 @@ func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
 				t.Errorf("no_tool_when_required count = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// maxTokensEscalatePolicy escalates only on an output-limit stop.
+type maxTokensEscalatePolicy struct{}
+
+func (maxTokensEscalatePolicy) Decide(in EscalationInput) EscalationDecision {
+	if in.StopReason != "max_tokens" {
+		return EscalationDecision{Kind: EscalationNone}
+	}
+	return EscalationDecision{Kind: EscalationNative, Reason: "test policy"}
+}
+
+// TestEscalation_MaxTokensStopRecoversWithoutEscalating pins that a
+// first-turn output-limit stop is continued by the loop's recovery and
+// never also escalated, whichever policy is installed.
+func TestEscalation_MaxTokensStopRecoversWithoutEscalating(t *testing.T) {
+	policies := map[string]EscalationPolicy{
+		"default":            newDefaultEscalationPolicy(1, nativeCaps),
+		"escalates_on_limit": maxTokensEscalatePolicy{},
+	}
+	for name, policy := range policies {
+		t.Run(name, func(t *testing.T) {
+			prov := &sequencedProvider{scripts: [][]types.StreamEvent{
+				{{Type: "text_delta", Text: "Partial"}, {Type: "message_complete", StopReason: "max_tokens"}},
+				toolCallTurn(),
+				{{Type: "text_delta", Text: "Done."}, {Type: "message_complete", StopReason: "end_turn"}},
+			}}
+			loop, reader := buildEscalationLoop(prov, policy)
+
+			runTrace, err := loop.Run(context.Background(), escalationConfig("execution"))
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if runTrace.Outcome != "success" {
+				t.Errorf("Outcome = %q, want success", runTrace.Outcome)
+			}
+			if got := prov.choiceAt(1); got != types.ToolChoiceAuto {
+				t.Errorf("tool choice after the recovery = %v, want auto", got)
+			}
+			if n := countNoToolWhenRequired(t, reader); n != 0 {
+				t.Errorf("no_tool_when_required count = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// TestEscalation_TerminalMaxTokensStopNoRetry pins that the default policy
+// accepts an output-limit stop the loop cannot recover from as the run
+// outcome instead of re-prompting for a tool call.
+func TestEscalation_TerminalMaxTokensStopNoRetry(t *testing.T) {
+	prov := &sequencedProvider{scripts: [][]types.StreamEvent{
+		{{Type: "text_delta", Text: "Partial"}, {Type: "message_complete", StopReason: "max_tokens"}},
+	}}
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+	config := escalationConfig("execution")
+	config.MaxTurns = 1
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if runTrace.Outcome != "max_tokens" {
+		t.Errorf("Outcome = %q, want max_tokens", runTrace.Outcome)
+	}
+	if n := countNoToolWhenRequired(t, reader); n != 0 {
+		t.Errorf("no_tool_when_required count = %d, want 0", n)
 	}
 }
 

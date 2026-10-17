@@ -231,6 +231,7 @@ func (l *AgenticLoop) requestProvider(
 	params types.StreamParams,
 	requestTokens int,
 	retryOverflow bool,
+	windDown string,
 ) providerAttempt {
 	start := time.Now()
 	// A batch turn is not retried: a retry would submit and wait out a
@@ -367,6 +368,7 @@ func (l *AgenticLoop) requestProvider(
 			BatchID:    turnBatchID,
 			Model:      selection.Model,
 			Retries:    retrier.retries,
+			WindDown:   windDown,
 		}
 		l.Trace.RecordTurn(summary)
 		// The run's cancellation can land after the attempt failed for
@@ -453,24 +455,28 @@ func (l *AgenticLoop) recordAttemptUsage(
 	selectedProvider provider.ProviderAdapter,
 	attempt providerAttempt,
 	toolCalls int,
+	outputLimitRecovery bool,
+	windDown string,
 ) types.TurnTrace {
 	sr, tokens := attempt.result, attempt.tokens
 	tokenTracker.RecordTurn(tokens)
 
 	turnMode, turnBatchID := turnModeInfo(selectedProvider)
 	summary := types.TurnTrace{
-		Turn:          turn,
-		Tokens:        tokens,
-		InputReported: attempt.inputReported,
-		StopReason:    sr.StopReason,
-		StopDetails:   sr.StopDetails,
-		DurationMs:    attempt.duration.Milliseconds(),
-		Mode:          turnMode,
-		BatchID:       turnBatchID,
-		Model:         selection.Model,
-		ResponseModel: sr.ResponseModel,
-		Retries:       attempt.retries,
-		ToolCalls:     toolCalls,
+		Turn:                turn,
+		Tokens:              tokens,
+		InputReported:       attempt.inputReported,
+		StopReason:          sr.StopReason,
+		StopDetails:         sr.StopDetails,
+		DurationMs:          attempt.duration.Milliseconds(),
+		Mode:                turnMode,
+		BatchID:             turnBatchID,
+		Model:               selection.Model,
+		ResponseModel:       sr.ResponseModel,
+		Retries:             attempt.retries,
+		ToolCalls:           toolCalls,
+		OutputLimitRecovery: outputLimitRecovery,
+		WindDown:            windDown,
 	}
 	l.Trace.RecordTurn(summary)
 

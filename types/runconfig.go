@@ -223,6 +223,27 @@ type RunConfig struct {
 	// "structured_output_failed". Applies to top-level runs only. Empty
 	// leaves the final answer as free text.
 	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+
+	// WindDown opts the run into a single synthetic instruction to wrap
+	// up once a turn, token or time budget is nearly spent. Nil (the
+	// default) or Enabled false leaves the loop unchanged. See
+	// WindDownConfig.
+	WindDown *WindDownConfig `json:"windDown,omitempty"`
+}
+
+// WindDownConfig configures the wind-down instruction. When enabled, the
+// loop sends it once per run, at the start of the first turn on which two
+// turns remain (counting that turn), 90 percent of MaxTokenBudget is
+// consumed, or 90 percent of the run deadline has elapsed. The thresholds
+// are fixed. Read-only modes receive a summary-only variant.
+type WindDownConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// WindDownEnabled reports whether the run opted into the wind-down
+// instruction.
+func (rc *RunConfig) WindDownEnabled() bool {
+	return rc != nil && rc.WindDown != nil && rc.WindDown.Enabled
 }
 
 // ObservabilityConfig carries operator-supplied labels promoted to the OTel

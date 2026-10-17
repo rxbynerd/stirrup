@@ -94,8 +94,9 @@ const (
 	// the request opened, on a turn with tool definitions attached.
 	ToolFailureProviderStream ToolFailureCategory = "provider_stream_failed"
 
-	// ToolFailureStallRepeated — stall detector observed
-	// maxRepeatedToolCalls identical consecutive (name, input) calls.
+	// ToolFailureStallRepeated — stall detector observed a repeated
+	// tool-call pattern (identical calls or a short cycle) after it had
+	// already nudged the model.
 	ToolFailureStallRepeated ToolFailureCategory = "stall_repeated_calls"
 
 	// ToolFailureStallConsecutiveFailures — stall detector observed

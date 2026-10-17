@@ -162,7 +162,7 @@ func TestLoop_RepeatedMalformedToolArgumentsEndRun(t *testing.T) {
 		wantTurns   int
 	}{
 		{name: "distinct", raw: func(i int) string { return fmt.Sprintf(`{"attempt": %d`, i) }, wantOutcome: "tool_failures", wantTurns: 5},
-		{name: "identical", raw: func(int) string { return `{"attempt":` }, wantOutcome: "stalled", wantTurns: 3},
+		{name: "identical", raw: func(int) string { return `{"attempt":` }, wantOutcome: "tool_failures", wantTurns: 5},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -344,6 +344,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			MaxRetries: int(pc.ToolChoiceEscalation.GetMaxRetries()),
 		}
 	}
+	if pc.WindDown != nil {
+		rc.WindDown = &types.WindDownConfig{Enabled: pc.WindDown.GetEnabled()}
+	}
 	if pc.ToolDispatch != nil {
 		// Only construct when present, so nil ToolDispatch stays
 		// wire-distinguishable from an explicit ToolDispatchConfig{}

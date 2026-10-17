@@ -1816,6 +1816,41 @@ func TestRunConfigFromProto_ToolChoiceEscalationPreserved(t *testing.T) {
 	})
 }
 
+// TestRunConfigFromProto_WindDownPreserved pins the wind-down block across
+// a wire round-trip; an absent sub-message stays nil (off).
+func TestRunConfigFromProto_WindDownPreserved(t *testing.T) {
+	t.Run("enabled", func(t *testing.T) {
+		raw, err := proto.Marshal(&pb.RunConfig{WindDown: &pb.WindDownConfig{Enabled: true}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunConfig
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		rc := runConfigFromProto(&decoded)
+		if rc.WindDown == nil || !rc.WindDown.Enabled || !rc.WindDownEnabled() {
+			t.Fatalf("WindDown = %+v, want enabled", rc.WindDown)
+		}
+	})
+
+	t.Run("empty sub-message stays non-nil and off", func(t *testing.T) {
+		rc := runConfigFromProto(&pb.RunConfig{WindDown: &pb.WindDownConfig{}})
+		if rc.WindDown == nil {
+			t.Fatal("expected non-nil WindDown for an empty sub-message")
+		}
+		if rc.WindDownEnabled() {
+			t.Error("empty sub-message must not enable wind-down")
+		}
+	})
+
+	t.Run("absent stays nil", func(t *testing.T) {
+		if wd := runConfigFromProto(&pb.RunConfig{}).WindDown; wd != nil {
+			t.Errorf("WindDown should be nil when proto field absent, got %+v", wd)
+		}
+	})
+}
+
 // TestRunConfigFromProto_LogsExportPreserved pins observability.logs_export,
 // which sits one level below a sub-message that was already translated —
 // exactly the shape a field-by-field mirror is most likely to miss.

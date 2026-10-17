@@ -155,6 +155,47 @@ func TestChatSpan_EndAttributes(t *testing.T) {
 	}
 }
 
+// TestChatSpan_OutputLimitRecoveryAttribute pins that only a turn the
+// loop continued past an output-limit stop carries the recovery attribute.
+func TestChatSpan_OutputLimitRecoveryAttribute(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "a"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "max_tokens", OutputLimitRecovery: true},
+	})
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "b"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "end_turn"},
+	})
+	finishLiveRun(t, emitter)
+
+	recovered := findSpan(t, exporter, "chat a")
+	var got bool
+	for _, attr := range recovered.Attributes {
+		if string(attr.Key) == "turn.output_limit_recovery" {
+			got = attr.Value.AsBool()
+		}
+	}
+	if !got {
+		t.Error("turn.output_limit_recovery = false or absent on the recovered turn, want true")
+	}
+	assertAttributesAbsent(t, findSpan(t, exporter, "chat b"), "turn.output_limit_recovery")
+}
+
+// TestChatSpan_WindDownAttribute pins that only the turn that carried the
+// wind-down instruction names its trigger on the chat span.
+func TestChatSpan_WindDownAttribute(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "a"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "tool_use", WindDown: "tokens"},
+	})
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "b"}).End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "end_turn"},
+	})
+	finishLiveRun(t, emitter)
+
+	assertAttribute(t, findSpan(t, exporter, "chat a"), "turn.wind_down", "tokens")
+	assertAttributesAbsent(t, findSpan(t, exporter, "chat b"), "turn.wind_down")
+}
+
 func TestChatSpan_ErrorScrubbed(t *testing.T) {
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
