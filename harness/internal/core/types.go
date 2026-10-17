@@ -174,6 +174,11 @@ type AgenticLoop struct {
 	// the current run, built once repository guidance has loaded.
 	writeProtection security.ProtectedWriteTargets
 
+	// ledger binds the run-wide TokenLedger for the run in progress. The
+	// factory shares it with the metered auxiliary providers; sub-agents
+	// share the parent's.
+	ledger *ledgerBinding
+
 	// lastContextTokens holds the most recent absolute context-window token
 	// estimate, published after each Context.Prepare and read from the
 	// ContextTokens gauge callback. atomic ensures a complete value is seen
@@ -311,8 +316,9 @@ func (l *AgenticLoop) asyncCorrelatorForTest() *transport.Correlator {
 	return l.asyncCorrelator.Load()
 }
 
-// TokenTracker tracks cumulative token usage per run and enforces token budgets.
-// Cost estimation is a control plane concern — the harness only tracks tokens.
+// TokenTracker tracks one loop's own token usage and enforces a token
+// budget against it; the run-wide total lives in TokenLedger. Cost
+// estimation is a control plane concern — the harness only tracks tokens.
 type TokenTracker struct {
 	total types.TokenUsage
 }

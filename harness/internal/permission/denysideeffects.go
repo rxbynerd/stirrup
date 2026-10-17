@@ -39,3 +39,45 @@ func (d *DenySideEffects) Check(_ context.Context, tool types.ToolDefinition, _ 
 	}
 	return &PermissionResult{Allowed: true}, nil
 }
+
+// SideEffectGate denies workspace-mutating tools before consulting the
+// wrapped policy, so a call must pass both. It narrows a read-only
+// sub-agent's inherited permission chain without replacing it: the
+// inner chain still decides every call the gate lets through, and
+// mutating calls never reach an inner ask-upstream policy.
+type SideEffectGate struct {
+	deny  *DenySideEffects
+	inner PermissionPolicy
+}
+
+var (
+	_ PermissionPolicy = (*SideEffectGate)(nil)
+	_ Rewrapper        = (*SideEffectGate)(nil)
+)
+
+// NewSideEffectGate returns a SideEffectGate denying the tools in
+// mutatingTools in front of inner.
+func NewSideEffectGate(mutatingTools map[string]bool, inner PermissionPolicy) *SideEffectGate {
+	return &SideEffectGate{deny: NewDenySideEffects(mutatingTools), inner: inner}
+}
+
+// Check denies a mutating tool outright and otherwise returns the inner
+// policy's decision.
+func (g *SideEffectGate) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
+	result, err := g.deny.Check(ctx, tool, input)
+	if err != nil || !result.Allowed {
+		return result, err
+	}
+	return g.inner.Check(ctx, tool, input)
+}
+
+// Unwrap returns the wrapped policy so Unwrap and RewrapChain see through
+// the gate.
+func (g *SideEffectGate) Unwrap() PermissionPolicy {
+	return g.inner
+}
+
+// Rewrap reproduces the gate, with the same denied set, around inner.
+func (g *SideEffectGate) Rewrap(inner PermissionPolicy) PermissionPolicy {
+	return &SideEffectGate{deny: g.deny, inner: inner}
+}

@@ -371,7 +371,7 @@ func TestPolicyEngine_ForChildRun_PopulatesParentRunID(t *testing.T) {
 		t.Fatalf("parent run_command should fall through to allow-all fallback (no parentRunId), got deny: %q", parentResult.Reason)
 	}
 
-	child := parent.ForChildRun("run-child-1")
+	child := parent.ForChildRun("run-child-1", "")
 	if child == nil {
 		t.Fatal("ForChildRun returned nil")
 	}
@@ -395,12 +395,66 @@ func TestPolicyEngine_ForChildRun_PopulatesParentRunID(t *testing.T) {
 
 	// Cloning twice with no-op IDs leaves the parent's runID untouched
 	// — guards against a future regression that mutates the receiver.
-	child2 := parent.ForChildRun("")
+	child2 := parent.ForChildRun("", "")
 	if child2.runID != parent.runID {
-		t.Errorf("ForChildRun(\"\") should preserve runID; got %q", child2.runID)
+		t.Errorf("ForChildRun(\"\", \"\") should preserve runID; got %q", child2.runID)
 	}
 	if parent.parentRunID != "" {
 		t.Errorf("parent parentRunID was mutated to %q", parent.parentRunID)
+	}
+}
+
+// TestPolicyEngine_ForChildRun_UsesChildMode pins that a child clone
+// presents its own mode as principal.mode, so a Cedar rule keyed on a
+// read-only mode fires for a child in that mode but not for its parent.
+func TestPolicyEngine_ForChildRun_UsesChildMode(t *testing.T) {
+	policy := `forbid (
+		principal,
+		action == Action::"tool:write_file",
+		resource == Tool::"write_file"
+	) when {
+		principal.mode == "research"
+	};`
+
+	parent := newTestPolicy(t, PolicyEngineConfig{
+		PolicySet: mustParse(t, policy),
+		Fallback:  NewAllowAll(),
+		RunID:     "run-parent-1",
+		Mode:      "execution",
+	})
+	tool := types.ToolDefinition{Name: "write_file"}
+	input := json.RawMessage(`{"path":"a.txt","content":"x"}`)
+
+	check := func(t *testing.T, p *PolicyEnginePolicy) bool {
+		t.Helper()
+		result, err := p.Check(context.Background(), tool, input)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		return result.Allowed
+	}
+
+	if !check(t, parent) {
+		t.Fatal("execution parent: write_file should fall through to the allow-all fallback")
+	}
+
+	research := parent.ForChildRun("run-child-1", "research")
+	if research.mode != "research" {
+		t.Errorf("child mode = %q, want research", research.mode)
+	}
+	if check(t, research) {
+		t.Error("research child: write_file should be denied by the principal.mode forbid")
+	}
+	if parent.mode != "execution" {
+		t.Errorf("parent mode mutated to %q", parent.mode)
+	}
+
+	inherited := parent.ForChildRun("run-child-2", "")
+	if inherited.mode != "execution" {
+		t.Errorf("empty childMode should keep the parent's mode; got %q", inherited.mode)
+	}
+	if !check(t, inherited) {
+		t.Error("child inheriting execution mode: write_file should be allowed")
 	}
 }
 

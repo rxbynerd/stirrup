@@ -884,6 +884,19 @@ func TestIsReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestIsBuiltInTool(t *testing.T) {
+	for _, name := range []string{"read_file", "write_file", "run_command", "spawn_agent", "git_show"} {
+		if !IsBuiltInTool(name) {
+			t.Errorf("IsBuiltInTool(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "mcp_docs_update", "ticket_lookup", "search_files"} {
+		if IsBuiltInTool(name) {
+			t.Errorf("IsBuiltInTool(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestValidateRunConfig_ExecutionModeWithWriteTools(t *testing.T) {
 	c := validConfig()
 	c.Mode = "execution"

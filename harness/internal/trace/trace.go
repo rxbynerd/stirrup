@@ -116,6 +116,14 @@ type VerificationRecorder interface {
 	RecordVerification(result types.VerificationResult)
 }
 
+// LedgerUsageRecorder is an optional capability a TraceEmitter can
+// implement to receive the run ledger's auxiliary usage and external
+// guard usage just before Finish. Finish adds the auxiliary usage to
+// RunTrace.TokenUsage, so TokenUsage matches the ledger total.
+type LedgerUsageRecorder interface {
+	RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage)
+}
+
 // CommandOutputRecorder receives bounded metadata for complete command
 // captures. Full stream content remains in the sidecar archive.
 type CommandOutputRecorder interface {

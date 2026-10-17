@@ -84,11 +84,14 @@ type GCSTraceEmitter struct {
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
 	repositoryGuidance   []types.RepositoryGuidanceRecord
+	auxiliaryTokens      types.TokenUsage
+	externalGuardTokens  types.TokenUsage
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
 var _ VerificationRecorder = (*GCSTraceEmitter)(nil)
 var _ RepositoryGuidanceRecorder = (*GCSTraceEmitter)(nil)
+var _ LedgerUsageRecorder = (*GCSTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
@@ -188,6 +191,8 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.runError = ""
 	e.structuredOutput = nil
 	e.repositoryGuidance = nil
+	e.auxiliaryTokens = types.TokenUsage{}
+	e.externalGuardTokens = types.TokenUsage{}
 }
 
 // RecordTurn appends a turn trace.
@@ -247,6 +252,15 @@ func (e *GCSTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCa
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
+}
+
+// RecordLedgerUsage stores the run's auxiliary and external guard usage
+// for the uploaded trace object.
+func (e *GCSTraceEmitter) RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auxiliaryTokens = auxiliary
+	e.externalGuardTokens = externalGuard
 }
 
 func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
@@ -325,6 +339,8 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	structuredOutput := e.structuredOutput
 	degradedCapabilities := e.degradedCapabilities
 	repositoryGuidance := e.repositoryGuidance
+	auxiliaryTokens := e.auxiliaryTokens
+	externalGuardTokens := e.externalGuardTokens
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -333,6 +349,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	for _, turn := range turns {
 		totalTokens.Add(turn.Tokens)
 	}
+	totalTokens.Add(auxiliaryTokens)
 
 	summaries := make([]types.ToolCallSummary, len(toolCalls))
 	for i, tc := range toolCalls {
@@ -368,6 +385,8 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		StructuredOutput:     structuredOutput,
 		DegradedCapabilities: degradedCapabilities,
 		RepositoryGuidance:   repositoryGuidance,
+		AuxiliaryTokens:      auxiliaryTokens,
+		ExternalGuardTokens:  externalGuardTokens,
 	}
 
 	data, err := json.Marshal(trace)

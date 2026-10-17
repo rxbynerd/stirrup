@@ -978,3 +978,19 @@ func TestSpawnAgentTool_EnrichedShape(t *testing.T) {
 		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
 	}
 }
+
+// TestSpawnAgentTool_DescriptionStatesReadOnlyRule pins that the model is
+// told which tools a read-only sub-agent loses and that a read-only run
+// cannot request an execution sub-agent.
+func TestSpawnAgentTool_DescriptionStatesReadOnlyRule(t *testing.T) {
+	desc := SpawnAgentTool(nil).Description
+	for _, want := range []string{
+		"loses every workspace-mutating tool",
+		"can only spawn read-only sub-agents",
+		"requesting execution mode returns an error",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("spawn_agent description missing %q:\n%s", want, desc)
+		}
+	}
+}

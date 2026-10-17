@@ -120,6 +120,8 @@ type OTelTraceEmitter struct {
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
 	repositoryGuidance   []types.RepositoryGuidanceRecord
+	auxiliaryTokens      types.TokenUsage
+	externalGuardTokens  types.TokenUsage
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -156,6 +158,7 @@ var (
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
 	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
+	_ LedgerUsageRecorder          = (*OTelTraceEmitter)(nil)
 )
 
 // OTelTraceEmitterOptions configures NewOTelTraceEmitter.
@@ -264,6 +267,8 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.structuredOutput = nil
 	e.degradedCapabilities = nil
 	e.repositoryGuidance = nil
+	e.auxiliaryTokens = types.TokenUsage{}
+	e.externalGuardTokens = types.TokenUsage{}
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
@@ -430,6 +435,15 @@ func (e *OTelTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedC
 	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
 }
 
+// RecordLedgerUsage stores the run's auxiliary and external guard usage
+// for the RunTrace aggregate returned by Finish.
+func (e *OTelTraceEmitter) RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auxiliaryTokens = auxiliary
+	e.externalGuardTokens = externalGuard
+}
+
 func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -578,6 +592,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	for _, turn := range e.turns {
 		totalTokens.Add(turn.Tokens)
 	}
+	totalTokens.Add(e.auxiliaryTokens)
 
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
@@ -613,6 +628,8 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		StructuredOutput:     e.structuredOutput,
 		DegradedCapabilities: e.degradedCapabilities,
 		RepositoryGuidance:   e.repositoryGuidance,
+		AuxiliaryTokens:      e.auxiliaryTokens,
+		ExternalGuardTokens:  e.externalGuardTokens,
 	}
 
 	return trace, nil

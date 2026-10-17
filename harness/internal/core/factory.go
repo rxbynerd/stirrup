@@ -353,8 +353,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return presenter.InternalName(name)
 	}
 	// Auxiliary model calls (summarisation, llm-judge, cloud-judge) go
-	// through auxProv so they are counted in the GenAI client metrics.
-	auxProv := newMeteredProvider(prov, config.Provider.Type)
+	// through auxProv so they are counted in the GenAI client metrics and
+	// charged to the ledger of whichever run is in progress on this loop.
+	ledger := &ledgerBinding{}
+	meteredAux := newMeteredProvider(prov, config.Provider.Type)
+	structuredResults := buildStructuredResultSupport(config, quirks.DefaultRegistry())
+	auxProv := newChargingProvider(meteredAux, ledger.chargeAuxiliary, withStructuredResults(func(model string) bool {
+		return structuredResults("", model)
+	}))
 	cs := buildContextStrategy(config.ContextStrategy, auxProv, config.ModelRouter.Model, summaryWindow, exec, internalToolName)
 
 	// 9. Verifier. Construction is deferred to step 13, once metrics
@@ -364,7 +370,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10. GuardRail, built after providers so cloud-judge can reuse the
 	// default ProviderAdapter.
-	gr, err := buildGuardRail(config.GuardRail, providers, auxProv)
+	gr, err := buildGuardRail(config.GuardRail, providers, auxProv, ledger.reportExternal)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
@@ -393,7 +399,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	} else {
 		metrics = observability.NewNoopMetrics()
 	}
-	auxProv.metrics = metrics
+	meteredAux.metrics = metrics
 
 	// 14. Wire the SecurityEvents counter so every Emit increments OTel
 	// metrics tagged by "event".
@@ -632,11 +638,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		LogScope:             logScope,
 		emitReady:            emitReady,
 		ownedClosers:         ownedClosers,
+		ledger:               ledger,
 	}
 	// Compat profiles add no context windows, so the default registry
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
-	loop.StructuredResults = buildStructuredResultSupport(config, quirks.DefaultRegistry())
+	loop.StructuredResults = structuredResults
 	loop.ProtectedWriteTargets = config.Tools.ProtectedWriteTargets
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
@@ -1630,15 +1637,16 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 // buildGuardRail constructs the operator-configured GuardRail. A nil cfg
 // or an explicit "none" type returns the package-level Noop so the
 // loop's call sites can be unconditional. Cloud-judge reuses the default
-// provider adapter; granite-guardian builds its own HTTP client. The
+// provider adapter; granite-guardian builds its own HTTP client and hands
+// the usage it reports to reportExternal (which may be nil). The
 // outer Phases gate (when non-empty) is applied after the inner guard
 // is built so a misconfigured PhaseGated does not silently bypass the
 // guard at non-listed phases.
-func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, reportExternal func(types.TokenUsage)) (guard.GuardRail, error) {
 	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
 		return guard.NewNoop(), nil
 	}
-	return buildGuardRailNode(cfg, providers, defaultProvider)
+	return buildGuardRailNode(cfg, providers, defaultProvider, reportExternal)
 }
 
 // buildGuardRailNode is the recursive worker for buildGuardRail. It
@@ -1647,7 +1655,7 @@ func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.Pr
 // config validation time) — but we still defend in depth by returning
 // an error for any unsupported type so a non-CLI caller bypassing
 // validation gets a clear diagnostic instead of a silent allow.
-func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, reportExternal func(types.TokenUsage)) (guard.GuardRail, error) {
 	switch cfg.Type {
 	case "none":
 		return guard.NewNoop(), nil
@@ -1663,6 +1671,7 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 			Think:          cfg.Think != nil && *cfg.Think,
 			Timeout:        time.Duration(cfg.TimeoutMs) * time.Millisecond,
 			MinChunkChars:  cfg.MinChunkChars,
+			ReportUsage:    reportExternal,
 		})
 		if err != nil {
 			return nil, err
@@ -1687,7 +1696,7 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 	case "composite":
 		guards := make([]guard.GuardRail, 0, len(cfg.Stages))
 		for i := range cfg.Stages {
-			stage, err := buildGuardRailNode(&cfg.Stages[i], providers, defaultProvider)
+			stage, err := buildGuardRailNode(&cfg.Stages[i], providers, defaultProvider, reportExternal)
 			if err != nil {
 				return nil, fmt.Errorf("composite stage %d: %w", i, err)
 			}

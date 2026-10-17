@@ -265,12 +265,14 @@ func (p *PolicyEnginePolicy) Probe(_ context.Context) error {
 }
 
 // ForChildRun returns a shallow clone of the receiver bound to a new
-// child run identity: runID becomes the child's ID and parentRunID is
-// set to the parent's ID. This is the only supported way to populate
+// child run identity: runID becomes the child's ID, parentRunID is set
+// to the parent's ID, and mode becomes childMode so principal.mode
+// reflects the child's mode. This is the only supported way to populate
 // Cedar's principal.parentRunId attribute, which
-// subagent-capability-cap.cedar keys off. The receiver is not mutated;
+// subagent-capability-cap.cedar keys off. An empty childRunID or
+// childMode keeps the parent's value. The receiver is not mutated;
 // capabilities and dynamicContext are inherited unchanged.
-func (p *PolicyEnginePolicy) ForChildRun(childRunID string) *PolicyEnginePolicy {
+func (p *PolicyEnginePolicy) ForChildRun(childRunID, childMode string) *PolicyEnginePolicy {
 	if p == nil {
 		return nil
 	}
@@ -278,6 +280,9 @@ func (p *PolicyEnginePolicy) ForChildRun(childRunID string) *PolicyEnginePolicy 
 	clone.parentRunID = p.runID
 	if childRunID != "" {
 		clone.runID = childRunID
+	}
+	if childMode != "" {
+		clone.mode = childMode
 	}
 	return &clone
 }

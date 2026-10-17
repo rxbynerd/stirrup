@@ -133,7 +133,24 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Error:    last.Error,
 		}
 	}
+	pt.AuxiliaryTokens = tokenUsageToProto(t.AuxiliaryTokens)
+	pt.ExternalGuardTokens = tokenUsageToProto(t.ExternalGuardTokens)
 	return pt
+}
+
+// tokenUsageToProto returns nil for zero usage so the field is absent on
+// the wire.
+func tokenUsageToProto(u types.TokenUsage) *pb.TokenUsage {
+	if u == (types.TokenUsage{}) {
+		return nil
+	}
+	return &pb.TokenUsage{
+		InputTokens:      saturateInt32(u.Input),
+		OutputTokens:     saturateInt32(u.Output),
+		CacheReadTokens:  saturateInt32(u.CacheRead),
+		CacheWriteTokens: saturateInt32(u.CacheWrite),
+		ReasoningTokens:  saturateInt32(u.Reasoning),
+	}
 }
 
 // saturateInt32 narrows n to int32, pinning out-of-range values to the

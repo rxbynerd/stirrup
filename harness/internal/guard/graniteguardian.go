@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // Granite Guardian adapter for the OpenAI-compatible chat-completions API
@@ -171,6 +172,10 @@ type GraniteGuardianConfig struct {
 	// Threshold notice). Optional; when nil, warnings are emitted via
 	// the slog default.
 	Logger *slog.Logger
+
+	// ReportUsage, when set, receives the token usage each classifier
+	// response reports. Optional.
+	ReportUsage func(types.TokenUsage)
 }
 
 // GraniteGuardian is the concrete GuardRail implementation for vLLM-
@@ -185,6 +190,7 @@ type GraniteGuardian struct {
 	think         bool
 	httpClient    *http.Client
 	minChunkChars int
+	reportUsage   func(types.TokenUsage)
 }
 
 // NewGraniteGuardian constructs a GraniteGuardian adapter from cfg.
@@ -252,6 +258,7 @@ func NewGraniteGuardian(cfg GraniteGuardianConfig) (*GraniteGuardian, error) {
 		think:         cfg.Think,
 		httpClient:    &http.Client{Timeout: timeout},
 		minChunkChars: minChunk,
+		reportUsage:   cfg.ReportUsage,
 	}, nil
 }
 
@@ -380,7 +387,10 @@ func (g *GraniteGuardian) Check(ctx context.Context, in Input) (*Decision, error
 		return nil, fmt.Errorf("granite-guardian: http status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 
-	verdict, err := parseGuardianResponse(resp.Body)
+	verdict, usage, err := parseGuardianResponse(resp.Body)
+	if g.reportUsage != nil && usage != (types.TokenUsage{}) {
+		g.reportUsage(usage)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +444,10 @@ type chatCompletionResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 // parseGuardianResponse returns true when the classifier said "yes"
@@ -441,13 +455,17 @@ type chatCompletionResponse struct {
 // ErrParseFailed (or its more specific ErrResponseTruncated wrapper) if
 // no <score> tag was found. The fail-open decision is loop policy, not
 // adapter policy.
-func parseGuardianResponse(body io.Reader) (bool, error) {
+func parseGuardianResponse(body io.Reader) (bool, types.TokenUsage, error) {
 	var resp chatCompletionResponse
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {
-		return false, fmt.Errorf("%w: decode body: %v", ErrParseFailed, err)
+		return false, types.TokenUsage{}, fmt.Errorf("%w: decode body: %v", ErrParseFailed, err)
+	}
+	usage := types.TokenUsage{
+		Input:  max(resp.Usage.PromptTokens, 0),
+		Output: max(resp.Usage.CompletionTokens, 0),
 	}
 	if len(resp.Choices) == 0 {
-		return false, fmt.Errorf("%w: response had no choices", ErrParseFailed)
+		return false, usage, fmt.Errorf("%w: response had no choices", ErrParseFailed)
 	}
 	content := resp.Choices[0].Message.Content
 	match := scoreRegex.FindStringSubmatch(content)
@@ -460,11 +478,11 @@ func parseGuardianResponse(body io.Reader) (bool, error) {
 		// tag will be present in content; we only treat truncation as the
 		// cause when the score is also missing.
 		if strings.EqualFold(resp.Choices[0].FinishReason, "length") {
-			return false, ErrResponseTruncated
+			return false, usage, ErrResponseTruncated
 		}
-		return false, fmt.Errorf("%w: no <score> tag in %q", ErrParseFailed, truncateForError(content, graniteErrSnippetMax))
+		return false, usage, fmt.Errorf("%w: no <score> tag in %q", ErrParseFailed, truncateForError(content, graniteErrSnippetMax))
 	}
-	return strings.EqualFold(strings.TrimSpace(match[1]), "yes"), nil
+	return strings.EqualFold(strings.TrimSpace(match[1]), "yes"), usage, nil
 }
 
 // truncateForError keeps error messages bounded when the upstream body

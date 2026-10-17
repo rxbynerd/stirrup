@@ -1493,8 +1493,9 @@ Per-client timeouts are listed in
 `maxTokenBudget` is the only budget the harness enforces. It is
 checked between provider calls and terminates the run with
 `outcome: "budget_exceeded"`. Consumption is input plus output summed
-over turns. Input is the provider-reported figure, cached tokens
-included in full, wherever the provider reports one, and the harness
+over every provider call on the run's credentials, including sub-agent
+turns and summary, llm-judge and cloud-judge calls. Input is the
+provider-reported figure, cached tokens included in full, wherever the provider reports one, and the harness
 estimate otherwise; Gemini output includes thought tokens. See
 [`trace-inspection.md`](trace-inspection.md#token-usage) for the
 per-provider sources.

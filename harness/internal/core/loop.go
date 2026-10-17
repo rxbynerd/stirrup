@@ -330,8 +330,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	messages := buildMessages(config.Prompt)
 
-	// Token tracking (cost estimation is a control plane concern).
+	// Token tracking (cost estimation is a control plane concern):
+	// tokenTracker holds this loop's own turns, ledger the run-wide total
+	// shared with sub-agents and auxiliary calls.
 	tokenTracker := &TokenTracker{}
+	ledger, releaseLedger := l.acquireLedger(config)
+	defer releaseLedger()
 
 	if l.emitReady {
 		if err := l.Transport.Emit(types.HarnessEvent{
@@ -398,7 +402,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 		var innerOutcome, innerFinalText string
 		structuredOutput = nil
-		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker, &nextTurn)
+		messages, innerOutcome, innerFinalText, finalStopDetails = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker, ledger, &nextTurn)
 		finalInnerOutcome = innerOutcome
 		if innerFinalText != "" {
 			finalAssistantText = innerFinalText
@@ -563,6 +567,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if recorder, ok := l.Trace.(trace.StopDetailsRecorder); ok && finalStopDetails != nil {
 		recorder.RecordStopDetails(finalStopDetails)
 	}
+	// Only the top-level run records ledger usage: a sub-agent's
+	// auxiliary calls charge the ledger its parent reports.
+	if recorder, ok := l.Trace.(trace.LedgerUsageRecorder); ok && l.ParentRunID == "" {
+		recorder.RecordLedgerUsage(ledger.Auxiliary(), ledger.External())
+	}
 
 	// A trace that was assembled but not persisted is still returned, so
 	// the entry points can emit its RunResult; the outcome is unchanged.
@@ -701,6 +710,7 @@ func (l *AgenticLoop) runInnerLoop(
 	systemPrompt string,
 	messages []types.Message,
 	tokenTracker *TokenTracker,
+	ledger *TokenLedger,
 	nextTurn *int,
 ) ([]types.Message, string, string, *types.StopDetails) {
 	var lastStopReason string
@@ -731,8 +741,7 @@ func (l *AgenticLoop) runInnerLoop(
 		*nextTurn = turn + 1
 		l.Logger.InfoContext(ctx, "turn started", "turn", turn)
 
-		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
-		if !budgetCheck.WithinBudget {
+		if budgetExhausted(tokenTracker, ledger, config) {
 			return messages, "budget_exceeded", finalAssistantText, nil
 		}
 
@@ -950,7 +959,7 @@ func (l *AgenticLoop) runInnerLoop(
 		rejected := 0
 		for {
 			chatCtx, chat = l.startChatSpan(ctx, config, turn, selection, selectedProvider, params)
-			attempt = l.requestProvider(chatCtx, config, tokenTracker, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0, windDown)
+			attempt = l.requestProvider(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, providerAttrs, params, requestTokens, rejected == 0, windDown)
 			if attempt.err == nil && attempt.inputReported {
 				calibration.observe(requestTokens, attempt.tokens.Input)
 			}
@@ -960,9 +969,9 @@ func (l *AgenticLoop) runInnerLoop(
 			if attempt.err == nil {
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
-				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, 0, false, windDown)
+				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, 0, false, windDown)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
-				if !tokenTracker.CheckBudget(config.MaxTokenBudget).WithinBudget {
+				if budgetExhausted(tokenTracker, ledger, config) {
 					return messages, "budget_exceeded", finalAssistantText, nil
 				}
 			} else {
@@ -999,7 +1008,7 @@ func (l *AgenticLoop) runInnerLoop(
 			dispatched = len(toolCalls)
 		}
 		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
-		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
+		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -1170,8 +1179,7 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Prevents the next turn from sending an over-budget context.
-		budgetCheck = tokenTracker.CheckBudget(config.MaxTokenBudget)
-		if !budgetCheck.WithinBudget {
+		if budgetExhausted(tokenTracker, ledger, config) {
 			return messages, "budget_exceeded", finalAssistantText, nil
 		}
 

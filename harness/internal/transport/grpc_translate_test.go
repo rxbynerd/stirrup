@@ -1182,6 +1182,39 @@ func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
 	}
 }
 
+func TestRunTraceToProto_LedgerUsage(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{
+		ID:                  "run-aux",
+		TokenUsage:          types.TokenUsage{Input: 500, Output: 60},
+		AuxiliaryTokens:     types.TokenUsage{Input: 200, Output: 10, CacheRead: 50, CacheWrite: 7, Reasoning: 3},
+		ExternalGuardTokens: types.TokenUsage{Input: math.MaxInt, Output: 1},
+	})
+	raw, err := proto.Marshal(pt)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunTrace
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	aux := decoded.GetAuxiliaryTokens()
+	if aux.GetInputTokens() != 200 || aux.GetOutputTokens() != 10 || aux.GetCacheReadTokens() != 50 ||
+		aux.GetCacheWriteTokens() != 7 || aux.GetReasoningTokens() != 3 {
+		t.Errorf("auxiliary_tokens = %v, want 200/10/50/7/3", aux)
+	}
+	ext := decoded.GetExternalGuardTokens()
+	if ext.GetInputTokens() != math.MaxInt32 || ext.GetOutputTokens() != 1 {
+		t.Errorf("external_guard_tokens = %v, want saturated input and output 1", ext)
+	}
+}
+
+func TestRunTraceToProto_ZeroLedgerUsageIsAbsent(t *testing.T) {
+	pt := runTraceToProto(&types.RunTrace{ID: "run-plain", TokenUsage: types.TokenUsage{Input: 5}})
+	if pt.AuxiliaryTokens != nil || pt.ExternalGuardTokens != nil {
+		t.Errorf("auxiliary_tokens=%v external_guard_tokens=%v, want both absent", pt.AuxiliaryTokens, pt.ExternalGuardTokens)
+	}
+}
+
 // TestRunTraceToProto_StopDetails pins the stop_details mirror through a
 // wire round-trip, and that a nil StopDetails stays absent on the wire.
 func TestRunTraceToProto_StopDetails(t *testing.T) {
