@@ -277,7 +277,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.open = nil
 	e.postEditChecks = nil
 
-	e.scope.setRun(runIdentityFor(config))
+	e.scope.setRun(runIdentityFor(config, e.redactionDisabled))
 
 	attrs := []attribute.KeyValue{
 		attribute.String("run.id", runID),
@@ -638,7 +638,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		if e.redactionDisabled {
 			redactedConfig = *e.config
 		} else {
-			redactedConfig = e.config.Redact()
+			redactedConfig = redactRunConfig(e.config)
 		}
 	}
 

@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
 var runConfigCmd = &cobra.Command{
@@ -29,8 +31,9 @@ Output:
   - Default: pretty-printed JSON (2-space indent) to stdout
   - --compact: single-line JSON
   - --redact: apply RunConfig.Redact() before emit (rewrites
-    secret:// references to secret://[REDACTED] — produces a copy
-    safe to commit / share, but not runnable as-is)`,
+    secret:// references to secret://[REDACTED] and scrubs
+    secret-shaped correlation values — produces a copy safe to
+    commit / share, but not runnable as-is)`,
 	Args: cobra.NoArgs,
 	RunE: runRunConfig,
 }
@@ -89,6 +92,7 @@ func runRunConfigWithIO(cmd *cobra.Command, args []string, stdin io.Reader, stdo
 
 	if redact, _ := f.GetBool("redact"); redact {
 		r := cfg.Redact()
+		r.Correlation = security.ScrubCorrelation(r.Correlation)
 		cfg = &r
 	}
 

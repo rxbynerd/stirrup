@@ -9,6 +9,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -42,13 +43,19 @@ type runIdentity struct {
 }
 
 // runIdentityFor takes the session ID from correlation.sessionId, falling
-// back to the session name.
-func runIdentityFor(config *types.RunConfig) runIdentity {
+// back to the session name. Correlation values are scrubbed unless
+// redaction is disabled, matching every other operator-supplied string
+// the emitter exports.
+func runIdentityFor(config *types.RunConfig, redactionDisabled bool) runIdentity {
 	if config == nil {
 		return runIdentity{}
 	}
 	id := runIdentity{sessionID: config.SessionName}
-	if c := config.Correlation; c != nil {
+	c := config.Correlation
+	if !redactionDisabled {
+		c = security.ScrubCorrelation(c)
+	}
+	if c != nil {
 		if c.SessionID != "" {
 			id.sessionID = c.SessionID
 		}
@@ -92,14 +99,10 @@ func (id runIdentity) attributes() []attribute.KeyValue {
 	return attrs
 }
 
-// runScopeProcessor stamps run-wide identity onto every span at start:
-// the run identity's attributes, and gen_ai.agent.name inherited from
-// the nearest enclosing invoke_agent span. Lineage is tracked by span ID
-// rather than a context value because the loop parents tool and chat
-// spans on contexts derived from the cancellable run context, which
-// never carried the agent span's values.
-//
-// The mutex is a leaf: the processor never calls into the emitter.
+// runScopeProcessor stamps every span at start with the identity of the
+// run most recently passed to setRun, and with gen_ai.agent.name
+// inherited by span ID from the nearest enclosing invoke_agent span. Its
+// mutex is a leaf: the processor never calls into the emitter.
 type runScopeProcessor struct {
 	mu       sync.Mutex
 	identity []attribute.KeyValue

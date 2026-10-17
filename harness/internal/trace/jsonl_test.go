@@ -1198,3 +1198,40 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesRequestParamsAndResponseMod
 		t.Errorf("wire form lacks toolChoice or an explicit zero temperature:\n%s", buf.String())
 	}
 }
+
+func TestJSONLTraceEmitter_CorrelationScrubbedInPersistedConfig(t *testing.T) {
+	key := "sk-ant-api03-" + strings.Repeat("B", 40)
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+	config := &types.RunConfig{
+		RunID: "run-corr",
+		Mode:  "execution",
+		Correlation: &types.CorrelationConfig{
+			TaskID: "task-7",
+			URL:    "https://cp.example.com/runs/42?token=" + key,
+			Labels: map[string]string{"agent_profile": key},
+		},
+	}
+	emitter.Start("run-corr", config)
+	trace, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if strings.Contains(buf.String(), key) {
+		t.Errorf("JSONL output carries the unscrubbed key:\n%s", buf.String())
+	}
+	started := pickEvent(t, readEvents(t, buf.Bytes()), EventKindRunStarted)
+	if started.Config == nil || started.Config.Correlation == nil {
+		t.Fatal("run_started config lost the correlation block")
+	}
+	if got := started.Config.Correlation; got.TaskID != "task-7" || got.URL != "https://cp.example.com/runs/42?token=[REDACTED]" {
+		t.Errorf("run_started correlation = %+v", got)
+	}
+	if strings.Contains(trace.Config.Correlation.Labels["agent_profile"], key) {
+		t.Error("RunTrace config correlation label not scrubbed")
+	}
+	if !strings.Contains(config.Correlation.URL, key) {
+		t.Error("scrubbing must not reach the live config")
+	}
+}

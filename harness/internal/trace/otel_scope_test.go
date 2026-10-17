@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -242,5 +243,82 @@ func TestRunScope_FollowUpRunResetsCorrelation(t *testing.T) {
 	for _, s := range exporter.GetSpans() {
 		assertAttributesAbsent(t, s, sessionIDKey, userIDKey, taskIDKey, attemptIDKey,
 			controlPlaneURLKey, "stirrup.label.agent_profile", "stirrup.label.execution_mode")
+	}
+}
+
+func TestRunScope_BackToBackRunsCarryTheirOwnCorrelation(t *testing.T) {
+	first := correlatedConfig("")
+	second := correlatedConfig("")
+	second.Correlation = &types.CorrelationConfig{
+		SessionID: "cp-session-43",
+		TaskID:    "task-8",
+		AttemptID: "attempt-1",
+		UserID:    "user-1a2b",
+		URL:       "https://cp.example.com/runs/43",
+		Labels:    map[string]string{"agent_profile": "triager"},
+	}
+
+	emitter, exporter := newTestOTelEmitter()
+	for i, cfg := range []*types.RunConfig{first, second} {
+		emitter.Start(fmt.Sprintf("run-%d", i+1), cfg)
+		_, child := emitter.Tracer().Start(emitter.RootContext(), "context.prepare")
+		child.End()
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish run %d: %v", i+1, err)
+		}
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 4 {
+		t.Fatalf("expected 4 spans, got %d", len(spans))
+	}
+	byTrace := map[oteltrace.TraceID]*types.CorrelationConfig{
+		spans[1].SpanContext.TraceID(): first.Correlation,
+		spans[3].SpanContext.TraceID(): second.Correlation,
+	}
+	if len(byTrace) != 2 {
+		t.Fatal("the two runs should be separate traces")
+	}
+	for _, s := range spans {
+		want := byTrace[s.SpanContext.TraceID()]
+		assertAttribute(t, s, sessionIDKey, want.SessionID)
+		assertAttribute(t, s, userIDKey, want.UserID)
+		assertAttribute(t, s, taskIDKey, want.TaskID)
+		assertAttribute(t, s, attemptIDKey, want.AttemptID)
+		assertAttribute(t, s, controlPlaneURLKey, want.URL)
+		assertAttribute(t, s, "stirrup.label.agent_profile", want.Labels["agent_profile"])
+		if want == second.Correlation {
+			assertAttributesAbsent(t, s, "stirrup.label.execution_mode")
+		}
+	}
+}
+
+func TestRunScope_CorrelationIsScrubbed(t *testing.T) {
+	key := "sk-ant-api03-" + strings.Repeat("A", 40)
+	cfg := sessionConfig("")
+	cfg.Correlation = &types.CorrelationConfig{
+		UserID: "user-" + key,
+		URL:    "https://cp.example.com/runs/42?token=" + key,
+		Labels: map[string]string{"agent_profile": key},
+	}
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-scope", cfg)
+	trace, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	for _, s := range exporter.GetSpans() {
+		for _, kv := range s.Attributes {
+			if strings.Contains(kv.Value.String(), key) {
+				t.Errorf("%s: attribute %s carries the unscrubbed key", s.Name, kv.Key)
+			}
+		}
+		assertAttribute(t, s, controlPlaneURLKey, "https://cp.example.com/runs/42?token=[REDACTED]")
+	}
+	if got := trace.Config.Correlation; got == nil || strings.Contains(got.URL+got.UserID+got.Labels["agent_profile"], key) {
+		t.Errorf("RunTrace config correlation not scrubbed: %+v", got)
+	}
+	if !strings.Contains(cfg.Correlation.URL, key) {
+		t.Error("scrubbing must not reach the live config")
 	}
 }

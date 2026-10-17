@@ -457,7 +457,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		if e.redactionDisabled {
 			redactedConfig = *e.config
 		} else {
-			redactedConfig = e.config.Redact()
+			redactedConfig = redactRunConfig(e.config)
 		}
 	}
 
@@ -671,7 +671,7 @@ func (e *JSONLTraceEmitter) redactConfig(config *types.RunConfig) types.RunConfi
 	if e.redactionDisabled {
 		return *config
 	}
-	redacted := config.Redact()
+	redacted := redactRunConfig(config)
 	redacted.Prompt = security.Scrub(config.Prompt)
 	return redacted
 }
@@ -684,6 +684,14 @@ func scrubPostEditCheck(r types.PostEditCheckRecord, redactionDisabled bool) typ
 	r.Command = scrubOrPass(r.Command, redactionDisabled)
 	r.Error = scrubOrPass(r.Error, redactionDisabled)
 	return r
+}
+
+// redactRunConfig returns config.Redact() with the correlation values
+// scrubbed, since an operator-supplied URL or ID can carry a token.
+func redactRunConfig(config *types.RunConfig) types.RunConfig {
+	redacted := config.Redact()
+	redacted.Correlation = security.ScrubCorrelation(redacted.Correlation)
+	return redacted
 }
 
 // scrubOrPass returns security.Scrub(s), or s verbatim under the --debug

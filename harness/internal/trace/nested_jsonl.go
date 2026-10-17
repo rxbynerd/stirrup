@@ -319,7 +319,7 @@ func (e *NestedJSONLEmitter) buildRunTrace(outcome string) *types.RunTrace {
 
 	var redactedConfig types.RunConfig
 	if e.config != nil {
-		redactedConfig = e.config.Redact()
+		redactedConfig = redactRunConfig(e.config)
 	}
 
 	return &types.RunTrace{
