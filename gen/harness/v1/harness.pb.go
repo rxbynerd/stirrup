@@ -64,6 +64,7 @@ const (
 //	  - text: incremental reasoning text from the model's response, where
 //	          the provider exposes it. Opaque (redacted) reasoning is
 //	          never sent.
+//	  None are sent when RunConfig.reasoning_summary is "off".
 //
 //	"tool_call"
 //	  - id:    unique tool-use ID assigned by the model.

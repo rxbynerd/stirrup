@@ -119,7 +119,7 @@ status.
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as delivered to the model. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. Sent once per turn, before the first provider request. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
-| `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it. Opaque (redacted) reasoning is never sent. |
+| `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
 | `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. A `turn_started` with no `turn_committed` before the next `turn_started` or `done` is a turn that did not commit. |
@@ -639,6 +639,16 @@ re-provisioning the sandbox.
 
   The primary run is the same in both modes, and the field does nothing
   without a follow-up window.
+- On the stream, every follow-up run in either mode opens with its own
+  `run_started` and a `user_message` with source `followup_prompt`
+  whose `text` is the new prompt alone, even when `"continue"` merges it
+  into the carried history's last message, and whose `request_id`
+  echoes the `user_response` that started the run. Its turns count from
+  0 again. The carried history is not re-sent as events: a control
+  plane rendering the session as one conversation joins the runs' event
+  sequences in order. The `warning` for history that is not continued
+  arrives after that run's `run_started`. See
+  [Watching a run live](#watching-a-run-live).
 - A `user_response` sent during an active run — primary or follow-up —
   is not a follow-up: it is queued (up to 16) and injected as a user
   message at that run's next turn boundary, after any pending tool
@@ -771,6 +781,10 @@ afterwards, as with tool results, is not re-announced.
 provider returns it in readable form; a model that returns only an
 opaque signature, such as `claude-sonnet-5-5` by default, sends none.
 Reasoning is model output and gets the same handling as `text_delta`.
+`reasoningSummary: "off"` stops every `thinking_delta` without changing
+what the model is replayed; see
+[Reasoning summaries](configuration.md#reasoning-summaries) for what
+each provider returns under the default `"auto"`.
 
 **Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent, one event at a time. A secret split across two
