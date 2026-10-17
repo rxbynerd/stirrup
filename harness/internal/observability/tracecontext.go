@@ -24,3 +24,14 @@ func InjectTraceContext(ctx context.Context) *types.TraceContext {
 		Tracestate:  carrier.Get("tracestate"),
 	}
 }
+
+// ExtractTraceContext returns ctx carrying the remote span context that
+// traceparent and tracestate describe. An invalid traceparent returns ctx
+// unchanged; a malformed tracestate is dropped and the parent kept.
+func ExtractTraceContext(ctx context.Context, traceparent, tracestate string) context.Context {
+	carrier := propagation.MapCarrier{"traceparent": traceparent}
+	if tracestate != "" {
+		carrier["tracestate"] = tracestate
+	}
+	return propagation.TraceContext{}.Extract(ctx, carrier)
+}
