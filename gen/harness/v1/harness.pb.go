@@ -46,8 +46,11 @@ const (
 //	  - source:     where the text came from; see the source field.
 //	  - request_id: the user_response's request_id, when the text came
 //	                from one.
-//	  Sent in append order. Tool results are reported by "tool_result",
-//	  never by "user_message".
+//	  Sent in append order. Reports text appended to history, not that the
+//	  model will act on it: a "user_response" input is reported once it
+//	  passes screening, while a prompt or verifier feedback is reported
+//	  before the screening that can still end the run. Tool results are
+//	  reported by "tool_result", never by "user_message".
 //
 //	"turn_started"
 //	  - turn:     the run-scoped turn number, starting at 0.

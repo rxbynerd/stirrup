@@ -116,7 +116,7 @@ status.
 |---|---|---|
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
-| `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as delivered to the model. Tool results are reported by `tool_result`, not by `user_message`. |
+| `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. Sent once per turn, before the first provider request. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
 | `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
@@ -781,9 +781,29 @@ The vocabulary is open: preserve values that are not recognised.
 | `wind_down` | A budget is nearly exhausted and the model is told to finish up. |
 | `output_limit_recovery` | A turn stopped at the output limit and the model is told how to continue. |
 
-A `user_message` reports the text at the moment it is appended. A
-Rule-of-Two redaction or guardrail replacement applied to that content
-afterwards, as with tool results, is not re-announced.
+A `user_message` reports text as it was appended to the history, not
+that the model will act on it:
+
+- `user_response` is reported only once the input passes screening. An
+  input the Rule-of-Two monitor or the pre-turn guard stops is never
+  reported, so its `request_id` is not echoed; the run ends and `done`
+  carries `rule_of_two_violation` or `guardrail_blocked`.
+- `initial_prompt`, `followup_prompt` and `verifier_feedback` are
+  reported before the screening of the turn that delivers them, so a
+  run can still end `rule_of_two_violation` or `guardrail_blocked`
+  after one; the outcome on `done` supersedes it. That includes the
+  prompt of a follow-up whose carried history ends the run when it is
+  screened.
+- The other sources are harness-authored text, reported exactly as
+  appended.
+
+A Rule-of-Two redaction or guardrail replacement applied to the content
+afterwards, as with tool results, is not re-announced. `onDetect:
+redact` protects the model's context, not the control stream:
+`verifier_feedback` text and `tool_result` content reach the stream
+with only the transport's secret scrubbing applied, so latch-tier spans
+the scrubber does not recognise (card numbers, IBANs, anchored SSNs)
+are sent as they are.
 
 **Reasoning.** `thinking_delta` carries reasoning text only where the
 provider returns it in readable form; a model that returns only an

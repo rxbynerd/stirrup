@@ -116,6 +116,12 @@ guarantee scrubs the joined text itself.
 control plane. It is model output, with the same trust level and the
 same per-fragment scrubbing as `text_delta`.
 
+The Rule-of-Two `redact` action rewrites the model's context, not the
+control stream. `tool_result` content and `verifier_feedback` text
+reach the control plane with this scrubbing alone, so latch-tier spans
+the scrubber does not recognise, such as card numbers, IBANs and
+anchored SSNs, are sent unredacted.
+
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a

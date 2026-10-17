@@ -324,9 +324,6 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 		texts[i] = in.Text
 	}
 	*messages = injectUserInput(*messages, texts)
-	for _, in := range inputs {
-		l.emitUserMessage(types.UserMessageSourceUserResponse, in.Text, in.RequestID)
-	}
 	l.Logger.InfoContext(ctx, "user input injected", "turn", turn, "count", len(inputs))
 
 	if det := l.observeSensitive(ctx, config, "user_response", turn, texts); det.Transition && l.ruleOfTwoAction() == "abort" {
@@ -345,6 +342,11 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 	l.ratchetRuleOfTwo(ctx, config, decision, turn)
 	if !allow {
 		return len(inputs), "guardrail_blocked"
+	}
+	// Reported once screening passes, so input that ends the run never
+	// appears on the transcript.
+	for _, in := range inputs {
+		l.emitUserMessage(types.UserMessageSourceUserResponse, in.Text, in.RequestID)
 	}
 	return len(inputs), ""
 }
