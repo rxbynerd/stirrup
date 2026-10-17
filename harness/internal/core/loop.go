@@ -802,75 +802,28 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// See collectUntrustedChunks / docs/guardrails.md for what
-		// counts as untrusted content per turn.
-		var preTurnDynamic map[string]types.DynamicContextValue
+		// counts as untrusted content per turn. Turn 0 chunks were
+		// already scanned by the Rule-of-Two monitor in Run() under their
+		// own labels, so only the guard sees them here.
 		if turn == 0 {
-			preTurnDynamic = config.DynamicContext
-		}
-		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
-			feedback := turn > 0 && isVerifierFeedback(messages[len(messages)-1])
-			// Deterministic-first, before the guard (see
-			// docs/safety-rings.md). Turn 0 chunks were already scanned
-			// in Run() under their own labels, so only turn>0 is
-			// rescanned here.
-			if turn > 0 {
-				source := "tool_result"
-				if feedback {
-					source = types.MessageOriginVerifierFeedback
+			if chunks := collectUntrustedChunks(messages, turn, config.DynamicContext, config.Prompt); len(chunks) > 0 {
+				in := guard.Input{
+					Phase:   guard.PhasePreTurn,
+					Content: batchUntrustedChunks(chunks),
+					Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
+					Mode:    config.Mode,
+					RunID:   config.RunID,
 				}
-				det := l.observeSensitive(ctx, config, source, turn, chunks)
-				switch l.ruleOfTwoAction() {
-				case "abort":
-					if det.Transition {
-						l.recordRuleOfTwoAction(ctx, "abort")
-						return messages, "rule_of_two_violation", finalAssistantText, nil
-					}
-				case "redact":
-					if n := l.redactSensitiveSpans(messages, turn); n > 0 {
-						l.recordRuleOfTwoAction(ctx, "redact")
-					}
-				}
-			}
-			guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
-			if feedback {
-				// Scrubbed after the Rule-of-Two scan so a secret in the
-				// feedback still trips the latch, and before the guard so
-				// a remote classifier never receives it.
-				scrubVerifierFeedback(&messages[len(messages)-1])
-				chunks = collectUntrustedChunks(messages, turn, nil, "")
-				guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
-			}
-			batched := batchUntrustedChunks(chunks)
-			in := guard.Input{
-				Phase:   guard.PhasePreTurn,
-				Content: batched,
-				Source:  guardSource,
-				Mode:    config.Mode,
-				RunID:   config.RunID,
-				// Feedback arrives at most once per verification retry, so
-				// the per-turn cost the min-chunk gate saves does not apply.
-				IgnoreMinChunk: feedback,
-			}
-			allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
-			l.ratchetRuleOfTwo(ctx, config, decision, turn)
-			switch {
-			case !allow:
-				// Turn-0 vs later-turn deny handling differs; see
-				// docs/guardrails.md.
-				if turn == 0 {
+				allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
+				l.ratchetRuleOfTwo(ctx, config, decision, turn)
+				// A turn-0 deny ends the run and a spotlight is a no-op;
+				// see docs/guardrails.md.
+				if !allow {
 					return messages, "guardrail_blocked", finalAssistantText, nil
 				}
-
-				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
-			case spotlight:
-				if turn == 0 {
-					// No-op on turn 0 (no tool_result blocks); skip the
-					// metric so dashboards reflect applied spotlights only.
-					break
-				}
-				spotlightUntrustedChunks(messages, turn)
-				l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 			}
+		} else if blocked := l.screenArrivedContent(ctx, config, turn, messages); blocked != "" {
+			return messages, blocked, finalAssistantText, nil
 		}
 
 		var windDown string
@@ -1765,6 +1718,65 @@ func guardFailOpen(config *types.RunConfig) bool {
 	return config.GuardRail.FailOpen
 }
 
+// screenArrivedContent screens the untrusted content that ends the
+// history — tool results or verifier feedback — before the model sees
+// it: the Rule-of-Two scan and its abort/redact enforcement first, then
+// the pre-turn guard, whose deny replaces the content and whose
+// spotlight rewraps it. Returns the outcome that ends the run, or "".
+func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.RunConfig, turn int, messages []types.Message) string {
+	chunks := arrivedUntrustedChunks(messages)
+	if len(chunks) == 0 {
+		return ""
+	}
+	feedback := isVerifierFeedback(messages[len(messages)-1])
+	// Deterministic-first, before the guard (see docs/safety-rings.md).
+	source := "tool_result"
+	if feedback {
+		source = types.MessageOriginVerifierFeedback
+	}
+	det := l.observeSensitive(ctx, config, source, turn, chunks)
+	switch l.ruleOfTwoAction() {
+	case "abort":
+		if det.Transition {
+			l.recordRuleOfTwoAction(ctx, "abort")
+			return "rule_of_two_violation"
+		}
+	case "redact":
+		if n := l.redactSensitiveSpans(messages); n > 0 {
+			l.recordRuleOfTwoAction(ctx, "redact")
+		}
+	}
+	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+	if feedback {
+		// Scrubbed after the Rule-of-Two scan so a secret in the
+		// feedback still trips the latch, and before the guard so a
+		// remote classifier never receives it.
+		scrubVerifierFeedback(&messages[len(messages)-1])
+		chunks = arrivedUntrustedChunks(messages)
+		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
+	}
+	in := guard.Input{
+		Phase:   guard.PhasePreTurn,
+		Content: batchUntrustedChunks(chunks),
+		Source:  guardSource,
+		Mode:    config.Mode,
+		RunID:   config.RunID,
+		// Feedback arrives at most once per verification retry, so the
+		// per-turn cost the min-chunk gate saves does not apply.
+		IgnoreMinChunk: feedback,
+	}
+	allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+	l.ratchetRuleOfTwo(ctx, config, decision, turn)
+	switch {
+	case !allow:
+		replaceUntrustedChunks(messages, "[content blocked by guardrail]")
+	case spotlight:
+		spotlightUntrustedChunks(messages)
+		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
+	}
+	return ""
+}
+
 // collectUntrustedChunks returns the chunks of untrusted content that
 // just entered the message history at the start of the given turn: on
 // turn 0, the initial prompt plus DynamicContext entries (sorted by
@@ -1794,6 +1806,13 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		}
 		return chunks
 	}
+	return arrivedUntrustedChunks(messages)
+}
+
+// arrivedUntrustedChunks returns the untrusted chunks of the message that
+// ends the history: the text blocks of verifier feedback, or otherwise
+// every tool_result block's Content and Structured payload.
+func arrivedUntrustedChunks(messages []types.Message) []string {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -1864,14 +1883,10 @@ func batchUntrustedChunks(chunks []string) string {
 
 // replaceUntrustedChunks replaces every tool_result block's content in
 // the last message, or every text block of a verifier-feedback last
-// message, with placeholder, for a PhasePreTurn deny on turn N>0.
-// Turn 0 has no tool_result blocks yet (the prompt is the untrusted
-// content) — callers must abort instead; see docs/guardrails.md.
-func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
-	if turn == 0 {
-		// Defensive no-op; callers must abort on turn 0 instead.
-		return
-	}
+// message, with placeholder, for a PhasePreTurn deny of arrived content.
+// A prompt message carries neither, so it is left alone: a denied prompt
+// ends the run instead; see docs/guardrails.md.
+func replaceUntrustedChunks(messages []types.Message, placeholder string) {
 	if len(messages) == 0 {
 		return
 	}
@@ -1894,11 +1909,11 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 // just-arrived tool_result block's Content AND Structured payload (both
 // are model-visible; see docs/architecture.md "Structured tool
 // results"), and in the text blocks of a verifier-feedback last
-// message. Returns the number of spans replaced. Turn 0 is a no-op —
-// its untrusted content is the prompt/dynamic context, handled by
-// redactDynamicContext before Prompt.Build.
-func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) int {
-	if turn == 0 || len(messages) == 0 || l.RuleOfTwo == nil {
+// message. Returns the number of spans replaced. A prompt message is
+// left alone: the prompt is never redacted, and dynamic context is
+// handled by redactDynamicContext before Prompt.Build.
+func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message) int {
+	if len(messages) == 0 || l.RuleOfTwo == nil {
 		return 0
 	}
 	last := &messages[len(messages)-1]
@@ -2000,13 +2015,9 @@ func guidanceContents(docs []prompt.GuidanceDocument) []string {
 // spotlightUntrustedChunks rewraps every tool_result block in the last
 // message, or every text block of a verifier-feedback last message,
 // via guard.ApplySpotlight. Used when PhasePreTurn returns
-// VerdictAllowSpot for batched untrusted content. Turn 0 is a no-op
-// because the user prompt already lives in the system input layer; we
-// cannot retroactively spotlight it without rewriting prompts.
-func spotlightUntrustedChunks(messages []types.Message, turn int) {
-	if turn == 0 {
-		return
-	}
+// VerdictAllowSpot for batched untrusted content. A prompt message is
+// left alone: the prompt cannot be spotlighted without rewriting it.
+func spotlightUntrustedChunks(messages []types.Message) {
 	if len(messages) == 0 {
 		return
 	}
