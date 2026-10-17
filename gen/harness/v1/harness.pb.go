@@ -30,6 +30,15 @@ const (
 //	"ready"
 //	  - harness_version: build version string of the harness binary.
 //
+//	"run_started"
+//	  - id:              the run ID (RunConfig.run_id) of the run that started.
+//	  - trace_reference: the run span's OTel trace ID, span ID and sampled
+//	                     flag.
+//	  Sent once per run, before the run's first model event, only when the
+//	  run records an OTel span. Under `stirrup job`, "ready" is sent once per
+//	  session, so a follow-up run's "run_started" follows the previous run's
+//	  "done".
+//
 //	"text_delta"
 //	  - text: incremental text fragment from the model's response.
 //
@@ -181,9 +190,11 @@ type HarnessEvent struct {
 	// which may override it when minting the token.
 	Audience string `protobuf:"bytes,14,opt,name=audience,proto3" json:"audience,omitempty"`
 	// The run span's OTel identity. Set on "run_started" events, which the
-	// harness sends once per run, after "ready" and before the run's first
-	// model event, only when the run records an OTel span. The "done"
-	// summary carries the same value in RunTrace.trace_reference.
+	// harness sends once per run, before the run's first model event, only
+	// when the run records an OTel span. "ready" is per session under
+	// `stirrup job`, so a follow-up run's "run_started" follows the previous
+	// run's "done". The "done" summary carries the same value in
+	// RunTrace.trace_reference.
 	TraceReference *TraceReference `protobuf:"bytes,15,opt,name=trace_reference,json=traceReference,proto3" json:"trace_reference,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

@@ -303,8 +303,10 @@ func Float64Ptr(v float64) *float64 {
 // and Audience only names the intended JWT `aud` claim.
 //
 // "run_started" carries the run ID in ID and the run span's
-// TraceReference. It is sent once per run, after "ready", only when the
-// trace emitter records an OTel run span.
+// TraceReference. It is sent once per run, before the run's first model
+// event, only when the trace emitter records an OTel run span. Under
+// `stirrup job` "ready" is per session, so a follow-up run's
+// "run_started" follows the previous run's "done".
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
