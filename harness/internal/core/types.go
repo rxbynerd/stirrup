@@ -742,6 +742,19 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	var currentText string
 	inText := false
 
+	// blockStreamed records whether the current thinking block's text
+	// reached the transport as deltas; a block that arrives whole is
+	// forwarded as one delta at its boundary instead.
+	blockStreamed := false
+	forwardThinking := func(text string) {
+		if text == "" {
+			return
+		}
+		if err := tp.Emit(types.HarnessEvent{Type: "thinking_delta", Text: text}); err != nil {
+			emitFailed("thinking_delta", err)
+		}
+	}
+
 	for event := range ch {
 		select {
 		case <-ctx.Done():
@@ -814,9 +827,17 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				}
 			}
 
+		case "thinking_delta":
+			blockStreamed = true
+			forwardThinking(event.Text)
+
 		case "thinking", "redacted_thinking":
-			// Persisted in stream order so the provider can replay them;
-			// never emitted to the transport.
+			// Persisted in stream order so the provider can replay them.
+			// Redacted reasoning is opaque and never forwarded.
+			if event.Type == "thinking" && !blockStreamed {
+				forwardThinking(event.Text)
+			}
+			blockStreamed = false
 			if inText {
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 				inText = false

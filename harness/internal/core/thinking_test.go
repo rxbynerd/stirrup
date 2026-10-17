@@ -32,11 +32,38 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 	return result.Blocks, transportBuf.String()
 }
 
+// recordStreamEvents feeds events through streamEventsToResult and returns
+// the persisted blocks and the events the transport received.
+func recordStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentBlock, []types.HarnessEvent) {
+	t.Helper()
+	rec := &recordingTransport{}
+	ch := make(chan types.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	result, err := streamEventsToResult(context.Background(), ch, rec, ignoreEmitFailure)
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	return result.Blocks, rec.events
+}
+
+func thinkingDeltaTexts(events []types.HarnessEvent) []string {
+	var texts []string
+	for _, ev := range events {
+		if ev.Type == "thinking_delta" {
+			texts = append(texts, ev.Text)
+		}
+	}
+	return texts
+}
+
 // TestStreamEventsToResult_ThinkingBlocksPersistedInOrder pins that
 // thinking and redacted_thinking events interleaved with text and tool
 // calls become history blocks in stream order, flushing pending text, and
-// that the transport receives exactly the bytes it would for the same
-// stream with no thinking events.
+// that a block arriving whole reaches the transport as one thinking_delta
+// in stream position, while redacted reasoning and signatures never do.
 func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 	visible := []types.StreamEvent{
 		{Type: "text_delta", Text: "Reading."},
@@ -75,9 +102,52 @@ func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 		}
 	}
 
-	_, withoutThinking := runStreamEvents(t, visible)
-	if withThinking != withoutThinking {
-		t.Errorf("transport output differs when thinking events are present\nwith:\n%s\nwithout:\n%s", withThinking, withoutThinking)
+	for _, secret := range []string{"sig-A", "sig-B", "data-C"} {
+		if strings.Contains(withThinking, secret) {
+			t.Errorf("transport output carries %q; signatures and redacted data stay out of it:\n%s", secret, withThinking)
+		}
+	}
+
+	_, emitted := recordStreamEvents(t, interleaved)
+	var gotTypes []string
+	for _, ev := range emitted {
+		gotTypes = append(gotTypes, ev.Type)
+	}
+	wantTypes := []string{"thinking_delta", "text_delta", "thinking_delta", "tool_call", "tool_call"}
+	if fmt.Sprint(gotTypes) != fmt.Sprint(wantTypes) {
+		t.Errorf("emitted types = %v, want %v", gotTypes, wantTypes)
+	}
+	if got := thinkingDeltaTexts(emitted); fmt.Sprint(got) != "[plan A plan B]" {
+		t.Errorf("thinking_delta texts = %q, want the two whole blocks", got)
+	}
+}
+
+// TestStreamEventsToResult_ThinkingDeltasForwardedOnce pins that streamed
+// reasoning fragments are forwarded as they arrive and the block that
+// closes them is not forwarded again, while a later block that arrives
+// whole is still forwarded, and an empty block produces no event.
+func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
+	blocks, emitted := recordStreamEvents(t, []types.StreamEvent{
+		{Type: "thinking_delta", Text: "Let me "},
+		{Type: "thinking_delta", Text: "check."},
+		{Type: "thinking", Text: "Let me check.", ThoughtSignature: "sig-A"},
+		{Type: "text_delta", Text: "Done."},
+		{Type: "thinking", Text: "whole block", ThoughtSignature: "sig-B"},
+		{Type: "thinking", ThoughtSignature: "sig-C"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	})
+
+	if got := thinkingDeltaTexts(emitted); fmt.Sprint(got) != "[Let me  check. whole block]" {
+		t.Errorf("thinking_delta texts = %q, want the two fragments then the whole later block", got)
+	}
+	var thinkingBlocks int
+	for _, b := range blocks {
+		if b.Type == "thinking" {
+			thinkingBlocks++
+		}
+	}
+	if thinkingBlocks != 3 {
+		t.Errorf("persisted %d thinking blocks, want 3: deltas must not add history", thinkingBlocks)
 	}
 }
 
