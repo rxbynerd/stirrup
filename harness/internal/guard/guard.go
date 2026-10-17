@@ -13,6 +13,7 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -85,6 +86,36 @@ type Input struct {
 // out across multiple goroutines.
 type GuardRail interface {
 	Check(ctx context.Context, in Input) (*Decision, error)
+}
+
+// Error attributes a failed Check to the adapter that produced it so the
+// loop can label guard_error events and metrics when no Decision exists.
+// It formats and unwraps as the underlying error.
+type Error struct {
+	GuardID string
+	Err     error
+}
+
+func (e *Error) Error() string { return e.Err.Error() }
+
+func (e *Error) Unwrap() error { return e.Err }
+
+// ErrorGuardID returns the GuardID of the first *Error in err's chain, or
+// "" when err carries none.
+func ErrorGuardID(err error) string {
+	var ge *Error
+	if errors.As(err, &ge) {
+		return ge.GuardID
+	}
+	return ""
+}
+
+// attributeError tags a non-nil err with guardID and passes d through.
+func attributeError(guardID string, d *Decision, err error) (*Decision, error) {
+	if err != nil {
+		return d, &Error{GuardID: guardID, Err: err}
+	}
+	return d, nil
 }
 
 // ValidPhase reports whether p is one of the three Phase constants

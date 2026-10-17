@@ -397,6 +397,28 @@ func TestShieldstral_Verdicts(t *testing.T) {
 	}
 }
 
+func TestShieldstral_ErrorsCarryGuardID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatalf("NewShieldstral: %v", err)
+	}
+	_, err = s.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "some output"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := ErrorGuardID(err); got != shieldstralGuardID {
+		t.Errorf("ErrorGuardID = %q, want %q", got, shieldstralGuardID)
+	}
+	if !strings.Contains(err.Error(), "http status 500") {
+		t.Errorf("attribution changed the error text: %v", err)
+	}
+}
+
 func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 	t.Run("truncated by max_tokens", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

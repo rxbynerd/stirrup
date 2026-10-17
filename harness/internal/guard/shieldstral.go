@@ -255,7 +255,13 @@ func buildShieldstralPhaseCriteria(ids []string, custom map[string]string) (map[
 }
 
 // Check classifies in.Content against the configured criteria for the requested phase.
+// Errors carry the adapter's GuardID.
 func (s *Shieldstral) Check(ctx context.Context, in Input) (*Decision, error) {
+	d, err := s.check(ctx, in)
+	return attributeError(shieldstralGuardID, d, err)
+}
+
+func (s *Shieldstral) check(ctx context.Context, in Input) (*Decision, error) {
 	start := time.Now()
 
 	// PhasePreTurn skip: tiny chunks rarely contain prompt-injection payloads

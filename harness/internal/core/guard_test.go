@@ -493,6 +493,33 @@ func TestLoop_GuardErrorFailOpenAllowsRun(t *testing.T) {
 	}
 }
 
+// TestLoop_GuardErrorNamesAdapter asserts the guard_error security
+// event labels a failing adapter by its own GuardID rather than "unknown".
+func TestLoop_GuardErrorNamesAdapter(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(prov, &secBuf)
+	loop.GuardRail = &errorGuard{err: &guard.Error{GuardID: "shieldstral", Err: errors.New("http status 500")}}
+	config := buildTestConfig()
+	config.GuardRail = &types.GuardRailConfig{Type: "shieldstral", FailOpen: true}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	out := secBuf.String()
+	if !strings.Contains(out, `"guardId":"shieldstral"`) {
+		t.Errorf("guard_error should name the adapter, got: %s", out)
+	}
+	if strings.Contains(out, `"guardId":"unknown"`) {
+		t.Errorf("guard_error fell back to unknown: %s", out)
+	}
+}
+
 type errorGuard struct{ err error }
 
 func (e *errorGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, error) {

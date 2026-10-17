@@ -321,6 +321,11 @@ func buildPhaseCriteria(ids []string, custom map[string]string) (map[Phase]strin
 // calibrated probabilities, and surfacing a synthetic score would lie
 // to anyone consuming the metric.
 func (g *GraniteGuardian) Check(ctx context.Context, in Input) (*Decision, error) {
+	d, err := g.check(ctx, in)
+	return attributeError(guardianGuardID, d, err)
+}
+
+func (g *GraniteGuardian) check(ctx context.Context, in Input) (*Decision, error) {
 	start := time.Now()
 
 	// PhasePreTurn skip: tiny chunks rarely contain prompt-injection

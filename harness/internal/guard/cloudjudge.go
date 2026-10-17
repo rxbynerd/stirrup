@@ -148,6 +148,11 @@ func NewCloudJudge(cfg CloudJudgeConfig) (*CloudJudge, error) {
 // JSON contract is one object carrying the call's fence nonce:
 // {"nonce": "<nonce>", "verdict": "allow"|"deny", "reason": "..."}.
 func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
+	d, err := c.check(ctx, in)
+	return attributeError(cloudJudgeGuardID, d, err)
+}
+
+func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 	start := time.Now()
 
 	criteria, ok := c.phases[in.Phase]
