@@ -111,6 +111,13 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Int("repository-guidance-max-bytes", 0, "Cap on rendered repository guidance, per file and in total. Range: 1-50000. 0 uses the default (32768). Mirrors repositoryGuidance.maxBytes.")
 	f.StringArray("repository-guidance-pin", nil, "Repeatable file=sha256 pin promoting a --repository-guidance-file entry to operator-approved guidance. A missing file or digest mismatch fails the run (setup_failed) before any provider call. Mirrors repositoryGuidance.pinnedSha256.")
 
+	f.String("correlation-session-id", "", "Control-plane session identifier stamped on every span as session.id and gen_ai.conversation.id, taking precedence over --name. Never placed in the model's context. Max 199 bytes. Mirrors correlation.sessionId.")
+	f.String("correlation-task-id", "", "Control-plane task identifier stamped on every span as stirrup.task.id. Never placed in the model's context. Max 255 bytes. Mirrors correlation.taskId.")
+	f.String("correlation-attempt-id", "", "Control-plane attempt identifier stamped on every span as stirrup.attempt.id. Never placed in the model's context. Max 255 bytes. Mirrors correlation.attemptId.")
+	f.String("correlation-user-id", "", "Pseudonymous end-user identifier stamped on every span as user.id. Choose a value that is not directly identifying. Max 255 bytes. Mirrors correlation.userId.")
+	f.String("correlation-url", "", "Control-plane page for this run, stamped on every span as stirrup.control_plane.url. Must be an absolute http or https URL without credentials. Max 1500 bytes. Mirrors correlation.url.")
+	f.StringArray("correlation-label", nil, "Repeatable key=value label stamped on every span as stirrup.label.<key>. Merges over any correlation.labels from --config, a repeated key keeping the last value. Key shape and limits are checked by RunConfig validation (both commands). An empty value is rejected. Mirrors correlation.labels.")
+
 	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction; each turn waits up to --timeout, capped at 3600s). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/batch.md.")
 
 	addRunConfigFlagCompletions(cmd)

@@ -1236,7 +1236,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.ToolChoiceEscalation.MaxRetries = mr
 	}
-	return applyRepositoryGuidanceOverrides(cmd, cfg)
+	if err := applyRepositoryGuidanceOverrides(cmd, cfg); err != nil {
+		return err
+	}
+	return applyCorrelationOverrides(cmd, cfg)
 }
 
 // applyRepositoryGuidanceOverrides folds the --repository-guidance-* flags
