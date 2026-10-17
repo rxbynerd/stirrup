@@ -5597,7 +5597,8 @@ type TraceEmitterConfig struct {
 	MetricsEndpoint string `protobuf:"bytes,4,opt,name=metrics_endpoint,json=metricsEndpoint,proto3" json:"metrics_endpoint,omitempty"`
 	// For "otel": OTLP wire protocol. Closed set:
 	//
-	//	"" (defaults to "grpc") | "grpc" | "http/protobuf"
+	//	"" (defaults to the platform's required protocol, else "grpc") |
+	//	"grpc" | "http/protobuf"
 	//
 	// The same protocol and headers apply to traces, metrics, and logs
 	// exported through ObservabilityConfig.logs_export. HTTP/JSON is

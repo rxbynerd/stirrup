@@ -1340,7 +1340,8 @@ type TraceEmitterConfig struct {
 	Credential *CredentialConfig `json:"credential,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
-	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
+	// Closed set: "" (defaults to the platform's required protocol, else
+	// "grpc"), "grpc", "http/protobuf".
 	// HTTP/JSON is intentionally not supported. Ignored for "jsonl".
 	Protocol string `json:"protocol,omitempty"`
 
@@ -2033,6 +2034,29 @@ var validTraceEmitterPlatforms = map[string]bool{
 	"cloudwatch": true,
 	"langfuse":   true,
 	"phoenix":    true,
+}
+
+// requiredTraceEmitterProtocols is the OTLP protocol each platform
+// requires; a platform absent here accepts any. The platform package
+// pins it against each profile's RequiredProtocol.
+var requiredTraceEmitterProtocols = map[string]string{
+	"cloudwatch": "http/protobuf",
+	"langfuse":   "http/protobuf",
+}
+
+// RequiredTraceEmitterProtocol returns the OTLP protocol platform
+// requires, or "" when it accepts any.
+func RequiredTraceEmitterProtocol(platform string) string {
+	return requiredTraceEmitterProtocols[platform]
+}
+
+// effectiveProtocol is the protocol the exporters use: Protocol, or the
+// platform's required protocol when Protocol is unset.
+func (c *TraceEmitterConfig) effectiveProtocol() string {
+	if c.Protocol == "" {
+		return RequiredTraceEmitterProtocol(c.Platform)
+	}
+	return c.Protocol
 }
 
 // Shape limits for TraceEmitterConfig.PlatformOptions. Per-key rules
@@ -5436,9 +5460,9 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 	// harness/internal/observability/otlp dial the documented host:port
 	// endpoint form without TLS, so any bearer/Basic credential supplied
 	// via headers would be transmitted in plaintext; only the HTTP
-	// protocol accepts headers. Empty Protocol defaults to gRPC at
-	// exporter construction time, so the check applies there too.
-	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
+	// protocol accepts headers. Empty Protocol defaults to the platform's
+	// required protocol, else to gRPC, so the check applies there too.
+	if protocol := cfg.effectiveProtocol(); (protocol == "" || protocol == "grpc") && len(cfg.Headers) > 0 {
 		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; the gRPC transport dials host:port endpoints in plaintext and would expose credentials")
 	}
 	// Header name and value validation. Block CRLF injection at
@@ -5486,6 +5510,13 @@ func validateTraceEmitterPlatform(cfg *TraceEmitterConfig, errs *[]string) {
 				cfg.Type,
 			))
 		}
+	}
+	if required := RequiredTraceEmitterProtocol(cfg.Platform); required != "" &&
+		cfg.Protocol != "" && cfg.Protocol != required && validTraceEmitterProtocols[cfg.Protocol] {
+		*errs = append(*errs, fmt.Sprintf(
+			"traceEmitter.platform %q requires traceEmitter.protocol %s (got %q)",
+			cfg.Platform, required, cfg.Protocol,
+		))
 	}
 	if len(cfg.PlatformOptions) == 0 {
 		return
