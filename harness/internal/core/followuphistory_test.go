@@ -508,3 +508,87 @@ func TestRetainHistory(t *testing.T) {
 		t.Errorf("success: carried = %+v, want the screened history", kept.carried)
 	}
 }
+
+// eventsFromRun returns the events from the n-th run_started (0-based)
+// up to the next one.
+func eventsFromRun(events []types.HarnessEvent, n int) []types.HarnessEvent {
+	start, seen := -1, -1
+	for i, ev := range events {
+		if ev.Type != "run_started" {
+			continue
+		}
+		seen++
+		if seen == n {
+			start = i
+			continue
+		}
+		if start >= 0 {
+			return events[start:i]
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	return events[start:]
+}
+
+// TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt pins the
+// live transcript of a follow-up that continues a history ending on
+// unscreened tool results: screening the carried tail emits no event,
+// and the prompt, though merged into the carried tool-result message, is
+// reported alone as the run's one user_message.
+func TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt(t *testing.T) {
+	prov := &recordingScriptProvider{script: emitToolScript}
+	loop, tr := buildUserInputTestLoop(prov)
+	registerEmitTool(t, loop, "SPOT-MARKER output")
+	g := &markerGuard{markers: []string{"SPOT-MARKER"}, verdict: guard.VerdictAllowSpot}
+	loop.GuardRail = g
+	config := buildTestConfig()
+	config.MaxTurns = 1
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	followUpSession(t, loop, tr, config, "carry on")
+	if g.matches() != 1 {
+		t.Fatalf("guard screened the carried tool result %d times, want 1", g.matches())
+	}
+	if last := prov.params()[1].Messages; !reflect.DeepEqual(blockTypes(last[len(last)-1]), []string{"tool_result", "text"}) {
+		t.Fatalf("follow-up prompt was not merged after the carried results: %v", blockTypes(last[len(last)-1]))
+	}
+
+	followUp := eventsFromRun(tr.Events(), 1)
+	got := eventTypeList(followUp)
+	want := []string{"run_started", "user_message", "turn_started", "text_delta", "turn_committed", "done"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("follow-up event types = %v\nwant %v", got, want)
+	}
+	msg := followUp[1]
+	if msg.Source != types.UserMessageSourceFollowUpPrompt || msg.Text != "carry on" || msg.RequestID != "r1" {
+		t.Errorf("follow-up user_message = source %q text %q requestId %q", msg.Source, msg.Text, msg.RequestID)
+	}
+}
+
+// TestRunFollowUpLoop_ContinueWithheldWarningFollowsRunStarted pins that
+// the warning for a follow-up that cannot continue its history lands in
+// that follow-up's own events, after its run_started.
+func TestRunFollowUpLoop_ContinueWithheldWarningFollowsRunStarted(t *testing.T) {
+	prov := &recordingScriptProvider{script: emitToolScript}
+	loop, tr := buildUserInputTestLoop(prov)
+	registerEmitTool(t, loop, "AWS_ACCESS_KEY_ID="+fakeLiveAWSKey)
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, false)
+	config := buildTestConfig()
+	config.MaxTurns = 1
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	followUpSession(t, loop, tr, config, "carry on", "start over")
+
+	third := eventsFromRun(tr.Events(), 2)
+	var warned bool
+	for _, ev := range third {
+		if ev.Type == "warning" && strings.Contains(ev.Message, "followUpHistory") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("withheld-history warning missing from the follow-up's own events: %v", eventTypeList(third))
+	}
+}

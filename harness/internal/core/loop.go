@@ -332,11 +332,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	gitSetupSpan.End()
 
-	messages, carriedAbort := l.startingHistory(runCtx, config, carried)
-	if carriedAbort {
-		turnZeroAbort = true
-	}
-
 	// Token tracking (cost estimation is a control plane concern):
 	// tokenTracker holds this loop's own turns, ledger the run-wide total
 	// shared with sub-agents and auxiliary calls.
@@ -352,6 +347,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 	l.emitRunStarted(config.RunID)
+
+	// After run_started, so the withheld-history warning and any screening
+	// of a carried tail are attributed to this run.
+	messages, carriedAbort := l.startingHistory(runCtx, config, carried)
+	if carriedAbort {
+		turnZeroAbort = true
+	}
 	if followUp != nil {
 		l.emitUserMessage(types.UserMessageSourceFollowUpPrompt, config.Prompt, followUp.RequestID)
 	} else {
