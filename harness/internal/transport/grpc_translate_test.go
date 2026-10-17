@@ -2590,6 +2590,78 @@ func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
 	}
 }
 
+// harnessEventWireRoundTrip translates e and decodes it from the wire, so a
+// field the translation drops or the proto lacks reads back as zero.
+func harnessEventWireRoundTrip(t *testing.T, e types.HarnessEvent) *pb.HarnessEvent {
+	t.Helper()
+	raw, err := proto.Marshal(harnessEventToProto(e))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.HarnessEvent
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return &decoded
+}
+
+func TestHarnessEventToProto_LiveTranscriptFields(t *testing.T) {
+	turn := func(n int) *int { return &n }
+
+	t.Run("user_message", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "user_message", Text: "fix it", Source: types.UserMessageSourceFollowUpPrompt, RequestID: "req-9",
+		})
+		if got.GetText() != "fix it" || got.GetSource() != "followup_prompt" || got.GetRequestId() != "req-9" {
+			t.Errorf("text/source/request_id = %q/%q/%q", got.GetText(), got.GetSource(), got.GetRequestId())
+		}
+	})
+
+	t.Run("turn_started keeps turn 0 present", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "turn_started", Turn: turn(0), Model: "claude-x", Provider: "anthropic",
+		})
+		if got.Turn == nil || got.GetTurn() != 0 {
+			t.Errorf("turn = %v, want present 0", got.Turn)
+		}
+		if got.GetModel() != "claude-x" || got.GetProvider() != "anthropic" {
+			t.Errorf("model/provider = %q/%q", got.GetModel(), got.GetProvider())
+		}
+	})
+
+	t.Run("turn_committed", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "turn_committed", Turn: turn(3), StopReason: "tool_use", ToolResultCount: 2,
+			Usage: &types.TokenUsage{Input: 100, Output: 20, CacheRead: 5, CacheWrite: 6, Reasoning: 7},
+		})
+		if got.GetTurn() != 3 || got.GetStopReason() != "tool_use" || got.GetToolResultCount() != 2 {
+			t.Errorf("turn/stop_reason/tool_result_count = %d/%q/%d", got.GetTurn(), got.GetStopReason(), got.GetToolResultCount())
+		}
+		u := got.GetUsage()
+		if u.GetInputTokens() != 100 || u.GetOutputTokens() != 20 || u.GetCacheReadTokens() != 5 ||
+			u.GetCacheWriteTokens() != 6 || u.GetReasoningTokens() != 7 {
+			t.Errorf("usage = %v", u)
+		}
+	})
+
+	t.Run("tool_result", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "tool_result", ToolUseID: "tu-1", Name: "read_file", Content: "boom", IsError: true, DurationMs: 42,
+		})
+		if got.GetToolUseId() != "tu-1" || got.GetName() != "read_file" || !got.GetIsError() || got.GetDurationMs() != 42 {
+			t.Errorf("tool_use_id/name/is_error/duration_ms = %q/%q/%v/%d",
+				got.GetToolUseId(), got.GetName(), got.GetIsError(), got.GetDurationMs())
+		}
+	})
+
+	t.Run("unset turn and usage stay absent", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "text_delta", Text: "x"})
+		if got.Turn != nil || got.Usage != nil {
+			t.Errorf("turn/usage = %v/%v, want absent", got.Turn, got.Usage)
+		}
+	})
+}
+
 func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
 	ref := &types.TraceReference{
 		TraceID:   "4bf92f3577b34da6a3ce929d0e0e4736",

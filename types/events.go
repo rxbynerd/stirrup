@@ -13,6 +13,9 @@ import (
 // its signature. A "redacted_thinking" event carries only opaque data in
 // ThoughtSignature. Adapters emit each once per block, in stream order,
 // so the loop persists them between the surrounding text and tool calls.
+// A "thinking_delta" event carries an incremental fragment of a thinking
+// block's text for live display only: an adapter that emits them still
+// emits the complete "thinking" event, which alone reaches history.
 //
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
@@ -28,7 +31,7 @@ import (
 // CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
 // subset of OutputTokens.
 type StreamEvent struct {
-	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking" | "redacted_thinking" | "message_complete" | "error"
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking_delta" | "thinking" | "redacted_thinking" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
@@ -289,11 +292,13 @@ func Float64Ptr(v float64) *float64 {
 
 // HarnessEvent is an event emitted by the harness to the control plane.
 //
-// Type discriminates the event shape: "text_delta", "tool_call",
-// "tool_result", "done", "error", "warning", "heartbeat", "ready",
+// Type discriminates the event shape: "text_delta", "thinking_delta",
+// "tool_call", "tool_result", "user_message", "turn_started",
+// "turn_committed", "done", "error", "warning", "heartbeat", "ready",
 // "run_started", "permission_request", "tool_result_request",
 // "batch_submission", "batch_waiting", "batch_cancel_request",
-// "sandbox_token_request".
+// "sandbox_token_request". The per-type field table is the HarnessEvent
+// comment in proto/harness/v1/harness.proto.
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
@@ -302,9 +307,9 @@ func Float64Ptr(v float64) *float64 {
 // the control plane derives run identity from the authenticated stream,
 // and Audience only names the intended JWT `aud` claim.
 //
-// "run_started" carries the run ID in ID and the run span's
-// TraceReference. It is sent once per run, before the run's first model
-// event, only when the trace emitter records an OTel run span. Under
+// "run_started" carries the run ID in ID and, when the trace emitter
+// records an OTel run span, that span's TraceReference. It is sent once
+// per run after setup, before the run's first "user_message". Under
 // `stirrup job` "ready" is per session, so a follow-up run's
 // "run_started" follows the previous run's "done".
 type HarnessEvent struct {
@@ -324,7 +329,36 @@ type HarnessEvent struct {
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
+
+	// Source names where a "user_message" event's text came from: one of
+	// the UserMessageSource* values. The vocabulary is open, so consumers
+	// preserve values they do not recognise.
+	Source string `json:"source,omitempty"`
+	// Turn is the run-scoped turn number on "turn_started" and
+	// "turn_committed"; a pointer so turn 0 is present on the wire.
+	Turn     *int   `json:"turn,omitempty"`
+	Model    string `json:"model,omitempty"`    // the routed model (turn_started only)
+	Provider string `json:"provider,omitempty"` // the routed provider, as RunConfig names it (turn_started only)
+	// Usage is the turn's token usage on "turn_committed"; nil when the
+	// turn reported none.
+	Usage           *TokenUsage `json:"usage,omitempty"`
+	ToolResultCount int         `json:"toolResultCount,omitempty"` // tool results the turn appended (turn_committed only)
+	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
+	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
 }
+
+// Values of HarnessEvent.Source on a "user_message" event.
+const (
+	UserMessageSourceInitialPrompt              = "initial_prompt"
+	UserMessageSourceFollowUpPrompt             = "followup_prompt"
+	UserMessageSourceUserResponse               = "user_response"
+	UserMessageSourceVerifierFeedback           = "verifier_feedback"
+	UserMessageSourceStructuredOutputCorrection = "structured_output_correction"
+	UserMessageSourceToolChoiceEscalation       = "tool_choice_escalation"
+	UserMessageSourceStallNudge                 = "stall_nudge"
+	UserMessageSourceWindDown                   = "wind_down"
+	UserMessageSourceOutputLimitRecovery        = "output_limit_recovery"
+)
 
 // ControlEvent is an event received from the control plane.
 //

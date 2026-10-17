@@ -45,14 +45,37 @@ service HarnessService {
 //   "run_started"
 //     - id:              the run ID (RunConfig.run_id) of the run that started.
 //     - trace_reference: the run span's OTel trace ID, span ID and sampled
-//                        flag.
-//     Sent once per run, before the run's first model event, only when the
-//     run records an OTel span. Under `stirrup job`, "ready" is sent once per
-//     session, so a follow-up run's "run_started" follows the previous run's
-//     "done".
+//                        flag; set only when the run records an OTel span.
+//     Sent once per run, primary and follow-up alike, after the run's setup
+//     and before its first "user_message". A run that fails setup sends
+//     none. Under `stirrup job`, "ready" is sent once per session, so a
+//     follow-up run's "run_started" follows the previous run's "done".
+//
+//   "user_message"
+//     - text:       the text the harness appended to the run's history as a
+//                   user-role message, after sanitisation. When it merged
+//                   into a trailing user message, only the appended text.
+//     - source:     where the text came from; see the source field.
+//     - request_id: the user_response's request_id, when the text came
+//                   from one.
+//     Sent in append order. Tool results are reported by "tool_result",
+//     never by "user_message".
+//
+//   "turn_started"
+//     - turn:     the run-scoped turn number, starting at 0.
+//     - model:    the model the router selected for the turn.
+//     - provider: the provider the router selected, as the RunConfig names
+//                 it (a providers key, or the provider type).
+//     Sent once per turn, before the provider request. A retried or
+//     compacted request within the turn sends no further "turn_started".
 //
 //   "text_delta"
 //     - text: incremental text fragment from the model's response.
+//
+//   "thinking_delta"
+//     - text: incremental reasoning text from the model's response, where
+//             the provider exposes it. Opaque (redacted) reasoning is
+//             never sent.
 //
 //   "tool_call"
 //     - id:    unique tool-use ID assigned by the model.
@@ -61,7 +84,20 @@ service HarnessService {
 //
 //   "tool_result"
 //     - tool_use_id: the tool-use ID this result corresponds to.
+//     - name:        the tool name, the same as the matching "tool_call".
 //     - content:     string result returned by the tool.
+//     - is_error:    true when the call failed.
+//     - duration_ms: the call's run time in milliseconds.
+//
+//   "turn_committed"
+//     - turn:              the turn number its "turn_started" carried.
+//     - stop_reason:       the model's stop reason for the turn.
+//     - usage:             the turn's token usage.
+//     - tool_result_count: the number of tool results the turn appended.
+//     Sent once the turn's assistant message and a result for every tool
+//     call in it are in history. A turn whose output was discarded, whose
+//     dispatch was cut short, or whose answer a guardrail rejected sends a
+//     "turn_started" without a "turn_committed".
 //
 //   "permission_request"
 //     - request_id: unique ID for this request; the control plane must echo it
@@ -145,14 +181,19 @@ service HarnessService {
 //     created, on a refresh it stops refreshing and emits a "warning".
 message HarnessEvent {
   // Required. The event type discriminator.
-  // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
-  //              "warning", "heartbeat", "ready", "run_started",
-  //              "permission_request", "tool_result_request",
-  //              "batch_submission", "batch_waiting", "batch_cancel_request",
-  //              "sandbox_token_request".
+  // Valid values: "text_delta", "thinking_delta", "tool_call",
+  //              "tool_result", "user_message", "turn_started",
+  //              "turn_committed", "done", "error", "warning", "heartbeat",
+  //              "ready", "run_started", "permission_request",
+  //              "tool_result_request", "batch_submission", "batch_waiting",
+  //              "batch_cancel_request", "sandbox_token_request".
+  // Consumers should ignore types they do not recognise.
   string type = 1;
 
-  // Incremental text fragment from the model. Set on "text_delta" events.
+  // Incremental text fragment from the model. Set on "text_delta" events,
+  // and on "thinking_delta" events for reasoning text. On "user_message"
+  // events, the appended text, capped at 256 KiB; a capped text ends in
+  // "[truncated by harness for the control stream: N of M bytes shown]".
   string text = 2;
 
   // Unique tool-use ID assigned by the model. Set on "tool_call" events.
@@ -160,7 +201,8 @@ message HarnessEvent {
   // started.
   string id = 3;
 
-  // Tool name. Set on "tool_call" events.
+  // Tool name. Set on "tool_call" events, and on "tool_result" events to
+  // the same name as the matching "tool_call".
   string name = 4;
 
   // JSON-encoded tool input parameters. Set on "tool_call",
@@ -182,6 +224,8 @@ message HarnessEvent {
   // Why the run ended. Set on "done" events to the run outcome, the same
   // value as RunTrace.outcome; see that field for the values. A "done"
   // sent for a task rejected before its run started carries "error".
+  // On "turn_committed" events, the model's stop reason for the turn
+  // ("end_turn", "tool_use", "max_tokens", or a provider stop reason).
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
@@ -196,8 +240,9 @@ message HarnessEvent {
   // Unique request ID for correlation. Set on "permission_request" and
   // "tool_result_request" events. The control plane must echo this back in
   // the corresponding permission_response / tool_result_response ControlEvent.
-  // Also set on a "warning" that reports a dropped user_response, echoing
-  // that ControlEvent's request_id.
+  // Also set on a "warning" that reports a dropped user_response, and on a
+  // "user_message" whose text came from a user_response, echoing that
+  // ControlEvent's request_id.
   string request_id = 11;
 
   // The tool name. Set on "permission_request" (tool requesting permission)
@@ -213,12 +258,9 @@ message HarnessEvent {
   // which may override it when minting the token.
   string audience = 14;
 
-  // The run span's OTel identity. Set on "run_started" events, which the
-  // harness sends once per run, before the run's first model event, only
-  // when the run records an OTel span. "ready" is per session under
-  // `stirrup job`, so a follow-up run's "run_started" follows the previous
-  // run's "done". The "done" summary carries the same value in
-  // RunTrace.trace_reference.
+  // The run span's OTel identity. Set on "run_started" events when the run
+  // records an OTel span; absent otherwise. The "done" summary carries the
+  // same value in RunTrace.trace_reference.
   TraceReference trace_reference = 15;
 
   // The W3C trace context of the tool call's execute_tool span. Set on
@@ -227,6 +269,53 @@ message HarnessEvent {
   // its own work for the call on it. request_id and tool_use_id remain the
   // reply correlation; this field describes causality only.
   TraceContext trace_context = 16;
+
+  // Where a "user_message" event's text came from. An open vocabulary:
+  // consumers must preserve values they do not recognise.
+  //   "initial_prompt"               the primary run's prompt.
+  //   "followup_prompt"              a follow-up run's prompt, from the
+  //                                  user_response that started it.
+  //   "user_response"                a user_response injected at a turn
+  //                                  boundary of the active run, one
+  //                                  event per ControlEvent.
+  //   "verifier_feedback"            the verifier's feedback after a
+  //                                  failed verification.
+  //   "structured_output_correction" the request to correct a final
+  //                                  answer that failed the output schema.
+  //   "tool_choice_escalation"       the prompt sent after a turn that
+  //                                  should have called a tool.
+  //   "stall_nudge"                  the instruction to change approach
+  //                                  after a repeated tool-call pattern.
+  //   "wind_down"                    the instruction to finish up as a
+  //                                  budget nears exhaustion.
+  //   "output_limit_recovery"        the instruction that follows a turn
+  //                                  cut off at the output limit.
+  string source = 17;
+
+  // The run-scoped turn number, starting at 0. Set on "turn_started" and
+  // "turn_committed" events.
+  optional int32 turn = 18;
+
+  // The model the router selected for the turn. Set on "turn_started".
+  string model = 19;
+
+  // The provider the router selected for the turn. Set on "turn_started".
+  string provider = 20;
+
+  // The turn's token usage. Set on "turn_committed" events; absent when
+  // the turn reported no usage.
+  TokenUsage usage = 21;
+
+  // The number of tool results the turn appended to history. Set on
+  // "turn_committed" events.
+  int32 tool_result_count = 22;
+
+  // True when the tool call failed. Set on "tool_result" events.
+  bool is_error = 23;
+
+  // The tool call's run time in milliseconds, excluding time it spent
+  // queued for a parallel dispatch slot. Set on "tool_result" events.
+  int64 duration_ms = 24;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's

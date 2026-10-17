@@ -15,19 +15,32 @@ import (
 // wire-format representation.
 func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	pe := &pb.HarnessEvent{
-		Type:           e.Type,
-		Text:           e.Text,
-		Id:             e.ID,
-		Name:           e.Name,
-		Input:          []byte(e.Input),
-		ToolUseId:      e.ToolUseID,
-		Content:        e.Content,
-		StopReason:     e.StopReason,
-		Message:        e.Message,
-		RequestId:      e.RequestID,
-		ToolName:       e.ToolName,
-		HarnessVersion: e.HarnessVersion,
-		Audience:       e.Audience,
+		Type:            e.Type,
+		Text:            e.Text,
+		Id:              e.ID,
+		Name:            e.Name,
+		Input:           []byte(e.Input),
+		ToolUseId:       e.ToolUseID,
+		Content:         e.Content,
+		StopReason:      e.StopReason,
+		Message:         e.Message,
+		RequestId:       e.RequestID,
+		ToolName:        e.ToolName,
+		HarnessVersion:  e.HarnessVersion,
+		Audience:        e.Audience,
+		Source:          e.Source,
+		Model:           e.Model,
+		Provider:        e.Provider,
+		ToolResultCount: saturateInt32(e.ToolResultCount),
+		IsError:         e.IsError,
+		DurationMs:      e.DurationMs,
+	}
+	if e.Turn != nil {
+		turn := saturateInt32(*e.Turn)
+		pe.Turn = &turn
+	}
+	if e.Usage != nil {
+		pe.Usage = tokenUsageToProto(*e.Usage)
 	}
 
 	if e.Trace != nil {

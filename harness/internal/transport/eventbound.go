@@ -9,21 +9,24 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// maxEventFieldBytes bounds tool_result content and tool_call input on the
-// gRPC stream. It sits well under grpc-go's 4 MiB default receive limit,
+// maxEventFieldBytes bounds tool_result content, tool_call input and
+// user_message text on the gRPC stream. It sits well under grpc-go's 4 MiB default receive limit,
 // which a control plane enforces by aborting the whole stream.
 const maxEventFieldBytes = 256 << 10
 
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
-// boundEventFields caps the event fields that carry tool payloads. The
-// model's view is bounded separately by tools.maxResultBytes; this cap
-// protects the control stream when that budget is raised or a tool input
-// is large.
+// boundEventFields caps the event fields that carry tool payloads and
+// appended user text. The model's view is bounded separately by
+// tools.maxResultBytes; this cap protects the control stream when that
+// budget is raised, a tool input is large, or a user_message carries a
+// long prompt.
 func boundEventFields(event *types.HarnessEvent) {
 	switch event.Type {
 	case "tool_result":
 		event.Content = capEventText(event.Content)
+	case "user_message":
+		event.Text = capEventText(event.Text)
 	case "tool_call":
 		event.Input = capEventInput(event.Input)
 	}
