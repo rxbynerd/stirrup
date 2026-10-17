@@ -33,6 +33,7 @@ func TestValidateRunConfig_CorrelationAccepted(t *testing.T) {
 		"255-byte task ID":      {TaskID: strings.Repeat("t", MaxCorrelationIDLength)},
 		"unicode user ID":       {UserID: "café-文字"},
 		"http URL":              {URL: "http://localhost:8080/runs/1"},
+		"URL with query":        {URL: "https://cp.example.com/runs?id=42&tab=trace"},
 		"uppercase scheme":      {URL: "HTTPS://cp.example.com/runs/1"},
 		"1500-byte URL":         {URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength-len("https://cp.example.com/"))},
 		"sixteen labels":        {Labels: labels},
@@ -59,7 +60,7 @@ func TestValidateRunConfig_CorrelationRejected(t *testing.T) {
 		corr CorrelationConfig
 		want string
 	}{
-		{"200-char session ID", CorrelationConfig{SessionID: strings.Repeat("s", 200)}, "correlation.sessionId must be <= 199"},
+		{"200-char session ID", CorrelationConfig{SessionID: strings.Repeat("s", 200)}, "correlation.sessionId must be <= 199 bytes"},
 		{"non-ASCII session ID", CorrelationConfig{SessionID: "café"}, "correlation.sessionId must be printable US-ASCII"},
 		{"newline in session ID", CorrelationConfig{SessionID: "a\nb"}, "correlation.sessionId must be printable US-ASCII"},
 		{"over-long task ID", CorrelationConfig{TaskID: strings.Repeat("t", 256)}, "correlation.taskId must be <= 255 bytes"},
@@ -71,6 +72,9 @@ func TestValidateRunConfig_CorrelationRejected(t *testing.T) {
 		{"relative URL", CorrelationConfig{URL: "/runs/42"}, "correlation.url must be an absolute http or https URL"},
 		{"ftp URL", CorrelationConfig{URL: "ftp://cp.example.com/runs/42"}, "correlation.url must be an absolute http or https URL"},
 		{"URL without host", CorrelationConfig{URL: "https:///runs/42"}, "correlation.url must include a host"},
+		{"port-only URL", CorrelationConfig{URL: "http://:80/"}, "correlation.url must include a host"},
+		{"URL with fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#access_token=abc"}, "correlation.url must not include a fragment"},
+		{"URL with empty fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#"}, "correlation.url must not include a fragment"},
 		{"URL with userinfo", CorrelationConfig{URL: "https://alice:hunter2@cp.example.com/runs/42"}, "correlation.url must not include userinfo"},
 		{"over-long URL", CorrelationConfig{URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength)}, "correlation.url must be <= 1500 bytes"},
 		{"seventeenth label", CorrelationConfig{Labels: seventeen}, "correlation.labels must have at most 16 entries"},
@@ -109,13 +113,35 @@ func TestValidateRunConfig_CorrelationURLErrorOmitsUserinfo(t *testing.T) {
 	}
 }
 
-func TestRedact_CorrelationPreserved(t *testing.T) {
+func TestValidateRunConfig_CorrelationLabelKeyEchoIsCapped(t *testing.T) {
+	c := validConfig()
+	long := "Bad" + strings.Repeat("x", 500)
+	c.Correlation = &CorrelationConfig{Labels: map[string]string{long: "v"}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected a label key error")
+	}
+	if strings.Contains(err.Error(), long[:100]) {
+		t.Errorf("error echoes more than 64 bytes of the key: %v", err)
+	}
+	if !strings.Contains(err.Error(), long[:64]+`"…`) {
+		t.Errorf("error should echo the key's first 64 bytes and an ellipsis, got: %v", err)
+	}
+}
+
+func TestRedact_CorrelationPreservedAsDeepCopy(t *testing.T) {
 	rc := RunConfig{
 		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
 		Correlation: fullCorrelation(),
 	}
-	if got := rc.Redact().Correlation; !reflect.DeepEqual(got, fullCorrelation()) {
-		t.Errorf("Correlation should survive Redact unchanged, got %+v", got)
+	redacted := rc.Redact()
+	if !reflect.DeepEqual(redacted.Correlation, fullCorrelation()) {
+		t.Fatalf("Correlation should survive Redact unchanged, got %+v", redacted.Correlation)
+	}
+	redacted.Correlation.URL = "mutated"
+	redacted.Correlation.Labels["agent_profile"] = "mutated"
+	if !reflect.DeepEqual(rc.Correlation, fullCorrelation()) {
+		t.Errorf("mutating the redacted copy reached the live config: %+v", rc.Correlation)
 	}
 }
 

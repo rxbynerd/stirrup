@@ -603,6 +603,19 @@ func (rc RunConfig) Redact() RunConfig {
 		gr := redactGuardRailConfig(*redacted.GuardRail)
 		redacted.GuardRail = &gr
 	}
+	// Deep-copy Correlation so the harness can scrub the redacted copy's
+	// values without reaching the live config.
+	if redacted.Correlation != nil {
+		corr := *redacted.Correlation
+		if corr.Labels != nil {
+			labels := make(map[string]string, len(corr.Labels))
+			for k, v := range corr.Labels {
+				labels[k] = v
+			}
+			corr.Labels = labels
+		}
+		redacted.Correlation = &corr
+	}
 	return redacted
 }
 
@@ -3818,14 +3831,14 @@ var correlationLabelKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // validateCorrelationConfig bounds every correlation value so it is safe
 // as a span attribute and survives the Langfuse limits named on the
 // MaxCorrelation* constants. Errors never echo the URL, which may carry
-// credentials in its userinfo.
+// credentials, and cap any other echoed value at 64 bytes.
 func validateCorrelationConfig(cfg *CorrelationConfig, errs *[]string) {
 	if cfg == nil {
 		return
 	}
 	if cfg.SessionID != "" {
 		if len(cfg.SessionID) > MaxCorrelationSessionIDLength {
-			*errs = append(*errs, fmt.Sprintf("correlation.sessionId must be <= %d characters, got %d", MaxCorrelationSessionIDLength, len(cfg.SessionID)))
+			*errs = append(*errs, fmt.Sprintf("correlation.sessionId must be <= %d bytes, got %d", MaxCorrelationSessionIDLength, len(cfg.SessionID)))
 		} else {
 			for i := 0; i < len(cfg.SessionID); i++ {
 				if c := cfg.SessionID[i]; c < 0x20 || c > 0x7e {
@@ -3850,7 +3863,7 @@ func validateCorrelationConfig(cfg *CorrelationConfig, errs *[]string) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if !correlationLabelKeyPattern.MatchString(k) {
-			*errs = append(*errs, fmt.Sprintf("correlation.labels key %q must match %s", k, correlationLabelKeyPattern.String()))
+			*errs = append(*errs, fmt.Sprintf("correlation.labels key %s must match %s", truncateForError([]byte(k)), correlationLabelKeyPattern.String()))
 			continue
 		}
 		validatePrintableField(fmt.Sprintf("correlation.labels[%s]", k), cfg.Labels[k], MaxCorrelationIDLength, errs)
@@ -3873,10 +3886,12 @@ func validateCorrelationURL(raw string, errs *[]string) {
 		*errs = append(*errs, "correlation.url is not a valid URL")
 	case u.Scheme != "http" && u.Scheme != "https":
 		*errs = append(*errs, "correlation.url must be an absolute http or https URL")
-	case u.Host == "":
+	case u.Hostname() == "":
 		*errs = append(*errs, "correlation.url must include a host")
 	case u.User != nil:
 		*errs = append(*errs, "correlation.url must not include userinfo")
+	case u.Fragment != "" || strings.Contains(raw, "#"):
+		*errs = append(*errs, "correlation.url must not include a fragment")
 	}
 }
 
