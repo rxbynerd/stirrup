@@ -29,6 +29,21 @@ Converse, OpenAI Chat Completions, OpenAI Responses, and Google
 Gemini via Vertex AI. Each adapter is a few hundred lines of stdlib
 HTTP — every line is auditable.
 
+**Built for hosted runs, not a laptop.** The harness is designed
+to run inside a sandboxed, hosted environment driven by a control
+plane, whether the run is fully autonomous or watched and steered
+by a person.
+
+**The control stream is for real-time control; telemetry is for
+long-term analysis.** The gRPC stream carries what a control plane
+needs while a run is in flight: a live transcript to show, approvals
+and tool results to answer, and input that steers the run. Trace
+emitters and OTel exporters carry what operators need afterwards:
+durable records for debugging, cost, evaluation, and dashboards. The
+two are independent. A run streams to its control plane whatever
+telemetry it exports, and the stream is not a substitute for a
+durable record.
+
 **The eval framework is a peer, not an afterthought.** Deterministic
 replay providers and replay executors mean CI eval suites run
 without hitting a paid API. Live runs, replay evaluation, drift
