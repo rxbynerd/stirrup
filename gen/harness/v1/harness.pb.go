@@ -29,6 +29,7 @@ const (
 //
 //	"ready"
 //	  - harness_version: build version string of the harness binary.
+//	  - capabilities:    the contract features this harness implements.
 //
 //	"run_started"
 //	  - id:              the run ID (RunConfig.run_id) of the run that started.
@@ -232,8 +233,9 @@ type HarnessEvent struct {
 	// The tool name. Set on "permission_request" (tool requesting permission)
 	// and "tool_result_request" (async tool whose result is being requested).
 	ToolName string `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	// Build version of the harness binary. Set on "ready" events. The control
-	// plane may use this to verify compatibility before sending a task.
+	// Build version of the harness binary. Set on "ready" events.
+	// Informational: "dev" and "main" builds cannot be ordered against a
+	// release, so gate features on capabilities instead.
 	HarnessVersion string `protobuf:"bytes,13,opt,name=harness_version,json=harnessVersion,proto3" json:"harness_version,omitempty"`
 	// The intended JWT `aud` claim for the sandbox identity token. Set on
 	// "sandbox_token_request" events. Informational to the control plane,
@@ -290,7 +292,12 @@ type HarnessEvent struct {
 	IsError bool `protobuf:"varint,23,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
 	// The tool call's run time in milliseconds, excluding time it spent
 	// queued for a parallel dispatch slot. Set on "tool_result" events.
-	DurationMs    int64 `protobuf:"varint,24,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	DurationMs int64 `protobuf:"varint,24,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// The contract features this harness implements, such as
+	// "live_transcript", "reasoning_summary" and "follow_up_history". Set on
+	// "ready" events. The vocabulary is open: ignore values that are not
+	// recognised. A harness that sends none implements none of them.
+	Capabilities  []string `protobuf:"bytes,25,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -491,6 +498,13 @@ func (x *HarnessEvent) GetDurationMs() int64 {
 		return x.DurationMs
 	}
 	return 0
+}
+
+func (x *HarnessEvent) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -6569,7 +6583,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xb8\x06\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xdc\x06\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -6598,7 +6612,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x11tool_result_count\x18\x16 \x01(\x05R\x0ftoolResultCount\x12\x19\n" +
 	"\bis_error\x18\x17 \x01(\bR\aisError\x12\x1f\n" +
 	"\vduration_ms\x18\x18 \x01(\x03R\n" +
-	"durationMsB\a\n" +
+	"durationMs\x12\"\n" +
+	"\fcapabilities\x18\x19 \x03(\tR\fcapabilitiesB\a\n" +
 	"\x05_turn\"e\n" +
 	"\x0eTraceReference\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x1e\n" +

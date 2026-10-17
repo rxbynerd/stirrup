@@ -334,7 +334,8 @@ type HarnessEvent struct {
 	Trace          *RunTrace       `json:"trace,omitempty"`
 	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result/sandbox-token requests with their responses; on a "warning", echoes the dropped user_response's requestId
 	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
-	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
+	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events); informational, not for feature gating
+	Capabilities   []string        `json:"capabilities,omitempty"`   // contract features this harness implements (set on "ready" events); see HarnessCapabilities
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
@@ -354,6 +355,24 @@ type HarnessEvent struct {
 	ToolResultCount int         `json:"toolResultCount,omitempty"` // tool results the turn appended (turn_committed only)
 	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
 	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
+}
+
+// Contract capabilities a harness advertises on "ready".
+const (
+	// CapabilityLiveTranscript: user_message, turn_started, turn_committed
+	// and thinking_delta events, tool_result name/is_error/duration_ms, and
+	// run_started for every run.
+	CapabilityLiveTranscript = "live_transcript"
+	// CapabilityReasoningSummary: RunConfig.ReasoningSummary is honoured.
+	CapabilityReasoningSummary = "reasoning_summary"
+	// CapabilityFollowUpHistory: RunConfig.FollowUpHistory is honoured.
+	CapabilityFollowUpHistory = "follow_up_history"
+)
+
+// HarnessCapabilities returns the capabilities this harness advertises on
+// "ready", as a new slice on every call.
+func HarnessCapabilities() []string {
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory}
 }
 
 // Values of HarnessEvent.Source on a "user_message" event.

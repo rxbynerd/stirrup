@@ -341,7 +341,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	if l.emitReady {
 		if err := l.Transport.Emit(types.HarnessEvent{
-			Type: "ready",
+			Type:         "ready",
+			Capabilities: types.HarnessCapabilities(),
 		}); err != nil {
 			l.logEmitFailure("ready", err)
 		}

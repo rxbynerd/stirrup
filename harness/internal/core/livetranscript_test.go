@@ -460,6 +460,21 @@ func TestLoop_TurnEventsBracketEachTurn(t *testing.T) {
 	}
 }
 
+func TestLoop_ReadyAdvertisesCapabilities(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{events: scriptEndTurn})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+	loop.emitReady = true
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	ready := eventsOfType(tp, "ready")
+	if len(ready) != 1 || fmt.Sprint(ready[0].Capabilities) != fmt.Sprint(types.HarnessCapabilities()) {
+		t.Errorf("ready events = %+v, want one carrying %v", ready, types.HarnessCapabilities())
+	}
+}
+
 // TestLoop_TurnStartedReportsTheProviderType pins that turn_started names
 // the adapter type of the routed provider, never the operator's
 // providers-map key, including when the router names no provider.

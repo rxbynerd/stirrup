@@ -32,7 +32,8 @@ const (
 //
 // Lifecycle:
 //  1. Harness connects and opens a RunTask stream.
-//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
 //     a RunConfig in the task field.
 //  4. Harness sends "run_started", then streams the run's live transcript
@@ -88,7 +89,8 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 //
 // Lifecycle:
 //  1. Harness connects and opens a RunTask stream.
-//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
 //     a RunConfig in the task field.
 //  4. Harness sends "run_started", then streams the run's live transcript

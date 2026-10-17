@@ -10,7 +10,8 @@ import "google/protobuf/struct.proto";
 //
 // Lifecycle:
 //   1. Harness connects and opens a RunTask stream.
-//   2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//   2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//      and capabilities).
 //   3. Control plane sends a ControlEvent with type "task_assignment" containing
 //      a RunConfig in the task field.
 //   4. Harness sends "run_started", then streams the run's live transcript
@@ -46,6 +47,7 @@ service HarnessService {
 //
 //   "ready"
 //     - harness_version: build version string of the harness binary.
+//     - capabilities:    the contract features this harness implements.
 //
 //   "run_started"
 //     - id:              the run ID (RunConfig.run_id) of the run that started.
@@ -258,8 +260,9 @@ message HarnessEvent {
   // and "tool_result_request" (async tool whose result is being requested).
   string tool_name = 12;
 
-  // Build version of the harness binary. Set on "ready" events. The control
-  // plane may use this to verify compatibility before sending a task.
+  // Build version of the harness binary. Set on "ready" events.
+  // Informational: "dev" and "main" builds cannot be ordered against a
+  // release, so gate features on capabilities instead.
   string harness_version = 13;
 
   // The intended JWT `aud` claim for the sandbox identity token. Set on
@@ -327,6 +330,12 @@ message HarnessEvent {
   // The tool call's run time in milliseconds, excluding time it spent
   // queued for a parallel dispatch slot. Set on "tool_result" events.
   int64 duration_ms = 24;
+
+  // The contract features this harness implements, such as
+  // "live_transcript", "reasoning_summary" and "follow_up_history". Set on
+  // "ready" events. The vocabulary is open: ignore values that are not
+  // recognised. A harness that sends none implements none of them.
+  repeated string capabilities = 25;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's

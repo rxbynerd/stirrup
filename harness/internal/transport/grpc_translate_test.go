@@ -2803,3 +2803,15 @@ func TestTraceContextFromProto_TaskAssignment(t *testing.T) {
 		t.Errorf("absent trace context translated to %+v, want nil", e.TraceContext)
 	}
 }
+
+func TestHarnessEventToProto_ReadyCapabilities(t *testing.T) {
+	got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+		Type: "ready", HarnessVersion: "dev", Capabilities: types.HarnessCapabilities(),
+	})
+	if want := types.HarnessCapabilities(); !reflect.DeepEqual(got.GetCapabilities(), want) {
+		t.Errorf("capabilities = %v, want %v", got.GetCapabilities(), want)
+	}
+	if bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "ready"}); len(bare.GetCapabilities()) != 0 {
+		t.Errorf("a ready without capabilities arrived with %v", bare.GetCapabilities())
+	}
+}

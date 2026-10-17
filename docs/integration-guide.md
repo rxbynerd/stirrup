@@ -59,7 +59,8 @@ status.
 
 1. The harness (launched as `stirrup job` with `CONTROL_PLANE_ADDR`
    set) dials the control plane and opens the `RunTask` stream.
-2. The harness sends `HarnessEvent{type:"ready", harness_version}`.
+2. The harness sends
+   `HarnessEvent{type:"ready", harness_version, capabilities}`.
    When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
    session that launched the Pod.
@@ -114,7 +115,7 @@ status.
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
-| `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
+| `ready` | `harness_version`, `capabilities`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature; see [Compatibility](#compatibility). `harness_version` is informational. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
@@ -819,13 +820,13 @@ before it is sent, one event at a time. A secret split across two
 `text_delta` or `thinking_delta` fragments is not recognised; see
 [`security.md`](security.md#control-stream-scrubbing).
 
-**Version gating.** A harness that predates these events sends none of
-`user_message`, `turn_started`, `turn_committed` or `thinking_delta`,
-leaves `name`, `is_error` and `duration_ms` unset on `tool_result`,
-and sends `run_started` only for runs that record an OTel span. A
-control plane that depends on the transcript gates task assignment on
-`ready.harness_version`, and ignores event types it does not recognise
-so later additions do not break it.
+**Capability gating.** A harness that predates these events sends none
+of `user_message`, `turn_started`, `turn_committed` or
+`thinking_delta`, leaves `name`, `is_error` and `duration_ms` unset on
+`tool_result`, and sends `run_started` only for runs that record an
+OTel span. A control plane that depends on the transcript gates task
+assignment on `live_transcript` in `ready.capabilities`, and ignores
+event types it does not recognise so later additions do not break it.
 
 ### Cancelling a run
 
@@ -1260,21 +1261,34 @@ around silently".
 
 ## Compatibility
 
+- `ready.capabilities` lists the contract features the harness
+  implements. Gate task assignment on the presence of a capability; a
+  `ready` without the field comes from a harness that predates every
+  listed feature, and unrecognised values are ignored. The values are:
+  - `live_transcript`: the `user_message`, `turn_started`,
+    `turn_committed` and `thinking_delta` events, `name`, `is_error`
+    and `duration_ms` on `tool_result`, and `run_started` for every
+    run.
+  - `reasoning_summary`: `RunConfig.reasoningSummary` (field 59) is
+    honoured.
+  - `follow_up_history`: `RunConfig.followUpHistory` (field 60) is
+    honoured.
 - `ready.harness_version` carries the build label
-  (`v1.2.3 (abc1234)` for releases). Gate task assignment on it if
-  the control plane depends on contract features by version.
+  (`v1.2.3 (abc1234)` for releases) and is informational: `dev` and
+  `main` builds cannot be ordered against a release, so it is not a
+  basis for feature gating.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
   lower-camel-case names. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
   `allowedMCPHosts` is no longer accepted.
 - File-config JSON rejects unknown fields (`DisallowUnknownFields`).
   Protobuf binary compatibility is different: an older harness ignores
-  unknown fields. Gate assignment on `ready.harness_version` when a
-  task depends on a newly added wire field; do not assume it will fail
+  unknown fields. Gate assignment on `ready.capabilities` when a task
+  depends on a newly added wire field; do not assume it will fail
   loudly.
 - New `HarnessEvent` types are added without a version bump of the
-  RPC. Ignore unrecognised types; gate on `ready.harness_version` when
-  a feature depends on one, as for the live transcript events in
+  RPC. Ignore unrecognised types; gate on `ready.capabilities` when a
+  feature depends on one, as for the live transcript events in
   [Watching a run live](#watching-a-run-live).
 - The container image is distroless (`nonroot`, no shell):
   `ghcr.io/rxbynerd/stirrup:<tag>` per release, `:main` per merge.

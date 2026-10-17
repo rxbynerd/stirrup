@@ -108,7 +108,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// Session ID (if set) lets the control plane correlate this stream with
 	// the session that launched the subprocess.
 	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
-	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID, HarnessVersion: version.Version()}); err != nil {
+	if err := tp.Emit(types.HarnessEvent{
+		Type:           "ready",
+		ID:             sessionID,
+		HarnessVersion: version.Version(),
+		Capabilities:   types.HarnessCapabilities(),
+	}); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 

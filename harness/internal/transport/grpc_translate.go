@@ -27,6 +27,7 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		RequestId:       e.RequestID,
 		ToolName:        e.ToolName,
 		HarnessVersion:  e.HarnessVersion,
+		Capabilities:    e.Capabilities,
 		Audience:        e.Audience,
 		Source:          e.Source,
 		Model:           e.Model,
