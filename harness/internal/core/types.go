@@ -575,16 +575,20 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		timeout = DefaultAsyncToolTimeout
 	}
 
+	// ctx carries this call's execute_tool span, which the trace context
+	// hands to the control plane as the parent of its work for the call.
+	traceContext := observability.InjectTraceContext(ctx)
+
 	// The correlator allocates the wire request ID; AsyncDispatch does not
 	// expose it to tool authors, since correlation is a loop concern.
-
 	payload, err := correlator.Await(ctx, timeout, func(requestID string) error {
 		return l.Transport.Emit(types.HarnessEvent{
-			Type:      "tool_result_request",
-			RequestID: requestID,
-			ToolName:  call.Name,
-			ToolUseID: call.ID,
-			Input:     inputForCall,
+			Type:         "tool_result_request",
+			RequestID:    requestID,
+			ToolName:     call.Name,
+			ToolUseID:    call.ID,
+			Input:        inputForCall,
+			TraceContext: traceContext,
 		})
 	})
 	if err != nil {

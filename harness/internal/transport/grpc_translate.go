@@ -34,8 +34,19 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		pe.Trace = runTraceToProto(e.Trace)
 	}
 	pe.TraceReference = traceReferenceToProto(e.TraceReference)
+	pe.TraceContext = traceContextToProto(e.TraceContext)
 
 	return pe
+}
+
+func traceContextToProto(c *types.TraceContext) *pb.TraceContext {
+	if c == nil {
+		return nil
+	}
+	return &pb.TraceContext{
+		Traceparent: c.Traceparent,
+		Tracestate:  c.Tracestate,
+	}
 }
 
 func traceReferenceToProto(r *types.TraceReference) *pb.TraceReference {

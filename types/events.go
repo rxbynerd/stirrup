@@ -323,6 +323,7 @@ type HarnessEvent struct {
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
+	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
 }
 
 // ControlEvent is an event received from the control plane.

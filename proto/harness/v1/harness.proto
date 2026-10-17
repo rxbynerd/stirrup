@@ -220,6 +220,13 @@ message HarnessEvent {
   // run's "done". The "done" summary carries the same value in
   // RunTrace.trace_reference.
   TraceReference trace_reference = 15;
+
+  // The W3C trace context of the tool call's execute_tool span. Set on
+  // "tool_result_request" events when the harness records the call as a
+  // span or forwards an upstream parent, so the control plane can parent
+  // its own work for the call on it. request_id and tool_use_id remain the
+  // reply correlation; this field describes causality only.
+  TraceContext trace_context = 16;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -401,6 +408,20 @@ message ControlEvent {
   // (epoch), letting the harness tell "the control plane did not report an
   // expiry" from "the token expires at the epoch".
   optional int64 expires_at = 10;
+}
+
+// TraceContext is a W3C Trace Context carrier
+// (https://www.w3.org/TR/trace-context/).
+message TraceContext {
+  // The traceparent header value, e.g.
+  // "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".
+  string traceparent = 1;
+
+  // The tracestate header value. Optional; dropped when malformed.
+  string tracestate = 2;
+
+  reserved 3;
+  reserved "baggage";
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"

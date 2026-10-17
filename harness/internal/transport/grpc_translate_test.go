@@ -2648,3 +2648,31 @@ func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
 		}
 	})
 }
+
+func TestTraceContextToProto_ToolResultRequest(t *testing.T) {
+	carrier := &types.TraceContext{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "vendor=opaque",
+	}
+	raw, err := proto.Marshal(harnessEventToProto(types.HarnessEvent{
+		Type: "tool_result_request", RequestID: "req-1", ToolUseID: "tc_1", TraceContext: carrier,
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.HarnessEvent
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetTraceContext()
+	if got.GetTraceparent() != carrier.Traceparent || got.GetTracestate() != carrier.Tracestate {
+		t.Errorf("trace_context = %v, want %+v", got, *carrier)
+	}
+	if decoded.GetRequestId() != "req-1" || decoded.GetToolUseId() != "tc_1" {
+		t.Errorf("request_id/tool_use_id = %q/%q, want req-1/tc_1", decoded.GetRequestId(), decoded.GetToolUseId())
+	}
+
+	if pe := harnessEventToProto(types.HarnessEvent{Type: "tool_result_request"}); pe.TraceContext != nil {
+		t.Errorf("absent trace context translated to %v, want nil", pe.TraceContext)
+	}
+}
