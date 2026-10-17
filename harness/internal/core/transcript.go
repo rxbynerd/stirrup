@@ -31,13 +31,10 @@ func (l *AgenticLoop) emitTurnStarted(turn int, model, providerType string) {
 	}
 }
 
-// committableAssistantBlocks returns the blocks of a turn that ended with
-// stopReason that may enter history, and whether the turn leaves an
-// assistant message at all. Only a tool_use turn is dispatched, so every
-// other stop drops its tool calls. A max_tokens turn is kept only when
-// it carries text: thinking alone may have been cut before its
-// signature arrived, and providers reject an assistant message with no
-// content.
+// committableAssistantBlocks returns the blocks of a turn ending with
+// stopReason that may enter history, and whether any remain. Only tool_use
+// turns are dispatched, so other stops drop their tool calls; a max_tokens
+// turn needs text, as thinking cut off before its signature cannot replay.
 func committableAssistantBlocks(stopReason string, blocks []types.ContentBlock) ([]types.ContentBlock, bool) {
 	if stopReason == "tool_use" {
 		return blocks, true

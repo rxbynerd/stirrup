@@ -147,14 +147,6 @@ func followUpSession(t *testing.T, loop *AgenticLoop, tr *cancellableTransport, 
 	return traces
 }
 
-func roles(messages []types.Message) []string {
-	out := make([]string, len(messages))
-	for i, m := range messages {
-		out[i] = m.Role
-	}
-	return out
-}
-
 func TestRunFollowUpLoop_ContinueCarriesCommittedHistory(t *testing.T) {
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
@@ -173,8 +165,8 @@ func TestRunFollowUpLoop_ContinueCarriesCommittedHistory(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 4 (two primary turns, one per follow-up)", len(calls))
 	}
 	second := calls[2].Messages
-	if want := []string{"user", "assistant", "user", "assistant", "user"}; !reflect.DeepEqual(roles(second), want) {
-		t.Fatalf("first follow-up roles = %v, want %v", roles(second), want)
+	if want := []string{"user", "assistant", "user", "assistant", "user"}; !reflect.DeepEqual(rolesOf(second), want) {
+		t.Fatalf("first follow-up roles = %v, want %v", rolesOf(second), want)
 	}
 	if got := second[0].Content[0].Text; got != "Hello, write a test file." {
 		t.Errorf("first follow-up lost the primary prompt: %q", got)
@@ -188,7 +180,7 @@ func TestRunFollowUpLoop_ContinueCarriesCommittedHistory(t *testing.T) {
 
 	third := calls[3].Messages
 	if len(third) != len(second)+2 || !reflect.DeepEqual(third[:len(second)], second) {
-		t.Fatalf("second follow-up did not extend the first's history:\n got %v", roles(third))
+		t.Fatalf("second follow-up did not extend the first's history:\n got %v", rolesOf(third))
 	}
 	if got := textBlocks(third[len(third)-1]); !reflect.DeepEqual(got, []string{"second follow-up"}) {
 		t.Errorf("second follow-up prompt message = %v", got)
@@ -534,9 +526,10 @@ func eventsFromRun(events []types.HarnessEvent, n int) []types.HarnessEvent {
 
 // TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt pins the
 // live transcript of a follow-up that continues a history ending on
-// unscreened tool results: screening the carried tail emits no event,
-// and the prompt, though merged into the carried tool-result message, is
-// reported alone as the run's one user_message.
+// unscreened tool results: screening the carried tail emits no event and
+// spotlights the result once, and the prompt, though merged into the
+// carried tool-result message, is reported alone as the run's one
+// user_message.
 func TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt(t *testing.T) {
 	prov := &recordingScriptProvider{script: emitToolScript}
 	loop, tr := buildUserInputTestLoop(prov)
@@ -553,6 +546,9 @@ func TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt(t *testing.T)
 	}
 	if last := prov.params()[1].Messages; !reflect.DeepEqual(blockTypes(last[len(last)-1]), []string{"tool_result", "text"}) {
 		t.Fatalf("follow-up prompt was not merged after the carried results: %v", blockTypes(last[len(last)-1]))
+	}
+	if results := toolResultContents(prov.params()[1].Messages); len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
+		t.Errorf("follow-up tool result = %q, want it spotlighted exactly once", results)
 	}
 
 	followUp := eventsFromRun(tr.Events(), 1)
@@ -721,26 +717,6 @@ func TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce(t *testing.T
 	}
 	if !strings.Contains(text, prompt) {
 		t.Errorf("follow-up prompt was rewritten as feedback: %q", text)
-	}
-}
-
-// TestRunFollowUpLoop_ContinueSpotlightsCarriedToolResultOnce pins that a
-// carried tool result the guard spotlights reaches the follow-up's
-// request wrapped exactly once.
-func TestRunFollowUpLoop_ContinueSpotlightsCarriedToolResultOnce(t *testing.T) {
-	prov := &recordingScriptProvider{script: emitToolScript}
-	loop, tr := buildUserInputTestLoop(prov)
-	registerEmitTool(t, loop, "SPOT-MARKER output")
-	loop.GuardRail = &markerGuard{markers: []string{"SPOT-MARKER"}, verdict: guard.VerdictAllowSpot}
-	config := buildTestConfig()
-	config.MaxTurns = 1
-	config.FollowUpHistory = types.FollowUpHistoryContinue
-
-	followUpSession(t, loop, tr, config, "carry on")
-
-	results := toolResultContents(prov.params()[1].Messages)
-	if len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
-		t.Errorf("follow-up tool result = %q, want it spotlighted exactly once", results)
 	}
 }
 

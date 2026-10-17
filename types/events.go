@@ -321,6 +321,10 @@ func Float64Ptr(v float64) *float64 {
 // per run after setup, before the run's first "user_message". Under
 // `stirrup job` "ready" is per session, so a follow-up run's
 // "run_started" follows the previous run's "done".
+//
+// Source takes one of the UserMessageSource* values; the vocabulary is
+// open, so consumers preserve values they do not recognise. Turn is a
+// pointer so turn 0 is present on the wire.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -340,18 +344,11 @@ type HarnessEvent struct {
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
 
-	// Source names where a "user_message" event's text came from: one of
-	// the UserMessageSource* values. The vocabulary is open, so consumers
-	// preserve values they do not recognise.
-	Source string `json:"source,omitempty"`
-	// Turn is the run-scoped turn number on "turn_started" and
-	// "turn_committed"; a pointer so turn 0 is present on the wire.
-	Turn     *int   `json:"turn,omitempty"`
-	Model    string `json:"model,omitempty"`    // the routed model (turn_started only)
-	Provider string `json:"provider,omitempty"` // the routed provider's adapter type, never a providers-map key (turn_started only)
-	// Usage is the turn's token usage on "turn_committed"; nil when the
-	// turn reported none.
-	Usage           *TokenUsage `json:"usage,omitempty"`
+	Source          string      `json:"source,omitempty"`          // where a user_message's text came from (user_message only)
+	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started and turn_committed)
+	Model           string      `json:"model,omitempty"`           // the routed model (turn_started only)
+	Provider        string      `json:"provider,omitempty"`        // the routed provider's adapter type, never a providers-map key (turn_started only)
+	Usage           *TokenUsage `json:"usage,omitempty"`           // the turn's token usage, nil when it reported none (turn_committed only)
 	ToolResultCount int         `json:"toolResultCount,omitempty"` // tool results the turn appended (turn_committed only)
 	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
 	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)

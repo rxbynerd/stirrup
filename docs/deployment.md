@@ -169,10 +169,10 @@ IMDS, GitHub Actions OIDC). See
    `tool_result`, `turn_committed` and `user_message` (see
    [Watching a run live](integration-guide.md#watching-a-run-live)) —
    plus `heartbeat` (every 30 s) and, depending on the permission
-   policy, `permission_request` events. Tools declared in `tools.controlPlane` emit
-   `tool_result_request` and block on `tool_result_response`; the
-   request's `trace_context`, when present, is the W3C context of the
-   call's `execute_tool` span. A
+   policy, `permission_request` events. Tools declared in
+   `tools.controlPlane` emit `tool_result_request` and block on
+   `tool_result_response`; the request's `trace_context`, when
+   present, is the W3C context of the call's `execute_tool` span. A
    `tool_call` is not guaranteed a matching `tool_result`: a
    cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn
    can orphan one, so `done` is the terminal close for any pending
@@ -217,7 +217,8 @@ IMDS, GitHub Actions OIDC). See
     new run ID and its own `timeout` budget; `followUpHistory` decides
     whether that run continues the previous run's conversation (see
     [Follow-up turns](integration-guide.md#follow-up-turns)). Steps 7–9
-    repeat for that run. See [Run budgets and precedence](#run-budgets-and-precedence).
+    repeat for that run. See
+    [Run budgets and precedence](#run-budgets-and-precedence).
 11. **Exit.** The liveness probe file is removed; the process exits 0
     when the primary run succeeded or non-zero on transport / build /
     runtime failure. Before the connection closes the harness

@@ -120,7 +120,8 @@ to make a feature easier:
   `planning` so a bare invocation is safe-by-default; `execution`
   is the explicit opt-in for editable runs.
 - **Model-behaviour knobs are provider-neutral.** Knobs that tune
-  how a model behaves (`temperature`, `reasoningEffort`) are
+  how a model behaves (`temperature`, `reasoningEffort`,
+  `reasoningSummary`) are
   top-level `RunConfig` fields threaded through
   `types.StreamParams`; each adapter projects them onto its native
   wire control (or ignores them when no control has been probed),
@@ -173,6 +174,8 @@ Quick map for "I need to change X" lookups:
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Control-plane-fulfilled tools (`tools.controlPlane`) | `harness/internal/tool/controlplane.go` (builder), registration in `core/factory.go::buildToolRegistry`, validation in `types/runconfig.go::validateControlPlaneTools` (operator doc: `docs/configuration.md#control-plane-tools`) |
 | Edit fallback logic | `harness/internal/edit/multi.go` |
+| Live transcript events (`user_message`, `turn_started`, `turn_committed`, `thinking_delta`) | `harness/internal/core/transcript.go`; wire contract in the `HarnessEvent` comment in `proto/harness/v1/harness.proto`, `types/events.go`, `harness/internal/transport/grpc_translate.go` and `eventbound.go` (operator doc: `docs/integration-guide.md#watching-a-run-live`) |
+| Follow-up history carry (`followUpHistory: "continue"`) | `harness/internal/core/followuphistory.go`, `RunFollowUpLoop` in `harness/internal/core/loop.go` (operator doc: `docs/integration-guide.md#follow-up-turns`) |
 | Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
