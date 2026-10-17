@@ -61,7 +61,7 @@ keep field numbers reserved as listed below so the PRs do not collide:
 | Message | Next free field | Reserved for |
 |---|---|---|
 | `HarnessEvent` | 15 | `TraceReference trace_reference = 15` (S1), `TraceContext trace_context = 16` (S5) |
-| `ControlEvent` | 10 | `TraceContext trace_context = 10` (S6) |
+| `ControlEvent` | 11 | `TraceContext trace_context = 11` (S6) |
 | `RunTrace` | 37 | `TraceReference trace_reference = 37` (S1) |
 | `RunConfig` | 35 | `CorrelationConfig correlation = 35` (S2) |
 
@@ -401,7 +401,9 @@ Proto: `message TraceContext { string traceparent = 1; string tracestate = 2; re
 `harnessEventToProto`.
 
 In `dispatchAsyncToolCall` (`harness/internal/core/types.go:530`) the
-`ctx` is already the tool span context (same path as S4). Inject with
+`ctx` is already the tool span context: async control-plane tools run
+on the `plan[idx].spanCtx` path that `planAndDispatch` builds from the
+`execute_tool` span, whereas MCP tools (S4) run inline. Inject with
 `propagation.TraceContext{}` into the event alongside `RequestID`,
 `ToolName`, `ToolUseID`. Request and tool-use IDs keep their meaning
 (reply correlation); the carrier only describes causality.
@@ -419,7 +421,7 @@ packages but not conditional on the pilot's result. CLI flags are S8.
 
 ### Wire
 
-`ControlEvent` gains `TraceContext *TraceContext` (proto field 10, read in
+`ControlEvent` gains `TraceContext *TraceContext` (proto field 11, read in
 `controlEventFromProto` at `grpc_translate.go:42`). It is meaningful on
 `task_assignment` only; other events ignore it. The carrier never
 touches `RunConfig`, so a replayed configuration cannot re-parent a run.
@@ -462,12 +464,16 @@ root context still has no deadline.
 
 ### Loop
 
-At `loop.go:177`, when `l.TraceContext == nil` (a top-level run), the
-incoming `ctx` carries a valid span context, and the emitter implements
-`ContextStarter`, call `StartWithContext(ctx, ...)`; otherwise `Start`.
-Sub-agent loops are built with `TraceContext` set by the parent and
-their root span comes from `StartSubAgentSpan` (`otel_live.go:372`), so
-nothing changes for them. Follow-up runs derive their context from the
+At `loop.go:177`, when the run is top-level (`l.ParentRunID` is empty
+and `l.TraceContext` is nil), the incoming `ctx` carries a valid span
+context, and the emitter implements `ContextStarter`, call
+`StartWithContext(ctx, ...)`; otherwise `Start`. `TraceContext` alone
+does not identify a top-level run: `SpawnSubAgent` builds the child
+loop without one, and the child's `ctx` holds the spawning tool span.
+The `ParentRunID` check excludes the child, and its
+`NestedJSONLEmitter` does not implement `ContextStarter` either, so its
+root span still comes from `StartSubAgentSpan` (`otel_live.go:372`)
+and nothing changes for sub-agents. Follow-up runs derive their context from the
 session context in `RunFollowUpLoop` (`loop.go:1312`), which carries no
 remote parent, so each follow-up starts a new root; a later change may
 let `user_response` carry its own `trace_context`.
