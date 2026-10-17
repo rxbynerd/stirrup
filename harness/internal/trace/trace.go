@@ -187,6 +187,13 @@ type RootContextProvider interface {
 	RootContext() context.Context
 }
 
+// TraceReferenceProvider is an optional capability for emitters that
+// record an OTel run span. TraceReference returns nil before Start and
+// when the emitter holds no valid span.
+type TraceReferenceProvider interface {
+	TraceReference() *types.TraceReference
+}
+
 // LiveSpanStarter is an optional capability for emitters that record model
 // requests and tool calls as live spans. A nil handle means the emitter
 // cannot record this span (for example a NestedJSONLEmitter over a parent

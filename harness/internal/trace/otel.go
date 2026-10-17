@@ -158,6 +158,7 @@ var (
 	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
+	_ TraceReferenceProvider       = (*OTelTraceEmitter)(nil)
 	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
 	_ LedgerUsageRecorder          = (*OTelTraceEmitter)(nil)
 	_ PostEditCheckRecorder        = (*OTelTraceEmitter)(nil)
@@ -668,6 +669,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		AuxiliaryTokens:      e.auxiliaryTokens,
 		ExternalGuardTokens:  e.externalGuardTokens,
 		PostEditChecks:       e.postEditChecks,
+		TraceReference:       e.traceReferenceLocked(),
 	}
 
 	return trace, nil
@@ -694,6 +696,29 @@ func (e *OTelTraceEmitter) Probe(ctx context.Context) error {
 // to create child spans for component calls.
 func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {
 	return e.tracer
+}
+
+// TraceReference returns the identity of the current run's invoke_agent
+// span, or nil before Start.
+func (e *OTelTraceEmitter) TraceReference() *types.TraceReference {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.traceReferenceLocked()
+}
+
+func (e *OTelTraceEmitter) traceReferenceLocked() *types.TraceReference {
+	if e.rootSpan == nil {
+		return nil
+	}
+	sc := e.rootSpan.SpanContext()
+	if !sc.IsValid() {
+		return nil
+	}
+	return &types.TraceReference{
+		TraceID: sc.TraceID().String(),
+		SpanID:  sc.SpanID().String(),
+		Sampled: sc.IsSampled(),
+	}
 }
 
 // RootContext returns the context containing the invoke_agent span, for use

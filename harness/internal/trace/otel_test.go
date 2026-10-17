@@ -513,3 +513,82 @@ func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
 	emitter, _ := newTestOTelEmitter()
 	emitter.RecordPromptResolution("claude-fable-5", "frontier")
 }
+
+func TestOTelTraceEmitter_TraceReferenceIdentifiesRunSpan(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	if ref := emitter.TraceReference(); ref != nil {
+		t.Fatalf("TraceReference before Start = %+v, want nil", ref)
+	}
+
+	emitter.Start("run-ref-1", nil)
+	ref := emitter.TraceReference()
+	if ref == nil {
+		t.Fatal("TraceReference after Start = nil")
+	}
+	rt, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
+	want := types.TraceReference{
+		TraceID: root.SpanContext.TraceID().String(),
+		SpanID:  root.SpanContext.SpanID().String(),
+		Sampled: true,
+	}
+	if *ref != want {
+		t.Errorf("TraceReference = %+v, want exported root span %+v", *ref, want)
+	}
+	if len(ref.TraceID) != 32 || len(ref.SpanID) != 16 {
+		t.Errorf("TraceReference IDs have lengths %d/%d, want 32/16", len(ref.TraceID), len(ref.SpanID))
+	}
+	if rt.TraceReference == nil || *rt.TraceReference != want {
+		t.Errorf("RunTrace.TraceReference = %+v, want %+v", rt.TraceReference, want)
+	}
+
+	emitter.Start("run-ref-2", nil)
+	next := emitter.TraceReference()
+	if next == nil {
+		t.Fatal("TraceReference after second Start = nil")
+	}
+	if next.TraceID == ref.TraceID {
+		t.Errorf("second run reused trace ID %s", next.TraceID)
+	}
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+}
+
+func TestOTelTraceEmitter_TraceReferenceReportsUnsampledSpan(t *testing.T) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample()))
+	emitter := newOTelTraceEmitterForTest(tp, false)
+
+	emitter.Start("run-unsampled", nil)
+	ref := emitter.TraceReference()
+	if ref == nil {
+		t.Fatal("TraceReference for an unsampled run span = nil, want a reference with Sampled false")
+	}
+	if ref.Sampled {
+		t.Error("Sampled = true for a NeverSample run span")
+	}
+	rt, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if rt.TraceReference == nil || rt.TraceReference.Sampled {
+		t.Errorf("RunTrace.TraceReference = %+v, want an unsampled reference", rt.TraceReference)
+	}
+}
+
+func TestNonOTelEmittersDoNotProvideTraceReference(t *testing.T) {
+	for name, e := range map[string]TraceEmitter{
+		"jsonl":  &JSONLTraceEmitter{},
+		"gcs":    &GCSTraceEmitter{},
+		"nested": &NestedJSONLEmitter{},
+	} {
+		if _, ok := e.(TraceReferenceProvider); ok {
+			t.Errorf("%s emitter implements TraceReferenceProvider; a run under it would report a reference with no OTel span behind it", name)
+		}
+	}
+}

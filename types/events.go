@@ -291,8 +291,9 @@ func Float64Ptr(v float64) *float64 {
 //
 // Type discriminates the event shape: "text_delta", "tool_call",
 // "tool_result", "done", "error", "warning", "heartbeat", "ready",
-// "permission_request", "tool_result_request", "batch_submission",
-// "batch_waiting", "batch_cancel_request", "sandbox_token_request".
+// "run_started", "permission_request", "tool_result_request",
+// "batch_submission", "batch_waiting", "batch_cancel_request",
+// "sandbox_token_request".
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
@@ -300,6 +301,10 @@ func Float64Ptr(v float64) *float64 {
 // "sandbox_token_request" carries no harness-asserted identity field:
 // the control plane derives run identity from the authenticated stream,
 // and Audience only names the intended JWT `aud` claim.
+//
+// "run_started" carries the run ID in ID and the run span's
+// TraceReference. It is sent once per run, after "ready", only when the
+// trace emitter records an OTel run span.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -315,6 +320,7 @@ type HarnessEvent struct {
 	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
+	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 }
 
 // ControlEvent is an event received from the control plane.
