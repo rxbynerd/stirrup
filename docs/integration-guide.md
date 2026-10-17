@@ -67,7 +67,10 @@ status.
    `ControlEvent{type:"task_assignment", task: RunConfig}` — this
    must be the first `ControlEvent`. The harness waits at most
    **5 minutes** for it, then exits. A `cancel` sent before
-   assignment makes the harness exit cleanly without running.
+   assignment makes the harness exit cleanly without running. An
+   optional `trace_context` on the assignment makes the run's trace
+   a child of the control plane's span; see
+   [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context).
 4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
    `sandbox_token_response` before creating the sandbox. When the
@@ -129,7 +132,7 @@ carries the trace reference instead.
 
 | `type` | Fields | Semantics |
 |---|---|---|
-| `task_assignment` | `task` (RunConfig) | First event on the stream. Duplicate assignments are ignored. |
+| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
 | `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a fresh run with its text as the prompt, and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
@@ -727,7 +730,11 @@ Control-plane responsibilities:
   A span started from it, exported to the same backend, nests under
   the tool call in the run's trace. Each concurrent call carries its
   own span. The field is absent when the call has no valid span
-  context. It carries causality only: correlate the response by
+  context. Under a trace emitter that records no spans, such as
+  `jsonl`, a run with an upstream parent opens no tool spans, so every
+  `tool_result_request` in the run carries that same upstream parent
+  (see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context)).
+  It carries causality only: correlate the response by
   `request_id`, never by trace or span ID. See
   [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
 
@@ -758,6 +765,86 @@ Posture notes:
 
 Field reference: [`configuration.md`](configuration.md#control-plane-tools).
 Wire contract for the event pair: [`deployment.md`](deployment.md).
+
+### Joining a control-plane trace (`trace_context`)
+
+Goal: show a run inside the control plane's own trace, under the span
+that dispatched it, instead of as a separate trace.
+
+```json
+{
+  "type": "task_assignment",
+  "task": { "…": "RunConfig" },
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "tracestate": "vendor=opaque"
+  }
+}
+```
+
+`trace_context` is a W3C Trace Context carrier. With the `otel` trace
+emitter, a valid `traceparent` becomes the parent of the run's
+`invoke_agent stirrup` span, so the run's spans share the control
+plane's trace ID, and `run_started` and the `done` summary report that
+trace ID in `trace_reference`. Behaviour to plan for:
+
+- The carrier is read on `task_assignment` only. It applies to the
+  primary run; follow-up runs started by `user_response` begin new
+  traces.
+- An invalid `traceparent` is ignored and the run starts a new trace;
+  the task is not rejected. A malformed `tracestate` is dropped and
+  the parent kept.
+- The run follows the parent's sampling decision. An unsampled
+  parent (trace flags `00`) means the harness exports no spans for
+  the run, and `trace_reference.sampled` is `false`. See
+  [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
+- The carrier is not part of `RunConfig`, so storing and replaying a
+  `RunConfig` never re-parents a new run onto an old trace. Send the
+  carrier for the task being dispatched, not one saved with the
+  config.
+- Baggage is not accepted. `TraceContext` field 3 is reserved for it.
+- Under a trace emitter that records no spans, such as `jsonl`, the
+  run opens no spans of its own but still carries the parent: every
+  `tool_result_request` in the primary run sends the same upstream
+  parent as its `trace_context`, with `request_id` remaining the reply
+  key, and the harness's log records carry the control plane's trace
+  and span IDs.
+- Control-plane-fulfilled tool calls send the reverse carrier: each
+  `tool_result_request` carries its `execute_tool` span's context
+  (see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request)).
+
+The Go embedding surface follows the same rule without a carrier:
+`harnessapi.Loop.Run(ctx, config)` parents the run on a valid span
+context in `ctx`. To start a new trace, pass a `ctx` with no span,
+such as one derived from `context.Background()`.
+
+**Langfuse under an upstream parent.** Langfuse groups spans into a
+trace by trace ID and takes the trace name and the trace-level input
+and output from the trace's root observation. A run parented on a
+control-plane span is not that root, so the integration chooses one
+of two outcomes and records which one the deployment uses:
+
+- **The control plane exports its root span to the same Langfuse
+  project.** The run appears inside the control plane's trace. The
+  trace is named after the control plane's root span unless a span
+  carries the `langfuse.trace.name` attribute (the collector recipe in
+  [`observability-cloud.md`](observability-cloud.md#langfuse) sets
+  it), and the trace-level input and output
+  panels show the control plane's root observation, which is empty
+  unless the control plane records content on it. The per-generation
+  and per-tool panels are unaffected.
+- **The control plane does not export its root span to Langfuse.**
+  The run span arrives with a parent Langfuse never receives, and
+  Langfuse shows it as an orphan whose parent is missing. Whether
+  the trace name and trace-level panels still fall back to it is not
+  documented by Langfuse, so verify the rendering on the deployed
+  Langfuse version before relying on it.
+
+Trace-level metadata, user, session and tags are unaffected either
+way, because Langfuse reads them from any span in the trace. Feedback
+scores keep targeting the run span through `trace_reference`
+(`traceId` plus `runSpanId` as the observation ID) in both outcomes;
+see [`observability-cloud.md`](observability-cloud.md#langfuse).
 
 ### Sandbox identity tokens (authenticated git egress)
 

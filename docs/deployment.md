@@ -19,7 +19,7 @@ sequenceDiagram
     H->>CP: Dial gRPC, open RunTask stream
     H->>CP: HarnessEvent{type:"ready", harness_version}
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
-    CP->>H: ControlEvent{type:"task_assignment", task: RunConfig}
+    CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
     opt Sandbox identity token requested
         H->>CP: sandbox_token_request
@@ -129,7 +129,11 @@ IMDS, GitHub Actions OIDC). See
    assignment is honoured: the harness exits cleanly without
    running anything. Receiving the assignment removes `/tmp/ready`:
    the pod runs one task to completion rather than accepting more
-   work.
+   work. An optional `trace_context` (`traceparent`, `tracestate`) on
+   the assignment parents the primary run's span on the control
+   plane's span; an invalid one is ignored. It is read on
+   `task_assignment` only and never stored in the `RunConfig`. See
+   [`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
 5. **Sandbox identity token** *(optional)*. When the run wants a
    sandbox identity token (e.g. to authenticate a git proxy such as
    Haybale), the harness sends a
@@ -494,8 +498,14 @@ import "github.com/rxbynerd/stirrup/harness/harnessapi"
 
 loop, err := harnessapi.BuildLoopWithTransport(ctx, runConfig, transport)
 if err != nil { /* handle */ }
-err = loop.Run(ctx)
+trace, err := loop.Run(ctx, runConfig)
 ```
+
+With the `otel` trace emitter, a valid OpenTelemetry span context on
+the `ctx` passed to `Run` becomes the parent of the run span, so the
+run joins the caller's trace and follows its sampling decision. The
+trace copies only the span context from `ctx`, never its cancellation
+or deadline. To start a new trace, pass a `ctx` with no span.
 
 Use this when you need the agentic loop in-process — for example, in
 a single-binary tool that bundles its own control-plane logic. For

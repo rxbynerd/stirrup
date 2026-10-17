@@ -879,8 +879,16 @@ import "github.com/rxbynerd/stirrup/harness/harnessapi"
 
 loop, err := harnessapi.BuildLoopWithTransport(ctx, runConfig, transport)
 if err != nil { /* handle */ }
-err = loop.Run(ctx)
+trace, err := loop.Run(ctx, runConfig)
 ```
+
+A valid OpenTelemetry span context on the `ctx` passed to `Run`
+parents the run span when the trace emitter is `otel`; a `ctx` with no
+span starts a new trace. The emitter copies only the span context, so
+the run span's context carries none of the caller's cancellation or
+deadline. Sub-agent runs still nest under their spawning tool span.
+`stirrup job` and `stirrup harness` run follow-ups on the session
+context, so each follow-up starts a new trace.
 
 For per-package detail see [`AGENTS.md`](../AGENTS.md). For the gRPC
 contract and control-plane handshake see

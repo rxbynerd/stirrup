@@ -500,6 +500,12 @@ A reference with `sampled: false` names a span that was not exported,
 so Langfuse holds no observation for it. Stirrup submits no scores
 itself.
 
+A run parented on a control-plane span through `trace_context` is not
+the root of its Langfuse trace, which changes the trace name and the
+trace-level panels; the choice is described in
+[`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
+Scores on the run span are unaffected.
+
 ## Arize Phoenix
 
 Phoenix ingests OTLP traces and, from version 15.10.0, converts the
@@ -958,6 +964,38 @@ context. A trace emitter that records no OpenTelemetry spans, such as
 context already holds a span, in which case it names that span.
 Baggage is never sent.
 
+In the other direction, a control plane can make a run part of its
+own trace. A `task_assignment` whose `trace_context` carries a valid
+`traceparent` parents the primary run's `invoke_agent stirrup` span on
+the control plane's span, and the run's spans share its trace ID.
+Follow-up runs start new traces. An invalid `traceparent` is ignored,
+so the run starts a new trace. A Go embedder gets the same behaviour
+from a span on the `ctx` passed to `harnessapi.Loop.Run`. Integrator
+detail, including the Langfuse rendering choice this creates, is in
+[`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
+
+**Sampling follows the parent.** The harness configures no sampler in
+code, so the OpenTelemetry SDK's parent-based default applies: a sampled
+parent (trace flags `01`) records and exports the run, and an
+unsampled parent (`00`) suppresses export of every span in the run.
+The harness does not override that decision, so a trace the control
+plane chose not to keep does not reappear in part. The run still
+reports its trace reference on `run_started` and the `done` summary
+with `sampled: false`, which tells the control plane that feedback on
+the run has no exported trace to land on.
+
+The parent-based default is what makes `sampled: false` mean "the
+control plane chose not to keep this trace". The SDK also reads
+`OTEL_TRACES_SAMPLER` from the harness's environment, and that
+variable replaces the default. The `parentbased_*` values keep the
+parent's decision. `always_on`, `always_off` and `traceidratio`
+ignore it: under `always_on` or a ratio sampler, a run under an
+unsampled parent can export its spans and `run_started` then reports
+`sampled: true`. `sampled` always reflects the run span's own flag, so
+operators who set a non-parent-based sampler accept that it can
+disagree with the control plane's decision, and that the backend can
+hold a run whose parent trace it never received.
+
 ## Log-trace correlation
 
 When the trace emitter records spans (`traceEmitter.type: "otel"`),
@@ -990,7 +1028,11 @@ The span a record correlates with depends on what it describes:
 
 Records emitted before the first run's span opens (boot-time and
 component construction), and every record of a run whose trace emitter
-records no spans, carry no correlation fields. Between follow-up runs,
+records no spans, carry no correlation fields, except under an
+upstream parent (`trace_context` on the task assignment, or a span on
+an embedder's `ctx`). Then construction records logged with the build
+context, and every record of a run whose emitter records no spans,
+correlate with the upstream parent span. Between follow-up runs,
 records keep the previous run's `runId` and root span. Security event
 lines are written by a separate writer and carry `runId` but no
 correlation fields.
