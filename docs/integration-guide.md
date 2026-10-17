@@ -912,15 +912,20 @@ to the control plane's page for the run.
 - Every value is opaque to the harness. `userId` belongs to the
   control plane to pseudonymise before it is sent; the harness never
   interprets it.
+- Derive every identifier server-side, never from end-user input: a
+  forged session ID places runs inside another user's session.
 - `url` is the control plane's canonical page for the run: an absolute
-  `http` or `https` URL without userinfo. A configured public origin
-  with an ordinary authenticated route works; a signed or
-  token-bearing URL does not belong here, because traces persist it.
+  `http` or `https` URL without userinfo or a fragment. It must not
+  carry credentials. A configured public origin with an ordinary
+  authenticated route works; a signed or token-bearing URL does not
+  belong here, because traces persist it. The harness scrubs
+  secret-shaped values from every field before stamping or persisting
+  them, as a backstop only.
 - `labels` carries the control plane's own slicing dimensions. Keys
   are lower-case identifiers, so they stay valid metadata path
   segments in backends that index them.
-- The block survives `Redact()` and so appears in persisted traces
-  and recordings. Bounds:
+- The block is recorded with the rest of the config in JSONL and GCS
+  trace files and in recordings. Bounds:
   [Correlation](configuration.md#correlation).
 
 ### Safety posture quick reference

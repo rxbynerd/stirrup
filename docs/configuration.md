@@ -538,11 +538,11 @@ file, on stdin, or in a gRPC `task_assignment`.
 
 | Field | Span attribute | Validation |
 |---|---|---|
-| `sessionId` | `session.id` and `gen_ai.conversation.id`; takes precedence over `sessionName` (`--name`), which remains the fallback | 1–199 printable US-ASCII characters. Langfuse drops session IDs of 200 characters or more. |
+| `sessionId` | `session.id` and `gen_ai.conversation.id`; takes precedence over `sessionName` (`--name`), which remains the fallback | 1–199 bytes of printable US-ASCII. Langfuse drops session IDs of 200 characters or more. |
 | `taskId` | `stirrup.task.id` | At most 255 bytes of printable UTF-8. |
 | `attemptId` | `stirrup.attempt.id` | At most 255 bytes of printable UTF-8. |
 | `userId` | `user.id` | At most 255 bytes of printable UTF-8. The control plane chooses a pseudonymous value; the harness never interprets it. |
-| `url` | `stirrup.control_plane.url` | Absolute `http` or `https` URL with a host and no userinfo, at most 1500 bytes. |
+| `url` | `stirrup.control_plane.url` | Absolute `http` or `https` URL with a host, no userinfo and no fragment, at most 1500 bytes. A query string is allowed. |
 | `labels` | `stirrup.label.<key>`, one per entry | At most 16 entries. Keys match `^[a-z][a-z0-9_]{0,63}$`; values are at most 255 bytes of printable UTF-8. |
 
 `labels` carries slicing dimensions the harness cannot name in
@@ -551,9 +551,18 @@ run's own mode is already stamped as `run.mode` and needs no label.
 The key pattern keeps every key a valid metadata path segment, so a key
 can never spell `__proto__`, `constructor`, or `prototype`.
 
-The block holds no secrets and survives `RunConfig.Redact()`, so it
-appears in persisted traces and recordings. A follow-up run in the same
-session reuses the block. The span attributes are listed in
+The control plane derives every identifier server-side and never
+takes one from end-user input: a forged session ID places runs inside
+another user's session. The URL must not carry credentials. Before a
+value is stamped on a span or persisted, the harness passes it through
+the secret scrubber, which replaces secret-shaped substrings such as
+API keys and `token=` query values with `[REDACTED]`; the scrubber is a
+backstop, not a licence to send credentials.
+
+The block is recorded with the rest of the config in JSONL and GCS
+trace files and in recordings, and survives `RunConfig.Redact()` apart
+from that scrub. A follow-up run in the same session reuses the block.
+The span attributes are listed in
 [`observability-cloud.md`](observability-cloud.md#span-tree).
 
 ### Run output

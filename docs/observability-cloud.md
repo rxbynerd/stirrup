@@ -452,9 +452,9 @@ API.
   The `phoenix` profile's `project` option sets the same attribute.
 - **Sessions.** Phoenix maps `gen_ai.conversation.id`, which the
   harness sets on every span from `correlation.sessionId` or else
-  `--name`, to its session id. A run with neither has no session. Phoenix keys a session on the id
-  alone, so a trace in a second project that reuses the id joins the
-  first project's session.
+  `--name`, to its session id. A run with neither has no session.
+  Phoenix keys a session on the id alone, so a trace in a second
+  project that reuses the id joins the first project's session.
 
 Without a profile, Phoenix types `invoke_agent` spans as AGENT, `chat`
 as LLM, and `execute_tool` as TOOL, and reads token counts, model,
