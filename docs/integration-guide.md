@@ -118,6 +118,13 @@ status.
 | `batch_cancel_request` | `request_id` | Best-effort: cancel the provider-side batch. The harness does not wait for a reply. |
 | `sandbox_token_request` | `request_id`, `audience` | See [Sandbox identity tokens](#sandbox-identity-tokens-authenticated-git-egress). |
 
+The control-stream `run_started` event is distinct from the
+`run_started` record that opens every JSONL trace file
+([`trace-inspection.md`](trace-inspection.md)). The JSONL record is
+always written and carries the redacted `RunConfig`; the event is sent
+on the control stream only when the run records an OTel span, and
+carries the trace reference instead.
+
 ### Events to the harness
 
 | `type` | Fields | Semantics |

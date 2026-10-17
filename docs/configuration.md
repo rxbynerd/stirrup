@@ -544,6 +544,12 @@ when `traceEmitter.type` is `otel` and omitted for the `jsonl` and
 `gcs` emitters, which record no OTel span. The same value reaches a
 gRPC control plane on the `run_started` event and the `done` summary;
 see [`integration-guide.md`](integration-guide.md#events-from-the-harness).
+Under `--transport stdio`, the CLI default, the `run_started` event is
+also written to stdout as a JSON line, after the run's `ready` line:
+
+```json
+{"type":"run_started","id":"run-123","traceReference":{"traceId":"4bf92f3577b34da6a3ce929d0e0e4736","runSpanId":"00f067aa0ba902b7","sampled":true}}
+```
 
 Pair `--output=json` with a trace emitter that does not target
 stdout. The default JSONL trace writes to a file (or to nothing when
