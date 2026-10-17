@@ -1,4 +1,4 @@
-# synthetic: derived from buildResponsesRequest + DefaultRegistry().Resolve; no OpenAI credential was available, so the shape is documented, not probed. Pins the GPT-5.6 reasoning-family request: reasoning.effort projected, temperature omitted although the caller supplied one, strict:true tools with the normalised schema, and include:["reasoning.encrypted_content"] for stateless replay. See testdata/quirks/README.md to refresh.
+# synthetic: derived from buildResponsesRequest + DefaultRegistry().Resolve; no OpenAI credential was available, so the shape is documented, not probed. Pins the GPT-5.6 reasoning-family request: reasoning.effort projected with reasoning.summary "auto" beside it, temperature omitted although the caller supplied one, strict:true tools with the normalised schema, and include:["reasoning.encrypted_content"] for stateless replay. See testdata/quirks/README.md to refresh.
 {
   "model": "gpt-5.6-sol",
   "instructions": "You are helpful.",
@@ -37,6 +37,7 @@
   "store": false,
   "include": ["reasoning.encrypted_content"],
   "reasoning": {
-    "effort": "high"
+    "effort": "high",
+    "summary": "auto"
   }
 }

@@ -93,6 +93,10 @@ func (a *OpenAIResponsesAdapter) WireTap(out io.Writer) {
 // reasoning item's encrypted_content, which stateless replay requires.
 const responsesIncludeEncryptedReasoning = "reasoning.encrypted_content"
 
+// responsesReasoningSummaryAuto asks for the most detailed reasoning summary
+// the model offers.
+const responsesReasoningSummaryAuto = "auto"
+
 // responsesRequest is the JSON body sent to POST /v1/responses.
 //
 // Like the Chat Completions openaiRequest, the canonical fields carry no
@@ -123,6 +127,10 @@ type responsesRequest struct {
 	// ReasoningEffort is the wire value for reasoning.effort. Empty omits
 	// the reasoning object.
 	ReasoningEffort string `json:"-"`
+	// ReasoningSummary is the wire value for reasoning.summary. It rides
+	// only inside a reasoning object, so it is dropped when ReasoningEffort
+	// is empty.
+	ReasoningSummary string `json:"-"`
 	// PromptCacheKey is the wire value for prompt_cache_key. Empty omits
 	// the key.
 	PromptCacheKey string `json:"-"`
@@ -160,7 +168,9 @@ type responsesRequest struct {
 //   - "include" — ["reasoning.encrypted_content"] when
 //     IncludeEncryptedReasoning is set; omitted otherwise.
 //   - "parallel_tool_calls" — omitted when nil.
-//   - "reasoning" — {"effort": ...}; omitted when ReasoningEffort is empty.
+//   - "reasoning" — {"effort": ..., "summary": ...}; omitted when
+//     ReasoningEffort is empty, and "summary" omitted when
+//     ReasoningSummary is empty.
 //   - "prompt_cache_key" — omitted when PromptCacheKey is empty.
 func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	if r.InputItemShape != quirks.TypedInputItems {
@@ -256,7 +266,11 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 
 	if r.ReasoningEffort != "" {
 		first = writeKey(first, "reasoning")
-		if err := writeRaw(map[string]string{"effort": r.ReasoningEffort}); err != nil {
+		reasoning := map[string]string{"effort": r.ReasoningEffort}
+		if r.ReasoningSummary != "" {
+			reasoning["summary"] = r.ReasoningSummary
+		}
+		if err := writeRaw(reasoning); err != nil {
 			return nil, err
 		}
 	}
@@ -350,12 +364,14 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 	}
 	if v, ok := raw["reasoning"]; ok {
 		var reasoning struct {
-			Effort string `json:"effort"`
+			Effort  string `json:"effort"`
+			Summary string `json:"summary"`
 		}
 		if err := json.Unmarshal(v, &reasoning); err != nil {
 			return fmt.Errorf("responsesRequest.reasoning: %w", err)
 		}
 		r.ReasoningEffort = reasoning.Effort
+		r.ReasoningSummary = reasoning.Summary
 	}
 	if v, ok := raw["prompt_cache_key"]; ok {
 		if err := json.Unmarshal(v, &r.PromptCacheKey); err != nil {
@@ -1245,6 +1261,10 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if responsesOmitsTemperature(q, effort) {
 		temperature = nil
 	}
+	var summary string
+	if effort != "" && params.ReasoningSummary != types.ReasoningSummaryOff {
+		summary = responsesReasoningSummaryAuto
+	}
 	var cacheKey string
 	if q.BehaviourFlags.OpenAIResponses.PromptCacheKey {
 		cacheKey = params.CacheKey
@@ -1258,6 +1278,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
 		ReasoningEffort:   effort,
+		ReasoningSummary:  summary,
 		PromptCacheKey:    cacheKey,
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
@@ -1648,6 +1669,21 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		}
 		return true
 
+	case "response.reasoning_summary_text.delta":
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse reasoning_summary_text.delta: %w", err)})
+			return false
+		}
+		if payload.Delta != "" {
+			if !emit(types.StreamEvent{Type: "thinking_delta", Text: payload.Delta}) {
+				return false
+			}
+		}
+		return true
+
 	case "response.function_call_arguments.delta":
 		var payload struct {
 			ItemID      string `json:"item_id"`
@@ -1869,8 +1905,8 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 		return false
 
 	default:
-		// Forward-compatible: unknown events (e.g. reasoning summaries,
-		// content_part lifecycle, partial-image deltas) are ignored. We
+		// Forward-compatible: unknown events (e.g. reasoning summary part
+		// lifecycle, content_part lifecycle, partial-image deltas) are ignored. We
 		// add a span event so production operators can spot a flood of
 		// new event types from a future API revision instead of silently
 		// dropping content.
