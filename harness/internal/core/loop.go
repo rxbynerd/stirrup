@@ -154,6 +154,8 @@ func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord 
 // but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	l.windDown = windDownState{start: l.now()}
+	followUp := l.followUpInput
+	l.followUpInput = nil
 
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
@@ -345,6 +347,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 	l.emitRunStarted(config.RunID)
+	if followUp != nil {
+		l.emitUserMessage(types.UserMessageSourceFollowUpPrompt, config.Prompt, followUp.RequestID)
+	} else {
+		l.emitUserMessage(types.UserMessageSourceInitialPrompt, config.Prompt, "")
+	}
 
 	l.Logger.InfoContext(runCtx, "run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
@@ -433,7 +440,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				structuredCorrections++
 				l.Logger.InfoContext(runCtx, "final answer failed the output schema; requesting a correction",
 					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
-				messages = append(messages, structuredOutputCorrection(violation))
+				correction := structuredOutputCorrection(violation)
+				messages = append(messages, correction)
+				l.emitUserMessage(types.UserMessageSourceStructuredOutputCorrection, correction.Content[0].Text, "")
 				continue
 			}
 			structuredOutput = doc
@@ -486,6 +495,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			feedbackMsg.Origin = types.MessageOriginVerifierFeedback
 		}
 		messages = append(messages, feedbackMsg)
+		l.emitUserMessage(types.UserMessageSourceVerifierFeedback, feedbackMsg.Content[0].Text, "")
 	}
 
 	// A cancel arriving between the inner loop returning and Verify
@@ -1256,6 +1266,7 @@ func (l *AgenticLoop) applyEscalation(
 				{Type: "text", Text: decision.PromptMessage},
 			},
 		})
+		l.emitUserMessage(types.UserMessageSourceToolChoiceEscalation, decision.PromptMessage, "")
 	}
 
 	// tool.name is the bounded empty-sentinel — no tool was involved,
@@ -1368,6 +1379,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			// Issue a fresh run ID so traces don't collide.
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 			config.Prompt = next.Text
+			loop.followUpInput = &next
 
 			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
 			runTrace, err := loop.Run(runCtx, config)

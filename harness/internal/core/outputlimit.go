@@ -74,6 +74,7 @@ func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit
 		action = "discarded a turn with no text"
 	}
 	messages = injectSyntheticUserText(messages, instruction)
+	l.emitUserMessage(types.UserMessageSourceOutputLimitRecovery, instruction, "")
 
 	l.Logger.Warn("output limit reached; continuing run",
 		"turn", turn,

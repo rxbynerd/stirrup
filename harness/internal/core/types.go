@@ -233,6 +233,11 @@ type AgenticLoop struct {
 	controlStop      chan struct{}
 	controlStopOnce  sync.Once
 
+	// followUpInput is the queued user_response whose text is the prompt
+	// of the run RunFollowUpLoop is starting; nil for any other run. Run
+	// consumes it at start.
+	followUpInput *queuedUserInput
+
 	// streamLost is set once the control stream has been lost; from then
 	// on lossEmitLogged keeps emit failures to a single warning.
 	streamLost     atomic.Bool
