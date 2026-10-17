@@ -515,6 +515,14 @@ the none executor has no capability to back the rest.
 | `--service-name` | (none) | OTel `service.name` resource attribute (`observability.serviceName`, e.g. `triage-agent`). Backends list and separate agents by this value, so deployments that should appear separately set distinct names. Empty falls through to env `OTEL_SERVICE_NAME`, then to `stirrup`. |
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 | `--log-export` | `none` | Structured-log export: `none` (stderr only) or `otlp` (stderr plus an OTLP log exporter, `observability.logsExport.type`). The exporter uses the traces protocol and headers, over gRPC or `http/protobuf`. The endpoint defaults to `--otel-endpoint` (or the platform profile's logs endpoint); `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` overrides it. With the otel trace emitter, every record emitted during a run carries `trace_id` and `span_id`; see [`observability-cloud.md`](observability-cloud.md#log-trace-correlation). |
+| `--correlation-session-id` | (none) | Session identifier stamped on every span as `session.id` and `gen_ai.conversation.id` (`correlation.sessionId`), taking precedence over `--name`. See [Correlation](#correlation) for limits. |
+| `--correlation-task-id` | (none) | Task identifier stamped on every span as `stirrup.task.id` (`correlation.taskId`). |
+| `--correlation-attempt-id` | (none) | Attempt identifier stamped on every span as `stirrup.attempt.id` (`correlation.attemptId`). |
+| `--correlation-user-id` | (none) | Pseudonymous end-user identifier stamped on every span as `user.id` (`correlation.userId`). |
+| `--correlation-url` | (none) | Control-plane page for the run, stamped on every span as `stirrup.control_plane.url` (`correlation.url`). |
+| `--correlation-label` | (none) | Repeatable `key=value` label stamped on every span as `stirrup.label.<key>` (`correlation.labels`). A pair without `=` or with an empty key is rejected when the config is built. Labels merge key by key over any `labels` from `--config`, and a repeated key keeps its last value. An empty value is rejected. Key shape and limits are checked by `ValidateRunConfig` in both commands; `stirrup run-config` checks them with `--validate`. |
+| `--traceparent` | (none) | `stirrup harness` only. W3C `traceparent` of the upstream span that parents the run's root span. Sets the run's context, not its `RunConfig`; see [Upstream parent](#upstream-parent). |
+| `--tracestate` | (none) | `stirrup harness` only. W3C `tracestate` carried with `--traceparent`. Ignored without a valid `--traceparent`. |
 
 #### Correlation
 
@@ -522,8 +530,14 @@ The `correlation` block carries the identifiers a control plane uses
 for the run in its own UI. The harness stamps each set value on every
 span of the run and treats every value as opaque. The values never
 enter the model's context, and they are not resource attributes or
-metric labels. The block has no CLI flags; it is set in a `--config`
-file, on stdin, or in a gRPC `task_assignment`.
+metric labels. The block is set in a `--config` file, on stdin, in a
+gRPC `task_assignment`, or with the `--correlation-*` flags in the table
+above. Each flag replaces only its own field, and an unset flag never
+clears a value from the file. An explicitly empty scalar value, such as
+`--correlation-user-id ""`, clears that field. Labels from a file
+cannot be removed from the command line; a flag can only add or
+overwrite a key. The block is omitted when nothing sets it. `stirrup run-config` emits the flags as part of the resolved
+config.
 
 ```json
 "correlation": {
@@ -566,6 +580,36 @@ trace files and in recordings, and survives `RunConfig.Redact()` apart
 from that scrub. A follow-up run in the same session reuses the block.
 The span attributes are listed in
 [`observability-cloud.md`](observability-cloud.md#span-tree).
+
+#### Upstream parent
+
+`--traceparent` and `--tracestate` nest a CLI run under a span the
+caller already holds. Both take the W3C Trace Context header values
+verbatim, for example
+`--traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`.
+With the `otel` trace emitter, a valid `traceparent` makes that span
+the parent of the run's root `invoke_agent stirrup` span, and the run's
+spans share the caller's trace ID. Sampling follows the parent: a
+sampled parent (trace flags `01`) exports the run, and an unsampled
+parent (`00`) suppresses export of every span in it, although
+`RunResult.traceReference` still reports the trace ID with
+`sampled: false`. An `OTEL_TRACES_SAMPLER` value that is not
+`parentbased_*` replaces that behaviour; see
+[`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
+The `jsonl` and `gcs` emitters record no spans, so the flags do not
+change their trace files.
+
+The flags set the run's context, not its config. They are registered
+on `stirrup harness` only, never appear in a `RunConfig`, and are
+rejected by `stirrup run-config` as unknown flags, so a replayed or
+stored config can never re-parent a run. A value the W3C parser
+rejects, such as a wrong length or an unsupported version, is ignored
+and the run starts its own trace. `--tracestate` without a valid
+`--traceparent` is ignored. The harness logs a warning when a real run
+ignores the parent because the value is invalid or the trace emitter
+records no spans; `--dry-run` and `--output-runconfig` stay silent.
+The parent applies to the primary run; follow-up runs in the same
+session start new traces.
 
 ### Run output
 
