@@ -75,9 +75,10 @@ Skip when:
 The shipped Granite Guardian adapter applies a **batched** check at
 this phase by default: all untrusted chunks for a turn are
 concatenated under per-chunk delimiters and submitted in one
-outbound request, not one per chunk. Combined with the `MinChunkChars`
-skip threshold (default 256), this keeps the per-turn overhead bounded
-even when many small tool outputs are returned.
+outbound request, not one per chunk. Combined with the opt-in
+`minChunkChars` skip threshold (zero, meaning disabled, unless set),
+this keeps the per-turn overhead bounded even when many small tool
+outputs are returned.
 
 ### `pre_tool` (recommended for production)
 
@@ -176,7 +177,7 @@ Skip when:
 
 ## Adapters
 
-Three adapter types ship in the harness, plus a no-op default:
+Four adapter types ship in the harness, plus a no-op default:
 
 ### `none` (default)
 
@@ -233,6 +234,83 @@ than "claims must be supported" — the latter is met by a good answer,
 so the classifier says `yes` and the adapter denies it.
 `builtInCriteria` in `harness/internal/guard/graniteguardian.go` is
 the reference for this phrasing.
+
+### `shieldstral`
+
+[Shieldstral](https://huggingface.co/mistralai/Shieldstral-1.0-3B)
+is an open-weights safety classifier fine-tuned by Mistral AI for
+conversational and agentic safety intervention points. It is
+self-hosted behind an OpenAI-compatible chat-completions API, the
+same shape as `granite-guardian`.
+
+**Model id.** `model` is required; there is no default, because each
+runtime names the model differently. Set the id the server exposes:
+`mistralai/Shieldstral-1.0-3B` on vLLM, while LM Studio lists its own
+ids (for example `shieldstral-1.0-3b-mlx`). A mismatched id is
+rejected by the server (LM Studio answers HTTP 400 `Invalid model
+identifier`).
+
+**Tested runtimes.** The adapter has been live-tested only against
+LM Studio serving MLX conversions of `mistralai/Shieldstral-1.0-3B`.
+vLLM, Ollama, and TGI are expected to work through the
+OpenAI-compatible chat-completions API but are untested.
+
+**Phases.** A `shieldstral` guard with no `phases` checks `pre_turn`
+and `post_turn` only; `pre_tool` is skipped without a classifier
+call. The `pre_tool` check receives only the tool's JSON arguments,
+and the built-in `function_call` criterion wrongly denied harmless
+read and search calls (such as `{"path":"README.md"}`) in testing
+against the 3B MLX builds: 2 of 8 harmless calls on the 4-bit build
+and 3 of 8 on the MXFP8 build, while all 7 malicious calls were
+denied on both. With the fail-closed default, each false positive
+blocks the tool call. Listing `pre_tool` in `phases` opts in, for
+example `"phases": ["pre_turn", "pre_tool", "post_turn"]`. The
+default applies to `shieldstral` stages inside a `composite` as well.
+
+**Availability.** Shieldstral is not available on Mistral AI's hosted
+API (`api.mistral.ai`) or on OpenRouter; both were checked live and
+neither serves a `shieldstral*` model. The `endpoint` / `apiKeyRef`
+fields exist for operators pointing at their own authenticated
+deployment (a private inference endpoint, a proxy in front of a
+self-hosted instance).
+
+**LM Studio chat template.** Some LM Studio builds of the model ship
+a `chat_template.jinja` that calls its `render_content` macro with
+keyword arguments, which LM Studio's template engine rejects: every
+`/v1/chat/completions` call returns HTTP 400 with
+`Missing positional argument: content`. Rewriting those calls to pass
+the arguments positionally fixes it.
+
+Authentication is supported via `apiKeyRef` (resolving a
+`secret://...` reference via `security.SecretStore`) for endpoints
+that require it. For unauthenticated local instances, `apiKeyRef`
+can be omitted.
+
+The `endpoint` is either a bare host (`/v1/chat/completions` is
+appended automatically) or a full chat-completions URL. A
+path-bearing endpoint is used as-is.
+
+Minimal config:
+
+```json
+{
+  "guardRail": {
+    "type": "shieldstral",
+    "endpoint": "http://127.0.0.1:1234",
+    "model": "mistralai/Shieldstral-1.0-3B"
+  }
+}
+```
+
+Or via flags:
+
+```sh
+stirrup harness \
+  --prompt "..." \
+  --guardrail shieldstral \
+  --guardrail-endpoint http://127.0.0.1:1234 \
+  --guardrail-model mistralai/Shieldstral-1.0-3B
+```
 
 ### `cloud-judge`
 
@@ -335,8 +413,9 @@ response stream, not just the time to its first token.
 ### `composite` (operator escape hatch)
 
 Layers multiple stages, optionally restricted to specific phases.
-The harness only ships `granite-guardian` and `cloud-judge`, but
-the composite primitive lets operators add their own classifiers
+The harness only ships `granite-guardian`, `shieldstral`, and
+`cloud-judge`, but the composite primitive lets operators add their
+own classifiers
 (e.g. a fast-path Llama Prompt Guard 2 served via TEI in front of
 the slower Granite Guardian) without modifying the harness. See
 [§ Operator escape hatch](#operator-escape-hatch) below.
@@ -361,7 +440,7 @@ throughput and prompt length; treat these as advisory.
 
 | Phase | p50 | p99 | Notes |
 |---|---|---|---|
-| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256). |
+| `pre_turn`  | < 50 ms | < 600 ms | Single batched call per turn (all untrusted chunks). Skipped entirely for chunks shorter than `MinChunkChars` (default 256 for `granite-guardian`; `shieldstral` skips only when the threshold is set). |
 | `pre_tool`  | < 30 ms | < 200 ms | One call per tool invocation, after the deterministic checks. Adds up over many tool calls per turn. |
 | `post_turn` | < 50 ms | < 600 ms | Single composite-criterion call per turn end. |
 
@@ -380,11 +459,12 @@ offending content does not pass.
 The two load-bearing latency mitigations are:
 
 1. **`MinChunkChars` skip** at `pre_turn`. Chunks shorter than the
-   threshold (default 256 chars) are not sent to the classifier;
-   a `guard_skipped` event is emitted instead. Mid-run `user_response`
-   input is exempt: it is classified at any length, since it is one
-   call per turn boundary at most and a short relayed turn is exactly
-   the case that needs screening.
+   threshold (default 256 chars for `granite-guardian`; zero, which
+   disables the skip, for `shieldstral`) are not sent to the
+   classifier; a `guard_skipped` event is emitted instead. Mid-run
+   `user_response` input is exempt: it is classified at any length,
+   since it is one call per turn boundary at most and a short relayed
+   turn is exactly the case that needs screening.
 2. **Batched composite criterion** at `pre_turn` and `post_turn`.
    The default config issues one outbound request per phase per
    turn, regardless of chunk count.
@@ -536,7 +616,9 @@ Composite config skeleton:
 ```
 
 Each stage can carry its own `phases` restriction; an unset
-`phases` means the stage runs at every phase. Stages run
+`phases` means the stage runs at every phase, except that a
+`shieldstral` stage then skips `pre_tool` (see
+[`shieldstral`](#shieldstral)). Stages run
 sequentially: the first deny short-circuits.
 
 To add an adapter type, implement the `GuardRail` interface in a

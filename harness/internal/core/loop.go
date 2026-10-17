@@ -1443,7 +1443,7 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	if err != nil {
 		scrubbed := recordSpanError(span, err)
 		span.End()
-		guardID := guardIDFromDecision(decision)
+		guardID := guardIDFromCheck(decision, err)
 		if l.Metrics != nil {
 			l.Metrics.GuardErrors.Add(ctx, 1, l.metricAttrs(
 				attribute.String("guard.phase", string(in.Phase)),
@@ -1685,12 +1685,16 @@ func sortedContextValues(dynamicContext map[string]string) []string {
 	return values
 }
 
-// guardIDFromDecision returns the GuardID from a Decision, defaulting to
-// "unknown" when the decision is nil or its GuardID is empty. Used for
-// metric labelling on the error path where a Decision may not exist.
-func guardIDFromDecision(d *guard.Decision) string {
+// guardIDFromCheck names the guard behind a failed Check: the Decision's
+// GuardID when present, else the ID the adapter attached to err, else
+// "unknown". Used for labelling on the error path where a Decision
+// usually does not exist.
+func guardIDFromCheck(d *guard.Decision, err error) string {
 	if d != nil && d.GuardID != "" {
 		return d.GuardID
+	}
+	if id := guard.ErrorGuardID(err); id != "" {
+		return id
 	}
 	return "unknown"
 }

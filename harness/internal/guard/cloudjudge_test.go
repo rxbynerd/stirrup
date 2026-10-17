@@ -140,6 +140,9 @@ func TestCloudJudgeMalformedJSONReturnsError(t *testing.T) {
 	if !errors.Is(err, ErrCloudJudgeNoJSON) || !errors.Is(err, jsonextract.ErrNoNonceObject) {
 		t.Fatalf("error chain missing ErrCloudJudgeNoJSON or ErrNoNonceObject: %v", err)
 	}
+	if got := ErrorGuardID(err); got != cloudJudgeGuardID {
+		t.Fatalf("ErrorGuardID = %q, want %q", got, cloudJudgeGuardID)
+	}
 }
 
 func TestCloudJudgeUnknownVerdictReturnsError(t *testing.T) {

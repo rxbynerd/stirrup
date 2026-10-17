@@ -118,6 +118,22 @@ func TestGraniteGuardianDenyPath(t *testing.T) {
 	}
 }
 
+func TestGraniteGuardianErrorsCarryGuardID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatalf("NewGraniteGuardian: %v", err)
+	}
+	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "some output"})
+	if got := ErrorGuardID(err); got != guardianGuardID {
+		t.Errorf("ErrorGuardID(%v) = %q, want %q", err, got, guardianGuardID)
+	}
+}
+
 func TestGraniteGuardianThinkMode(t *testing.T) {
 	fs := newFakeGraniteServer(t, "<think>this looks malicious</think><score>yes</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
