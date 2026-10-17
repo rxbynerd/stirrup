@@ -1057,13 +1057,12 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Carries provider replay state so the next request can
-		// round-trip it. A max_tokens turn is never dispatched, so its
-		// tool calls stay out of history.
-		assistantBlocks := sr.Blocks
-		if sr.StopReason == "max_tokens" {
-			assistantBlocks = withoutToolUse(sr.Blocks)
+		// round-trip it. A turn that leaves no assistant message is
+		// never committed.
+		assistantBlocks, appended := committableAssistantBlocks(sr.StopReason, sr.Blocks)
+		if appended {
+			messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 		}
-		messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on
@@ -1085,7 +1084,9 @@ func (l *AgenticLoop) runInnerLoop(
 				// replay/mining still sees the rejected answer. The retry
 				// turn is recorded separately on its own iteration.
 				l.Trace.RecordTurnRecord(turnRecord)
-				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+				if appended {
+					l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+				}
 				messages = l.applyEscalation(ctx, config, decision, selection.Provider, selection.Model, messages, &pendingToolChoice)
 				escalationsSoFar++
 				continue
@@ -1118,7 +1119,9 @@ func (l *AgenticLoop) runInnerLoop(
 					l.Logger.InfoContext(ctx, "postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
-			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			if appended {
+				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			}
 			// The run does not end while unconsumed operator input
 			// exists: queued user_response text becomes the next user
 			// turn instead of a "done".
@@ -1153,7 +1156,9 @@ func (l *AgenticLoop) runInnerLoop(
 			// Non-tool-use, non-end-turn stop reasons still represent
 			// a completed exchange that replay/mining cares about.
 			l.Trace.RecordTurnRecord(turnRecord)
-			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			if appended {
+				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			}
 			return messages, sr.StopReason, finalAssistantText, sr.StopDetails
 		}
 		if len(toolCalls) == 0 {
@@ -1232,13 +1237,7 @@ func (l *AgenticLoop) applyEscalation(
 		*pendingToolChoice = types.ToolChoiceRequired
 	}
 	if decision.PromptMessage != "" {
-		messages = append(messages, types.Message{
-			Role:      "user",
-			Synthetic: true,
-			Content: []types.ContentBlock{
-				{Type: "text", Text: decision.PromptMessage},
-			},
-		})
+		messages = injectSyntheticUserText(messages, decision.PromptMessage)
 		l.emitUserMessage(types.UserMessageSourceToolChoiceEscalation, decision.PromptMessage, "")
 	}
 

@@ -618,9 +618,13 @@ re-provisioning the sandbox.
     not visible to the model.
   - `"continue"` starts each follow-up from the previous run's
     committed history with the prompt appended, so a session of
-    follow-ups is one conversation. A turn is committed once every tool
-    call it made has a result; a turn cut off mid-dispatch or by the
-    output limit is dropped together with everything after it. When
+    follow-ups is one conversation. A turn is committed once its
+    assistant message is in history and every tool call in it has a
+    result. A turn cut off mid-dispatch is dropped together with
+    everything after it. A turn that ends the run without dispatching
+    its tool calls, such as one cut off at the output limit, is kept
+    without them when it produced text and discarded when it produced
+    none. When
     the history ends in a user message (tool results, or verifier
     feedback), the prompt joins that message rather than following it.
     Tool results the previous run had not yet screened, because it
@@ -740,15 +744,19 @@ Deltas and tool events between a `turn_started` and the next
 `turn_committed` belong to that turn. `warning` and `heartbeat` events
 can arrive anywhere.
 
-**Committed and uncommitted turns.** `turn_committed` means the turn's
-assistant message, and a result for every tool call in it, are in the
-run's history, which later turns build on. A turn that opens with `turn_started` but
+**Committed and uncommitted turns.** `turn_committed` means the
+turn's assistant message, and a result for every tool call in it, are
+in the run's history, which later turns build on. A turn that ends the
+run without dispatching its tool calls commits without them, so a
+`tool_call` event streamed in such a turn has no `tool_result` and is
+not part of the history. A turn that opens with `turn_started` but
 reaches the next `turn_started` or `done` without a `turn_committed`
 did not commit. That happens when the provider request failed, when a
 stall or the consecutive-failure limit ended the run partway through
 the turn's tool calls, when the post-turn guard rejected the answer,
-or when a turn cut off at the output limit produced no text and was
-discarded. Its deltas were shown live but are not part of the
+or when a turn that was not dispatched left nothing to keep: a turn
+cut off at the output limit with no text, or a turn of tool calls
+alone. Its deltas were shown live but are not part of the
 conversation the model continues from. Tools that did run still had
 their effects on the workspace.
 

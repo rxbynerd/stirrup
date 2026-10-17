@@ -333,6 +333,31 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 		}
 	})
 
+	t.Run("provider error after the last retry", func(t *testing.T) {
+		loop := buildTestLoop(nil)
+		loop.Provider = &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream()}}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		rt, err := loop.Run(context.Background(), retryConfig(2))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rt.Outcome != "error" {
+			t.Fatalf("outcome = %q, want error", rt.Outcome)
+		}
+		var order []string
+		for _, ev := range tp.events {
+			switch ev.Type {
+			case "turn_started", "turn_committed", "done":
+				order = append(order, ev.Type)
+			}
+		}
+		if want := "[turn_started done]"; fmt.Sprint(order) != want {
+			t.Errorf("events = %v, want %s", order, want)
+		}
+	})
+
 	t.Run("output-limit turn with no text is discarded", func(t *testing.T) {
 		h := newOutputLimitHarness(
 			[]types.StreamEvent{{Type: "thinking", Text: "long", ThoughtSignature: "sig"}, stopWith("max_tokens")},
@@ -369,6 +394,71 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 			t.Errorf("order = %v, want %s", order, want)
 		}
 	})
+}
+
+// TestLoop_EscalationCommitsTheRejectedAnswer pins that an answer the
+// escalation policy rejects commits before its instruction is reported,
+// and the retry opens as the next turn.
+func TestLoop_EscalationCommitsTheRejectedAnswer(t *testing.T) {
+	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer(), toolCallTurn(), scriptEndTurn}}
+	loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
+	tp := &recordingTransport{}
+	loop.Transport = tp
+
+	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.calls() < 2 {
+		t.Fatalf("provider calls = %d, want an escalation retry", prov.calls())
+	}
+	retried := prov.historyAt(1)
+	instruction := textBlocks(retried[len(retried)-1])
+
+	var order []string
+	for _, ev := range tp.events {
+		switch ev.Type {
+		case "turn_started":
+			order = append(order, fmt.Sprintf("start:%d", *ev.Turn))
+		case "turn_committed":
+			order = append(order, fmt.Sprintf("commit:%d:%s:%d", *ev.Turn, ev.StopReason, ev.ToolResultCount))
+		case "user_message":
+			if ev.Source == types.UserMessageSourceToolChoiceEscalation {
+				order = append(order, "escalation")
+				if len(instruction) == 0 || ev.Text != instruction[len(instruction)-1] {
+					t.Errorf("escalation user_message text = %q, want the instruction appended to history %q", ev.Text, instruction)
+				}
+			}
+		}
+	}
+	if want := "[start:0 commit:0:end_turn:0 escalation start:1"; len(order) < 4 || fmt.Sprint(order[:4]) != want+"]" {
+		t.Errorf("event order = %v, want it to begin %s]", order, want)
+	}
+}
+
+// TestLoop_ContextOverflowRetryReportsTheTurnOnce pins that a turn retried
+// after a forced compaction opens and commits once.
+func TestLoop_ContextOverflowRetryReportsTheTurnOnce(t *testing.T) {
+	loop, _, _, _ := buildOverflowLoop(t, overflowStep{err: promptTooLong()})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+
+	rt, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rt.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success after the retry", rt.Outcome)
+	}
+	var started []int
+	for _, ev := range eventsOfType(tp, "turn_started") {
+		started = append(started, *ev.Turn)
+	}
+	if fmt.Sprint(started) != "[0 1 2 3]" {
+		t.Errorf("turn_started turns = %v, want [0 1 2 3]", started)
+	}
+	if got := userTurnCommits(tp.events); fmt.Sprint(got) != "[0 1 2 3]" {
+		t.Errorf("turn_committed turns = %v, want [0 1 2 3]", got)
+	}
 }
 
 func userTurnCommits(events []types.HarnessEvent) []int {
