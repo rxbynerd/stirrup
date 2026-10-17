@@ -369,6 +369,11 @@ a compromised or misconfigured server can do (`MCPServerConfig`):
   passing the SSRF guard — a defence against a server URI being
   repointed at an unexpected host.
 
+A traced run discloses its trace IDs to every connected MCP server:
+each tool call sends the run's `traceparent` and `tracestate` as HTTP
+headers and in `tools/call` `_meta`, with no opt-out (see
+[Trace context sent to MCP servers](observability-cloud.md#trace-context-sent-to-mcp-servers)).
+
 ## Path traversal prevention
 
 Every `Executor` implementation enforces workspace containment

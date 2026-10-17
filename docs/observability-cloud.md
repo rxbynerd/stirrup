@@ -1110,6 +1110,33 @@ request `provider_request_failed` or `provider_stream_failed`, so its
 label set stays the failure categories. Exception events carry the Go
 type of the underlying error in `exception.type`.
 
+### Trace context sent to MCP servers
+
+An MCP tool call reaches its server parented on the call's
+`execute_tool` span, so a server that exports its own spans to the
+same backend appears in the run's trace tree under that span. The
+harness sends W3C Trace Context in two places, both taken from the
+same span:
+
+- `params._meta.traceparent` and `params._meta.tracestate` on every
+  `tools/call` request, under the `_meta` key the MCP specification
+  reserves for this. The tool's `arguments` are unchanged.
+- `traceparent` and `tracestate` HTTP headers on every JSON-RPC
+  request whose context holds a span.
+
+A request whose context holds no span sends neither. Tool discovery
+(`tools/list`) runs while the harness is built, before the run span
+opens, so it carries no run span. It forwards a span that is already
+on the context passed to the factory, by an embedder through
+`harnessapi` or to the `--dry-run` preflight probe. `stirrup harness`
+passes no such span; `stirrup job` forwards the span carried on the
+task assignment's `trace_context` when one is supplied. A trace
+emitter that records no OpenTelemetry spans, such as `jsonl`, opens no
+spans of its own, so MCP servers receive trace context only when the
+caller's context already holds a span, and the context then names that
+caller span. Baggage is never sent, in `_meta` or as a header: MCP
+servers are third parties, and baggage can carry user identifiers.
+
 ## Token usage on chat spans
 
 Every `chat` span that completed carries `gen_ai.usage.input_tokens`
