@@ -146,7 +146,7 @@ instead.
 | `type` | Fields | Semantics |
 |---|---|---|
 | `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
-| `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a fresh run with its text as the prompt, and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
+| `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a new run with its text as the prompt (from the previous run's history under `followUpHistory: "continue"`, see [Follow-up turns](#follow-up-turns)), and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
 | `batch_result` | `request_id`, `content` (BatchResult JSON) | Completes a `batch_submission`. Encode failures in `content.err` — `content` is the canonical discriminator. `is_error` is optional and must agree with it. |
@@ -610,9 +610,35 @@ re-provisioning the sandbox.
   or set `STIRRUP_FOLLOWUP_GRACE` in the Pod environment. A positive
   config value wins; zero or unset falls back to the environment.
 - After `done`, the stream stays open for the grace window. A
-  `user_response` starts a fresh run with a new run ID and the response
-  text as its prompt. Current follow-ups **do not preserve the previous
-  run's conversation history**.
+  `user_response` starts a new run with a new run ID and the response
+  text as its prompt. What that run starts from is set by
+  `followUpHistory`:
+  - `"reset"` (the default; an empty value selects it) starts each
+    follow-up from its prompt alone. The previous run's conversation is
+    not visible to the model.
+  - `"continue"` starts each follow-up from the previous run's
+    committed history with the prompt appended, so a session of
+    follow-ups is one conversation. A turn is committed once every tool
+    call it made has a result; a turn cut off mid-dispatch or by the
+    output limit is dropped together with everything after it. When
+    the history ends in a user message (tool results, or verifier
+    feedback), the prompt joins that message rather than following it.
+    Tool results the previous run had not yet screened, because it
+    ended before its next turn boundary, are screened before the
+    follow-up's first model call, with the Rule-of-Two and guard
+    handling a turn boundary applies. A run that ended
+    `rule_of_two_violation` or `guardrail_blocked` passes no history
+    on: the next follow-up starts from its prompt alone and the harness
+    sends a `warning` saying so. The system prompt, dynamic context and
+    repository guidance are rebuilt for every run and are not part of
+    the carried history. Each run re-sends the carried history, so its
+    input tokens count against that run's `maxTokenBudget`, and the
+    configured context strategy compacts a long session the same way it
+    compacts a long run. The Rule-of-Two latch spans the whole session
+    in both modes: once tripped, it stays tripped for every later run.
+
+  The primary run is the same in both modes, and the field does nothing
+  without a follow-up window.
 - A `user_response` sent during an active run — primary or follow-up —
   is not a follow-up: it is queued (up to 16) and injected as a user
   message at that run's next turn boundary, after any pending tool

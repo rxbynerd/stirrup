@@ -210,9 +210,11 @@ IMDS, GitHub Actions OIDC). See
 10. **Follow-up grace** *(optional)*. If `followUpGrace` (or
     `STIRRUP_FOLLOWUP_GRACE`) is positive, the stream stays open for
     that many idle seconds after each run is finalised, so the control
-    plane can deliver a `user_response` that starts a fresh run with a
-    new run ID and its own `timeout` budget. Steps 7–9 repeat for that
-    run. See [Run budgets and precedence](#run-budgets-and-precedence).
+    plane can deliver a `user_response` that starts a new run with a
+    new run ID and its own `timeout` budget; `followUpHistory` decides
+    whether that run continues the previous run's conversation (see
+    [Follow-up turns](integration-guide.md#follow-up-turns)). Steps 7–9
+    repeat for that run. See [Run budgets and precedence](#run-budgets-and-precedence).
 11. **Exit.** The liveness probe file is removed; the process exits 0
     when the primary run succeeded or non-zero on transport / build /
     runtime failure. Before the connection closes the harness

@@ -14,8 +14,9 @@ follow-up against the same message history. The existing
 `--followup-grace` flag keeps the gRPC transport open, but only the gRPC
 control plane can deliver follow-up `user_response` events. More
 importantly, `RunFollowUpLoop` currently mutates `config.Prompt` and calls
-`Run` again, and `Run` rebuilds message history from the new prompt. That
-is a new run, not a continuation.
+`Run` again, and by default `Run` rebuilds message history from the new
+prompt. That is a new run, not a continuation. (`followUpHistory:
+"continue"` now gives in-process continuity; see section 2.)
 
 We want three behaviours:
 
@@ -41,7 +42,7 @@ of session events written as the run progresses.
 |---|---|
 | Message history lifetime | Local variable in `Run` / `runInnerLoop`; gone when `Run` returns. |
 | Existing `--trace` JSONL | One summary line at end with token totals and tool-call summaries. It is telemetry, not conversational state, and does not contain message content. |
-| `--followup-grace` | `RunFollowUpLoop` sets `config.Prompt` and calls `Run`, which rebuilds `messages` from the prompt. Prior turns are dropped. |
+| `--followup-grace` | `RunFollowUpLoop` sets `config.Prompt` and calls `Run`. Under `followUpHistory: "reset"` (the default) `Run` rebuilds `messages` from the prompt and prior turns are dropped. Under `followUpHistory: "continue"` the loop keeps the previous run's committed messages in memory and the follow-up starts from them with its prompt coalesced into a trailing user message (see section 7, "gRPC Follow-Up Flow"). Nothing is written to disk, so the history ends with the process. |
 | Existing recording types | `types.RunRecording` and `[]types.TurnRecord` describe post-hoc replay/eval records. They are useful reference points, but they are not a live session log and are not populated by the live loop. |
 | Secret hygiene | `RunConfig.Redact()` exists for traces/recordings. Transports and logs scrub emitted strings. In-memory `messages` are not scrubbed because the model may need the exact content. |
 | Tool-use correlation | `ToolUseID` couples `tool_use` and `tool_result` blocks. Provider APIs reject mismatched IDs, so continuation must round-trip them exactly. |
@@ -486,6 +487,24 @@ Recorder call sites:
   when the caller knows it (`signal`, `timeout`, `error`).
 
 ### gRPC Follow-Up Flow
+
+**Implementation status.** In-process continuity has shipped behind
+`followUpHistory: "continue"`, without the session recorder or
+`RunWithMessages`. At the end of each top-level run the loop keeps the
+run's committed history — it drops a trailing assistant message whose
+`tool_use` blocks are not all answered by the next message's
+`tool_result` blocks, and everything after it, which is the
+reconstruction rule of section 6 step 6 applied to the in-memory slice.
+The next run `RunFollowUpLoop` starts takes that history up and
+coalesces its prompt into a trailing user message. Tool results that
+arrived after the previous run's last pre-turn screening are screened
+before the follow-up's first provider call, and a run that ended
+`rule_of_two_violation` or `guardrail_blocked` passes no history on.
+Steps 2-4 below are covered by that in-memory hand-off; the `runId`
+correlation check in step 1 is not implemented, since the harness
+accepts `user_response` only from the one control stream it serves.
+The on-disk session log, `--continue`, and teleporting remain
+unimplemented.
 
 `RunFollowUpLoop` keeps the message slice returned by the primary
 `RunWithMessages` and tracks the active `runId`/`sessionId`. On each
