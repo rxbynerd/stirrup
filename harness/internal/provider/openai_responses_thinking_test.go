@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -139,4 +140,76 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
+}
+
+// responsesSummaryDeltas is a text-only turn whose reasoning summary
+// arrives as the given reasoning_summary_text.delta payloads.
+func responsesSummaryDeltas(payloads ...string) []byte {
+	events := []string{
+		makeResponsesEvent("response.created", `{"response":{"id":"resp_p","status":"in_progress","model":"gpt-5.6-sol","output":[]}}`),
+	}
+	for _, p := range payloads {
+		events = append(events, makeResponsesEvent("response.reasoning_summary_text.delta", p))
+	}
+	events = append(events,
+		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_p","output_index":1,"delta":"done"}`),
+		makeResponsesEvent("response.completed", `{"response":{"id":"resp_p","status":"completed","model":"gpt-5.6-sol","output":[]}}`),
+	)
+	return []byte(strings.Join(events, ""))
+}
+
+func TestOpenAIResponsesAdapter_ReasoningSummaryParts(t *testing.T) {
+	delta := func(item string, index int, text string) string {
+		return fmt.Sprintf(`{"item_id":%q,"output_index":0,"summary_index":%d,"delta":%s}`, item, index, mustJSON(t, text))
+	}
+	cases := []struct {
+		name     string
+		payloads []string
+		want     []string
+	}{
+		{
+			name:     "a new part starts a new paragraph",
+			payloads: []string{delta("rs_1", 0, "End of part"), delta("rs_1", 0, " one."), delta("rs_1", 1, "Start of part two.")},
+			want:     []string{"End of part", " one.", "\n\nStart of part two."},
+		},
+		{
+			name:     "a single part has no separator",
+			payloads: []string{delta("rs_1", 0, "Only "), delta("rs_1", 0, "part.")},
+			want:     []string{"Only ", "part."},
+		},
+		{
+			name:     "a part of a later reasoning item starts a new paragraph",
+			payloads: []string{delta("rs_1", 0, "First item."), delta("rs_2", 0, "Second item.")},
+			want:     []string{"First item.", "\n\nSecond item."},
+		},
+		{
+			name:     "malformed and empty deltas are dropped",
+			payloads: []string{`{"delta":`, delta("rs_1", 0, ""), delta("rs_1", 0, "Kept.")},
+			want:     []string{"Kept."},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := newResponsesScript(t, responsesSummaryDeltas(tc.payloads...))
+			params := effortParams(responsesReplayModel, "high", true)
+			params.ReasoningSummary = types.ReasoningSummaryAuto
+			ch, err := script.adapter(nil).Stream(context.Background(), params)
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			events := drainStream(t, ch)
+			for _, ev := range events {
+				if ev.Type == "error" {
+					t.Fatalf("stream failed: %v", ev.Error)
+				}
+			}
+			thinking, text := splitDeltas(events)
+			if strings.Join(thinking, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("thinking_delta fragments = %q, want %q", thinking, tc.want)
+			}
+			if text != "done" {
+				t.Errorf("answer text = %q, want done", text)
+			}
+		})
+	}
 }

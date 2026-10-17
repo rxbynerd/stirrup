@@ -434,12 +434,15 @@ effort is `none`.
 
 **Reasoning summaries.** When `reasoningSummary` is explicitly `auto`,
 a request that carries `reasoning.effort` also carries
-`reasoning.summary: "auto"`, and each `response.reasoning_summary_text.delta` event streams as a
-`thinking_delta`. With no projected effort the request has no
-`reasoning` object, so no summary is requested. The reasoning output
-item, with its `summary` array, is stored and replayed verbatim like
-any other item. This follows OpenAI's documented shapes and has not
-been probed live. OpenAI's
+`reasoning.summary: "auto"`, and each
+`response.reasoning_summary_text.delta` event streams as a
+`thinking_delta`. The first delta of each later summary part starts
+with a blank line, so parts do not run together, and a malformed delta
+is dropped rather than failing the turn. With no projected effort the
+request has no `reasoning` object, so no summary is requested. The
+reasoning output item, with its `summary` array, is stored and
+replayed verbatim like any other item. This follows OpenAI's
+documented shapes and has not been probed live. OpenAI's
 [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
 says organisation verification may be needed before summarizers work on
 its latest reasoning models, so an unset `reasoningSummary` requests no

@@ -1505,6 +1505,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	// outputIdx field is preserved so we can flush in deterministic order.
 	calls := make(map[string]*responsesCallState)
 	replay := newResponsesReplayCapture(logger, model, replayOrigin, &o.replayWarnedNoEncrypted)
+	summary := &responsesSummaryParts{logger: logger}
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase the buffer ceiling so a single SSE record carrying a large
@@ -1530,7 +1531,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		if eventName == "" || data == "" {
 			return true
 		}
-		return o.dispatchEvent(ctx, eventName, data, calls, replay, emitEvent)
+		return o.dispatchEvent(ctx, eventName, data, calls, replay, summary, emitEvent)
 	}
 
 	for scanner.Scan() {
@@ -1607,6 +1608,24 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	}
 }
 
+// responsesSummaryParts tracks the reasoning-summary part the stream is in,
+// so the first delta of each later part starts on a new paragraph rather
+// than running on from the previous part's last sentence.
+type responsesSummaryParts struct {
+	logger *slog.Logger
+	itemID string
+	index  int
+	seen   bool
+}
+
+func (s *responsesSummaryParts) text(itemID string, index int, delta string) string {
+	if s.seen && (itemID != s.itemID || index != s.index) {
+		delta = "\n\n" + delta
+	}
+	s.itemID, s.index, s.seen = itemID, index, true
+	return delta
+}
+
 // dispatchEvent handles a single completed SSE record. It returns false to
 // signal the caller to stop reading (terminal event or consumer cancelled),
 // true to continue.
@@ -1614,7 +1633,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 // `emit` returns false when the consumer has gone away (context cancelled);
 // every emit call site propagates that to abandon the stream rather than
 // pretending to keep going.
-func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, emit func(types.StreamEvent) bool) bool {
+func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, summary *responsesSummaryParts, emit func(types.StreamEvent) bool) bool {
 	switch name {
 	case "response.created":
 		// Optional metadata; nothing to emit.
@@ -1671,14 +1690,19 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 
 	case "response.reasoning_summary_text.delta":
 		var payload struct {
-			Delta string `json:"delta"`
+			ItemID       string `json:"item_id"`
+			SummaryIndex int    `json:"summary_index"`
+			Delta        string `json:"delta"`
 		}
+		// Summary text is display-only, so a malformed delta is dropped
+		// rather than failing the turn.
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse reasoning_summary_text.delta: %w", err)})
-			return false
+			summary.logger.DebugContext(ctx, "openai-responses reasoning summary delta dropped", "error", err)
+			return true
 		}
 		if payload.Delta != "" {
-			if !emit(types.StreamEvent{Type: "thinking_delta", Text: payload.Delta}) {
+			text := summary.text(payload.ItemID, payload.SummaryIndex, payload.Delta)
+			if !emit(types.StreamEvent{Type: "thinking_delta", Text: text}) {
 				return false
 			}
 		}
