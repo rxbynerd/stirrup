@@ -42,6 +42,9 @@ const (
 	// follows run_started because the prompt is built after the trace
 	// starts, and an older reader skips it as an unknown kind.
 	EventKindSystemPrompt EventKind = "system_prompt"
+	// EventKindPostEditCheck captures one tools.postEdit check execution
+	// as it completes.
+	EventKindPostEditCheck EventKind = "post_edit_check"
 )
 
 // CurrentSchemaVersion is the streaming-trace schema version emitted in
@@ -93,6 +96,7 @@ type Event struct {
 	// Hook payload — populated for hook_record events.
 	Hook          *types.HookExecution       `json:"hook,omitempty"`
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
+	PostEditCheck *types.PostEditCheckRecord `json:"postEditCheck,omitempty"`
 
 	// SubRun is the child's outcome — populated for subrun_finished.
 	SubRun *types.SubRunSummary `json:"subRun,omitempty"`

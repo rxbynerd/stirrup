@@ -63,6 +63,7 @@ type JSONLTraceEmitter struct {
 	repositoryGuidance   []types.RepositoryGuidanceRecord
 	auxiliaryTokens      types.TokenUsage
 	externalGuardTokens  types.TokenUsage
+	postEditChecks       []types.PostEditCheckRecord
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
@@ -79,6 +80,7 @@ var _ RunErrorRecorder = (*JSONLTraceEmitter)(nil)
 var _ StructuredOutputRecorder = (*JSONLTraceEmitter)(nil)
 var _ SubRunRecorder = (*JSONLTraceEmitter)(nil)
 var _ SystemInstructionsRecorder = (*JSONLTraceEmitter)(nil)
+var _ PostEditCheckRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -128,6 +130,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.permissionDenials = 0
 	e.hookResults = nil
 	e.verificationResults = nil
+	e.postEditChecks = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.degradedCapabilities = nil
@@ -373,6 +376,16 @@ func (e *JSONLTraceEmitter) runIDLocked(recordRunID string) string {
 	return e.runID
 }
 
+// RecordPostEditCheck accumulates a post-edit check record for the
+// run_finished summary and streams it as a post_edit_check event.
+func (e *JSONLTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	scrubbed := scrubPostEditCheck(record, e.redactionDisabled)
+	e.postEditChecks = append(e.postEditChecks, scrubbed)
+	_ = e.writeLineLocked(Event{Kind: EventKindPostEditCheck, PostEditCheck: &scrubbed})
+}
+
 func (e *JSONLTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -471,6 +484,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		RepositoryGuidance:   e.repositoryGuidance,
 		AuxiliaryTokens:      e.auxiliaryTokens,
 		ExternalGuardTokens:  e.externalGuardTokens,
+		PostEditChecks:       e.postEditChecks,
 	}
 
 	ev := Event{
@@ -660,6 +674,16 @@ func (e *JSONLTraceEmitter) redactConfig(config *types.RunConfig) types.RunConfi
 	redacted := config.Redact()
 	redacted.Prompt = security.Scrub(config.Prompt)
 	return redacted
+}
+
+// scrubPostEditCheck re-scrubs the model- and operator-derived strings of
+// a post-edit check record so the persisted trace does not depend on the
+// checker having scrubbed them.
+func scrubPostEditCheck(r types.PostEditCheckRecord, redactionDisabled bool) types.PostEditCheckRecord {
+	r.Path = scrubOrPass(r.Path, redactionDisabled)
+	r.Command = scrubOrPass(r.Command, redactionDisabled)
+	r.Error = scrubOrPass(r.Error, redactionDisabled)
+	return r
 }
 
 // scrubOrPass returns security.Scrub(s), or s verbatim under the --debug

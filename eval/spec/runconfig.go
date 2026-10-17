@@ -214,6 +214,16 @@ type traceArchiveSpec struct {
 type toolsSpec struct {
 	BuiltIn       []string           `hcl:"built_in,optional"`
 	CommandOutput *commandOutputSpec `hcl:"command_output,block"`
+	PostEdit      []postEditSpec     `hcl:"post_edit,block"`
+}
+
+// postEditSpec mirrors types.PostEditCheckConfig so a suite can pair a
+// run with and without post-edit checks. Repeat the block for several
+// checks; order is preserved.
+type postEditSpec struct {
+	Glob           string `hcl:"glob"`
+	Command        string `hcl:"command"`
+	TimeoutSeconds int    `hcl:"timeout_seconds,optional"`
 }
 
 // commandOutputSpec mirrors types.CommandOutputConfig so suites can A/B the
@@ -375,6 +385,13 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 				MaxBytesPerStream:     co.MaxBytesPerStream,
 				MaxBytesPerRun:        co.MaxBytesPerRun,
 			}
+		}
+		for _, pe := range s.Tools.PostEdit {
+			out.Tools.PostEdit = append(out.Tools.PostEdit, types.PostEditCheckConfig{
+				Glob:           pe.Glob,
+				Command:        pe.Command,
+				TimeoutSeconds: pe.TimeoutSeconds,
+			})
 		}
 	}
 	if s.RuleOfTwo != nil {

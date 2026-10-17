@@ -1158,6 +1158,9 @@ message RunTrace {
   // part of the token totals above and not charged to max_token_budget.
   // Absent when there was none.
   TokenUsage external_guard_tokens = 26;
+
+  // Counts of tools.post_edit check executions. Absent when no check ran.
+  PostEditCheckSummary post_edit_checks = 35;
 }
 
 // GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
@@ -1251,6 +1254,22 @@ message TokenUsage {
   int32 cache_read_tokens = 3;
   int32 cache_write_tokens = 4;
   int32 reasoning_tokens = 5;
+}
+
+// PostEditCheckSummary aggregates the run's post-edit check executions.
+message PostEditCheckSummary {
+  // Executions, one per matching check per successful edit.
+  int32 runs = 1;
+
+  // Executions that exited non-zero.
+  int32 failures = 2;
+
+  // Executions killed by their timeout.
+  int32 timeouts = 3;
+
+  // Executions that did not run to an exit code for another reason
+  // (a rejected path or an executor error).
+  int32 errors = 4;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured
@@ -2295,6 +2314,15 @@ message ToolsConfig {
   // segments or glob characters; at most 64. Files loaded through
   // repository_guidance are protected in addition. Empty by default.
   repeated string protected_write_targets = 8;
+
+  // Optional. Operator-authored checks run through the run's executor
+  // after an edit tool (write_file, edit_file, search_replace,
+  // apply_diff) succeeds on a matching path. A non-zero exit appends
+  // fenced, scrubbed diagnostics (at most 16 KiB) to that tool result; a
+  // zero exit adds nothing; the edit is never rolled back. Not subject to
+  // the permission policy. Rejected in read-only modes and for the "api"
+  // and "none" executors. At most 16 entries.
+  repeated PostEditCheck post_edit = 10;
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte
@@ -2321,6 +2349,27 @@ message CommandOutputConfig {
   // Optional. Per-run capture cap across all commands. 0 selects 500 MiB;
   // maximum 2 GiB.
   int64 max_bytes_per_run = 6;
+}
+
+// PostEditCheck is one tools.post_edit entry. Every entry whose glob
+// matches the edited path runs, in configuration order.
+message PostEditCheck {
+  // Required. path.Match pattern. A glob without "/" matches the edited
+  // file's base name; a glob containing "/" matches the cleaned
+  // workspace-relative path. Max 256 bytes.
+  string glob = 1;
+
+  // Required. Shell command executed via "sh -c"; only a non-zero exit
+  // reports a problem. Each "{path}" expands to a reference to the
+  // exported STIRRUP_EDITED_PATH variable, one word whether bare or
+  // double-quoted; "'{path}'" is rejected. Must not contain a
+  // "secret://" reference. Max 16 KB.
+  string command = 2;
+
+  // Optional. Timeout in seconds for one execution. Zero resolves to
+  // 60 s; max 600. A timeout adds a warning to the tool result and does
+  // not fail the edit.
+  int32 timeout_seconds = 3;
 }
 
 // ControlPlaneToolConfig declares one tool whose result the control plane

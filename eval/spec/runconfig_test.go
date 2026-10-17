@@ -206,6 +206,78 @@ suite "s" {
 	}
 }
 
+func TestLoadSuiteHCL_ToolsPostEditBlocks(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    tools {
+      post_edit {
+        glob    = "*.go"
+        command = "gofmt -l {path}"
+      }
+      post_edit {
+        glob            = "cmd/*.go"
+        command         = "go vet ./cmd/..."
+        timeout_seconds = 120
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-post-edit.hcl", src))
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	want := []types.PostEditCheckConfig{
+		{Glob: "*.go", Command: "gofmt -l {path}"},
+		{Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: 120},
+	}
+	if got.RunConfig == nil || !reflect.DeepEqual(got.RunConfig.Tools.PostEdit, want) {
+		t.Fatalf("PostEdit = %#v, want %#v", got.RunConfig, want)
+	}
+}
+
+// TestLoadSuiteHCL_PostEditABArmsDifferOnlyInChecks pins the paired
+// post-edit suites: identical tasks and run config apart from
+// tools.postEdit, which only the on arm sets.
+func TestLoadSuiteHCL_PostEditABArmsDifferOnlyInChecks(t *testing.T) {
+	on, err := LoadSuiteHCL("../suites/post-edit-ab-on.hcl")
+	if err != nil {
+		t.Fatalf("on arm: %v", err)
+	}
+	off, err := LoadSuiteHCL("../suites/post-edit-ab-off.hcl")
+	if err != nil {
+		t.Fatalf("off arm: %v", err)
+	}
+	if !reflect.DeepEqual(on.Tasks, off.Tasks) || len(on.Tasks) == 0 {
+		t.Fatal("post-edit A/B arms must carry identical, non-empty task lists")
+	}
+	if len(on.RunConfig.Tools.PostEdit) == 0 || len(off.RunConfig.Tools.PostEdit) != 0 {
+		t.Fatalf("postEdit on=%v off=%v; only the on arm may configure checks", on.RunConfig.Tools.PostEdit, off.RunConfig.Tools.PostEdit)
+	}
+	onConfig := *on.RunConfig
+	onConfig.Tools.PostEdit = nil
+	if !reflect.DeepEqual(onConfig, *off.RunConfig) {
+		t.Fatalf("arms differ beyond tools.postEdit\n on:  %#v\n off: %#v", onConfig, *off.RunConfig)
+	}
+}
+
 // TestLoadSuiteHCL_TraceEmitterArchiveBlock asserts trace_emitter.archive
 // round-trips into a *types.TraceArchiveConfig (issue #498), covering both
 // the "gcs" and "local" archive types since validateTraceArchiveConfig

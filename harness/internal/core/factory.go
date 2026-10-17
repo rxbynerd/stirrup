@@ -28,6 +28,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/postedit"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
@@ -248,6 +249,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		logger = logger.With("sessionName", config.SessionName)
 	}
 	logPlatformExporters(logger, config, exporters)
+	postEditChecker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, config.Tools.PostEdit, logger)
 
 	// 4b. Sandbox identity token refresh, started here rather than at 3b
 	// so its log lines ride the scrub-wrapped logger. Runs from now until
@@ -334,6 +336,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	te := components.traceEmitter
 	if recorder, ok := te.(trace.CommandOutputRecorder); ok && commandOutputStore != nil {
 		commandOutputStore.SetRecorder(recorder)
+	}
+	if recorder, ok := te.(trace.PostEditCheckRecorder); ok && postEditChecker != nil {
+		postEditChecker.SetRecorder(recorder)
 	}
 	if closer, ok := te.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
@@ -1361,6 +1366,24 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 			return fmt.Sprintf("Successfully edited %s", result.Path), nil
 		},
 	}
+}
+
+// attachPostEditChecks wraps the registered edit tool's handler with the
+// tools.postEdit checks. That one tool serves every edit strategy, so no
+// workspace-writing edit path bypasses them. Returns nil when no checks
+// are configured or no edit tool is registered, warning in the latter case.
+func attachPostEditChecks(registry *tool.Registry, editToolName string, exec executor.Executor, checks []types.PostEditCheckConfig, logger *slog.Logger) *postedit.Checker {
+	checker := postedit.New(checks, exec, logger)
+	if checker == nil {
+		return nil
+	}
+	t := registry.Resolve(editToolName)
+	if t == nil || t.Handler == nil {
+		logger.Warn("tools.postEdit is configured but no edit tool is registered; post-edit checks will not run", "editTool", editToolName)
+		return nil
+	}
+	t.Handler = checker.Wrap(t.Name, t.Handler)
+	return checker
 }
 
 // defaultRuleOfTwoGuardCriteria is the guard-criteria set used when

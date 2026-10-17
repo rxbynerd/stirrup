@@ -133,6 +133,7 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 			Error:    last.Error,
 		}
 	}
+	pt.PostEditChecks = postEditCheckSummaryToProto(t.PostEditChecks)
 	pt.AuxiliaryTokens = tokenUsageToProto(t.AuxiliaryTokens)
 	pt.ExternalGuardTokens = tokenUsageToProto(t.ExternalGuardTokens)
 	return pt
@@ -150,6 +151,32 @@ func tokenUsageToProto(u types.TokenUsage) *pb.TokenUsage {
 		CacheReadTokens:  saturateInt32(u.CacheRead),
 		CacheWriteTokens: saturateInt32(u.CacheWrite),
 		ReasoningTokens:  saturateInt32(u.Reasoning),
+	}
+}
+
+// postEditCheckSummaryToProto counts check executions by result; nil when
+// none ran.
+func postEditCheckSummaryToProto(records []types.PostEditCheckRecord) *pb.PostEditCheckSummary {
+	if len(records) == 0 {
+		return nil
+	}
+	var runs, failures, timeouts, errs int
+	for _, r := range records {
+		runs++
+		switch {
+		case r.TimedOut:
+			timeouts++
+		case r.Error != "":
+			errs++
+		case r.ExitCode != 0:
+			failures++
+		}
+	}
+	return &pb.PostEditCheckSummary{
+		Runs:     saturateInt32(runs),
+		Failures: saturateInt32(failures),
+		Timeouts: saturateInt32(timeouts),
+		Errors:   saturateInt32(errs),
 	}
 }
 
@@ -745,6 +772,13 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			enabled := *co.Enabled
 			tc.CommandOutput.Enabled = &enabled
 		}
+	}
+	for _, pe := range pc.PostEdit {
+		tc.PostEdit = append(tc.PostEdit, types.PostEditCheckConfig{
+			Glob:           pe.Glob,
+			Command:        pe.Command,
+			TimeoutSeconds: int(pe.TimeoutSeconds),
+		})
 	}
 	return tc
 }
