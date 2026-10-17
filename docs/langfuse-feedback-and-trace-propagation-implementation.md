@@ -373,9 +373,13 @@ baggage is adopted (see the carrier decision above) it carries
 `session.id` only, never `user.id`, following Langfuse's warning that
 baggage reaches third-party APIs.
 
-`ctx` here is the per-call tool span context: `dispatch.go:221` passes
-`plan[idx].spanCtx`, and `registerMCPTool` forwards the handler `ctx`
-into `callTool` (`client.go:798`). `arguments` is untouched.
+`ctx` here is the per-call tool span context. MCP tools register only a
+`StructuredHandler`, with no `AsyncHandler`, so `planAndDispatch` runs
+them inline in its first phase via `executeToolCall(toolSpanCtx, …)`,
+one after another within a batch, rather than through the async
+fan-out. `executeToolCall` passes that `ctx` to the handler, and
+`registerMCPTool` forwards it into `callTool`. `arguments` is
+untouched.
 
 In `call` (`client.go:690`), inject the same two headers on the
 `*http.Request` for every method, from the method's `ctx`. The static
