@@ -160,7 +160,7 @@ suite "s" {
     model_router {
       type     = "static"
       provider = "anthropic"
-      model    = "claude-haiku-4-5"
+      model    = "claude-haiku-5-5"
     }
 
     tools {
@@ -296,7 +296,7 @@ suite "s" {
     model_router {
       type     = "static"
       provider = "anthropic"
-      model    = "claude-haiku-4-5"
+      model    = "claude-haiku-5-5"
     }
 
     trace_emitter {
@@ -355,7 +355,7 @@ suite "s" {
     model_router {
       type     = "static"
       provider = "anthropic"
-      model    = "claude-haiku-4-5"
+      model    = "claude-haiku-5-5"
     }
 
     trace_emitter {
@@ -416,7 +416,7 @@ suite "s" {
     model_router {
       type     = "static"
       provider = "anthropic"
-      model    = "claude-haiku-4-5"
+      model    = "claude-haiku-5-5"
     }
 
     trace_emitter {

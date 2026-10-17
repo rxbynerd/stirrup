@@ -318,11 +318,11 @@ func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 	t.Run("ModelRouter", func(t *testing.T) {
 		baseline := baselineRunConfig()
 		overlay := &types.RunConfigOverrides{
-			ModelRouter: &types.ModelRouterConfig{Type: "static", Model: "claude-haiku-4-5"},
+			ModelRouter: &types.ModelRouterConfig{Type: "static", Model: "claude-haiku-5-5"},
 		}
 		got := mergeOverrides(baseline, overlay)
-		if got.ModelRouter.Type != "static" || got.ModelRouter.Model != "claude-haiku-4-5" {
-			t.Errorf("ModelRouter = %#v, want {Type:static Model:claude-haiku-4-5}", got.ModelRouter)
+		if got.ModelRouter.Type != "static" || got.ModelRouter.Model != "claude-haiku-5-5" {
+			t.Errorf("ModelRouter = %#v, want {Type:static Model:claude-haiku-5-5}", got.ModelRouter)
 		}
 	})
 

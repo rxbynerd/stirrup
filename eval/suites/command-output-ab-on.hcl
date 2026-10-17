@@ -38,7 +38,7 @@ suite "command-output-ab-on" {
     model_router {
       type     = "static"
       provider = "anthropic"
-      model    = "claude-haiku-4-5"
+      model    = "claude-haiku-5-5"
     }
 
     permission_policy {

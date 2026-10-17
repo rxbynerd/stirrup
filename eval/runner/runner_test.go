@@ -1059,7 +1059,7 @@ fi
 
 	_, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: harnessPath,
-		Model:       "claude-haiku-4-5-20251001",
+		Model:       "claude-haiku-5-5",
 	})
 	if err != nil {
 		t.Fatalf("RunSuite returned error: %v", err)
@@ -1070,7 +1070,7 @@ fi
 		t.Fatalf("reading captured argv: %v", err)
 	}
 	captured := string(data)
-	for _, frag := range []string{"--model", "claude-haiku-4-5-20251001"} {
+	for _, frag := range []string{"--model", "claude-haiku-5-5"} {
 		if !strings.Contains(captured, frag+"\n") {
 			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
 		}

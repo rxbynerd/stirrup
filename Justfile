@@ -155,7 +155,7 @@ int-test-anthropic: build
     ./stirrup harness \
         --provider anthropic \
         --api-key-ref secret://ANTHROPIC_API_KEY \
-        --model claude-haiku-4-5-20251001 \
+        --model claude-haiku-5-5 \
         --max-turns 2 \
         --trace /tmp/stirrup-int-test-anthropic.jsonl \
         --prompt "Reply with the single word 'ok' and nothing else."
