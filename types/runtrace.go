@@ -505,11 +505,12 @@ type ModelInput struct {
 // request carried none. CacheKey is the provider-neutral affinity digest,
 // never the run ID itself.
 type RequestParams struct {
-	Temperature     *float64       `json:"temperature,omitempty"`
-	MaxTokens       int            `json:"maxTokens"`
-	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
-	ToolChoice      ToolChoiceMode `json:"toolChoice"`
-	CacheKey        string         `json:"cacheKey,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"`
+	MaxTokens        int            `json:"maxTokens"`
+	ReasoningEffort  string         `json:"reasoningEffort,omitempty"`
+	ReasoningSummary string         `json:"reasoningSummary,omitempty"`
+	ToolChoice       ToolChoiceMode `json:"toolChoice"`
+	CacheKey         string         `json:"cacheKey,omitempty"`
 }
 
 // ToolCallRecord records a single tool call and its result.

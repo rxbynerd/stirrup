@@ -1119,6 +1119,11 @@ type RunConfig struct {
 	// rejects "minimal"); the provider quirks registry enforces that
 	// before any wire bytes are sent.
 	ReasoningEffort string `protobuf:"bytes,33,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
+	// Optional. Provider-neutral switch for the model's reasoning text:
+	// "auto" (the default when empty) requests it from providers with a
+	// probed control and streams it as thinking_delta events; "off"
+	// requests none and streams none. Conversation history is unaffected.
+	ReasoningSummary string `protobuf:"bytes,59,opt,name=reasoning_summary,json=reasoningSummary,proto3" json:"reasoning_summary,omitempty"`
 	// Optional. Destination for the run's *answer* — a small RunResult
 	// JSON payload — as distinct from the trace emitter's *evidence*.
 	// An absent sub-message is equivalent to type "none" (no sink); a
@@ -1413,6 +1418,13 @@ func (x *RunConfig) GetHooks() *HooksConfig {
 func (x *RunConfig) GetReasoningEffort() string {
 	if x != nil {
 		return x.ReasoningEffort
+	}
+	return ""
+}
+
+func (x *RunConfig) GetReasoningSummary() string {
+	if x != nil {
+		return x.ReasoningSummary
 	}
 	return ""
 }
@@ -6590,7 +6602,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"tracestate\x18\x02 \x01(\tR\n" +
 	"tracestateJ\x04\b\x03\x10\x04R\abaggage\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xa1\x15\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xce\x15\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -6626,7 +6638,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\rtool_dispatch\x18\x1e \x01(\v2&.stirrup.harness.v1.ToolDispatchConfigR\ftoolDispatch\x12%\n" +
 	"\vtemperature\x18\x1f \x01(\x01H\x06R\vtemperature\x88\x01\x01\x125\n" +
 	"\x05hooks\x18  \x01(\v2\x1f.stirrup.harness.v1.HooksConfigR\x05hooks\x12)\n" +
-	"\x10reasoning_effort\x18! \x01(\tR\x0freasoningEffort\x12E\n" +
+	"\x10reasoning_effort\x18! \x01(\tR\x0freasoningEffort\x12+\n" +
+	"\x11reasoning_summary\x18; \x01(\tR\x10reasoningSummary\x12E\n" +
 	"\vresult_sink\x18\" \x01(\v2$.stirrup.harness.v1.ResultSinkConfigR\n" +
 	"resultSink\x12d\n" +
 	"\x16tool_choice_escalation\x18# \x01(\v2..stirrup.harness.v1.ToolChoiceEscalationConfigR\x14toolChoiceEscalation\x12<\n" +

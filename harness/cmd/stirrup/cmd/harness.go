@@ -155,6 +155,10 @@ type harnessCLIOptions struct {
 	// default.
 	ReasoningEffort string
 
+	// ReasoningSummary selects whether reasoning text is requested and
+	// streamed ("auto" or "off"). Empty means "auto".
+	ReasoningSummary string
+
 	// Vertex AI Gemini provider fields; meaningful only when
 	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
 	GCPProject         string
@@ -413,6 +417,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.Temperature = &t
 	}
 	config.ReasoningEffort = opts.ReasoningEffort
+	config.ReasoningSummary = opts.ReasoningSummary
 
 	// Scoped to gemini so --gcp-* flags left at their defaults do not
 	// leak onto non-gemini runs; the validator rejects them otherwise.
@@ -860,6 +865,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("reasoning-effort") {
 		cfg.ReasoningEffort, _ = f.GetString("reasoning-effort")
+	}
+	if changed("reasoning-summary") {
+		cfg.ReasoningSummary, _ = f.GetString("reasoning-summary")
 	}
 	if changed("log-level") {
 		cfg.LogLevel, _ = f.GetString("log-level")

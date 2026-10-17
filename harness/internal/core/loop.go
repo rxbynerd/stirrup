@@ -116,11 +116,12 @@ func requestParamsOf(p types.StreamParams) *types.RequestParams {
 		temperature = types.Float64Ptr(*p.Temperature)
 	}
 	return &types.RequestParams{
-		Temperature:     temperature,
-		MaxTokens:       p.MaxTokens,
-		ReasoningEffort: p.ReasoningEffort,
-		ToolChoice:      p.ToolChoice,
-		CacheKey:        p.CacheKey,
+		Temperature:      temperature,
+		MaxTokens:        p.MaxTokens,
+		ReasoningEffort:  p.ReasoningEffort,
+		ReasoningSummary: p.ReasoningSummary,
+		ToolChoice:       p.ToolChoice,
+		CacheKey:         p.CacheKey,
 	}
 }
 
@@ -982,15 +983,16 @@ func (l *AgenticLoop) runInnerLoop(
 		pendingToolChoice = types.ToolChoiceAuto
 
 		params := types.StreamParams{
-			Model:           selection.Model,
-			System:          systemPrompt,
-			Messages:        preparedMessages,
-			Tools:           l.Tools.List(),
-			MaxTokens:       responseReserve,
-			Temperature:     temperature,
-			ReasoningEffort: config.ReasoningEffort,
-			ToolChoice:      turnToolChoice,
-			CacheKey:        cacheKey,
+			Model:            selection.Model,
+			System:           systemPrompt,
+			Messages:         preparedMessages,
+			Tools:            l.Tools.List(),
+			MaxTokens:        responseReserve,
+			Temperature:      temperature,
+			ReasoningEffort:  config.ReasoningEffort,
+			ReasoningSummary: config.ReasoningSummary,
+			ToolChoice:       turnToolChoice,
+			CacheKey:         cacheKey,
 		}
 		l.emitTurnStarted(turn, selection)
 

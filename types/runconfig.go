@@ -155,6 +155,15 @@ type RunConfig struct {
 	// registry before any wire bytes are sent.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
+	// ReasoningSummary selects whether the model's reasoning text is
+	// requested and streamed to the transport as thinking_delta events:
+	// "auto" (the default when empty) or "off". Provider-neutral like
+	// ReasoningEffort: each adapter projects "auto" onto its native
+	// control (Gemini thinkingConfig.includeThoughts, OpenAI Responses
+	// reasoning.summary) and "off" requests none. History is unchanged
+	// either way.
+	ReasoningSummary string `json:"reasoningSummary,omitempty"`
+
 	// FollowUpGrace is the number of idle seconds to keep the transport
 	// open after each run completes, waiting for a follow-up user_response
 	// that starts the next run. The window restarts after every run. A
@@ -1759,6 +1768,13 @@ var validReasoningEfforts = map[string]bool{
 	"max":     true,
 }
 
+// Provider-neutral ReasoningSummary values. Empty is equivalent to
+// ReasoningSummaryAuto.
+const (
+	ReasoningSummaryAuto = "auto"
+	ReasoningSummaryOff  = "off"
+)
+
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
 // HTTP token characters so a user cannot inject CRLF / colon / whitespace
 // into the request. The pattern intentionally excludes "_" and "."; if a
@@ -2655,6 +2671,13 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf(
 			"reasoningEffort %q must be one of minimal, low, medium, high, xhigh, max",
 			config.ReasoningEffort))
+	}
+
+	switch config.ReasoningSummary {
+	case "", ReasoningSummaryAuto, ReasoningSummaryOff:
+	default:
+		errs = append(errs, fmt.Sprintf(
+			"reasoningSummary %q must be one of auto, off", config.ReasoningSummary))
 	}
 
 	validateRuleOfTwo(config, &errs)

@@ -13,9 +13,12 @@ import (
 // its signature. A "redacted_thinking" event carries only opaque data in
 // ThoughtSignature. Adapters emit each once per block, in stream order,
 // so the loop persists them between the surrounding text and tool calls.
-// A "thinking_delta" event carries an incremental fragment of a thinking
-// block's text for live display only: an adapter that emits them still
-// emits the complete "thinking" event, which alone reaches history.
+//
+// A "thinking_delta" event carries one fragment of reasoning text in Text,
+// for live display only: the loop never persists it, so an adapter whose
+// reasoning belongs in history or must be replayed also emits the complete
+// "thinking" block or ReplayFields. Reasoning text never rides on
+// "text_delta".
 //
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
@@ -251,6 +254,11 @@ type StreamParams struct {
 	// allow-list, and ignore it for models with no probed control, so a
 	// config stays portable across providers.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
+	// ReasoningSummary is RunConfig.ReasoningSummary: "auto" (or empty)
+	// asks adapters with a probed control to return reasoning text, which
+	// they stream as "thinking_delta" events; "off" asks for none.
+	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 
 	// ToolChoice steers tool use for this turn. The zero value
 	// (ToolChoiceAuto) is omitted from the wire by every adapter. An

@@ -1054,6 +1054,15 @@ func TestRunConfigFromProto_ReasoningEffortCarried(t *testing.T) {
 	}
 }
 
+func TestRunConfigFromProto_ReasoningSummaryCarried(t *testing.T) {
+	if got := runConfigFromProto(&pb.RunConfig{ReasoningSummary: "off"}).ReasoningSummary; got != "off" {
+		t.Errorf("ReasoningSummary: got %q, want %q", got, "off")
+	}
+	if got := runConfigFromProto(&pb.RunConfig{}).ReasoningSummary; got != "" {
+		t.Errorf("absent reasoning_summary translated to %q, want empty", got)
+	}
+}
+
 // TestProviderConfigFromProto_GeminiFieldsCarried pins that the four
 // Gemini provider fields survive the proto boundary. Before this test
 // existed they were silently dropped by providerConfigFromProto, which

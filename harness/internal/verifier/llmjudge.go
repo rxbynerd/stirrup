@@ -80,6 +80,8 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: userContent}}}},
 		MaxTokens:   judgeMaxTokens,
 		Temperature: types.Float64Ptr(judgeTemperature),
+		// Only the verdict text is read, so reasoning text is not requested.
+		ReasoningSummary: types.ReasoningSummaryOff,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream request failed: %w", err)

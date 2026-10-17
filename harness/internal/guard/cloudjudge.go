@@ -184,6 +184,8 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
 		MaxTokens:       cloudJudgeMaxTokens,
 		ReasoningEffort: cloudJudgeReasoningEffort,
+		// Only the verdict text is read, so reasoning text is not requested.
+		ReasoningSummary: types.ReasoningSummaryOff,
 		// Greedy decoding is transmitted as an explicit 0.0 via the
 		// pointer type, distinguishing "guard asked for greedy" from
 		// "unset" on the wire.

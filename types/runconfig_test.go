@@ -1185,6 +1185,28 @@ func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_ReasoningSummary(t *testing.T) {
+	for _, v := range []string{"", "auto", "off"} {
+		t.Run("accepts/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningSummary = v
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for reasoningSummary=%q, got: %v", v, err)
+			}
+		})
+	}
+	for _, v := range []string{"Auto", "none", "detailed", "concise"} {
+		t.Run("rejects/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningSummary = v
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), "reasoningSummary") {
+				t.Fatalf("expected reasoningSummary error for %q, got: %v", v, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_SessionNameEmpty(t *testing.T) {
 	c := validConfig()
 	c.SessionName = ""

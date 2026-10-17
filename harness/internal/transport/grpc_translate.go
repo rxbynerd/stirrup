@@ -284,6 +284,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.Temperature = pc.Temperature
 	}
 	rc.ReasoningEffort = pc.ReasoningEffort
+	rc.ReasoningSummary = pc.ReasoningSummary
 	if pc.Timeout != nil {
 		v := int(*pc.Timeout)
 		rc.Timeout = &v

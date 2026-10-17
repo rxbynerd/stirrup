@@ -263,6 +263,8 @@ func (s *SummariseStrategy) generateSummary(ctx context.Context, input string) (
 		// pointer type, distinguishing "summariser asked for greedy"
 		// from "unset" on the wire.
 		Temperature: types.Float64Ptr(0.0),
+		// Only the answer text is read, so reasoning text is not requested.
+		ReasoningSummary: types.ReasoningSummaryOff,
 	})
 	if err != nil {
 		return "", fmt.Errorf("start summary stream: %w", err)

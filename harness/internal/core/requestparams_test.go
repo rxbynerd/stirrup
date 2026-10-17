@@ -62,6 +62,7 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 	config := escalationConfig("execution")
 	config.Temperature = &temperature
 	config.ReasoningEffort = "high"
+	config.ReasoningSummary = "off"
 	if _, err := loop.Run(context.Background(), config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -80,11 +81,12 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 			t.Fatalf("turn %d: ModelInput.Request is nil", i)
 		}
 		want := types.RequestParams{
-			Temperature:     sent.Temperature,
-			MaxTokens:       sent.MaxTokens,
-			ReasoningEffort: sent.ReasoningEffort,
-			ToolChoice:      sent.ToolChoice,
-			CacheKey:        sent.CacheKey,
+			Temperature:      sent.Temperature,
+			MaxTokens:        sent.MaxTokens,
+			ReasoningEffort:  sent.ReasoningEffort,
+			ReasoningSummary: sent.ReasoningSummary,
+			ToolChoice:       sent.ToolChoice,
+			CacheKey:         sent.CacheKey,
 		}
 		if !reflect.DeepEqual(*got, want) {
 			t.Errorf("turn %d: recorded %+v, sent %+v", i, *got, want)
@@ -97,6 +99,9 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 		}
 		if got.ReasoningEffort != "high" {
 			t.Errorf("turn %d: reasoningEffort = %q, want high", i, got.ReasoningEffort)
+		}
+		if got.ReasoningSummary != "off" {
+			t.Errorf("turn %d: reasoningSummary = %q, want off", i, got.ReasoningSummary)
 		}
 	}
 

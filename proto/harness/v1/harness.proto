@@ -752,6 +752,12 @@ message RunConfig {
   // before any wire bytes are sent.
   string reasoning_effort = 33;
 
+  // Optional. Provider-neutral switch for the model's reasoning text:
+  // "auto" (the default when empty) requests it from providers with a
+  // probed control and streams it as thinking_delta events; "off"
+  // requests none and streams none. Conversation history is unaffected.
+  string reasoning_summary = 59;
+
   // Optional. Destination for the run's *answer* — a small RunResult
   // JSON payload — as distinct from the trace emitter's *evidence*.
   // An absent sub-message is equivalent to type "none" (no sink); a

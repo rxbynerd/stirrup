@@ -3192,6 +3192,55 @@ func TestBuildHarnessRunConfig_ReasoningEffortInvalid(t *testing.T) {
 	}
 }
 
+func TestBuildHarnessRunConfig_ReasoningSummary(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:            "test-run",
+		Mode:             "execution",
+		Prompt:           "test",
+		ProviderType:     "anthropic",
+		Model:            "claude-sonnet-5-5",
+		MaxTurns:         20,
+		Timeout:          600,
+		TransportType:    "stdio",
+		LogLevel:         "info",
+		ReasoningSummary: "off",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.ReasoningSummary != "off" {
+		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, "off")
+	}
+}
+
+func TestApplyOverrides_ReasoningSummary(t *testing.T) {
+	t.Run("flag overrides file", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.ReasoningSummary = "auto"
+		if err := cmd.Flags().Set("reasoning-summary", "off"); err != nil {
+			t.Fatalf("set reasoning-summary: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.ReasoningSummary != "off" {
+			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
+		}
+	})
+	t.Run("unset flag keeps file value", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.ReasoningSummary = "off"
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.ReasoningSummary != "off" {
+			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
+		}
+	})
+}
+
 // TestApplyOverrides_GeminiFlags exercises the --gcp-project,
 // --gcp-location, and --gcp-credentials-file overrides on the --config
 // path. Explicitly-set flags must clobber the file's values, and the

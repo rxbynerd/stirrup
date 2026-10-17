@@ -301,6 +301,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	gcpLocation, _ := f.GetString("gcp-location")
 	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
 	reasoningEffort, _ := f.GetString("reasoning-effort")
+	reasoningSummary, _ := f.GetString("reasoning-summary")
 	anthropicFederationRuleID, _ := f.GetString("anthropic-federation-rule-id")
 	anthropicOrganizationID, _ := f.GetString("anthropic-organization-id")
 	anthropicServiceAccountID, _ := f.GetString("anthropic-service-account-id")
@@ -456,6 +457,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		FollowUpGrace:                followUpGrace,
 		Temperature:                  temperature,
 		ReasoningEffort:              reasoningEffort,
+		ReasoningSummary:             reasoningSummary,
 		LogLevel:                     logLevel,
 		ExecutorType:                 executorType,
 		EditStrategyType:             editStrategyType,
