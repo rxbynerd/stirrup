@@ -6,19 +6,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -1004,5 +1009,128 @@ func TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults(t *testing.T) {
 		if callIdx >= resultIdx {
 			t.Errorf("tool_call for %q at index %d did not precede its tool_result at index %d", id, callIdx, resultIdx)
 		}
+	}
+}
+
+// mcpTraceServer is an MCP server whose single "echo" tool returns its "id"
+// argument. It records the traceparent each tools/call carried, both as the
+// HTTP header and in params._meta, keyed by that id.
+func mcpTraceServer(t *testing.T) (*httptest.Server, func() map[string][2]string) {
+	t.Helper()
+	var mu sync.Mutex
+	seen := map[string][2]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Arguments struct {
+					ID string `json:"id"`
+				} `json:"arguments"`
+				Meta map[string]string `json:"_meta"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var result string
+		switch req.Method {
+		case "tools/list":
+			result = `{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}`
+		case "tools/call":
+			mu.Lock()
+			seen[req.Params.Arguments.ID] = [2]string{r.Header.Get("traceparent"), req.Params.Meta["traceparent"]}
+			mu.Unlock()
+			result = fmt.Sprintf(`{"content":[{"type":"text","text":%q}]}`, req.Params.Arguments.ID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, result)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() map[string][2]string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[string][2]string, len(seen))
+		for k, v := range seen {
+			out[k] = v
+		}
+		return out
+	}
+}
+
+func spanIDFromTraceparent(t *testing.T, traceparent string) oteltrace.SpanContext {
+	t.Helper()
+	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": traceparent})
+	sc := oteltrace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		t.Fatalf("traceparent %q does not decode to a valid span context", traceparent)
+	}
+	return sc
+}
+
+// TestDispatch_MCPCallsCarryTheirOwnToolSpan pins that each MCP call in a
+// batch, dispatched inline one after another, reaches the server parented on
+// its own execute_tool span through both the traceparent header and
+// tools/call _meta.
+func TestDispatch_MCPCallsCarryTheirOwnToolSpan(t *testing.T) {
+	loop, exporter := otelLoop(t, nil)
+	loop.Permissions = permission.NewAllowAll()
+
+	srv, seen := mcpTraceServer(t)
+	client := mcp.NewClient(loop.Tools.(*tool.Registry), srv.Client())
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "srv", URI: srv.URL}, nil); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
+		{
+			{Type: "tool_call", ID: "tc_a", Name: "mcp_srv_echo", Input: map[string]any{"id": "a"}},
+			{Type: "tool_call", ID: "tc_b", Name: "mcp_srv_echo", Input: map[string]any{"id": "b"}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+		{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}}
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	root := spansNamed(spans, "invoke_agent stirrup")[0]
+	toolSpanByCall := map[string]oteltrace.SpanContext{}
+	for _, s := range spansNamed(spans, "execute_tool mcp_srv_echo") {
+		id, _ := spanAttr(s, "gen_ai.tool.call.id")
+		toolSpanByCall[id] = s.SpanContext
+	}
+	if len(toolSpanByCall) != 2 {
+		t.Fatalf("found execute_tool spans for calls %v, want tc_a and tc_b", toolSpanByCall)
+	}
+
+	got := seen()
+	for arg, callID := range map[string]string{"a": "tc_a", "b": "tc_b"} {
+		want, ok := toolSpanByCall[callID]
+		if !ok {
+			t.Fatalf("no execute_tool span for %s", callID)
+		}
+		carried, ok := got[arg]
+		if !ok {
+			t.Fatalf("server saw no tools/call for %q", arg)
+		}
+		for i, where := range []string{"traceparent header", "_meta.traceparent"} {
+			sc := spanIDFromTraceparent(t, carried[i])
+			if sc.SpanID() != want.SpanID() {
+				t.Errorf("call %s %s span = %s, want its execute_tool span %s", callID, where, sc.SpanID(), want.SpanID())
+			}
+			if sc.TraceID() != root.SpanContext.TraceID() {
+				t.Errorf("call %s %s trace = %s, want the run trace %s", callID, where, sc.TraceID(), root.SpanContext.TraceID())
+			}
+		}
+	}
+	if toolSpanByCall["tc_a"].SpanID() == toolSpanByCall["tc_b"].SpanID() {
+		t.Fatal("both MCP calls ran under the same execute_tool span")
 	}
 }
