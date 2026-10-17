@@ -8,12 +8,21 @@ Every file and line reference was re-checked against Stirrup
 `d65c91bd` and the sibling checkouts pinned in the research worksheet
 (Hairpin `5421cde9`, Billet `d4fb0e15`, haybale `e7941a5b`).
 
-Ownership: the feedback page, its persistence and the Langfuse score
-submission belong to an outer application that sits above the control
-plane. Stirrup reports identity and propagates context. Hairpin is a
-pass-through: it persists what Stirrup reports, forwards what the outer
-application supplies, and serves as the functional-test control plane.
-Nothing in this worksheet makes Hairpin the feedback surface.
+Scope: this worksheet covers Stirrup only. Stirrup reports identity and
+propagates context; it collects no feedback and submits no scores. The
+work in the other Equestrianism components is tracked where it will be
+done:
+
+| Component | Where the work is tracked |
+|---|---|
+| Outer application (owns the rating page, feedback store and score delivery) | [`langfuse-feedback-outer-application-worksheet.md`](langfuse-feedback-outer-application-worksheet.md) |
+| Hairpin (pass-through: persist and expose the reference, forward correlation) | [hairpin#18](https://github.com/rxbynerd/hairpin/issues/18) |
+| Hairpin (parent proxied tool calls on the harness tool span, trace the Billet client) | [hairpin#19](https://github.com/rxbynerd/hairpin/issues/19) |
+| Billet (OTel export, Connect interceptor, MCP `_meta` extraction) | [billet#2](https://github.com/rxbynerd/billet/issues/2) |
+| haybale (strip trace headers at the external Git boundary) | [haybale#16](https://github.com/rxbynerd/haybale/issues/16) |
+
+Hairpin is the functional-test control plane for the Stirrup packages
+below; nothing here makes it the feedback surface.
 
 ## Decisions
 
@@ -22,31 +31,27 @@ The rejected alternative is recorded so the reasoning is not lost.
 
 | Decision | Taken | Rejected | Why |
 |---|---|---|---|
-| Who owns feedback | An outer application owns the rating page, the feedback store, the outbox and the score submission (A1). Hairpin persists and exposes the reference and forwards correlation (H1) | Hairpin as the feedback surface | Under Hairpin's model an outer application owns the user-facing page; Hairpin stays usable for functional testing |
+| Who owns feedback | An outer application owns the rating page, the feedback store, the outbox and the score submission (its own worksheet). Hairpin persists and exposes the reference and forwards correlation (hairpin#18) | Hairpin as the feedback surface | Under Hairpin's model an outer application owns the user-facing page; Hairpin stays usable for functional testing |
+| Where non-Stirrup work is specified | Each component's work lives in its own worksheet or as issues on its repository (table above) | One cross-repository worksheet here | A Stirrup document cannot be the source of truth for another repository's backlog |
 | Where Langfuse-specific attributes are produced | A `langfuse` platform profile in `harness/internal/observability/platform/`, the vendor-mapping mechanism introduced by [#777](https://github.com/rxbynerd/stirrup/pull/777) | The collector `transform` recipe already in `docs/observability-cloud.md#langfuse` | The platform package is the one place allowed to name a vendor; a profile removes the collector from the feedback pilot and makes the OTLP/HTTP requirement a validation error instead of a silent drop |
 | `correlation.userId` | Accepted in the first cut as an opaque value | Deferred until a pseudonymisation policy exists | Pseudonymisation is the upstream application's responsibility; Stirrup treats the value as opaque |
 | Carrier shape on the wire | One shared proto message `TraceContext { traceparent, tracestate }` reused on `HarnessEvent` and `ControlEvent` | Two bare string fields per message | One type, one translate helper, one validator; `baggage` is excluded on purpose |
 | Who may set an upstream parent | The gRPC task assignment and the Go embedding caller's `ctx` (S6); CLI flags that set the context, not the config (S8) | A `traceContext` block inside `RunConfig` | A replayed `RunConfig` must not re-parent a new run onto an old trace |
 | Feedback subject in Langfuse | Observation score on the Stirrup run span (`traceId` + `observationId`) | Trace score | The run span is the execution; a trace may later contain Hairpin or other work |
-| Delivery waves | Wave 1: S1, S2, S3, H1, A1 (the feedback pilot). Wave 2: S6 and S4/S5, independent of the pilot's outcome. S8 as its own follow-up PR. S7 last | Upstream parenting first, or upstream parenting gated on the pilot | Feedback needs only S1; upstream parenting is wanted regardless of how the pilot goes, so it is sequenced, not conditional |
+| Delivery waves | Wave 1: S1, S2, S3 (what the feedback pilot needs from Stirrup). Wave 2: S6 and S4/S5, independent of the pilot's outcome. S8 as its own follow-up PR. S7 last | Upstream parenting first, or upstream parenting gated on the pilot | Feedback needs only S1; upstream parenting is wanted regardless of how the pilot goes, so it is sequenced, not conditional |
 
 ## Work packages
 
-| ID | Repository | Title | Depends on |
+| ID | Title | Depends on | Consumed by |
 |---|---|---|---|
-| S1 | Stirrup | Trace reference on `run_started`, `done`, `RunTrace`, `RunResult` | none |
-| S2 | Stirrup | Typed application correlation block on `RunConfig`, stamped on spans | none |
-| S3 | Stirrup | `langfuse` platform profile | S2 for the user/session/URL mapping |
-| S4 | Stirrup | W3C context in MCP `tools/call` `_meta` and HTTP headers | none |
-| S5 | Stirrup | W3C context on `tool_result_request` | shared `TraceContext` proto message (also used by S6) |
-| S6 | Stirrup | Context-aware trace start: upstream parent from the task assignment or the embedding `ctx` | shared `TraceContext` proto message |
-| S7 | Stirrup + haybale | Per-command Git trace headers through the executor env overlay | agreed executor overlay contract; haybale boundary policy |
-| S8 | Stirrup | CLI flags for correlation and the upstream parent (follow-up PR) | S2, S6 |
-| H1 | Hairpin | Persist and expose the reference; forward correlation from the outer application | S1, S2 |
-| H2 | Hairpin | Extract the tool carrier, trace the Billet RPC client | S5, B1 |
-| A1 | Outer application | Rating page, feedback store, outbox, Langfuse score delivery, links | S1 via H1 (and S2 for backlinks) |
-| B1 | Billet | OTel setup, Connect interceptor, MCP `_meta` extraction | none (useful with S4) |
-| Y1 | haybale | Strip trace headers at external upstreams by default | none (required before S7 is enabled) |
+| S1 | Trace reference on `run_started`, `done`, `RunTrace`, `RunResult` | none | hairpin#18, outer application |
+| S2 | Typed application correlation block on `RunConfig`, stamped on spans | none | hairpin#18, outer application |
+| S3 | `langfuse` platform profile | S2 for the user/session/URL mapping | operators |
+| S4 | W3C context in MCP `tools/call` `_meta` and HTTP headers | none | billet#2 |
+| S5 | W3C context on `tool_result_request` | shared `TraceContext` proto message (also used by S6) | hairpin#19 |
+| S6 | Context-aware trace start: upstream parent from the task assignment or the embedding `ctx` | shared `TraceContext` proto message | control planes, embedders |
+| S7 | Per-command Git trace headers through the executor env overlay | haybale#16 landed; agreed executor overlay contract | haybale |
+| S8 | CLI flags for correlation and the upstream parent (follow-up PR) | S2, S6 | CLI operators |
 
 S1, S2, S5 and S6 touch `proto/harness/v1/harness.proto`. Land the
 shared `TraceContext` message with whichever of S5/S6 goes first and
@@ -464,8 +469,10 @@ that already exists on the wire.
 
 ## S7. Git headers through the executor (deferred)
 
-Prototype only after Y1 lands and the executor env-overlay contract is
-agreed. Shape: for each `run_command`, compose `GIT_CONFIG_*` entries
+Prototype only after haybale strips trace headers at its external
+boundary ([haybale#16](https://github.com/rxbynerd/haybale/issues/16))
+and the executor env-overlay contract is agreed. Shape: for each
+`run_command`, compose `GIT_CONFIG_*` entries
 (`harness/internal/sandboxidentity/env.go:67` is the existing
 composition to extend) adding
 `http.<haybale-url>.extraHeader=traceparent: ...` from the command's tool
@@ -475,112 +482,27 @@ Never mutate the container's process-global environment. Acceptance:
 haybale's HTTP spans nest under the originating command's span, and two
 concurrent commands never share a parent.
 
-## H1. Hairpin: persist, expose, forward
-
-Hairpin is a pass-through here. It holds no feedback and builds no
-Langfuse links; it makes sure what Stirrup reports survives and what
-the outer application supplies reaches Stirrup.
-
-1. `just sync-proto` after S1 and S2 merge; regenerate. Hairpin's
-   unknown-event fallback (`internal/controlplane/pump.go:167`) stores
-   events with `protojson`, so without the regenerated types a
-   `trace_reference` field is dropped on the floor.
-2. `eventPump`: handle `run_started` explicitly: persist `TraceID`,
-   `RunSpanID`, `Sampled` on `job.Job` (`internal/job/job.go:51`,
-   beside the existing `TraceParent`, which is Hairpin's own submission
-   context and must stay separate), then `appendProto`. On `done`, if
-   `trace.trace_reference` is present and the job has none, persist it
-   (belt and braces for a dropped `run_started`).
-3. Expose the reference on the JobService `Get` response and in the
-   job's event replay, so the outer application can read it after a
-   restart on either side. The `/jobs/{id}` page
-   (`internal/web/web.go:77`) may show the raw IDs as an operator aid;
-   it is not the user surface and does not link into Langfuse.
-4. Accept a `correlation` block on job submission and copy it verbatim
-   into `RunConfig.correlation` when assembling the task. Hairpin
-   supplies nothing of its own: `url` is the outer application's page,
-   `userId` is already pseudonymised upstream, and `sessionId`,
-   `taskId`, `attemptId` are the outer application's identifiers.
-   Validation mirrors S2 so a bad block is rejected at submission, not
-   by the harness.
-5. Tests: event replay after restart keeps the reference; a submission
-   with `correlation` reaches the harness unchanged; a submission
-   without it leaves the block absent.
-
-## A1. Outer application: rate, store, deliver
-
-The application that owns the user-facing page. Hairpin is the
-functional-test stand-in for "control plane" below; the design does not
-depend on it.
-
-1. Mapping: persist `response/attempt → Stirrup run ID → trace ID +
-   run span ID + sampled → Langfuse host and project` per attempt, read
-   from the control plane's job record (H1 step 3). Keep every attempt's
-   reference; associate feedback with the attempt actually shown.
-2. Submission: set `correlation` on each job: `sessionId` = the
-   application's session, `taskId` and `attemptId` = its own IDs,
-   `userId` = its pseudonymous user key, `url` = the canonical page for
-   that attempt under its configured public origin.
-3. Feedback endpoint: `POST .../feedback {value, comment}` authenticated
-   by the application, which resolves the attempt to its stored
-   reference and never trusts a browser-supplied trace ID. Persist a row
-   keyed by attempt and reviewer first; a feedback ID derived from that
-   key is the Langfuse score `id`, so retries and edits upsert and two
-   reviewers never overwrite each other.
-4. Delivery: an outbox worker posts `POST {host}/api/public/scores`
-   with `id`, `traceId`, `observationId` = run span ID,
-   `name: "helpfulness"`, `value`, `comment`, Basic auth from the
-   project key pair. An attempt with `sampled == false` or no reference
-   stores the feedback and marks delivery "no trace". Record the
-   configuration or model identity alongside the rating so a score can
-   be attributed to a setup.
-5. Links: Langfuse deep link
-   `{host}/project/{projectId}/traces/{traceId}` built from the stored
-   host and project, never from today's configuration for an old run.
-6. Tests: rating the second of two attempts scores the second run's
-   span; retry/edit upserts; delivery failure leaves the row and
-   retries; a restart of the application or the control plane preserves
-   the mapping.
-
-## H2. Hairpin: tool carrier to Billet
-
-In `fulfilToolResult` (`pump.go:324`) extract the event's
-`trace_context` into the parent of `hairpin.memory.call` instead of the
-harness-stream context. Add the `otelconnect` interceptor to the Billet
-client at `internal/memory/memory.go:83`. Acceptance: a proxied call's
-Billet spans nest under the Stirrup `execute_tool` span.
-
-## B1. Billet: instrumentation
-
-Billet has no OTel dependency. Add an opt-in OTLP setup (same env
-variables as haybale's `internal/observability/setup.go` for
-consistency), the `otelconnect` interceptor on the RPC server
-(`internal/rpcserver/server.go`), and in the MCP server
-(`internal/mcpserver/server.go`) read `params._meta.traceparent`
-(and the HTTP headers) to start a server span per `tools/call`. Record
-operation, counts, duration and outcome only; no memory content.
-
-## Y1. haybale: external boundary
-
-haybale preserves caller headers in its proxy rewrite
-(`internal/proxy/proxy.go:445`). Strip `traceparent`, `tracestate` and
-`baggage` before forwarding to the external Git host by default, with a
-config flag to forward them. Required before S7 is enabled anywhere.
-
-## Verification before calling the pilot complete
+## Verification of the Stirrup packages
 
 - Unit and wire tests listed per package above.
-- A pinned local stack: Langfuse (self-hosted v4.x), Stirrup with the
-  `langfuse` profile, Hairpin as the functional-test control plane,
-  Billet, and a minimal outer-application stub that submits jobs with
-  `correlation` and posts scores. Assert span ancestry from the stored
+- A pinned local stack: Langfuse (self-hosted v4.x) and Stirrup with
+  the `langfuse` profile, driven over gRPC by Hairpin as the
+  functional-test control plane. For S4, a local MCP server that echoes
+  `_meta` and headers; for S5, a control-plane stub that records the
+  `tool_result_request` carrier. Assert span ancestry from the stored
   observations, not from span names.
-- Product path: submit two attempts, rate the second, edit the rating,
-  restart both the stub and Hairpin, confirm the score sits on the
-  second attempt's run span.
-- Browser path: application page → Langfuse trace; trace metadata
-  `control_plane_url` → application page.
-- Negative paths: JSONL-only emitter (no reference anywhere), unsampled
-  parent (`sampled: false`, no spans), feedback submitted after export
-  failure (row retained, delivery marked), a submission with an invalid
-  `correlation.url` rejected at the control plane.
+- Identity: the `traceId` and `runSpanId` on `run_started`, `done` and
+  `RunResult` equal the root span Langfuse stored for that run.
+- Correlation: every stored observation of a run carries `session.id`,
+  `user.id` and the `stirrup.*` keys, and the profile's `langfuse.*`
+  mappings appear in the trace's metadata and user fields. Click the
+  `control_plane_url` metadata value in the trace view; that renderer
+  claim is source-only until checked in a browser.
+- Negative paths: JSONL-only emitter (no reference anywhere); unsampled
+  parent (`sampled: false`, zero exported spans); invalid `correlation`
+  rejected by `ValidateRunConfig`; invalid carriers ignored at every
+  extraction point.
+
+The end-to-end feedback check (rate an attempt, restart, confirm the
+score lands on that run span) belongs to the outer-application
+worksheet.
