@@ -244,14 +244,24 @@ conversational and agentic safety intervention points, self-hosted
 via vLLM, Ollama, TGI, or LM Studio using the OpenAI-compatible
 chat-completions API — the same shape as `granite-guardian`.
 
-As of writing, Shieldstral is not listed on Mistral AI's La
-Plateforme (`api.mistral.ai`) or on OpenRouter; both were checked
-live and neither serves a `shieldstral*` model. The `endpoint` /
-`apiKeyRef` fields exist for operators pointing at their own
-authenticated deployment (a private inference endpoint, a proxy in
-front of a self-hosted instance) — do not assume a Mistral-hosted or
-OpenRouter-hosted endpoint will resolve without first confirming the
-provider serves the model.
+**Tested runtimes.** The adapter has been live-tested only against
+LM Studio serving MLX conversions of `mistralai/Shieldstral-1.0-3B`.
+vLLM, Ollama, and TGI are expected to work through the
+OpenAI-compatible chat-completions API but are untested.
+
+**Availability.** Shieldstral is not available on Mistral AI's hosted
+API (`api.mistral.ai`) or on OpenRouter; both were checked live and
+neither serves a `shieldstral*` model. The `endpoint` / `apiKeyRef`
+fields exist for operators pointing at their own authenticated
+deployment (a private inference endpoint, a proxy in front of a
+self-hosted instance).
+
+**LM Studio chat template.** Some LM Studio builds of the model ship
+a `chat_template.jinja` that calls its `render_content` macro with
+keyword arguments, which LM Studio's template engine rejects: every
+`/v1/chat/completions` call returns HTTP 400 with
+`Missing positional argument: content`. Rewriting those calls to pass
+the arguments positionally fixes it.
 
 Authentication is supported via `apiKeyRef` (resolving a
 `secret://...` reference via `security.SecretStore`) for endpoints
