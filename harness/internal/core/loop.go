@@ -174,7 +174,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	defer l.setActiveRun(nil)
 
-	l.Trace.Start(config.RunID, config)
+	l.startTrace(ctx, config)
 	l.failure = runFailure{}
 
 	// A non-nil TraceContext here was set by the caller; otherwise
@@ -344,6 +344,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			l.logEmitFailure("ready", err)
 		}
 	}
+	l.emitRunStarted(config.RunID)
 
 	l.Logger.InfoContext(runCtx, "run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
@@ -686,6 +687,20 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 	span.SetAttributes(attribute.String("run.cancelled_by", reason))
 }
 
+// startTrace parents a top-level run on a valid span context in ctx when
+// the emitter supports it. Sub-agents are excluded by ParentRunID: their
+// ctx holds the spawning tool span, under which their emitter already
+// opens the agent span.
+func (l *AgenticLoop) startTrace(ctx context.Context, config *types.RunConfig) {
+	if l.TraceContext == nil && l.ParentRunID == "" && oteltrace.SpanContextFromContext(ctx).IsValid() {
+		if starter, ok := l.Trace.(trace.ContextStarter); ok {
+			starter.StartWithContext(ctx, config.RunID, config)
+			return
+		}
+	}
+	l.Trace.Start(config.RunID, config)
+}
+
 // runSpanContext returns the context carrying the trace emitter's run
 // span, or nil when the emitter records none.
 func (l *AgenticLoop) runSpanContext() context.Context {
@@ -693,6 +708,27 @@ func (l *AgenticLoop) runSpanContext() context.Context {
 		return p.RootContext()
 	}
 	return nil
+}
+
+// emitRunStarted tells the control plane the run span's identity before
+// the first model event, so it can address the run's trace while the run
+// is still in flight. Nothing is sent when the emitter records no span.
+func (l *AgenticLoop) emitRunStarted(runID string) {
+	p, ok := l.Trace.(trace.TraceReferenceProvider)
+	if !ok {
+		return
+	}
+	ref := p.TraceReference()
+	if ref == nil {
+		return
+	}
+	if err := l.Transport.Emit(types.HarnessEvent{
+		Type:           "run_started",
+		ID:             runID,
+		TraceReference: ref,
+	}); err != nil {
+		l.logEmitFailure("run_started", err)
+	}
 }
 
 // runInnerLoop runs the agentic loop turns until the model says "done",

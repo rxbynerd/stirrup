@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func slackTokenFixture() string {
@@ -641,5 +643,37 @@ func TestDetectSensitive_WorkspacePathIsNotAKey(t *testing.T) {
 	}
 	if !latched {
 		t.Errorf("DetectSensitive(%q) = %+v, want a TierLatch finding", leaked, fs)
+	}
+}
+
+func TestScrubCorrelation_ScrubsEveryValueAndCopies(t *testing.T) {
+	key := "sk-ant-api03-" + strings.Repeat("A", 40)
+	in := &types.CorrelationConfig{
+		SessionID: "s-" + key,
+		TaskID:    "t-" + key,
+		AttemptID: "a-" + key,
+		UserID:    "u-" + key,
+		URL:       "https://cp.example.com/runs/42?token=" + key,
+		Labels:    map[string]string{"agent_profile": "p-" + key},
+	}
+	got := ScrubCorrelation(in)
+	for name, v := range map[string]string{
+		"sessionId": got.SessionID, "taskId": got.TaskID, "attemptId": got.AttemptID,
+		"userId": got.UserID, "url": got.URL, "labels[agent_profile]": got.Labels["agent_profile"],
+	} {
+		if strings.Contains(v, key) || !strings.Contains(v, redactedPlaceholder) {
+			t.Errorf("%s not scrubbed: %q", name, v)
+		}
+	}
+	if !strings.HasPrefix(got.URL, "https://cp.example.com/runs/42?token=") {
+		t.Errorf("scrubbing must keep the non-secret URL prefix, got %q", got.URL)
+	}
+
+	got.Labels["agent_profile"] = "mutated"
+	if in.Labels["agent_profile"] != "p-"+key {
+		t.Error("ScrubCorrelation shares the input's label map")
+	}
+	if ScrubCorrelation(nil) != nil {
+		t.Error("nil in must be nil out")
 	}
 }

@@ -373,7 +373,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		if e.redactionDisabled {
 			redactedConfig = *cfg
 		} else {
-			redactedConfig = cfg.Redact()
+			redactedConfig = redactRunConfig(cfg)
 		}
 	}
 

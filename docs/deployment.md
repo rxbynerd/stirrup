@@ -19,13 +19,16 @@ sequenceDiagram
     H->>CP: Dial gRPC, open RunTask stream
     H->>CP: HarnessEvent{type:"ready", harness_version}
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
-    CP->>H: ControlEvent{type:"task_assignment", task: RunConfig}
+    CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
     opt Sandbox identity token requested
         H->>CP: sandbox_token_request
         CP-->>H: sandbox_token_response
     end
     H->>H: Build AgenticLoop with the supplied RunConfig
+    opt Run records an OTel span
+        H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference}
+    end
     loop For each turn
         H->>CP: heartbeat (every 30s)
         H-->>CP: text_delta · tool_call · tool_result
@@ -126,7 +129,11 @@ IMDS, GitHub Actions OIDC). See
    assignment is honoured: the harness exits cleanly without
    running anything. Receiving the assignment removes `/tmp/ready`:
    the pod runs one task to completion rather than accepting more
-   work.
+   work. An optional `trace_context` (`traceparent`, `tracestate`) on
+   the assignment parents the primary run's span on the control
+   plane's span; an invalid one is ignored. It is read on
+   `task_assignment` only and never stored in the `RunConfig`. See
+   [`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
 5. **Sandbox identity token** *(optional)*. When the run wants a
    sandbox identity token (e.g. to authenticate a git proxy such as
    Haybale), the harness sends a
@@ -148,11 +155,18 @@ IMDS, GitHub Actions OIDC). See
    message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
-7. **Stream events.** Throughout the run the harness emits
+7. **Stream events.** When the run records an OTel span, the harness
+   first emits `HarnessEvent{type:"run_started"}` carrying the run ID
+   in `id` and the run span's `trace_reference` (`trace_id`,
+   `run_span_id`, `sampled`), after the git setup and before the first
+   model event. A run that fails setup sends no `run_started`.
+   Throughout the run the harness emits
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
    events. Tools declared in `tools.controlPlane` emit
-   `tool_result_request` and block on `tool_result_response`. A
+   `tool_result_request` and block on `tool_result_response`; the
+   request's `trace_context`, when present, is the W3C context of the
+   call's `execute_tool` span. A
    `tool_call` is not guaranteed a matching `tool_result`: a
    cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn
    can orphan one, so `done` is the terminal close for any pending
@@ -165,7 +179,8 @@ IMDS, GitHub Actions OIDC). See
    one (empty, or queue full) produces a `warning` echoing its
    `request_id`.
 8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
-   carries the run metrics and the reason the loop ended
+   carries the run metrics, the run span's `trace.trace_reference`
+   when the run recorded an OTel span, and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
    `cancelled`, `budget_exceeded`, `error`, `setup_failed`,
    `hook_failed`). `error`, `setup_failed`, and `hook_failed` are the
@@ -483,8 +498,14 @@ import "github.com/rxbynerd/stirrup/harness/harnessapi"
 
 loop, err := harnessapi.BuildLoopWithTransport(ctx, runConfig, transport)
 if err != nil { /* handle */ }
-err = loop.Run(ctx)
+trace, err := loop.Run(ctx, runConfig)
 ```
+
+With the `otel` trace emitter, a valid OpenTelemetry span context on
+the `ctx` passed to `Run` becomes the parent of the run span, so the
+run joins the caller's trace and follows its sampling decision. The
+trace copies only the span context from `ctx`, never its cancellation
+or deadline. To start a new trace, pass a `ctx` with no span.
 
 Use this when you need the agentic loop in-process — for example, in
 a single-binary tool that bundles its own control-plane logic. For

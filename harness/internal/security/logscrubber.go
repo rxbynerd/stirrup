@@ -3,6 +3,8 @@ package security
 import (
 	"regexp"
 	"strings"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // namedPattern pairs a regexp with a stable label used in ScrubStats.
@@ -184,6 +186,28 @@ func ScrubWithStats(value string) (string, ScrubStats) {
 		}
 	}
 	return value, stats
+}
+
+// ScrubCorrelation returns a copy of c with every value scrubbed. Label
+// keys are left as-is: their pattern cannot spell a known secret format.
+func ScrubCorrelation(c *types.CorrelationConfig) *types.CorrelationConfig {
+	if c == nil {
+		return nil
+	}
+	out := &types.CorrelationConfig{
+		SessionID: Scrub(c.SessionID),
+		TaskID:    Scrub(c.TaskID),
+		AttemptID: Scrub(c.AttemptID),
+		UserID:    Scrub(c.UserID),
+		URL:       Scrub(c.URL),
+	}
+	if c.Labels != nil {
+		out.Labels = make(map[string]string, len(c.Labels))
+		for k, v := range c.Labels {
+			out.Labels[k] = Scrub(v)
+		}
+	}
+	return out
 }
 
 // ScrubMap returns a deep copy of data with all string values scrubbed.

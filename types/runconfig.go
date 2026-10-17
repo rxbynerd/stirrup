@@ -95,6 +95,10 @@ type RunConfig struct {
 	Mode        string `json:"mode"`                  // "execution" | "planning" | "review" | "research" | "toil"
 	SessionName string `json:"sessionName,omitempty"` // human-readable label; never injected into the model's context
 
+	// Correlation carries control-plane identity for the run's telemetry.
+	// Values are stamped on every span and never enter the model's context.
+	Correlation *CorrelationConfig `json:"correlation,omitempty"`
+
 	// What to do
 	Prompt         string                         `json:"prompt"`
 	DynamicContext map[string]DynamicContextValue `json:"dynamicContext,omitempty"`
@@ -598,6 +602,19 @@ func (rc RunConfig) Redact() RunConfig {
 	if redacted.GuardRail != nil {
 		gr := redactGuardRailConfig(*redacted.GuardRail)
 		redacted.GuardRail = &gr
+	}
+	// Deep-copy Correlation so the harness can scrub the redacted copy's
+	// values without reaching the live config.
+	if redacted.Correlation != nil {
+		corr := *redacted.Correlation
+		if corr.Labels != nil {
+			labels := make(map[string]string, len(corr.Labels))
+			for k, v := range corr.Labels {
+				labels[k] = v
+			}
+			corr.Labels = labels
+		}
+		redacted.Correlation = &corr
 	}
 	return redacted
 }
@@ -1323,7 +1340,8 @@ type TraceEmitterConfig struct {
 	Credential *CredentialConfig `json:"credential,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
-	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
+	// Closed set: "" (defaults to the platform's required protocol, else
+	// "grpc"), "grpc", "http/protobuf".
 	// HTTP/JSON is intentionally not supported. Ignored for "jsonl".
 	Protocol string `json:"protocol,omitempty"`
 
@@ -2014,7 +2032,31 @@ var validTraceEmitterMetricsTemporalities = map[string]bool{
 var validTraceEmitterPlatforms = map[string]bool{
 	"":           true,
 	"cloudwatch": true,
+	"langfuse":   true,
 	"phoenix":    true,
+}
+
+// requiredTraceEmitterProtocols is the OTLP protocol each platform
+// requires; a platform absent here accepts any. The platform package
+// pins it against each profile's RequiredProtocol.
+var requiredTraceEmitterProtocols = map[string]string{
+	"cloudwatch": "http/protobuf",
+	"langfuse":   "http/protobuf",
+}
+
+// RequiredTraceEmitterProtocol returns the OTLP protocol platform
+// requires, or "" when it accepts any.
+func RequiredTraceEmitterProtocol(platform string) string {
+	return requiredTraceEmitterProtocols[platform]
+}
+
+// effectiveProtocol is the protocol the exporters use: Protocol, or the
+// platform's required protocol when Protocol is unset.
+func (c *TraceEmitterConfig) effectiveProtocol() string {
+	if c.Protocol == "" {
+		return RequiredTraceEmitterProtocol(c.Platform)
+	}
+	return c.Protocol
 }
 
 // Shape limits for TraceEmitterConfig.PlatformOptions. Per-key rules
@@ -2445,6 +2487,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
+	validateCorrelationConfig(config.Correlation, &errs)
 	// RunID is optional at this layer (the CLI / control plane assigns
 	// one before construction), but when set it is interpolated verbatim
 	// into the GCS object name produced by the gcs trace emitter. The
@@ -3779,25 +3822,101 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 // goal is to keep the value safe to drop into a log line, an OTel attribute,
 // or a trace JSON record without truncation, escaping, or line corruption.
 func validateSessionName(name string, errs *[]string) {
-	if name == "" {
+	validatePrintableField("sessionName", name, maxSessionNameLength, errs)
+}
+
+// validatePrintableField rejects a non-empty value longer than maxBytes,
+// not valid UTF-8, or containing any non-printable rune.
+func validatePrintableField(field, value string, maxBytes int, errs *[]string) {
+	if value == "" {
 		return
 	}
-	if len(name) > maxSessionNameLength {
-		*errs = append(*errs, fmt.Sprintf("sessionName must be <= %d bytes, got %d", maxSessionNameLength, len(name)))
+	if len(value) > maxBytes {
+		*errs = append(*errs, fmt.Sprintf("%s must be <= %d bytes, got %d", field, maxBytes, len(value)))
 		return
 	}
-	if !utf8.ValidString(name) {
-		*errs = append(*errs, "sessionName must be valid UTF-8")
+	if !utf8.ValidString(value) {
+		*errs = append(*errs, fmt.Sprintf("%s must be valid UTF-8", field))
 		return
 	}
-	for i, r := range name {
-		// Reject every non-printable rune, including line terminators,
-		// tabs, NUL, and DEL. unicode.IsPrint returns false for control
-		// characters and for the Unicode separators we don't want either.
+	for i, r := range value {
+		// unicode.IsPrint is false for line terminators, tabs, NUL, DEL
+		// and the Unicode separators.
 		if !unicode.IsPrint(r) {
-			*errs = append(*errs, fmt.Sprintf("sessionName contains non-printable character at byte %d (U+%04X)", i, r))
+			*errs = append(*errs, fmt.Sprintf("%s contains non-printable character at byte %d (U+%04X)", field, i, r))
 			return
 		}
+	}
+}
+
+// correlationLabelKeyPattern keeps a label key a valid Langfuse metadata
+// path segment; it can never spell __proto__, constructor or prototype.
+var correlationLabelKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// validateCorrelationConfig bounds every correlation value so it is safe
+// as a span attribute and survives the Langfuse limits named on the
+// MaxCorrelation* constants. Errors never echo the URL, which may carry
+// credentials, and cap any other echoed value at 64 bytes.
+func validateCorrelationConfig(cfg *CorrelationConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.SessionID != "" {
+		if len(cfg.SessionID) > MaxCorrelationSessionIDLength {
+			*errs = append(*errs, fmt.Sprintf("correlation.sessionId must be <= %d bytes, got %d", MaxCorrelationSessionIDLength, len(cfg.SessionID)))
+		} else {
+			for i := 0; i < len(cfg.SessionID); i++ {
+				if c := cfg.SessionID[i]; c < 0x20 || c > 0x7e {
+					*errs = append(*errs, fmt.Sprintf("correlation.sessionId must be printable US-ASCII, got byte 0x%02X at %d", c, i))
+					break
+				}
+			}
+		}
+	}
+	validatePrintableField("correlation.taskId", cfg.TaskID, MaxCorrelationIDLength, errs)
+	validatePrintableField("correlation.attemptId", cfg.AttemptID, MaxCorrelationIDLength, errs)
+	validatePrintableField("correlation.userId", cfg.UserID, MaxCorrelationIDLength, errs)
+	validateCorrelationURL(cfg.URL, errs)
+
+	if len(cfg.Labels) > MaxCorrelationLabels {
+		*errs = append(*errs, fmt.Sprintf("correlation.labels must have at most %d entries, got %d", MaxCorrelationLabels, len(cfg.Labels)))
+	}
+	keys := make([]string, 0, len(cfg.Labels))
+	for k := range cfg.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !correlationLabelKeyPattern.MatchString(k) {
+			*errs = append(*errs, fmt.Sprintf("correlation.labels key %s must match %s", truncateForError([]byte(k)), correlationLabelKeyPattern.String()))
+			continue
+		}
+		validatePrintableField(fmt.Sprintf("correlation.labels[%s]", k), cfg.Labels[k], MaxCorrelationIDLength, errs)
+	}
+}
+
+func validateCorrelationURL(raw string, errs *[]string) {
+	if raw == "" {
+		return
+	}
+	var fieldErrs []string
+	validatePrintableField("correlation.url", raw, MaxCorrelationURLLength, &fieldErrs)
+	if len(fieldErrs) > 0 {
+		*errs = append(*errs, fieldErrs...)
+		return
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		*errs = append(*errs, "correlation.url is not a valid URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		*errs = append(*errs, "correlation.url must be an absolute http or https URL")
+	case u.Hostname() == "":
+		*errs = append(*errs, "correlation.url must include a host")
+	case u.User != nil:
+		*errs = append(*errs, "correlation.url must not include userinfo")
+	case u.Fragment != "" || strings.Contains(raw, "#"):
+		*errs = append(*errs, "correlation.url must not include a fragment")
 	}
 }
 
@@ -5341,9 +5460,9 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 	// harness/internal/observability/otlp dial the documented host:port
 	// endpoint form without TLS, so any bearer/Basic credential supplied
 	// via headers would be transmitted in plaintext; only the HTTP
-	// protocol accepts headers. Empty Protocol defaults to gRPC at
-	// exporter construction time, so the check applies there too.
-	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
+	// protocol accepts headers. Empty Protocol defaults to the platform's
+	// required protocol, else to gRPC, so the check applies there too.
+	if protocol := cfg.effectiveProtocol(); (protocol == "" || protocol == "grpc") && len(cfg.Headers) > 0 {
 		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; the gRPC transport dials host:port endpoints in plaintext and would expose credentials")
 	}
 	// Header name and value validation. Block CRLF injection at
@@ -5391,6 +5510,13 @@ func validateTraceEmitterPlatform(cfg *TraceEmitterConfig, errs *[]string) {
 				cfg.Type,
 			))
 		}
+	}
+	if required := RequiredTraceEmitterProtocol(cfg.Platform); required != "" &&
+		cfg.Protocol != "" && cfg.Protocol != required && validTraceEmitterProtocols[cfg.Protocol] {
+		*errs = append(*errs, fmt.Sprintf(
+			"traceEmitter.platform %q requires traceEmitter.protocol %s (got %q)",
+			cfg.Platform, required, cfg.Protocol,
+		))
 	}
 	if len(cfg.PlatformOptions) == 0 {
 		return

@@ -67,50 +67,72 @@ status.
    `ControlEvent{type:"task_assignment", task: RunConfig}` — this
    must be the first `ControlEvent`. The harness waits at most
    **5 minutes** for it, then exits. A `cancel` sent before
-   assignment makes the harness exit cleanly without running.
+   assignment makes the harness exit cleanly without running. An
+   optional `trace_context` on the assignment makes the run's trace
+   a child of the control plane's span; see
+   [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context).
 4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
    `sandbox_token_response` before creating the sandbox. When the
    response carries `expires_at`, further requests follow ahead of
    each expiry — at most eight per run.
-5. During execution the harness streams `text_delta`, `tool_call`,
+5. When the run records an OTel span (`traceEmitter.type: "otel"`),
+   the harness sends `HarnessEvent{type:"run_started", id,
+   trace_reference}` before the run's first model event. `id` is the
+   run ID; `trace_reference` holds the OTel trace ID and run-span ID
+   that a feedback score or trace link targets. A run that fails
+   setup (a fatal `preRun` hook, git setup) sends no `run_started`.
+6. During execution the harness streams `text_delta`, `tool_call`,
    `tool_result`, occasional `warning` events, and a `heartbeat` every
    **30 seconds**. Depending on configuration it may also emit
    `permission_request`, `tool_result_request`, `batch_submission`,
    `batch_waiting`, and `batch_cancel_request`.
-6. A built loop ends by emitting `HarnessEvent{type:"done",
-   stop_reason}`. Some early run failures emit a human-readable `error`
-   event first. The current `stirrup job` path does **not** attach the
-   proto's optional `trace` field to `done`.
-7. If a follow-up grace window is configured, the stream stays open
+7. A built loop ends by emitting `HarnessEvent{type:"done",
+   stop_reason, trace}`. `trace` is the run summary: outcome, token
+   usage, stop details, git handoff, workspace export receipt, error,
+   structured output, degraded capabilities, and the `trace_reference`
+   when the run recorded an OTel span. Some early
+   run failures emit a human-readable `error` event first. A task
+   rejected before its run started (an invalid `RunConfig`, a loop
+   build failure) gets a `done` with `stop_reason: "error"` and no
+   `trace`.
+8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
-   process and workspace; otherwise the stream closes and the process
-   exits.
+   process and workspace, each sending its own `run_started` with a new
+   trace reference; otherwise the stream closes and the process exits.
 
 ### Events from the harness
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
+| `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Persist the reference against the run to target feedback scores or link to the trace. Sent once per run before its first model event, only when the run records an OTel span. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `content` | Informational. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
-| `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
+| `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
-| `done` | `stop_reason` | Terminal status for that run. The proto has a `trace` field, but `stirrup job` does not currently populate it. |
+| `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
 | `batch_waiting` | `request_id` | Batch keep-alive (roughly every 5 minutes) distinguishing "provider batch still pending" from a stall. |
 | `batch_cancel_request` | `request_id` | Best-effort: cancel the provider-side batch. The harness does not wait for a reply. |
 | `sandbox_token_request` | `request_id`, `audience` | See [Sandbox identity tokens](#sandbox-identity-tokens-authenticated-git-egress). |
 
+The control-stream `run_started` event is distinct from the
+`run_started` record that opens every JSONL trace file
+([`trace-inspection.md`](trace-inspection.md)). The JSONL record is
+always written and carries the redacted `RunConfig`; the event is sent
+on the control stream only when the run records an OTel span, and
+carries the trace reference instead.
+
 ### Events to the harness
 
 | `type` | Fields | Semantics |
 |---|---|---|
-| `task_assignment` | `task` (RunConfig) | First event on the stream. Duplicate assignments are ignored. |
+| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
 | `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a fresh run with its text as the prompt, and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
@@ -703,6 +725,18 @@ Control-plane responsibilities:
   failure, and the run winds down as usual. A request that could not
   be written to the stream (transport disconnect) fails the call
   the same way.
+- Optionally parent the work for a call on `trace_context`, the W3C
+  `traceparent` and `tracestate` of the call's `execute_tool` span.
+  A span started from it, exported to the same backend, nests under
+  the tool call in the run's trace. Each concurrent call carries its
+  own span. The field is absent when the call has no valid span
+  context. Under a trace emitter that records no spans, such as
+  `jsonl`, a run with an upstream parent opens no tool spans, so every
+  `tool_result_request` in the run carries that same upstream parent
+  (see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context)).
+  It carries causality only: correlate the response by
+  `request_id`, never by trace or span ID. See
+  [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
 
 Validation (`ValidateRunConfig`) rejects the block unless
 `transport.type` is `grpc` — a config arriving in `task_assignment`
@@ -731,6 +765,86 @@ Posture notes:
 
 Field reference: [`configuration.md`](configuration.md#control-plane-tools).
 Wire contract for the event pair: [`deployment.md`](deployment.md).
+
+### Joining a control-plane trace (`trace_context`)
+
+Goal: show a run inside the control plane's own trace, under the span
+that dispatched it, instead of as a separate trace.
+
+```json
+{
+  "type": "task_assignment",
+  "task": { "…": "RunConfig" },
+  "trace_context": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "tracestate": "vendor=opaque"
+  }
+}
+```
+
+`trace_context` is a W3C Trace Context carrier. With the `otel` trace
+emitter, a valid `traceparent` becomes the parent of the run's
+`invoke_agent stirrup` span, so the run's spans share the control
+plane's trace ID, and `run_started` and the `done` summary report that
+trace ID in `trace_reference`. Behaviour to plan for:
+
+- The carrier is read on `task_assignment` only. It applies to the
+  primary run; follow-up runs started by `user_response` begin new
+  traces.
+- An invalid `traceparent` is ignored and the run starts a new trace;
+  the task is not rejected. A malformed `tracestate` is dropped and
+  the parent kept.
+- The run follows the parent's sampling decision. An unsampled
+  parent (trace flags `00`) means the harness exports no spans for
+  the run, and `trace_reference.sampled` is `false`. See
+  [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
+- The carrier is not part of `RunConfig`, so storing and replaying a
+  `RunConfig` never re-parents a new run onto an old trace. Send the
+  carrier for the task being dispatched, not one saved with the
+  config.
+- Baggage is not accepted. `TraceContext` field 3 is reserved for it.
+- Under a trace emitter that records no spans, such as `jsonl`, the
+  run opens no spans of its own but still carries the parent: every
+  `tool_result_request` in the primary run sends the same upstream
+  parent as its `trace_context`, with `request_id` remaining the reply
+  key, and the harness's log records carry the control plane's trace
+  and span IDs.
+- Control-plane-fulfilled tool calls send the reverse carrier: each
+  `tool_result_request` carries its `execute_tool` span's context
+  (see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request)).
+
+The Go embedding surface follows the same rule without a carrier:
+`harnessapi.Loop.Run(ctx, config)` parents the run on a valid span
+context in `ctx`. To start a new trace, pass a `ctx` with no span,
+such as one derived from `context.Background()`.
+
+**Langfuse under an upstream parent.** Langfuse groups spans into a
+trace by trace ID and takes the trace name and the trace-level input
+and output from the trace's root observation. A run parented on a
+control-plane span is not that root, so the integration chooses one
+of two outcomes and records which one the deployment uses:
+
+- **The control plane exports its root span to the same Langfuse
+  project.** The run appears inside the control plane's trace. The
+  trace is named after the control plane's root span unless a span
+  carries the `langfuse.trace.name` attribute (the collector recipe in
+  [`observability-cloud.md`](observability-cloud.md#langfuse) sets
+  it), and the trace-level input and output
+  panels show the control plane's root observation, which is empty
+  unless the control plane records content on it. The per-generation
+  and per-tool panels are unaffected.
+- **The control plane does not export its root span to Langfuse.**
+  The run span arrives with a parent Langfuse never receives, and
+  Langfuse shows it as an orphan whose parent is missing. Whether
+  the trace name and trace-level panels still fall back to it is not
+  documented by Langfuse, so verify the rendering on the deployed
+  Langfuse version before relying on it.
+
+Trace-level metadata, user, session and tags are unaffected either
+way, because Langfuse reads them from any span in the trace. Feedback
+scores keep targeting the run span through `trace_reference`
+(`traceId` plus `runSpanId` as the observation ID) in both outcomes;
+see [`observability-cloud.md`](observability-cloud.md#langfuse).
 
 ### Sandbox identity tokens (authenticated git egress)
 
@@ -844,13 +958,14 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | Outcome in `stop_reason`; run summary in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
 For OTel specifically: `sessionName` labels the run in logs and
-carries on every span as `gen_ai.conversation.id` and `session.id`.
+carries on every span as `gen_ai.conversation.id` and `session.id`
+unless `correlation.sessionId` is set (see the next recipe).
 `observability.serviceName` / `environment` / `serviceNamespace` ride
 the OTel Resource, and `serviceName` is how backends tell one agent
 deployment from another. `traceEmitter.captureContent` opts spans into
@@ -861,6 +976,52 @@ that fills unset exporter settings; option keys are checked when the
 harness builds its exporters, so an unknown key fails the run at start
 rather than at `ValidateRunConfig`. Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
+
+### Linking a run to the control plane's own page
+
+Goal: find a run's spans in the observability backend by the
+identifiers the control plane already uses, and get from a span back
+to the control plane's page for the run.
+
+```json
+"correlation": {
+  "sessionId": "conversation-8841",
+  "taskId": "task-2207",
+  "attemptId": "attempt-2",
+  "userId": "u-5c1f0e",
+  "url": "https://cp.example.com/tasks/2207/attempts/2",
+  "labels": { "agent_profile": "reviewer", "execution_mode": "batch" }
+}
+```
+
+- Every span of the run carries `session.id` and
+  `gen_ai.conversation.id` (from `sessionId`, which takes precedence
+  over `sessionName`), `user.id`, `stirrup.task.id`,
+  `stirrup.attempt.id`, `stirrup.control_plane.url`, and one
+  `stirrup.label.<key>` per label. Langfuse reads `user.id` and
+  `session.id` natively, so users and sessions populate without a
+  collector.
+- The values never reach the model. They are not resource attributes
+  or metric labels either, so per-run values cannot inflate metric
+  cardinality.
+- Every value is opaque to the harness. `userId` belongs to the
+  control plane to pseudonymise before it is sent; the harness never
+  interprets it.
+- Derive every identifier server-side, never from end-user input: a
+  forged session ID places runs inside another user's session.
+- `url` is the control plane's canonical page for the run: an absolute
+  `http` or `https` URL without userinfo or a fragment. It must not
+  carry credentials. A configured public origin with an ordinary
+  authenticated route works; a signed or token-bearing URL does not
+  belong here, because traces persist it. The harness scrubs
+  secret-shaped values from every field before stamping or persisting
+  them, as a backstop only.
+- `labels` carries the control plane's own slicing dimensions. Keys
+  are lower-case identifiers, so they stay valid metadata path
+  segments in backends that index them.
+- The block is recorded with the rest of the config in JSONL and GCS
+  trace files and in recordings. Bounds:
+  [Correlation](configuration.md#correlation).
 
 ### Safety posture quick reference
 
@@ -901,7 +1062,7 @@ Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
 `registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
-`toolChoiceEscalation`, `observability.logsExport`,
+`toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`, and
 `platformOptions`.

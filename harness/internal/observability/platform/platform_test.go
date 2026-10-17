@@ -26,6 +26,22 @@ func registerTestPlatform(t *testing.T, name string, def definition) {
 	t.Cleanup(func() { delete(registry, name) })
 }
 
+// TestRequiredProtocolMatchesTypes pins the validation-time table of
+// required protocols to each registered profile's RequiredProtocol.
+func TestRequiredProtocolMatchesTypes(t *testing.T) {
+	_, deps := staticAWS("eu-west-2")
+	opts := map[string]map[string]string{"cloudwatch": {"logGroup": "/stirrup/agents"}}
+	for _, name := range sortedKeys(registry) {
+		p, err := Resolve(context.Background(), name, opts[name], deps)
+		if err != nil {
+			t.Fatalf("Resolve %q: %v", name, err)
+		}
+		if got := types.RequiredTraceEmitterProtocol(name); got != p.RequiredProtocol {
+			t.Errorf("types requires protocol %q for %q, the profile requires %q", got, name, p.RequiredProtocol)
+		}
+	}
+}
+
 func TestResolve_NoPlatform(t *testing.T) {
 	p, err := Resolve(context.Background(), "", nil, Deps{})
 	if err != nil {
@@ -300,7 +316,7 @@ func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
 			return rt
 		},
 	}
-	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, p)
+	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://backend.example"}, Getenv: noEnv}, p)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -389,6 +405,11 @@ func TestApply_RejectsContradictions(t *testing.T) {
 			cfg:     types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolGRPC},
 			profile: headerProfile,
 			want:    "requires protocol http/protobuf",
+		},
+		"http platform without a trace endpoint": {
+			cfg:     types.TraceEmitterConfig{Type: "otel"},
+			profile: Profile{name: "http-platform", RequiredProtocol: otlp.ProtocolHTTPProtobuf},
+			want:    `platform "http-platform" exports over http/protobuf and has no trace endpoint`,
 		},
 		"explicit Authorization with signing": {
 			cfg:     types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolHTTPProtobuf},

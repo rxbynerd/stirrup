@@ -5336,9 +5336,11 @@ func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
 // its otel-only scope, and the shape rules on platformOptions.
 func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 	valid := map[string]TraceEmitterConfig{
-		"no platform":   {Type: "otel"},
-		"cloudwatch":    {Type: "otel", Platform: "cloudwatch", PlatformOptions: map[string]string{"region": "us-east-1", "logGroup": "/stirrup/agents"}},
-		"phoenix":       {Type: "otel", Platform: "phoenix"},
+		"no platform": {Type: "otel"},
+		"cloudwatch":  {Type: "otel", Platform: "cloudwatch", PlatformOptions: map[string]string{"region": "us-east-1", "logGroup": "/stirrup/agents"}},
+		"phoenix":     {Type: "otel", Platform: "phoenix"},
+		"langfuse":    {Type: "otel", Protocol: "http/protobuf", Platform: "langfuse", PlatformOptions: map[string]string{"host": "https://langfuse.example.com"}},
+		"headers with the platform's required protocol": {Type: "otel", Platform: "langfuse", Headers: map[string]string{"Authorization": "secret://LANGFUSE_AUTH"}},
 		"8 options":     {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8"}},
 		"max value len": {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 256)}},
 		"max key len":   {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("A", 31): "v"}},
@@ -5358,20 +5360,22 @@ func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 		te   TraceEmitterConfig
 		want string
 	}{
-		"unknown platform":       {TraceEmitterConfig{Type: "otel", Platform: "datadog"}, `unsupported traceEmitter.platform "datadog"`},
-		"platform on jsonl":      {TraceEmitterConfig{Type: "jsonl", Platform: "phoenix"}, "traceEmitter.platform is only valid when traceEmitter.type is \"otel\""},
-		"options on gcs":         {TraceEmitterConfig{Type: "gcs", Bucket: "b-123", Platform: "", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions is only valid when traceEmitter.type is \"otel\""},
-		"options without name":   {TraceEmitterConfig{Type: "otel", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions requires traceEmitter.platform"},
-		"too many options":       {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8", "i": "9"}}, "has 9 entries (max 8)"},
-		"uppercase key start":    {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"Project": "p"}}, `key "Project" must match`},
-		"key with dash":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"log-group": "p"}}, `key "log-group" must match`},
-		"key too long":           {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("a", 32): "v"}}, "must match"},
-		"value too long":         {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 257)}}, "is 257 bytes (max 256)"},
-		"value with LF":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\nb"}}, "must be printable text without CR or LF"},
-		"value with CR":          {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\rb"}}, "must be printable text without CR or LF"},
-		"value with control":     {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\x00b"}}, "must be printable text without CR or LF"},
-		"value invalid utf8":     {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\xffb"}}, "must be printable text without CR or LF"},
-		"secret reference value": {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "secret://PROJECT"}}, "must not be a secret:// reference"},
+		"unknown platform":           {TraceEmitterConfig{Type: "otel", Platform: "datadog"}, `unsupported traceEmitter.platform "datadog"`},
+		"platform on jsonl":          {TraceEmitterConfig{Type: "jsonl", Platform: "phoenix"}, "traceEmitter.platform is only valid when traceEmitter.type is \"otel\""},
+		"options on gcs":             {TraceEmitterConfig{Type: "gcs", Bucket: "b-123", Platform: "", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions is only valid when traceEmitter.type is \"otel\""},
+		"options without name":       {TraceEmitterConfig{Type: "otel", PlatformOptions: map[string]string{"project": "p"}}, "traceEmitter.platformOptions requires traceEmitter.platform"},
+		"too many options":           {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8", "i": "9"}}, "has 9 entries (max 8)"},
+		"uppercase key start":        {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"Project": "p"}}, `key "Project" must match`},
+		"key with dash":              {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"log-group": "p"}}, `key "log-group" must match`},
+		"key too long":               {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("a", 32): "v"}}, "must match"},
+		"value too long":             {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 257)}}, "is 257 bytes (max 256)"},
+		"value with LF":              {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\nb"}}, "must be printable text without CR or LF"},
+		"value with CR":              {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\rb"}}, "must be printable text without CR or LF"},
+		"value with control":         {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\x00b"}}, "must be printable text without CR or LF"},
+		"value invalid utf8":         {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "a\xffb"}}, "must be printable text without CR or LF"},
+		"secret reference value":     {TraceEmitterConfig{Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": "secret://PROJECT"}}, "must not be a secret:// reference"},
+		"grpc with an http platform": {TraceEmitterConfig{Type: "otel", Protocol: "grpc", Platform: "langfuse"}, `traceEmitter.platform "langfuse" requires traceEmitter.protocol http/protobuf (got "grpc")`},
+		"headers on a platform without a required protocol": {TraceEmitterConfig{Type: "otel", Platform: "phoenix", Headers: map[string]string{"Authorization": "secret://PHOENIX_AUTH"}}, "traceEmitter.headers requires protocol=http/protobuf"},
 	}
 	for name, tc := range invalid {
 		t.Run("invalid/"+name, func(t *testing.T) {

@@ -504,10 +504,10 @@ the none executor has no capability to back the rest.
 | `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`. |
 | `--otel-endpoint` | (none) | OTLP endpoint. Falls back to the platform profile's trace endpoint, then to `localhost:4317`. For `http/protobuf` use the gateway base path (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`): the exporter appends `/v1/traces`, `/v1/metrics`, and `/v1/logs`, and uses a path that already ends in the signal's own segment as given. Metrics and logs inherit this endpoint, so a per-signal URL belongs in `--otel-metrics-endpoint` or `observability.logsExport.endpoint` instead. The `OTEL_EXPORTER_OTLP_ENDPOINT` variable is not consulted for traces or metrics; see [`observability-cloud.md`](observability-cloud.md#precedence). |
 | `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc, or to the protocol the platform profile requires), `grpc`, `http/protobuf`. Applies to traces, metrics, and logs. HTTP/JSON is intentionally not supported, and `OTEL_EXPORTER_OTLP_PROTOCOL` is not read. See [`observability-cloud.md`](observability-cloud.md). |
-| `--otel-header` | (none) | Repeatable `key=value` HTTP header attached to every OTLP export request. Values may be `secret://` references resolved at exporter init — never pass raw secrets. Requires `--otel-protocol=http/protobuf` (validation rejects headers on the plaintext gRPC path). Explicit flags replace any `headers` map from `--config`. The `OTEL_EXPORTER_OTLP_HEADERS` env var is the SDK-native fallback when no headers are configured. |
+| `--otel-header` | (none) | Repeatable `key=value` HTTP header attached to every OTLP export request. Values may be `secret://` references resolved at exporter init — never pass raw secrets. Requires `--otel-protocol=http/protobuf`, or an `--otel-platform` that requires it (validation rejects headers on the plaintext gRPC path). Explicit flags replace any `headers` map from `--config`. The `OTEL_EXPORTER_OTLP_HEADERS` env var is the SDK-native fallback when no headers are configured. |
 | `--otel-metrics-endpoint` | (none) | OTLP endpoint for the metrics exporter when metrics target a different collector than traces. Defaults to the platform profile's metrics endpoint, then to `--otel-endpoint`; with neither, metrics are not exported. |
 | `--otel-metrics-temporality` | (none) | Aggregation temporality for exported metrics: `cumulative` or `delta` (`traceEmitter.metricsTemporality`). Empty defers to env `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`, then to `cumulative`. Backends that ingest deltas natively need `delta`; Prometheus-style backends expect `cumulative`. Rejected unless `--trace-emitter=otel`. |
-| `--otel-platform` | (none) | Observability platform profile (`traceEmitter.platform`): `cloudwatch` or `phoenix`. A profile fills OTLP settings the config leaves unset (per-signal endpoints, headers, request signing, resource and span attributes) and never overrides an explicit field. Rejected unless `--trace-emitter=otel`. See [`observability-cloud.md`](observability-cloud.md#platform-profiles). |
+| `--otel-platform` | (none) | Observability platform profile (`traceEmitter.platform`): `cloudwatch`, `langfuse`, or `phoenix`. A profile fills OTLP settings the config leaves unset (per-signal endpoints, headers, request signing, resource and span attributes) and never overrides an explicit field. Rejected unless `--trace-emitter=otel`. See [`observability-cloud.md`](observability-cloud.md#platform-profiles). |
 | `--otel-platform-option` | (none) | Repeatable `key=value` setting for the selected platform (`traceEmitter.platformOptions`, e.g. `--otel-platform-option region=us-east-1`). At most 8 entries; keys match `^[a-z][A-Za-z0-9]{0,31}$`; values are at most 256 bytes of printable UTF-8 and are never secrets (`secret://` values are rejected). Which keys a platform accepts is checked when the exporters are built, so `stirrup harness --dry-run` reports a misspelled key and `stirrup run-config` does not. Explicit flags replace any `platformOptions` map from `--config`. |
 | `--otel-capture-content` | `false` | Opt the otel emitter into recording prompt/completion content on chat, agent, and tool spans via the GenAI semconv attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`). Off by default: message content is likely to contain PII. Content is scrubbed for secret-shaped substrings before export. See [`observability-cloud.md`](observability-cloud.md#span-content-capture-opt-in). |
 | `--otel-capture-content-max-bytes` | `0` | Cap each captured content attribute value at this many bytes (`traceEmitter.captureContentMaxBytes`). A longer value is shortened at a message or part boundary so JSON stays valid, and the span gains `stirrup.<attribute>.truncated=true`. `0` means no cap; otherwise at least `256`. Requires `--otel-capture-content`. See [`observability-cloud.md`](observability-cloud.md#span-content-capture-opt-in). |
@@ -515,6 +515,101 @@ the none executor has no capability to back the rest.
 | `--service-name` | (none) | OTel `service.name` resource attribute (`observability.serviceName`, e.g. `triage-agent`). Backends list and separate agents by this value, so deployments that should appear separately set distinct names. Empty falls through to env `OTEL_SERVICE_NAME`, then to `stirrup`. |
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 | `--log-export` | `none` | Structured-log export: `none` (stderr only) or `otlp` (stderr plus an OTLP log exporter, `observability.logsExport.type`). The exporter uses the traces protocol and headers, over gRPC or `http/protobuf`. The endpoint defaults to `--otel-endpoint` (or the platform profile's logs endpoint); `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` overrides it. With the otel trace emitter, every record emitted during a run carries `trace_id` and `span_id`; see [`observability-cloud.md`](observability-cloud.md#log-trace-correlation). |
+| `--correlation-session-id` | (none) | Session identifier stamped on every span as `session.id` and `gen_ai.conversation.id` (`correlation.sessionId`), taking precedence over `--name`. See [Correlation](#correlation) for limits. |
+| `--correlation-task-id` | (none) | Task identifier stamped on every span as `stirrup.task.id` (`correlation.taskId`). |
+| `--correlation-attempt-id` | (none) | Attempt identifier stamped on every span as `stirrup.attempt.id` (`correlation.attemptId`). |
+| `--correlation-user-id` | (none) | Pseudonymous end-user identifier stamped on every span as `user.id` (`correlation.userId`). |
+| `--correlation-url` | (none) | Control-plane page for the run, stamped on every span as `stirrup.control_plane.url` (`correlation.url`). |
+| `--correlation-label` | (none) | Repeatable `key=value` label stamped on every span as `stirrup.label.<key>` (`correlation.labels`). A pair without `=` or with an empty key is rejected when the config is built. Labels merge key by key over any `labels` from `--config`, and a repeated key keeps its last value. An empty value is rejected. Key shape and limits are checked by `ValidateRunConfig` in both commands; `stirrup run-config` checks them with `--validate`. |
+| `--traceparent` | (none) | `stirrup harness` only. W3C `traceparent` of the upstream span that parents the run's root span. Sets the run's context, not its `RunConfig`; see [Upstream parent](#upstream-parent). |
+| `--tracestate` | (none) | `stirrup harness` only. W3C `tracestate` carried with `--traceparent`. Ignored without a valid `--traceparent`. |
+
+#### Correlation
+
+The `correlation` block carries the identifiers a control plane uses
+for the run in its own UI. The harness stamps each set value on every
+span of the run and treats every value as opaque. The values never
+enter the model's context, and they are not resource attributes or
+metric labels. The block is set in a `--config` file, on stdin, in a
+gRPC `task_assignment`, or with the `--correlation-*` flags in the table
+above. Each flag replaces only its own field, and an unset flag never
+clears a value from the file. An explicitly empty scalar value, such as
+`--correlation-user-id ""`, clears that field. Labels from a file
+cannot be removed from the command line; a flag can only add or
+overwrite a key. The block is omitted when nothing sets it. `stirrup run-config` emits the flags as part of the resolved
+config.
+
+```json
+"correlation": {
+  "sessionId": "conversation-8841",
+  "taskId": "task-2207",
+  "attemptId": "attempt-2",
+  "userId": "u-5c1f0e",
+  "url": "https://cp.example.com/tasks/2207/attempts/2",
+  "labels": { "agent_profile": "reviewer" }
+}
+```
+
+| Field | Span attribute | Validation |
+|---|---|---|
+| `sessionId` | `session.id` and `gen_ai.conversation.id`; takes precedence over `sessionName` (`--name`), which remains the fallback | 1–199 bytes of printable US-ASCII. Langfuse drops session IDs of 200 characters or more. |
+| `taskId` | `stirrup.task.id` | At most 255 bytes of printable UTF-8. |
+| `attemptId` | `stirrup.attempt.id` | At most 255 bytes of printable UTF-8. |
+| `userId` | `user.id` | At most 255 bytes of printable UTF-8. The control plane chooses a pseudonymous value; the harness never interprets it. |
+| `url` | `stirrup.control_plane.url` | Absolute `http` or `https` URL with a host, no userinfo and no fragment, at most 1500 bytes. A query string is allowed. |
+| `labels` | `stirrup.label.<key>`, one per entry | At most 16 entries. Keys match `^[a-z][a-z0-9_]{0,63}$`; values are at most 255 bytes of printable UTF-8. |
+
+`labels` carries slicing dimensions the harness cannot name in
+advance, such as an agent profile or an upstream execution mode. The
+run's own mode is already stamped as `run.mode` and needs no label.
+The key pattern keeps every key a valid metadata path segment, so a key
+can never spell `__proto__`, `constructor`, or `prototype`. The
+[`langfuse` profile](observability-cloud.md#the-langfuse-profile) turns
+each label into filterable Langfuse metadata.
+
+The control plane derives every identifier server-side and never
+takes one from end-user input: a forged session ID places runs inside
+another user's session. The URL must not carry credentials. Before a
+value is stamped on a span or persisted, the harness passes it through
+the secret scrubber, which replaces secret-shaped substrings such as
+API keys and `token=` query values with `[REDACTED]`; the scrubber is a
+backstop, not a licence to send credentials.
+
+The block is recorded with the rest of the config in JSONL and GCS
+trace files and in recordings, and survives `RunConfig.Redact()` apart
+from that scrub. A follow-up run in the same session reuses the block.
+The span attributes are listed in
+[`observability-cloud.md`](observability-cloud.md#span-tree).
+
+#### Upstream parent
+
+`--traceparent` and `--tracestate` nest a CLI run under a span the
+caller already holds. Both take the W3C Trace Context header values
+verbatim, for example
+`--traceparent 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`.
+With the `otel` trace emitter, a valid `traceparent` makes that span
+the parent of the run's root `invoke_agent stirrup` span, and the run's
+spans share the caller's trace ID. Sampling follows the parent: a
+sampled parent (trace flags `01`) exports the run, and an unsampled
+parent (`00`) suppresses export of every span in it, although
+`RunResult.traceReference` still reports the trace ID with
+`sampled: false`. An `OTEL_TRACES_SAMPLER` value that is not
+`parentbased_*` replaces that behaviour; see
+[`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
+The `jsonl` and `gcs` emitters record no spans, so the flags do not
+change their trace files.
+
+The flags set the run's context, not its config. They are registered
+on `stirrup harness` only, never appear in a `RunConfig`, and are
+rejected by `stirrup run-config` as unknown flags, so a replayed or
+stored config can never re-parent a run. A value the W3C parser
+rejects, such as a wrong length or an unsupported version, is ignored
+and the run starts its own trace. `--tracestate` without a valid
+`--traceparent` is ignored. The harness logs a warning when a real run
+ignores the parent because the value is invalid or the trace emitter
+records no spans; `--dry-run` and `--output-runconfig` stay silent.
+The parent applies to the primary run; follow-up runs in the same
+session start new traces.
 
 ### Run output
 
@@ -536,6 +631,20 @@ failed or cancelled run still exits non-zero. A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
+
+`RunResult.traceReference` identifies the run's OTel root span:
+`traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
+characters) and `sampled` (the trace flags' sampled bit). It is set
+when `traceEmitter.type` is `otel` and omitted for the `jsonl` and
+`gcs` emitters, which record no OTel span. The same value reaches a
+gRPC control plane on the `run_started` event and the `done` summary;
+see [`integration-guide.md`](integration-guide.md#events-from-the-harness).
+Under `--transport stdio`, the CLI default, the `run_started` event is
+also written to stdout as a JSON line, after the run's `ready` line:
+
+```json
+{"type":"run_started","id":"run-123","traceReference":{"traceId":"4bf92f3577b34da6a3ce929d0e0e4736","runSpanId":"00f067aa0ba902b7","sampled":true}}
+```
 
 Pair `--output=json` with a trace emitter that does not target
 stdout. The default JSONL trace writes to a file (or to nothing when

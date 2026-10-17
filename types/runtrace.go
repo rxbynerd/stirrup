@@ -169,6 +169,9 @@ type RunTrace struct {
 	// they reach the trace only inside the tool result they were appended
 	// to.
 	PostEditChecks []PostEditCheckRecord `json:"postEditChecks,omitempty"`
+	// TraceReference identifies the run's OTel root span. Nil when the
+	// trace emitter records no OTel span.
+	TraceReference *TraceReference `json:"traceReference,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run

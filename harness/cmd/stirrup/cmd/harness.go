@@ -15,10 +15,12 @@ import (
 
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -735,6 +737,7 @@ func init() {
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 	f.Bool("debug", false, "Disable redaction/scrubbing of trace and recording output (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. CLI-only — never representable in a RunConfig, so a control-plane submission cannot request it. See docs/security.md#debug-builds.")
 	addTransportTLSFlags(f)
+	addTraceParentFlags(f)
 	f.Bool("trace-wire", false, "Dump raw, unredacted provider wire request/response to stderr (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. Bedrock traffic is not tapped (AWS SDK, no raw *http.Client seam). CLI-only — never representable in a RunConfig. See docs/security.md#debug-builds.")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
@@ -1236,7 +1239,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.ToolChoiceEscalation.MaxRetries = mr
 	}
-	return applyRepositoryGuidanceOverrides(cmd, cfg)
+	if err := applyRepositoryGuidanceOverrides(cmd, cfg); err != nil {
+		return err
+	}
+	return applyCorrelationOverrides(cmd, cfg)
 }
 
 // applyRepositoryGuidanceOverrides folds the --repository-guidance-* flags
@@ -1319,6 +1325,31 @@ func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfi
 	return nil
 }
 
+// addTraceParentFlags registers --traceparent and --tracestate on the
+// harness command only. They set the run's context, never its RunConfig,
+// so run-config does not know them and a replayed config cannot re-parent
+// a run.
+func addTraceParentFlags(f *flag.FlagSet) {
+	f.String("traceparent", "", "W3C traceparent (e.g. 00-<trace-id>-<span-id>-01) naming the upstream span that parents the run's root span. Sets the run's context, not its RunConfig. An invalid value is ignored. Takes effect with --trace-emitter=otel, where sampling follows the parent (an unsampled parent exports nothing); follow-up runs start new traces.")
+	f.String("tracestate", "", "W3C tracestate carried with --traceparent. Ignored without a valid --traceparent.")
+}
+
+// warnIgnoredTraceParent tells the operator when an upstream parent flag
+// will have no effect: the traceparent is invalid, the tracestate has no
+// traceparent to travel with, or the trace emitter records no spans.
+func warnIgnoredTraceParent(cfg *types.RunConfig, traceParent, traceState string) {
+	switch {
+	case traceParent == "" && traceState != "":
+		slog.Warn("--tracestate ignored: it requires --traceparent")
+	case traceParent == "":
+	case !oteltrace.SpanContextFromContext(observability.ExtractTraceContext(context.Background(), traceParent, traceState)).IsValid():
+		slog.Warn("--traceparent ignored: not a valid W3C traceparent; the run starts a new trace")
+	case cfg.TraceEmitter.Type != "otel":
+		slog.Warn("--traceparent has no effect: the trace emitter records no spans",
+			"traceEmitter", cfg.TraceEmitter.Type)
+	}
+}
+
 func runHarness(cmd *cobra.Command, args []string) error {
 	f := cmd.Flags()
 	configPath, _ := f.GetString("config")
@@ -1389,11 +1420,16 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if cfg.Transport.Type == "grpc" {
 		logControlPlaneTransport(cmd.ErrOrStderr(), cfg.Transport.Address, tlsCfg)
 	}
+	traceParent, _ := f.GetString("traceparent")
+	traceState, _ := f.GetString("tracestate")
+	warnIgnoredTraceParent(cfg, traceParent, traceState)
 	return runWithConfig(cfg, runOptions{
 		outputMode:             outputMode,
 		debugRedactionDisabled: debugRedactionDisabled,
 		wireTrace:              wireTrace,
 		transportTLS:           tlsCreds,
+		traceParent:            traceParent,
+		traceState:             traceState,
 	})
 }
 
@@ -1806,11 +1842,16 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 //
 // transportTLS carries the loaded --transport-tls-* credentials; nil
 // keeps the plaintext default.
+//
+// traceParent and traceState carry --traceparent / --tracestate: the
+// upstream span context of the primary run, applied to its context only.
 type runOptions struct {
 	outputMode             string
 	debugRedactionDisabled bool
 	wireTrace              bool
 	transportTLS           credentials.TransportCredentials
+	traceParent            string
+	traceState             string
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1844,6 +1885,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	runTimeout := runTimeoutFor(config)
 	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
 	defer runCancel()
+	runCtx = observability.ExtractTraceContext(runCtx, opts.traceParent, opts.traceState)
 
 	graceSecs := 0
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {

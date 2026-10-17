@@ -405,3 +405,186 @@ func TestLoop_OTelProviderRequestPastDeadlineIsTimeout(t *testing.T) {
 		t.Errorf("chat error.type = %q, want timeout", got)
 	}
 }
+
+func eventsOfType(tp *recordingTransport, typ string) []types.HarnessEvent {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	var out []types.HarnessEvent
+	for _, e := range tp.events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
+	loop, exporter := otelLoop(t, &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+	loop.emitReady = true
+	config := buildTestConfig()
+
+	rt, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	root := spansNamed(exporter.GetSpans(), "invoke_agent stirrup")
+	if len(root) != 1 {
+		t.Fatalf("found %d root spans, want 1", len(root))
+	}
+	want := types.TraceReference{
+		TraceID:   root[0].SpanContext.TraceID().String(),
+		RunSpanID: root[0].SpanContext.SpanID().String(),
+		Sampled:   true,
+	}
+
+	readyAt, startedAt, firstModelAt := -1, -1, -1
+	var started []types.HarnessEvent
+	for i, e := range tp.events {
+		switch e.Type {
+		case "ready":
+			if readyAt < 0 {
+				readyAt = i
+			}
+		case "run_started":
+			startedAt = i
+			started = append(started, e)
+		case "text_delta", "tool_call":
+			if firstModelAt < 0 {
+				firstModelAt = i
+			}
+		}
+	}
+	if len(started) != 1 {
+		t.Fatalf("got %d run_started events, want 1", len(started))
+	}
+	if readyAt < 0 || startedAt <= readyAt || firstModelAt <= startedAt {
+		t.Errorf("event order ready=%d run_started=%d first model event=%d, want ready before run_started before the first model event", readyAt, startedAt, firstModelAt)
+	}
+	if started[0].ID != config.RunID {
+		t.Errorf("run_started ID = %q, want the run ID %q", started[0].ID, config.RunID)
+	}
+	if got := started[0].TraceReference; got == nil || *got != want {
+		t.Errorf("run_started reference = %+v, want the exported root span %+v", got, want)
+	}
+	if rt.TraceReference == nil || *rt.TraceReference != want {
+		t.Errorf("RunTrace.TraceReference = %+v, want %+v", rt.TraceReference, want)
+	}
+
+	done := eventsOfType(tp, "done")
+	if len(done) != 1 || done[0].Trace == nil {
+		t.Fatalf("got %d done events, want 1 with a summary", len(done))
+	}
+	if got := done[0].Trace.TraceReference; got == nil || *got != want {
+		t.Errorf("done summary reference = %+v, want %+v", got, want)
+	}
+}
+
+func TestLoop_RunStartedAbsentWithoutOTelSpan(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+
+	rt, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := eventsOfType(tp, "run_started"); len(got) != 0 {
+		t.Errorf("JSONL-traced run emitted %d run_started events, want none", len(got))
+	}
+	if rt.TraceReference != nil {
+		t.Errorf("RunTrace.TraceReference = %+v, want nil", rt.TraceReference)
+	}
+	for _, e := range tp.events {
+		if e.TraceReference != nil || (e.Trace != nil && e.Trace.TraceReference != nil) {
+			t.Errorf("%s event carries a trace reference without an OTel span", e.Type)
+		}
+	}
+}
+
+func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
+	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}})
+	tp := &recordingTransport{}
+	loop.Transport = tp
+	loop.emitReady = false
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(tp.events) == 0 {
+		t.Fatal("loop emitted no events")
+	}
+	if first := tp.events[0]; first.Type != "run_started" || first.ID != config.RunID || first.TraceReference == nil {
+		t.Errorf("first event = %s (id %q, reference %+v), want run_started for %q with a reference", first.Type, first.ID, first.TraceReference, config.RunID)
+	}
+}
+
+// recordingControlTransport records emitted events and lets the test fire
+// control events, so a follow-up run's events can be observed.
+type recordingControlTransport struct {
+	controllableTransport
+	rec recordingTransport
+}
+
+func (t *recordingControlTransport) Emit(e types.HarnessEvent) error { return t.rec.Emit(e) }
+
+func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
+	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}})
+	tp := &recordingControlTransport{}
+	loop.Transport = tp
+	loop.ensureControlRouting()
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ran := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, config, 30, FollowUpOptions{
+			OnRunComplete: func(c *types.RunConfig, _ *types.RunTrace, _ error) { ran <- c.RunID },
+		})
+	}()
+	tp.FireControl(types.ControlEvent{Type: "user_response", UserResponse: "And another thing."})
+	var followUpRunID string
+	select {
+	case followUpRunID = <-ran:
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up run did not complete")
+	}
+	cancel()
+	<-done
+
+	started := eventsOfType(&tp.rec, "run_started")
+	if len(started) != 2 {
+		t.Fatalf("got %d run_started events, want one per run", len(started))
+	}
+	if started[0].ID != "test-run-1" || started[1].ID != followUpRunID {
+		t.Errorf("run_started IDs = %q, %q, want test-run-1, %q", started[0].ID, started[1].ID, followUpRunID)
+	}
+	if started[0].TraceReference == nil || started[1].TraceReference == nil {
+		t.Fatalf("run_started references = %+v, %+v, want both set", started[0].TraceReference, started[1].TraceReference)
+	}
+	if started[0].TraceReference.TraceID == started[1].TraceReference.TraceID {
+		t.Errorf("follow-up run reused trace ID %s", started[1].TraceReference.TraceID)
+	}
+}

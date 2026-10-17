@@ -26,7 +26,7 @@ see [`trace-inspection.md`](trace-inspection.md).
 | Where should telemetry land? | Use |
 |---|---|
 | Grafana Cloud, Honeycomb, GCP Cloud Trace, any managed OTLP gateway | **Native HTTP** ([Grafana Cloud example](#native-http-grafana-cloud-example)) |
-| Langfuse | Native HTTP ([Langfuse](#langfuse)) |
+| Langfuse | Native HTTP, plus the `langfuse` profile ([Langfuse](#langfuse)) |
 | Arize Phoenix | Native HTTP or gRPC, plus the `phoenix` profile ([Arize Phoenix](#arize-phoenix)) |
 | Amazon CloudWatch generative AI observability | The `cloudwatch` profile, which signs requests in process ([Amazon CloudWatch](#amazon-cloudwatch)) |
 | Datadog | Native HTTP to the OTLP intake ([Datadog](#datadog)) |
@@ -39,8 +39,9 @@ OTLP/protobuf directly to the backend over HTTPS. A
 [platform profile](#platform-profiles) (`traceEmitter.platform`)
 extends this to backends that need more than an endpoint and a
 header, namely request signing and backend-specific span attributes.
-Only `cloudwatch` and `phoenix` profiles exist. The other backends in
-this document are configured through the neutral settings alone.
+Only the `cloudwatch`, `langfuse`, and `phoenix` profiles exist. The
+other backends in this document are configured through the neutral
+settings alone.
 
 ## Native HTTP: Grafana Cloud example
 
@@ -215,10 +216,12 @@ against an account for this document.
 ## Langfuse
 
 Langfuse is an LLM-observability backend that ingests OTLP natively
-and reads the GenAI semantic-convention attributes Stirrup emits. No
-profile exists or is needed for the core views. Self-hosted requires
-v3.22.0 or later; the behaviour below was observed on a self-hosted
-v4.57.0.
+and reads the GenAI semantic-convention attributes Stirrup emits. The
+core views need no profile; the
+[`langfuse` profile](#the-langfuse-profile) adds the trace name, tags,
+release, filterable metadata, and component observation types.
+Self-hosted requires v3.22.0 or later; the behaviour below was observed
+on a self-hosted v4.57.0.
 
 ```json
 {
@@ -275,7 +278,8 @@ failure):
 - **Observation typing.** `invoke_agent` spans (the root and each
   sub-agent) render as agent observations, `chat {model}` spans as
   generations, and `execute_tool {name}` spans as tool observations;
-  Langfuse types them from `gen_ai.operation.name`. Component spans
+  Langfuse types them from `gen_ai.operation.name`. Without the
+  [`langfuse` profile](#the-langfuse-profile), component spans
   (`guard.*`, `verifier.verify`, `context.prepare`, and the rest)
   render as generic spans. See [Span tree](#span-tree).
 - **Input/output panels** populate only with
@@ -293,10 +297,16 @@ failure):
   OTel error status and `error.type`, which Langfuse maps to
   `level: ERROR` with the status message. Filter traces and
   observations by level to triage failures.
-- **Sessions.** `--name` is emitted on every span as both
-  `gen_ai.conversation.id` and `session.id`. Langfuse v4 filters
-  sessions per observation, so the id on every span is what makes the
-  session filter match. Without a session name there is no session.
+- **Sessions.** `correlation.sessionId`, or `--name` when no session
+  ID is set, is emitted on every span as both `gen_ai.conversation.id`
+  and `session.id`. Langfuse v4 filters sessions per observation, so
+  the id on every span is what makes the session filter match. Without
+  either there is no session. Langfuse drops session IDs of 200
+  characters or more, which is why validation caps
+  `correlation.sessionId` at 199.
+- **Users.** `correlation.userId` is emitted on every span as
+  `user.id`, which Langfuse reads natively. Without it there is no
+  user. See [Correlation](configuration.md#correlation).
 - **Environments.** `observability.environment` reaches Langfuse via
   the `deployment.environment.name` resource attribute.
 - **Chat rendering.** Stirrup serialises message content in the
@@ -306,14 +316,108 @@ failure):
   stored data. How the Langfuse web interface draws those messages
   was not viewed in a browser.
 
-Backend-native concepts beyond these (Langfuse users, tags, trace
-name, release, metadata, and observation types) live in the
-`langfuse.*` attribute namespace, which Stirrup deliberately does not
-emit. An OpenTelemetry Collector `transform` processor sets them while
-keeping the vendor mapping in operator config. This configuration
-populated the trace name, user, release, tags, filterable metadata,
-and the guardrail, evaluator, and chain observation types in a
-self-hosted v4.57.0 (collector contrib 0.162.0):
+Langfuse reads `user.id` and `session.id` natively, so the run
+correlation block alone populates users and sessions
+([attribute mapping](https://langfuse.com/integrations/native/opentelemetry)).
+The remaining backend-native concepts (tags, trace name, release,
+filterable metadata, and observation types) live in the `langfuse.*`
+attribute namespace. The harness emits them only through the
+`langfuse` profile; a collector can set them instead.
+
+### The `langfuse` profile
+
+`traceEmitter.platform: "langfuse"` sends traces to Langfuse's OTLP
+endpoint and adds the `langfuse.*` attributes:
+
+```json
+{
+  "traceEmitter": {
+    "type": "otel",
+    "headers": {"Authorization": "secret://LANGFUSE_AUTH"},
+    "captureContent": true,
+    "platform": "langfuse",
+    "platformOptions": {"host": "http://localhost:3000"}
+  }
+}
+```
+
+The same configuration from the command line:
+
+```sh
+stirrup harness \
+  --trace-emitter otel \
+  --otel-platform langfuse \
+  --otel-platform-option host=http://localhost:3000 \
+  --otel-header Authorization=secret://LANGFUSE_AUTH \
+  --otel-capture-content \
+  ...
+```
+
+| Option | Required | Meaning |
+|---|---|---|
+| `host` | no | Base URL of the Langfuse web application, such as `http://localhost:3000`. Traces go to `<host>/api/public/otel/v1/traces`, and a path prefix in `host` is kept. Without `host`, traces go to `traceEmitter.endpoint`; with neither set, the run fails at start and `--dry-run` reports it under the `trace-emitter` step. A `host` that already ends in `/api/public/otel` is rejected. |
+
+The profile's export settings:
+
+- **`http/protobuf` is required.** An unset `protocol` resolves to
+  it, including for the `traceEmitter.headers` check, so the example
+  omits `protocol`. `protocol: "grpc"` fails validation instead of
+  exporting spans that Langfuse drops.
+- **Ingestion header.** Trace export requests to the profile's
+  endpoint carry `x-langfuse-ingestion-version: 4`. A header of the
+  same name in `traceEmitter.headers` overrides it.
+- **Authorization stays with the operator.** The project's API key
+  pair goes in `traceEmitter.headers` as a `secret://` reference,
+  built as shown at the start of this section.
+- **Metrics are left alone.** With only `host` set, no metrics
+  endpoint resolves and metric export is off. With `endpoint` set as
+  well, metrics follow it as usual and Langfuse discards them.
+
+At export time the profile adds each of these attributes to a span
+that does not already carry it:
+
+| Attribute | Value | Spans |
+|---|---|---|
+| `langfuse.trace.name` | `stirrup <mode>`, for example `stirrup execution` | The run's `invoke_agent stirrup` span |
+| `langfuse.trace.tags` | `["stirrup", "<mode>"]` | Every span |
+| `langfuse.release` | The `service.version` resource attribute, the harness version | Every span |
+| `langfuse.trace.metadata.run_mode` | The run mode, from the `harness.run.mode` resource attribute | Every span |
+| `langfuse.trace.metadata.task_id`, `.attempt_id`, `.control_plane_url` | `correlation.taskId`, `attemptId`, and `url` | Every span, when set |
+| `langfuse.trace.metadata.<key>` and `langfuse.observation.metadata.<key>` | Each `correlation.labels` entry | Every span |
+| `langfuse.observation.type` | `guardrail` for `guard.*`, `evaluator` for `verifier.verify`, and `chain` for `context.prepare`, `hooks.*`, `git.*`, and `workspace.*` | Those component spans |
+
+- **Trace-level attributes.** Langfuse applies a trace-level
+  attribute from whichever span carries it, and the profile sets them
+  on every span. The trace name is the exception: it is set on the run
+  span only, so it names Stirrup's run even when that span is not the
+  root of the trace.
+- **Filtering.** Only top-level `langfuse.trace.metadata.*` keys are
+  filterable in Langfuse; other span attributes land under
+  `metadata.attributes`. Labels therefore become both trace and
+  observation metadata, so a control plane's dimensions, such as
+  `correlation.labels.agent_profile`, filter both tables. When the
+  harness has its own value for `run_mode`, `task_id`, `attempt_id`, or
+  `control_plane_url`, a label of the same name sets only the
+  observation key and the trace key keeps the harness's value. Without
+  `correlation.taskId`, for example, a `task_id` label fills both
+  keys.
+- **GenAI spans.** `invoke_agent`, `chat`, and `execute_tool` spans
+  keep the agent, generation, and tool types Langfuse derives from
+  `gen_ai.operation.name`.
+
+The profile's attributes are those of the collector recipe below plus
+the correlation and label metadata. The profile itself has not been
+run against a Langfuse instance, and whether the trace view renders
+`control_plane_url` as a link is unchecked.
+
+### Collector alternative
+
+Operators who already run an OpenTelemetry Collector can set the same
+attributes with a `transform` processor instead of the profile,
+keeping the vendor mapping in operator config. Unlike the profile,
+`set` replaces a value already on the span. A label's key must be
+named in the recipe; the `agent_profile` statements below show the
+pair each label needs.
 
 ```yaml
 receivers:
@@ -327,11 +431,15 @@ processors:
     trace_statements:
       - context: span
         statements:
-          - set(attributes["langfuse.trace.name"], "stirrup-run")
-          - set(attributes["langfuse.user.id"], "user-1")
+          - set(attributes["langfuse.trace.name"], Concat(["stirrup", resource.attributes["harness.run.mode"]], " ")) where attributes["gen_ai.operation.name"] == "invoke_agent" and attributes["gen_ai.agent.name"] == "stirrup"
           - set(attributes["langfuse.release"], resource.attributes["service.version"])
           - set(attributes["langfuse.trace.tags"], ["stirrup", resource.attributes["harness.run.mode"]])
           - set(attributes["langfuse.trace.metadata.run_mode"], resource.attributes["harness.run.mode"])
+          - set(attributes["langfuse.trace.metadata.task_id"], attributes["stirrup.task.id"]) where attributes["stirrup.task.id"] != nil
+          - set(attributes["langfuse.trace.metadata.attempt_id"], attributes["stirrup.attempt.id"]) where attributes["stirrup.attempt.id"] != nil
+          - set(attributes["langfuse.trace.metadata.control_plane_url"], attributes["stirrup.control_plane.url"]) where attributes["stirrup.control_plane.url"] != nil
+          - set(attributes["langfuse.trace.metadata.agent_profile"], attributes["stirrup.label.agent_profile"]) where attributes["stirrup.label.agent_profile"] != nil
+          - set(attributes["langfuse.observation.metadata.agent_profile"], attributes["stirrup.label.agent_profile"]) where attributes["stirrup.label.agent_profile"] != nil
           - set(attributes["langfuse.observation.type"], "guardrail") where IsMatch(name, "^guard\\.")
           - set(attributes["langfuse.observation.type"], "evaluator") where name == "verifier.verify"
           - set(attributes["langfuse.observation.type"], "chain") where IsMatch(name, "^(context\\.prepare|hooks\\.|git\\.|workspace\\.)")
@@ -350,11 +458,53 @@ service:
 ```
 
 Stirrup then points at the collector over gRPC (`endpoint:
-localhost:4317`, no headers). The assessment ran this file with the
-exporter spelled `otlphttp/langfuse`, the deprecated alias, and
-against the span shape that preceded the live `chat` and
-`execute_tool` spans. The matched span names are unchanged since. The
-`otlp_http` spelling was run against another backend, not Langfuse.
+localhost:4317`, no headers). The assessment populated the trace name,
+release, tags, run-mode metadata, and the guardrail, evaluator, and
+chain observation types in a self-hosted v4.57.0 (collector contrib
+0.162.0) with an earlier form of this file. That form set a constant
+trace name on every span and spelled the exporter `otlphttp/langfuse`,
+the deprecated alias, and it ran against the span shape that preceded
+the live `chat` and `execute_tool` spans. The matched span names are
+unchanged since. The run-span trace name and the correlation and label
+statements were added afterwards. Run through collector contrib 0.151.0
+on a run span from the harness, they produced the same attributes as
+the profile; they have not been run against Langfuse. The `otlp_http`
+spelling was run against another backend,
+not Langfuse.
+
+**Scoring a run.** A control plane that collects feedback on a run
+scores the run span, not the whole trace, so the score stays on the
+execution when the trace also holds orchestration or other runs.
+Stirrup reports the run span's identity as a trace reference on the
+`run_started` event, the `done` summary and `RunResult.traceReference`. The reference's
+`traceId` is the Langfuse trace ID and its `runSpanId` is the
+observation ID, since Langfuse uses an OTLP span's ID as its
+observation ID. A score through the
+[Langfuse scores API](https://langfuse.com/docs/evaluation/evaluation-methods/scores-via-sdk)
+(`POST /api/public/scores`) then targets the run:
+
+```json
+{
+  "id": "feedback-8f2e-reviewer-1",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "observationId": "00f067aa0ba902b7",
+  "name": "helpfulness",
+  "value": 1,
+  "dataType": "NUMERIC",
+  "comment": "Fixed the failing test on the first attempt."
+}
+```
+
+A stable `id` makes a retried or edited score update the existing one.
+A reference with `sampled: false` names a span that was not exported,
+so Langfuse holds no observation for it. Stirrup submits no scores
+itself.
+
+A run parented on a control-plane span through `trace_context` is not
+the root of its Langfuse trace, which changes the trace name and the
+trace-level panels; the choice is described in
+[`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
+Scores on the run span are unaffected.
 
 ## Arize Phoenix
 
@@ -414,10 +564,10 @@ API.
 
   The `phoenix` profile's `project` option sets the same attribute.
 - **Sessions.** Phoenix maps `gen_ai.conversation.id`, which the
-  harness sets from `--name` on every span, to its session id. A run
-  without `--name` has no session. Phoenix keys a session on the id
-  alone, so a trace in a second project that reuses the id joins the
-  first project's session.
+  harness sets on every span from `correlation.sessionId` or else
+  `--name`, to its session id. A run with neither has no session.
+  Phoenix keys a session on the id alone, so a trace in a second
+  project that reuses the id joins the first project's session.
 
 Without a profile, Phoenix types `invoke_agent` spans as AGENT, `chat`
 as LLM, and `execute_tool` as TOOL, and reads token counts, model,
@@ -469,9 +619,12 @@ carry the attribute:
 
 The profile sets no endpoint or protocol, so traces go to
 `traceEmitter.endpoint`, or to the default `localhost:4317` over gRPC
-when it is unset. It sets no user or tag attributes, and Phoenix's user filter and tag
-display stay empty (see issue #775). A collector `transform` processor
-set `user.id`, `metadata`, and tags in the assessment.
+when it is unset. It sets no tag attributes, and Phoenix's tag display
+stays empty (see issue #775). `correlation.userId` stamps `user.id`,
+the OpenInference user attribute, on every span without the profile;
+Phoenix's user filter has not been checked against it. A collector
+`transform` processor set `user.id`, `metadata`, and tags in the
+assessment.
 
 ## Amazon CloudWatch
 
@@ -641,8 +794,8 @@ What CloudWatch does with the spans, read back from the stored
 - **Sessions.** CloudWatch does not derive sessions from
   `gen_ai.conversation.id`; it keeps a `session.id` span attribute, by
   which a sessions-and-traces aggregation worked. The harness sets
-  `session.id` on every span from `sessionName`. A run without a
-  session name has no session.
+  `session.id` on every span from `correlation.sessionId`, or else
+  `sessionName`. A run with neither has no session.
 - **Agent identity.** The service is `service.name`, so deployments
   that share the default `stirrup` name merge into one service. Set
   `observability.serviceName` per agent.
@@ -794,6 +947,55 @@ mapping table omits them, so cost may be overstated on cache-heavy
 runs), and whether `aws.bedrock` and `gcp.vertex_ai` provider names
 resolve to priced providers.
 
+## Trace context exchanged with a control plane
+
+A control-plane tool call (`tools.controlPlane`) is work the control
+plane does for the run, so its `tool_result_request` event carries
+`trace_context`: the W3C `traceparent` and `tracestate` of the call's
+`execute_tool` span. A control plane that traces its own work parents
+the span for the call on it, and the span then appears in the run's
+trace tree under the tool call. Concurrent calls each carry their own
+span. `request_id` still pairs the request with its response; the
+trace context describes causality only.
+
+The harness sends no `trace_context` when the call has no valid span
+context. A trace emitter that records no OpenTelemetry spans, such as
+`jsonl`, opens no tool span, so the field is absent unless the run's
+context already holds a span, in which case it names that span.
+Baggage is never sent.
+
+In the other direction, a control plane can make a run part of its
+own trace. A `task_assignment` whose `trace_context` carries a valid
+`traceparent` parents the primary run's `invoke_agent stirrup` span on
+the control plane's span, and the run's spans share its trace ID.
+Follow-up runs start new traces. An invalid `traceparent` is ignored,
+so the run starts a new trace. A Go embedder gets the same behaviour
+from a span on the `ctx` passed to `harnessapi.Loop.Run`. Integrator
+detail, including the Langfuse rendering choice this creates, is in
+[`integration-guide.md`](integration-guide.md#joining-a-control-plane-trace-trace_context).
+
+**Sampling follows the parent.** The harness configures no sampler in
+code, so the OpenTelemetry SDK's parent-based default applies: a sampled
+parent (trace flags `01`) records and exports the run, and an
+unsampled parent (`00`) suppresses export of every span in the run.
+The harness does not override that decision, so a trace the control
+plane chose not to keep does not reappear in part. The run still
+reports its trace reference on `run_started` and the `done` summary
+with `sampled: false`, which tells the control plane that feedback on
+the run has no exported trace to land on.
+
+The parent-based default is what makes `sampled: false` mean "the
+control plane chose not to keep this trace". The SDK also reads
+`OTEL_TRACES_SAMPLER` from the harness's environment, and that
+variable replaces the default. The `parentbased_*` values keep the
+parent's decision. `always_on`, `always_off` and `traceidratio`
+ignore it: under `always_on` or a ratio sampler, a run under an
+unsampled parent can export its spans and `run_started` then reports
+`sampled: true`. `sampled` always reflects the run span's own flag, so
+operators who set a non-parent-based sampler accept that it can
+disagree with the control plane's decision, and that the backend can
+hold a run whose parent trace it never received.
+
 ## Log-trace correlation
 
 When the trace emitter records spans (`traceEmitter.type: "otel"`),
@@ -826,7 +1028,11 @@ The span a record correlates with depends on what it describes:
 
 Records emitted before the first run's span opens (boot-time and
 component construction), and every record of a run whose trace emitter
-records no spans, carry no correlation fields. Between follow-up runs,
+records no spans, carry no correlation fields, except under an
+upstream parent (`trace_context` on the task assignment, or a span on
+an embedder's `ctx`). Then construction records logged with the build
+context, and every record of a run whose emitter records no spans,
+correlate with the upstream parent span. Between follow-up runs,
 records keep the previous run's `runId` and root span. Security event
 lines are written by a separate writer and carry `runId` but no
 correlation fields.
@@ -871,7 +1077,15 @@ Every span in the run carries:
 | Attribute | Value |
 |---|---|
 | `gen_ai.agent.name` | `stirrup`, or `stirrup.subagent` for spans inside a sub-agent run. |
-| `gen_ai.conversation.id`, `session.id` | The `--session-name`, when one is set. |
+| `gen_ai.conversation.id`, `session.id` | `correlation.sessionId`, else the `--name` session name, when either is set. |
+| `user.id` | `correlation.userId`, when set. |
+| `stirrup.task.id`, `stirrup.attempt.id` | `correlation.taskId` and `correlation.attemptId`, when set. |
+| `stirrup.control_plane.url` | `correlation.url`, when set. |
+| `stirrup.label.<key>` | One per `correlation.labels` entry. |
+
+These run identity attributes are span attributes only: they are not
+resource attributes, metric labels, or prompt content. See
+[Correlation](configuration.md#correlation).
 
 Span-specific attributes:
 
@@ -1099,8 +1313,10 @@ logs go in plaintext to the SDK's default local collector
 
 Some backends need more than an endpoint and a header: Amazon
 CloudWatch requires SigV4-signed requests to a different host per
-signal, and Arize Phoenix reads OpenInference attributes that the
-GenAI semantic conventions do not carry. A platform profile supplies
+signal, Arize Phoenix reads OpenInference attributes that the GenAI
+semantic conventions do not carry, and Langfuse reads its trace name,
+tags, and filterable metadata only from its own `langfuse.*`
+attributes. A platform profile supplies
 those settings so the harness can export to the backend directly,
 without a collector in between.
 
@@ -1164,11 +1380,19 @@ or `OTEL_EXPORTER_OTLP_ENDPOINT`, carries only `traceEmitter.headers`
 and is not signed, so the profile's credentials never reach that
 collector. A signing client does not follow HTTP redirects.
 
-The harness rejects these combinations at start:
+`ValidateRunConfig`, and so `stirrup run-config`, rejects
+`protocol: "grpc"` with a platform that requires `http/protobuf`
+(`cloudwatch` and `langfuse`). An unset `protocol` with such a
+platform resolves to `http/protobuf`, so `traceEmitter.headers` needs
+no explicit `protocol` there.
+
+The harness also rejects these combinations at start:
 
 - an option key the platform does not accept, or a missing required
   one;
-- `protocol: "grpc"` with a platform that requires `http/protobuf`;
+- a platform that requires `http/protobuf` with no trace endpoint,
+  where neither `traceEmitter.endpoint` nor a platform option names
+  the backend;
 - a platform that signs requests or adds headers, on gRPC (signing
   wraps the OTLP/HTTP transport, which gRPC does not use, and headers
   are refused on gRPC as described under [Validation](#validation));
@@ -1185,9 +1409,10 @@ logged.
 | Profile | Backend | Reference |
 |---|---|---|
 | `cloudwatch` | Amazon CloudWatch generative AI observability: per-signal endpoints, SigV4 signing, log group headers, and the agent resource attributes. | [Amazon CloudWatch](#amazon-cloudwatch) |
+| `langfuse` | Langfuse: the OTLP/HTTP trace endpoint and ingestion header, the trace name, tags, release, correlation and label metadata, and component observation types. | [The `langfuse` profile](#the-langfuse-profile) |
 | `phoenix` | Arize Phoenix: OpenInference span kinds, root input and output, and the project name. | [The `phoenix` profile](#the-phoenix-profile) |
 
-No profile exists for Datadog, Langfuse, or Grafana. Their sections
+No profile exists for Datadog or Grafana. Their sections
 configure the neutral settings only. A Datadog profile is deferred
 until an account trial can confirm the open points listed there (see
 issue #771).
@@ -1377,7 +1602,8 @@ the documented `host:port` endpoint form in plaintext, so any bearer
 or Basic credential supplied via `headers` would ride a plaintext gRPC
 channel to the collector. To make this footgun unreachable, the validator
 rejects `headers` whenever `protocol` is `""` (which defaults to gRPC
-at exporter construction) or `"grpc"`. The gRPC path is the
+at exporter construction unless the platform requires `http/protobuf`)
+or `"grpc"`. The gRPC path is the
 local/sidecar collector flow and assumes the collector itself does
 not require auth. A gRPC link that needs auth goes through a sidecar
 collector that handles the credential locally and forwards over a

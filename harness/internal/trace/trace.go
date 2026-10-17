@@ -180,11 +180,25 @@ type SubRunRecorder interface {
 	RecordSubRunFinished(summary types.SubRunSummary)
 }
 
+// ContextStarter is implemented by emitters whose run span can be
+// parented on a span carried by ctx. Only the span context is taken from
+// ctx; its cancellation and deadline are not.
+type ContextStarter interface {
+	StartWithContext(ctx context.Context, runID string, config *types.RunConfig)
+}
+
 // RootContextProvider is an optional capability for emitters that open a
 // span for the run. The loop parents its component spans on the returned
 // context. A nil return means the emitter records no run span.
 type RootContextProvider interface {
 	RootContext() context.Context
+}
+
+// TraceReferenceProvider is an optional capability for emitters that
+// record an OTel run span. TraceReference returns nil before Start and
+// when the emitter holds no valid span.
+type TraceReferenceProvider interface {
+	TraceReference() *types.TraceReference
 }
 
 // LiveSpanStarter is an optional capability for emitters that record model

@@ -110,6 +110,11 @@ type RunResult struct {
 	// proceeded without, such as an optional MCP server that was
 	// unavailable at startup. Can be non-empty when Outcome is "success".
 	DegradedCapabilities []DegradedCapability `json:"degradedCapabilities,omitempty"`
+
+	// TraceReference mirrors RunTrace.TraceReference: the OTel trace ID
+	// and run span ID a feedback score can target. Omitted when the run
+	// recorded no OTel span.
+	TraceReference *TraceReference `json:"traceReference,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

@@ -2,36 +2,111 @@ package trace
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
+
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // sessionIDKey is the general semconv session attribute. Some backends
 // group spans into sessions by it rather than by gen_ai.conversation.id,
-// so both carry the session name.
+// so both carry the session ID.
 const sessionIDKey = "session.id"
+
+const (
+	userIDKey          = "user.id"
+	taskIDKey          = "stirrup.task.id"
+	attemptIDKey       = "stirrup.attempt.id"
+	controlPlaneURLKey = "stirrup.control_plane.url"
+	labelKeyPrefix     = "stirrup.label."
+)
 
 const (
 	agentNameRun      = "stirrup"
 	agentNameSubAgent = "stirrup.subagent"
 )
 
-// runScopeProcessor stamps run-wide GenAI identity onto every span at
-// start: the session name as gen_ai.conversation.id and session.id, and
-// gen_ai.agent.name inherited from the nearest enclosing invoke_agent
-// span. Lineage is tracked by span ID rather than a context value
-// because the loop parents tool and chat spans on contexts derived from
-// the cancellable run context, which never carried the agent span's
-// values.
-//
-// The mutex is a leaf: the processor never calls into the emitter.
+// runIdentity is the run-wide identity stamped on every span. Empty
+// fields are not stamped.
+type runIdentity struct {
+	sessionID string
+	userID    string
+	taskID    string
+	attemptID string
+	url       string
+	labels    map[string]string
+}
+
+// runIdentityFor takes the session ID from correlation.sessionId, falling
+// back to the session name. Correlation values are scrubbed unless
+// redaction is disabled, matching every other operator-supplied string
+// the emitter exports.
+func runIdentityFor(config *types.RunConfig, redactionDisabled bool) runIdentity {
+	if config == nil {
+		return runIdentity{}
+	}
+	id := runIdentity{sessionID: config.SessionName}
+	c := config.Correlation
+	if !redactionDisabled {
+		c = security.ScrubCorrelation(c)
+	}
+	if c != nil {
+		if c.SessionID != "" {
+			id.sessionID = c.SessionID
+		}
+		id.userID = c.UserID
+		id.taskID = c.TaskID
+		id.attemptID = c.AttemptID
+		id.url = c.URL
+		id.labels = c.Labels
+	}
+	return id
+}
+
+// attributes returns the identity as span attributes, labels in key
+// order.
+func (id runIdentity) attributes() []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 6+len(id.labels))
+	if id.sessionID != "" {
+		attrs = append(attrs,
+			attribute.String(genAIConversationIDKey, id.sessionID),
+			attribute.String(sessionIDKey, id.sessionID),
+		)
+	}
+	for _, kv := range []struct{ key, value string }{
+		{userIDKey, id.userID},
+		{taskIDKey, id.taskID},
+		{attemptIDKey, id.attemptID},
+		{controlPlaneURLKey, id.url},
+	} {
+		if kv.value != "" {
+			attrs = append(attrs, attribute.String(kv.key, kv.value))
+		}
+	}
+	keys := make([]string, 0, len(id.labels))
+	for k := range id.labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		attrs = append(attrs, attribute.String(labelKeyPrefix+k, id.labels[k]))
+	}
+	return attrs
+}
+
+// runScopeProcessor stamps every span at start with the identity of the
+// run most recently passed to setRun, and with gen_ai.agent.name
+// inherited by span ID from the nearest enclosing invoke_agent span. Its
+// mutex is a leaf: the processor never calls into the emitter.
 type runScopeProcessor struct {
-	mu             sync.Mutex
-	conversationID string
-	agents         map[oteltrace.SpanID]string
+	mu       sync.Mutex
+	identity []attribute.KeyValue
+	agents   map[oteltrace.SpanID]string
 }
 
 var _ sdktrace.SpanProcessor = (*runScopeProcessor)(nil)
@@ -40,12 +115,13 @@ func newRunScopeProcessor() *runScopeProcessor {
 	return &runScopeProcessor{agents: map[oteltrace.SpanID]string{}}
 }
 
-// setRun records the conversation ID for the run being started; empty
-// means no session name was configured.
-func (p *runScopeProcessor) setRun(conversationID string) {
+// setRun records the identity of the run being started, replacing the
+// previous run's.
+func (p *runScopeProcessor) setRun(id runIdentity) {
+	attrs := id.attributes()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.conversationID = conversationID
+	p.identity = attrs
 }
 
 func (p *runScopeProcessor) OnStart(_ context.Context, s sdktrace.ReadWriteSpan) {
@@ -66,21 +142,14 @@ func (p *runScopeProcessor) OnStart(_ context.Context, s sdktrace.ReadWriteSpan)
 		agent = agentNameRun
 	}
 	p.agents[s.SpanContext().SpanID()] = agent
-	conversationID := p.conversationID
+	identity := p.identity
 	p.mu.Unlock()
 
-	attrs := make([]attribute.KeyValue, 0, 3)
 	if own == "" {
-		attrs = append(attrs, attribute.String(genAIAgentNameKey, agent))
+		s.SetAttributes(attribute.String(genAIAgentNameKey, agent))
 	}
-	if conversationID != "" {
-		attrs = append(attrs,
-			attribute.String(genAIConversationIDKey, conversationID),
-			attribute.String(sessionIDKey, conversationID),
-		)
-	}
-	if len(attrs) > 0 {
-		s.SetAttributes(attrs...)
+	if len(identity) > 0 {
+		s.SetAttributes(identity...)
 	}
 }
 
@@ -102,8 +171,8 @@ type otelOptions struct {
 }
 
 // WithSpanProcessor registers an extra span processor after the emitter's
-// run-scope processor, so it sees gen_ai.agent.name, gen_ai.conversation.id
-// and session.id already set at OnStart. A processor can only change a
+// run-scope processor, so it sees gen_ai.agent.name and the run identity
+// attributes already set at OnStart. A processor can only change a
 // span at start; end-time values reach it read-only.
 func WithSpanProcessor(p sdktrace.SpanProcessor) OTelOption {
 	return func(o *otelOptions) {

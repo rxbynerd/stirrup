@@ -158,6 +158,7 @@ var (
 	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
 	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
 	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
+	_ TraceReferenceProvider       = (*OTelTraceEmitter)(nil)
 	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
 	_ LedgerUsageRecorder          = (*OTelTraceEmitter)(nil)
 	_ PostEditCheckRecorder        = (*OTelTraceEmitter)(nil)
@@ -250,6 +251,20 @@ func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 // Start initialises a new trace with the given run ID and configuration.
 // It creates the root "invoke_agent stirrup" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
+	e.start(context.Background(), runID, config)
+}
+
+var _ ContextStarter = (*OTelTraceEmitter)(nil)
+
+// StartWithContext is Start with the run span parented on the span
+// context ctx carries, or a new trace when that is invalid. Only the span
+// context is copied: RootContext carries no cancellation or deadline from
+// ctx, so post-run spans still record after the caller's ctx ends.
+func (e *OTelTraceEmitter) StartWithContext(ctx context.Context, runID string, config *types.RunConfig) {
+	e.start(oteltrace.ContextWithSpanContext(context.Background(), oteltrace.SpanContextFromContext(ctx)), runID, config)
+}
+
+func (e *OTelTraceEmitter) start(parent context.Context, runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -276,18 +291,14 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.open = nil
 	e.postEditChecks = nil
 
-	conversationID := ""
-	if config != nil {
-		conversationID = config.SessionName
-	}
-	e.scope.setRun(conversationID)
+	e.scope.setRun(runIdentityFor(config, e.redactionDisabled))
 
 	attrs := []attribute.KeyValue{
 		attribute.String("run.id", runID),
 		attribute.String("harness.version", version.Version()),
 	}
 	attrs = append(attrs, agentSpanAttributes(agentNameRun, config)...)
-	ctx, span := e.tracer.Start(context.Background(), "invoke_agent "+agentNameRun,
+	ctx, span := e.tracer.Start(parent, "invoke_agent "+agentNameRun,
 		oteltrace.WithAttributes(attrs...),
 	)
 
@@ -641,7 +652,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		if e.redactionDisabled {
 			redactedConfig = *e.config
 		} else {
-			redactedConfig = e.config.Redact()
+			redactedConfig = redactRunConfig(e.config)
 		}
 	}
 
@@ -668,6 +679,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		AuxiliaryTokens:      e.auxiliaryTokens,
 		ExternalGuardTokens:  e.externalGuardTokens,
 		PostEditChecks:       e.postEditChecks,
+		TraceReference:       e.traceReferenceLocked(),
 	}
 
 	return trace, nil
@@ -694,6 +706,29 @@ func (e *OTelTraceEmitter) Probe(ctx context.Context) error {
 // to create child spans for component calls.
 func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {
 	return e.tracer
+}
+
+// TraceReference returns the identity of the current run's invoke_agent
+// span, or nil before Start.
+func (e *OTelTraceEmitter) TraceReference() *types.TraceReference {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.traceReferenceLocked()
+}
+
+func (e *OTelTraceEmitter) traceReferenceLocked() *types.TraceReference {
+	if e.rootSpan == nil {
+		return nil
+	}
+	sc := e.rootSpan.SpanContext()
+	if !sc.IsValid() {
+		return nil
+	}
+	return &types.TraceReference{
+		TraceID:   sc.TraceID().String(),
+		RunSpanID: sc.SpanID().String(),
+		Sampled:   sc.IsSampled(),
+	}
 }
 
 // RootContext returns the context containing the invoke_agent span, for use

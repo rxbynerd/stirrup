@@ -33,8 +33,41 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	if e.Trace != nil {
 		pe.Trace = runTraceToProto(e.Trace)
 	}
+	pe.TraceReference = traceReferenceToProto(e.TraceReference)
+	pe.TraceContext = traceContextToProto(e.TraceContext)
 
 	return pe
+}
+
+func traceContextFromProto(c *pb.TraceContext) *types.TraceContext {
+	if c == nil {
+		return nil
+	}
+	return &types.TraceContext{
+		Traceparent: c.Traceparent,
+		Tracestate:  c.Tracestate,
+	}
+}
+
+func traceContextToProto(c *types.TraceContext) *pb.TraceContext {
+	if c == nil {
+		return nil
+	}
+	return &pb.TraceContext{
+		Traceparent: c.Traceparent,
+		Tracestate:  c.Tracestate,
+	}
+}
+
+func traceReferenceToProto(r *types.TraceReference) *pb.TraceReference {
+	if r == nil {
+		return nil
+	}
+	return &pb.TraceReference{
+		TraceId:   r.TraceID,
+		RunSpanId: r.RunSpanID,
+		Sampled:   r.Sampled,
+	}
 }
 
 // controlEventFromProto translates a proto ControlEvent to the internal
@@ -63,6 +96,8 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 		v := *pe.ExpiresAt
 		e.ExpiresAt = &v
 	}
+
+	e.TraceContext = traceContextFromProto(pe.TraceContext)
 
 	if pe.Task != nil {
 		rc := runConfigFromProto(pe.Task)
@@ -117,6 +152,7 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 	}
 	pt.Error = t.Error
 	pt.StructuredOutput = string(t.StructuredOutput)
+	pt.TraceReference = traceReferenceToProto(t.TraceReference)
 	for _, dc := range t.DegradedCapabilities {
 		pt.DegradedCapabilities = append(pt.DegradedCapabilities, &pb.DegradedCapability{
 			Kind:  dc.Kind,
@@ -404,6 +440,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.RepositoryGuidance != nil {
 		rc.RepositoryGuidance = repositoryGuidanceConfigFromProto(pc.RepositoryGuidance)
 	}
+	if pc.Correlation != nil {
+		rc.Correlation = correlationConfigFromProto(pc.Correlation)
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
@@ -663,6 +702,25 @@ func repositoryGuidanceConfigFromProto(pc *pb.RepositoryGuidanceConfig) *types.R
 		}
 	}
 	return rg
+}
+
+// correlationConfigFromProto copies the proto-owned label map so later
+// mutations to the wire payload cannot reach internal config state.
+func correlationConfigFromProto(pc *pb.CorrelationConfig) *types.CorrelationConfig {
+	cc := &types.CorrelationConfig{
+		SessionID: pc.GetSessionId(),
+		TaskID:    pc.GetTaskId(),
+		AttemptID: pc.GetAttemptId(),
+		UserID:    pc.GetUserId(),
+		URL:       pc.GetUrl(),
+	}
+	if labels := pc.GetLabels(); len(labels) > 0 {
+		cc.Labels = make(map[string]string, len(labels))
+		for k, v := range labels {
+			cc.Labels[k] = v
+		}
+	}
+	return cc
 }
 
 // hooksConfigFromProto translates a proto HooksConfig to the internal

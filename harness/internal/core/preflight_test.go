@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/types"
@@ -187,6 +188,44 @@ func TestPreflight_PlatformMissingRequiredOptionFails(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no registered platform has a required option to exercise")
+	}
+}
+
+// TestPreflight_PlatformWithoutTraceEndpointFails pins that a dry run
+// reports a platform that requires OTLP/HTTP but resolves no trace
+// endpoint, rather than exporting to the default gRPC address over HTTP.
+func TestPreflight_PlatformWithoutTraceEndpointFails(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	checked := 0
+	for _, name := range types.ValidTraceEmitterPlatformValues() {
+		p, err := platform.Resolve(context.Background(), name, nil, platform.Deps{})
+		if err != nil || p.RequiredProtocol != otlp.ProtocolHTTPProtobuf || p.Signals[otlp.SignalTraces].Endpoint != "" {
+			continue
+		}
+		checked++
+		t.Run(name, func(t *testing.T) {
+			config := preflightTestConfig(t, srv.URL+"/v1")
+			config.TraceEmitter = types.TraceEmitterConfig{Type: "otel", Platform: name}
+			report, err := Preflight(context.Background(), config, PreflightOptions{})
+			if err != nil {
+				t.Fatalf("Preflight: %v", err)
+			}
+			for _, step := range report.Steps {
+				if step.Name == "trace-emitter" {
+					if report.OK || step.Status != PreflightFail || !strings.Contains(step.Detail, "has no trace endpoint") {
+						t.Errorf("trace-emitter step = %+v, want a missing-endpoint failure", step)
+					}
+					return
+				}
+			}
+			t.Errorf("no trace-emitter step in %+v", report.Steps)
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no registered platform requires OTLP/HTTP without its own trace endpoint")
 	}
 }
 

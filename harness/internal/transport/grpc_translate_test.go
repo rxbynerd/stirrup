@@ -2532,11 +2532,180 @@ func TestRunConfigFromProto_RepositoryGuidancePreserved(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_CorrelationPreserved pins every CorrelationConfig
+// field across a wire round-trip and checks the translated label map does
+// not alias the proto-owned map.
+func TestRunConfigFromProto_CorrelationPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Correlation: &pb.CorrelationConfig{
+			SessionId: "session-42",
+			TaskId:    "task-7",
+			AttemptId: "attempt-3",
+			UserId:    "user-9f2c",
+			Url:       "https://cp.example.com/runs/42",
+			Labels:    map[string]string{"agent_profile": "reviewer", "execution_mode": "batch"},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	got := runConfigFromProto(&decoded).Correlation
+	want := &types.CorrelationConfig{
+		SessionID: "session-42",
+		TaskID:    "task-7",
+		AttemptID: "attempt-3",
+		UserID:    "user-9f2c",
+		URL:       "https://cp.example.com/runs/42",
+		Labels:    map[string]string{"agent_profile": "reviewer", "execution_mode": "batch"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Correlation: got %+v, want %+v", got, want)
+	}
+
+	decoded.Correlation.Labels["agent_profile"] = "mutated"
+	if got.Labels["agent_profile"] != "reviewer" {
+		t.Error("Correlation.Labels shares the proto-owned map")
+	}
+}
+
+func TestRunConfigFromProto_CorrelationAbsentStaysNil(t *testing.T) {
+	if got := runConfigFromProto(&pb.RunConfig{}).Correlation; got != nil {
+		t.Errorf("Correlation should be nil when proto field absent, got %+v", got)
+	}
+}
+
 // TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil documents that an
 // absent sub-message leaves guidance off rather than synthesising an empty
 // block that fails validation.
 func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
 	if rg := runConfigFromProto(&pb.RunConfig{}).RepositoryGuidance; rg != nil {
 		t.Errorf("RepositoryGuidance should be nil when proto field absent, got %+v", rg)
+	}
+}
+
+func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
+	ref := &types.TraceReference{
+		TraceID:   "4bf92f3577b34da6a3ce929d0e0e4736",
+		RunSpanID: "00f067aa0ba902b7",
+		Sampled:   true,
+	}
+	assertRef := func(t *testing.T, got *pb.TraceReference) {
+		t.Helper()
+		if got.GetTraceId() != ref.TraceID || got.GetRunSpanId() != ref.RunSpanID || got.GetSampled() != ref.Sampled {
+			t.Errorf("trace_reference = %v, want %+v", got, *ref)
+		}
+	}
+
+	t.Run("run_started event", func(t *testing.T) {
+		raw, err := proto.Marshal(harnessEventToProto(types.HarnessEvent{
+			Type: "run_started", ID: "run-ref", TraceReference: ref,
+		}))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.HarnessEvent
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.GetType() != "run_started" || decoded.GetId() != "run-ref" {
+			t.Errorf("type/id = %q/%q, want run_started/run-ref", decoded.GetType(), decoded.GetId())
+		}
+		assertRef(t, decoded.GetTraceReference())
+	})
+
+	t.Run("done summary", func(t *testing.T) {
+		raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{Outcome: "success", TraceReference: ref}))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunTrace
+		if err := proto.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		assertRef(t, decoded.GetTraceReference())
+	})
+
+	t.Run("unsampled reference keeps sampled false", func(t *testing.T) {
+		got := traceReferenceToProto(&types.TraceReference{TraceID: ref.TraceID, RunSpanID: ref.RunSpanID})
+		if got == nil || got.GetSampled() {
+			t.Errorf("trace_reference = %v, want present with sampled false", got)
+		}
+	})
+
+	t.Run("absent stays absent", func(t *testing.T) {
+		if pe := harnessEventToProto(types.HarnessEvent{Type: "text_delta"}); pe.TraceReference != nil {
+			t.Errorf("event trace_reference = %v, want nil", pe.TraceReference)
+		}
+		if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.TraceReference != nil {
+			t.Errorf("summary trace_reference = %v, want nil", pt.TraceReference)
+		}
+	})
+}
+
+func TestTraceContextToProto_ToolResultRequest(t *testing.T) {
+	carrier := &types.TraceContext{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "vendor=opaque",
+	}
+	raw, err := proto.Marshal(harnessEventToProto(types.HarnessEvent{
+		Type: "tool_result_request", RequestID: "req-1", ToolUseID: "tc_1", TraceContext: carrier,
+	}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.HarnessEvent
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.GetTraceContext()
+	if got.GetTraceparent() != carrier.Traceparent || got.GetTracestate() != carrier.Tracestate {
+		t.Errorf("trace_context = %v, want %+v", got, *carrier)
+	}
+	if decoded.GetRequestId() != "req-1" || decoded.GetToolUseId() != "tc_1" {
+		t.Errorf("request_id/tool_use_id = %q/%q, want req-1/tc_1", decoded.GetRequestId(), decoded.GetToolUseId())
+	}
+
+	if pe := harnessEventToProto(types.HarnessEvent{Type: "tool_result_request"}); pe.TraceContext != nil {
+		t.Errorf("absent trace context translated to %v, want nil", pe.TraceContext)
+	}
+}
+
+func TestTraceContextFromProto_TaskAssignment(t *testing.T) {
+	raw, err := proto.Marshal(&pb.ControlEvent{
+		Type: "task_assignment",
+		Task: &pb.RunConfig{RunId: "run-parented"},
+		TraceContext: &pb.TraceContext{
+			Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			Tracestate:  "vendor=opaque",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.ControlEvent
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	e := controlEventFromProto(&decoded)
+	want := types.TraceContext{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "vendor=opaque",
+	}
+	if e.TraceContext == nil || *e.TraceContext != want {
+		t.Errorf("trace context = %+v, want %+v", e.TraceContext, want)
+	}
+	if e.Task == nil || e.Task.RunID != "run-parented" {
+		t.Errorf("task = %+v, want run-parented", e.Task)
+	}
+
+	if e := controlEventFromProto(&pb.ControlEvent{Type: "task_assignment"}); e.TraceContext != nil {
+		t.Errorf("absent trace context translated to %+v, want nil", e.TraceContext)
 	}
 }

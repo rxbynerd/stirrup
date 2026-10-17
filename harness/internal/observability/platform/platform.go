@@ -78,6 +78,7 @@ type definition struct {
 // keys must equal types.ValidTraceEmitterPlatformValues().
 var registry = map[string]definition{
 	"cloudwatch": cloudwatchDefinition,
+	"langfuse":   langfuseDefinition,
 	"phoenix":    phoenixDefinition,
 }
 

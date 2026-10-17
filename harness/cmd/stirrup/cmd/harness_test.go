@@ -627,6 +627,7 @@ func newTestHarnessCommand() *cobra.Command {
 	// RunConfig. Mirrors the registration in harness.go init().
 	f.String("output-runconfig", "", "")
 	f.StringP("output", "o", "text", "")
+	addTraceParentFlags(f)
 	// Dry-run flags. Mirrors the registration in harness.go init() so
 	// flag-combination tests can exercise validateDryRunFlags.
 	f.Bool("dry-run", false, "")

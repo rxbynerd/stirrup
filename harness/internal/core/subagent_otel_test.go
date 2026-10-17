@@ -97,6 +97,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		Handler:           nil, // wired below
 	})
 
+	parentTp := &recordingTransport{}
 	parentLoop := &AgenticLoop{
 		Provider:    parentProv,
 		Router:      router.NewStaticRouter("anthropic", "claude-sonnet-4-6"),
@@ -108,7 +109,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		Verifier:    verifier.NewNoneVerifier(),
 		Permissions: permission.NewAllowAll(),
 		Git:         git.NewNoneGitStrategy(),
-		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
+		Transport:   parentTp,
 		Trace:       emitter,
 		Tracer:      tracer,
 		Metrics:     observability.NewNoopMetrics(),
@@ -171,6 +172,17 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	sub := one("invoke_agent stirrup.subagent")
 	requireParent(t, spawn, root)
 	requireParent(t, sub, spawn)
+
+	started := eventsOfType(parentTp, "run_started")
+	if len(started) != 1 {
+		t.Fatalf("parent transport received %d run_started events, want only the parent run's", len(started))
+	}
+	if started[0].TraceReference == nil {
+		t.Fatal("parent run_started carries no trace reference")
+	}
+	if got := started[0]; got.ID != "parent-run-otel" || got.TraceReference.RunSpanID != root.SpanContext.SpanID().String() {
+		t.Errorf("run_started = id %q span %s, want the parent run and its root span %s", got.ID, got.TraceReference.RunSpanID, root.SpanContext.SpanID())
+	}
 
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
 	if len(chats) != 3 {

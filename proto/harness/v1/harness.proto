@@ -42,6 +42,15 @@ service HarnessService {
 //   "ready"
 //     - harness_version: build version string of the harness binary.
 //
+//   "run_started"
+//     - id:              the run ID (RunConfig.run_id) of the run that started.
+//     - trace_reference: the run span's OTel trace ID, span ID and sampled
+//                        flag.
+//     Sent once per run, before the run's first model event, only when the
+//     run records an OTel span. Under `stirrup job`, "ready" is sent once per
+//     session, so a follow-up run's "run_started" follows the previous run's
+//     "done".
+//
 //   "text_delta"
 //     - text: incremental text fragment from the model's response.
 //
@@ -137,15 +146,18 @@ service HarnessService {
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
-  //              "warning", "heartbeat", "ready", "permission_request",
-  //              "tool_result_request", "batch_submission", "batch_waiting",
-  //              "batch_cancel_request", "sandbox_token_request".
+  //              "warning", "heartbeat", "ready", "run_started",
+  //              "permission_request", "tool_result_request",
+  //              "batch_submission", "batch_waiting", "batch_cancel_request",
+  //              "sandbox_token_request".
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events.
   string text = 2;
 
   // Unique tool-use ID assigned by the model. Set on "tool_call" events.
+  // On "run_started" events, the run ID (RunConfig.run_id) of the run that
+  // started.
   string id = 3;
 
   // Tool name. Set on "tool_call" events.
@@ -200,6 +212,36 @@ message HarnessEvent {
   // "sandbox_token_request" events. Informational to the control plane,
   // which may override it when minting the token.
   string audience = 14;
+
+  // The run span's OTel identity. Set on "run_started" events, which the
+  // harness sends once per run, before the run's first model event, only
+  // when the run records an OTel span. "ready" is per session under
+  // `stirrup job`, so a follow-up run's "run_started" follows the previous
+  // run's "done". The "done" summary carries the same value in
+  // RunTrace.trace_reference.
+  TraceReference trace_reference = 15;
+
+  // The W3C trace context of the tool call's execute_tool span. Set on
+  // "tool_result_request" events when the harness records the call as a
+  // span or forwards an upstream parent, so the control plane can parent
+  // its own work for the call on it. request_id and tool_use_id remain the
+  // reply correlation; this field describes causality only.
+  TraceContext trace_context = 16;
+}
+
+// TraceReference mirrors types.TraceReference: the identity of a run's
+// OTel root span, which a control plane uses as the target of later
+// operations such as a feedback score.
+message TraceReference {
+  // The W3C trace ID as 32 lowercase hex characters.
+  string trace_id = 1;
+
+  // The run span's ID as 16 lowercase hex characters.
+  string run_span_id = 2;
+
+  // The trace flags' sampled bit. False means the span was not exported,
+  // so the observability backend holds no trace for this reference.
+  bool sampled = 3;
 }
 
 // ControlEvent is sent from the control plane to the harness.
@@ -366,6 +408,28 @@ message ControlEvent {
   // (epoch), letting the harness tell "the control plane did not report an
   // expiry" from "the token expires at the epoch".
   optional int64 expires_at = 10;
+
+  // Optional W3C trace context of the control plane's span for the task.
+  // Read on "task_assignment" events only and ignored on every other type.
+  // A valid traceparent becomes the parent of the primary run's root span,
+  // and an invalid one is ignored, so the run starts a new trace.
+  // Follow-up runs always start a new trace. Never part of RunConfig, so
+  // replaying a configuration cannot re-parent a run.
+  TraceContext trace_context = 11;
+}
+
+// TraceContext is a W3C Trace Context carrier
+// (https://www.w3.org/TR/trace-context/).
+message TraceContext {
+  // The traceparent header value, e.g.
+  // "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".
+  string traceparent = 1;
+
+  // The tracestate header value. Optional; dropped when malformed.
+  string tracestate = 2;
+
+  reserved 3;
+  reserved "baggage";
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"
@@ -631,6 +695,11 @@ message RunConfig {
   // RepositoryGuidanceConfig.
   RepositoryGuidanceConfig repository_guidance = 53;
 
+  // Optional. Control-plane identifiers stamped on every span of the
+  // run. Never injected into the model's prompt or conversation
+  // history. See CorrelationConfig.
+  CorrelationConfig correlation = 58;
+
   // RunConfig.transport is intentionally NOT mirrored. The transport is
   // a property of how the harness was launched, not of the work being
   // assigned: a config that arrives in a TaskAssignment arrived over
@@ -639,7 +708,7 @@ message RunConfig {
   // would let a control plane declare a transport that contradicts the
   // stream carrying the declaration.
   //
-  // Next available field number: 36.
+  // Next available field number: 59.
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -697,6 +766,38 @@ message ToolChoiceEscalationConfig {
   // missed-tool recovery. Values outside that range are rejected by
   // ValidateRunConfig.
   int32 max_retries = 2;
+}
+
+// CorrelationConfig carries the identifiers a control plane uses for the
+// run in its own UI. The harness stamps each set value on every span
+// (session.id and gen_ai.conversation.id, user.id, stirrup.task.id,
+// stirrup.attempt.id, stirrup.control_plane.url, stirrup.label.<key>)
+// and treats every value as opaque. Values are never resource
+// attributes, metric labels, or prompt content.
+message CorrelationConfig {
+  // Optional. Groups runs into one session; takes precedence over
+  // RunConfig.session_name for session.id. 1-199 printable US-ASCII
+  // characters.
+  string session_id = 1;
+
+  // Optional. At most 255 bytes of printable UTF-8.
+  string task_id = 2;
+
+  // Optional. At most 255 bytes of printable UTF-8.
+  string attempt_id = 3;
+
+  // Optional. Opaque end-user identifier; the control plane chooses a
+  // pseudonymous value. At most 255 bytes of printable UTF-8.
+  string user_id = 4;
+
+  // Optional. The control plane's canonical page for the run: an
+  // absolute http or https URL without userinfo, at most 1500 bytes.
+  string url = 5;
+
+  // Optional. The control plane's slicing dimensions. At most 16
+  // entries; keys match ^[a-z][a-z0-9_]{0,63}$ and values are at most
+  // 255 bytes of printable UTF-8.
+  map<string, string> labels = 6;
 }
 
 // WindDownConfig configures the wind-down instruction. When enabled, the
@@ -1171,6 +1272,10 @@ message RunTrace {
 
   // Counts of tools.post_edit check executions. Absent when no check ran.
   PostEditCheckSummary post_edit_checks = 35;
+
+  // The run span's OTel identity, the same value "run_started" carried.
+  // Absent when the run recorded no OTel span.
+  TraceReference trace_reference = 37;
 }
 
 // GitHandoff mirrors types.GitHandoff: the git state a deterministic-git
@@ -2181,7 +2286,8 @@ message TraceEmitterConfig {
   string metrics_endpoint = 4;
 
   // For "otel": OTLP wire protocol. Closed set:
-  //   "" (defaults to "grpc") | "grpc" | "http/protobuf"
+  //   "" (defaults to the platform's required protocol, else "grpc") |
+  //   "grpc" | "http/protobuf"
   // The same protocol and headers apply to traces, metrics, and logs
   // exported through ObservabilityConfig.logs_export. HTTP/JSON is
   // intentionally not supported. See docs/observability-cloud.md for the
@@ -2229,7 +2335,7 @@ message TraceEmitterConfig {
   // For "otel": backend platform profile that fills unset OTLP settings
   // (per-signal endpoints, headers, request signing, resource and span
   // attributes) for one observability platform. Closed set:
-  //   "" | "cloudwatch" | "phoenix"
+  //   "" | "cloudwatch" | "langfuse" | "phoenix"
   // Explicit fields always win over a profile's defaults. Rejected for
   // jsonl and gcs. See docs/observability-cloud.md#platform-profiles.
   string platform = 12;
