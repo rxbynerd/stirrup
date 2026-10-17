@@ -110,7 +110,8 @@ func BuildGenerateContentRequest(
 	// 0 as either a validation error or a hard zero-output cap, neither
 	// of which the caller wants.
 	sendTemperature := params.Temperature != nil && !q.BehaviourFlags.Gemini.OmitSamplingParams
-	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" {
+	includeThoughts := params.ReasoningSummary != types.ReasoningSummaryOff
+	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" || includeThoughts {
 		gc := &geminiGenerationConfig{}
 		if params.MaxTokens > 0 {
 			gc.MaxOutputTokens = params.MaxTokens
@@ -119,9 +120,10 @@ func BuildGenerateContentRequest(
 			t := *params.Temperature
 			gc.Temperature = &t
 		}
-		if params.ReasoningEffort != "" {
+		if params.ReasoningEffort != "" || includeThoughts {
 			gc.ThinkingConfig = &geminiThinkingConfig{
-				ThinkingLevel: strings.ToUpper(params.ReasoningEffort),
+				ThinkingLevel:   strings.ToUpper(params.ReasoningEffort),
+				IncludeThoughts: includeThoughts,
 			}
 		}
 		req.GenerationConfig = gc
