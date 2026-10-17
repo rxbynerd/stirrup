@@ -527,7 +527,7 @@ func TestRunErrorText(t *testing.T) {
 }
 
 func TestDoneSummary_CarriesTraceReference(t *testing.T) {
-	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", SpanID: "00f067aa0ba902b7", Sampled: true}
+	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", RunSpanID: "00f067aa0ba902b7", Sampled: true}
 	if got := doneSummary(&types.RunTrace{Outcome: "success", TraceReference: ref}); got.TraceReference != ref {
 		t.Errorf("done summary TraceReference = %+v, want %+v", got.TraceReference, ref)
 	}

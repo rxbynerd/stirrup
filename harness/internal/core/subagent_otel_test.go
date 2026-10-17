@@ -177,8 +177,8 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("parent transport received %d run_started events, want only the parent run's", len(started))
 	}
-	if got := started[0]; got.ID != "parent-run-otel" || got.TraceReference.SpanID != root.SpanContext.SpanID().String() {
-		t.Errorf("run_started = id %q span %s, want the parent run and its root span %s", got.ID, got.TraceReference.SpanID, root.SpanContext.SpanID())
+	if got := started[0]; got.ID != "parent-run-otel" || got.TraceReference.RunSpanID != root.SpanContext.SpanID().String() {
+		t.Errorf("run_started = id %q span %s, want the parent run and its root span %s", got.ID, got.TraceReference.RunSpanID, root.SpanContext.SpanID())
 	}
 
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")

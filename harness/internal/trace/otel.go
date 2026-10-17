@@ -715,9 +715,9 @@ func (e *OTelTraceEmitter) traceReferenceLocked() *types.TraceReference {
 		return nil
 	}
 	return &types.TraceReference{
-		TraceID: sc.TraceID().String(),
-		SpanID:  sc.SpanID().String(),
-		Sampled: sc.IsSampled(),
+		TraceID:   sc.TraceID().String(),
+		RunSpanID: sc.SpanID().String(),
+		Sampled:   sc.IsSampled(),
 	}
 }
 

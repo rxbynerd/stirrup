@@ -6,8 +6,8 @@ package types
 type TraceReference struct {
 	// TraceID is the W3C trace ID as 32 lowercase hex characters.
 	TraceID string `json:"traceId"`
-	// SpanID is the run span's ID as 16 lowercase hex characters.
-	SpanID string `json:"runSpanId"`
+	// RunSpanID is the run span's ID as 16 lowercase hex characters.
+	RunSpanID string `json:"runSpanId"`
 	// Sampled is the trace flags' sampled bit. An unsampled run span is
 	// not exported, so a backend holds no trace for the reference.
 	Sampled bool `json:"sampled"`

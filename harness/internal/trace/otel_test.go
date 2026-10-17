@@ -533,15 +533,15 @@ func TestOTelTraceEmitter_TraceReferenceIdentifiesRunSpan(t *testing.T) {
 
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 	want := types.TraceReference{
-		TraceID: root.SpanContext.TraceID().String(),
-		SpanID:  root.SpanContext.SpanID().String(),
-		Sampled: true,
+		TraceID:   root.SpanContext.TraceID().String(),
+		RunSpanID: root.SpanContext.SpanID().String(),
+		Sampled:   true,
 	}
 	if *ref != want {
 		t.Errorf("TraceReference = %+v, want exported root span %+v", *ref, want)
 	}
-	if len(ref.TraceID) != 32 || len(ref.SpanID) != 16 {
-		t.Errorf("TraceReference IDs have lengths %d/%d, want 32/16", len(ref.TraceID), len(ref.SpanID))
+	if len(ref.TraceID) != 32 || len(ref.RunSpanID) != 16 {
+		t.Errorf("TraceReference IDs have lengths %d/%d, want 32/16", len(ref.TraceID), len(ref.RunSpanID))
 	}
 	if rt.TraceReference == nil || *rt.TraceReference != want {
 		t.Errorf("RunTrace.TraceReference = %+v, want %+v", rt.TraceReference, want)

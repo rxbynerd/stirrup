@@ -2543,13 +2543,13 @@ func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
 
 func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
 	ref := &types.TraceReference{
-		TraceID: "4bf92f3577b34da6a3ce929d0e0e4736",
-		SpanID:  "00f067aa0ba902b7",
-		Sampled: true,
+		TraceID:   "4bf92f3577b34da6a3ce929d0e0e4736",
+		RunSpanID: "00f067aa0ba902b7",
+		Sampled:   true,
 	}
 	assertRef := func(t *testing.T, got *pb.TraceReference) {
 		t.Helper()
-		if got.GetTraceId() != ref.TraceID || got.GetRunSpanId() != ref.SpanID || got.GetSampled() != ref.Sampled {
+		if got.GetTraceId() != ref.TraceID || got.GetRunSpanId() != ref.RunSpanID || got.GetSampled() != ref.Sampled {
 			t.Errorf("trace_reference = %v, want %+v", got, *ref)
 		}
 	}
@@ -2584,7 +2584,7 @@ func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
 	})
 
 	t.Run("unsampled reference keeps sampled false", func(t *testing.T) {
-		got := traceReferenceToProto(&types.TraceReference{TraceID: ref.TraceID, SpanID: ref.SpanID})
+		got := traceReferenceToProto(&types.TraceReference{TraceID: ref.TraceID, RunSpanID: ref.RunSpanID})
 		if got == nil || got.GetSampled() {
 			t.Errorf("trace_reference = %v, want present with sampled false", got)
 		}

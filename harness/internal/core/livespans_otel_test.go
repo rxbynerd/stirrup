@@ -438,9 +438,9 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 		t.Fatalf("found %d root spans, want 1", len(root))
 	}
 	want := types.TraceReference{
-		TraceID: root[0].SpanContext.TraceID().String(),
-		SpanID:  root[0].SpanContext.SpanID().String(),
-		Sampled: true,
+		TraceID:   root[0].SpanContext.TraceID().String(),
+		RunSpanID: root[0].SpanContext.SpanID().String(),
+		Sampled:   true,
 	}
 
 	readyAt, startedAt, firstModelAt := -1, -1, -1

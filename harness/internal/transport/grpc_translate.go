@@ -44,7 +44,7 @@ func traceReferenceToProto(r *types.TraceReference) *pb.TraceReference {
 	}
 	return &pb.TraceReference{
 		TraceId:   r.TraceID,
-		RunSpanId: r.SpanID,
+		RunSpanId: r.RunSpanID,
 		Sampled:   r.Sampled,
 	}
 }
