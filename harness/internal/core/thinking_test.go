@@ -25,7 +25,7 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 		ch <- ev
 	}
 	close(ch)
-	result, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
+	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -36,13 +36,18 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 // the persisted blocks and the events the transport received.
 func recordStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentBlock, []types.HarnessEvent) {
 	t.Helper()
+	return recordStreamEventsWith(t, events, true)
+}
+
+func recordStreamEventsWith(t *testing.T, events []types.StreamEvent, streamThinking bool) ([]types.ContentBlock, []types.HarnessEvent) {
+	t.Helper()
 	rec := &recordingTransport{}
 	ch := make(chan types.StreamEvent, len(events))
 	for _, ev := range events {
 		ch <- ev
 	}
 	close(ch)
-	result, err := streamEventsToResult(context.Background(), ch, rec, ignoreEmitFailure)
+	result, err := streamEventsToResult(context.Background(), ch, rec, streamThinking, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -148,6 +153,37 @@ func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 	}
 	if thinkingBlocks != 3 {
 		t.Errorf("persisted %d thinking blocks, want 3: deltas must not add history", thinkingBlocks)
+	}
+}
+
+// TestStreamEventsToResult_ThinkingNotForwardedWhenOff pins that with
+// thinking streaming off neither streamed fragments nor a block arriving
+// whole reach the transport, while every thinking block is still persisted
+// and answer text is still forwarded.
+func TestStreamEventsToResult_ThinkingNotForwardedWhenOff(t *testing.T) {
+	blocks, emitted := recordStreamEventsWith(t, []types.StreamEvent{
+		{Type: "thinking_delta", Text: "Let me "},
+		{Type: "thinking_delta", Text: "check."},
+		{Type: "thinking", Text: "Let me check.", ThoughtSignature: "sig-A"},
+		{Type: "text_delta", Text: "Done."},
+		{Type: "thinking", Text: "whole block", ThoughtSignature: "sig-B"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}, false)
+
+	if got := thinkingDeltaTexts(emitted); len(got) != 0 {
+		t.Errorf("thinking_delta texts = %q, want none", got)
+	}
+	if got := eventTypeList(emitted); fmt.Sprint(got) != "[text_delta]" {
+		t.Errorf("emitted types = %v, want only the answer text", got)
+	}
+	var thinkingTexts []string
+	for _, b := range blocks {
+		if b.Type == "thinking" {
+			thinkingTexts = append(thinkingTexts, b.Text)
+		}
+	}
+	if fmt.Sprint(thinkingTexts) != "[Let me check. whole block]" {
+		t.Errorf("persisted thinking blocks = %q, want both blocks", thinkingTexts)
 	}
 }
 

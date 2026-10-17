@@ -752,8 +752,10 @@ func boundedResponseModel(model string) string {
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage. On
 // error the result is partial and only its Usage is meaningful: the
-// usage the provider reported before the failure.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
+// usage the provider reported before the failure. With streamThinking
+// false no thinking_delta reaches the transport; thinking blocks are
+// persisted either way.
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
@@ -763,7 +765,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	// forwarded as one delta at its boundary instead.
 	blockStreamed := false
 	forwardThinking := func(text string) {
-		if text == "" {
+		if !streamThinking || text == "" {
 			return
 		}
 		if err := tp.Emit(types.HarnessEvent{Type: "thinking_delta", Text: text}); err != nil {

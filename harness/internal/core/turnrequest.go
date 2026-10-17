@@ -263,7 +263,7 @@ func (l *AgenticLoop) requestProvider(
 		ch, err := selectedProvider.Stream(spanCtx, params)
 		if err == nil {
 			category = observability.ToolFailureProviderStream
-			sr, err = streamEventsToResult(ctx, ch, l.Transport, l.logEmitFailure)
+			sr, err = streamEventsToResult(ctx, ch, l.Transport, streamsThinking(config), l.logEmitFailure)
 		}
 		if err == nil {
 			succeeded := inference

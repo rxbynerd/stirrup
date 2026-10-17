@@ -83,7 +83,7 @@ func TestStreamEventsToResult_MergesReportedUsage(t *testing.T) {
 				ch <- ev
 			}
 			close(ch)
-			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), ignoreEmitFailure)
+			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure)
 			if err != nil {
 				t.Fatalf("streamEventsToResult() error: %v", err)
 			}
