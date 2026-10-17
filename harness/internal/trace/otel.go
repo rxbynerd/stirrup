@@ -251,6 +251,20 @@ func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 // Start initialises a new trace with the given run ID and configuration.
 // It creates the root "invoke_agent stirrup" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
+	e.start(context.Background(), runID, config)
+}
+
+var _ ContextStarter = (*OTelTraceEmitter)(nil)
+
+// StartWithContext is Start with the run span parented on the span
+// context ctx carries, or a new trace when that is invalid. Only the span
+// context is copied: RootContext carries no cancellation or deadline from
+// ctx, so post-run spans still record after the caller's ctx ends.
+func (e *OTelTraceEmitter) StartWithContext(ctx context.Context, runID string, config *types.RunConfig) {
+	e.start(oteltrace.ContextWithSpanContext(context.Background(), oteltrace.SpanContextFromContext(ctx)), runID, config)
+}
+
+func (e *OTelTraceEmitter) start(parent context.Context, runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -284,7 +298,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 		attribute.String("harness.version", version.Version()),
 	}
 	attrs = append(attrs, agentSpanAttributes(agentNameRun, config)...)
-	ctx, span := e.tracer.Start(context.Background(), "invoke_agent "+agentNameRun,
+	ctx, span := e.tracer.Start(parent, "invoke_agent "+agentNameRun,
 		oteltrace.WithAttributes(attrs...),
 	)
 
