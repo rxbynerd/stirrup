@@ -648,6 +648,14 @@ message RunConfig {
   // unset means disabled (stream closes after done). Max: 3600.
   optional int32 follow_up_grace = 21;
 
+  // Optional. The history a follow-up run starts from. "reset" (the
+  // default, also selected by an empty value) starts each follow-up from
+  // its prompt alone. "continue" starts it from the previous run's
+  // committed history — every turn whose tool calls all have results —
+  // with the follow-up prompt appended to it. The primary run, and a
+  // session without a follow-up window, are unaffected.
+  string follow_up_history = 60;
+
   // Optional. Structured log verbosity for this run.
   // Valid values: "debug", "info", "warn", "error". Default: "info".
   string log_level = 22;

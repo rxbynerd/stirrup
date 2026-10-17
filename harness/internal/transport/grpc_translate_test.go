@@ -1063,6 +1063,19 @@ func TestRunConfigFromProto_ReasoningSummaryCarried(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_FollowUpHistoryCarried pins follow_up_history
+// across the wire boundary: without the copy a control plane asking for
+// "continue" would silently get the reset default.
+func TestRunConfigFromProto_FollowUpHistoryCarried(t *testing.T) {
+	got := runConfigFromProto(&pb.RunConfig{FollowUpHistory: types.FollowUpHistoryContinue}).FollowUpHistory
+	if got != types.FollowUpHistoryContinue {
+		t.Errorf("FollowUpHistory: got %q, want %q", got, types.FollowUpHistoryContinue)
+	}
+	if got := runConfigFromProto(&pb.RunConfig{}).FollowUpHistory; got != "" {
+		t.Errorf("absent follow_up_history translated to %q, want empty", got)
+	}
+}
+
 // TestProviderConfigFromProto_GeminiFieldsCarried pins that the four
 // Gemini provider fields survive the proto boundary. Before this test
 // existed they were silently dropped by providerConfigFromProto, which

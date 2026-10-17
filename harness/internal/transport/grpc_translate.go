@@ -293,6 +293,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		v := int(*pc.FollowUpGrace)
 		rc.FollowUpGrace = &v
 	}
+	rc.FollowUpHistory = pc.FollowUpHistory
 
 	if pc.Provider != nil {
 		rc.Provider = providerConfigFromProto(pc.Provider)

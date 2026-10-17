@@ -2259,6 +2259,54 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_FollowupHistoryChangedGated pins that a file's
+// followUpHistory survives an invocation that does not pass
+// --followup-history, and that an explicit flag replaces it.
+func TestApplyOverrides_FollowupHistoryChangedGated(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.FollowUpHistory = types.FollowUpHistoryContinue
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
+		t.Errorf("unset --followup-history rewrote the file value to %q", cfg.FollowUpHistory)
+	}
+
+	if err := cmd.Flags().Set("followup-history", types.FollowUpHistoryReset); err != nil {
+		t.Fatalf("set followup-history: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryReset {
+		t.Errorf("explicit --followup-history=reset: got %q", cfg.FollowUpHistory)
+	}
+}
+
+// TestBuildFlagOnlyRunConfig_FollowupHistory pins the flag-only path for
+// --followup-history onto the top-level RunConfig field.
+func TestBuildFlagOnlyRunConfig_FollowupHistory(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+		"followup-grace": "30", "followup-history": types.FollowUpHistoryContinue,
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
+		t.Errorf("FollowUpHistory = %q, want %q", cfg.FollowUpHistory, types.FollowUpHistoryContinue)
+	}
+}
+
 // TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
 // follows the Changed() discipline: a config file's
 // promptBuilder.promptModel survives when the flag is unset, and an

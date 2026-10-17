@@ -1027,6 +1027,13 @@ type RunConfig struct {
 	// restarts after every run; a run in progress never consumes it. 0 or
 	// unset means disabled (stream closes after done). Max: 3600.
 	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
+	// Optional. The history a follow-up run starts from. "reset" (the
+	// default, also selected by an empty value) starts each follow-up from
+	// its prompt alone. "continue" starts it from the previous run's
+	// committed history — every turn whose tool calls all have results —
+	// with the follow-up prompt appended to it. The primary run, and a
+	// session without a follow-up window, are unaffected.
+	FollowUpHistory string `protobuf:"bytes,60,opt,name=follow_up_history,json=followUpHistory,proto3" json:"follow_up_history,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `protobuf:"bytes,22,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
@@ -1336,6 +1343,13 @@ func (x *RunConfig) GetFollowUpGrace() int32 {
 		return *x.FollowUpGrace
 	}
 	return 0
+}
+
+func (x *RunConfig) GetFollowUpHistory() string {
+	if x != nil {
+		return x.FollowUpHistory
+	}
+	return ""
 }
 
 func (x *RunConfig) GetLogLevel() string {
@@ -6602,7 +6616,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"tracestate\x18\x02 \x01(\tR\n" +
 	"tracestateJ\x04\b\x03\x10\x04R\abaggage\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xce\x15\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\x15\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -6625,7 +6639,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12/\n" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01B\x02\x18\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
-	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
+	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12*\n" +
+	"\x11follow_up_history\x18< \x01(\tR\x0ffollowUpHistory\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +
 	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x12&\n" +
 	"\fsession_name\x18\x18 \x01(\tH\x04R\vsessionName\x88\x01\x01\x12C\n" +

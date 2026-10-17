@@ -170,6 +170,13 @@ type RunConfig struct {
 	// value of zero or nil disables the grace period (default behaviour).
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
 
+	// FollowUpHistory selects the history a follow-up run starts from:
+	// "reset" (the default, also selected by "") starts it from its prompt
+	// alone; "continue" starts it from the previous run's committed
+	// history with the prompt appended. The primary run, and a session
+	// without a follow-up window, are unaffected.
+	FollowUpHistory string `json:"followUpHistory,omitempty"`
+
 	// LogLevel controls the structured logger verbosity.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `json:"logLevel,omitempty"`
@@ -352,6 +359,18 @@ func (rc *RunConfig) EffectiveToolDispatchMaxParallel() int {
 		return DefaultToolDispatchMaxParallel
 	}
 	return rc.ToolDispatch.MaxParallel
+}
+
+// FollowUpHistory values; see RunConfig.FollowUpHistory.
+const (
+	FollowUpHistoryReset    = "reset"
+	FollowUpHistoryContinue = "continue"
+)
+
+// ContinuesFollowUpHistory reports whether follow-up runs start from the
+// previous run's committed history.
+func (rc *RunConfig) ContinuesFollowUpHistory() bool {
+	return rc != nil && rc.FollowUpHistory == FollowUpHistoryContinue
 }
 
 // DefaultModel is the model the harness falls back to when neither the
@@ -2624,6 +2643,12 @@ func ValidateRunConfig(config *RunConfig) error {
 	// followUpGrace must be bounded
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > maxFollowUpGrace {
 		errs = append(errs, fmt.Sprintf("followUpGrace must be <= %d seconds", maxFollowUpGrace))
+	}
+
+	switch config.FollowUpHistory {
+	case "", FollowUpHistoryReset, FollowUpHistoryContinue:
+	default:
+		errs = append(errs, fmt.Sprintf("followUpHistory %q must be one of reset, continue", config.FollowUpHistory))
 	}
 
 	// maxCostBudget must be bounded, and the bound is the only thing the

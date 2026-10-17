@@ -135,14 +135,15 @@ type harnessCLIOptions struct {
 	// from Model.
 	PromptModel string
 
-	Workspace     string
-	MaxTurns      int
-	Timeout       int
-	TracePath     string
-	TransportType string
-	TransportAddr string
-	FollowUpGrace int
-	LogLevel      string
+	Workspace       string
+	MaxTurns        int
+	Timeout         int
+	TracePath       string
+	TransportType   string
+	TransportAddr   string
+	FollowUpGrace   int
+	FollowUpHistory string
+	LogLevel        string
 
 	// Temperature overrides the loop's default sampling temperature.
 	// Nil means "do not override". A pointer disambiguates an explicit
@@ -412,6 +413,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		grace := opts.FollowUpGrace
 		config.FollowUpGrace = &grace
 	}
+	config.FollowUpHistory = opts.FollowUpHistory
 	if opts.Temperature != nil {
 		t := *opts.Temperature
 		config.Temperature = &t
@@ -857,6 +859,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		} else {
 			cfg.FollowUpGrace = nil
 		}
+	}
+	if changed("followup-history") {
+		cfg.FollowUpHistory, _ = f.GetString("followup-history")
 	}
 	// See optionalFloat64Flag: without the Changed() check, omitting
 	// --temperature would silently rewrite a file-provided value to 0.
