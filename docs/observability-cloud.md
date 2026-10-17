@@ -278,7 +278,8 @@ failure):
 - **Observation typing.** `invoke_agent` spans (the root and each
   sub-agent) render as agent observations, `chat {model}` spans as
   generations, and `execute_tool {name}` spans as tool observations;
-  Langfuse types them from `gen_ai.operation.name`. Component spans
+  Langfuse types them from `gen_ai.operation.name`. Without the
+  [`langfuse` profile](#the-langfuse-profile), component spans
   (`guard.*`, `verifier.verify`, `context.prepare`, and the rest)
   render as generic spans. See [Span tree](#span-tree).
 - **Input/output panels** populate only with
@@ -332,7 +333,6 @@ endpoint and adds the `langfuse.*` attributes:
 {
   "traceEmitter": {
     "type": "otel",
-    "protocol": "http/protobuf",
     "headers": {"Authorization": "secret://LANGFUSE_AUTH"},
     "captureContent": true,
     "platform": "langfuse",
@@ -341,16 +341,28 @@ endpoint and adds the `langfuse.*` attributes:
 }
 ```
 
+The same configuration from the command line:
+
+```sh
+stirrup harness \
+  --trace-emitter otel \
+  --otel-platform langfuse \
+  --otel-platform-option host=http://localhost:3000 \
+  --otel-header Authorization=secret://LANGFUSE_AUTH \
+  --otel-capture-content \
+  ...
+```
+
 | Option | Required | Meaning |
 |---|---|---|
-| `host` | no | Base URL of the Langfuse web application, such as `http://localhost:3000`. Traces go to `<host>/api/public/otel/v1/traces`, and a path prefix in `host` is kept. Without `host`, traces go to `traceEmitter.endpoint`. |
+| `host` | no | Base URL of the Langfuse web application, such as `http://localhost:3000`. Traces go to `<host>/api/public/otel/v1/traces`, and a path prefix in `host` is kept. Without `host`, traces go to `traceEmitter.endpoint`; with neither set, the run fails at start and `--dry-run` reports it under the `trace-emitter` step. A `host` that already ends in `/api/public/otel` is rejected. |
 
 The profile's export settings:
 
-- **`http/protobuf` is required.** `protocol: "grpc"` fails at start
-  instead of exporting spans that Langfuse drops. The example still
-  states `protocol`, because validation refuses `traceEmitter.headers`
-  on the default gRPC path.
+- **`http/protobuf` is required.** An unset `protocol` resolves to
+  it, including for the `traceEmitter.headers` check, so the example
+  omits `protocol`. `protocol: "grpc"` fails validation instead of
+  exporting spans that Langfuse drops.
 - **Ingestion header.** Trace export requests to the profile's
   endpoint carry `x-langfuse-ingestion-version: 4`. A header of the
   same name in `traceEmitter.headers` overrides it.
@@ -383,10 +395,12 @@ that does not already carry it:
   filterable in Langfuse; other span attributes land under
   `metadata.attributes`. Labels therefore become both trace and
   observation metadata, so a control plane's dimensions, such as
-  `correlation.labels.agent_profile`, filter both tables. A label
-  named `run_mode`, `task_id`, `attempt_id`, or `control_plane_url`
-  sets only the observation key; the trace key keeps the harness's own
-  value.
+  `correlation.labels.agent_profile`, filter both tables. When the
+  harness has its own value for `run_mode`, `task_id`, `attempt_id`, or
+  `control_plane_url`, a label of the same name sets only the
+  observation key and the trace key keeps the harness's value. Without
+  `correlation.taskId`, for example, a `task_id` label fills both
+  keys.
 - **GenAI spans.** `invoke_agent`, `chat`, and `execute_tool` spans
   keep the agent, generation, and tool types Langfuse derives from
   `gen_ai.operation.name`.
@@ -1307,11 +1321,19 @@ or `OTEL_EXPORTER_OTLP_ENDPOINT`, carries only `traceEmitter.headers`
 and is not signed, so the profile's credentials never reach that
 collector. A signing client does not follow HTTP redirects.
 
-The harness rejects these combinations at start:
+`ValidateRunConfig`, and so `stirrup run-config`, rejects
+`protocol: "grpc"` with a platform that requires `http/protobuf`
+(`cloudwatch` and `langfuse`). An unset `protocol` with such a
+platform resolves to `http/protobuf`, so `traceEmitter.headers` needs
+no explicit `protocol` there.
+
+The harness also rejects these combinations at start:
 
 - an option key the platform does not accept, or a missing required
   one;
-- `protocol: "grpc"` with a platform that requires `http/protobuf`;
+- a platform that requires `http/protobuf` with no trace endpoint,
+  where neither `traceEmitter.endpoint` nor a platform option names
+  the backend;
 - a platform that signs requests or adds headers, on gRPC (signing
   wraps the OTLP/HTTP transport, which gRPC does not use, and headers
   are refused on gRPC as described under [Validation](#validation));
@@ -1521,7 +1543,8 @@ the documented `host:port` endpoint form in plaintext, so any bearer
 or Basic credential supplied via `headers` would ride a plaintext gRPC
 channel to the collector. To make this footgun unreachable, the validator
 rejects `headers` whenever `protocol` is `""` (which defaults to gRPC
-at exporter construction) or `"grpc"`. The gRPC path is the
+at exporter construction unless the platform requires `http/protobuf`)
+or `"grpc"`. The gRPC path is the
 local/sidecar collector flow and assumes the collector itself does
 not require auth. A gRPC link that needs auth goes through a sidecar
 collector that handles the credential locally and forwards over a

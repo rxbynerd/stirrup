@@ -40,7 +40,7 @@ stirrup/
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       observability/otlp/    # OTLP exporter construction for traces, metrics, logs (endpoint, TLS, headers, HTTP client)
-      observability/platform/ # Platform profiles (traceEmitter.platform): registry, Resolve, Apply precedence, cloudwatch (SigV4), phoenix (OpenInference); the only package that names a vendor
+      observability/platform/ # Platform profiles (traceEmitter.platform): registry, Resolve, Apply precedence, cloudwatch (SigV4), langfuse (langfuse.* attributes), phoenix (OpenInference); the only package that names a vendor
       health/                # File-based K8s liveness/readiness probes; backs `stirrup healthcheck`
       security/              # SecretStore, LogScrubber, input validation, judge-prompt data fences
       jsonextract/           # Nonce-bound JSON verdict extraction from free-form model output (guard + verifier)
