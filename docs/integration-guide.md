@@ -76,17 +76,25 @@ status.
    `sandbox_token_response` before creating the sandbox. When the
    response carries `expires_at`, further requests follow ahead of
    each expiry — at most eight per run.
-5. When the run records an OTel span (`traceEmitter.type: "otel"`),
-   the harness sends `HarnessEvent{type:"run_started", id,
-   trace_reference}` before the run's first model event. `id` is the
-   run ID; `trace_reference` holds the OTel trace ID and run-span ID
-   that a feedback score or trace link targets. A run that fails
-   setup (a fatal `preRun` hook, git setup) sends no `run_started`.
-6. During execution the harness streams `text_delta`, `tool_call`,
-   `tool_result`, occasional `warning` events, and a `heartbeat` every
-   **30 seconds**. Depending on configuration it may also emit
+5. Once the run's setup is done, the harness sends
+   `HarnessEvent{type:"run_started", id, trace_reference}`, followed by
+   a `user_message` carrying the run's prompt. `id` is the run ID.
+   `trace_reference` is set only when the run records an OTel span
+   (`traceEmitter.type: "otel"`) and holds the OTel trace ID and
+   run-span ID that a feedback score or trace link targets. A run that
+   fails setup (a fatal `preRun` hook, git setup) sends no
+   `run_started`.
+6. During execution the harness streams a live transcript of the run:
+   `turn_started` and `turn_committed` around each model turn, the
+   model's `text_delta` and `thinking_delta` fragments, each
+   `tool_call` and its `tool_result`, and a `user_message` for every
+   user-role message the harness appends to the history. Occasional
+   `warning` events and a `heartbeat` every **30 seconds** are
+   interleaved. Depending on configuration it may also emit
    `permission_request`, `tool_result_request`, `batch_submission`,
-   `batch_waiting`, and `batch_cancel_request`.
+   `batch_waiting`, and `batch_cancel_request`. See
+   [Watching a run live](#watching-a-run-live) for the ordering and
+   delivery rules.
 7. A built loop ends by emitting `HarnessEvent{type:"done",
    stop_reason, trace}`. `trace` is the run summary: outcome, token
    usage, stop details, git handoff, workspace export receipt, error,
@@ -99,17 +107,22 @@ status.
 8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
    process and workspace, each sending its own `run_started` with a new
-   trace reference; otherwise the stream closes and the process exits.
+   run ID (and a new trace reference when the run records an OTel
+   span); otherwise the stream closes and the process exits.
 
 ### Events from the harness
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
-| `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Persist the reference against the run to target feedback scores or link to the trace. Sent once per run before its first model event, only when the run records an OTel span. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
+| `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
+| `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as delivered to the model. Tool results are reported by `tool_result`, not by `user_message`. |
+| `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. Sent once per turn, before the first provider request. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
+| `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it. Opaque (redacted) reasoning is never sent. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
-| `tool_result` | `tool_use_id`, `content` | Informational. |
+| `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
+| `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. A `turn_started` with no `turn_committed` before the next `turn_started` or `done` is a turn that did not commit. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
@@ -124,9 +137,9 @@ status.
 The control-stream `run_started` event is distinct from the
 `run_started` record that opens every JSONL trace file
 ([`trace-inspection.md`](trace-inspection.md)). The JSONL record is
-always written and carries the redacted `RunConfig`; the event is sent
-on the control stream only when the run records an OTel span, and
-carries the trace reference instead.
+always written and carries the redacted `RunConfig`; the event carries
+the run ID and, when the run records an OTel span, the trace reference
+instead.
 
 ### Events to the harness
 
@@ -641,6 +654,108 @@ re-provisioning the sandbox.
   opposed to a non-success outcome such as `timeout`) ends the session;
   the failure is on that run's `done` and `RunResult`.
 
+### Watching a run live
+
+Goal: render a run as it happens, from the `RunTask` stream alone,
+including the model's text and reasoning, every tool call with its
+result, every user-role message the harness appends, and each turn's
+token usage.
+
+No configuration is needed. The transcript events are sent for every
+run regardless of `traceEmitter.type`, and the trace emitters keep
+recording as before; the stream is the live view, the trace is the
+durable record.
+
+**Delivery.** The events of a run arrive on one ordered stream, from
+its `run_started` to its `done`. Delivery is at most once: the harness
+does not acknowledge, retry or replay events, and a stream that breaks
+cannot be resumed, since losing the control stream ends the run with
+`control_stream_lost`. A consumer that needs a complete record reads
+it from a trace emitter or the `resultSink` after the run, not from
+the stream.
+
+**Keys.** The run ID from `run_started.id` identifies everything up to
+that run's `done`. Within a run, `turn` numbers the model turns from 0;
+it restarts at 0 for each follow-up run. `tool_use_id` joins a
+`tool_result` to its `tool_call`, and `request_id` joins a
+`user_message` to the `user_response` it delivered.
+
+**Shape of a run.**
+
+```text
+run_started            id
+user_message           source: initial_prompt (or followup_prompt)
+turn_started           turn 0, model, provider
+  thinking_delta …     reasoning text, where exposed
+  text_delta …         answer text
+  tool_call …          one per call the model made
+  tool_result …        one per call, in call order
+turn_committed         turn 0, stop_reason, usage, tool_result_count
+user_message …         anything the harness appends before the next turn
+turn_started           turn 1 …
+…
+done                   stop_reason (the run outcome), trace
+```
+
+Deltas and tool events between a `turn_started` and the next
+`turn_committed` belong to that turn. `warning` and `heartbeat` events
+can arrive anywhere.
+
+**Committed and uncommitted turns.** `turn_committed` means the turn's
+assistant message, and a result for every tool call in it, are in the
+run's history, which later turns build on. A turn that opens with `turn_started` but
+reaches the next `turn_started` or `done` without a `turn_committed`
+did not commit. That happens when the provider request failed, when a
+stall or the consecutive-failure limit ended the run partway through
+the turn's tool calls, when the post-turn guard rejected the answer,
+or when a turn cut off at the output limit produced no text and was
+discarded. Its deltas were shown live but are not part of the
+conversation the model continues from. Tools that did run still had
+their effects on the workspace.
+
+Within one turn, a provider failure that the harness retries, or a
+request it compacts and resends after a context-window overflow,
+sends a `warning` before the next attempt; any deltas and `tool_call`
+events the failed attempt streamed are not part of the turn. The retry keeps the turn's provider and model and
+sends no second `turn_started`.
+
+**User messages.** `source` names where a `user_message` came from.
+The vocabulary is open: preserve values that are not recognised.
+
+| `source` | Appended when |
+|---|---|
+| `initial_prompt` | The primary run starts; the text is the prompt. |
+| `followup_prompt` | A follow-up run starts; the text is the `user_response` that started it, whose `request_id` it echoes. |
+| `user_response` | A `user_response` sent during a run is injected at a turn boundary. Several queued inputs join the history as one message but are reported as one event each. |
+| `verifier_feedback` | The verifier failed and its feedback is sent back to the model. |
+| `structured_output_correction` | The final answer failed `outputSchema` and the model is asked to correct it. |
+| `tool_choice_escalation` | A turn that should have called a tool did not, and the escalation policy prompts the model. |
+| `stall_nudge` | The model repeated the same tool-call pattern and is told to change approach. |
+| `wind_down` | A budget is nearly exhausted and the model is told to finish up. |
+| `output_limit_recovery` | A turn stopped at the output limit and the model is told how to continue. |
+
+A `user_message` reports the text at the moment it is appended. A
+Rule-of-Two redaction or guardrail replacement applied to that content
+afterwards, as with tool results, is not re-announced.
+
+**Reasoning.** `thinking_delta` carries reasoning text only where the
+provider returns it in readable form; a model that returns only an
+opaque signature, such as `claude-sonnet-5-5` by default, sends none.
+Reasoning is model output and gets the same handling as `text_delta`.
+
+**Secrets.** Every text field is scrubbed of recognised secret formats
+before it is sent, one event at a time. A secret split across two
+`text_delta` or `thinking_delta` fragments is not recognised; see
+[`security.md`](security.md#control-stream-scrubbing).
+
+**Version gating.** A harness that predates these events sends none of
+`user_message`, `turn_started`, `turn_committed` or `thinking_delta`,
+leaves `name`, `is_error` and `duration_ms` unset on `tool_result`,
+and sends `run_started` only for runs that record an OTel span. A
+control plane that depends on the transcript gates task assignment on
+`ready.harness_version`, and ignores event types it does not recognise
+so later additions do not break it.
+
 ### Cancelling a run
 
 Send `ControlEvent{type:"cancel"}` at any point after assignment; it
@@ -1086,5 +1201,9 @@ around silently".
   unknown fields. Gate assignment on `ready.harness_version` when a
   task depends on a newly added wire field; do not assume it will fail
   loudly.
+- New `HarnessEvent` types are added without a version bump of the
+  RPC. Ignore unrecognised types; gate on `ready.harness_version` when
+  a feature depends on one, as for the live transcript events in
+  [Watching a run live](#watching-a-run-live).
 - The container image is distroless (`nonroot`, no shell):
   `ghcr.io/rxbynerd/stirrup:<tag>` per release, `:main` per merge.

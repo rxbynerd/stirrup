@@ -98,6 +98,24 @@ inside one — along with the age-gated sweep that reclaims spool roots a
 crashed run leaves behind, is described in
 [`configuration.md#command-output-capture`](configuration.md#command-output-capture).
 
+### Control-stream scrubbing
+
+The stdio and gRPC transports run `security.Scrub()` over the `text`,
+`content`, `message` and `input` fields of every event before sending
+it, and the gRPC transport then caps `tool_call` input, `tool_result`
+content and `user_message` text at 256 KiB. Scrubbing is per event.
+Model output and reasoning arrive as many small `text_delta` and
+`thinking_delta` fragments, so a secret the model writes out across two
+fragments is matched in neither and reaches the control plane intact
+once it concatenates them. The final assistant text recorded in the
+trace is scrubbed as a whole and does not share this gap. A control
+plane that persists or displays the joined deltas and needs the same
+guarantee scrubs the joined text itself.
+
+`thinking_delta` sends the model's readable reasoning text to the
+control plane. It is model output, with the same trust level and the
+same per-fragment scrubbing as `text_delta`.
+
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a

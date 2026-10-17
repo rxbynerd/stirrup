@@ -26,12 +26,13 @@ sequenceDiagram
         CP-->>H: sandbox_token_response
     end
     H->>H: Build AgenticLoop with the supplied RunConfig
-    opt Run records an OTel span
-        H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference}
-    end
+    H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference?}
+    H-->>CP: user_message (the prompt)
     loop For each turn
         H->>CP: heartbeat (every 30s)
-        H-->>CP: text_delta · tool_call · tool_result
+        H-->>CP: turn_started
+        H-->>CP: text_delta · thinking_delta · tool_call · tool_result
+        H-->>CP: turn_committed · user_message
         opt RequiresApproval tool
             H->>CP: permission_request
             CP-->>H: permission_response
@@ -155,15 +156,17 @@ IMDS, GitHub Actions OIDC). See
    message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
-7. **Stream events.** When the run records an OTel span, the harness
-   first emits `HarnessEvent{type:"run_started"}` carrying the run ID
-   in `id` and the run span's `trace_reference` (`trace_id`,
-   `run_span_id`, `sampled`), after the git setup and before the first
-   model event. A run that fails setup sends no `run_started`.
-   Throughout the run the harness emits
-   `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
-   s), and — depending on the permission policy — `permission_request`
-   events. Tools declared in `tools.controlPlane` emit
+7. **Stream events.** After the git setup the harness first emits
+   `HarnessEvent{type:"run_started"}` carrying the run ID in `id` and,
+   when the run records an OTel span, the run span's `trace_reference`
+   (`trace_id`, `run_span_id`, `sampled`), then a `user_message` with
+   the prompt. A run that fails setup sends no `run_started`.
+   Throughout the run the harness emits a live transcript —
+   `turn_started`, `text_delta`, `thinking_delta`, `tool_call`,
+   `tool_result`, `turn_committed` and `user_message` (see
+   [Watching a run live](integration-guide.md#watching-a-run-live)) —
+   plus `heartbeat` (every 30 s) and, depending on the permission
+   policy, `permission_request` events. Tools declared in `tools.controlPlane` emit
    `tool_result_request` and block on `tool_result_response`; the
    request's `trace_context`, when present, is the W3C context of the
    call's `execute_tool` span. A
