@@ -1084,6 +1084,7 @@ func TestResolveTelemetry_RejectsUnknownPlatformOption(t *testing.T) {
 var platformTestOptions = []map[string]string{
 	{"project": "stirrup-tests"},
 	{"logGroup": "/stirrup/tests"},
+	{"host": "https://observability.example.com"},
 }
 
 // isolateCloudCredentials gives the AWS default chain static environment
@@ -1114,7 +1115,7 @@ func isolateCloudCredentials(t *testing.T) {
 // reach the inputs of the trace, metric and log builders.
 func TestResolveTelemetry_WiresEachPlatformIntoTheBuilders(t *testing.T) {
 	isolateCloudCredentials(t)
-	var decorated, wrapped bool
+	var attributed, decorated, wrapped bool
 	for _, name := range types.ValidTraceEmitterPlatformValues() {
 		t.Run(name, func(t *testing.T) {
 			config := &types.RunConfig{
@@ -1136,7 +1137,8 @@ func TestResolveTelemetry_WiresEachPlatformIntoTheBuilders(t *testing.T) {
 				t.Fatalf("no test option set resolves platform %q: %v", name, err)
 			}
 
-			if len(exporters.ResourceAttrs) == 0 || !reflect.DeepEqual(resourceOpts.Extra, exporters.ResourceAttrs) {
+			attributed = attributed || len(exporters.ResourceAttrs) > 0
+			if !reflect.DeepEqual(resourceOpts.Extra, exporters.ResourceAttrs) {
 				t.Errorf("resource Extra = %v, want the profile's attributes %v", resourceOpts.Extra, exporters.ResourceAttrs)
 			}
 			opts := otelEmitterOptions(config.TraceEmitter, exporters, resourceOpts, false)
@@ -1161,8 +1163,8 @@ func TestResolveTelemetry_WiresEachPlatformIntoTheBuilders(t *testing.T) {
 			}
 		})
 	}
-	if !decorated || !wrapped {
-		t.Errorf("the registered platforms must exercise span decoration (%v) and wrapped transports (%v)", decorated, wrapped)
+	if !attributed || !decorated || !wrapped {
+		t.Errorf("the registered platforms must exercise resource attributes (%v), span decoration (%v) and wrapped transports (%v)", attributed, decorated, wrapped)
 	}
 }
 

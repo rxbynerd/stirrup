@@ -2031,6 +2031,7 @@ var validTraceEmitterMetricsTemporalities = map[string]bool{
 var validTraceEmitterPlatforms = map[string]bool{
 	"":           true,
 	"cloudwatch": true,
+	"langfuse":   true,
 	"phoenix":    true,
 }
 

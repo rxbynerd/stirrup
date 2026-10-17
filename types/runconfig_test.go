@@ -5339,6 +5339,7 @@ func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 		"no platform":   {Type: "otel"},
 		"cloudwatch":    {Type: "otel", Platform: "cloudwatch", PlatformOptions: map[string]string{"region": "us-east-1", "logGroup": "/stirrup/agents"}},
 		"phoenix":       {Type: "otel", Platform: "phoenix"},
+		"langfuse":      {Type: "otel", Protocol: "http/protobuf", Platform: "langfuse", PlatformOptions: map[string]string{"host": "https://langfuse.example.com"}},
 		"8 options":     {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8"}},
 		"max value len": {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": strings.Repeat("p", 256)}},
 		"max key len":   {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"k" + strings.Repeat("A", 31): "v"}},

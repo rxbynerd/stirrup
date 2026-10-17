@@ -5643,7 +5643,7 @@ type TraceEmitterConfig struct {
 	// (per-signal endpoints, headers, request signing, resource and span
 	// attributes) for one observability platform. Closed set:
 	//
-	//	"" | "cloudwatch" | "phoenix"
+	//	"" | "cloudwatch" | "langfuse" | "phoenix"
 	//
 	// Explicit fields always win over a profile's defaults. Rejected for
 	// jsonl and gcs. See docs/observability-cloud.md#platform-profiles.

@@ -12,7 +12,7 @@ import (
 // vendorNamePattern matches the platform-specific names that must stay in
 // this package. types/ names the closed set of platforms, and gen/ is
 // generated from the proto that documents it.
-var vendorNamePattern = regexp.MustCompile(`(?i)cloudwatch|phoenix|openinference|sigv4|aws\.service\.type`)
+var vendorNamePattern = regexp.MustCompile(`(?i)cloudwatch|phoenix|openinference|sigv4|aws\.service\.type|langfuse\.|x-langfuse-`)
 
 // TestVendorNamesStayInPlatformPackage keeps every vendor-specific name in
 // Go code inside this package, so the rest of the harness stays
