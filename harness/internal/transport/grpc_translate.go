@@ -39,6 +39,16 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	return pe
 }
 
+func traceContextFromProto(c *pb.TraceContext) *types.TraceContext {
+	if c == nil {
+		return nil
+	}
+	return &types.TraceContext{
+		Traceparent: c.Traceparent,
+		Tracestate:  c.Tracestate,
+	}
+}
+
 func traceContextToProto(c *types.TraceContext) *pb.TraceContext {
 	if c == nil {
 		return nil
@@ -86,6 +96,8 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 		v := *pe.ExpiresAt
 		e.ExpiresAt = &v
 	}
+
+	e.TraceContext = traceContextFromProto(pe.TraceContext)
 
 	if pe.Task != nil {
 		rc := runConfigFromProto(pe.Task)

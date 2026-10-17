@@ -11,6 +11,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
@@ -127,14 +128,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	// A cancel event before any task_assignment exits cleanly — the control
 	// plane may want to abort a pod that hasn't been dispatched yet.
-	configCh := make(chan *types.RunConfig, 1)
+	assignmentCh := make(chan types.ControlEvent, 1)
 	preTaskCancelCh := make(chan struct{}, 1)
 	tp.OnControl(func(event types.ControlEvent) {
 		switch event.Type {
 		case "task_assignment":
 			if event.Task != nil {
 				select {
-				case configCh <- event.Task:
+				case assignmentCh <- event:
 				default:
 					// Already received a task; ignore duplicates.
 				}
@@ -150,10 +151,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 	assignTimer := time.NewTimer(5 * time.Minute)
 	defer assignTimer.Stop()
 
-	var config *types.RunConfig
+	var assignment types.ControlEvent
 	var assigned time.Duration
 	select {
-	case config = <-configCh:
+	case assignment = <-assignmentCh:
 		assigned = time.Since(started)
 		// Assignment received; the pod is no longer idle-and-assignable.
 		_ = health.RemoveProbe(readinessMarkerPath)
@@ -167,6 +168,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	case <-ctx.Done():
 		return fmt.Errorf("interrupted before receiving task assignment")
 	}
+	config := assignment.Task
 
 	// The wall-clock budget covers component construction plus the
 	// primary run. Follow-up runs derive their own budget from the
@@ -174,6 +176,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 	runTimeout := runTimeoutFor(config)
 	runCtx, runCancel := withRunTimeout(ctx, runTimeout)
 	defer runCancel()
+	// The assignment's upstream parent applies to the primary run only;
+	// follow-ups run on ctx and start their own traces.
+	if tc := assignment.TraceContext; tc != nil {
+		runCtx = observability.ExtractTraceContext(runCtx, tc.Traceparent, tc.Tracestate)
+	}
 
 	// A control stream lost during construction aborts it, and the job
 	// fails rather than starting a run nobody is listening for.

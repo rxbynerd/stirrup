@@ -2676,3 +2676,36 @@ func TestTraceContextToProto_ToolResultRequest(t *testing.T) {
 		t.Errorf("absent trace context translated to %v, want nil", pe.TraceContext)
 	}
 }
+
+func TestTraceContextFromProto_TaskAssignment(t *testing.T) {
+	raw, err := proto.Marshal(&pb.ControlEvent{
+		Type: "task_assignment",
+		Task: &pb.RunConfig{RunId: "run-parented"},
+		TraceContext: &pb.TraceContext{
+			Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			Tracestate:  "vendor=opaque",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.ControlEvent
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	e := controlEventFromProto(&decoded)
+	want := types.TraceContext{
+		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		Tracestate:  "vendor=opaque",
+	}
+	if e.TraceContext == nil || *e.TraceContext != want {
+		t.Errorf("trace context = %+v, want %+v", e.TraceContext, want)
+	}
+	if e.Task == nil || e.Task.RunID != "run-parented" {
+		t.Errorf("task = %+v, want run-parented", e.Task)
+	}
+
+	if e := controlEventFromProto(&pb.ControlEvent{Type: "task_assignment"}); e.TraceContext != nil {
+		t.Errorf("absent trace context translated to %+v, want nil", e.TraceContext)
+	}
+}

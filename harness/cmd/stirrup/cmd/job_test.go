@@ -371,6 +371,8 @@ type recordingControlPlane struct {
 	pb.UnimplementedHarnessServiceServer
 
 	task *pb.RunConfig
+	// traceContext, when set, rides on the task_assignment.
+	traceContext *pb.TraceContext
 
 	mu       sync.Mutex
 	received []*pb.HarnessEvent
@@ -388,7 +390,7 @@ func (s *recordingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) 
 	if _, err := stream.Recv(); err != nil {
 		return err
 	}
-	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
+	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task, TraceContext: s.traceContext}); err != nil {
 		return err
 	}
 	for {

@@ -408,6 +408,14 @@ message ControlEvent {
   // (epoch), letting the harness tell "the control plane did not report an
   // expiry" from "the token expires at the epoch".
   optional int64 expires_at = 10;
+
+  // Optional W3C trace context of the control plane's span for the task.
+  // Read on "task_assignment" events only and ignored on every other type.
+  // A valid traceparent becomes the parent of the primary run's root span,
+  // and an invalid one is ignored, so the run starts a new trace.
+  // Follow-up runs always start a new trace. Never part of RunConfig, so
+  // replaying a configuration cannot re-parent a run.
+  TraceContext trace_context = 11;
 }
 
 // TraceContext is a W3C Trace Context carrier

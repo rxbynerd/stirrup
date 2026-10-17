@@ -378,6 +378,12 @@ type ControlEvent struct {
 	// (sandbox_token_response only). A nil value means the control plane
 	// did not report an expiry.
 	ExpiresAt *int64 `json:"expiresAt,omitempty"`
+
+	// TraceContext is the control plane's span for the task
+	// (task_assignment only). A valid one parents the primary run's root
+	// span. It is deliberately outside RunConfig so a replayed
+	// configuration cannot re-parent a new run onto an old trace.
+	TraceContext *TraceContext `json:"traceContext,omitempty"`
 }
 
 // HarnessLifecycleEvent represents lifecycle signals sent on the transport.
