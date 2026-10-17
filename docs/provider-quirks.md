@@ -764,6 +764,7 @@ the projection, not a provider-specific field:
 | `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | as `auto` | no request control exists |
 | `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | documented, not probed |
 | `gemini` | `generationConfig.thinkingConfig.includeThoughts: true`, for models whose quirks accept a thinking config or when `reasoningEffort` is set | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+| `bedrock` | nothing; the adapter streams no reasoning text | nothing | n/a |
 
 Gemini models that do not think reject a `thinkingConfig`, so the
 Gemini adapter sends `includeThoughts` by default only where the

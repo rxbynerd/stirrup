@@ -275,7 +275,8 @@ been probed against Bedrock.
 
 The Bedrock adapter does not consult the [provider quirks
 registry](provider-quirks.md): it forwards the harness default
-temperature to every model and ignores `reasoningEffort`. Anthropic
+temperature to every model and ignores `reasoningEffort`. It streams
+no reasoning text, so `reasoningSummary` has no effect on it. Anthropic
 documents that Claude Opus 4.7 onward, Sonnet 5 onward and Fable 5
 onward reject a non-default temperature on every request, so those
 models are expected to fail through Bedrock until the adapter applies

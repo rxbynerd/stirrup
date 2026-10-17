@@ -496,7 +496,7 @@ the none executor has no capability to back the rest.
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
 | `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. With a window configured, the CLI bounds the whole session at 10 × (`--timeout` + `--followup-grace`) after the primary run — room for ten follow-ups each waited for through a full window — since it has no orchestrator deadline behind it. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
-| `--followup-history` | `reset` | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
+| `--followup-history` | (unset → `reset`) | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window; it takes effect only through the follow-up loop, so an embedder calling `harnessapi.Loop.Run` repeatedly gets no carried history and no warning. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
 
 ### Tracing
 
@@ -1671,12 +1671,12 @@ decides whether the run streams the model's reasoning text to the
 transport as `thinking_delta` events, for a control plane that renders
 a live transcript. It accepts `auto` and `off`, validated at startup.
 An empty value is projected by each adapter: every adapter treats it as
-`auto` except `openai-responses`, which treats it as `off` (see below).
-It never changes what is kept in
-conversation history: reasoning the provider needs replayed (Anthropic
-thinking blocks, DeepSeek `reasoning_content`, OpenAI Responses
-reasoning items, Gemini thought signatures) is persisted and replayed
-exactly as before.
+`auto` except `openai-responses`, which treats it as `off` (see below),
+and `bedrock`, which streams no reasoning text whatever the value. It
+never changes what is kept in conversation history: reasoning the
+provider needs replayed (Anthropic thinking blocks, DeepSeek
+`reasoning_content`, OpenAI Responses reasoning items, Gemini thought
+signatures) is persisted and replayed exactly as before.
 
 | Adapter | `auto` | `off` |
 |---|---|---|
@@ -1684,6 +1684,7 @@ exactly as before.
 | `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
 | `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
 | `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` when the model's quirks accept a thinking config (Gemini 3.6, 3.7, 3.8, 3.1 Pro and 2.5 Flash) or `reasoningEffort` is set, and streams each `thought: true` part. Other models get no `thinkingConfig`, because models that do not think reject one. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
+| `bedrock` | No effect: the adapter streams no reasoning text and has no request control for it. | No effect. |
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns

@@ -16,7 +16,7 @@ control plane can deliver follow-up `user_response` events. More
 importantly, `RunFollowUpLoop` currently mutates `config.Prompt` and calls
 `Run` again, and by default `Run` rebuilds message history from the new
 prompt. That is a new run, not a continuation. (`followUpHistory:
-"continue"` now gives in-process continuity; see section 2.)
+"continue"` gives in-process continuity; see section 2.)
 
 We want three behaviours:
 
@@ -177,15 +177,40 @@ run finishes.
 | `run_finished` | The run completed. | `runId`, `outcome`, `tokens`, `durationMs` |
 | `writer_closed` | A writer exited without first emitting `run_finished` (signal, crash, context cancel, unrecoverable error). Not a terminal session marker. | `runId?`, `reason` |
 
-`source` on `user_message` is one of:
+`source` on `user_message` is an open vocabulary; readers preserve
+values they do not recognise. The values are the ones the gRPC
+`user_message` event uses:
 
 - `initial_prompt`
 - `followup_prompt`
-- `grpc_user_response`
+- `user_response`
 - `verifier_feedback`
-- `compaction_summary` (reserved; v1 does not emit this. Defined now so
-  that the planned compaction work in §14 can insert summaries into
+- `structured_output_correction`, `tool_choice_escalation`,
+  `stall_nudge`, `wind_down` and `output_limit_recovery`, the
+  harness-written instructions the loop appends
+- `compaction_summary` (reserved; v1 does not emit this. It is defined
+  so that the planned compaction work in §14 can insert summaries into
   canonical history without bumping the schema version.)
+
+**Relation to the gRPC transcript.** The gRPC `RunTask` stream carries
+events with the same names (see
+[Watching a run live](integration-guide.md#watching-a-run-live)), but
+they are a display transcript, not this lossless log. The wire has no
+`assistant_message` event and no thinking signatures, redacted thinking
+or provider replay fields; payloads are capped at 256 KiB; delivery is
+at most once; and only `run_started` carries a run ID. Persistence and
+reconstruction build on the harness-side JSONL, never on the wire
+stream. Where the names differ:
+
+| Wire (`HarnessEvent`) | Session log |
+|---|---|
+| `usage` on `turn_committed` | `tokens` |
+| `stop_reason` on `turn_committed` | `modelStopReason` (never the run outcome) |
+| no field | `turnOutcome` |
+| `name` on `tool_result` (the presented, possibly aliased, name) | `toolName` |
+| `content` on `tool_result` | `result` |
+| `tool_use_id` | `toolUseId` |
+| `duration_ms` | `durationMs` |
 
 `verification_result` is telemetry. It is not used directly to rebuild
 message history. When verifier feedback is fed back to the model, the
@@ -488,7 +513,7 @@ Recorder call sites:
 
 ### gRPC Follow-Up Flow
 
-**Implementation status.** In-process continuity has shipped behind
+**Implementation status.** In-process continuity is available behind
 `followUpHistory: "continue"`, without the session recorder or
 `RunWithMessages`. At the end of each top-level run the loop keeps the
 run's committed history — it drops a trailing assistant message whose
@@ -517,7 +542,7 @@ unimplemented.
    not be folded into this session's history.
 2. Generate a new `runId` for the follow-up turn.
 3. Call `RunWithMessages` with the current slice and `appendUser` set to
-   the response message with `source="grpc_user_response"`.
+   the response message with `source="followup_prompt"`.
 4. Store the returned message slice for the next follow-up.
 
 This preserves observable gRPC behaviour while making follow-ups true

@@ -215,7 +215,8 @@ type HarnessEvent struct {
 	// value as RunTrace.outcome; see that field for the values. A "done"
 	// sent for a task rejected before its run started carries "error".
 	// On "turn_committed" events, the model's stop reason for the turn
-	// ("end_turn", "tool_use", "max_tokens", or a provider stop reason).
+	// ("end_turn", "tool_use", "max_tokens", or a provider stop reason),
+	// never the run outcome.
 	StopReason string `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	// Human-readable message. Set on "error" and "warning" events.
 	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
@@ -273,6 +274,9 @@ type HarnessEvent struct {
 	//	                               budget nears exhaustion.
 	//	"output_limit_recovery"        the instruction that follows a turn
 	//	                               cut off at the output limit.
+	//	"compaction_summary"           reserved; not currently emitted.
+	//
+	// Every value other than the first three is text the harness wrote.
 	Source string `protobuf:"bytes,17,opt,name=source,proto3" json:"source,omitempty"`
 	// The run-scoped turn number, starting at 0. Set on "turn_started" and
 	// "turn_committed" events.

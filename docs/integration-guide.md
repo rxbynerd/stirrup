@@ -643,7 +643,10 @@ re-provisioning the sandbox.
     in both modes: once tripped, it stays tripped for every later run.
 
   The primary run is the same in both modes, and the field does nothing
-  without a follow-up window.
+  without a follow-up window. It takes effect only through the
+  follow-up loop that serves that window: an embedder that calls
+  `harnessapi.Loop.Run` repeatedly gets no carried history and no
+  warning.
 - On the stream, every follow-up run in either mode opens with its own
   `run_started` and a `user_message` with source `followup_prompt`
   whose `text` is the new prompt alone, even when `"continue"` merges it
@@ -710,6 +713,20 @@ run regardless of `traceEmitter.type`, and the trace emitters keep
 recording as before; the stream is the live view, the trace is the
 durable record.
 
+**Design.** The transcript is a series of incremental events on the
+existing `RunTask` stream, not a new RPC and not an upload of the
+whole transcript at the end of the run. A terminal upload would arrive
+only after the run and, on a long run, would exceed grpc-go's 4 MiB
+default message limit; each event stays far below it, because
+`tool_result` content, `tool_call` input, `user_message` text and
+`thinking_delta` text are each capped at 256 KiB and deltas are small.
+The new event types and fields are additive, so a control plane that
+does not know them ignores them and the RPC is unchanged. The stream
+and the trace emitters are independent of each other, as
+[`philosophy.md`](philosophy.md) sets out: the stream is for real-time
+control, telemetry for long-term analysis. Delivery and keys are
+described below.
+
 **Delivery.** The events of a run arrive on one ordered stream, from
 its `run_started` to its `done`. Delivery is at most once: the harness
 does not acknowledge, retry or replay events, and a stream that breaks
@@ -759,16 +776,27 @@ or when a turn that was not dispatched left nothing to keep: a turn
 cut off at the output limit with no text, or a turn of tool calls
 alone. Its deltas were shown live but are not part of the
 conversation the model continues from. Tools that did run still had
-their effects on the workspace.
+their effects on the workspace. The missing `turn_committed` is the
+whole signal: the harness does not say why a turn did not commit, and
+a new reason will not be reported by a new event for the same
+condition unless a capability on `ready` announces it.
 
 Within one turn, a provider failure that the harness retries, or a
 request it compacts and resends after a context-window overflow,
 sends a `warning` before the next attempt; any deltas and `tool_call`
-events the failed attempt streamed are not part of the turn. The retry keeps the turn's provider and model and
-sends no second `turn_started`.
+events the failed attempt streamed are not part of the turn. The retry
+keeps the turn's provider and model and sends no second
+`turn_started`.
 
 **User messages.** `source` names where a `user_message` came from.
 The vocabulary is open: preserve values that are not recognised.
+Every source other than `initial_prompt`, `followup_prompt` and
+`user_response` is text the harness wrote, and new values will
+normally be harness-written too, so a consumer can render an
+unrecognised source in its harness-message style. `text` holds the
+message's text blocks only. A consumer that joins the `text` of every
+event regardless of type also picks up `user_message` and
+`thinking_delta` text, so it filters on `type`.
 
 | `source` | Appended when |
 |---|---|
