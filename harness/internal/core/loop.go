@@ -179,7 +179,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.startTrace(ctx, config)
 	l.failure = runFailure{}
-	carried := l.takeCarriedHistory(l.followUpRun)
+	carried := l.takeCarriedHistory(followUp != nil)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
 	// establish the emitter's run span or a plain ctx as the span parent
@@ -1355,9 +1355,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			loop.followUpInput = &next
 
 			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
-			loop.followUpRun = true
 			runTrace, err := loop.Run(runCtx, config)
-			loop.followUpRun = false
 			cancelRun()
 			if opts.OnRunComplete != nil {
 				opts.OnRunComplete(config, runTrace, err)

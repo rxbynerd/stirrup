@@ -211,9 +211,6 @@ type AgenticLoop struct {
 	// follow-up that continues it; see retainHistory.
 	carried *carriedHistory
 
-	// followUpRun marks a run started by RunFollowUpLoop.
-	followUpRun bool
-
 	// screenedLen is the length of the current run's history at its
 	// latest pre-turn screening: untrusted content past it is unscreened.
 	screenedLen int
