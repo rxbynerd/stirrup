@@ -662,10 +662,25 @@ func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
 }
 
 // openaiDelta is the incremental content in a streaming chunk.
+// ReasoningContent is the non-standard reasoning text that DeepSeek, GLM,
+// and LM Studio stream beside content; it is display-only here, and any
+// replay goes through a ReplayFields rule on RawDelta. It stays raw so a
+// server that sends a non-string value does not fail the chunk.
 type openaiDelta struct {
-	Role      string                `json:"role,omitempty"`
-	Content   *string               `json:"content,omitempty"`
-	ToolCalls []openaiToolCallDelta `json:"tool_calls,omitempty"`
+	Role             string                `json:"role,omitempty"`
+	Content          *string               `json:"content,omitempty"`
+	ReasoningContent json.RawMessage       `json:"reasoning_content,omitempty"`
+	ToolCalls        []openaiToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// reasoningText returns the delta's reasoning_content when it is a JSON
+// string, and "" for null, absent, or any other shape.
+func (d openaiDelta) reasoningText() string {
+	var s string
+	if len(d.ReasoningContent) == 0 || json.Unmarshal(d.ReasoningContent, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 // openaiToolCallDelta is an incremental tool call in a streaming chunk.
@@ -1319,6 +1334,13 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 						replayFieldsCapture[k] = append(replayFieldsCapture[k], v...)
 					}
 				}
+			}
+
+			if reasoning := choice.Delta.reasoningText(); reasoning != "" {
+				emitEvent(types.StreamEvent{
+					Type: "thinking_delta",
+					Text: reasoning,
+				})
 			}
 
 			// Text content delta.
