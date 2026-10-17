@@ -12,14 +12,11 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 )
 
-// langfuseDefinition sends traces to Langfuse's OTLP endpoint and adds the
-// langfuse.* attributes behind its trace name, tags, release, filterable
-// metadata and observation types. Option: host (the Langfuse base URL;
-// unset sends traces to traceEmitter.endpoint).
-//
-// Langfuse ingests OTLP over HTTP only and drops gRPC silently, so the
-// profile requires http/protobuf. Authorization stays in
-// traceEmitter.headers.
+// langfuseDefinition sends traces over OTLP/HTTP, which is all Langfuse
+// ingests, and adds the langfuse.* attributes behind its trace name, tags,
+// release, filterable metadata and observation types. Option: host (the
+// Langfuse base URL; unset uses traceEmitter.endpoint). Authorization
+// stays in traceEmitter.headers.
 var langfuseDefinition = definition{
 	options: map[string]bool{"host": false},
 	build:   buildLangfuse,
@@ -83,6 +80,8 @@ func validateLangfuseHost(host string) error {
 		return errors.New("host must not carry userinfo; send credentials in traceEmitter.headers")
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return errors.New("host must not carry a query or fragment")
+	case strings.Contains(u.Path, langfuseOTLPPath):
+		return errors.New("host must be the Langfuse base URL, without " + langfuseOTLPPath)
 	}
 	return nil
 }
@@ -161,6 +160,9 @@ func withLangfuse(s sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 	add(attribute.StringSlice(langfuseTraceTagsKey, tags))
 	addString(langfuseObservationTypeKey, langfuseObservationType(s.Name()))
 
+	if len(added) == 0 {
+		return s
+	}
 	attrs := make([]attribute.KeyValue, 0, len(original)+len(added))
 	attrs = append(attrs, original...)
 	attrs = append(attrs, added...)

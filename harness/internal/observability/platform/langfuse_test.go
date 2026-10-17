@@ -77,6 +77,9 @@ func TestLangfuse_RejectsBadHost(t *testing.T) {
 		"userinfo":   "https://pk:sk-secret@langfuse.example.com",
 		"query":      "https://langfuse.example.com?x=1",
 		"fragment":   "https://langfuse.example.com#x",
+		"unparsable": "http://[::1",
+		"otlp path":  "https://langfuse.example.com/api/public/otel",
+		"trace path": "https://langfuse.example.com/api/public/otel/v1/traces",
 	}
 	for name, host := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -297,10 +300,12 @@ func TestLangfuse_ModeFallsBackToTheRunSpan(t *testing.T) {
 	}
 }
 
+// TestLangfuse_ObservationTypes uses the span names the harness emits.
 func TestLangfuse_ObservationTypes(t *testing.T) {
 	names := []string{
-		"guard.pre_tool", "verifier.verify", "context.prepare", "hooks.pre_run",
-		"git.setup", "workspace.export", "verifier.other", "contextual", "invoke_agent stirrup",
+		"guard.pre_turn", "guard.pre_tool", "guard.post_turn", "verifier.verify", "context.prepare",
+		"hooks.pre_run", "hooks.post_run", "git.setup", "git.checkpoint", "git.finalise", "workspace.handoff",
+		"permission.check", "provider.stream", "tool_choice.escalation", "invoke_agent stirrup",
 	}
 	spans := exportThroughLangfuse(t, langfuseTestResource, func(tr oteltrace.Tracer) {
 		for _, name := range names {
@@ -309,12 +314,17 @@ func TestLangfuse_ObservationTypes(t *testing.T) {
 		}
 	})
 	want := map[string]string{
-		"guard.pre_tool":   "guardrail",
-		"verifier.verify":  "evaluator",
-		"context.prepare":  "chain",
-		"hooks.pre_run":    "chain",
-		"git.setup":        "chain",
-		"workspace.export": "chain",
+		"guard.pre_turn":    "guardrail",
+		"guard.pre_tool":    "guardrail",
+		"guard.post_turn":   "guardrail",
+		"verifier.verify":   "evaluator",
+		"context.prepare":   "chain",
+		"hooks.pre_run":     "chain",
+		"hooks.post_run":    "chain",
+		"git.setup":         "chain",
+		"git.checkpoint":    "chain",
+		"git.finalise":      "chain",
+		"workspace.handoff": "chain",
 	}
 	for _, name := range names {
 		got, ok := spans[name]["langfuse.observation.type"]
@@ -363,6 +373,15 @@ func TestLangfuse_PresetAttributesWin(t *testing.T) {
 	}
 	if got := spans["guard.pre_tool"]["langfuse.observation.type"].AsString(); got != "span" {
 		t.Errorf("observation type = %q, want the operator's", got)
+	}
+}
+
+func TestLangfuse_SpanWithNothingToAddIsUnchanged(t *testing.T) {
+	span := tracetest.SpanStub{Name: "provider.stream", Attributes: []attribute.KeyValue{
+		attribute.StringSlice("langfuse.trace.tags", []string{"operator"}),
+	}}.Snapshot()
+	if got, wrapped := withLangfuse(span).(langfuseSpan); wrapped {
+		t.Errorf("a span with nothing to add must be returned as is, got attributes %v", got.Attributes())
 	}
 }
 
@@ -439,7 +458,7 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTelTraceEmitter: %v", err)
 	}
-	emitter.Start("run-1", &types.RunConfig{
+	config := &types.RunConfig{
 		RunID: "run-1",
 		Mode:  "execution",
 		Correlation: &types.CorrelationConfig{
@@ -448,7 +467,21 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 			URL:       "https://cp.example.com/runs/1",
 			Labels:    map[string]string{"agent_profile": "triage-v3"},
 		},
-	})
+	}
+	emitter.Start("run-1", config)
+	rootCtx := emitter.RootContext()
+	chat := emitter.StartChatSpan(rootCtx, trace.ChatSpanStart{Turn: 1, ProviderType: "anthropic", Model: "model-a"})
+	if chat == nil {
+		t.Fatal("StartChatSpan returned nil")
+	}
+	chat.End(trace.ChatSpanEnd{})
+	sub := emitter.StartSubAgentSpan(rootCtx, trace.SubAgentSpanStart{RunID: "run-1-sub", ParentRunID: "run-1", Config: config})
+	if sub == nil {
+		t.Fatal("StartSubAgentSpan returned nil")
+	}
+	sub.End(trace.AgentSpanEnd{Outcome: "success"})
+	_, handoff := emitter.Tracer().Start(rootCtx, "workspace.handoff")
+	handoff.End()
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
@@ -480,5 +513,25 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 	}
 	if got := root["langfuse.trace.tags"].AsStringSlice(); !slices.Equal(got, []string{"stirrup", "execution"}) {
 		t.Errorf("langfuse.trace.tags = %v", got)
+	}
+
+	for _, name := range []string{"chat model-a", "invoke_agent stirrup.subagent", "workspace.handoff"} {
+		attrs, ok := rec.spans[name]
+		if !ok {
+			t.Errorf("no %q span exported; got %v", name, slices.Collect(maps.Keys(rec.spans)))
+			continue
+		}
+		if v, named := attrs["langfuse.trace.name"]; named {
+			t.Errorf("%s must not name the trace, got %q", name, v.AsString())
+		}
+		if got := attrs["langfuse.trace.metadata.task_id"].AsString(); got != "task-7" {
+			t.Errorf("%s: langfuse.trace.metadata.task_id = %q, want task-7", name, got)
+		}
+	}
+	if got := rec.spans["workspace.handoff"]["langfuse.observation.type"].AsString(); got != "chain" {
+		t.Errorf("workspace.handoff observation type = %q, want chain", got)
+	}
+	if _, typed := rec.spans["chat model-a"]["langfuse.observation.type"]; typed {
+		t.Error("chat spans keep Langfuse's own typing")
 	}
 }

@@ -12,7 +12,23 @@ import (
 // vendorNamePattern matches the platform-specific names that must stay in
 // this package. types/ names the closed set of platforms, and gen/ is
 // generated from the proto that documents it.
-var vendorNamePattern = regexp.MustCompile(`(?i)cloudwatch|phoenix|openinference|sigv4|aws\.service\.type|langfuse\.|x-langfuse-`)
+var vendorNamePattern = regexp.MustCompile(`(?i:cloudwatch|phoenix|openinference|sigv4|aws\.service\.type|x-langfuse-)|\blangfuse\.(trace|observation|release|session|user|version|environment)\b|"langfuse"`)
+
+func TestVendorNamePattern(t *testing.T) {
+	for line, want := range map[string]bool{
+		`attribute.String("langfuse.trace.name", v)`:         true,
+		`"langfuse.observation.metadata." + k`:               true,
+		`key := "x-langfuse-ingestion-version"`:              true,
+		`registry["langfuse"]`:                               true,
+		`// so the trace name reaches Langfuse.`:             false,
+		`// Langfuse.Whatever is prose, not a key.`:          false,
+		`--otel-header Authorization=secret://LANGFUSE_AUTH`: false,
+	} {
+		if got := vendorNamePattern.MatchString(line); got != want {
+			t.Errorf("vendorNamePattern.MatchString(%q) = %v, want %v", line, got, want)
+		}
+	}
+}
 
 // TestVendorNamesStayInPlatformPackage keeps every vendor-specific name in
 // Go code inside this package, so the rest of the harness stays
