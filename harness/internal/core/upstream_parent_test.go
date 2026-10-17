@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -269,4 +273,33 @@ func TestAsyncToolResultRequest_ForwardsUpstreamParentWithoutOTelSpans(t *testin
 		return
 	}
 	t.Fatal("no tool_result_request emitted")
+}
+
+func TestLoop_UpstreamParentCorrelatesLogsWithoutOTelSpans(t *testing.T) {
+	var stderr bytes.Buffer
+	scope := observability.NewRunScope("")
+	loop := buildTestLoop(endTurnProvider())
+	loop.Logger = observability.NewScopedLoggerWithExport(scope, slog.LevelInfo, &stderr, nil, nil)
+	loop.LogScope = scope
+	parent := upstreamParent(t, true)
+
+	if _, err := loop.Run(upstreamCtx(t, true), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var records int
+	sc := bufio.NewScanner(&stderr)
+	for sc.Scan() {
+		var rec map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			continue
+		}
+		records++
+		if rec["trace_id"] != parent.TraceID().String() || rec["span_id"] != parent.SpanID().String() {
+			t.Errorf("record %q correlates with %v/%v, want the upstream parent", rec["msg"], rec["trace_id"], rec["span_id"])
+		}
+	}
+	if records == 0 {
+		t.Fatal("run logged no records")
+	}
 }
