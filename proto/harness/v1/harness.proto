@@ -1095,6 +1095,10 @@ message RunTrace {
   // nothing degraded.
   repeated DegradedCapability degraded_capabilities = 33;
 
+  // The last verifier attempt's verdict. Absent when the run's verifier
+  // is "none" or no verification attempt ran.
+  VerificationVerdict verification = 28;
+
   // The final answer as compact JSON text, set when RunConfig.output_schema
   // was configured, the answer satisfied it and the outcome is "success".
   // The document is scrubbed of secrets and never truncated. Empty
@@ -1165,6 +1169,24 @@ message DegradedCapability {
 
   // Scrubbed, length-bounded reason the capability was unavailable.
   string error = 3;
+}
+
+// VerificationVerdict mirrors the last entry of
+// types.RunTrace.VerificationResults. String fields are scrubbed of
+// secret-shaped content and capped at 4 KiB.
+message VerificationVerdict {
+  // 1-based attempt number; the number of verifier attempts in the run.
+  int32 attempt = 1;
+
+  // Whether the verifier accepted the work.
+  bool passed = 2;
+
+  // The verifier's feedback to the model, when it rejected the work.
+  string feedback = 3;
+
+  // Set, with passed false, when the verifier failed to produce a
+  // verdict (for example, the executor or judge model was unreachable).
+  string error = 4;
 }
 
 // StopDetails mirrors types.StopDetails: a provider's structured

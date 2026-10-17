@@ -114,6 +114,7 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 			result[i] = types.Message{
 				Role:         msg.Role,
 				Synthetic:    msg.Synthetic,
+				Origin:       msg.Origin,
 				Content:      newContent,
 				ReplayFields: msg.ReplayFields,
 			}

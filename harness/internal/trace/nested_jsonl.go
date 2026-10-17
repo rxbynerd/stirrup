@@ -36,19 +36,21 @@ type NestedJSONLEmitter struct {
 	// child's agent span.
 	spanParent context.Context //nolint:containedctx // span parent captured at spawn
 
-	mu                 sync.Mutex
-	runID              string
-	config             *types.RunConfig
-	startedAt          time.Time
-	turns              []types.TurnTrace
-	toolCalls          []types.ToolCallTrace
-	permissionDenials  int
-	finalAssistantText string
-	stopDetails        *types.StopDetails
-	agentSpan          AgentSpan
+	mu                  sync.Mutex
+	runID               string
+	config              *types.RunConfig
+	startedAt           time.Time
+	turns               []types.TurnTrace
+	toolCalls           []types.ToolCallTrace
+	permissionDenials   int
+	verificationResults []types.VerificationResult
+	finalAssistantText  string
+	stopDetails         *types.StopDetails
+	agentSpan           AgentSpan
 }
 
 var _ FinalAssistantTextRecorder = (*NestedJSONLEmitter)(nil)
+var _ VerificationRecorder = (*NestedJSONLEmitter)(nil)
 var _ StopDetailsRecorder = (*NestedJSONLEmitter)(nil)
 var _ CommandOutputRecorder = (*NestedJSONLEmitter)(nil)
 var _ SubRunRecorder = (*NestedJSONLEmitter)(nil)
@@ -91,6 +93,7 @@ func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.verificationResults = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.agentSpan = agentSpan
@@ -222,6 +225,15 @@ func (e *NestedJSONLEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+// RecordVerification stores a child run's verifier attempt locally and,
+// like RecordFinalAssistantText, does not forward it: the parent's
+// VerificationResults describe the parent's own verifier.
+func (e *NestedJSONLEmitter) RecordVerification(result types.VerificationResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.verificationResults = append(e.verificationResults, result)
+}
+
 // RecordStopDetails stores the child run's final stop details locally and,
 // like RecordFinalAssistantText, does not forward them to the parent.
 func (e *NestedJSONLEmitter) RecordStopDetails(details *types.StopDetails) {
@@ -302,16 +314,17 @@ func (e *NestedJSONLEmitter) buildRunTrace(outcome string) *types.RunTrace {
 	}
 
 	return &types.RunTrace{
-		ID:                 e.runID,
-		Config:             redactedConfig,
-		StartedAt:          e.startedAt,
-		CompletedAt:        now,
-		Turns:              len(e.turns),
-		TokenUsage:         totalTokens,
-		ToolCalls:          summaries,
-		PermissionDenials:  e.permissionDenials,
-		Outcome:            outcome,
-		StopDetails:        e.stopDetails,
-		FinalAssistantText: e.finalAssistantText,
+		ID:                  e.runID,
+		Config:              redactedConfig,
+		StartedAt:           e.startedAt,
+		CompletedAt:         now,
+		Turns:               len(e.turns),
+		TokenUsage:          totalTokens,
+		ToolCalls:           summaries,
+		PermissionDenials:   e.permissionDenials,
+		VerificationResults: e.verificationResults,
+		Outcome:             outcome,
+		StopDetails:         e.stopDetails,
+		FinalAssistantText:  e.finalAssistantText,
 	}
 }

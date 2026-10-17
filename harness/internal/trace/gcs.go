@@ -74,6 +74,7 @@ type GCSTraceEmitter struct {
 	turns                []types.TurnTrace
 	toolCalls            []types.ToolCallTrace
 	permissionDenials    int
+	verificationResults  []types.VerificationResult
 	finalAssistantText   string
 	stopDetails          *types.StopDetails
 	commandOutputArchive string
@@ -85,6 +86,7 @@ type GCSTraceEmitter struct {
 }
 
 var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
+var _ VerificationRecorder = (*GCSTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
@@ -174,6 +176,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.verificationResults = nil
 	e.finalAssistantText = ""
 	e.stopDetails = nil
 	e.degradedCapabilities = nil
@@ -208,6 +211,14 @@ func (e *GCSTraceEmitter) RecordPermissionDenial() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.permissionDenials++
+}
+
+// RecordVerification appends a verifier attempt for the uploaded trace
+// object.
+func (e *GCSTraceEmitter) RecordVerification(result types.VerificationResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.verificationResults = append(e.verificationResults, result)
 }
 
 // RecordFinalAssistantText stores the run's final assistant text so the
@@ -293,6 +304,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	turns := append([]types.TurnTrace(nil), e.turns...)
 	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
 	permissionDenials := e.permissionDenials
+	verificationResults := append([]types.VerificationResult(nil), e.verificationResults...)
 	finalAssistantText := e.finalAssistantText
 	stopDetails := e.stopDetails
 	commandOutputArchive := e.commandOutputArchive
@@ -333,6 +345,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 		TokenUsage:           totalTokens,
 		ToolCalls:            summaries,
 		PermissionDenials:    permissionDenials,
+		VerificationResults:  verificationResults,
 		Outcome:              outcome,
 		StopDetails:          stopDetails,
 		FinalAssistantText:   finalAssistantText,

@@ -207,13 +207,35 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
 		res.VerifierVerdict = &types.VerifierResult{
+			Attempt:  last.Attempt,
 			Passed:   last.Passed,
 			Feedback: last.Feedback,
+			Error:    last.Error,
 		}
+		res.Error = verificationOutcomeError(rt.Outcome, last)
 	}
 	// hookSummaryCounts is nil-safe, resolving to 0 for a hookless run.
 	_, res.HookFailures = hookSummaryCounts(rt.HookResults)
 	return res
+}
+
+// verificationOutcomeError is RunResult.Error for a run that the
+// verifier ended: the last attempt's verifier error or feedback. Empty
+// for any other outcome.
+func verificationOutcomeError(outcome string, last types.VerificationResult) string {
+	switch outcome {
+	case "verification_error":
+		if last.Error != "" {
+			return last.Error
+		}
+		return "verifier error"
+	case "verification_failed":
+		if last.Feedback != "" {
+			return last.Feedback
+		}
+		return "verification failed"
+	}
+	return ""
 }
 
 // runSuccessOutcomes is the closed set of RunTrace.Outcome values that

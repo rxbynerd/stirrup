@@ -99,6 +99,14 @@ type DegradedCapabilitiesRecorder interface {
 	RecordDegradedCapabilities(degraded []types.DegradedCapability)
 }
 
+// VerificationRecorder is an optional capability a TraceEmitter can
+// implement to receive each verifier attempt as it completes, so Finish
+// returns them on RunTrace.VerificationResults. The loop scrubs and caps
+// every string before recording.
+type VerificationRecorder interface {
+	RecordVerification(result types.VerificationResult)
+}
+
 // CommandOutputRecorder receives bounded metadata for complete command
 // captures. Full stream content remains in the sidecar archive.
 type CommandOutputRecorder interface {

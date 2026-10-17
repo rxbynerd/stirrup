@@ -15,6 +15,13 @@ type Message struct {
 	// from provenance-sensitive views.
 	Synthetic bool `json:"synthetic,omitempty"`
 
+	// Origin names the harness component whose output a message carries
+	// when that output can echo content from outside the harness. It is
+	// independent of Synthetic. MessageOriginVerifierFeedback marks
+	// verifier feedback, which the loop classifies as untrusted on the
+	// turn it arrives; empty means no such provenance.
+	Origin string `json:"origin,omitempty"`
+
 	// ReplayFields is provider-opaque round-trip state captured from an
 	// assistant response by quirks ReplayFields rules, keyed by the rule's
 	// path string. The agentic loop attaches it to the persisted assistant
@@ -25,6 +32,10 @@ type Message struct {
 	// for the same cross-provider leakage guard). See docs/provider-quirks.md.
 	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
 }
+
+// MessageOriginVerifierFeedback is the Message.Origin of the user message
+// that carries a failed verifier's feedback into a verification retry.
+const MessageOriginVerifierFeedback = "verifier_feedback"
 
 // ContentBlock is a single block of content within a message.
 // Use the Type field to determine which variant fields are populated.

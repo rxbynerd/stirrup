@@ -80,8 +80,8 @@ type RunResult struct {
 	// truncated; an answer over the size limit fails the run instead.
 	StructuredOutput json.RawMessage `json:"structuredOutput,omitempty"`
 
-	// VerifierVerdict is the optional verifier outcome, present only
-	// when a verifier ran.
+	// VerifierVerdict is the last verifier attempt's outcome, present
+	// only when a verifier other than "none" ran.
 	VerifierVerdict *VerifierResult `json:"verifierVerdict,omitempty"`
 
 	// Error mirrors RunTrace.Error: a short human-readable reason when
@@ -116,8 +116,10 @@ type RunResult struct {
 // mirrors VerificationResult but is intentionally a distinct, smaller
 // type, independent of the internal trace's evolving fields.
 type VerifierResult struct {
+	Attempt  int    `json:"attempt,omitempty"`
 	Passed   bool   `json:"passed"`
 	Feedback string `json:"feedback,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // Workspace export statuses carried on ExportReceipt.Status.

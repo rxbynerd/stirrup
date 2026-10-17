@@ -183,6 +183,67 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	}
 }
 
+func TestBuildRunResult_VerificationOutcomesPopulateError(t *testing.T) {
+	cases := []struct {
+		name        string
+		outcome     string
+		results     []types.VerificationResult
+		wantError   string
+		wantVerdict types.VerifierResult
+	}{
+		{
+			name:    "verification_failed carries the deciding attempt's feedback",
+			outcome: "verification_failed",
+			results: []types.VerificationResult{
+				{Attempt: 1, Feedback: "attempt-1 failure"},
+				{Attempt: 2, Feedback: "attempt-2 failure"},
+			},
+			wantError:   "attempt-2 failure",
+			wantVerdict: types.VerifierResult{Attempt: 2, Feedback: "attempt-2 failure"},
+		},
+		{
+			name:        "verification_failed without feedback gets a fallback",
+			outcome:     "verification_failed",
+			results:     []types.VerificationResult{{Attempt: 1}},
+			wantError:   "verification failed",
+			wantVerdict: types.VerifierResult{Attempt: 1},
+		},
+		{
+			name:        "verification_error carries the verifier error",
+			outcome:     "verification_error",
+			results:     []types.VerificationResult{{Attempt: 1, Error: "exec failed: [REDACTED]"}},
+			wantError:   "exec failed: [REDACTED]",
+			wantVerdict: types.VerifierResult{Attempt: 1, Error: "exec failed: [REDACTED]"},
+		},
+		{
+			name:    "success after a repair carries no error",
+			outcome: "success",
+			results: []types.VerificationResult{
+				{Attempt: 1, Feedback: "tests failed"},
+				{Attempt: 2, Passed: true},
+			},
+			wantVerdict: types.VerifierResult{Attempt: 2, Passed: true},
+		},
+		{
+			name:        "a later outcome does not inherit verifier feedback",
+			outcome:     "cancelled",
+			results:     []types.VerificationResult{{Attempt: 1, Feedback: "tests failed"}},
+			wantVerdict: types.VerifierResult{Attempt: 1, Feedback: "tests failed"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildRunResult(&types.RunTrace{Outcome: tc.outcome, VerificationResults: tc.results}, types.DefaultMaxFinalAssistantTextBytes)
+			if got.Error != tc.wantError {
+				t.Errorf("Error = %q, want %q", got.Error, tc.wantError)
+			}
+			if got.VerifierVerdict == nil || *got.VerifierVerdict != tc.wantVerdict {
+				t.Errorf("VerifierVerdict = %+v, want %+v", got.VerifierVerdict, tc.wantVerdict)
+			}
+		})
+	}
+}
+
 // TestBuildRunResult_FinalAssistantText pins that a populated
 // FinalAssistantText carries through verbatim and an empty one is
 // omitted from the wire via the omitempty tag.

@@ -15,8 +15,8 @@ const (
 
 	// EvalFailed indicates the loop terminated in an error class
 	// (`error`, `tool_failures`, `verification_failed`,
-	// `structured_output_failed`) or ran to
-	// `success` but a verifier disagreed.
+	// `structured_output_failed`) or ran to `success` but the last
+	// verifier attempt disagreed.
 	EvalFailed EvalOutcome = "failed"
 
 	// EvalInconclusive indicates the run terminated without enough
@@ -47,15 +47,15 @@ func EvalOutcomeFor(t RunTrace) EvalOutcome {
 	}
 }
 
-// verifierFailed reports whether any verifier in the result set
-// returned Passed=false. A nil or empty slice returns false.
+// verifierFailed reports whether the last recorded verifier attempt
+// returned Passed=false. Every attempt is recorded, so a run that
+// failed verification and then passed after a repair is judged on the
+// passing attempt. A nil or empty slice returns false.
 func verifierFailed(results []VerificationResult) bool {
-	for _, r := range results {
-		if !r.Passed {
-			return true
-		}
+	if len(results) == 0 {
+		return false
 	}
-	return false
+	return !results[len(results)-1].Passed
 }
 
 // RunHealth describes how the harness run itself finished, independent of
@@ -112,10 +112,9 @@ const (
 	VerificationFailed VerificationStatus = "failed"
 )
 
-// LastVerification reports the verdict of the final result in the trace.
-// A run that failed verification and then passed on a retry is
-// VerificationPassed, whereas EvalOutcomeFor treats any failed result as a
-// failed run.
+// LastVerification reports the verdict of the final result in the trace,
+// the same attempt EvalOutcomeFor judges. A run that failed verification
+// and then passed on a retry is VerificationPassed.
 func LastVerification(t *RunTrace) VerificationStatus {
 	if t == nil || len(t.VerificationResults) == 0 {
 		return VerificationNone

@@ -303,9 +303,17 @@ type ToolCallSummary struct {
 }
 
 // VerificationResult holds the outcome of a verification check.
+//
+// RunTrace.VerificationResults holds one per verifier attempt, in order,
+// and is empty when the run's verifier is "none". There, Attempt is the
+// 1-based attempt number and Error is set, with Passed false, when the
+// verifier failed to produce a verdict. Recorded strings are scrubbed
+// and capped.
 type VerificationResult struct {
+	Attempt  int            `json:"attempt,omitempty"`
 	Passed   bool           `json:"passed"`
 	Feedback string         `json:"feedback,omitempty"`
+	Error    string         `json:"error,omitempty"`
 	Details  map[string]any `json:"details,omitempty"`
 }
 

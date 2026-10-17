@@ -417,6 +417,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				attribute.Int("verifier.attempt", verificationAttempts),
 			),
 		)
+		attempt := verificationAttempts + 1
 		vResult, verifyErr := l.Verifier.Verify(runCtx, verifier.VerifyContext{
 			Mode:     config.Mode,
 			Executor: l.Executor,
@@ -425,12 +426,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if verifyErr != nil {
 			scrubbed := recordSpanError(verifySpan, verifyErr)
 			verifySpan.End()
+			l.reportVerifierError(config, attempt, verifyErr)
 			outcome = "verification_error"
 			l.noteFailure(outcome, "verifier: "+scrubbed)
 			break
 		}
 		verifySpan.SetAttributes(attribute.Bool("verifier.passed", vResult.Passed))
 		verifySpan.End()
+		l.recordVerification(config, boundedVerificationResult(attempt, vResult))
 		if vResult.Passed {
 			outcome = "success"
 			break
@@ -442,17 +445,19 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			break
 		}
 
-		feedback := vResult.Feedback
-		if feedback == "" {
-			feedback = "Verification failed. Please review and fix the issues."
-		}
-		messages = append(messages, types.Message{
+		feedbackMsg := types.Message{
 			Role:      "user",
 			Synthetic: true,
 			Content: []types.ContentBlock{
-				{Type: "text", Text: feedback},
+				{Type: "text", Text: vResult.Feedback},
 			},
-		})
+		}
+		if vResult.Feedback == "" {
+			feedbackMsg.Content[0].Text = "Verification failed. Please review and fix the issues."
+		} else {
+			feedbackMsg.Origin = types.MessageOriginVerifierFeedback
+		}
+		messages = append(messages, feedbackMsg)
 	}
 
 	// A cancel arriving between the inner loop returning and Verify
@@ -723,12 +728,17 @@ func (l *AgenticLoop) runInnerLoop(
 			preTurnDynamic = config.DynamicContext
 		}
 		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
+			feedback := turn > 0 && isVerifierFeedback(messages[len(messages)-1])
 			// Deterministic-first, before the guard (see
 			// docs/safety-rings.md). Turn 0 chunks were already scanned
 			// in Run() under their own labels, so only turn>0 is
 			// rescanned here.
 			if turn > 0 {
-				det := l.observeSensitive(ctx, config, "tool_result", turn, chunks)
+				source := "tool_result"
+				if feedback {
+					source = types.MessageOriginVerifierFeedback
+				}
+				det := l.observeSensitive(ctx, config, source, turn, chunks)
 				switch l.ruleOfTwoAction() {
 				case "abort":
 					if det.Transition {
@@ -741,13 +751,25 @@ func (l *AgenticLoop) runInnerLoop(
 					}
 				}
 			}
+			guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+			if feedback {
+				// Scrubbed after the Rule-of-Two scan so a secret in the
+				// feedback still trips the latch, and before the guard so
+				// a remote classifier never receives it.
+				scrubVerifierFeedback(&messages[len(messages)-1])
+				chunks = collectUntrustedChunks(messages, turn, nil, "")
+				guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
+			}
 			batched := batchUntrustedChunks(chunks)
 			in := guard.Input{
 				Phase:   guard.PhasePreTurn,
 				Content: batched,
-				Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
+				Source:  guardSource,
 				Mode:    config.Mode,
 				RunID:   config.RunID,
+				// Feedback arrives at most once per verification retry, so
+				// the per-turn cost the min-chunk gate saves does not apply.
+				IgnoreMinChunk: feedback,
 			}
 			allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 			l.ratchetRuleOfTwo(ctx, config, decision, turn)
@@ -1617,7 +1639,8 @@ func guardFailOpen(config *types.RunConfig) bool {
 // collectUntrustedChunks returns the chunks of untrusted content that
 // just entered the message history at the start of the given turn: on
 // turn 0, the initial prompt plus DynamicContext entries (sorted by
-// key); on later turns, every tool_result block's Content and
+// key); on later turns, the text blocks of a verifier-feedback last
+// message, or otherwise every tool_result block's Content and
 // Structured payload in the last message — both are model-visible
 // (see docs/architecture.md "Structured tool results"), so both need
 // classification. v1 does not reclassify earlier-turn content already
@@ -1646,8 +1669,17 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		return nil
 	}
 	last := messages[len(messages)-1]
-	// Synthetic messages (escalation prompts, verifier feedback) are
-	// harness-controlled, not untrusted external input.
+	if isVerifierFeedback(last) {
+		chunks := make([]string, 0, len(last.Content))
+		for _, b := range last.Content {
+			if b.Type == "text" && b.Text != "" {
+				chunks = append(chunks, b.Text)
+			}
+		}
+		return chunks
+	}
+	// Other synthetic messages (escalation prompts) are harness text,
+	// not untrusted external input.
 	if last.Role != "user" || last.Synthetic {
 		return nil
 	}
@@ -1664,6 +1696,22 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		}
 	}
 	return chunks
+}
+
+// isVerifierFeedback reports whether m is the user message that carries
+// a failed verifier's feedback into a verification retry.
+func isVerifierFeedback(m types.Message) bool {
+	return m.Role == "user" && m.Origin == types.MessageOriginVerifierFeedback
+}
+
+// scrubVerifierFeedback runs the log scrubber over the text blocks of a
+// verifier-feedback message, which can carry workspace command output.
+func scrubVerifierFeedback(m *types.Message) {
+	for i := range m.Content {
+		if m.Content[i].Type == "text" {
+			m.Content[i].Text = security.Scrub(m.Content[i].Text)
+		}
+	}
 }
 
 // batchUntrustedChunks concatenates chunks under per-chunk delimiters
@@ -1686,10 +1734,10 @@ func batchUntrustedChunks(chunks []string) string {
 }
 
 // replaceUntrustedChunks replaces every tool_result block's content in
-// the last message with placeholder, for a PhasePreTurn deny on turn
-// N>0. Turn 0 has no tool_result blocks yet (the prompt is the
-// untrusted content) — callers must abort instead; see
-// docs/guardrails.md.
+// the last message, or every text block of a verifier-feedback last
+// message, with placeholder, for a PhasePreTurn deny on turn N>0.
+// Turn 0 has no tool_result blocks yet (the prompt is the untrusted
+// content) — callers must abort instead; see docs/guardrails.md.
 func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
 	if turn == 0 {
 		// Defensive no-op; callers must abort on turn 0 instead.
@@ -1702,9 +1750,13 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 	if last.Role != "user" {
 		return
 	}
+	feedback := isVerifierFeedback(*last)
 	for i := range last.Content {
-		if last.Content[i].Type == "tool_result" {
+		switch {
+		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = placeholder
+		case feedback && last.Content[i].Type == "text":
+			last.Content[i].Text = placeholder
 		}
 	}
 }
@@ -1712,7 +1764,8 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 // redactSensitiveSpans rewrites latch-tier sensitive spans in every
 // just-arrived tool_result block's Content AND Structured payload (both
 // are model-visible; see docs/architecture.md "Structured tool
-// results"). Returns the number of spans replaced. Turn 0 is a no-op —
+// results"), and in the text blocks of a verifier-feedback last
+// message. Returns the number of spans replaced. Turn 0 is a no-op —
 // its untrusted content is the prompt/dynamic context, handled by
 // redactDynamicContext before Prompt.Build.
 func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) int {
@@ -1723,8 +1776,17 @@ func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) i
 	if last.Role != "user" {
 		return 0
 	}
+	feedback := isVerifierFeedback(*last)
 	total := 0
 	for i := range last.Content {
+		if feedback && last.Content[i].Type == "text" {
+			redacted, n := l.RuleOfTwo.Redact(last.Content[i].Text)
+			if n > 0 {
+				last.Content[i].Text = redacted
+				total += n
+			}
+			continue
+		}
 		if last.Content[i].Type != "tool_result" {
 			continue
 		}
@@ -1775,7 +1837,8 @@ func (l *AgenticLoop) redactDynamicContext(dynamicContext map[string]string) int
 }
 
 // spotlightUntrustedChunks rewraps every tool_result block in the last
-// message via guard.ApplySpotlight. Used when PhasePreTurn returns
+// message, or every text block of a verifier-feedback last message,
+// via guard.ApplySpotlight. Used when PhasePreTurn returns
 // VerdictAllowSpot for batched untrusted content. Turn 0 is a no-op
 // because the user prompt already lives in the system input layer; we
 // cannot retroactively spotlight it without rewriting prompts.
@@ -1790,9 +1853,13 @@ func spotlightUntrustedChunks(messages []types.Message, turn int) {
 	if last.Role != "user" {
 		return
 	}
+	feedback := isVerifierFeedback(*last)
 	for i := range last.Content {
-		if last.Content[i].Type == "tool_result" {
+		switch {
+		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = guard.ApplySpotlight(last.Content[i].Content)
+		case feedback && last.Content[i].Type == "text":
+			last.Content[i].Text = guard.ApplySpotlight(last.Content[i].Text)
 		}
 	}
 }
