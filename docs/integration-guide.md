@@ -73,25 +73,37 @@ status.
    `sandbox_token_response` before creating the sandbox. When the
    response carries `expires_at`, further requests follow ahead of
    each expiry — at most eight per run.
-5. During execution the harness streams `text_delta`, `tool_call`,
+5. When the run records an OTel span (`traceEmitter.type: "otel"`),
+   the harness sends `HarnessEvent{type:"run_started", id,
+   trace_reference}` before the run's first model event. `id` is the
+   run ID; `trace_reference` holds the OTel trace ID and run-span ID
+   that a feedback score or trace link targets. A run that fails
+   setup (a fatal `preRun` hook, git setup) sends no `run_started`.
+6. During execution the harness streams `text_delta`, `tool_call`,
    `tool_result`, occasional `warning` events, and a `heartbeat` every
    **30 seconds**. Depending on configuration it may also emit
    `permission_request`, `tool_result_request`, `batch_submission`,
    `batch_waiting`, and `batch_cancel_request`.
-6. A built loop ends by emitting `HarnessEvent{type:"done",
-   stop_reason}`. Some early run failures emit a human-readable `error`
-   event first. The current `stirrup job` path does **not** attach the
-   proto's optional `trace` field to `done`.
-7. If a follow-up grace window is configured, the stream stays open
+7. A built loop ends by emitting `HarnessEvent{type:"done",
+   stop_reason, trace}`. `trace` is the run summary: outcome, token
+   usage, stop details, git handoff, workspace export receipt, error,
+   structured output, degraded capabilities, and the `trace_reference`
+   when the run recorded an OTel span. Some early
+   run failures emit a human-readable `error` event first. A task
+   rejected before its run started (an invalid `RunConfig`, a loop
+   build failure) gets a `done` with `stop_reason: "error"` and no
+   `trace`.
+8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
-   process and workspace; otherwise the stream closes and the process
-   exits.
+   process and workspace, each sending its own `run_started` with a new
+   trace reference; otherwise the stream closes and the process exits.
 
 ### Events from the harness
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
 | `ready` | `harness_version`, `id` (session echo) | Optionally verify version compatibility before assigning work. |
+| `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Persist the reference against the run to target feedback scores or link to the trace. Sent once per run before its first model event, only when the run records an OTel span. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `content` | Informational. |
@@ -100,7 +112,7 @@ status.
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
-| `done` | `stop_reason` | Terminal status for that run. The proto has a `trace` field, but `stirrup job` does not currently populate it. |
+| `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
 | `batch_waiting` | `request_id` | Batch keep-alive (roughly every 5 minutes) distinguishing "provider batch still pending" from a stall. |
 | `batch_cancel_request` | `request_id` | Best-effort: cancel the provider-side batch. The harness does not wait for a reply. |
@@ -844,8 +856,8 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | Outcome in `stop_reason`; run summary in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 

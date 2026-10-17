@@ -26,6 +26,9 @@ sequenceDiagram
         CP-->>H: sandbox_token_response
     end
     H->>H: Build AgenticLoop with the supplied RunConfig
+    opt Run records an OTel span
+        H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference}
+    end
     loop For each turn
         H->>CP: heartbeat (every 30s)
         H-->>CP: text_delta · tool_call · tool_result
@@ -148,7 +151,12 @@ IMDS, GitHub Actions OIDC). See
    message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
-7. **Stream events.** Throughout the run the harness emits
+7. **Stream events.** When the run records an OTel span, the harness
+   first emits `HarnessEvent{type:"run_started"}` carrying the run ID
+   in `id` and the run span's `trace_reference` (`trace_id`,
+   `run_span_id`, `sampled`), after the git setup and before the first
+   model event. A run that fails setup sends no `run_started`.
+   Throughout the run the harness emits
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
    events. Tools declared in `tools.controlPlane` emit
@@ -165,7 +173,8 @@ IMDS, GitHub Actions OIDC). See
    one (empty, or queue full) produces a `warning` echoing its
    `request_id`.
 8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
-   carries the run metrics and the reason the loop ended
+   carries the run metrics, the run span's `trace.trace_reference`
+   when the run recorded an OTel span, and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
    `cancelled`, `budget_exceeded`, `error`, `setup_failed`,
    `hook_failed`). `error`, `setup_failed`, and `hook_failed` are the

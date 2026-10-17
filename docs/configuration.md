@@ -537,6 +537,14 @@ mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
 
+`RunResult.traceReference` identifies the run's OTel root span:
+`traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
+characters) and `sampled` (the trace flags' sampled bit). It is set
+when `traceEmitter.type` is `otel` and omitted for the `jsonl` and
+`gcs` emitters, which record no OTel span. The same value reaches a
+gRPC control plane on the `run_started` event and the `done` summary;
+see [`integration-guide.md`](integration-guide.md#events-from-the-harness).
+
 Pair `--output=json` with a trace emitter that does not target
 stdout. The default JSONL trace writes to a file (or to nothing when
 `--trace` is unset), so the stdout channel stays reserved for the

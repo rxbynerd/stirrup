@@ -356,6 +356,34 @@ against the span shape that preceded the live `chat` and
 `execute_tool` spans. The matched span names are unchanged since. The
 `otlp_http` spelling was run against another backend, not Langfuse.
 
+**Scoring a run.** A control plane that collects feedback on a run
+scores the run span, not the whole trace, so the score stays on the
+execution when the trace also holds orchestration or other runs.
+Stirrup reports the run span's identity as a trace reference on the
+`run_started` event, the `done` summary and `RunResult.traceReference`. The reference's
+`traceId` is the Langfuse trace ID and its `runSpanId` is the
+observation ID, since Langfuse uses an OTLP span's ID as its
+observation ID. A score through the
+[Langfuse scores API](https://langfuse.com/docs/evaluation/evaluation-methods/scores-via-sdk)
+(`POST /api/public/scores`) then targets the run:
+
+```json
+{
+  "id": "feedback-8f2e-reviewer-1",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "observationId": "00f067aa0ba902b7",
+  "name": "helpfulness",
+  "value": 1,
+  "dataType": "NUMERIC",
+  "comment": "Fixed the failing test on the first attempt."
+}
+```
+
+A stable `id` makes a retried or edited score update the existing one.
+A reference with `sampled: false` names a span that was not exported,
+so Langfuse holds no observation for it. Stirrup submits no scores
+itself.
+
 ## Arize Phoenix
 
 Phoenix ingests OTLP traces and, from version 15.10.0, converts the
