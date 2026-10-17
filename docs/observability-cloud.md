@@ -941,6 +941,23 @@ mapping table omits them, so cost may be overstated on cache-heavy
 runs), and whether `aws.bedrock` and `gcp.vertex_ai` provider names
 resolve to priced providers.
 
+## Trace context exchanged with a control plane
+
+A control-plane tool call (`tools.controlPlane`) is work the control
+plane does for the run, so its `tool_result_request` event carries
+`trace_context`: the W3C `traceparent` and `tracestate` of the call's
+`execute_tool` span. A control plane that traces its own work parents
+the span for the call on it, and the span then appears in the run's
+trace tree under the tool call. Concurrent calls each carry their own
+span. `request_id` still pairs the request with its response; the
+trace context describes causality only.
+
+The harness sends no `trace_context` when the call has no valid span
+context. A trace emitter that records no OpenTelemetry spans, such as
+`jsonl`, opens no tool span, so the field is absent unless the run's
+context already holds a span, in which case it names that span.
+Baggage is never sent.
+
 ## Log-trace correlation
 
 When the trace emitter records spans (`traceEmitter.type: "otel"`),

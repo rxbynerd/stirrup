@@ -108,7 +108,7 @@ status.
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `content` | Informational. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
-| `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. |
+| `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
@@ -722,6 +722,14 @@ Control-plane responsibilities:
   failure, and the run winds down as usual. A request that could not
   be written to the stream (transport disconnect) fails the call
   the same way.
+- Optionally parent the work for a call on `trace_context`, the W3C
+  `traceparent` and `tracestate` of the call's `execute_tool` span.
+  A span started from it, exported to the same backend, nests under
+  the tool call in the run's trace. Each concurrent call carries its
+  own span. The field is absent when the call has no valid span
+  context. It carries causality only: correlate the response by
+  `request_id`, never by trace or span ID. See
+  [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
 
 Validation (`ValidateRunConfig`) rejects the block unless
 `transport.type` is `grpc` — a config arriving in `task_assignment`

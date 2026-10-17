@@ -160,7 +160,9 @@ IMDS, GitHub Actions OIDC). See
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
    events. Tools declared in `tools.controlPlane` emit
-   `tool_result_request` and block on `tool_result_response`. A
+   `tool_result_request` and block on `tool_result_response`; the
+   request's `trace_context`, when present, is the W3C context of the
+   call's `execute_tool` span. A
    `tool_call` is not guaranteed a matching `tool_result`: a
    cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn
    can orphan one, so `done` is the terminal close for any pending
