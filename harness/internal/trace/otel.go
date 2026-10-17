@@ -277,11 +277,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.open = nil
 	e.postEditChecks = nil
 
-	conversationID := ""
-	if config != nil {
-		conversationID = config.SessionName
-	}
-	e.scope.setRun(conversationID)
+	e.scope.setRun(runIdentityFor(config))
 
 	attrs := []attribute.KeyValue{
 		attribute.String("run.id", runID),
