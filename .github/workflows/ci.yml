@@ -55,28 +55,16 @@ jobs:
       # reliably. The stronger-model sweep runs at release time
       # (release.yml::eval-extended, Sonnet 5 + Opus 4.8).
       #
-      # GPT-5.6 Luna over OpenRouter replaced Claude Haiku 4.5 here, on
-      # cost alone: ~$0.10/M input and ~$0.60/M output against Haiku
-      # 4.5's ~$1/$5 and GPT-5.6 Terra's ~$1/$6, which works out at
-      # roughly $0.01 per full dogfood-seed run instead of ~$0.09.
+      # GPT-6 Luna over OpenRouter is chosen on cost: $0.10/M input and
+      # $0.50/M output against Claude Haiku 4.5's $1/$5.
       #
       # The gate runs every task three times (--trials 3); the rationale
       # and false-alarm figures are in docs/eval.md#statistics.
       #
-      # It is NOT the fix for the flake that had this gate red on main
-      # from run 30163743698. That was a false positive in the
-      # sensitive-data detector — the runner's own workspace path
-      # matched the OpenAI-key pattern and latched Rule-of-Two, revoking
-      # run_command mid-run — and it reproduced on Haiku, Luna, and
-      # Terra alike. It is fixed in harness/internal/security
-      # (boundary-anchored sk- patterns); swapping models here would not
-      # have helped. Post-fix, Luna and Terra both pass the suite 3/3.
-      # Luna wins on price.
-      #
       # All four are forwarded to every harness invocation by
       # stirrup-eval, whose explicit flags override both the harness
       # defaults and anything the suite's run_config block pins.
-      EVAL_MODEL: openai/gpt-5.6-luna
+      EVAL_MODEL: openai/gpt-6-luna
       EVAL_PROVIDER: openai-compatible
       EVAL_BASE_URL: https://openrouter.ai/api/v1
       # A secret:// reference, not a key: the harness resolves it

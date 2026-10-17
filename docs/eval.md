@@ -1479,7 +1479,7 @@ override just the base URL. The per-push eval gate uses all four to run
   --provider openai-compatible \
   --base-url https://openrouter.ai/api/v1 \
   --api-key-ref secret://OPENROUTER_API_KEY \
-  --model openai/gpt-5.6-luna
+  --model openai/gpt-6-luna
 ```
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
@@ -1750,7 +1750,7 @@ the framework as a gating job:
 - **`eval-gate`** — depends on `verify`. On every push it builds
   the binaries, runs each suite in `eval/suites/` that has a
   matching baseline in `eval/baselines/` (unbaselined suites are
-  opt-in local runs), pins the model to GPT-5.6 Luna over OpenRouter
+  opt-in local runs), pins the model to GPT-6 Luna over OpenRouter
   via `stirrup-eval run`'s provider flags, runs every task three times
   (`--trials 3`) with three concurrent workers, compares each result
   to its baseline via `eval compare`, and uploads the result and

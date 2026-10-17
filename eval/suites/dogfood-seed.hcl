@@ -34,7 +34,7 @@
 //     --output eval/results/dogfood-seed
 //
 // CI: invoked automatically by `.github/workflows/ci.yml::eval-gate`
-// on every push, pinned to a cheap model (GPT-5.6 Luna over
+// on every push, pinned to a cheap model (GPT-6 Luna over
 // OpenRouter, selected by `stirrup-eval run`'s provider flags), and by
 // `.github/workflows/release.yml::eval-extended` on every release
 // tag against stronger models (Sonnet 5, Opus 4.8) over Anthropic WIF.
