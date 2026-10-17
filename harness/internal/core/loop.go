@@ -179,6 +179,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.startTrace(ctx, config)
 	l.failure = runFailure{}
+	carried := l.takeCarriedHistory(l.followUpRun)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
 	// establish the emitter's run span or a plain ctx as the span parent
@@ -331,7 +332,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	gitSetupSpan.End()
 
-	messages := buildMessages(config.Prompt)
+	messages, carriedAbort := l.startingHistory(runCtx, config, carried)
+	if carriedAbort {
+		turnZeroAbort = true
+	}
 
 	// Token tracking (cost estimation is a control plane concern):
 	// tokenTracker holds this loop's own turns, ledger the run-wide total
@@ -365,7 +369,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// gauge callback so the first observation (before any Context.Prepare)
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
-	l.historyRewritten = false
+	l.historyRewritten = carried.rewrote()
 	l.subAgentSpawns.Store(0)
 	l.outputLimitRecoveries = 0
 
@@ -498,6 +502,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		messages = append(messages, feedbackMsg)
 		l.emitUserMessage(types.UserMessageSourceVerifierFeedback, feedbackMsg.Content[0].Text, "")
 	}
+	l.retainHistory(config, outcome, messages)
 
 	// A cancel arriving between the inner loop returning and Verify
 	// completing can otherwise mask the true termination reason behind
@@ -825,6 +830,7 @@ func (l *AgenticLoop) runInnerLoop(
 		} else if blocked := l.screenArrivedContent(ctx, config, turn, messages); blocked != "" {
 			return messages, blocked, finalAssistantText, nil
 		}
+		l.screenedLen = len(messages)
 
 		var windDown string
 		messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
@@ -1291,7 +1297,9 @@ type FollowUpOptions struct {
 
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
-// each one as the prompt of a fresh run. Exits on grace-period
+// each one as the prompt of a new run, which starts from that prompt
+// alone or, under followUpHistory "continue", from the previous run's
+// committed history with the prompt appended. Exits on grace-period
 // timeout, ctx cancellation, a "cancel" control event (whenever it
 // arrived: a cancelled session opens no follow-up window), or a
 // follow-up run that fails. Whatever is still queued on exit is
@@ -1347,7 +1355,9 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			loop.followUpInput = &next
 
 			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
+			loop.followUpRun = true
 			runTrace, err := loop.Run(runCtx, config)
+			loop.followUpRun = false
 			cancelRun()
 			if opts.OnRunComplete != nil {
 				opts.OnRunComplete(config, runTrace, err)

@@ -207,6 +207,17 @@ type AgenticLoop struct {
 	// windDown is the per-run wind-down state; see windDownIfDue.
 	windDown windDownState
 
+	// carried is the history the latest top-level run kept for a
+	// follow-up that continues it; see retainHistory.
+	carried *carriedHistory
+
+	// followUpRun marks a run started by RunFollowUpLoop.
+	followUpRun bool
+
+	// screenedLen is the length of the current run's history at its
+	// latest pre-turn screening: untrusted content past it is unscreened.
+	screenedLen int
+
 	// clock is the wind-down time source; nil means time.Now.
 	clock func() time.Time
 
