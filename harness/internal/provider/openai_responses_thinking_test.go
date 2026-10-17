@@ -15,7 +15,7 @@ func TestResponsesRequest_ReasoningSummary(t *testing.T) {
 		name, model, effort, summary string
 		want                         string // "" means no reasoning object
 	}{
-		{"default asks for a summary", "gpt-5.6-sol", "high", "", `{"effort":"high","summary":"auto"}`},
+		{"unset sends effort only", "gpt-5.6-sol", "high", "", `{"effort":"high"}`},
 		{"auto asks for a summary", "gpt-5.6-sol", "low", types.ReasoningSummaryAuto, `{"effort":"low","summary":"auto"}`},
 		{"off sends effort only", "gpt-5.6-sol", "high", types.ReasoningSummaryOff, `{"effort":"high"}`},
 		{"no effort sends no reasoning object", "gpt-5.6-sol", "", types.ReasoningSummaryAuto, ""},
@@ -88,6 +88,7 @@ func TestOpenAIResponsesAdapter_ReasoningSummaryStreamsAndReplays(t *testing.T) 
 	adapter := script.adapter(nil)
 
 	params := effortParams(responsesReplayModel, "high", true)
+	params.ReasoningSummary = types.ReasoningSummaryAuto
 	ch, err := adapter.Stream(context.Background(), params)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)

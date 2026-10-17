@@ -176,16 +176,16 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 		model, effort string
 		want, absent  []string
 	}{
-		{"gpt-6.1-sol", "xhigh", []string{`"reasoning":{"effort":"xhigh","summary":"auto"}`}, []string{`"temperature"`}},
+		{"gpt-6.1-sol", "xhigh", []string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
 		{"gpt-6-astra", "", nil, []string{`"temperature"`, `"reasoning"`}},
 		{"gpt-5.4", "", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
-		{"gpt-5.4", "high", []string{`"reasoning":{"effort":"high","summary":"auto"}`}, []string{`"temperature"`}},
+		{"gpt-5.4", "high", []string{`"reasoning":{"effort":"high"}`}, []string{`"temperature"`}},
 		// gpt-5.4-mini inherits the gpt-5.4 rule; only gpt-5.4 is documented,
 		// so this row is inferred.
-		{"gpt-5.4-mini", "xhigh", []string{`"reasoning":{"effort":"xhigh","summary":"auto"}`}, []string{`"temperature"`}},
+		{"gpt-5.4-mini", "xhigh", []string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
 		{"gpt-5.5", "", nil, []string{`"temperature"`, `"reasoning"`}},
-		{"gpt-5.5", "low", []string{`"reasoning":{"effort":"low","summary":"auto"}`}, []string{`"temperature"`}},
-		{"gpt-5.6-sol", "max", []string{`"reasoning":{"effort":"max","summary":"auto"}`}, []string{`"temperature"`}},
+		{"gpt-5.5", "low", []string{`"reasoning":{"effort":"low"}`}, []string{`"temperature"`}},
+		{"gpt-5.6-sol", "max", []string{`"reasoning":{"effort":"max"}`}, []string{`"temperature"`}},
 		{"gpt-5.6-luna", "", nil, []string{`"temperature"`, `"reasoning"`}},
 		{"gpt-4.1", "high", []string{`"temperature":0.1`}, []string{`"reasoning"`}},
 	}
@@ -295,7 +295,7 @@ func TestResponsesAdapter_GPT5EffortLevelsOnTheWire(t *testing.T) {
 				t.Errorf("body carries temperature: %s", body)
 			}
 			wantReasoning := tc.effort != ""
-			if got := strings.Contains(body, `"reasoning":{"effort":"`+tc.effort+`","summary":"auto"}`); got != wantReasoning {
+			if got := strings.Contains(body, `"reasoning":{"effort":"`+tc.effort+`"}`); got != wantReasoning {
 				t.Errorf("reasoning.effort %q present = %v, want %v: %s", tc.effort, got, wantReasoning, body)
 			}
 		})

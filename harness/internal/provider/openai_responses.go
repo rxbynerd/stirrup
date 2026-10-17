@@ -1261,8 +1261,11 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if responsesOmitsTemperature(q, effort) {
 		temperature = nil
 	}
+	// Only an explicit "auto" asks for a summary: OpenAI can require
+	// organisation verification before it returns summaries, so an unset
+	// value leaves the request as unverified organisations can send it.
 	var summary string
-	if effort != "" && params.ReasoningSummary != types.ReasoningSummaryOff {
+	if effort != "" && params.ReasoningSummary == types.ReasoningSummaryAuto {
 		summary = responsesReasoningSummaryAuto
 	}
 	var cacheKey string

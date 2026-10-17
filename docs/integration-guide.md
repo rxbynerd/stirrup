@@ -784,7 +784,7 @@ Reasoning is model output and gets the same handling as `text_delta`.
 `reasoningSummary: "off"` stops every `thinking_delta` without changing
 what the model is replayed; see
 [Reasoning summaries](configuration.md#reasoning-summaries) for what
-each provider returns under the default `"auto"`.
+each provider returns under `"auto"` and when the field is unset.
 
 **Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent, one event at a time. A secret split across two

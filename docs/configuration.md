@@ -276,7 +276,7 @@ reference.
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, GPT-5.4-onward models document no `minimal` level, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
-| `--reasoning-summary` | `auto` | Whether the model's reasoning text is requested and streamed to the transport as `thinking_delta` events: `auto` or `off`. Empty means `auto`. Provider-neutral like `--reasoning-effort`: see [Reasoning summaries](#reasoning-summaries) for how each adapter projects it. Conversation history is unaffected either way. JSON path: `reasoningSummary`. |
+| `--reasoning-summary` | (none) | Whether the model's reasoning text is requested and streamed to the transport as `thinking_delta` events: `auto` or `off`. Empty is treated as `auto`, except that `openai-responses` requests no summary unless the value is explicitly `auto`. Provider-neutral like `--reasoning-effort`: see [Reasoning summaries](#reasoning-summaries) for how each adapter projects it, including the unset value. Conversation history is unaffected either way. JSON path: `reasoningSummary`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Loop behaviour
@@ -1669,8 +1669,10 @@ from any request that carries `reasoning.effort`.
 `reasoningSummary` is the third provider-neutral model knob. It
 decides whether the run streams the model's reasoning text to the
 transport as `thinking_delta` events, for a control plane that renders
-a live transcript. It accepts `auto` (the default when empty) and
-`off`, validated at startup. It never changes what is kept in
+a live transcript. It accepts `auto` and `off`, validated at startup.
+An empty value is projected by each adapter: every adapter treats it as
+`auto` except `openai-responses`, which treats it as `off` (see below).
+It never changes what is kept in
 conversation history: reasoning the provider needs replayed (Anthropic
 thinking blocks, DeepSeek `reasoning_content`, OpenAI Responses
 reasoning items, Gemini thought signatures) is persisted and replayed
@@ -1680,8 +1682,14 @@ exactly as before.
 |---|---|---|
 | `anthropic` | Streams thinking the request already enables through `reasoningEffort`; no request change. | No request change; the loop forwards no `thinking_delta`. |
 | `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
-| `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. |
+| `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
 | `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` and streams each `thought: true` part. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
+
+`openai-responses` requests summaries only on an explicit `auto`
+because OpenAI may require organisation verification before it returns
+them on its newest reasoning models, and the control has not been
+probed live; an unset value leaves the request as unverified
+organisations can send it.
 
 Reasoning text is best-effort: providers summarise rather than
 transcribe, and may return no summary for a short turn. The harness's

@@ -1128,9 +1128,10 @@ type RunConfig struct {
 	// before any wire bytes are sent.
 	ReasoningEffort string `protobuf:"bytes,33,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
 	// Optional. Provider-neutral switch for the model's reasoning text:
-	// "auto" (the default when empty) requests it from providers with a
-	// probed control and streams it as thinking_delta events; "off"
-	// requests none and streams none. Conversation history is unaffected.
+	// "auto" requests it from providers with a probed control and streams
+	// it as thinking_delta events; "off" requests none and streams none.
+	// Empty is "auto" on every adapter except openai-responses, which
+	// requests no summary. Conversation history is unaffected.
 	ReasoningSummary string `protobuf:"bytes,59,opt,name=reasoning_summary,json=reasoningSummary,proto3" json:"reasoning_summary,omitempty"`
 	// Optional. Destination for the run's *answer* — a small RunResult
 	// JSON payload — as distinct from the trace emitter's *evidence*.

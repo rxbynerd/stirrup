@@ -255,9 +255,10 @@ type StreamParams struct {
 	// config stays portable across providers.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
-	// ReasoningSummary is RunConfig.ReasoningSummary: "auto" (or empty)
-	// asks adapters with a probed control to return reasoning text, which
-	// they stream as "thinking_delta" events; "off" asks for none.
+	// ReasoningSummary is RunConfig.ReasoningSummary: "auto" asks adapters
+	// with a probed control to return reasoning text, which they stream as
+	// "thinking_delta" events; "off" asks for none. Each adapter projects
+	// an empty value itself.
 	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 
 	// ToolChoice steers tool use for this turn. The zero value

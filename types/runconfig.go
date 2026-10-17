@@ -157,11 +157,12 @@ type RunConfig struct {
 
 	// ReasoningSummary selects whether the model's reasoning text is
 	// requested and streamed to the transport as thinking_delta events:
-	// "auto" (the default when empty) or "off". Provider-neutral like
-	// ReasoningEffort: each adapter projects "auto" onto its native
-	// control (Gemini thinkingConfig.includeThoughts, OpenAI Responses
-	// reasoning.summary) and "off" requests none. History is unchanged
-	// either way.
+	// "auto" or "off". Provider-neutral like ReasoningEffort: each adapter
+	// projects "auto" onto its native control (Gemini
+	// thinkingConfig.includeThoughts, OpenAI Responses reasoning.summary),
+	// "off" requests none, and each adapter decides what empty means
+	// (openai-responses treats it as "off", the rest as "auto"). History
+	// is unchanged either way.
 	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 
 	// FollowUpGrace is the number of idle seconds to keep the transport
@@ -1787,8 +1788,8 @@ var validReasoningEfforts = map[string]bool{
 	"max":     true,
 }
 
-// Provider-neutral ReasoningSummary values. Empty is equivalent to
-// ReasoningSummaryAuto.
+// Provider-neutral ReasoningSummary values. Empty leaves the choice to
+// each adapter; see RunConfig.ReasoningSummary.
 const (
 	ReasoningSummaryAuto = "auto"
 	ReasoningSummaryOff  = "off"

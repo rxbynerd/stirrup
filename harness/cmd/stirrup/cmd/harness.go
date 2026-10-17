@@ -157,7 +157,7 @@ type harnessCLIOptions struct {
 	ReasoningEffort string
 
 	// ReasoningSummary selects whether reasoning text is requested and
-	// streamed ("auto" or "off"). Empty means "auto".
+	// streamed ("auto" or "off"). Empty leaves it to each adapter.
 	ReasoningSummary string
 
 	// Vertex AI Gemini provider fields; meaningful only when

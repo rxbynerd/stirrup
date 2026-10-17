@@ -755,14 +755,22 @@ effort allow-list, so an effort there is dropped with the warning above.
 
 `RunConfig.reasoningSummary` (`auto` or `off`) is projected per adapter
 the same way. No probed model rejects the control, so the registry has
-no flag for it:
+no flag for it. Each adapter also decides what an unset value projects
+to; the knob stays provider-neutral because the unset case is part of
+the projection, not a provider-specific field:
 
-| Adapter | `auto` on the wire | Probed |
-|---|---|---|
-| `anthropic` | nothing; thinking is configured by `reasoningEffort` | n/a |
-| `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | no request control exists |
-| `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | documented, not probed |
-| `gemini` | `generationConfig.thinkingConfig.includeThoughts: true` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+| Adapter | `auto` on the wire | Unset on the wire | Probed |
+|---|---|---|---|
+| `anthropic` | nothing; thinking is configured by `reasoningEffort` | as `auto` | n/a |
+| `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | as `auto` | no request control exists |
+| `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | documented, not probed |
+| `gemini` | `generationConfig.thinkingConfig.includeThoughts: true` | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+
+`openai-responses` requests summaries only on an explicit `auto`
+because OpenAI may require organisation verification before it returns
+them on its newest reasoning models, and the control has not been
+probed: a default-on summary could make requests from an unverified
+organisation fail.
 
 ## 4. Composition with the NormalizingAdapter
 

@@ -432,9 +432,9 @@ which is inferred from their `medium` default effort. GPT-5.4 keeps a
 configured temperature when no effort is set, because its default
 effort is `none`.
 
-**Reasoning summaries.** A request that carries `reasoning.effort` also
-carries `reasoning.summary: "auto"` unless `reasoningSummary` is `off`,
-and each `response.reasoning_summary_text.delta` event streams as a
+**Reasoning summaries.** When `reasoningSummary` is explicitly `auto`,
+a request that carries `reasoning.effort` also carries
+`reasoning.summary: "auto"`, and each `response.reasoning_summary_text.delta` event streams as a
 `thinking_delta`. With no projected effort the request has no
 `reasoning` object, so no summary is requested. The reasoning output
 item, with its `summary` array, is stored and replayed verbatim like
@@ -442,8 +442,8 @@ any other item. This follows OpenAI's documented shapes and has not
 been probed live. OpenAI's
 [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
 says organisation verification may be needed before summarizers work on
-its latest reasoning models; an organisation whose requests are refused
-for that reason can set `reasoningSummary: "off"`.
+its latest reasoning models, so an unset `reasoningSummary` requests no
+summary on this adapter and the request is the same as with `off`.
 
 **Strict tools.** The reasoning families send every tool with
 `strict: true`, because an omitted `strict` lets the API fall back to
