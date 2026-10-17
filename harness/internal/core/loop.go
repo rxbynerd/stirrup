@@ -710,17 +710,13 @@ func (l *AgenticLoop) runSpanContext() context.Context {
 	return nil
 }
 
-// emitRunStarted tells the control plane the run span's identity before
-// the first model event, so it can address the run's trace while the run
-// is still in flight. Nothing is sent when the emitter records no span.
+// emitRunStarted tells the control plane the run's ID before its first
+// transcript event and, when the emitter records a run span, that span's
+// identity, so it can address the run's trace while the run is in flight.
 func (l *AgenticLoop) emitRunStarted(runID string) {
-	p, ok := l.Trace.(trace.TraceReferenceProvider)
-	if !ok {
-		return
-	}
-	ref := p.TraceReference()
-	if ref == nil {
-		return
+	var ref *types.TraceReference
+	if p, ok := l.Trace.(trace.TraceReferenceProvider); ok {
+		ref = p.TraceReference()
 	}
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:           "run_started",

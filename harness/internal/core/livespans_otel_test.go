@@ -485,20 +485,25 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 	}
 }
 
-func TestLoop_RunStartedAbsentWithoutOTelSpan(t *testing.T) {
+func TestLoop_RunStartedWithoutOTelSpanCarriesNoReference(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
 	}})
 	tp := &recordingTransport{}
 	loop.Transport = tp
+	config := buildTestConfig()
 
-	rt, err := loop.Run(context.Background(), buildTestConfig())
+	rt, err := loop.Run(context.Background(), config)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := eventsOfType(tp, "run_started"); len(got) != 0 {
-		t.Errorf("JSONL-traced run emitted %d run_started events, want none", len(got))
+	started := eventsOfType(tp, "run_started")
+	if len(started) != 1 || started[0].ID != config.RunID {
+		t.Fatalf("run_started events = %+v, want one for run %q", started, config.RunID)
+	}
+	if tp.events[0].Type != "run_started" {
+		t.Errorf("first event = %s, want run_started", tp.events[0].Type)
 	}
 	if rt.TraceReference != nil {
 		t.Errorf("RunTrace.TraceReference = %+v, want nil", rt.TraceReference)
