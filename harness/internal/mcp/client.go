@@ -21,6 +21,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -511,11 +512,13 @@ func (c *Client) callTool(ctx context.Context, sess *serverSession, serverName, 
 // result is text-only), and an error for transport/protocol/tool failures.
 func (c *Client) callToolInner(ctx context.Context, sess *serverSession, name string, arguments json.RawMessage) (string, json.RawMessage, error) {
 	params := struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
+		Name      string            `json:"name"`
+		Arguments json.RawMessage   `json:"arguments"`
+		Meta      map[string]string `json:"_meta,omitempty"`
 	}{
 		Name:      name,
 		Arguments: arguments,
+		Meta:      traceCarrier(ctx),
 	}
 
 	raw, err := c.call(ctx, sess, "tools/call", params)
@@ -685,8 +688,18 @@ func (c *Client) recordCall(ctx context.Context, serverName, toolName string, su
 	))
 }
 
+// traceCarrier returns the W3C traceparent and tracestate for the span in
+// ctx, empty when ctx holds no valid span. Baggage is never propagated to
+// MCP servers.
+func traceCarrier(ctx context.Context) propagation.MapCarrier {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return carrier
+}
+
 // call performs a single JSON-RPC 2.0 request over HTTP POST. It handles
-// session ID tracking and bearer auth.
+// session ID tracking, bearer auth, and W3C trace-context headers taken
+// from ctx.
 func (c *Client) call(ctx context.Context, sess *serverSession, method string, params interface{}) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 
@@ -718,6 +731,9 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	c.mu.Unlock()
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	for k, v := range traceCarrier(ctx) {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.httpClient.Do(req)
