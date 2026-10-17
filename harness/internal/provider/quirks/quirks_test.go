@@ -579,6 +579,7 @@ func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 		"claude-opus-5-5",
 		"claude-fable-5",
 		"claude-fable-5-1",
+		"claude-haiku-5-5",
 		"claude-mythos-5",
 	}
 	for _, model := range omits {
@@ -633,6 +634,7 @@ func TestAnthropicEffortLevels(t *testing.T) {
 		{"claude-opus-5-5", full},
 		{"claude-fable-5", full},
 		{"claude-fable-5-1", full},
+		{"claude-haiku-5-5", full},
 		// Unprobed: keeps the send-nothing default.
 		{"claude-mythos-5", []string{}},
 	}
@@ -664,6 +666,7 @@ func TestAnthropicPromptCaching(t *testing.T) {
 		"claude-opus-5-5",
 		"claude-fable-5-1",
 		"claude-mythos-5-1",
+		"claude-haiku-5-5",
 	} {
 		if !DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
 			t.Errorf("anthropic/%s: PromptCaching = false, want true", model)
@@ -694,7 +697,7 @@ func TestAnthropicForcedToolChoiceRemoved(t *testing.T) {
 			}
 		})
 	}
-	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8"} {
+	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-haiku-5-5"} {
 		t.Run(model+" keeps forced choice", func(t *testing.T) {
 			tc := DefaultRegistry().Resolve("anthropic", model).ToolChoice
 			if !tc.Required || !tc.NamedTool {

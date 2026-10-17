@@ -37,6 +37,7 @@ func TestTierFor(t *testing.T) {
 		{"glm-5.3", TierOpenWeight},
 		{"claude-sonnet-4-6", TierDefault},
 		{"claude-haiku-4-5-20251001", TierDefault},
+		{"claude-haiku-5-5", TierDefault},
 		{"gpt-4o", TierDefault},
 		{"some-brand-new-model", TierDefault},
 		{"", TierDefault},
