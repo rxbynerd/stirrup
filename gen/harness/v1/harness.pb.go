@@ -2071,8 +2071,9 @@ type GuardRailConfig struct {
 	// have no transport of their own.
 	Endpoint string `protobuf:"bytes,4,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	// For "granite-guardian" / "shieldstral" / "cloud-judge": the model identifier
-	// (e.g. "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0", "mistralai/Shieldstral-8B").
-	// Adapter-defined default applies when empty.
+	// (e.g. "ibm-granite/granite-guardian-4.1-8b", "mistralai/Shieldstral-1.0-3B").
+	// Adapter-defined default applies when empty, except for "shieldstral",
+	// which requires an explicit model.
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
 	// For "granite-guardian" / "shieldstral": reserved. Validated to
 	// [0.0, 1.0] but currently ignored by both adapters (binary yes/no

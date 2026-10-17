@@ -19,16 +19,13 @@ import (
 )
 
 // Shieldstral adapter for Mistral AI's Shieldstral content-safety and moderation
-// models (e.g. shieldstral-1-0, mistralai/Shieldstral-8B), an open-weights model
-// self-hosted via vLLM, Ollama, TGI, or similar using the OpenAI-compatible
+// models (e.g. mistralai/Shieldstral-1.0-3B), an open-weights model
+// self-hosted via vLLM, LM Studio, or similar using the OpenAI-compatible
 // chat-completions API. Not known to be available on Mistral's own API or
 // OpenRouter as of writing — apiKeyRef exists for operators who point this
 // adapter at their own authenticated endpoint.
 
 const (
-	// defaultShieldstralModel is the default model identifier for Shieldstral.
-	defaultShieldstralModel = "shieldstral-1-0"
-
 	// defaultShieldstralTimeout balances remote cloud latency against
 	// the 30s upper bound enforced by RunConfig validation.
 	defaultShieldstralTimeout = 10 * time.Second
@@ -116,7 +113,8 @@ type ShieldstralConfig struct {
 	// APIKey is the resolved API key for authenticated endpoints (optional for local unauthenticated vLLM/Ollama).
 	APIKey string
 
-	// Model overrides the default Shieldstral model identifier.
+	// Model is the model identifier the server exposes. Required: deployments
+	// name the model differently, so there is no default.
 	Model string
 
 	// Criteria is an ordered list of criterion IDs to evaluate. IDs may reference CustomCriteria first, then built-in criteria.
@@ -166,10 +164,10 @@ func NewShieldstral(cfg ShieldstralConfig) (*Shieldstral, error) {
 		return nil, err
 	}
 
-	model := cfg.Model
-	if model == "" {
-		model = defaultShieldstralModel
+	if cfg.Model == "" {
+		return nil, errors.New("shieldstral: model is required")
 	}
+	model := cfg.Model
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {

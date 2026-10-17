@@ -980,8 +980,9 @@ message GuardRailConfig {
   string endpoint = 4;
 
   // For "granite-guardian" / "shieldstral" / "cloud-judge": the model identifier
-  // (e.g. "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0", "mistralai/Shieldstral-8B").
-  // Adapter-defined default applies when empty.
+  // (e.g. "ibm-granite/granite-guardian-4.1-8b", "mistralai/Shieldstral-1.0-3B").
+  // Adapter-defined default applies when empty, except for "shieldstral",
+  // which requires an explicit model.
   string model = 5;
 
   // For "granite-guardian" / "shieldstral": reserved. Validated to

@@ -369,7 +369,7 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 				{
 					Type:      "shieldstral",
 					Endpoint:  "https://api.mistral.ai",
-					Model:     "shieldstral-1-0",
+					Model:     "mistralai/Shieldstral-1.0-3B",
 					ApiKeyRef: "secret://MISTRAL_API_KEY",
 					TimeoutMs: 3000,
 				},
@@ -439,7 +439,7 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	if ss.Endpoint != "https://api.mistral.ai" {
 		t.Errorf("Stages[2].Endpoint: got %q", ss.Endpoint)
 	}
-	if ss.Model != "shieldstral-1-0" {
+	if ss.Model != "mistralai/Shieldstral-1.0-3B" {
 		t.Errorf("Stages[2].Model: got %q", ss.Model)
 	}
 	if ss.APIKeyRef != "secret://MISTRAL_API_KEY" {

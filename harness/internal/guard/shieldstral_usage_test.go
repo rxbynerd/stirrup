@@ -24,6 +24,7 @@ func TestShieldstral_ReportsResponseUsage(t *testing.T) {
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":412,"completion_tokens":7}}`)
 	var reported []types.TokenUsage
 	g, err := NewShieldstral(ShieldstralConfig{
+		Model:       testShieldstralModel,
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported = append(reported, u) },
 	})
@@ -43,6 +44,7 @@ func TestShieldstral_ReportsUsageOfUnparseableVerdict(t *testing.T) {
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":300,"completion_tokens":64}}`)
 	var reported types.TokenUsage
 	g, err := NewShieldstral(ShieldstralConfig{
+		Model:       testShieldstralModel,
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported.Add(u) },
 	})
@@ -61,6 +63,7 @@ func TestShieldstral_SkipsUsageReportWithoutUsage(t *testing.T) {
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":-5,"completion_tokens":0}}`)
 	calls := 0
 	g, err := NewShieldstral(ShieldstralConfig{
+		Model:       testShieldstralModel,
 		Endpoint:    srv.URL,
 		ReportUsage: func(types.TokenUsage) { calls++ },
 	})

@@ -782,7 +782,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 		cfg := &types.GuardRailConfig{
 			Type:      "shieldstral",
 			Endpoint:  "http://127.0.0.1:8000",
-			Model:     "mistralai/Shieldstral-8B",
+			Model:     "mistralai/Shieldstral-1.0-3B",
 			TimeoutMs: 1500,
 		}
 		g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
@@ -804,7 +804,7 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 			Type:      "shieldstral",
 			Endpoint:  "https://api.mistral.ai",
 			APIKeyRef: "secret://TEST_MISTRAL_KEY",
-			Model:     "shieldstral-1-0",
+			Model:     "mistralai/Shieldstral-1.0-3B",
 		}
 		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets, nil)
 		if err != nil {
@@ -957,7 +957,7 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 		Type: "composite",
 		Stages: []types.GuardRailConfig{
 			{Type: "granite-guardian", Endpoint: "http://classifier-a.local:9999"},
-			{Type: "shieldstral", Endpoint: "https://api.mistral.ai"},
+			{Type: "shieldstral", Endpoint: "https://api.mistral.ai", Model: "mistralai/Shieldstral-1.0-3B"},
 			{Type: "cloud-judge", Model: "claude-haiku-4-5-20251001"},
 		},
 	}

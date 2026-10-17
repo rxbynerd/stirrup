@@ -2754,7 +2754,7 @@ func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 		GuardRailType:      "shieldstral",
 		GuardRailEndpoint:  "https://api.mistral.ai",
 		GuardRailAPIKeyRef: "secret://MISTRAL_API_KEY",
-		GuardRailModel:     "shieldstral-1-0",
+		GuardRailModel:     "mistralai/Shieldstral-1.0-3B",
 	})
 	if err != nil {
 		t.Fatalf("buildHarnessRunConfig: %v", err)
@@ -2772,8 +2772,8 @@ func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 	if cfg.GuardRail.APIKeyRef != "secret://MISTRAL_API_KEY" {
 		t.Errorf("GuardRail.APIKeyRef = %q, want secret://MISTRAL_API_KEY", cfg.GuardRail.APIKeyRef)
 	}
-	if cfg.GuardRail.Model != "shieldstral-1-0" {
-		t.Errorf("GuardRail.Model = %q, want shieldstral-1-0", cfg.GuardRail.Model)
+	if cfg.GuardRail.Model != "mistralai/Shieldstral-1.0-3B" {
+		t.Errorf("GuardRail.Model = %q, want mistralai/Shieldstral-1.0-3B", cfg.GuardRail.Model)
 	}
 }
 

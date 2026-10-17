@@ -12,7 +12,16 @@ import (
 	"time"
 )
 
+const testShieldstralModel = "mistralai/Shieldstral-1.0-3B"
+
 func TestNewShieldstral_Validation(t *testing.T) {
+	t.Run("missing model", func(t *testing.T) {
+		_, err := NewShieldstral(ShieldstralConfig{Endpoint: "http://127.0.0.1:8000"})
+		if err == nil || !strings.Contains(err.Error(), "model is required") {
+			t.Fatalf("expected model-required error, got %v", err)
+		}
+	})
+
 	t.Run("empty endpoint", func(t *testing.T) {
 		_, err := NewShieldstral(ShieldstralConfig{})
 		if err == nil {
@@ -29,6 +38,7 @@ func TestNewShieldstral_Validation(t *testing.T) {
 
 	t.Run("unknown criterion ID", func(t *testing.T) {
 		_, err := NewShieldstral(ShieldstralConfig{
+			Model:    testShieldstralModel,
 			Endpoint: "http://127.0.0.1:8000",
 			Criteria: []string{"non_existent_criterion"},
 		})
@@ -42,6 +52,7 @@ func TestNewShieldstral_Validation(t *testing.T) {
 
 	t.Run("valid custom criteria", func(t *testing.T) {
 		s, err := NewShieldstral(ShieldstralConfig{
+			Model:    testShieldstralModel,
 			Endpoint: "http://127.0.0.1:8000",
 			Criteria: []string{"my_rule"},
 			CustomCriteria: map[string]string{
@@ -58,6 +69,7 @@ func TestNewShieldstral_Validation(t *testing.T) {
 
 	t.Run("built-in criteria mapping", func(t *testing.T) {
 		s, err := NewShieldstral(ShieldstralConfig{
+			Model:    testShieldstralModel,
 			Endpoint: "http://127.0.0.1:8000",
 			Criteria: []string{"prompt_injection", "tool_safety", "secret_leak"},
 		})
@@ -110,6 +122,7 @@ func TestShieldstral_MinChunkChars(t *testing.T) {
 	defer srv.Close()
 
 	s, err := NewShieldstral(ShieldstralConfig{
+		Model:         testShieldstralModel,
 		Endpoint:      srv.URL,
 		MinChunkChars: 256,
 	})
@@ -169,7 +182,7 @@ func TestShieldstral_AuthHeadersAndRequest(t *testing.T) {
 	s, err := NewShieldstral(ShieldstralConfig{
 		Endpoint: srv.URL,
 		APIKey:   "secret-token-12345",
-		Model:    "mistralai/Shieldstral-8B",
+		Model:    "mistralai/Shieldstral-1.0-3B",
 	})
 	if err != nil {
 		t.Fatalf("NewShieldstral: %v", err)
@@ -194,8 +207,8 @@ func TestShieldstral_AuthHeadersAndRequest(t *testing.T) {
 	if userAgent != shieldstralUserAgent {
 		t.Errorf("User-Agent = %q, want %q", userAgent, shieldstralUserAgent)
 	}
-	if reqBody["model"] != "mistralai/Shieldstral-8B" {
-		t.Errorf("model = %v, want 'mistralai/Shieldstral-8B'", reqBody["model"])
+	if reqBody["model"] != "mistralai/Shieldstral-1.0-3B" {
+		t.Errorf("model = %v, want 'mistralai/Shieldstral-1.0-3B'", reqBody["model"])
 	}
 }
 
@@ -366,7 +379,7 @@ func TestShieldstral_Verdicts(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+			s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 			if err != nil {
 				t.Fatalf("NewShieldstral: %v", err)
 			}
@@ -403,7 +416,7 @@ func TestShieldstral_ErrorsCarryGuardID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+	s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 	if err != nil {
 		t.Fatalf("NewShieldstral: %v", err)
 	}
@@ -434,7 +447,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -465,7 +478,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -490,7 +503,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -515,7 +528,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -540,7 +553,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -563,7 +576,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL})
+		s, err := NewShieldstral(ShieldstralConfig{Endpoint: srv.URL, Model: testShieldstralModel})
 		if err != nil {
 			t.Fatalf("NewShieldstral: %v", err)
 		}
@@ -585,6 +598,7 @@ func TestShieldstral_TruncationAndParseErrors(t *testing.T) {
 		defer srv.Close()
 
 		s, err := NewShieldstral(ShieldstralConfig{
+			Model:    testShieldstralModel,
 			Endpoint: srv.URL,
 			Timeout:  20 * time.Millisecond,
 		})

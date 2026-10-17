@@ -4089,18 +4089,35 @@ func TestValidateGuardRailConfig(t *testing.T) {
 			errSubstr: "requires endpoint",
 		},
 		{
+			name:      "shieldstral without model",
+			guard:     &GuardRailConfig{Type: "shieldstral", Endpoint: "http://127.0.0.1:1234"},
+			wantErr:   true,
+			errSubstr: "requires model",
+		},
+		{
+			name: "composite with shieldstral stage without model",
+			guard: &GuardRailConfig{
+				Type: "composite",
+				Stages: []GuardRailConfig{
+					{Type: "shieldstral", Endpoint: "http://127.0.0.1:1234"},
+				},
+			},
+			wantErr:   true,
+			errSubstr: "stages[0].type \"shieldstral\" requires model",
+		},
+		{
 			name:    "shieldstral with endpoint",
-			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions"},
+			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", Model: "mistralai/Shieldstral-1.0-3B"},
 			wantErr: false,
 		},
 		{
 			name:    "shieldstral with endpoint and valid apiKeyRef",
-			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", APIKeyRef: "secret://MISTRAL_API_KEY"},
+			guard:   &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", Model: "mistralai/Shieldstral-1.0-3B", APIKeyRef: "secret://MISTRAL_API_KEY"},
 			wantErr: false,
 		},
 		{
 			name:      "shieldstral with literal apiKeyRef",
-			guard:     &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", APIKeyRef: "sk-literal-key"},
+			guard:     &GuardRailConfig{Type: "shieldstral", Endpoint: "https://api.mistral.ai/v1/chat/completions", Model: "mistralai/Shieldstral-1.0-3B", APIKeyRef: "sk-literal-key"},
 			wantErr:   true,
 			errSubstr: "must be a secret reference",
 		},
@@ -4109,7 +4126,7 @@ func TestValidateGuardRailConfig(t *testing.T) {
 			guard: &GuardRailConfig{
 				Type: "composite",
 				Stages: []GuardRailConfig{
-					{Type: "shieldstral", Endpoint: "https://api.mistral.ai", APIKeyRef: "secret://MISTRAL_API_KEY"},
+					{Type: "shieldstral", Endpoint: "https://api.mistral.ai", Model: "mistralai/Shieldstral-1.0-3B", APIKeyRef: "secret://MISTRAL_API_KEY"},
 					{Type: "none"},
 				},
 			},

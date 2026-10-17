@@ -86,7 +86,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("guardrail", "", "GuardRail type: none, granite-guardian, shieldstral, composite, cloud-judge. Composite requires --config (guardRail.stages).")
 	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian, shieldstral, or cloud-judge adapter.")
 	f.String("guardrail-api-key-ref", "", "Secret reference for GuardRail API key (e.g. secret://MISTRAL_API_KEY). Used by shieldstral.")
-	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Shieldstral default: shieldstral-1-0. Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
+	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Shieldstral has no default and requires the model id the server exposes (e.g. mistralai/Shieldstral-1.0-3B). Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
 	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
 
 	f.String("deployment-environment", "", "OTel deployment.environment.name resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")

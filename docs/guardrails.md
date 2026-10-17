@@ -238,11 +238,17 @@ the reference for this phrasing.
 ### `shieldstral`
 
 [Shieldstral](https://huggingface.co/mistralai/Shieldstral-1.0-3B)
-(e.g. `shieldstral-1-0`, `mistralai/Shieldstral-8B`) is an
-open-weights safety classifier fine-tuned by Mistral AI for
-conversational and agentic safety intervention points, self-hosted
-via vLLM, Ollama, TGI, or LM Studio using the OpenAI-compatible
-chat-completions API — the same shape as `granite-guardian`.
+is an open-weights safety classifier fine-tuned by Mistral AI for
+conversational and agentic safety intervention points. It is
+self-hosted behind an OpenAI-compatible chat-completions API, the
+same shape as `granite-guardian`.
+
+**Model id.** `model` is required; there is no default, because each
+runtime names the model differently. Set the id the server exposes:
+`mistralai/Shieldstral-1.0-3B` on vLLM, while LM Studio lists its own
+ids (for example `shieldstral-1.0-3b-mlx`). A mismatched id is
+rejected by the server (LM Studio answers HTTP 400 `Invalid model
+identifier`).
 
 **Tested runtimes.** The adapter has been live-tested only against
 LM Studio serving MLX conversions of `mistralai/Shieldstral-1.0-3B`.
@@ -291,7 +297,7 @@ Minimal config:
   "guardRail": {
     "type": "shieldstral",
     "endpoint": "http://127.0.0.1:1234",
-    "model": "shieldstral-1-0"
+    "model": "mistralai/Shieldstral-1.0-3B"
   }
 }
 ```
@@ -303,7 +309,7 @@ stirrup harness \
   --prompt "..." \
   --guardrail shieldstral \
   --guardrail-endpoint http://127.0.0.1:1234 \
-  --guardrail-model shieldstral-1-0
+  --guardrail-model mistralai/Shieldstral-1.0-3B
 ```
 
 ### `cloud-judge`

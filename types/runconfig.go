@@ -482,9 +482,9 @@ type GuardRailConfig struct {
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
 
 	// Model identifies the classifier model (e.g.
-	// "ibm-granite/granite-guardian-4.1-8b", "shieldstral-1-0",
-	// "mistralai/Shieldstral-8B"). Adapter-defined default
-	// applies when empty.
+	// "ibm-granite/granite-guardian-4.1-8b", "mistralai/Shieldstral-1.0-3B").
+	// Adapter-defined default applies when empty, except for "shieldstral",
+	// which requires an explicit model.
 	Model string `json:"model,omitempty"`
 
 	// Threshold is reserved; the Granite Guardian 4.1-8B head returns
@@ -5034,6 +5034,9 @@ func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite 
 		case "shieldstral":
 			if cfg.Endpoint == "" {
 				*errs = append(*errs, fmt.Sprintf("%s.type %q requires endpoint", path, cfg.Type))
+			}
+			if cfg.Model == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.type %q requires model: set the id the server exposes (e.g. \"mistralai/Shieldstral-1.0-3B\" on vLLM, or the model id LM Studio lists)", path, cfg.Type))
 			}
 			if cfg.Think != nil {
 				*errs = append(*errs, fmt.Sprintf("%s.think is not valid for type=shieldstral", path))
