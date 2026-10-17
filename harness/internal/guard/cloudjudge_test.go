@@ -193,6 +193,11 @@ func TestCloudJudgeStreamParamsAreClassifierShaped(t *testing.T) {
 	if fp.params.MaxTokens != cloudJudgeMaxTokens {
 		t.Fatalf("max_tokens = %d, want %d", fp.params.MaxTokens, cloudJudgeMaxTokens)
 	}
+	// Models that think by default exhaust max_tokens before the verdict
+	// at their default effort.
+	if fp.params.ReasoningEffort != "low" {
+		t.Fatalf("reasoning effort = %q, want low", fp.params.ReasoningEffort)
+	}
 }
 
 func TestCloudJudgeRejectsNilProvider(t *testing.T) {
@@ -691,13 +696,13 @@ func TestCloudJudge_DefaultTimeoutPerPhase(t *testing.T) {
 		override time.Duration
 		want     time.Duration
 	}{
-		{PhasePreTool, 0, 2 * time.Second},
+		{PhasePreTool, 0, 4 * time.Second},
 		{PhasePreTurn, 0, 5 * time.Second},
 		{PhasePostTurn, 0, 5 * time.Second},
 		{Phase("custom"), 0, 5 * time.Second},
 		{PhasePreTool, 1500 * time.Millisecond, 1500 * time.Millisecond},
 		{PhasePostTurn, 1500 * time.Millisecond, 1500 * time.Millisecond},
-		{PhasePreTool, -time.Second, 2 * time.Second},
+		{PhasePreTool, -time.Second, 4 * time.Second},
 		{PhasePostTurn, -time.Second, 5 * time.Second},
 	}
 	for _, tc := range cases {

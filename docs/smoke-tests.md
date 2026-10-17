@@ -118,7 +118,7 @@ A green smoke run does **not** prove:
 
 The Anthropic smoke workflow lives at
 [`.github/workflows/smoke-anthropic.yml`](../.github/workflows/smoke-anthropic.yml).
-It targets `claude-haiku-4-5-20251001` over the public Anthropic
+It targets `claude-haiku-5-5` over the public Anthropic
 Messages API with WIF, no `ANTHROPIC_API_KEY` in scope.
 
 The federation primitive is documented in full at
@@ -146,7 +146,7 @@ The workflow uses the harness's first-class
 `--anthropic-from-github-actions` opt-in alongside the four ID
 flags (`--anthropic-federation-rule-id`,
 `--anthropic-organization-id`, `--anthropic-service-account-id`,
-plus `--model claude-haiku-4-5-20251001`). No fixture file is
+plus `--model claude-haiku-5-5`). No fixture file is
 needed; the CLI surface covers the full credential shape.
 
 If the smoke run starts surfacing `token exchange returned 400`

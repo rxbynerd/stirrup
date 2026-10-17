@@ -82,7 +82,7 @@ func TestLoadSuiteHCL_DiffReviewLLMBlockOptional(t *testing.T) {
 func TestLoadSuiteHCL_DiffReviewLLMTemperatureUnsetStaysNil(t *testing.T) {
 	src := diffReviewSuite(`
       llm {
-        model = "claude-haiku-4-5-20251001"
+        model = "claude-haiku-5-5"
       }
 `)
 	suite, err := LoadSuiteHCL(writeTemp(t, "temp.hcl", src))
@@ -110,7 +110,7 @@ suite "dr" {
         type     = "diff-review"
         criteria = "c"
         llm {
-          model = "claude-haiku-4-5-20251001"
+          model = "claude-haiku-5-5"
         }
       }
     }
@@ -247,7 +247,7 @@ suite "bad" {
     judge {
       ` + body + `
       llm {
-        model = "claude-haiku-4-5-20251001"
+        model = "claude-haiku-5-5"
       }
     }
   }

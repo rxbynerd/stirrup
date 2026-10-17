@@ -522,6 +522,13 @@ func BuiltinRules() []Rule {
 		},
 		{
 			ProviderType: "anthropic",
+			ModelMatch:   "claude-haiku-5*",
+			Description:  "Anthropic Claude Haiku 5.5: omit sampling params (400 on non-default temperature/top_p); output_config.effort low..max",
+			LastVerified: Date("2026-10-17"),
+			Apply:        applyAnthropicAdaptiveClass,
+		},
+		{
+			ProviderType: "anthropic",
 			ModelMatch:   "claude-mythos-5*",
 			Description:  "Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k)",
 			LastVerified: Date("2026-07-01"),

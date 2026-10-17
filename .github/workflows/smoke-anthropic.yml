@@ -48,7 +48,7 @@ jobs:
             --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
             --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
             --anthropic-from-github-actions \
-            --model claude-haiku-4-5-20251001 \
+            --model claude-haiku-5-5 \
             --workspace workspace \
             --trace trace.jsonl \
             --max-turns 5 \

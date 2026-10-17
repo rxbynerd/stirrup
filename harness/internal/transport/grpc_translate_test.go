@@ -363,7 +363,7 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 				},
 				{
 					Type:      "cloud-judge",
-					Model:     "claude-haiku-4-5-20251001",
+					Model:     "claude-haiku-5-5",
 					TimeoutMs: 5000,
 				},
 				{
@@ -425,7 +425,7 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 	if cj.Type != "cloud-judge" {
 		t.Errorf("Stages[1].Type: got %q", cj.Type)
 	}
-	if cj.Model != "claude-haiku-4-5-20251001" {
+	if cj.Model != "claude-haiku-5-5" {
 		t.Errorf("Stages[1].Model: got %q", cj.Model)
 	}
 	if cj.TimeoutMs != 5000 {

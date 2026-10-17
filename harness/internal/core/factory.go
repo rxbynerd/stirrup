@@ -914,7 +914,7 @@ func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	}
 	cheapModel := cfg.CheapModel
 	if cheapModel == "" {
-		cheapModel = "claude-haiku-4-5-20251001"
+		cheapModel = "claude-haiku-5-5"
 	}
 
 	expensiveProvider := cfg.ExpensiveProvider
@@ -1644,7 +1644,7 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 	case "llm-judge":
 		model := cfg.Model
 		if model == "" {
-			model = "claude-haiku-4-5-20251001"
+			model = "claude-haiku-5-5"
 		}
 		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria), metrics, "llm-judge")
 	case "test-runner":

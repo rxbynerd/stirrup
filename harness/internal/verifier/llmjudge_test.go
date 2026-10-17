@@ -66,7 +66,7 @@ func TestLLMJudgeVerifier_Pass(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-4-5-20251001", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "fix the bug"}}},
@@ -85,8 +85,8 @@ func TestLLMJudgeVerifier_Pass(t *testing.T) {
 	}
 
 	// Verify the provider was called with correct parameters.
-	if prov.lastParams.Model != "claude-haiku-4-5-20251001" {
-		t.Errorf("expected model %q, got %q", "claude-haiku-4-5-20251001", prov.lastParams.Model)
+	if prov.lastParams.Model != "claude-haiku-5-5" {
+		t.Errorf("expected model %q, got %q", "claude-haiku-5-5", prov.lastParams.Model)
 	}
 	if prov.lastParams.MaxTokens != judgeMaxTokens {
 		t.Errorf("expected maxTokens %d, got %d", judgeMaxTokens, prov.lastParams.MaxTokens)
@@ -110,7 +110,7 @@ func TestLLMJudgeVerifier_Fail(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-4-5-20251001", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "write code"}}},
@@ -136,7 +136,7 @@ func TestLLMJudgeVerifier_MalformedResponse(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-4-5-20251001", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{},
 	})
@@ -164,7 +164,7 @@ func TestLLMJudgeVerifier_StreamConnectionError(t *testing.T) {
 		err: fmt.Errorf("connection refused"),
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-4-5-20251001", "anything")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything")
 	_, err := v.Verify(context.Background(), VerifyContext{})
 
 	if err == nil {
@@ -186,7 +186,7 @@ func TestLLMJudgeVerifier_StreamEventError(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-4-5-20251001", "anything")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything")
 	_, err := v.Verify(context.Background(), VerifyContext{})
 
 	if err == nil {

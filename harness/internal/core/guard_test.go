@@ -920,7 +920,7 @@ func TestBuildGuardRail_CloudJudge(t *testing.T) {
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:      "cloud-judge",
-		Model:     "claude-haiku-4-5-20251001",
+		Model:     "claude-haiku-5-5",
 		TimeoutMs: 1500,
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
@@ -958,7 +958,7 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 		Stages: []types.GuardRailConfig{
 			{Type: "granite-guardian", Endpoint: "http://classifier-a.local:9999"},
 			{Type: "shieldstral", Endpoint: "https://api.mistral.ai", Model: "mistralai/Shieldstral-1.0-3B"},
-			{Type: "cloud-judge", Model: "claude-haiku-4-5-20251001"},
+			{Type: "cloud-judge", Model: "claude-haiku-5-5"},
 		},
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)

@@ -908,7 +908,7 @@ func TestSpawnSubAgent_TokenCountersLabelledWithRoutedSelection(t *testing.T) {
 	parentLoop.Metrics = metrics
 	parentLoop.Router = router.NewPerModeRouter(
 		router.ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
-		map[string]router.ModelSelection{"research": {Provider: "anthropic", Model: "claude-haiku-4-5"}},
+		map[string]router.ModelSelection{"research": {Provider: "anthropic", Model: "claude-haiku-5-5"}},
 	)
 
 	parentConfig := buildTestConfig()
@@ -928,8 +928,8 @@ func TestSpawnSubAgent_TokenCountersLabelledWithRoutedSelection(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 	attrs := findSubagentCounter(t, rm, "stirrup.subagent.tokens.input").attrs
-	if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-haiku-4-5" {
-		t.Errorf("provider/model = %q/%q, want anthropic/claude-haiku-4-5",
+	if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-haiku-5-5" {
+		t.Errorf("provider/model = %q/%q, want anthropic/claude-haiku-5-5",
 			attrs["gen_ai.provider.name"], attrs["gen_ai.request.model"])
 	}
 }

@@ -73,7 +73,7 @@ func TestEffectivePromptModel(t *testing.T) {
 				c.ModelRouter = ModelRouterConfig{
 					Type:           "dynamic",
 					Model:          "claude-sonnet-5",
-					CheapModel:     "claude-haiku-4-5",
+					CheapModel:     "claude-haiku-5-5",
 					ExpensiveModel: "claude-fable-5",
 				}
 			},

@@ -24,7 +24,7 @@ import (
 // when a diff-review judge has no `llm` block and the invocation supplies no
 // overrides.
 const (
-	DefaultLLMModel  = "claude-haiku-4-5-20251001"
+	DefaultLLMModel  = "claude-haiku-5-5"
 	DefaultLLMKeyRef = "secret://ANTHROPIC_API_KEY"
 )
 

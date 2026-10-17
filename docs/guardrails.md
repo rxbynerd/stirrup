@@ -315,10 +315,12 @@ stirrup harness \
 ### `cloud-judge`
 
 Reuses an existing `ProviderAdapter` (Anthropic, OpenAI-compatible)
-with a hard-coded cheap model — Anthropic Haiku is the documented
-default. No new SDK dependency: it streams a single low-temperature
-completion and extracts the verdict from a JSON field in the
-response. Use this when the deployment cannot run its own GPU-
+with a cheap default model, `claude-haiku-5-5`. No new SDK
+dependency: it streams a single completion at temperature 0 and low
+reasoning effort, and extracts the verdict from a JSON field in the
+response. Each field reaches the wire only where the model's quirks
+allow it: Claude Haiku 5.5 rejects a non-default temperature, so the
+Anthropic adapter drops it and keeps the effort setting. Use this when the deployment cannot run its own GPU-
 attached vLLM.
 
 `cloud-judge` is an escalation-grade classifier, not a fast path:
@@ -393,17 +395,17 @@ reaches the classifier. The deterministic tripwires (step 4 of
 [§ Dispatch order](#dispatch-order)) still scan the full raw input.
 `pre_turn` and `post_turn` content is not capped by the adapter.
 
-**Timeouts.** With `timeoutMs` unset, the per-call deadline is 2 s at
+**Timeouts.** With `timeoutMs` unset, the per-call deadline is 4 s at
 `pre_tool` and 5 s at `pre_turn` and `post_turn`. Setting
 `timeoutMs` overrides every phase. The deadline bounds the whole
 response stream, not just the time to its first token.
 
-- The 2 s `pre_tool` default replaces the 5 s that previously applied
-  to every phase. Under the default `failOpen: false`, a check that
-  runs past the deadline denies the call, and repeated denies trip
-  the stall detector, so provider slowness becomes failed tool
-  calls. Deployments whose provider latency can exceed 2 s set
-  `timeoutMs` explicitly.
+- Under the default `failOpen: false`, a check that runs past the
+  deadline denies the call, and repeated denies trip the stall
+  detector, so provider slowness becomes failed tool calls. The 4 s
+  `pre_tool` default leaves headroom over Claude Haiku 5.5, which
+  takes 1 to 3 s per check at low effort. Deployments on a slower
+  model or provider set `timeoutMs` explicitly.
 - Under `failOpen: true`, a timeout allows the call. The content
   under classification influences how long the classifier takes
   (its length, and what it asks the classifier to write), so a tight
@@ -527,7 +529,7 @@ If the model is reachable and named in `/v1/models`, the recipe
 prints `ok: granite-guardian available at http://127.0.0.1:1234`.
 
 For non-GPU operators, use the `cloud-judge` adapter instead. It
-reuses the Anthropic adapter with Haiku as the classifier model
+reuses the Anthropic adapter with Claude Haiku 5.5 as the classifier model
 and adds no new dependencies.
 
 ### LM Studio and other DeepSeek-style runtimes

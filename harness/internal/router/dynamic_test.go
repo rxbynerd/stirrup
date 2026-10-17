@@ -7,7 +7,7 @@ import (
 
 // Shared fixtures for all dynamic router tests.
 var (
-	cheapSel     = ModelSelection{Provider: "anthropic", Model: "claude-haiku-4-5-20251001"}
+	cheapSel     = ModelSelection{Provider: "anthropic", Model: "claude-haiku-5-5"}
 	defaultSel   = ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}
 	expensiveSel = ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"}
 
