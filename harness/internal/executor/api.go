@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,6 +63,9 @@ func (a *APIExecutor) ReadFile(ctx context.Context, path string) (string, error)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("api executor: read file %q: HTTP %d: %w", path, resp.StatusCode, fs.ErrNotExist)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("api executor: read file %q: HTTP %d", path, resp.StatusCode)
 	}

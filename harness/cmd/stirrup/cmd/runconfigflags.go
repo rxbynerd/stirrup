@@ -26,6 +26,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
 	f.String("provider-compat-profile", "", "Optional compatibility profile selecting a pre-defined provider-quirks rule. Closed set; current legal values: \"\" (no profile), \"zai-glm\" (Z.ai GLM tool_stream + legacy max_tokens).")
 	f.String("tools-profile", "", "Model-facing toolset profile (sets tools.profile). Closed set; current legal values: \"\"/\"default\" (no aliasing, internal tool names), \"coding-classic\" (terse coding-CLI aliases: grep, find, bash). Dispatch identities are unchanged regardless of profile.")
+	f.StringArray("protected-write-target", nil, "Repeatable workspace-relative path that write tools may not target (e.g. AGENTS.md, config/policies/). A trailing / protects the directory and everything beneath it; otherwise the exact path only. Files loaded via --repository-guidance-file are protected in addition. Replaces any tools.protectedWriteTargets from --config.")
 	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
 	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
 	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
@@ -104,6 +105,10 @@ func addRunConfigFlags(cmd *cobra.Command) {
 
 	f.Bool("escalate-tool-choice", false, "Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (or a stronger prompt where unsupported). OFF by default. See issue #230.")
 	f.Int("escalate-tool-choice-max-retries", 0, "Maximum forced retries per inner-loop run when --escalate-tool-choice is set. Range: 1-3. 0 uses the default (1). No effect unless --escalate-tool-choice is set.")
+
+	f.StringArray("repository-guidance-file", nil, "Repeatable workspace-root file name (e.g. AGENTS.md) loaded into the system prompt after pre-run hooks, read through the executor. Off unless set. No paths, globs, or directory walk. Unpinned files render as advisory guidance that cannot change permissions, mode, or tools. Replaces any repositoryGuidance.files from --config.")
+	f.Int("repository-guidance-max-bytes", 0, "Cap on rendered repository guidance, per file and in total. Range: 1-50000. 0 uses the default (32768). Mirrors repositoryGuidance.maxBytes.")
+	f.StringArray("repository-guidance-pin", nil, "Repeatable file=sha256 pin promoting a --repository-guidance-file entry to operator-approved guidance. A missing file or digest mismatch fails the run (setup_failed) before any provider call. Mirrors repositoryGuidance.pinnedSha256.")
 
 	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction; each turn waits up to --timeout, capped at 3600s). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/batch.md.")
 

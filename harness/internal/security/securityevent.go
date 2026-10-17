@@ -275,11 +275,11 @@ func (sl *SecurityLogger) GuardError(phase, guardID, errorMessage string) {
 // SensitiveDataDetected emits when the Rule-of-Two runtime monitor
 // reports sensitive content. patterns carries pattern NAMES only —
 // never matched content (the same no-content contract as GuardDenied).
-// source is the provenance ("prompt", "dynamic_context", "tool_result",
-// "user_response" for mid-run operator input, "verifier_feedback" for a
-// failed verifier's feedback, or "guard:<id>" for the LLM-guard
-// ratchet); transition is true on the event that flipped the
-// run's sensitive-data latch.
+// source is the provenance ("prompt", "dynamic_context",
+// "repository_guidance", "tool_result", "user_response" for mid-run
+// operator input, "verifier_feedback" for a failed verifier's feedback, or
+// "guard:<id>" for the LLM-guard ratchet); transition is true on the event
+// that flipped the run's sensitive-data latch.
 func (sl *SecurityLogger) SensitiveDataDetected(patterns []string, tier, source string, turn int, action string, transition bool) {
 	sl.Emit("warn", "sensitive_data_detected", map[string]any{
 		"patterns":   patterns,

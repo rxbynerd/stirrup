@@ -2033,6 +2033,40 @@ func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_ProtectedWriteTargetsPreserved pins
+// ToolsConfig.protected_write_targets across a wire round-trip and checks
+// the translated slice does not alias the proto message.
+func TestRunConfigFromProto_ProtectedWriteTargetsPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			ProtectedWriteTargets: []string{"AGENTS.md", "config/policies/"},
+		},
+	}
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+	want := []string{"AGENTS.md", "config/policies/"}
+	if !reflect.DeepEqual(rc.Tools.ProtectedWriteTargets, want) {
+		t.Fatalf("ProtectedWriteTargets: got %v, want %v", rc.Tools.ProtectedWriteTargets, want)
+	}
+
+	decoded.Tools.ProtectedWriteTargets[0] = "mutated"
+	if rc.Tools.ProtectedWriteTargets[0] != "AGENTS.md" {
+		t.Errorf("translated ProtectedWriteTargets aliases the proto's backing data: got %q", rc.Tools.ProtectedWriteTargets[0])
+	}
+
+	if empty := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}}); empty.Tools.ProtectedWriteTargets != nil {
+		t.Errorf("unset protected_write_targets should map to nil, got %v", empty.Tools.ProtectedWriteTargets)
+	}
+}
+
 // TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
 // field's translation: the budget is not enforced, but dropping it here
 // would swallow the value before ValidateRunConfig can warn that the cap
@@ -2393,5 +2427,59 @@ func TestRunTraceToProto_DegradedCapabilities(t *testing.T) {
 
 	if empty := runTraceToProto(&types.RunTrace{ID: "run-clean"}); len(empty.DegradedCapabilities) != 0 {
 		t.Errorf("a run with nothing degraded must carry no entries, got %v", empty.DegradedCapabilities)
+	}
+}
+
+// TestRunConfigFromProto_RepositoryGuidancePreserved pins every
+// RepositoryGuidanceConfig field across a wire round-trip and checks the
+// translated slice and map do not alias the proto-owned values.
+func TestRunConfigFromProto_RepositoryGuidancePreserved(t *testing.T) {
+	digest := "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	original := &pb.RunConfig{
+		RepositoryGuidance: &pb.RepositoryGuidanceConfig{
+			Files:        []string{"AGENTS.md", "CLAUDE.md"},
+			MaxBytes:     4096,
+			PinnedSha256: map[string]string{"AGENTS.md": digest},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rg := runConfigFromProto(&decoded).RepositoryGuidance
+	if rg == nil {
+		t.Fatal("RepositoryGuidance nil after translation")
+	}
+	want := &types.RepositoryGuidanceConfig{
+		Files:        []string{"AGENTS.md", "CLAUDE.md"},
+		MaxBytes:     4096,
+		PinnedSHA256: map[string]string{"AGENTS.md": digest},
+	}
+	if !reflect.DeepEqual(rg, want) {
+		t.Fatalf("RepositoryGuidance: got %+v, want %+v", rg, want)
+	}
+
+	decoded.RepositoryGuidance.Files[0] = "mutated"
+	decoded.RepositoryGuidance.PinnedSha256["AGENTS.md"] = "mutated"
+	if rg.Files[0] != "AGENTS.md" {
+		t.Error("RepositoryGuidance.Files shares the proto-owned slice")
+	}
+	if rg.PinnedSHA256["AGENTS.md"] != digest {
+		t.Error("RepositoryGuidance.PinnedSHA256 shares the proto-owned map")
+	}
+}
+
+// TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil documents that an
+// absent sub-message leaves guidance off rather than synthesising an empty
+// block that fails validation.
+func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
+	if rg := runConfigFromProto(&pb.RunConfig{}).RepositoryGuidance; rg != nil {
+		t.Errorf("RepositoryGuidance should be nil when proto field absent, got %+v", rg)
 	}
 }

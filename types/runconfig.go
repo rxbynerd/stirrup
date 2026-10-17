@@ -229,6 +229,11 @@ type RunConfig struct {
 	// default) or Enabled false leaves the loop unchanged. See
 	// WindDownConfig.
 	WindDown *WindDownConfig `json:"windDown,omitempty"`
+	// RepositoryGuidance opts the run into loading operator-listed
+	// workspace files such as AGENTS.md into the system prompt after the
+	// pre-run hooks. Nil (the default) loads nothing and leaves the
+	// prompt unchanged. See RepositoryGuidanceConfig.
+	RepositoryGuidance *RepositoryGuidanceConfig `json:"repositoryGuidance,omitempty"`
 }
 
 // WindDownConfig configures the wind-down instruction. When enabled, the
@@ -1418,6 +1423,12 @@ type ToolsConfig struct {
 	// and read_command_output bound their own output and are exempt. Zero
 	// selects DefaultToolMaxResultBytes; use EffectiveMaxResultBytes.
 	MaxResultBytes int `json:"maxResultBytes,omitempty"`
+
+	// ProtectedWriteTargets lists workspace-relative paths that write tools
+	// may not target. An entry ending in "/" protects that directory and
+	// everything beneath it; any other entry protects exactly that path.
+	// Files loaded through RepositoryGuidance are protected in addition.
+	ProtectedWriteTargets []string `json:"protectedWriteTargets,omitempty"`
 }
 
 // Bounds for ToolsConfig.MaxResultBytes. The minimum leaves room for the
@@ -2399,6 +2410,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCommandOutputConfig(config.Tools, &errs)
 	validateToolMaxResultBytes(config.Tools.MaxResultBytes, &errs)
+	validateProtectedWriteTargets(config.Tools.ProtectedWriteTargets, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	if config.TraceEmitter.Archive != nil {
@@ -2527,6 +2539,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
 	validateToolChoiceEscalationConfig(config.ToolChoiceEscalation, &errs)
 	validateHooksConfig(config, &errs)
+	validateRepositoryGuidanceConfig(config, &errs)
 	validateBatchConfig(config, &errs)
 
 	if len(errs) > 0 {

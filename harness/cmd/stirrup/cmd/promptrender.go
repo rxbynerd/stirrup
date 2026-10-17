@@ -33,7 +33,8 @@ var promptRenderCmd = &cobra.Command{
 --prompt-model) pair and print it to stdout. Only the templated
 preamble is rendered: the structural sections the harness appends at
 run time (working directory, turn budget, workspace tree, git status,
-dynamic context) depend on a live workspace and are omitted.
+repository guidance, dynamic context) depend on a live workspace and
+are omitted.
 
 By default the shipped, embedded mode template is rendered. Passing
 --template <path> renders an operator template file instead — the same

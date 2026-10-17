@@ -60,10 +60,12 @@ type JSONLTraceEmitter struct {
 	runError             string
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
+	repositoryGuidance   []types.RepositoryGuidanceRecord
 }
 
 var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 var _ VerificationRecorder = (*JSONLTraceEmitter)(nil)
+var _ RepositoryGuidanceRecorder = (*JSONLTraceEmitter)(nil)
 var _ StopDetailsRecorder = (*JSONLTraceEmitter)(nil)
 var _ DegradedCapabilitiesRecorder = (*JSONLTraceEmitter)(nil)
 var _ CommandOutputRecorder = (*JSONLTraceEmitter)(nil)
@@ -131,6 +133,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.workspaceExport = nil
 	e.runError = ""
 	e.structuredOutput = nil
+	e.repositoryGuidance = nil
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -394,6 +397,14 @@ func (e *JSONLTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
 	e.structuredOutput = append(json.RawMessage(nil), doc...)
 }
 
+// RecordRepositoryGuidance stores the guidance records so the run_finished
+// event's embedded RunTrace carries them.
+func (e *JSONLTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repositoryGuidance = append([]types.RepositoryGuidanceRecord(nil), records...)
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -442,6 +453,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		Error:                e.runError,
 		StructuredOutput:     e.structuredOutput,
 		DegradedCapabilities: e.degradedCapabilities,
+		RepositoryGuidance:   e.repositoryGuidance,
 	}
 
 	ev := Event{

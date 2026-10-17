@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +65,9 @@ func TestAPIExecutor_ReadFile_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("error should mention HTTP 404, got %q", err.Error())
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("404 read error should wrap fs.ErrNotExist, got %v", err)
 	}
 }
 

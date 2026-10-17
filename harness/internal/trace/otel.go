@@ -64,6 +64,16 @@ const (
 	// Prompt-resolution attributes, stirrup-specific (no GenAI counterpart).
 	promptModelKey = "prompt.model"
 	promptTierKey  = "prompt.tier"
+
+	// Repository-guidance attributes, stirrup-specific. Parallel slices,
+	// one element per configured file in render order.
+	repositoryGuidancePathsKey         = "repository_guidance.paths"
+	repositoryGuidanceTiersKey         = "repository_guidance.tiers"
+	repositoryGuidanceMissingKey       = "repository_guidance.missing"
+	repositoryGuidanceBytesKey         = "repository_guidance.bytes"
+	repositoryGuidanceRenderedBytesKey = "repository_guidance.rendered_bytes"
+	repositoryGuidanceTruncatedKey     = "repository_guidance.truncated"
+	repositoryGuidanceSHA256Key        = "repository_guidance.sha256"
 )
 
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
@@ -109,6 +119,7 @@ type OTelTraceEmitter struct {
 	lastChatErrorType    string
 	structuredOutput     json.RawMessage
 	degradedCapabilities []types.DegradedCapability
+	repositoryGuidance   []types.RepositoryGuidanceRecord
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised once by RecordSystemInstructions rather than per
@@ -133,6 +144,7 @@ var (
 	_ TraceEmitter                 = (*OTelTraceEmitter)(nil)
 	_ SystemInstructionsRecorder   = (*OTelTraceEmitter)(nil)
 	_ PromptResolutionRecorder     = (*OTelTraceEmitter)(nil)
+	_ RepositoryGuidanceRecorder   = (*OTelTraceEmitter)(nil)
 	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
 	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
 	_ DegradedCapabilitiesRecorder = (*OTelTraceEmitter)(nil)
@@ -251,6 +263,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.lastChatErrorType = ""
 	e.structuredOutput = nil
 	e.degradedCapabilities = nil
+	e.repositoryGuidance = nil
 	e.systemInstructionsJSON = ""
 	e.runContent = nil
 	e.open = nil
@@ -350,6 +363,35 @@ func (e *OTelTraceEmitter) RecordPromptResolution(model, tier string) {
 	e.rootSpan.SetAttributes(
 		attribute.String(promptModelKey, model),
 		attribute.String(promptTierKey, tier),
+	)
+}
+
+// RecordRepositoryGuidance sets the loaded guidance metadata on the root
+// span and keeps it for the RunTrace aggregate returned by Finish.
+func (e *OTelTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repositoryGuidance = append([]types.RepositoryGuidanceRecord(nil), records...)
+	if e.rootSpan == nil || !e.rootSpan.SpanContext().IsValid() || len(records) == 0 {
+		return
+	}
+	n := len(records)
+	paths, tiers, digests := make([]string, n), make([]string, n), make([]string, n)
+	bytes, rendered := make([]int, n), make([]int, n)
+	missing, truncated := make([]bool, n), make([]bool, n)
+	for i, r := range records {
+		paths[i], tiers[i], digests[i] = r.Path, r.Tier, r.SHA256
+		bytes[i], rendered[i] = r.Bytes, r.RenderedBytes
+		missing[i], truncated[i] = r.Missing, r.Truncated
+	}
+	e.rootSpan.SetAttributes(
+		attribute.StringSlice(repositoryGuidancePathsKey, paths),
+		attribute.StringSlice(repositoryGuidanceTiersKey, tiers),
+		attribute.BoolSlice(repositoryGuidanceMissingKey, missing),
+		attribute.IntSlice(repositoryGuidanceBytesKey, bytes),
+		attribute.IntSlice(repositoryGuidanceRenderedBytesKey, rendered),
+		attribute.BoolSlice(repositoryGuidanceTruncatedKey, truncated),
+		attribute.StringSlice(repositoryGuidanceSHA256Key, digests),
 	)
 }
 
@@ -570,6 +612,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		Error:                e.runError,
 		StructuredOutput:     e.structuredOutput,
 		DegradedCapabilities: e.degradedCapabilities,
+		RepositoryGuidance:   e.repositoryGuidance,
 	}
 
 	return trace, nil

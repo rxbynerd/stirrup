@@ -28,6 +28,7 @@ func NewTemplatePromptBuilder(text string, trial TemplateData) (*ComposedPromptB
 		OutputSchemaFragment(),
 		WorkspaceTreeFragment(),
 		GitStatusFragment(),
+		RepositoryGuidanceFragment(),
 		DynamicContextFragment(),
 	)), nil
 }

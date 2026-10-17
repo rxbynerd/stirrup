@@ -3,7 +3,7 @@ package prompt
 // NewOverridePromptBuilder returns a ComposedPromptBuilder that uses a fixed
 // system prompt preamble instead of the mode-based selection, keeping the
 // structural fragments (workspace path, turn budget, output schema,
-// workspace tree, git status, dynamic context).
+// workspace tree, git status, repository guidance, dynamic context).
 func NewOverridePromptBuilder(systemPrompt string) *ComposedPromptBuilder {
 	return NewComposedPromptBuilder(WithFragments(
 		StaticFragment(systemPrompt),
@@ -12,6 +12,7 @@ func NewOverridePromptBuilder(systemPrompt string) *ComposedPromptBuilder {
 		OutputSchemaFragment(),
 		WorkspaceTreeFragment(),
 		GitStatusFragment(),
+		RepositoryGuidanceFragment(),
 		DynamicContextFragment(),
 	))
 }

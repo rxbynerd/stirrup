@@ -745,3 +745,34 @@ func TestExec_NormalCompletionLeavesBackgroundProcessAndExitCode(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+type traversalCounter struct{ blocked int }
+
+func (c *traversalCounter) PathTraversalBlocked(_, _ string)           { c.blocked++ }
+func (c *traversalCounter) FileSizeLimitExceeded(_ string, _, _ int64) {}
+func (c *traversalCounter) OutputTruncated(_ string, _, _ int)         {}
+
+func TestResolvePathQuietly_RejectsEscapesWithoutSecurityEvent(t *testing.T) {
+	exec, dir := newTestExecutor(t)
+	counter := &traversalCounter{}
+	exec.Security = counter
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "escape_link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	for _, p := range []string{"escape_link/somefile", "../outside", "/etc/passwd"} {
+		if _, err := exec.ResolvePathQuietly(p); err == nil || !strings.Contains(err.Error(), "escapes workspace") {
+			t.Errorf("ResolvePathQuietly(%q) error = %v, want a workspace escape", p, err)
+		}
+	}
+	if counter.blocked != 0 {
+		t.Errorf("ResolvePathQuietly emitted %d path traversal events, want 0", counter.blocked)
+	}
+
+	if _, err := exec.ResolvePath("escape_link/somefile"); err == nil {
+		t.Fatal("ResolvePath must reject the escaping symlink")
+	}
+	if counter.blocked != 1 {
+		t.Errorf("ResolvePath emitted %d path traversal events, want 1", counter.blocked)
+	}
+}

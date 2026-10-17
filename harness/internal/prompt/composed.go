@@ -317,6 +317,7 @@ func DefaultComposedFragments() []PromptFragment {
 		OutputSchemaFragment(),
 		WorkspaceTreeFragment(),
 		GitStatusFragment(),
+		RepositoryGuidanceFragment(),
 		DynamicContextFragment(),
 	}
 }

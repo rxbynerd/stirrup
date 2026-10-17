@@ -148,6 +148,10 @@ type RunTrace struct {
 	// without, such as an optional MCP server that was unavailable at
 	// startup. Empty when nothing degraded.
 	DegradedCapabilities []DegradedCapability `json:"degradedCapabilities,omitempty"`
+	// RepositoryGuidance records each configured repositoryGuidance file as
+	// loaded for the system prompt, in render order. Populated by trace
+	// emitters implementing trace.RepositoryGuidanceRecorder.
+	RepositoryGuidance []RepositoryGuidanceRecord `json:"repositoryGuidance,omitempty"`
 }
 
 // GitHandoff is the git state a deterministic-git run hands off: the run

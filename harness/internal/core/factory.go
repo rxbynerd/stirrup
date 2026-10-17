@@ -600,6 +600,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, sandboxRefresher)
 	}
 
+	var guidance prompt.GuidanceLoader
+	if config.RepositoryGuidance != nil {
+		guidance = prompt.NewRepositoryGuidanceLoader(*config.RepositoryGuidance, exec)
+	}
+
 	loop := &AgenticLoop{
 		Provider:             prov,
 		Providers:            providers,
@@ -616,6 +621,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		RuleOfTwo:            rot,
 		Escalation:           escalation,
 		Hooks:                hooksRunner,
+		Guidance:             guidance,
 		Transport:            tp,
 		Trace:                te,
 		DegradedCapabilities: degradedCapabilities,
@@ -631,6 +637,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
 	loop.StructuredResults = buildStructuredResultSupport(config, quirks.DefaultRegistry())
+	loop.ProtectedWriteTargets = config.Tools.ProtectedWriteTargets
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
 	// first turn instead of being dropped.

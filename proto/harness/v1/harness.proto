@@ -625,6 +625,11 @@ message RunConfig {
   // turn, token or time budget is nearly spent. An absent sub-message is
   // OFF.
   WindDownConfig wind_down = 56;
+  // Optional. Operator-listed workspace files (such as AGENTS.md) loaded
+  // into the system prompt after the pre-run hooks. An absent sub-message
+  // loads nothing and leaves the prompt unchanged. See
+  // RepositoryGuidanceConfig.
+  RepositoryGuidanceConfig repository_guidance = 53;
 
   // RunConfig.transport is intentionally NOT mirrored. The transport is
   // a property of how the harness was launched, not of the work being
@@ -763,9 +768,33 @@ message LogsExportConfig {
   string endpoint = 2;
 }
 
+// RepositoryGuidanceConfig opts a run into loading guidance files from the
+// workspace root, read through the run's executor after the pre-run hooks
+// and before the first provider call. Guidance never changes enforcement:
+// permission policy, tool list, executor, egress, and the Rule of Two all
+// derive from the RunConfig alone.
+message RepositoryGuidanceConfig {
+  // Required when the sub-message is present. Workspace-root file names
+  // to load, in render order: no path separators, globbing, or directory
+  // walk. At most 16 entries.
+  repeated string files = 1;
+
+  // Optional. Caps the rendered guidance content, per file and in total
+  // across all files. Zero resolves to the harness default (32768). Range:
+  // 0 (use default) or 1-50000.
+  int32 max_bytes = 2;
+
+  // Optional. Maps an entry of `files` to the hex SHA-256 of the file
+  // content the operator approved. A pinned file that is missing or whose
+  // digest differs ends the run as "setup_failed" before any provider
+  // call; it renders as operator-approved guidance. Unpinned files render
+  // as advisory guidance inside a <repository_guidance> fence.
+  map<string, string> pinned_sha256 = 3;
+}
+
 // HooksConfig configures operator-authored lifecycle hooks that run
 // around the agentic session (issue #461): pre_run executes before the
-// session starts (after the harness builds the system prompt, before
+// session starts (before the harness builds the system prompt and before
 // GitStrategy.Setup); post_run executes after the session ends (after
 // GitStrategy.Finalise, before the run reports done). Hook output is
 // trace-only and never enters the model's context; hooks run through
@@ -2237,6 +2266,15 @@ message ToolsConfig {
   // run_command and read_command_output bound their own output and are
   // exempt. 0 selects 102400 (100 KiB); otherwise 1024..1048576.
   int32 max_result_bytes = 7;
+
+  // Optional. Workspace-relative paths that write tools (write_file,
+  // edit_file, search_replace, apply_diff, and workspace-mutating tools
+  // whose name contains "write") may not target. An entry ending in "/"
+  // protects that directory and everything beneath it; any other entry
+  // protects exactly that path. Entries must be relative, without ".."
+  // segments or glob characters; at most 64. Files loaded through
+  // repository_guidance are protected in addition. Empty by default.
+  repeated string protected_write_targets = 8;
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte
