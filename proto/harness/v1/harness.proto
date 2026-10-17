@@ -203,7 +203,8 @@ message HarnessEvent {
 
   // Incremental text fragment from the model. Set on "text_delta" events,
   // and on "thinking_delta" events for reasoning text. On "user_message"
-  // events, the appended text, capped at 256 KiB; a capped text ends in
+  // events, the appended text. "user_message" and "thinking_delta" text is
+  // capped at 256 KiB; a capped text ends in
   // "[truncated by harness for the control stream: N of M bytes shown]".
   string text = 2;
 

@@ -187,7 +187,8 @@ type HarnessEvent struct {
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events,
 	// and on "thinking_delta" events for reasoning text. On "user_message"
-	// events, the appended text, capped at 256 KiB; a capped text ends in
+	// events, the appended text. "user_message" and "thinking_delta" text is
+	// capped at 256 KiB; a capped text ends in
 	// "[truncated by harness for the control stream: N of M bytes shown]".
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	// Unique tool-use ID assigned by the model. Set on "tool_call" events.

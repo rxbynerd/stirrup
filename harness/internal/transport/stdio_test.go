@@ -112,6 +112,38 @@ func TestStdioTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 }
 
+func TestStdioTransport_EmitScrubsThinkingDeltaAndUserMessageText(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	events := []types.HarnessEvent{
+		{Type: "thinking_delta", Text: "the key is sk-ant-abc123-secret and ghp_abcdef1234567890"},
+		{Type: "user_message", Source: types.UserMessageSourceUserResponse, RequestID: "r1", Text: "use sk-ant-abc123-secret and ghp_abcdef1234567890"},
+	}
+	for _, ev := range events {
+		if err := tr.Emit(ev); err != nil {
+			t.Fatalf("Emit %s: %v", ev.Type, err)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != len(events) {
+		t.Fatalf("got %d lines, want %d", len(lines), len(events))
+	}
+	for i, line := range lines {
+		var got types.HarnessEvent
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		if strings.Contains(got.Text, "sk-ant-") || strings.Contains(got.Text, "ghp_") || !strings.Contains(got.Text, "[REDACTED]") {
+			t.Errorf("%s text was not scrubbed: %q", got.Type, got.Text)
+		}
+		if i == 1 && (got.Source != types.UserMessageSourceUserResponse || got.RequestID != "r1") {
+			t.Errorf("user_message source/requestId = %q/%q, want them unchanged", got.Source, got.RequestID)
+		}
+	}
+}
+
 // TestStdioTransport_EmitScrubsInput pins that the ask-upstream
 // rule-of-two gate forwards a tool call's raw Input on a
 // permission_request event after the sensitive-data latch trips, so a

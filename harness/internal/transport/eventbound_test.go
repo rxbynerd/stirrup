@@ -26,21 +26,21 @@ func TestCapEventText(t *testing.T) {
 	}
 }
 
-func TestBoundEventFields_CapsUserMessageTextOnly(t *testing.T) {
-	big := strings.Repeat("u", maxEventFieldBytes+1)
+func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
+	big := strings.Repeat("é", maxEventFieldBytes)
 
-	msg := types.HarnessEvent{Type: "user_message", Source: types.UserMessageSourceInitialPrompt, Text: big}
-	boundEventFields(&msg)
-	if len(msg.Text) > maxEventFieldBytes || !strings.HasSuffix(msg.Text, fmt.Sprintf(" of %d bytes shown]", len(big))) {
-		t.Fatalf("user_message text is %d bytes or lacks the marker", len(msg.Text))
+	for _, typ := range []string{"user_message", "thinking_delta"} {
+		ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
+		boundEventFields(&ev)
+		if len(ev.Text) > maxEventFieldBytes || !utf8.ValidString(ev.Text) || !strings.HasSuffix(ev.Text, fmt.Sprintf(" of %d bytes shown]", len(big))) {
+			t.Errorf("%s text is %d bytes (valid UTF-8: %v) or lacks the marker", typ, len(ev.Text), utf8.ValidString(ev.Text))
+		}
 	}
 
-	for _, typ := range []string{"text_delta", "thinking_delta"} {
-		delta := types.HarnessEvent{Type: typ, Text: big}
-		boundEventFields(&delta)
-		if delta.Text != big {
-			t.Errorf("%s text was altered; deltas are not capped", typ)
-		}
+	delta := types.HarnessEvent{Type: "text_delta", Text: big}
+	boundEventFields(&delta)
+	if delta.Text != big {
+		t.Error("text_delta text was altered; it is not capped")
 	}
 }
 

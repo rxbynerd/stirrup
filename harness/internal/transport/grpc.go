@@ -119,7 +119,8 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 }
 
 // Emit scrubs secret patterns from the event's string fields, caps
-// tool_result content and tool_call input at maxEventFieldBytes, translates
+// tool_result content, tool_call input, user_message text and
+// thinking_delta text at maxEventFieldBytes, translates
 // the event to its proto representation, and sends it on the gRPC stream.
 // When the optional Security logger is wired and any redaction occurs,
 // emits a SecretRedactedInOutput event with the matched pattern name and a
