@@ -39,7 +39,7 @@ func secretFixtures() []secretFixture {
 		{"gcp_api_key", "AI" + "zaA2345678901234567890123456789012345", "zaA2345678901234567890123456789012345"},
 		{"basic_auth", "Basic " + "c3RpcnJ1cDpzdXBlcnNlY3JldA==", "c3RpcnJ1cDpzdXBlcnNlY3JldA=="},
 		{"bearer_token", "Bearer " + "abc.def.ghi-token-value-0123456789", "abc.def.ghi-token-value-0123456789"},
-		{"pem_private_key", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----"},
+		{"pem_private_key", pemKey("EC PRIVATE KEY", pemBodyLines(3), "\n"), pemBodyLines(3)[2]},
 		{"secret_ref", "secret:" + "//provider/api-key", "provider/api-key"},
 		{"api_key_header", "x-api-key: " + "0123456789abcdefABCDEF", "0123456789abcdefABCDEF"},
 		{"generic_hex_secret", "api_key = " + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
@@ -114,6 +114,21 @@ func TestScrubWriterRedactsFatJWTAtDefaultBoundary(t *testing.T) {
 	feed(t, w, input, 4<<10)
 	if got := sink.String(); strings.Contains(got, "c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk") || got != Scrub(input) {
 		t.Fatal("fat JWT straddling the default chunk boundary was not fully redacted")
+	}
+}
+
+// TestScrubWriterRedactsRSAKeyAtDefaultBoundary proves the default carry
+// window against the largest PEM key the scrubber is expected to see whole.
+func TestScrubWriterRedactsRSAKeyAtDefaultBoundary(t *testing.T) {
+	key := rsa4096PEMFixture()
+	input := filler(scrubChunkBytes-len(key)/2) + key + "\n" + filler(ScrubCarryWindow)
+	var sink bytes.Buffer
+	w := NewScrubWriter(&sink)
+	feed(t, w, input, 4<<10)
+	got := sink.String()
+	assertNoPEMBody(t, got, pemBodyLines(51))
+	if got != Scrub(input) {
+		t.Fatal("RSA key straddling the default chunk boundary was not redacted as one span")
 	}
 }
 

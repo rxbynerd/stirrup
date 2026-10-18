@@ -51,7 +51,7 @@ var secretPatterns = []namedPattern{
 	// Basic token leaking into slog output would land unscrubbed.
 	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
 	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
-	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},
+	{"pem_private_key", regexp.MustCompile(pemPrivateKeyPattern)},
 	// Case-insensitive: a shell resolves "secret://" and "SECRET://"
 	// identically, and this pattern is the last line of defence for a
 	// hook command whose case-insensitive ValidateRunConfig rejection
@@ -84,6 +84,15 @@ var secretPatterns = []namedPattern{
 	// get pulled into the redaction span.
 	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
+
+// pemPrivateKeyPattern matches a PEM key from its BEGIN line through its
+// END line. The body admits base64, whitespace, "\n" escapes and
+// encrypted-key header lines, and never "--", so it stops at the next
+// armour line. Without an END line the header is matched with the run of
+// base64 lines after it, which excludes the spaces of following prose.
+const pemPrivateKeyPattern = `-----BEGIN[\s\w]+KEY-----(?:` +
+	`(?:[A-Za-z0-9+/=\s:,\\]|-[A-Za-z0-9])*-----END[\s\w]+KEY-----|` +
+	`(?:\n[ \t]+|[A-Za-z0-9+/=\\\r\n])*)`
 
 // matchValidators narrows patterns whose regex also matches ordinary prose.
 // A match is redacted only when its validator returns true; patterns absent
