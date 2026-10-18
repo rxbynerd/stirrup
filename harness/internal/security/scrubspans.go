@@ -2,8 +2,9 @@ package security
 
 import "strings"
 
-// ScrubSpan is a byte range [Start, End) of a scrubbed input.
-type ScrubSpan struct {
+// ScrubRange is a range [Start, End) of UTF-8 byte offsets into the input
+// of ScrubWithSpans.
+type ScrubRange struct {
 	Start, End int
 }
 
@@ -18,18 +19,20 @@ type scrubSegment struct {
 }
 
 // ScrubWithSpans returns what ScrubWithStats returns and, in addition, the
-// ranges of value the scrubber replaced, in order, with touching ranges
-// merged. Every byte outside the ranges appears unchanged and in order in
-// the scrubbed string, so the ranges hold every byte Scrub redacts.
+// byte ranges of value the scrubber replaced: ordered, disjoint and never
+// touching, since touching ranges are merged. Every byte outside the
+// ranges appears unchanged and in order in the scrubbed string, so the
+// ranges hold every byte Scrub redacts. TestScrubWithSpans_ConsistentWithScrub
+// and the random-layout test hold it in parity with ScrubWithStats.
 //
 // Patterns run in turn over the rewritten string, as in ScrubWithStats, so
 // a later match can extend across an earlier placeholder; its range is
 // mapped back to the original bytes the placeholder stood for.
-func ScrubWithSpans(value string) (string, []ScrubSpan, ScrubStats) {
+func ScrubWithSpans(value string) (string, []ScrubRange, ScrubStats) {
 	segs, stats := scrubSegments(value)
 	var b strings.Builder
 	b.Grow(len(value))
-	var spans []ScrubSpan
+	var spans []ScrubRange
 	for _, seg := range segs {
 		b.WriteString(seg.text)
 		if !seg.redacted || seg.start == seg.end {
@@ -39,7 +42,7 @@ func ScrubWithSpans(value string) (string, []ScrubSpan, ScrubStats) {
 			spans[n-1].End = seg.end
 			continue
 		}
-		spans = append(spans, ScrubSpan{Start: seg.start, End: seg.end})
+		spans = append(spans, ScrubRange{Start: seg.start, End: seg.end})
 	}
 	return b.String(), spans, stats
 }

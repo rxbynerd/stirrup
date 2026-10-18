@@ -76,7 +76,7 @@ func checkScrubSpans(t *testing.T, value string) {
 	segs, _ := scrubSegments(value)
 	var text strings.Builder
 	pos := 0
-	var redacted []ScrubSpan
+	var redacted []ScrubRange
 	for _, seg := range segs {
 		text.WriteString(seg.text)
 		if seg.start != pos || seg.end < seg.start {
@@ -95,7 +95,7 @@ func checkScrubSpans(t *testing.T, value string) {
 		if n := len(redacted); n > 0 && redacted[n-1].End == seg.start {
 			redacted[n-1].End = seg.end
 		} else {
-			redacted = append(redacted, ScrubSpan{Start: seg.start, End: seg.end})
+			redacted = append(redacted, ScrubRange{Start: seg.start, End: seg.end})
 		}
 	}
 	if pos != len(value) {
@@ -118,7 +118,7 @@ func checkScrubSpans(t *testing.T, value string) {
 // spans[i:] replaced by one or more placeholders and every other byte
 // kept, matching from value offset at and out offset j. It is independent
 // of the segment bookkeeping it checks.
-func spansExplainScrub(value, out string, spans []ScrubSpan, at, j int) bool {
+func spansExplainScrub(value, out string, spans []ScrubRange, at, j int) bool {
 	if len(spans) == 0 {
 		return out[j:] == value[at:]
 	}

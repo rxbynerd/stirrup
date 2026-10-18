@@ -1946,7 +1946,7 @@ func scrubVerifierFeedback(m *types.Message) int {
 // the ranges of its Content it replaced.
 type scrubbedToolResult struct {
 	block int
-	spans []security.ScrubSpan
+	spans []security.ScrubRange
 }
 
 // scrubToolResultsForGuard returns the guard's copy of the tool_result
@@ -1961,7 +1961,7 @@ func scrubToolResultsForGuard(m types.Message) ([]string, int, []scrubbedToolRes
 		if b.Type != "tool_result" {
 			continue
 		}
-		var ranges []security.ScrubSpan
+		var ranges []security.ScrubRange
 		n := 0
 		if b.Content != "" {
 			text, r, stats := security.ScrubWithSpans(b.Content)
@@ -1996,7 +1996,7 @@ func fenceScrubbedSpans(m *types.Message, changed []scrubbedToolResult) {
 
 // spotlightSpans returns text with each of the ordered, disjoint spans
 // replaced by its guard.ApplySpotlight wrapping.
-func spotlightSpans(text string, spans []security.ScrubSpan) string {
+func spotlightSpans(text string, spans []security.ScrubRange) string {
 	if len(spans) == 0 {
 		return text
 	}

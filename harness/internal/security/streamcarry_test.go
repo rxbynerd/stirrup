@@ -118,7 +118,7 @@ func TestStreamCarry_ReleasesProseBehindTheTail(t *testing.T) {
 	prose := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 40)
 	for i := 0; i < len(prose); i += 5 {
 		released += len(c.Push(prose[i:min(i+5, len(prose))]))
-		if held := i + 5 - released; i+5 <= len(prose) && held > StreamCarryTail+len("jumps ")+5 {
+		if held := i + 5 - released; i+5 <= len(prose) && held > streamCarryTail+len("jumps ")+5 {
 			t.Fatalf("after %d bytes the carry holds %d, want at most the tail and one word", i+5, held)
 		}
 	}
@@ -127,20 +127,20 @@ func TestStreamCarry_ReleasesProseBehindTheTail(t *testing.T) {
 	}
 }
 
-// TestStreamCarry_HoldIsBounded pins StreamCarryMax: a run no pattern ends
+// TestStreamCarry_HoldIsBounded pins streamCarryMax: a run no pattern ends
 // is released once it outgrows the bound, so a stream cannot be stalled.
 func TestStreamCarry_HoldIsBounded(t *testing.T) {
 	var c StreamCarry
-	run := "Bearer " + strings.Repeat("a", 4*StreamCarryMax)
+	run := "Bearer " + strings.Repeat("a", 4*streamCarryMax)
 	released := 0
 	for i := 0; i < len(run); i += 7 {
 		released += len(c.Push(run[i:min(i+7, len(run))]))
-		if held := min(i+7, len(run)) - released; held > StreamCarryMax {
-			t.Fatalf("carry holds %d bytes, above StreamCarryMax", held)
+		if held := min(i+7, len(run)) - released; held > streamCarryMax {
+			t.Fatalf("carry holds %d bytes, above streamCarryMax", held)
 		}
 	}
 	if released == 0 {
-		t.Fatal("nothing was released from a run four times StreamCarryMax")
+		t.Fatal("nothing was released from a run four times streamCarryMax")
 	}
 }
 

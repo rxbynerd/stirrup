@@ -422,3 +422,24 @@ func sortedCopy(in []string) []string {
 	}
 	return out
 }
+
+func TestRetreatCutPastSpans(t *testing.T) {
+	cases := map[string]struct {
+		spans [][]int
+		cut   int
+		want  int
+	}{
+		"no spans":           {nil, 10, 10},
+		"cut inside a span":  {[][]int{{4, 12}}, 10, 4},
+		"cut at span start":  {[][]int{{10, 12}}, 10, 10},
+		"cut at span end":    {[][]int{{4, 10}}, 10, 10},
+		"second pass needed": {[][]int{{6, 12}, {2, 8}}, 10, 2},
+		"unrelated spans":    {[][]int{{0, 2}, {12, 20}}, 10, 10},
+		"cut at zero":        {[][]int{{0, 5}}, 0, 0},
+	}
+	for name, tc := range cases {
+		if got := retreatCutPastSpans(tc.spans, tc.cut); got != tc.want {
+			t.Errorf("%s: retreatCutPastSpans(%v, %d) = %d, want %d", name, tc.spans, tc.cut, got, tc.want)
+		}
+	}
+}

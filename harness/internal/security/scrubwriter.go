@@ -157,21 +157,27 @@ func (w *ScrubWriter) boundaryCut(cut int) int {
 		lo = 0
 	}
 	region := w.pending[lo:]
-	rel := cut - lo
 	var spans [][]int
 	for _, p := range secretPatterns {
 		spans = append(spans, p.re.FindAllIndex(region, -1)...)
 	}
+	return lo + retreatCutPastSpans(spans, cut-lo)
+}
+
+// retreatCutPastSpans moves cut back to the start of every span that
+// crosses it, repeating until none does, since moving back can land inside
+// an earlier span that overlaps the first.
+func retreatCutPastSpans(spans [][]int, cut int) int {
 	for moved := true; moved; {
 		moved = false
 		for _, span := range spans {
-			if span[0] < rel && span[1] > rel {
-				rel = span[0]
+			if span[0] < cut && span[1] > cut {
+				cut = span[0]
 				moved = true
 			}
 		}
 	}
-	return lo + rel
+	return cut
 }
 
 func (w *ScrubWriter) emit(cut int) error {

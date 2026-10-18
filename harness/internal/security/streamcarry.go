@@ -6,17 +6,17 @@ import (
 )
 
 const (
-	// StreamCarryTail is the number of trailing bytes a StreamCarry always
+	// streamCarryTail is the number of trailing bytes a StreamCarry always
 	// holds back. It exceeds the longest text that can begin a match
 	// without yet being one: a key-name pattern's name, separator and
 	// quote, followed by one byte fewer than its fixed-length value.
-	StreamCarryTail = 96
+	streamCarryTail = 96
 
-	// StreamCarryMax bounds the bytes a StreamCarry holds. Past it the
+	// streamCarryMax bounds the bytes a StreamCarry holds. Past it the
 	// oldest bytes are released even when a match could still cross them,
 	// so a span longer than this is scrubbed in pieces and its tail
 	// reaches the sink.
-	StreamCarryMax = 8 << 10
+	streamCarryMax = 8 << 10
 
 	// streamCarryRescanBytes is the held size above which the carry
 	// rescans only once the held text has grown by a quarter, so a long
@@ -29,7 +29,7 @@ const (
 // secret pattern cannot match across, so a sink that scrubs each piece on
 // its own still redacts a secret split between two fragments.
 //
-// It holds back the last StreamCarryTail bytes, the trailing run of token
+// It holds back the last streamCarryTail bytes, the trailing run of token
 // characters, and every match that crosses the cut or could still grow: one
 // touching the end of the held text, or a PEM header whose END line has not
 // arrived. Flush releases the rest and must be called wherever the stream
@@ -44,7 +44,7 @@ func (c *StreamCarry) Push(fragment string) string {
 	c.pending = append(c.pending, fragment...)
 	c.unscanned += len(fragment)
 	var out []byte
-	if over := len(c.pending) - StreamCarryMax; over > 0 {
+	if over := len(c.pending) - streamCarryMax; over > 0 {
 		out = c.take(runeStartAtOrBefore(c.pending, over))
 	}
 	if len(c.pending) <= streamCarryRescanBytes || c.unscanned >= len(c.pending)/4 {
@@ -71,7 +71,7 @@ func (c *StreamCarry) take(n int) []byte {
 }
 
 func streamCarryCut(p []byte) int {
-	cut := len(p) - StreamCarryTail
+	cut := len(p) - streamCarryTail
 	if run := tokenRunStart(p); run < cut {
 		cut = run
 	}
@@ -121,14 +121,5 @@ func heldMatchStart(p []byte, cut int) int {
 			held = append(held, m)
 		}
 	}
-	for moved := true; moved; {
-		moved = false
-		for _, m := range held {
-			if m[0] < cut && m[1] > cut {
-				cut = m[0]
-				moved = true
-			}
-		}
-	}
-	return cut
+	return retreatCutPastSpans(held, cut)
 }
