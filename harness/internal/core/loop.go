@@ -1794,21 +1794,20 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	last := &messages[len(messages)-1]
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
 	var spans int
-	var scrubbed []int
+	var scrubbed []scrubbedToolResult
 	if feedback {
-		// Feedback is scrubbed in history too; tool results keep their
-		// content for the model and are scrubbed for the guard alone.
-		spans, scrubbed = scrubVerifierFeedback(last)
+		// Feedback is scrubbed in history too, so the guard reads what
+		// the model will and nothing needs fencing; tool results keep
+		// their content for the model and are scrubbed for the guard
+		// alone.
+		spans = scrubVerifierFeedback(last)
 		chunks = arrivedUntrustedChunks(messages)
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
 	} else {
-		spans, scrubbed = scrubbedToolResults(*last)
-		for i := range chunks {
-			chunks[i] = security.Scrub(chunks[i])
-		}
+		chunks, spans, scrubbed = scrubToolResultsForGuard(*last)
 	}
 	// A guard cannot judge what the scrubber hid from it, so with one
-	// configured the harness fences every scrubbed block for the model.
+	// configured the harness fences each hidden span for the model.
 	fence := len(scrubbed) > 0 && guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
 	in := guard.Input{
 		Phase:   guard.PhasePreTurn,
@@ -1820,7 +1819,7 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		// per-turn cost the min-chunk gate saves does not apply.
 		IgnoreMinChunk: feedback,
 	}
-	if fence {
+	if spans > 0 {
 		in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
 	}
 	allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
@@ -1832,7 +1831,7 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		spotlightUntrustedChunks(messages)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 	case fence:
-		fenceBlocks(last, scrubbed)
+		fenceScrubbedSpans(last, scrubbed)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
 	}
 	return ""
@@ -1929,57 +1928,87 @@ func isVerifierFeedback(m types.Message) bool {
 
 // scrubVerifierFeedback runs the log scrubber over the text blocks of a
 // verifier-feedback message, which can carry workspace command output,
-// and returns the spans it replaced and the blocks they were in.
-func scrubVerifierFeedback(m *types.Message) (int, []int) {
+// and returns the number of spans it replaced.
+func scrubVerifierFeedback(m *types.Message) int {
 	spans := 0
-	var blocks []int
 	for i := range m.Content {
 		if m.Content[i].Type != "text" {
 			continue
 		}
 		var stats security.ScrubStats
 		m.Content[i].Text, stats = security.ScrubWithStats(m.Content[i].Text)
-		if stats.Count > 0 {
-			spans += stats.Count
-			blocks = append(blocks, i)
-		}
+		spans += stats.Count
 	}
-	return spans, blocks
+	return spans
 }
 
-// scrubbedToolResults returns the spans the log scrubber would replace in
-// the tool_result blocks of m, Content and Structured payload alike, and
-// the blocks they are in.
-func scrubbedToolResults(m types.Message) (int, []int) {
+// scrubbedToolResult is a tool_result block the log scrubber changed and
+// the ranges of its Content it replaced.
+type scrubbedToolResult struct {
+	block int
+	spans []security.ScrubSpan
+}
+
+// scrubToolResultsForGuard returns the guard's copy of the tool_result
+// blocks of m, Content and Structured payload alike in the order
+// arrivedUntrustedChunks gives them, with the log scrubber applied; the
+// number of spans it replaced; and the blocks it changed.
+func scrubToolResultsForGuard(m types.Message) ([]string, int, []scrubbedToolResult) {
+	var chunks []string
 	spans := 0
-	var blocks []int
+	var changed []scrubbedToolResult
 	for i, b := range m.Content {
 		if b.Type != "tool_result" {
 			continue
 		}
-		_, content := security.ScrubWithStats(b.Content)
-		_, structured := security.ScrubWithStats(string(b.Structured))
-		if n := content.Count + structured.Count; n > 0 {
+		var ranges []security.ScrubSpan
+		n := 0
+		if b.Content != "" {
+			text, r, stats := security.ScrubWithSpans(b.Content)
+			chunks = append(chunks, text)
+			ranges = r
+			n += stats.Count
+		}
+		if len(b.Structured) > 0 {
+			text, stats := security.ScrubWithStats(string(b.Structured))
+			chunks = append(chunks, text)
+			n += stats.Count
+		}
+		if n > 0 {
 			spans += n
-			blocks = append(blocks, i)
+			changed = append(changed, scrubbedToolResult{block: i, spans: ranges})
 		}
 	}
-	return spans, blocks
+	return chunks, spans, changed
 }
 
-// fenceBlocks spotlights the given blocks of m, dropping their structured
-// payload so adapters send the fenced text rather than the raw JSON.
-func fenceBlocks(m *types.Message, blocks []int) {
-	for _, i := range blocks {
-		b := &m.Content[i]
-		switch b.Type {
-		case "tool_result":
-			b.Content = guard.ApplySpotlight(b.Content)
-		case "text":
-			b.Text = guard.ApplySpotlight(b.Text)
-		}
+// fenceScrubbedSpans spotlights, in each changed block of m, the original
+// text of every range the scrubber replaced, leaving the rest plain, and
+// drops the block's structured payload so adapters send the fenced text
+// rather than the raw JSON.
+func fenceScrubbedSpans(m *types.Message, changed []scrubbedToolResult) {
+	for _, c := range changed {
+		b := &m.Content[c.block]
+		b.Content = spotlightSpans(b.Content, c.spans)
 		b.Structured, b.Kind = nil, ""
 	}
+}
+
+// spotlightSpans returns text with each of the ordered, disjoint spans
+// replaced by its guard.ApplySpotlight wrapping.
+func spotlightSpans(text string, spans []security.ScrubSpan) string {
+	if len(spans) == 0 {
+		return text
+	}
+	var b strings.Builder
+	prev := 0
+	for _, s := range spans {
+		b.WriteString(text[prev:s.Start])
+		b.WriteString(guard.ApplySpotlight(text[s.Start:s.End]))
+		prev = s.End
+	}
+	b.WriteString(text[prev:])
+	return b.String()
 }
 
 // batchUntrustedChunks concatenates chunks under per-chunk delimiters
