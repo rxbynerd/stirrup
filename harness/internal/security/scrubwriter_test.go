@@ -20,9 +20,11 @@ type secretFixture struct {
 	sensitive string
 }
 
+// fatJWTFixture is a JWT with a large payload. Its header and payload hold
+// "_", as base64url segments of real tokens usually do.
 func fatJWTFixture() string {
-	payload := strings.Repeat("eyJzdWIiOiJzdGlycnVwLXJ1bm5lciIsImF1ZCI6InN0cy5hbXpvbmF3cy5jb20i", 96)
-	return "ey" + "JhbGciOiJSUzI1NiIsImtpZCI6InN0aXJydXAtdGVzdCJ9." + payload + ".c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk"
+	payload := strings.Repeat("eyJzdWIiOiJzdGlycnVwLXJ1bm5lciIs_ImF1ZCI6InN0cy5hbXpvbmF3cy5jb20i", 96)
+	return "ey" + "JhbGciOiJSUzI1NiIs_ImtpZCI6InN0aXJydXAtdGVzdCJ9." + payload + ".c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk"
 }
 
 func secretFixtures() []secretFixture {

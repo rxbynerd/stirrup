@@ -297,9 +297,6 @@ func TestRunJob_MidRunUserResponseIsInjected(t *testing.T) {
 	inputSent := make(chan struct{})
 	var mu sync.Mutex
 	var bodies []string
-	// Longer than the scrub carry's tail, so part of it reaches the
-	// control plane while the turn is held open.
-	opening := "hi, " + strings.Repeat("this opening line runs past the held tail. ", 4)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
@@ -307,7 +304,7 @@ func TestRunJob_MidRunUserResponseIsInjected(t *testing.T) {
 		n := len(bodies)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: "+`{"id":"x","choices":[{"index":0,"delta":{"content":"`+opening+`"},"finish_reason":null}]}`+"\n\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"id":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`+"\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -366,7 +363,7 @@ func TestRunJob_MidRunUserResponseIsInjected(t *testing.T) {
 		t.Fatalf("provider requests = %d, want 2 (the queued input continued the run past end_turn)", len(bodies))
 	}
 	second := bodies[1]
-	assistant := strings.Index(second, `"content":"`+opening+`"`)
+	assistant := strings.Index(second, `"content":"hi"`)
 	injected := strings.Index(second, "And again.")
 	if assistant < 0 || injected < 0 || injected < assistant {
 		t.Errorf("second request did not carry the assistant turn followed by the injected input:\n%s", second)

@@ -73,7 +73,7 @@ func checkScrubSpans(t *testing.T, value string) {
 	if !spansExplainScrub(value, want, spans, 0, 0) {
 		t.Fatalf("%q: Scrub = %q is not the input with each of spans %v replaced by placeholders", value, want, spans)
 	}
-	segs, _ := scrubSegments(value)
+	segs, _ := scrubSegments(value, nil)
 	var text strings.Builder
 	pos := 0
 	var redacted []ScrubRange
@@ -197,7 +197,7 @@ func TestReplaceSegments_MatchEndingInsidePlaceholder(t *testing.T) {
 		{text: "bb", start: 8, end: 10},
 	}
 	// "a[REDAC" in "aa[REDACTED]bb".
-	got := replaceSegments(append([]scrubSegment(nil), segs...), [][]int{{1, 8}})
+	got := replaceSegments(append([]scrubSegment(nil), segs...), [][]int{{1, 8}}, "")
 	want := []scrubSegment{
 		{text: "a", start: 0, end: 1},
 		{text: redactedPlaceholder, start: 1, end: 2, redacted: true},
@@ -208,7 +208,7 @@ func TestReplaceSegments_MatchEndingInsidePlaceholder(t *testing.T) {
 		t.Fatalf("segments = %+v, want %+v", got, want)
 	}
 	// "ED]b" in "aa[REDACTED]bb".
-	got = replaceSegments(append([]scrubSegment(nil), segs...), [][]int{{9, 13}})
+	got = replaceSegments(append([]scrubSegment(nil), segs...), [][]int{{9, 13}}, "")
 	want = []scrubSegment{
 		{text: "aa", start: 0, end: 2},
 		{text: "[REDACT", start: 2, end: 2, redacted: true},

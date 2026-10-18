@@ -793,26 +793,34 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		}
 	}
 	flushDeltas := func() {
-		emitDelta(carriedType, carry.Flush())
+		out, _ := carry.Flush()
+		emitDelta(carriedType, out)
 	}
 	defer flushDeltas()
-	pushDelta := func(eventType, text string) {
+	// pushDelta releases what the carry can of text; a whole block is
+	// complete, so it and anything held before it go out as one event.
+	pushDelta := func(eventType, text string, whole bool) {
 		if eventType != carriedType {
 			flushDeltas()
 			carriedType = eventType
 		}
-		emitDelta(eventType, carry.Push(text))
+		out, _ := carry.Push(text)
+		if whole {
+			rest, _ := carry.Flush()
+			out += rest
+		}
+		emitDelta(eventType, out)
 	}
 
 	// blockStreamed records whether the current thinking block's text
 	// reached the transport as deltas; a block that arrives whole is
 	// forwarded as one delta at its boundary instead.
 	blockStreamed := false
-	forwardThinking := func(text string) {
+	forwardThinking := func(text string, whole bool) {
 		if !streamThinking || text == "" {
 			return
 		}
-		pushDelta("thinking_delta", text)
+		pushDelta("thinking_delta", text, whole)
 	}
 
 	for event := range ch {
@@ -832,7 +840,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			currentText += event.Text
-			pushDelta("text_delta", event.Text)
+			pushDelta("text_delta", event.Text, false)
 
 		case "tool_call":
 			// Flush any accumulated text block.
@@ -887,13 +895,13 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 
 		case "thinking_delta":
 			blockStreamed = true
-			forwardThinking(event.Text)
+			forwardThinking(event.Text, false)
 
 		case "thinking", "redacted_thinking":
 			// Persisted in stream order so the provider can replay them.
 			// Redacted reasoning is opaque and never forwarded.
 			if event.Type == "thinking" && !blockStreamed {
-				forwardThinking(event.Text)
+				forwardThinking(event.Text, true)
 			}
 			blockStreamed = false
 			if inText {

@@ -129,8 +129,14 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 			}
 			close(ch)
 			_, _ = streamEventsToResult(tc.ctx, ch, rec, true, ignoreEmitFailure)
+			// Deltas of one type in a row are joined: their count is not
+			// part of the contract, their order and text are.
 			var got []string
 			for _, ev := range rec.events {
+				if n := len(got); n > 0 && ev.Text != "" && strings.HasPrefix(got[n-1], ev.Type+":") {
+					got[n-1] += ev.Text
+					continue
+				}
 				got = append(got, ev.Type+":"+ev.Text)
 			}
 			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
@@ -147,10 +153,10 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 func TestStreamEventsToResult_CancellationFlushesHeldText(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	long := strings.Repeat("words of reasoning ", 20)
+	// The carry holds the trailing "sk-ant-", which could begin a key.
+	first := "the key starts sk-ant-"
 	events := []types.StreamEvent{
-		{Type: "text_delta", Text: "first "},
-		{Type: "text_delta", Text: long},
+		{Type: "text_delta", Text: first},
 		{Type: "text_delta", Text: "never read"},
 	}
 	ch := make(chan types.StreamEvent, len(events))
@@ -165,7 +171,7 @@ func TestStreamEventsToResult_CancellationFlushesHeldText(t *testing.T) {
 	if len(rec.events) < 2 {
 		t.Fatalf("emitted %d events, want the release that cancelled and the flush after it", len(rec.events))
 	}
-	if got := joinedText(rec.events, "text_delta"); got != "first "+long {
+	if got := joinedText(rec.events, "text_delta"); got != first {
 		t.Errorf("text emitted = %q, want everything pushed before the cancellation", got)
 	}
 }
