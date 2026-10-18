@@ -286,8 +286,9 @@ SSNs) are removed from its input only under that action; under `abort`,
 `warn` and the permission-channel action they reach the guard as the
 tool returned them. Under every action the guard's copy has the log
 scrubber applied. That copy is the only one the scrubber changes: the
-model sees the tool result as redaction left it, spotlighted when the
-scrubber replaced a span the guard therefore could not read (see
+model sees the tool result as redaction left it, and each span the
+scrubber replaced, which the guard could not read, is spotlighted in
+place (see
 [Scrubbed content is fenced](security.md#scrubbed-content-is-fenced)).
 
 **Two confidence tiers.** A *latch-tier* finding is high-confidence

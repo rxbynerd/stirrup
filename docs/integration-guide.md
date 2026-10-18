@@ -893,8 +893,12 @@ still matches its `tool_result.tool_use_id`, but a `request_id` longer
 than 1 KiB comes back shortened and does not match the one sent.
 
 **Secrets.** Every text field is scrubbed of recognised secret formats
-before it is sent, one event at a time. A secret split across two
-`text_delta` or `thinking_delta` fragments is not recognised; see
+before it is sent, one event at a time. The harness holds back the end
+of the model's text and reasoning until no secret pattern can still
+match across it, so a secret split between two provider deltas is
+redacted. `text_delta` and `thinking_delta` events therefore trail the
+model by about two dozen tokens, and their boundaries do not match the
+provider's deltas. A span longer than 8 KiB can still be cut; see
 [`security.md`](security.md#control-stream-scrubbing).
 
 **Capability gating.** A harness that predates these events sends none

@@ -80,15 +80,24 @@ outbound request, not one per chunk. Combined with the opt-in
 this keeps the per-turn overhead bounded even when many small tool
 outputs are returned.
 
-The guard receives arrived content with the log scrubber applied, so a
-span the scrubber replaces reaches it as `[REDACTED]`. Since the guard
-cannot judge what it cannot see, the harness spotlights every tool
-result or verifier feedback block that held such a span, whatever the
-verdict. It also sets `Input.Metadata["redacted_spans"]` to the number
-of spans replaced, for guard implementations that want it; the shipped
-adapters do not forward it, so the `[REDACTED]` placeholder in the
-content is the only signal they pass on. A block the guard also
-spotlights is wrapped once. See
+Every `pre_turn` input reaches the guard with the log scrubber applied:
+the prompt and dynamic context at turn 0, a mid-run `user_response`,
+tool results and verifier feedback. A span the scrubber replaces
+reaches the guard as `[REDACTED]`, and `Input.Metadata["redacted_spans"]`
+gives the number replaced, for guard implementations that want it; the
+shipped adapters do not forward it, so the `[REDACTED]` placeholder in
+the content is the only signal they pass on. Turn-0 dynamic context
+reaches the guard as the system prompt renders it, after sanitisation
+and the Rule-of-Two `redact` action.
+
+Since the guard cannot judge what it cannot see, the harness spotlights,
+whatever the verdict, each span the scrubber replaced in a tool result,
+leaving the rest of the result as plain text the guard has read. A
+result the guard also spotlights is wrapped once as a whole. Verifier
+feedback is scrubbed in the model's history too, so it needs no fence.
+Operator input (the prompt, dynamic context and `user_response`) is not
+fenced either: the model receives it as written, apart from the
+sanitisation and Rule-of-Two redaction of dynamic context. See
 [Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
 A deny or spotlight of arrived tool results, like the harness's own
 fence, drops each result's structured payload, which the Anthropic and
