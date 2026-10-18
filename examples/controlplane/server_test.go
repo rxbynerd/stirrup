@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -410,6 +411,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"unreadable config", []string{"-config", filepath.Join(t.TempDir(), "absent.json")}},
 		{"unknown flag", []string{"-bogus"}},
 		{"unusable listen address", []string{"-config", cfg, "-listen", "not-an-address"}},
+		{"follow-up without followUpGrace", []string{"-config", cfg, "-followup", "again"}},
+		{"empty follow-up", []string{"-config", cfg, "-followup", " "}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -433,3 +436,115 @@ type errStream struct{}
 
 func (errStream) Recv() (*harnessv1.HarnessEvent, error) { return nil, errors.New("boom") }
 func (errStream) Send(*harnessv1.ControlEvent) error     { return nil }
+
+func TestHandleRendersTurnAbandoned(t *testing.T) {
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	turn := int32(2)
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "turn_started", Turn: &turn},
+		{Type: "turn_abandoned", Turn: &turn, AbandonReason: "empty_response"},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	if _, err := srv.handle(context.Background(), stream); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "[turn_abandoned] 2 empty_response") {
+		t.Errorf("stderr lacks the abandoned turn:\n%s", errOut.String())
+	}
+}
+
+func TestHandleSendsFollowUpsAfterEachDone(t *testing.T) {
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	srv.followUps = []string{"second", "third"}
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "done", StopReason: "success"},
+		{Type: "run_started", Id: "run-1-2"},
+		{Type: "done", StopReason: "success"},
+		{Type: "run_started", Id: "run-1-3"},
+		{Type: "done", StopReason: "max_turns"},
+		{Type: "text_delta", Text: "never read"},
+	}}
+
+	res, err := srv.handle(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if res.Succeeded() || res.Outcome != "max_turns" || strings.Join(res.Outcomes, ",") != "success,success,max_turns" {
+		t.Errorf("result = %+v, want three runs ending max_turns and not succeeded", res)
+	}
+	if len(stream.events) != 1 {
+		t.Errorf("handle read past the last run's done: %d events left", len(stream.events))
+	}
+	var got []string
+	for _, ev := range stream.sent {
+		got = append(got, ev.GetType()+":"+ev.GetUserResponse()+":"+ev.GetRequestId())
+	}
+	if want := "task_assignment::,user_response:second:followup-1,user_response:third:followup-2"; strings.Join(got, ",") != want {
+		t.Errorf("sent = %v, want %s", got, want)
+	}
+	if !strings.Contains(errOut.String(), "[followup] followup-1: second") {
+		t.Errorf("stderr lacks the follow-up:\n%s", errOut.String())
+	}
+}
+
+func TestHandleFailsWhenStreamClosesBeforeFollowUpRun(t *testing.T) {
+	srv, _, _ := testServer(t, permissionDeny, "")
+	srv.followUps = []string{"second"}
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	if _, err := srv.handle(context.Background(), stream); err == nil {
+		t.Fatal("handle: want an error when the stream closes before the follow-up run's done")
+	}
+}
+
+func TestHandleEscapesTerminalControls(t *testing.T) {
+	srv, out, errOut := testServer(t, permissionDeny, "")
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1\x1b]0;pwned\a"},
+		{Type: "text_delta", Text: "red \x1b[31mtext\x1b[0m\nnext\tline\r"},
+		{Type: "thinking_delta", Text: "\u202eevil"},
+		{Type: "tool_call", Id: "tc1", Name: "read\x1b[2Jfile", Input: []byte(`{"p":"a\u0007"}`)},
+		{Type: "tool_result", ToolUseId: "tc1", Name: "read_file", Content: "line1\nline2\x1b[1A\xff"},
+		{Type: "warning", Message: "careful\u009b31m"},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	if _, err := srv.handle(context.Background(), stream); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if want := `red \x1b[31mtext\x1b[0m` + "\nnext\tline" + `\r`; out.String() != want {
+		t.Errorf("stdout = %q, want %q", out.String(), want)
+	}
+	for _, want := range []string{
+		`v1\x1b]0;pwned\x07`,
+		`\u202eevil`,
+		`[tool_call] read\x1b[2Jfile`,
+		`line1\nline2\x1b[1A\xff`,
+		`careful\x9b31m`,
+	} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut.String())
+		}
+	}
+	for _, b := range []byte{0x1b, 0x07, 0x0d} {
+		if bytes.IndexByte(out.Bytes(), b) >= 0 || bytes.IndexByte(errOut.Bytes(), b) >= 0 {
+			t.Errorf("raw control byte %#x reached the terminal", b)
+		}
+	}
+	if strings.ContainsRune(errOut.String(), 0x202e) || strings.ContainsRune(errOut.String(), 0x9b) {
+		t.Error("a raw bidi override or C1 control reached the terminal")
+	}
+}
+
+func TestPreviewCutsOnRuneBoundary(t *testing.T) {
+	got := preview(strings.Repeat("é", maxToolResultPreview))
+	if !strings.HasSuffix(got, "...") || len(got) > maxToolResultPreview+3 || !utf8.ValidString(got) {
+		t.Errorf("preview = %q", got)
+	}
+}

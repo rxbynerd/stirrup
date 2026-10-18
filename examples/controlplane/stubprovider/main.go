@@ -1,7 +1,9 @@
 // Command stubprovider is a scripted OpenAI-compatible Chat Completions
 // server for exercising the harness without an API key or network access.
 // In "success" mode every request is answered with one streamed final
-// assistant message; in "error" mode every request is rejected with a 400.
+// assistant message; in "empty" mode with a streamed message that ends the
+// turn without any content; in "error" mode every request is rejected with
+// a 400.
 package main
 
 import (
@@ -26,13 +28,13 @@ func run(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stubprovider", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", "127.0.0.1:0", "address to serve on")
-	mode := fs.String("mode", "success", "scripted behaviour: success or error")
+	mode := fs.String("mode", "success", "scripted behaviour: success, empty or error")
 	addrFile := fs.String("addr-file", "", "write the bound listen address to this file once listening")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *mode != "success" && *mode != "error" {
-		writef(stderr, "stubprovider: invalid -mode %q: want success or error\n", *mode)
+	if *mode != "success" && *mode != "empty" && *mode != "error" {
+		writef(stderr, "stubprovider: invalid -mode %q: want success, empty or error\n", *mode)
 		return 2
 	}
 
@@ -71,7 +73,11 @@ func newHandler(mode string) http.Handler {
 			})
 			return
 		}
-		writeFinalMessage(w)
+		content := finalMessage
+		if mode == "empty" {
+			content = ""
+		}
+		writeFinalMessage(w, content)
 	})
 	return mux
 }
@@ -79,12 +85,12 @@ func newHandler(mode string) http.Handler {
 // writeFinalMessage streams one assistant message that ends the turn, in the
 // chunk sequence real servers use: content delta, finish_reason, usage, then
 // the [DONE] terminator.
-func writeFinalMessage(w http.ResponseWriter) {
+func writeFinalMessage(w http.ResponseWriter, content string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	chunks := []any{
 		map[string]any{"choices": []any{map[string]any{
-			"index": 0, "delta": map[string]any{"role": "assistant", "content": finalMessage}, "finish_reason": nil,
+			"index": 0, "delta": map[string]any{"role": "assistant", "content": content}, "finish_reason": nil,
 		}}},
 		map[string]any{"choices": []any{map[string]any{
 			"index": 0, "delta": map[string]any{}, "finish_reason": "stop",

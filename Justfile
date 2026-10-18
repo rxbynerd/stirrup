@@ -33,11 +33,14 @@ vuln:
 proto:
     buf generate
 
-# Smoke test: one task through examples/controlplane, a scripted
+# Smoke test: tasks through examples/controlplane, a scripted
 # OpenAI-compatible provider and the locally built `stirrup job` with the
-# local executor. Needs no container engine and no API key.
+# local executor: a successful run, a follow-up run on the same stream, and
+# a turn reported as abandoned. Needs no container engine and no API key.
 controlplane-smoke: build
     examples/controlplane/smoke.sh success
+    examples/controlplane/smoke.sh followup
+    examples/controlplane/smoke.sh abandoned-turn
 
 # The same smoke test with a scripted provider failure; passes only when
 # the run is reported as failed with a non-zero exit.
