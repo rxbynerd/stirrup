@@ -1145,6 +1145,12 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:    config.Mode,
 					RunID:   config.RunID,
 				}
+				if guard.ChecksPhase(l.GuardRail, guard.PhasePostTurn) {
+					if scrubbed, n := scrubForGuard([]string{finalText}); n > 0 {
+						in.Content = scrubbed[0]
+						in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(n)}
+					}
+				}
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {

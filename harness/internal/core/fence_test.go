@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -254,4 +257,90 @@ func TestLoop_TurnZeroDynamicContextSpansAreFenced(t *testing.T) {
 	if strings.Contains(unguarded, guard.SpotlightOpenTag) || unguarded != postTurnOnly || !strings.Contains(unguarded, pemWords) {
 		t.Error("without a pre_turn guard the system prompt changed")
 	}
+}
+
+// TestLoop_PostTurnGuardReceivesScrubbedFinalText pins that the post_turn
+// guard reads the model's final text scrubbed, with the match count.
+func TestLoop_PostTurnGuardReceivesScrubbedFinalText(t *testing.T) {
+	answer := "Done. The key was " + fakeAnthropicKey + "."
+	prov := &mockProvider{events: []types.StreamEvent{{Type: "text_delta", Text: answer}, {Type: "message_complete", StopReason: "end_turn"}}}
+	loop := buildTestLoop(prov)
+	g := &phaseRecordingGuard{}
+	loop.GuardRail = g
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	in := g.input(t, guard.PhasePostTurn)
+	if in.Content != "Done. The key was [REDACTED]." || in.Metadata[guard.MetadataRedactedSpans] != "1" {
+		t.Errorf("post_turn guard input = %q metadata %v, want the key scrubbed and redacted_spans=1", in.Content, in.Metadata)
+	}
+}
+
+// TestDispatch_PreToolGuardReceivesScrubbedArguments pins that the
+// pre_tool guard reads a call's arguments scrubbed, as Content and as
+// valid-JSON ToolInput, while the handler receives them unchanged.
+func TestDispatch_PreToolGuardReceivesScrubbedArguments(t *testing.T) {
+	awsKey := strings.Repeat("A", 40)
+	cases := []struct {
+		name, input, wantContent string
+	}{
+		{"valid after scrub", `{"cmd":"echo ghp_abcdef123 done"}`, `{"cmd":"echo [REDACTED] done"}`},
+		{"invalid after scrub", `{"env":"aws_secret_access_key=` + awsKey + `"}`, `{"env":"[REDACTED]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var handled json.RawMessage
+			tl := trivialTool()
+			tl.InputSchema = json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"},"env":{"type":"string"}}}`)
+			tl.Handler = func(_ context.Context, input json.RawMessage) (string, error) {
+				handled = input
+				return "ok", nil
+			}
+			g := &recordingPreToolGuard{}
+			loop, _ := buildMetricsHarness(t, []*tool.Tool{tl}, nil, g, nil)
+			loop.planAndDispatch(context.Background(), configWithMaxParallel(1),
+				[]types.ToolCall{{ID: "tc", Name: "trivial", Input: json.RawMessage(tc.input)}}, &stallDetector{}, "", "")
+
+			inputs := g.preToolInputs()
+			if len(inputs) != 1 {
+				t.Fatalf("pre_tool guard calls = %d, want 1", len(inputs))
+			}
+			in := inputs[0]
+			if in.Content != tc.wantContent || in.Metadata[guard.MetadataRedactedSpans] != "1" {
+				t.Errorf("pre_tool guard input = %q metadata %v, want %q and redacted_spans=1", in.Content, in.Metadata, tc.wantContent)
+			}
+			if !json.Valid(in.ToolInput) || strings.Contains(string(in.ToolInput), "ghp_abcdef123") || strings.Contains(string(in.ToolInput), awsKey) {
+				t.Errorf("guard ToolInput = %s, want valid JSON without the secret", in.ToolInput)
+			}
+			if string(handled) != tc.input {
+				t.Errorf("handler received %s, want the original arguments %s", handled, tc.input)
+			}
+		})
+	}
+}
+
+// phaseRecordingGuard allows everything and records each input by phase.
+type phaseRecordingGuard struct {
+	mu     sync.Mutex
+	inputs []guard.Input
+}
+
+func (g *phaseRecordingGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.inputs = append(g.inputs, in)
+	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "phases"}, nil
+}
+
+func (g *phaseRecordingGuard) input(t *testing.T, phase guard.Phase) guard.Input {
+	t.Helper()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, in := range g.inputs {
+		if in.Phase == phase {
+			return in
+		}
+	}
+	t.Fatalf("the guard saw no %s input", phase)
+	return guard.Input{}
 }
