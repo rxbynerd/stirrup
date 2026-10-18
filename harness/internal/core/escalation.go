@@ -55,7 +55,7 @@ type EscalationInput struct {
 	// ToolsAvailable reports whether any tool was attached to the turn; the trigger never fires when false.
 	ToolsAvailable bool
 
-	// PriorToolCalls gates escalation to the first assistant turn (== 0); a model that has already used tools is trusted.
+	// PriorToolCalls gates escalation to turns before any tool call (== 0), counting a continued follow-up's carried tool calls; a model that has already used tools is trusted.
 	PriorToolCalls int
 
 	// Turn is the zero-based turn index within the run; verification repairs continue the numbering.

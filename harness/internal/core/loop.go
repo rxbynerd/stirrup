@@ -782,13 +782,13 @@ func (l *AgenticLoop) runInnerLoop(
 	var continuedText, preContinuationText string
 	stall := &stallDetector{}
 
-	// Tool-choice escalation state: priorToolCalls tracks whether the
-	// model has dispatched any tool yet this run; escalationsSoFar
-	// bounds missed-tool recovery; pendingToolChoice forces a tool
-	// choice on the next turn's Stream call, consumed once. All three
-	// are inert when EscalationPolicy is nil (default off).
-	// escalationsSoFar is not carried: the cap bounds missed-tool recovery
-	// for one prompt, and each follow-up is a new prompt.
+	// Tool-choice escalation state: priorToolCalls counts the tool calls
+	// dispatched so far, starting from those in a continued follow-up's
+	// carried history; escalationsSoFar bounds missed-tool recovery (it
+	// is not carried, as each follow-up is a new prompt);
+	// pendingToolChoice forces a tool choice on the next turn's Stream
+	// call, consumed once. All three are inert when EscalationPolicy is
+	// nil (default off).
 	priorToolCalls := l.carriedToolCalls
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto

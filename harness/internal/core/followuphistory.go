@@ -60,12 +60,10 @@ func (c *carriedHistory) continuesHistory() bool {
 	return c != nil && len(c.messages) > 0
 }
 
-// beginRunState sets the per-run state that a run's inner loops share:
-// the prior tool calls tool-choice escalation counts, and the provider
-// cache key. A run continuing carried history inherits both, so the
-// model's earlier tool use still counts and the shared prefix keeps its
-// cache affinity. Every other run starts a new conversation under a key
-// of its own run ID.
+// beginRunState sets the per-run state a run's inner loops share: the
+// tool-call count escalation starts from and the provider cache key. A run
+// continuing carried history inherits both; any other run counts zero and
+// keys on its own run ID.
 func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHistory) {
 	l.carriedToolCalls = 0
 	l.cacheKey = providerCacheKey(config.RunID)

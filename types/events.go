@@ -284,11 +284,11 @@ type StreamParams struct {
 
 	// CacheKey is a provider-neutral prompt-cache affinity hint: stable
 	// across every request of one conversation and distinct between
-	// conversations. The loop sets it to a digest of the run ID, which is
-	// not an anonymiser (run IDs are not secret) and is only as unique as
-	// the run ID; a collision shares routing affinity, not cache contents.
-	// A follow-up run that continues the previous run's history reuses
-	// that run's key.
+	// conversations. The loop sets it to a digest of the ID of the run that
+	// began the conversation; a follow-up continuing the previous run's
+	// history reuses that run's key. The digest is not an anonymiser (run
+	// IDs are not secret) and is only as unique as the run ID; a collision
+	// shares routing affinity, not cache contents.
 	// Empty means "not a multi-turn conversation": OpenAI Responses omits
 	// `prompt_cache_key` and Anthropic omits its top-level breakpoint.
 	CacheKey string `json:"cacheKey,omitempty"`

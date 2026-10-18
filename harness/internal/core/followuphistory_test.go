@@ -809,9 +809,10 @@ func TestRunFollowUpLoop_EscalationCountsCarriedToolCalls(t *testing.T) {
 		name          string
 		history       string
 		wantFollowUps int
+		wantPrompted  []int
 	}{
 		{name: "continue does not escalate", history: types.FollowUpHistoryContinue, wantFollowUps: 1},
-		{name: "reset escalates", history: types.FollowUpHistoryReset, wantFollowUps: 2},
+		{name: "reset escalates", history: types.FollowUpHistoryReset, wantFollowUps: 2, wantPrompted: []int{3, 5}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -825,8 +826,139 @@ func TestRunFollowUpLoop_EscalationCountsCarriedToolCalls(t *testing.T) {
 
 			// The primary run calls a tool, then answers; the scripted
 			// follow-ups answer without calling one.
-			if got, want := len(prov.params()), 2+2*tc.wantFollowUps; got != want {
+			calls := prov.params()
+			if got, want := len(calls), 2+2*tc.wantFollowUps; got != want {
 				t.Errorf("provider calls = %d, want %d", got, want)
+			}
+			assertPrompted(t, calls, tc.wantPrompted)
+		})
+	}
+}
+
+// escalationPromptMarker is in the retry message the default policy
+// injects when the provider cannot force a tool choice.
+const escalationPromptMarker = "Call an appropriate tool"
+
+// promptCount returns how many messages of the request carry the
+// escalation retry message.
+func promptCount(c types.StreamParams) int {
+	n := 0
+	for _, m := range c.Messages {
+		if strings.Contains(strings.Join(textBlocks(m), "\n"), escalationPromptMarker) {
+			n++
+		}
+	}
+	return n
+}
+
+// assertPrompted fails unless exactly the calls at want carry the
+// escalation retry message.
+func assertPrompted(t *testing.T, calls []types.StreamParams, want []int) {
+	t.Helper()
+	var got []int
+	for i, c := range calls {
+		if promptCount(c) > 0 {
+			got = append(got, i)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("calls carrying the escalation retry message = %v, want %v", got, want)
+	}
+}
+
+// TestRunFollowUpLoop_ContinueEscalatesWhenCarriedHistoryHasNoToolCalls
+// pins that a continued follow-up is still escalated when nothing in the
+// carried history is a tool call.
+func TestRunFollowUpLoop_ContinueEscalatesWhenCarriedHistoryHasNoToolCalls(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	loop.Escalation = newDefaultEscalationPolicy(1, nil)
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	followUpSession(t, loop, tr, config, "follow-up")
+
+	// Each run answers without a tool and is retried once.
+	calls := prov.params()
+	if len(calls) != 4 {
+		t.Fatalf("provider calls = %d, want 4", len(calls))
+	}
+	// The follow-up's history already holds the primary run's retry
+	// message, so only the new one raises the count.
+	if promptCount(calls[3]) != promptCount(calls[2])+1 {
+		t.Errorf("follow-up retry carries %d escalation messages, its first request %d; want one more", promptCount(calls[3]), promptCount(calls[2]))
+	}
+}
+
+// TestRunFollowUpLoop_EscalationAfterWithheldHistoryStartsFromZero pins
+// that a follow-up starting from its prompt alone, after a continued
+// follow-up was stopped by the guard, neither inherits the earlier tool
+// calls nor the stopped run's cache key.
+func TestRunFollowUpLoop_EscalationAfterWithheldHistoryStartsFromZero(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
+		scriptCallTestTool,
+		scriptEndTurn,
+		{{Type: "text_delta", Text: "LEAK-MARKER answer"}, stopWith("end_turn")},
+		scriptEndTurn,
+	}}
+	loop, tr := buildUserInputTestLoop(prov)
+	loop.GuardRail = phaseMarkerGuard{phase: guard.PhasePostTurn, marker: "LEAK-MARKER"}
+	loop.Escalation = newDefaultEscalationPolicy(1, nil)
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	traces := followUpSession(t, loop, tr, config, "blocked follow-up", "fresh follow-up")
+
+	wantOutcomes := []string{"success", "guardrail_blocked", "success"}
+	for i, want := range wantOutcomes {
+		if traces[i].Outcome != want {
+			t.Fatalf("run %d outcome = %q, want %q", i, traces[i].Outcome, want)
+		}
+	}
+	// Primary: tool call, answer. Blocked follow-up: one call, not
+	// escalated because the carried history holds a tool call. Fresh
+	// follow-up: an answer without a tool, then its retry.
+	calls := prov.params()
+	if len(calls) != 5 {
+		t.Fatalf("provider calls = %d, want 5", len(calls))
+	}
+	assertPrompted(t, calls, []int{4})
+	want := providerCacheKey(traces[2].ID)
+	for _, i := range []int{3, 4} {
+		if calls[i].CacheKey != want {
+			t.Errorf("call %d CacheKey = %q, want the fresh follow-up's own %q", i, calls[i].CacheKey, want)
+		}
+	}
+	if calls[2].CacheKey != providerCacheKey(traces[0].ID) {
+		t.Errorf("blocked follow-up CacheKey = %q, want the primary run's", calls[2].CacheKey)
+	}
+}
+
+func TestBeginRunState(t *testing.T) {
+	config := buildTestConfig()
+	own := providerCacheKey(config.RunID)
+	history := []types.Message{userText("task"), assistantText("done")}
+	cases := []struct {
+		name      string
+		carried   *carriedHistory
+		wantKey   string
+		wantCalls int
+	}{
+		{name: "no carried history", wantKey: own},
+		{name: "withheld history", carried: &carriedHistory{withheld: "guardrail_blocked", cacheKey: "k", toolCalls: 3}, wantKey: own},
+		{name: "empty messages", carried: &carriedHistory{cacheKey: "k", toolCalls: 3}, wantKey: own},
+		{name: "carried history without a key", carried: &carriedHistory{messages: history, toolCalls: 2}, wantKey: own, wantCalls: 2},
+		{name: "carried history", carried: &carriedHistory{messages: history, cacheKey: "k", toolCalls: 2}, wantKey: "k", wantCalls: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loop := buildTestLoop(nil)
+			// State from an earlier run must not leak into this one.
+			loop.cacheKey = "stale"
+			loop.carriedToolCalls = 9
+			loop.beginRunState(config, tc.carried)
+			if loop.cacheKey != tc.wantKey || loop.carriedToolCalls != tc.wantCalls {
+				t.Errorf("cacheKey, carriedToolCalls = %q, %d, want %q, %d", loop.cacheKey, loop.carriedToolCalls, tc.wantKey, tc.wantCalls)
 			}
 		})
 	}
