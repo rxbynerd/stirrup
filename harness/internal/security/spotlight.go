@@ -17,6 +17,37 @@ func Spotlight(content string) string {
 	return SpotlightOpenTag + base64.StdEncoding.EncodeToString([]byte(content)) + SpotlightCloseTag
 }
 
+// DecodeFences returns s with each spotlight fence replaced by the text it
+// encodes, and false if a fence is unclosed or its payload is not base64.
+func DecodeFences(s string) (string, bool) {
+	var b strings.Builder
+	for {
+		open := strings.Index(s, SpotlightOpenTag)
+		if open < 0 {
+			if strings.Contains(s, SpotlightCloseTag) {
+				return "", false
+			}
+			b.WriteString(s)
+			return b.String(), true
+		}
+		if strings.Contains(s[:open], SpotlightCloseTag) {
+			return "", false
+		}
+		b.WriteString(s[:open])
+		s = s[open+len(SpotlightOpenTag):]
+		end := strings.Index(s, SpotlightCloseTag)
+		if end < 0 {
+			return "", false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(s[:end])
+		if err != nil {
+			return "", false
+		}
+		b.Write(decoded)
+		s = s[end+len(SpotlightCloseTag):]
+	}
+}
+
 // ScrubFenced is Scrub for text that may hold spotlight fences: the decoded
 // payload of each fence is scrubbed and re-encoded, so a secret the
 // harness fenced for the model is redacted wherever the text is persisted.

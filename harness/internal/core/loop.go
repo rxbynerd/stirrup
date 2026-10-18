@@ -292,18 +292,27 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 	l.turnZeroContext = sortedContextValues(dynamicContext)
+	// The turn-0 guard reads dynamic context scrubbed, so with one
+	// configured the model reads the text it could not see fenced.
+	var fencedContext map[string]string
+	if guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn) {
+		if fencedContext = fenceDynamicContext(dynamicContext); len(fencedContext) > 0 {
+			l.recordSpotlightApplied(runCtx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "dynamic context held spans the scrubber replaced"})
+		}
+	}
 	l.writeProtection = l.buildWriteProtection()
 
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
-		Mode:               config.Mode,
-		Workspace:          config.Executor.Workspace,
-		Executor:           l.Executor,
-		MaxTurns:           config.MaxTurns,
-		Model:              promptModel,
-		DynamicContext:     dynamicContext,
-		OutputSchema:       config.OutputSchema,
-		RepositoryGuidance: l.repositoryGuidance,
+		Mode:                 config.Mode,
+		Workspace:            config.Executor.Workspace,
+		Executor:             l.Executor,
+		MaxTurns:             config.MaxTurns,
+		Model:                promptModel,
+		DynamicContext:       dynamicContext,
+		FencedDynamicContext: fencedContext,
+		OutputSchema:         config.OutputSchema,
+		RepositoryGuidance:   l.repositoryGuidance,
 	})
 	if err != nil {
 		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
@@ -2031,6 +2040,21 @@ const (
 	// pairs.
 	fenceMaxRanges = 32
 )
+
+// fenceDynamicContext returns, for each value of dynamicContext holding
+// text the scrubber replaces, the value with those ranges fenced.
+func fenceDynamicContext(dynamicContext map[string]string) map[string]string {
+	var fenced map[string]string
+	for k, v := range dynamicContext {
+		if _, ranges, _ := security.ScrubWithSpans(v); len(ranges) > 0 {
+			if fenced == nil {
+				fenced = make(map[string]string)
+			}
+			fenced[k] = fenceRanges(v, ranges)
+		}
+	}
+	return fenced
+}
 
 // fenceRanges returns text with its ordered, disjoint ranges spotlighted:
 // nearby ranges share a fence, and past fenceMaxRanges the whole text is

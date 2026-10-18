@@ -36,6 +36,11 @@ type PromptContext struct {
 	// a prompt/model comparison run.
 	Model          string
 	DynamicContext map[string]string
+	// FencedDynamicContext holds, for a DynamicContext key, its sanitised
+	// value with spans spotlight-fenced, rendered in place of the value.
+	// An entry whose fences do not decode to that sanitised value is
+	// ignored, so the field cannot add text or tags of its own.
+	FencedDynamicContext map[string]string
 	// OutputSchema is RunConfig.OutputSchema: the JSON Schema the final
 	// answer must satisfy. Empty when the run returns free text.
 	OutputSchema json.RawMessage

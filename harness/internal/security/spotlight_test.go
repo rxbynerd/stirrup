@@ -29,3 +29,22 @@ func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeFences(t *testing.T) {
+	cases := map[string]struct {
+		in, want string
+		ok       bool
+	}{
+		"plain":            {"no fences", "no fences", true},
+		"two fences":       {"a " + Spotlight("x") + " b " + Spotlight("y"), "a x b y", true},
+		"unclosed":         {"a " + SpotlightOpenTag + "eA==", "", false},
+		"stray close":      {"a " + SpotlightCloseTag + " b", "", false},
+		"not base64":       {SpotlightOpenTag + "not base64!" + SpotlightCloseTag, "", false},
+		"close before one": {SpotlightCloseTag + Spotlight("x"), "", false},
+	}
+	for name, tc := range cases {
+		if got, ok := DecodeFences(tc.in); got != tc.want || ok != tc.ok {
+			t.Errorf("%s: DecodeFences = %q, %v; want %q, %v", name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
