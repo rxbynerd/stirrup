@@ -474,7 +474,9 @@ the run ID, but the digest is not an anonymiser: run IDs are not
 secret, and anyone holding a candidate run ID can recompute the key.
 The key is only as unique as the run ID, so control planes should keep
 run IDs unique per credential; a collision affects routing affinity
-only. On models before GPT-5.6 a stable key routes related
+only. A follow-up run that continues the previous run's history
+(`followUpHistory: "continue"`) reuses that run's key, since it resends
+the same prefix. On models before GPT-5.6 a stable key routes related
 requests to the same cache, and OpenAI suggests keeping each key to
 about 15 requests per minute; on GPT-5.6 and later routing is automatic
 and the key only keeps cache accounting separate per run. Summariser,
