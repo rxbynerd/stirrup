@@ -80,6 +80,14 @@ outbound request, not one per chunk. Combined with the opt-in
 this keeps the per-turn overhead bounded even when many small tool
 outputs are returned.
 
+The guard receives arrived content with the log scrubber applied, so a
+span the scrubber replaces reaches it as `[REDACTED]`. Since the guard
+cannot judge what it cannot see, the harness spotlights every tool
+result or verifier feedback block that held such a span, whatever the
+verdict, and sets `Input.Metadata["redacted_spans"]` to the number of
+spans replaced. A block the guard also spotlights is wrapped once. See
+[Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
+
 ### `pre_tool` (recommended for production)
 
 Pre-tool catches three things:
@@ -651,7 +659,7 @@ Five instruments emitted by `harness/internal/observability/metrics.go`:
 | `stirrup.guard.checks` | counter | `guard.id`, `guard.phase`, `guard.verdict` |
 | `stirrup.guard.errors` | counter | `guard.id`, `guard.phase` |
 | `stirrup.guard.skips` | counter | `guard.id`, `guard.phase`, `reason` |
-| `stirrup.guard.spotlights` | counter | `guard.id` |
+| `stirrup.guard.spotlights` | counter | `guard.id` (`harness:scrubbed-spans` for the harness's own fence) |
 | `stirrup.guard.duration` | histogram | `guard.id`, `guard.phase` |
 
 A healthy production fleet sees `errors` and `skips` at low rates

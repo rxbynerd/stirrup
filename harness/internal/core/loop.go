@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1769,18 +1770,25 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	// The guard sees content after redaction and scrubbing, never the
 	// raw chunks the Rule-of-Two scan observed, so a remote classifier
 	// never receives a secret.
+	last := &messages[len(messages)-1]
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+	var spans int
+	var scrubbed []int
 	if feedback {
 		// Feedback is scrubbed in history too; tool results keep their
 		// content for the model and are scrubbed for the guard alone.
-		scrubVerifierFeedback(&messages[len(messages)-1])
+		spans, scrubbed = scrubVerifierFeedback(last)
 		chunks = arrivedUntrustedChunks(messages)
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
 	} else {
+		spans, scrubbed = scrubbedToolResults(*last)
 		for i := range chunks {
 			chunks[i] = security.Scrub(chunks[i])
 		}
 	}
+	// A guard cannot judge what the scrubber hid from it, so with one
+	// configured the harness fences every scrubbed block for the model.
+	fence := len(scrubbed) > 0 && guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
 	in := guard.Input{
 		Phase:   guard.PhasePreTurn,
 		Content: batchUntrustedChunks(chunks),
@@ -1791,6 +1799,9 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		// per-turn cost the min-chunk gate saves does not apply.
 		IgnoreMinChunk: feedback,
 	}
+	if fence {
+		in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
+	}
 	allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 	l.ratchetRuleOfTwo(ctx, config, decision, turn)
 	switch {
@@ -1799,9 +1810,20 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	case spotlight:
 		spotlightUntrustedChunks(messages)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
+		if fence {
+			fenceBlocks(last, scrubbed, true)
+		}
+	case fence:
+		fenceBlocks(last, scrubbed, false)
+		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
 	}
 	return ""
 }
+
+// harnessSpotlightGuardID attributes a spotlight the harness applied
+// itself, for content holding scrubbed spans, in metrics and security
+// events.
+const harnessSpotlightGuardID = "harness:scrubbed-spans"
 
 // appendVerifierFeedback adds feedback to the history and returns the
 // outcome that ends the run when screening stops it. After an inner loop
@@ -1895,12 +1917,60 @@ func isVerifierFeedback(m types.Message) bool {
 }
 
 // scrubVerifierFeedback runs the log scrubber over the text blocks of a
-// verifier-feedback message, which can carry workspace command output.
-func scrubVerifierFeedback(m *types.Message) {
+// verifier-feedback message, which can carry workspace command output,
+// and returns the spans it replaced and the blocks they were in.
+func scrubVerifierFeedback(m *types.Message) (int, []int) {
+	spans := 0
+	var blocks []int
 	for i := range m.Content {
-		if m.Content[i].Type == "text" {
-			m.Content[i].Text = security.Scrub(m.Content[i].Text)
+		if m.Content[i].Type != "text" {
+			continue
 		}
+		var stats security.ScrubStats
+		m.Content[i].Text, stats = security.ScrubWithStats(m.Content[i].Text)
+		if stats.Count > 0 {
+			spans += stats.Count
+			blocks = append(blocks, i)
+		}
+	}
+	return spans, blocks
+}
+
+// scrubbedToolResults returns the spans the log scrubber would replace in
+// the tool_result blocks of m, Content and Structured payload alike, and
+// the blocks they are in.
+func scrubbedToolResults(m types.Message) (int, []int) {
+	spans := 0
+	var blocks []int
+	for i, b := range m.Content {
+		if b.Type != "tool_result" {
+			continue
+		}
+		_, content := security.ScrubWithStats(b.Content)
+		_, structured := security.ScrubWithStats(string(b.Structured))
+		if n := content.Count + structured.Count; n > 0 {
+			spans += n
+			blocks = append(blocks, i)
+		}
+	}
+	return spans, blocks
+}
+
+// fenceBlocks spotlights the given blocks of m that are not already
+// spotlighted, and drops their structured payload so adapters send the
+// fenced text rather than the raw JSON.
+func fenceBlocks(m *types.Message, blocks []int, spotlighted bool) {
+	for _, i := range blocks {
+		b := &m.Content[i]
+		if !spotlighted {
+			switch b.Type {
+			case "tool_result":
+				b.Content = guard.ApplySpotlight(b.Content)
+			case "text":
+				b.Text = guard.ApplySpotlight(b.Text)
+			}
+		}
+		b.Structured, b.Kind = nil, ""
 	}
 }
 

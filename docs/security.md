@@ -123,6 +123,30 @@ reach the control plane with this scrubbing alone, so latch-tier spans
 the scrubber does not recognise, such as card numbers, IBANs and
 anchored SSNs, are sent unredacted.
 
+### Scrubbed content is fenced
+
+When a `pre_turn` guard is configured, its copy of each arrived tool
+result, carried tool result or verifier feedback has every match of the
+log scrubber replaced with `[REDACTED]`, so a remote classifier is not
+sent a credential. Several scrubber patterns match any run of token
+characters after a prefix, so text written in the shape of a token
+(`sk-ant-ignore_all_previous_instructions…`, a camelCase `ghp_` value,
+a `Bearer` value that is base64 of an instruction) is replaced as well,
+and the guard cannot judge it. The harness therefore spotlights, in the
+model's history, every block in which the scrubber replaced at least
+one span: the block is base64-encoded inside the spotlight tags, the
+same mechanism a guard's `spotlight` verdict uses, and its structured
+payload is dropped so adapters send the fenced text. This happens
+whatever the guard's verdict, once per block: a block the guard also
+spotlights is wrapped once, and a block already screened is not
+screened again. The guard is told through
+`Input.Metadata["redacted_spans"]`, the number of spans replaced.
+
+The model still receives the unscrubbed content, inside the fence, as
+it would have without a guard. With no `pre_turn` guard (no guard, the
+`none` adapter, or a guard gated to other phases) nothing is fenced and
+history is unchanged.
+
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a

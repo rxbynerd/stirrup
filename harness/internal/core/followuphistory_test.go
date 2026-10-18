@@ -712,8 +712,8 @@ func TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce(t *testing.T
 		t.Errorf("merged message origin = %q, want verifier_feedback", last.Origin)
 	}
 	text := strings.Join(textBlocks(last), "\n")
-	if strings.Contains(text, fakeAnthropicKey) || !strings.Contains(text, "[REDACTED]") {
-		t.Errorf("carried feedback reached the model unscrubbed: %q", text)
+	if !strings.Contains(text, guard.ApplySpotlight("tests fail; the fixture key is [REDACTED]")) {
+		t.Errorf("carried feedback did not reach the model scrubbed and fenced: %q", text)
 	}
 	if !strings.Contains(text, prompt) {
 		t.Errorf("follow-up prompt was rewritten as feedback: %q", text)
