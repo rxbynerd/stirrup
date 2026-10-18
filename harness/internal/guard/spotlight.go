@@ -1,14 +1,12 @@
 package guard
 
-import (
-	"encoding/base64"
-)
+import "github.com/rxbynerd/stirrup/harness/internal/security"
 
 // Spotlight wrapper tags. Exported so callers can recognise already-
 // spotlighted content and avoid double wrapping.
 const (
-	SpotlightOpenTag  = "<untrusted_content_b64>"
-	SpotlightCloseTag = "</untrusted_content_b64>"
+	SpotlightOpenTag  = security.SpotlightOpenTag
+	SpotlightCloseTag = security.SpotlightCloseTag
 )
 
 // ApplySpotlight wraps content for "spotlighting" per Hines et al.
@@ -20,6 +18,5 @@ const (
 // around plain text to bypass encoding, so idempotency must never be
 // inferred from the tags alone.
 func ApplySpotlight(content string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return SpotlightOpenTag + encoded + SpotlightCloseTag
+	return security.Spotlight(content)
 }

@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -372,5 +375,33 @@ func TestLoop_TurnZeroGuardReceivesRedactedScrubbedContext(t *testing.T) {
 	}
 	if strings.Contains(prov.lastParams.System, fakeLuhnCard) {
 		t.Error("the model's system prompt carried the card the redact action removes")
+	}
+}
+
+// TestScreenArrivedContent_PersistedTraceHoldsNoFencedSecret pins that the
+// fence the loop puts around a secret for the model does not carry the
+// secret into the JSONL trace in decodable form.
+func TestScreenArrivedContent_PersistedTraceHoldsNoFencedSecret(t *testing.T) {
+	prov := &recordingScriptProvider{script: emitToolScript}
+	loop, _ := buildUserInputTestLoop(prov)
+	registerEmitTool(t, loop, "key "+fakeAnthropicKey)
+	loop.GuardRail = &inputRecordingGuard{}
+	var buf bytes.Buffer
+	loop.Trace = trace.NewJSONLTraceEmitter(&buf, false)
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if results := toolResultContents(prov.params()[1].Messages); len(results) != 1 || !strings.Contains(results[0], guard.SpotlightOpenTag) {
+		t.Fatalf("tool result sent to the model = %q, want the key fenced", results)
+	}
+	persisted := buf.String()
+	if !strings.Contains(persisted, "untrusted_content_b64") {
+		t.Fatal("the trace holds no fence, so the check below proves nothing")
+	}
+	for _, leak := range []string{fakeAnthropicKey, base64.StdEncoding.EncodeToString([]byte(fakeAnthropicKey))} {
+		if strings.Contains(persisted, leak) {
+			t.Errorf("JSONL trace carries %q", leak)
+		}
 	}
 }
