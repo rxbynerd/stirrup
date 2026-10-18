@@ -162,7 +162,7 @@ the same date, so the API no longer serves it.
 - A top-level `"cache_control": {"type": "ephemeral"}` turns on automatic
   caching: the API places a second breakpoint on the last cacheable block
   of each request, so the history written on one turn is read back on
-  the next. Only main-loop turns send it, identified by the per-run cache
+  the next. Only main-loop turns send it, identified by carrying the cache
   key described under [OpenAI Responses](#openai-responses-api); a one-shot
   call never extends a history, so a write there would not be read back.
 
@@ -465,21 +465,27 @@ exercised it.
 **Prompt caching.** The Responses API caches automatically, with no
 breakpoint in the request: the cached prefix covers the tools,
 `instructions` and the input history, and GPT-5.6 and later need a
-prefix of at least 1,024 tokens. The adapter adds a per-run
+prefix of at least 1,024 tokens. The adapter adds a
 `prompt_cache_key` (the `PromptCacheKey`
 [quirk](provider-quirks.md#21-providerquirks)): the first 32 hex
-characters of the SHA-256 of the run ID, so it is stable across the
-run's turns and distinct between runs and sub-agents. It does not send
-the run ID, but the digest is not an anonymiser: run IDs are not
-secret, and anyone holding a candidate run ID can recompute the key.
-The key is only as unique as the run ID, so control planes should keep
-run IDs unique per credential; a collision affects routing affinity
-only. A follow-up run that continues the previous run's history
+characters of the SHA-256 of a run ID, so it is stable across the
+run's turns and distinct between runs and sub-agents, except that a
+follow-up run continuing the previous run's history
 (`followUpHistory: "continue"`) reuses that run's key, since it resends
-the same prefix. On models before GPT-5.6 a stable key routes related
-requests to the same cache, and OpenAI suggests keeping each key to
-about 15 requests per minute; on GPT-5.6 and later routing is automatic
-and the key only keeps cache accounting separate per run. Summariser,
+the same prefix. A chain of continued follow-ups therefore sends the key
+derived from the run ID that began the chain, normally the primary
+run's. A follow-up starting from its prompt alone, a `reset` follow-up,
+a sub-agent and a direct `Run` caller each use the digest of their own
+run ID. The adapter does not send the run ID, but the digest is not an
+anonymiser: run IDs are not secret, and anyone holding a candidate run
+ID can recompute the key. The key is only as unique as the run ID, so
+control planes should keep run IDs unique per credential; a collision
+affects routing affinity only. On models before GPT-5.6 a stable key
+routes related requests to the same cache, and OpenAI suggests keeping
+each key to about 15 requests per minute; on GPT-5.6 and later routing
+is automatic and the key only keeps cache accounting separate per key,
+so a chain of continued follow-ups shares one accounting group and
+every other run has its own. Summariser,
 LLM-judge and guard calls send no key. The Chat Completions adapter
 never sends one, since compatible servers may reject the field. This
 behaviour is documented, not probed.

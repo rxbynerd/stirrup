@@ -392,7 +392,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "*",
-			Description:  "OpenAI Responses: prompt_cache_key from the per-run cache key (documented, not probed)",
+			Description:  "OpenAI Responses: prompt_cache_key from the loop's conversation cache key (documented, not probed)",
 			LastVerified: Date("2026-09-30"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.PromptCacheKey = true
