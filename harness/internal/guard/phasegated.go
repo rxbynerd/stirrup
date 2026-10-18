@@ -32,9 +32,9 @@ func (p PhaseGated) Check(ctx context.Context, in Input) (*Decision, error) {
 }
 
 // ChecksPhase reports whether g evaluates content of phase p, so a caller
-// can tell a configured guard from the Noop default: false for nil, Noop,
-// a PhaseGated that does not list p, and a composite with no member that
-// checks p; true for any other guard.
+// can tell a configured guard from the Noop default: false for nil (typed
+// nil pointers included), Noop, a PhaseGated that does not list p, and a
+// composite with no member that checks p; true for any other guard.
 func ChecksPhase(g GuardRail, p Phase) bool {
 	switch v := g.(type) {
 	case nil, Noop, *Noop:
@@ -42,15 +42,15 @@ func ChecksPhase(g GuardRail, p Phase) bool {
 	case PhaseGated:
 		return slices.Contains(v.Phases, p) && ChecksPhase(v.Inner, p)
 	case *PhaseGated:
-		return slices.Contains(v.Phases, p) && ChecksPhase(v.Inner, p)
+		return v != nil && slices.Contains(v.Phases, p) && ChecksPhase(v.Inner, p)
 	case Sequential:
 		return anyChecksPhase(v.Guards, p)
 	case *Sequential:
-		return anyChecksPhase(v.Guards, p)
+		return v != nil && anyChecksPhase(v.Guards, p)
 	case Parallel:
 		return anyChecksPhase(v.Guards, p)
 	case *Parallel:
-		return anyChecksPhase(v.Guards, p)
+		return v != nil && anyChecksPhase(v.Guards, p)
 	default:
 		return true
 	}
