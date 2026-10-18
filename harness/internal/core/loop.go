@@ -1828,8 +1828,9 @@ const harnessSpotlightGuardID = "harness:scrubbed-spans"
 // appendVerifierFeedback adds feedback to the history and returns the
 // outcome that ends the run when screening stops it. After an inner loop
 // that left no assistant message the history ends on a user message, so
-// the feedback merges into it. That message is already screened and is
-// not screened again, so merged feedback is screened on its own first.
+// the feedback merges into it as a block carrying the feedback's Origin.
+// That message is already screened and is not screened again, so merged
+// feedback is screened on its own first.
 func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.RunConfig, turn int, messages []types.Message, feedback types.Message) ([]types.Message, string) {
 	if n := len(messages); n == 0 || messages[n-1].Role != "user" {
 		return append(messages, feedback), ""
@@ -1838,7 +1839,8 @@ func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.
 	if outcome := l.screenArrivedContent(ctx, config, turn, alone); outcome != "" {
 		return messages, outcome
 	}
-	return injectSyntheticUserText(messages, alone[0].Content[0].Text), ""
+	merged := types.ContentBlock{Type: "text", Text: alone[0].Content[0].Text, Origin: feedback.Origin}
+	return appendUserBlock(messages, merged, true), ""
 }
 
 // collectUntrustedChunks returns the chunks of untrusted content that

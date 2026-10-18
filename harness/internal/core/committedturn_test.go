@@ -217,6 +217,10 @@ func TestRun_FeedbackAfterNoFinalAnswerMergesIntoTheTrailingUserMessage(t *testi
 			if n := len(g.feedbackChecks()); n != 1 {
 				t.Errorf("feedback screened %d times, want 1", n)
 			}
+			blocks := retry[len(retry)-1].Content
+			if feedback := blocks[len(blocks)-1]; feedback.Type != "text" || feedback.Origin != types.MessageOriginVerifierFeedback {
+				t.Errorf("merged feedback block = %+v, want a text block carrying the verifier_feedback origin", feedback)
+			}
 		})
 	}
 

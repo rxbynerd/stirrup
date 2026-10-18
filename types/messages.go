@@ -74,6 +74,12 @@ type ContentBlock struct {
 	// Content remains the always-populated canonical fallback.
 	Structured json.RawMessage `json:"structured,omitempty"`
 	Kind       string          `json:"kind,omitempty"`
+
+	// Origin gives a text block the provenance Message.Origin gives a
+	// whole message, for harness output merged into a message of another
+	// origin: verifier feedback that joins a user message carries
+	// MessageOriginVerifierFeedback here.
+	Origin string `json:"origin,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the model.

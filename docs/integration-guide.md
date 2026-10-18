@@ -836,7 +836,10 @@ check treats the missing answer as a final message with no text and
 asks for a correction, and the verifier runs as after any other
 answer; an `llm-judge` verifier then sees no final answer. Verifier
 feedback merged this way is screened when it is appended, not at the
-next turn.
+next turn, and stays a text block of its own marked with the
+`verifier_feedback` origin, so the `llm-judge` verifier leaves it out
+and the compaction summariser labels it harness text, as they do for a
+separate feedback message.
 
 A Rule-of-Two redaction or guardrail replacement applied to the content
 afterwards, as with tool results, is not re-announced. `onDetect:

@@ -121,6 +121,10 @@ func (v *LLMJudgeVerifier) buildUserMessage(fence security.DataFence, vc VerifyC
 		}
 		fmt.Fprintf(&sb, "### %s\n\n", msg.Role)
 		for _, block := range msg.Content {
+			// Merged harness output is skipped like a synthetic message.
+			if block.Origin != "" {
+				continue
+			}
 			switch block.Type {
 			case "text":
 				sb.WriteString(security.NeutraliseFenceMarkers(block.Text))

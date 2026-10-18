@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -107,6 +108,25 @@ func TestScrubVerifierFeedback_ScrubsTextBlocks(t *testing.T) {
 	scrubVerifierFeedback(&msg)
 	if strings.Contains(msg.Content[0].Text, fakeLiveAWSKey) {
 		t.Errorf("key survived scrubbing: %q", msg.Content[0].Text)
+	}
+}
+
+// TestAppendUserBlock_KeepsMergedFeedbackSeparate pins that text merged
+// after a feedback block becomes its own block, so operator words never
+// take on the feedback's origin and the feedback keeps it.
+func TestAppendUserBlock_KeepsMergedFeedbackSeparate(t *testing.T) {
+	feedback := types.ContentBlock{Type: "text", Text: "tests failed", Origin: types.MessageOriginVerifierFeedback}
+	messages := appendUserBlock([]types.Message{userText("task")}, feedback, true)
+	messages = injectUserInput(messages, []string{"operator note"})
+
+	blocks := messages[len(messages)-1].Content
+	want := []types.ContentBlock{
+		{Type: "text", Text: "task"},
+		{Type: "text", Text: "\n\ntests failed", Origin: types.MessageOriginVerifierFeedback},
+		{Type: "text", Text: "\n\noperator note"},
+	}
+	if len(messages) != 1 || !reflect.DeepEqual(blocks, want) {
+		t.Errorf("blocks = %+v, want %+v", blocks, want)
 	}
 }
 
