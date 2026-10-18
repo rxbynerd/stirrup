@@ -170,6 +170,11 @@ type AgenticLoop struct {
 	// re-reading files the parent run may since have edited.
 	repositoryGuidance []prompt.GuidanceDocument
 
+	// turnZeroContext is the current run's dynamic-context values in key
+	// order, as the system prompt renders them: sanitised and, under the
+	// Rule-of-Two redact action, redacted.
+	turnZeroContext []string
+
 	// writeProtection is the security guard's protected-write set for
 	// the current run, built once repository guidance has loaded.
 	writeProtection security.ProtectedWriteTargets

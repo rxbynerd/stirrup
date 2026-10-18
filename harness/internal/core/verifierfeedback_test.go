@@ -35,21 +35,21 @@ func historyEndingWith(last types.Message) []types.Message {
 	}
 }
 
-func TestCollectUntrustedChunks_VerifierFeedbackTextBlocks(t *testing.T) {
+func TestArrivedUntrustedChunks_VerifierFeedbackTextBlocks(t *testing.T) {
 	messages := historyEndingWith(feedbackMessage("Test command failed:\nboom"))
-	chunks := collectUntrustedChunks(messages, 3, nil, "the task")
+	chunks := arrivedUntrustedChunks(messages)
 	if len(chunks) != 1 || chunks[0] != "Test command failed:\nboom" {
 		t.Fatalf("chunks = %q, want the feedback text only", chunks)
 	}
 }
 
-func TestCollectUntrustedChunks_EscalationNudgeNotCollected(t *testing.T) {
+func TestArrivedUntrustedChunks_EscalationNudgeNotCollected(t *testing.T) {
 	nudge := types.Message{
 		Role:      "user",
 		Synthetic: true,
 		Content:   []types.ContentBlock{{Type: "text", Text: "Please call a tool."}},
 	}
-	if chunks := collectUntrustedChunks(historyEndingWith(nudge), 3, nil, ""); chunks != nil {
+	if chunks := arrivedUntrustedChunks(historyEndingWith(nudge)); chunks != nil {
 		t.Errorf("escalation nudge collected as untrusted: %q", chunks)
 	}
 }

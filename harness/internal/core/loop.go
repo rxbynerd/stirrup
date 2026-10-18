@@ -291,6 +291,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			turnZeroAbort = true
 		}
 	}
+	l.turnZeroContext = sortedContextValues(dynamicContext)
 	l.writeProtection = l.buildWriteProtection()
 
 	promptModel := config.EffectivePromptModel()
@@ -825,18 +826,21 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, blocked, finalAssistantText, nil
 		}
 
-		// See collectUntrustedChunks / docs/guardrails.md for what
-		// counts as untrusted content per turn. Turn 0 chunks were
-		// already scanned by the Rule-of-Two monitor in Run() under their
-		// own labels, so only the guard sees them here.
+		// See docs/guardrails.md for what counts as untrusted content
+		// per turn. Turn 0 chunks were already scanned by the Rule-of-Two
+		// monitor in Run() under their own labels, so only the guard sees
+		// them here.
 		if turn == 0 {
-			if chunks := collectUntrustedChunks(messages, turn, config.DynamicContext, config.Prompt); len(chunks) > 0 {
+			if chunks, spans := turnZeroGuardChunks(config.Prompt, l.turnZeroContext); len(chunks) > 0 {
 				in := guard.Input{
 					Phase:   guard.PhasePreTurn,
 					Content: batchUntrustedChunks(chunks),
 					Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
 					Mode:    config.Mode,
 					RunID:   config.RunID,
+				}
+				if spans > 0 {
+					in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
 				}
 				allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
@@ -1711,8 +1715,8 @@ func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, ac
 }
 
 // sortedContextValues returns the non-empty dynamic-context values in
-// key order, matching collectUntrustedChunks' deterministic ordering so
-// detection events are stable across runs of the same config.
+// key order, so detection events and the turn-0 guard input are stable
+// across runs of the same config.
 func sortedContextValues(dynamicContext map[string]string) []string {
 	if len(dynamicContext) == 0 {
 		return nil
@@ -1857,36 +1861,22 @@ func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.
 	return appendUserBlock(messages, merged, true), ""
 }
 
-// collectUntrustedChunks returns the chunks of untrusted content that
-// just entered the message history at the start of the given turn: on
-// turn 0, the initial prompt plus DynamicContext entries (sorted by
-// key); on later turns, the text blocks of a verifier-feedback last
-// message, or otherwise every tool_result block's Content and
-// Structured payload in the last message — both are model-visible
-// (see docs/architecture.md "Structured tool results"), so both need
-// classification. v1 does not reclassify earlier-turn content already
-// in history, nor model-emitted text (handled at PhasePostTurn).
-func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]types.DynamicContextValue, prompt string) []string {
-	if turn == 0 {
-		chunks := make([]string, 0, 1+len(dynamicContext))
-		if prompt != "" {
-			chunks = append(chunks, prompt)
-		}
-		// Deterministic ordering: the guard adapter assigns chunk indices,
-		// and operators debugging a deny benefit from stability.
-		keys := make([]string, 0, len(dynamicContext))
-		for k := range dynamicContext {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if v := dynamicContext[k]; v.Value != "" {
-				chunks = append(chunks, v.Value)
-			}
-		}
-		return chunks
+// turnZeroGuardChunks returns the guard's copy of the content that enters
+// the run before its first turn, the prompt and then contextValues, with
+// the log scrubber applied, and the number of spans it replaced.
+func turnZeroGuardChunks(prompt string, contextValues []string) ([]string, int) {
+	chunks := make([]string, 0, 1+len(contextValues))
+	if prompt != "" {
+		chunks = append(chunks, prompt)
 	}
-	return arrivedUntrustedChunks(messages)
+	chunks = append(chunks, contextValues...)
+	spans := 0
+	for i := range chunks {
+		var stats security.ScrubStats
+		chunks[i], stats = security.ScrubWithStats(chunks[i])
+		spans += stats.Count
+	}
+	return chunks, spans
 }
 
 // arrivedUntrustedChunks returns the untrusted chunks of the message that

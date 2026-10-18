@@ -301,3 +301,50 @@ func TestScreenArrivedContent_DenyAndSpotlightDropStructuredPayload(t *testing.T
 		})
 	}
 }
+
+// TestLoop_TurnZeroGuardReceivesRedactedScrubbedContext pins that the
+// turn-0 guard reads dynamic context as the model's system prompt holds
+// it, after Rule-of-Two redaction, and with the log scrubber applied on
+// top, so neither a latch-tier span nor a credential reaches the guard.
+func TestLoop_TurnZeroGuardReceivesRedactedScrubbedContext(t *testing.T) {
+	prov := &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}}
+	loop := buildTestLoop(prov)
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+	g := &inputRecordingGuard{}
+	loop.GuardRail = g
+	config := buildTestConfig()
+	config.Prompt = "fix it, key " + fakeAnthropicKey
+	config.DynamicContext = map[string]types.DynamicContextValue{
+		"issue": {Value: "card " + fakeLuhnCard + " and token " + fakeTokenInstruction},
+	}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	g.mu.Lock()
+	inputs := append([]guard.Input(nil), g.inputs...)
+	g.mu.Unlock()
+	if len(inputs) == 0 {
+		t.Fatal("the turn-0 guard screened nothing")
+	}
+	in := inputs[0]
+	for _, s := range []string{fakeLuhnCard, fakeAnthropicKey, fakeTokenInstruction} {
+		if strings.Contains(in.Content, s) {
+			t.Errorf("turn-0 guard input carried %q: %q", s, in.Content)
+		}
+	}
+	if !strings.Contains(in.Content, ruleoftwo.RedactionPlaceholder) {
+		t.Errorf("turn-0 guard input = %q, want the Rule-of-Two redaction the model sees", in.Content)
+	}
+	// The redact action has already replaced the context's token, so the
+	// scrubber replaces only the prompt's key.
+	if got := in.Metadata[guard.MetadataRedactedSpans]; got != "1" {
+		t.Errorf("turn-0 guard metadata = %v, want %s=1", in.Metadata, guard.MetadataRedactedSpans)
+	}
+	if strings.Contains(prov.lastParams.System, fakeLuhnCard) {
+		t.Error("the model's system prompt carried the card the redact action removes")
+	}
+}
