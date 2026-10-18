@@ -156,6 +156,9 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 	for {
 		ev, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if len(res.Outcomes) > 0 {
+				return res, fmt.Errorf("stream closed before follow-up run %d sent its done event", len(res.Outcomes)+1)
+			}
 			return res, errors.New("stream closed before the done event")
 		}
 		if err != nil {
@@ -180,7 +183,7 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 		case "text_delta":
 			writef(s.out, "%s", escapeText(ev.GetText()))
 		case "tool_call":
-			writef(s.errOut, "\n[tool_call] %s %s\n", escapeLine(ev.GetName()), escapeLine(string(ev.GetInput())))
+			writef(s.errOut, "\n[tool_call] %s %s\n", escapeLine(ev.GetName()), displayInput(ev.GetInput()))
 		case "tool_result":
 			status := "ok"
 			if ev.GetIsError() {
@@ -252,7 +255,7 @@ func (s *server) decide(ctx context.Context, ev *harnessv1.HarnessEvent) bool {
 // askTerminal prompts on the terminal and treats anything but an explicit yes
 // as a denial, including end of input.
 func (s *server) askTerminal(ctx context.Context, ev *harnessv1.HarnessEvent) bool {
-	writef(s.errOut, "\n[permission] allow %s %s? [y/N] ", escapeLine(ev.GetToolName()), escapeLine(string(ev.GetInput())))
+	writef(s.errOut, "\n[permission] allow %s %s? [y/N] ", escapeLine(ev.GetToolName()), displayInput(ev.GetInput()))
 	answer := make(chan string, 1)
 	go func() {
 		line, _ := s.stdin.ReadString('\n')
@@ -279,6 +282,24 @@ func preview(s string) string {
 		n--
 	}
 	return s[:n] + "..."
+}
+
+// displayInput renders a JSON tool input as the tool will decode it: escaped
+// characters are shown decoded and a duplicated key keeps only its last
+// value, so the operator approves what will run rather than raw model bytes.
+// Input that is not valid JSON is shown escaped as received.
+func displayInput(raw []byte) string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return escapeLine(string(raw))
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return escapeLine(string(raw))
+	}
+	return escapeLine(strings.TrimSuffix(b.String(), "\n"))
 }
 
 // escapeText makes streamed model text safe to write to a terminal: it
@@ -310,7 +331,7 @@ func escapeTerminal(s string, multiline bool) string {
 			b.WriteString(`\t`)
 		case r == '\r':
 			b.WriteString(`\r`)
-		case unicode.IsControl(r) || isReorderingControl(r):
+		case unicode.IsControl(r) || isInvisible(r):
 			if r <= 0xff {
 				fmt.Fprintf(&b, `\x%02x`, r)
 			} else {
@@ -324,14 +345,13 @@ func escapeTerminal(s string, multiline bool) string {
 	return b.String()
 }
 
-// isReorderingControl reports the bidirectional formatting characters and
-// line separators, which can make displayed text differ from its bytes.
-func isReorderingControl(r rune) bool {
-	switch {
-	case r == 0x061c, r == 0x200e, r == 0x200f, r == 0x2028, r == 0x2029:
-		return true
-	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+// isInvisible reports the format characters (bidirectional controls,
+// zero-width characters, tags), line and paragraph separators and blank
+// fillers, which can make displayed text differ from its bytes.
+func isInvisible(r rune) bool {
+	switch r {
+	case 0x115f, 0x1160, 0x3164, 0xffa0:
 		return true
 	}
-	return false
+	return unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }

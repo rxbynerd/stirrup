@@ -59,6 +59,9 @@ sequences and bidirectional formatting characters are printed as escapes
 such as `\x1b` or `\u202e` rather than written to the terminal raw. Streamed
 answer and reasoning text keeps its newlines and tabs; single-line fields
 escape those too.
+Tool input in a `tool_call` line or a permission prompt is shown as the
+tool decodes it: escaped characters appear decoded, and a key repeated in
+the JSON shows only the value the tool will use.
 
 ## Follow-up runs
 

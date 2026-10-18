@@ -780,9 +780,9 @@ Deltas and tool events between a `turn_started` and the turn's
 `turn_committed` or `turn_abandoned` belong to that turn. A
 `user_message` never belongs to a turn: it follows the turn's
 `turn_committed` or `turn_abandoned` and precedes the next
-`turn_started`. `warning` and `heartbeat` events can arrive anywhere
-after `run_started`; a `warning` raised during the run's setup is held
-until `run_started` is sent.
+`turn_started`. `warning` and `heartbeat` events can arrive anywhere,
+except that a Rule-of-Two or `continueOnError` `preRun` hook warning
+raised during the run's setup is held until `run_started` is sent.
 
 **Committed and uncommitted turns.** `turn_committed` means the
 turn's assistant message, and a result for every tool call in it, are
@@ -884,13 +884,13 @@ what the model is replayed; see
 [Reasoning summaries](configuration.md#reasoning-summaries) for what
 each provider returns under `"auto"` and when the field is unset.
 
-**Field caps.** Tool payloads, `user_message` text and
-`thinking_delta` text are capped at 256 KiB with a truncation marker.
+**Field caps.** Tool payloads, `user_message` text, `thinking_delta`
+text and `message` are capped at 256 KiB with a truncation marker.
 The name and ID fields (`id`, `name`, `tool_use_id`, `request_id`,
-`tool_name`) are capped at 1 KiB on every event, cut without a marker
-so equal values stay equal: a capped `tool_call.id` still matches its
-`tool_result.tool_use_id`, but a `request_id` longer than 1 KiB comes
-back shortened and does not match the one sent.
+`tool_name`) and `stop_reason` are capped at 1 KiB on every event, cut
+without a marker so equal values stay equal: a capped `tool_call.id`
+still matches its `tool_result.tool_use_id`, but a `request_id` longer
+than 1 KiB comes back shortened and does not match the one sent.
 
 **Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent, one event at a time. A secret split across two

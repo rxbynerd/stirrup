@@ -163,9 +163,9 @@ IMDS, GitHub Actions OIDC). See
    `HarnessEvent{type:"run_started"}` carrying the run ID in `id` and,
    when the run records an OTel span, the run span's `trace_reference`
    (`trace_id`, `run_span_id`, `sampled`), then a `user_message` with
-   the prompt. Warnings raised during setup follow `run_started`. A run
-   that fails setup sends no `run_started`, and its setup warnings
-   precede its `error`. Throughout the run the harness emits a live
+   the prompt. Rule-of-Two and `continueOnError` `preRun` hook warnings
+   raised during setup follow `run_started`. A run that fails setup
+   sends no `run_started`, and those warnings precede its `error`. Throughout the run the harness emits a live
    transcript — `turn_started`, `text_delta`, `thinking_delta`,
    `tool_call`, `tool_result`, `turn_committed` or `turn_abandoned`, and
    `user_message` (see
