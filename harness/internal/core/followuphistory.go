@@ -21,6 +21,10 @@ type carriedHistory struct {
 	// withheld is the outcome of a run whose history is not carried
 	// because screening stopped content in it.
 	withheld string
+	// toolCalls counts the tool_use blocks in messages.
+	toolCalls int
+	// cacheKey is the provider cache key the history was produced under.
+	cacheKey string
 }
 
 func (c *carriedHistory) rewrote() bool {
@@ -45,7 +49,45 @@ func (l *AgenticLoop) retainHistory(config *types.RunConfig, outcome string, mes
 		messages:   committed,
 		unscreened: len(committed) > l.screenedLen && len(arrivedUntrustedChunks(committed)) > 0,
 		rewritten:  l.historyRewritten,
+		toolCalls:  countToolUses(committed),
+		cacheKey:   l.cacheKey,
 	}
+}
+
+// continuesHistory reports whether a run starts from the carried
+// messages rather than from its prompt alone.
+func (c *carriedHistory) continuesHistory() bool {
+	return c != nil && len(c.messages) > 0
+}
+
+// beginRunState sets the per-run state that a run's inner loops share:
+// the prior tool calls tool-choice escalation counts, and the provider
+// cache key. A run continuing carried history inherits both, so the
+// model's earlier tool use still counts and the shared prefix keeps its
+// cache affinity. Every other run starts a new conversation under a key
+// of its own run ID.
+func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHistory) {
+	l.carriedToolCalls = 0
+	l.cacheKey = providerCacheKey(config.RunID)
+	if !carried.continuesHistory() {
+		return
+	}
+	l.carriedToolCalls = carried.toolCalls
+	if carried.cacheKey != "" {
+		l.cacheKey = carried.cacheKey
+	}
+}
+
+func countToolUses(messages []types.Message) int {
+	n := 0
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.Type == "tool_use" {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // takeCarriedHistory hands the history the previous run kept to a

@@ -100,7 +100,8 @@ func effectiveReserveForResponse(maxTokens int) int {
 // providerCacheKey derives StreamParams.CacheKey as an unsalted digest of
 // the run ID: deterministic, so a retried run keeps its routing affinity,
 // and not an anonymiser. An empty run ID yields no key rather than one
-// shared by every such run.
+// shared by every such run. A run continuing a previous run's history
+// reuses that run's key instead; see beginRunState.
 func providerCacheKey(runID string) string {
 	if runID == "" {
 		return ""
@@ -374,6 +375,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
 	l.historyRewritten = carried.rewrote()
+	l.beginRunState(config, carried)
 	l.subAgentSpawns.Store(0)
 	l.outputLimitRecoveries = 0
 
@@ -785,11 +787,13 @@ func (l *AgenticLoop) runInnerLoop(
 	// bounds missed-tool recovery; pendingToolChoice forces a tool
 	// choice on the next turn's Stream call, consumed once. All three
 	// are inert when EscalationPolicy is nil (default off).
-	priorToolCalls := 0
+	// escalationsSoFar is not carried: the cap bounds missed-tool recovery
+	// for one prompt, and each follow-up is a new prompt.
+	priorToolCalls := l.carriedToolCalls
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto
 
-	cacheKey := providerCacheKey(config.RunID)
+	cacheKey := l.cacheKey
 	var calibration tokenCalibration
 
 	for *nextTurn < config.MaxTurns {

@@ -495,9 +495,22 @@ func TestRetainHistory(t *testing.T) {
 	}
 
 	kept := buildTestLoop(nil)
+	kept.cacheKey = "run-key"
 	kept.retainHistory(continueConfig, "success", history)
 	if kept.carried == nil || !reflect.DeepEqual(kept.carried.messages, history) || kept.carried.unscreened {
 		t.Errorf("success: carried = %+v, want the screened history", kept.carried)
+	}
+	if kept.carried.toolCalls != 0 || kept.carried.cacheKey != "run-key" {
+		t.Errorf("success: carried toolCalls, cacheKey = %d, %q, want 0, run-key", kept.carried.toolCalls, kept.carried.cacheKey)
+	}
+
+	// The unanswered trailing tool call is not part of the committed
+	// history, so it does not count.
+	withTools := []types.Message{userText("task"), assistantToolUse("t1", "t2"), toolResults("t1", "t2"), assistantToolUse("t3")}
+	counted := buildTestLoop(nil)
+	counted.retainHistory(continueConfig, "success", withTools)
+	if counted.carried == nil || counted.carried.toolCalls != 2 {
+		t.Errorf("carried = %+v, want 2 tool calls", counted.carried)
 	}
 }
 
@@ -785,4 +798,113 @@ func TestRunFollowUpLoop_ContinueRestartsTurnNumbering(t *testing.T) {
 		}
 	}
 	t.Error("follow-up sent no turn_started")
+}
+
+// TestRunFollowUpLoop_EscalationCountsCarriedToolCalls pins that under
+// "continue" a follow-up answering without a tool is not escalated when
+// the carried history holds tool calls, and that "reset" still escalates
+// it.
+func TestRunFollowUpLoop_EscalationCountsCarriedToolCalls(t *testing.T) {
+	cases := []struct {
+		name          string
+		history       string
+		wantFollowUps int
+	}{
+		{name: "continue does not escalate", history: types.FollowUpHistoryContinue, wantFollowUps: 1},
+		{name: "reset escalates", history: types.FollowUpHistoryReset, wantFollowUps: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+			loop, tr := buildUserInputTestLoop(prov)
+			loop.Escalation = newDefaultEscalationPolicy(1, nil)
+			config := buildTestConfig()
+			config.FollowUpHistory = tc.history
+
+			followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
+
+			// The primary run calls a tool, then answers; the scripted
+			// follow-ups answer without calling one.
+			if got, want := len(prov.params()), 2+2*tc.wantFollowUps; got != want {
+				t.Errorf("provider calls = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestRunFollowUpLoop_ContinueKeepsOneCacheKey(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	traces := followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
+
+	want := providerCacheKey(traces[0].ID)
+	if want == "" {
+		t.Fatal("primary run has no cache key")
+	}
+	calls := prov.params()
+	if len(calls) != 4 {
+		t.Fatalf("provider calls = %d, want 4", len(calls))
+	}
+	for i, c := range calls {
+		if c.CacheKey != want {
+			t.Errorf("call %d CacheKey = %q, want the primary run's %q", i, c.CacheKey, want)
+		}
+	}
+}
+
+func TestRunFollowUpLoop_ResetKeepsPerRunCacheKeys(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryReset
+
+	traces := followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
+
+	calls := prov.params()
+	if len(calls) != 4 {
+		t.Fatalf("provider calls = %d, want 4", len(calls))
+	}
+	// Calls 0 and 1 are the primary run's two turns; calls 2 and 3 are
+	// the follow-ups' only turns.
+	for i, runIndex := range []int{0, 0, 1, 2} {
+		if want := providerCacheKey(traces[runIndex].ID); calls[i].CacheKey != want {
+			t.Errorf("call %d CacheKey = %q, want run %d's %q", i, calls[i].CacheKey, runIndex, want)
+		}
+	}
+	if calls[2].CacheKey == calls[0].CacheKey || calls[3].CacheKey == calls[2].CacheKey {
+		t.Errorf("runs shared a cache key: %q, %q, %q", calls[0].CacheKey, calls[2].CacheKey, calls[3].CacheKey)
+	}
+}
+
+// TestRunFollowUpLoop_ContinueWithheldHistoryGetsAFreshCacheKey pins that
+// a follow-up starting a new conversation because screening ended the
+// previous run does not reuse that run's key.
+func TestRunFollowUpLoop_ContinueWithheldHistoryGetsAFreshCacheKey(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
+		{{Type: "text_delta", Text: "LEAK-MARKER answer"}, stopWith("end_turn")},
+		scriptEndTurn,
+	}}
+	loop, tr := buildUserInputTestLoop(prov)
+	loop.GuardRail = phaseMarkerGuard{phase: guard.PhasePostTurn, marker: "LEAK-MARKER"}
+	config := buildTestConfig()
+	config.FollowUpHistory = types.FollowUpHistoryContinue
+
+	traces := followUpSession(t, loop, tr, config, "start over")
+
+	if traces[0].Outcome != "guardrail_blocked" {
+		t.Fatalf("primary outcome = %q, want guardrail_blocked", traces[0].Outcome)
+	}
+	calls := prov.params()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(calls))
+	}
+	if want := providerCacheKey(traces[1].ID); calls[1].CacheKey != want {
+		t.Errorf("follow-up CacheKey = %q, want its own run's %q", calls[1].CacheKey, want)
+	}
+	if calls[1].CacheKey == calls[0].CacheKey {
+		t.Errorf("follow-up reused the blocked run's cache key %q", calls[0].CacheKey)
+	}
 }
