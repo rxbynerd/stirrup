@@ -623,11 +623,11 @@ re-provisioning the sandbox.
     assistant message is in history and every tool call in it has a
     result. A turn cut off mid-dispatch is dropped together with
     everything after it. A turn that ends the run without dispatching
-    its tool calls, such as one cut off at the output limit, is kept
-    without them when it produced text and discarded when it produced
-    none. When
-    the history ends in a user message (tool results, or verifier
-    feedback), the prompt joins that message rather than following it.
+    its tool calls is kept without them when anything else remains: any
+    text or reasoning for most stops, and text alone for a turn cut off
+    at the output limit. Otherwise it is discarded. When the history
+    ends in a user message (tool results, or verifier feedback), the
+    prompt joins that message rather than following it.
     Tool results the previous run had not yet screened, because it
     ended before its next turn boundary, are screened before the
     follow-up's first model call, with the Rule-of-Two and guard
@@ -759,8 +759,10 @@ done                   stop_reason (the run outcome), trace
 ```
 
 Deltas and tool events between a `turn_started` and the next
-`turn_committed` belong to that turn. `warning` and `heartbeat` events
-can arrive anywhere.
+`turn_committed` belong to that turn. A `user_message` never belongs
+to a turn: it follows the turn's `turn_committed`, or, when the turn
+did not commit, the turn's last event, and it precedes the next
+`turn_started`. `warning` and `heartbeat` events can arrive anywhere.
 
 **Committed and uncommitted turns.** `turn_committed` means the
 turn's assistant message, and a result for every tool call in it, are
