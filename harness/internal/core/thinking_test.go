@@ -128,9 +128,10 @@ func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 }
 
 // TestStreamEventsToResult_ThinkingDeltasForwardedOnce pins that streamed
-// reasoning fragments are forwarded as they arrive and the block that
-// closes them is not forwarded again, while a later block that arrives
-// whole is still forwarded, and an empty block produces no event.
+// reasoning fragments are forwarded, joined where the scrub carry holds
+// them, and the block that closes them is not forwarded again, while a
+// later block that arrives whole is still forwarded, and an empty block
+// produces no event.
 func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 	blocks, emitted := recordStreamEvents(t, []types.StreamEvent{
 		{Type: "thinking_delta", Text: "Let me "},
@@ -142,8 +143,8 @@ func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 		{Type: "message_complete", StopReason: "end_turn"},
 	})
 
-	if got := thinkingDeltaTexts(emitted); fmt.Sprint(got) != "[Let me  check. whole block]" {
-		t.Errorf("thinking_delta texts = %q, want the two fragments then the whole later block", got)
+	if got := thinkingDeltaTexts(emitted); fmt.Sprint(got) != "[Let me check. whole block]" {
+		t.Errorf("thinking_delta texts = %q, want the joined fragments then the whole later block", got)
 	}
 	var thinkingBlocks int
 	for _, b := range blocks {

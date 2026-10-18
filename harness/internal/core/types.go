@@ -772,10 +772,37 @@ func boundedResponseModel(model string) string {
 // usage the provider reported before the failure. With streamThinking
 // false no thinking_delta reaches the transport; thinking blocks are
 // persisted either way.
+//
+// Deltas reach the transport through a security.StreamCarry, so a secret
+// split across two provider deltas is in one event when the transport
+// scrubs it. The carry is flushed before any other event is emitted and
+// on every return, which keeps the stream's order and loses no text.
 func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
+
+	var carry security.StreamCarry
+	carriedType := ""
+	emitDelta := func(eventType, text string) {
+		if text == "" {
+			return
+		}
+		if err := tp.Emit(types.HarnessEvent{Type: eventType, Text: text}); err != nil {
+			emitFailed(eventType, err)
+		}
+	}
+	flushDeltas := func() {
+		emitDelta(carriedType, carry.Flush())
+	}
+	defer flushDeltas()
+	pushDelta := func(eventType, text string) {
+		if eventType != carriedType {
+			flushDeltas()
+			carriedType = eventType
+		}
+		emitDelta(eventType, carry.Push(text))
+	}
 
 	// blockStreamed records whether the current thinking block's text
 	// reached the transport as deltas; a block that arrives whole is
@@ -785,9 +812,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		if !streamThinking || text == "" {
 			return
 		}
-		if err := tp.Emit(types.HarnessEvent{Type: "thinking_delta", Text: text}); err != nil {
-			emitFailed("thinking_delta", err)
-		}
+		pushDelta("thinking_delta", text)
 	}
 
 	for event := range ch {
@@ -797,6 +822,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		default:
 		}
 
+		if event.Type != "text_delta" && event.Type != "thinking_delta" {
+			flushDeltas()
+		}
 		switch event.Type {
 		case "text_delta":
 			if !inText {
@@ -804,12 +832,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			currentText += event.Text
-			if err := tp.Emit(types.HarnessEvent{
-				Type: "text_delta",
-				Text: event.Text,
-			}); err != nil {
-				emitFailed("text_delta", err)
-			}
+			pushDelta("text_delta", event.Text)
 
 		case "tool_call":
 			// Flush any accumulated text block.
