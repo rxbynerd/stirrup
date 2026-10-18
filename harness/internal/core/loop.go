@@ -1810,11 +1810,8 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	case spotlight:
 		spotlightUntrustedChunks(messages)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
-		if fence {
-			fenceBlocks(last, scrubbed, true)
-		}
 	case fence:
-		fenceBlocks(last, scrubbed, false)
+		fenceBlocks(last, scrubbed)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
 	}
 	return ""
@@ -1958,19 +1955,16 @@ func scrubbedToolResults(m types.Message) (int, []int) {
 	return spans, blocks
 }
 
-// fenceBlocks spotlights the given blocks of m that are not already
-// spotlighted, and drops their structured payload so adapters send the
-// fenced text rather than the raw JSON.
-func fenceBlocks(m *types.Message, blocks []int, spotlighted bool) {
+// fenceBlocks spotlights the given blocks of m, dropping their structured
+// payload so adapters send the fenced text rather than the raw JSON.
+func fenceBlocks(m *types.Message, blocks []int) {
 	for _, i := range blocks {
 		b := &m.Content[i]
-		if !spotlighted {
-			switch b.Type {
-			case "tool_result":
-				b.Content = guard.ApplySpotlight(b.Content)
-			case "text":
-				b.Text = guard.ApplySpotlight(b.Text)
-			}
+		switch b.Type {
+		case "tool_result":
+			b.Content = guard.ApplySpotlight(b.Content)
+		case "text":
+			b.Text = guard.ApplySpotlight(b.Text)
 		}
 		b.Structured, b.Kind = nil, ""
 	}
@@ -1998,8 +1992,10 @@ func batchUntrustedChunks(chunks []string) string {
 // replaceUntrustedChunks replaces every tool_result block's content in
 // the last message, or every text block of a verifier-feedback last
 // message, with placeholder, for a PhasePreTurn deny of arrived content.
-// A prompt message carries neither, so it is left alone: a denied prompt
-// ends the run instead; see docs/guardrails.md.
+// A tool result's structured payload is dropped with it, since adapters
+// send that payload beside the text. A prompt message carries neither,
+// so it is left alone: a denied prompt ends the run instead; see
+// docs/guardrails.md.
 func replaceUntrustedChunks(messages []types.Message, placeholder string) {
 	if len(messages) == 0 {
 		return
@@ -2013,6 +2009,7 @@ func replaceUntrustedChunks(messages []types.Message, placeholder string) {
 		switch {
 		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = placeholder
+			last.Content[i].Structured, last.Content[i].Kind = nil, ""
 		case feedback && last.Content[i].Type == "text":
 			last.Content[i].Text = placeholder
 		}
@@ -2128,7 +2125,8 @@ func guidanceContents(docs []prompt.GuidanceDocument) []string {
 
 // spotlightUntrustedChunks rewraps every tool_result block in the last
 // message, or every text block of a verifier-feedback last message,
-// via guard.ApplySpotlight. Used when PhasePreTurn returns
+// via guard.ApplySpotlight, dropping a tool result's structured payload
+// so adapters send only the fenced text. Used when PhasePreTurn returns
 // VerdictAllowSpot for batched untrusted content. A prompt message is
 // left alone: the prompt cannot be spotlighted without rewriting it.
 func spotlightUntrustedChunks(messages []types.Message) {
@@ -2144,6 +2142,7 @@ func spotlightUntrustedChunks(messages []types.Message) {
 		switch {
 		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = guard.ApplySpotlight(last.Content[i].Content)
+			last.Content[i].Structured, last.Content[i].Kind = nil, ""
 		case feedback && last.Content[i].Type == "text":
 			last.Content[i].Text = guard.ApplySpotlight(last.Content[i].Text)
 		}

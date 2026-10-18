@@ -87,6 +87,9 @@ result or verifier feedback block that held such a span, whatever the
 verdict, and sets `Input.Metadata["redacted_spans"]` to the number of
 spans replaced. A block the guard also spotlights is wrapped once. See
 [Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
+A deny or spotlight of arrived tool results, like the harness's own
+fence, drops each result's structured payload, which the Anthropic and
+Gemini adapters would otherwise send beside the rewritten text.
 
 ### `pre_tool` (recommended for production)
 
