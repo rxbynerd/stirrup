@@ -16,6 +16,25 @@ Two images ride the same pipeline:
   `ghcr.io/rxbynerd/stirrup-sandbox` with the same tag scheme, and to
   GAR under the `${GAR_IMAGE}-sandbox` image name at release time.
 
+Every `FROM` line in both Dockerfiles pins its base image by tag and
+multi-arch index digest (`image:tag@sha256:...`), so a retagged
+upstream base image cannot change what a build starts from without a
+reviewed commit. The `# syntax=` BuildKit frontend line is not
+digest-pinned; Dependabot does not track it. Dependabot's `docker` updater checks both files daily and opens
+a PR that moves the tag and digest together; merging it is how
+base-layer patches reach the published images. A digest pin also
+means a rebuild alone never picks up a newer base.
+
+`ci.yml` additionally rebuilds and republishes the GHCR dev images
+(`:latest`, `:main`, `:sha-<7>`) from `main` every Monday at 04:17
+UTC. Builds run without a layer cache, so the sandbox image's
+`apt-get install` layer resolves `git` and `ca-certificates` against
+the current Debian archive even when no commit has landed. The
+scheduled run skips the eval gate, and it publishes to GHCR only, so
+it adds no Artifact Analysis scan cost. Release tags are immutable and
+are not rebuilt; a base-image fix for a released version ships in the
+next release.
+
 The registry, IAM, and gating walkthrough below is written against the
 harness image; everything applies to the sandbox image identically
 unless a difference is called out.
