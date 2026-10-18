@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -62,6 +63,7 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 	config := escalationConfig("execution")
 	config.Temperature = &temperature
 	config.ReasoningEffort = "high"
+	config.ReasoningSummary = "off"
 	if _, err := loop.Run(context.Background(), config); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -80,11 +82,12 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 			t.Fatalf("turn %d: ModelInput.Request is nil", i)
 		}
 		want := types.RequestParams{
-			Temperature:     sent.Temperature,
-			MaxTokens:       sent.MaxTokens,
-			ReasoningEffort: sent.ReasoningEffort,
-			ToolChoice:      sent.ToolChoice,
-			CacheKey:        sent.CacheKey,
+			Temperature:      sent.Temperature,
+			MaxTokens:        sent.MaxTokens,
+			ReasoningEffort:  sent.ReasoningEffort,
+			ReasoningSummary: sent.ReasoningSummary,
+			ToolChoice:       sent.ToolChoice,
+			CacheKey:         sent.CacheKey,
 		}
 		if !reflect.DeepEqual(*got, want) {
 			t.Errorf("turn %d: recorded %+v, sent %+v", i, *got, want)
@@ -97,6 +100,9 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 		}
 		if got.ReasoningEffort != "high" {
 			t.Errorf("turn %d: reasoningEffort = %q, want high", i, got.ReasoningEffort)
+		}
+		if got.ReasoningSummary != "off" {
+			t.Errorf("turn %d: reasoningSummary = %q, want off", i, got.ReasoningSummary)
 		}
 	}
 
@@ -239,11 +245,52 @@ func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
 			ch := make(chan types.StreamEvent, 2)
 			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn", ResponseModel: tc.model}
 			close(ch)
-			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), ignoreEmitFailure)
+			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure)
 			if err != nil {
 				t.Fatalf("streamEventsToResult: %v", err)
 			}
 			tc.check(t, result.ResponseModel)
+		})
+	}
+}
+
+// TestRun_RecordsResolvedReasoningSummary pins that the recorded request
+// carries the reasoningSummary the selected adapter applies, so a trace
+// shows whether a summary was requested.
+func TestRun_RecordsResolvedReasoningSummary(t *testing.T) {
+	cases := []struct {
+		providerType, configured, want string
+	}{
+		{"anthropic", "", types.ReasoningSummaryAuto},
+		{"openai-responses", "", types.ReasoningSummaryOff},
+		{"openai-responses", types.ReasoningSummaryAuto, types.ReasoningSummaryAuto},
+		{"anthropic", types.ReasoningSummaryOff, types.ReasoningSummaryOff},
+	}
+	for _, tc := range cases {
+		t.Run(tc.providerType+"/"+tc.configured, func(t *testing.T) {
+			prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{
+				{{Type: "text_delta", Text: "hi"}, {Type: "message_complete", StopReason: "end_turn"}},
+			}}
+			loop, _ := buildEscalationLoop(&sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}, nil)
+			loop.Provider = prov
+			loop.Router = router.NewStaticRouter(tc.providerType, "some-model")
+			rec := &recordingTraceEmitter{}
+			loop.Trace = rec
+			config := escalationConfig("planning")
+			config.Provider.Type = tc.providerType
+			config.ReasoningSummary = tc.configured
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if len(rec.turnRecords) == 0 {
+				t.Fatal("no turn records")
+			}
+			if got := rec.turnRecords[0].ModelInput.Request.ReasoningSummary; got != tc.want {
+				t.Errorf("recorded reasoningSummary = %q, want %q", got, tc.want)
+			}
 		})
 	}
 }

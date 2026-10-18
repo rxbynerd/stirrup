@@ -76,6 +76,46 @@ func TestHandleAssignsTaskAndReportsSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleRendersLiveTranscriptEvents(t *testing.T) {
+	srv, out, errOut := testServer(t, permissionDeny, "")
+	turn := int32(0)
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "run_started", Id: "run-1"},
+		{Type: "user_message", Source: "initial_prompt", Text: "do it"},
+		{Type: "turn_started", Turn: &turn, Provider: "anthropic", Model: "claude-x"},
+		{Type: "thinking_delta", Text: "plan"},
+		{Type: "tool_call", Id: "tc1", Name: "read_file", Input: []byte(`{}`)},
+		{Type: "tool_result", ToolUseId: "tc1", Name: "read_file", IsError: true, DurationMs: 12, Content: "no such file"},
+		{Type: "turn_committed", Turn: &turn, StopReason: "tool_use", ToolResultCount: 1,
+			Usage: &harnessv1.TokenUsage{InputTokens: 100, OutputTokens: 5}},
+		{Type: "text_delta", Text: "answer"},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	if _, err := srv.handle(context.Background(), stream); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if got := out.String(); got != "answer" {
+		t.Errorf("stdout = %q, want only the model's text", got)
+	}
+	for _, want := range []string{
+		"[run_started] run-1",
+		"[user_message] initial_prompt: do it",
+		"[turn_started] 0 anthropic/claude-x",
+		"plan",
+		"[tool_result] read_file error 12ms no such file",
+		"[turn_committed] 0 tool_use in=100 out=5",
+	} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut.String())
+		}
+	}
+	if strings.Contains(errOut.String(), "not handled") {
+		t.Errorf("a live transcript event was reported as unhandled:\n%s", errOut.String())
+	}
+}
+
 func TestHandleDoneOutcome(t *testing.T) {
 	tests := []struct {
 		name string

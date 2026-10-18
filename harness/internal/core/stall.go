@@ -186,6 +186,7 @@ func canonicalToolInput(input json.RawMessage) []byte {
 // through metrics, the log and the transport.
 func (l *AgenticLoop) nudgeStalledRun(ctx context.Context, config *types.RunConfig, turn int, text string, messages []types.Message) []types.Message {
 	messages = injectSyntheticUserText(messages, text)
+	l.emitUserMessage(types.UserMessageSourceStallNudge, text, "")
 	l.Metrics.StallNudges.Add(ctx, 1,
 		l.metricAttrs(attribute.String("run.mode", config.Mode)),
 	)

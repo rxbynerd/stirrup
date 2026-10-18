@@ -155,11 +155,29 @@ type RunConfig struct {
 	// registry before any wire bytes are sent.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
+	// ReasoningSummary selects whether the model's reasoning text is
+	// requested and streamed to the transport as thinking_delta events:
+	// "auto" or "off". Provider-neutral like ReasoningEffort: each adapter
+	// projects "auto" onto its native control (Gemini
+	// thinkingConfig.includeThoughts for models that accept a thinking
+	// config, OpenAI Responses reasoning.summary). "off" stops the
+	// streaming and, where the provider has a request control (Gemini,
+	// OpenAI Responses), does not request it. ResolveReasoningSummary
+	// decides what empty means. History is unchanged either way.
+	ReasoningSummary string `json:"reasoningSummary,omitempty"`
+
 	// FollowUpGrace is the number of idle seconds to keep the transport
 	// open after each run completes, waiting for a follow-up user_response
 	// that starts the next run. The window restarts after every run. A
 	// value of zero or nil disables the grace period (default behaviour).
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
+
+	// FollowUpHistory selects the history a follow-up run starts from:
+	// "reset" (the default, also selected by "") starts it from its prompt
+	// alone; "continue" starts it from the previous run's committed
+	// history with the prompt appended. The primary run, and a session
+	// without a follow-up window, are unaffected.
+	FollowUpHistory string `json:"followUpHistory,omitempty"`
 
 	// LogLevel controls the structured logger verbosity.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
@@ -343,6 +361,18 @@ func (rc *RunConfig) EffectiveToolDispatchMaxParallel() int {
 		return DefaultToolDispatchMaxParallel
 	}
 	return rc.ToolDispatch.MaxParallel
+}
+
+// FollowUpHistory values; see RunConfig.FollowUpHistory.
+const (
+	FollowUpHistoryReset    = "reset"
+	FollowUpHistoryContinue = "continue"
+)
+
+// ContinuesFollowUpHistory reports whether follow-up runs start from the
+// previous run's committed history.
+func (rc *RunConfig) ContinuesFollowUpHistory() bool {
+	return rc != nil && rc.FollowUpHistory == FollowUpHistoryContinue
 }
 
 // DefaultModel is the model the harness falls back to when neither the
@@ -1759,6 +1789,27 @@ var validReasoningEfforts = map[string]bool{
 	"max":     true,
 }
 
+// Provider-neutral ReasoningSummary values. Empty leaves the choice to
+// each adapter; see RunConfig.ReasoningSummary.
+const (
+	ReasoningSummaryAuto = "auto"
+	ReasoningSummaryOff  = "off"
+)
+
+// ResolveReasoningSummary returns the ReasoningSummary value an adapter of
+// providerType applies when configured is the RunConfig value. Unset is
+// "off" on openai-responses, whose summaries can require organisation
+// verification, and "auto" on every other adapter.
+func ResolveReasoningSummary(providerType, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if providerType == "openai-responses" {
+		return ReasoningSummaryOff
+	}
+	return ReasoningSummaryAuto
+}
+
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
 // HTTP token characters so a user cannot inject CRLF / colon / whitespace
 // into the request. The pattern intentionally excludes "_" and "."; if a
@@ -2610,6 +2661,12 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf("followUpGrace must be <= %d seconds", maxFollowUpGrace))
 	}
 
+	switch config.FollowUpHistory {
+	case "", FollowUpHistoryReset, FollowUpHistoryContinue:
+	default:
+		errs = append(errs, fmt.Sprintf("followUpHistory %q must be one of reset, continue", config.FollowUpHistory))
+	}
+
 	// maxCostBudget must be bounded, and the bound is the only thing the
 	// harness does with it — nothing computes cost, so an operator who
 	// sets it must be told the run is uncapped.
@@ -2655,6 +2712,13 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf(
 			"reasoningEffort %q must be one of minimal, low, medium, high, xhigh, max",
 			config.ReasoningEffort))
+	}
+
+	switch config.ReasoningSummary {
+	case "", ReasoningSummaryAuto, ReasoningSummaryOff:
+	default:
+		errs = append(errs, fmt.Sprintf(
+			"reasoningSummary %q must be one of auto, off", config.ReasoningSummary))
 	}
 
 	validateRuleOfTwo(config, &errs)

@@ -1,6 +1,9 @@
 package guard
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // PhaseGated wraps an inner GuardRail so that Check only delegates when
 // the input's Phase is one of the explicitly listed Phases. Operators
@@ -26,4 +29,38 @@ func (p PhaseGated) Check(ctx context.Context, in Input) (*Decision, error) {
 		}
 	}
 	return &Decision{Verdict: VerdictAllow, GuardID: "phase-gated:skipped"}, nil
+}
+
+// ChecksPhase reports whether g evaluates content of phase p, so a caller
+// can tell a configured guard from the Noop default: false for nil (typed
+// nil pointers included), Noop, a PhaseGated that does not list p, and a
+// composite with no member that checks p; true for any other guard.
+func ChecksPhase(g GuardRail, p Phase) bool {
+	switch v := g.(type) {
+	case nil, Noop, *Noop:
+		return false
+	case PhaseGated:
+		return slices.Contains(v.Phases, p) && ChecksPhase(v.Inner, p)
+	case *PhaseGated:
+		return v != nil && slices.Contains(v.Phases, p) && ChecksPhase(v.Inner, p)
+	case Sequential:
+		return anyChecksPhase(v.Guards, p)
+	case *Sequential:
+		return v != nil && anyChecksPhase(v.Guards, p)
+	case Parallel:
+		return anyChecksPhase(v.Guards, p)
+	case *Parallel:
+		return v != nil && anyChecksPhase(v.Guards, p)
+	default:
+		return true
+	}
+}
+
+func anyChecksPhase(guards []GuardRail, p Phase) bool {
+	for _, g := range guards {
+		if ChecksPhase(g, p) {
+			return true
+		}
+	}
+	return false
 }

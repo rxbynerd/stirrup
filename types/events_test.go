@@ -185,3 +185,15 @@ func TestToolChoiceModeUnmarshalErrorTruncates(t *testing.T) {
 		t.Errorf("error message must stay bounded, got %d bytes: %s", len(msg), msg)
 	}
 }
+
+func TestHarnessCapabilities(t *testing.T) {
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history"}
+	got := HarnessCapabilities()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("HarnessCapabilities() = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if again := HarnessCapabilities(); again[0] != want[0] {
+		t.Errorf("mutating the returned slice changed the next call: %v", again)
+	}
+}

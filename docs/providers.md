@@ -68,6 +68,13 @@ its thinking blocks exceed 10 MiB in total (reasoning text, signatures
 and redacted data counted together) or when it opens more than 64
 content blocks at once. Batch results are parsed into the same shape.
 
+While a block streams, the adapter also forwards each fragment of its
+reasoning text as it arrives, which the loop sends to the control
+plane as `thinking_delta` events; the complete block remains the only
+thing persisted. A block whose reasoning text is empty, the
+`claude-sonnet-5-5` default, produces no `thinking_delta`. See
+[Watching a run live](integration-guide.md#watching-a-run-live).
+
 Replayed thinking is billed as input. In one probe against
 `claude-sonnet-5-5` on 2026-09-30, a continuation cost 668 input tokens
 with the prior turn's thinking block replayed and 558 without it, a
@@ -268,7 +275,8 @@ been probed against Bedrock.
 
 The Bedrock adapter does not consult the [provider quirks
 registry](provider-quirks.md): it forwards the harness default
-temperature to every model and ignores `reasoningEffort`. Anthropic
+temperature to every model and ignores `reasoningEffort`. It streams
+no reasoning text, so `reasoningSummary` has no effect on it. Anthropic
 documents that Claude Opus 4.7 onward, Sonnet 5 onward and Fable 5
 onward reject a non-default temperature on every request, so those
 models are expected to fail through Bedrock until the adapter applies
@@ -292,6 +300,15 @@ Azure Entra ID bearer tokens work with the default empty `apiKeyHeader`
 — the `Authorization: Bearer` header carries the Entra token normally.
 See `examples/runconfig/azure-openai.json`.
 
+**Reasoning text.** Servers that stream reasoning in a non-standard
+`reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio) have
+each fragment forwarded as a `thinking_delta` event, whether or not a
+replay rule also captures it for the next turn. Chat Completions has no
+request control for this, so `reasoningSummary` changes nothing on the
+wire; `off` only stops the loop forwarding the events. A
+`reasoning_content` value that is not a JSON string is ignored. The
+`reasoning` delta field some gateways use instead is not read.
+
 ### Local models via LM Studio (Qwen 3.6)
 
 LM Studio exposes the Chat Completions wire format at
@@ -311,7 +328,9 @@ end-to-end against LM Studio. The operationally relevant behaviours:
   omitted, accepts the modern `max_completion_tokens` key, and welcomes
   sampling parameters. It needs no `compatProfile` and no replay rule —
   the chain-of-thought LM Studio surfaces in a `reasoning_content` field
-  is dropped between turns by design, matching Qwen's own template.
+  is dropped between turns by design, matching Qwen's own template. It
+  still streams to the transport as `thinking_delta` events unless
+  `reasoningSummary` is `off`.
 - **Thinking is always on.** The `/no_think` directive and an
   `enable_thinking` request parameter are not honoured through the plain
   Chat Completions surface, so every turn spends reasoning tokens. The
@@ -413,6 +432,22 @@ receives `temperature`; GPT-5.5 and GPT-5.6 never receive it either,
 which is inferred from their `medium` default effort. GPT-5.4 keeps a
 configured temperature when no effort is set, because its default
 effort is `none`.
+
+**Reasoning summaries.** When `reasoningSummary` is explicitly `auto`,
+a request that carries `reasoning.effort` also carries
+`reasoning.summary: "auto"`, and each
+`response.reasoning_summary_text.delta` event streams as a
+`thinking_delta`. The first delta of each later summary part starts
+with a blank line, so parts do not run together, and a malformed delta
+is dropped rather than failing the turn. With no projected effort the
+request has no `reasoning` object, so no summary is requested. The
+reasoning output item, with its `summary` array, is stored and
+replayed verbatim like any other item. This follows OpenAI's
+documented shapes and has not been probed live. OpenAI's
+[reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
+says organisation verification may be needed before summarizers work on
+its latest reasoning models, so an unset `reasoningSummary` requests no
+summary on this adapter and the request is the same as with `off`.
 
 **Strict tools.** The reasoning families send every tool with
 `strict: true`, because an omitted `strict` lets the API fall back to
@@ -541,6 +576,19 @@ Key implementation notes:
   which 3.6 Flash accepts — so the quirks registry carries a per-model
   allow-list and the adapter fails the request before any wire bytes
   are sent. See [`provider-quirks.md`](provider-quirks.md).
+- **Thought summaries.** Unless `reasoningSummary` is `off`, the request
+  sets `generationConfig.thinkingConfig.includeThoughts: true` for a
+  model whose quirks accept a thinking config (Gemini 3.6, 3.7 and 3.8,
+  3.1 Pro, and 2.5 Flash) and for any request with a `reasoningEffort`;
+  other models receive no `thinkingConfig`, because a model that does
+  not think rejects one. Each response part marked `thought: true`
+  streams as a `thinking_delta`.
+  Thought parts never become answer text or tool input and are not kept
+  in history; the `thoughtSignature` rides on the `functionCall` part
+  and round-trips unchanged. Probed on Vertex AI and AI Studio for
+  Gemini 3.6, 3.7, and 3.8 Flash and 3.1 Pro, including a replayed
+  tool-calling turn. Summaries are best-effort: a short turn at the
+  default thinking level often has none.
 - **Output tokens include thought tokens.** Vertex reports
   `thoughtsTokenCount` beside `candidatesTokenCount`, so the adapter
   reports their sum as output tokens, matching billing, and the

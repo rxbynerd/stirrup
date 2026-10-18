@@ -492,6 +492,13 @@ func (g *GeminiAdapter) consumeSSE(
 			if cand.Content != nil {
 				for _, part := range cand.Content.Parts {
 					switch {
+					case part.Thought:
+						if part.Text != "" {
+							emitEvent(types.StreamEvent{
+								Type: "thinking_delta",
+								Text: part.Text,
+							})
+						}
 					case part.Text != "":
 						// TODO(#194): Gemini 3.x can also attach a
 						// thoughtSignature to text parts; threading it onto

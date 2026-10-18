@@ -207,16 +207,9 @@ func structuredOutputViolation(err error) string {
 
 // structuredOutputCorrection is the user turn that asks the model to
 // replace a rejected final answer.
-func structuredOutputCorrection(violation string) types.Message {
-	return types.Message{
-		Role:      "user",
-		Synthetic: true,
-		Content: []types.ContentBlock{{
-			Type: "text",
-			Text: "Your final message did not satisfy the required output schema: " + violation +
-				"\n\nReply with only a JSON document that conforms to the schema in <output_schema> (a single ```json fenced block is also accepted).",
-		}},
-	}
+func structuredOutputCorrection(violation string) string {
+	return "Your final message did not satisfy the required output schema: " + violation +
+		"\n\nReply with only a JSON document that conforms to the schema in <output_schema> (a single ```json fenced block is also accepted)."
 }
 
 // scrubJSONStrings applies security.Scrub to every string literal (keys

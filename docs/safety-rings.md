@@ -280,6 +280,15 @@ the model — and the verifier feedback that opens a verification retry, *before
 later guard scrub cannot un-trip the latch). Once the latch trips,
 rescans are skipped for the rest of the run (except under the `redact`
 action, which keeps scanning so it can rewrite every later result).
+Under `redact`, the pre-turn guard then receives those tool results
+after the rewrite, so latch-tier spans (card numbers, IBANs, anchored
+SSNs) are removed from its input only under that action; under `abort`,
+`warn` and the permission-channel action they reach the guard as the
+tool returned them. Under every action the guard's copy has the log
+scrubber applied. That copy is the only one the scrubber changes: the
+model sees the tool result as redaction left it, spotlighted when the
+scrubber replaced a span the guard therefore could not read (see
+[Scrubbed content is fenced](security.md#scrubbed-content-is-fenced)).
 
 **Two confidence tiers.** A *latch-tier* finding is high-confidence
 sensitive data and trips the latch. A *warn-tier* finding (a bare

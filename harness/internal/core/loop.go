@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,11 +117,12 @@ func requestParamsOf(p types.StreamParams) *types.RequestParams {
 		temperature = types.Float64Ptr(*p.Temperature)
 	}
 	return &types.RequestParams{
-		Temperature:     temperature,
-		MaxTokens:       p.MaxTokens,
-		ReasoningEffort: p.ReasoningEffort,
-		ToolChoice:      p.ToolChoice,
-		CacheKey:        p.CacheKey,
+		Temperature:      temperature,
+		MaxTokens:        p.MaxTokens,
+		ReasoningEffort:  p.ReasoningEffort,
+		ReasoningSummary: p.ReasoningSummary,
+		ToolChoice:       p.ToolChoice,
+		CacheKey:         p.CacheKey,
 	}
 }
 
@@ -154,6 +156,8 @@ func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord 
 // but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	l.windDown = windDownState{start: l.now()}
+	followUp := l.followUpInput
+	l.followUpInput = nil
 
 	// WithCancelCause lets Run later disambiguate control-plane
 	// cancellation, deadline expiry, and caller cancellation via
@@ -176,6 +180,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.startTrace(ctx, config)
 	l.failure = runFailure{}
+	carried := l.takeCarriedHistory(followUp != nil)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
 	// establish the emitter's run span or a plain ctx as the span parent
@@ -328,8 +333,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	gitSetupSpan.End()
 
-	messages := buildMessages(config.Prompt)
-
 	// Token tracking (cost estimation is a control plane concern):
 	// tokenTracker holds this loop's own turns, ledger the run-wide total
 	// shared with sub-agents and auxiliary calls.
@@ -339,12 +342,25 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	if l.emitReady {
 		if err := l.Transport.Emit(types.HarnessEvent{
-			Type: "ready",
+			Type:         "ready",
+			Capabilities: types.HarnessCapabilities(),
 		}); err != nil {
 			l.logEmitFailure("ready", err)
 		}
 	}
 	l.emitRunStarted(config.RunID)
+
+	// After run_started, so the withheld-history warning and any screening
+	// of a carried tail are attributed to this run.
+	messages, carriedAbort := l.startingHistory(runCtx, config, carried)
+	if carriedAbort {
+		turnZeroAbort = true
+	}
+	if followUp != nil {
+		l.emitUserMessage(types.UserMessageSourceFollowUpPrompt, config.Prompt, followUp.RequestID)
+	} else {
+		l.emitUserMessage(types.UserMessageSourceInitialPrompt, config.Prompt, "")
+	}
 
 	l.Logger.InfoContext(runCtx, "run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
@@ -357,7 +373,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// gauge callback so the first observation (before any Context.Prepare)
 	// is 0 rather than the value from a previous run.
 	l.lastContextTokens.Store(0)
-	l.historyRewritten = false
+	l.historyRewritten = carried.rewrote()
 	l.subAgentSpawns.Store(0)
 	l.outputLimitRecoveries = 0
 
@@ -433,7 +449,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				structuredCorrections++
 				l.Logger.InfoContext(runCtx, "final answer failed the output schema; requesting a correction",
 					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
-				messages = append(messages, structuredOutputCorrection(violation))
+				correction := structuredOutputCorrection(violation)
+				messages = injectSyntheticUserText(messages, correction)
+				l.emitUserMessage(types.UserMessageSourceStructuredOutputCorrection, correction, "")
 				continue
 			}
 			structuredOutput = doc
@@ -485,8 +503,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		} else {
 			feedbackMsg.Origin = types.MessageOriginVerifierFeedback
 		}
-		messages = append(messages, feedbackMsg)
+		l.emitUserMessage(types.UserMessageSourceVerifierFeedback, feedbackMsg.Content[0].Text, "")
+		var blocked string
+		if messages, blocked = l.appendVerifierFeedback(runCtx, config, nextTurn, messages, feedbackMsg); blocked != "" {
+			outcome = blocked
+			break
+		}
 	}
+	l.retainHistory(config, outcome, messages)
 
 	// A cancel arriving between the inner loop returning and Verify
 	// completing can otherwise mask the true termination reason behind
@@ -710,17 +734,13 @@ func (l *AgenticLoop) runSpanContext() context.Context {
 	return nil
 }
 
-// emitRunStarted tells the control plane the run span's identity before
-// the first model event, so it can address the run's trace while the run
-// is still in flight. Nothing is sent when the emitter records no span.
+// emitRunStarted tells the control plane the run's ID before its first
+// transcript event and, when the emitter records a run span, that span's
+// identity, so it can address the run's trace while the run is in flight.
 func (l *AgenticLoop) emitRunStarted(runID string) {
-	p, ok := l.Trace.(trace.TraceReferenceProvider)
-	if !ok {
-		return
-	}
-	ref := p.TraceReference()
-	if ref == nil {
-		return
+	var ref *types.TraceReference
+	if p, ok := l.Trace.(trace.TraceReferenceProvider); ok {
+		ref = p.TraceReference()
 	}
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:           "run_started",
@@ -795,76 +815,34 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// See collectUntrustedChunks / docs/guardrails.md for what
-		// counts as untrusted content per turn.
-		var preTurnDynamic map[string]types.DynamicContextValue
+		// counts as untrusted content per turn. Turn 0 chunks were
+		// already scanned by the Rule-of-Two monitor in Run() under their
+		// own labels, so only the guard sees them here.
 		if turn == 0 {
-			preTurnDynamic = config.DynamicContext
-		}
-		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
-			feedback := turn > 0 && isVerifierFeedback(messages[len(messages)-1])
-			// Deterministic-first, before the guard (see
-			// docs/safety-rings.md). Turn 0 chunks were already scanned
-			// in Run() under their own labels, so only turn>0 is
-			// rescanned here.
-			if turn > 0 {
-				source := "tool_result"
-				if feedback {
-					source = types.MessageOriginVerifierFeedback
+			if chunks := collectUntrustedChunks(messages, turn, config.DynamicContext, config.Prompt); len(chunks) > 0 {
+				in := guard.Input{
+					Phase:   guard.PhasePreTurn,
+					Content: batchUntrustedChunks(chunks),
+					Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
+					Mode:    config.Mode,
+					RunID:   config.RunID,
 				}
-				det := l.observeSensitive(ctx, config, source, turn, chunks)
-				switch l.ruleOfTwoAction() {
-				case "abort":
-					if det.Transition {
-						l.recordRuleOfTwoAction(ctx, "abort")
-						return messages, "rule_of_two_violation", finalAssistantText, nil
-					}
-				case "redact":
-					if n := l.redactSensitiveSpans(messages, turn); n > 0 {
-						l.recordRuleOfTwoAction(ctx, "redact")
-					}
-				}
-			}
-			guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
-			if feedback {
-				// Scrubbed after the Rule-of-Two scan so a secret in the
-				// feedback still trips the latch, and before the guard so
-				// a remote classifier never receives it.
-				scrubVerifierFeedback(&messages[len(messages)-1])
-				chunks = collectUntrustedChunks(messages, turn, nil, "")
-				guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
-			}
-			batched := batchUntrustedChunks(chunks)
-			in := guard.Input{
-				Phase:   guard.PhasePreTurn,
-				Content: batched,
-				Source:  guardSource,
-				Mode:    config.Mode,
-				RunID:   config.RunID,
-				// Feedback arrives at most once per verification retry, so
-				// the per-turn cost the min-chunk gate saves does not apply.
-				IgnoreMinChunk: feedback,
-			}
-			allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
-			l.ratchetRuleOfTwo(ctx, config, decision, turn)
-			switch {
-			case !allow:
-				// Turn-0 vs later-turn deny handling differs; see
-				// docs/guardrails.md.
-				if turn == 0 {
+				allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
+				l.ratchetRuleOfTwo(ctx, config, decision, turn)
+				// A turn-0 deny ends the run and a spotlight is a no-op;
+				// see docs/guardrails.md.
+				if !allow {
 					return messages, "guardrail_blocked", finalAssistantText, nil
 				}
-
-				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
-			case spotlight:
-				if turn == 0 {
-					// No-op on turn 0 (no tool_result blocks); skip the
-					// metric so dashboards reflect applied spotlights only.
-					break
-				}
-				spotlightUntrustedChunks(messages, turn)
-				l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
+			}
+		} else if len(messages) > l.screenedLen {
+			// Harness text merged into a screened message adds no
+			// message, so only a history that grew holds new content.
+			if blocked := l.screenArrivedContent(ctx, config, turn, messages); blocked != "" {
+				return messages, blocked, finalAssistantText, nil
 			}
 		}
+		l.screenedLen = len(messages)
 
 		var windDown string
 		messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
@@ -975,17 +953,21 @@ func (l *AgenticLoop) runInnerLoop(
 		turnToolChoice := pendingToolChoice
 		pendingToolChoice = types.ToolChoiceAuto
 
+		providerType := selectedProviderType(config, selection.Provider)
 		params := types.StreamParams{
-			Model:           selection.Model,
-			System:          systemPrompt,
-			Messages:        preparedMessages,
-			Tools:           l.Tools.List(),
-			MaxTokens:       responseReserve,
-			Temperature:     temperature,
-			ReasoningEffort: config.ReasoningEffort,
-			ToolChoice:      turnToolChoice,
-			CacheKey:        cacheKey,
+			Model:            selection.Model,
+			System:           systemPrompt,
+			Messages:         preparedMessages,
+			Tools:            l.Tools.List(),
+			MaxTokens:        responseReserve,
+			Temperature:      temperature,
+			ReasoningEffort:  config.ReasoningEffort,
+			ReasoningSummary: types.ResolveReasoningSummary(providerType, config.ReasoningSummary),
+			ToolChoice:       turnToolChoice,
+			CacheKey:         cacheKey,
 		}
+		l.emitTurnStarted(turn, selection.Model, providerType)
+
 		// A request that exceeds the context window gets one forced
 		// compaction and retry per turn; a second overflow ends the run.
 		// Each request has its own chat span, ended on every path below.
@@ -1078,7 +1060,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if outputLimitRecovery {
 			l.Trace.RecordTurnRecord(turnRecord)
 			var continues bool
-			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, messages)
+			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, summary.Tokens, messages)
 			if continues {
 				continuedText, preContinuationText = finalText, priorFinalText
 			}
@@ -1086,13 +1068,12 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Carries provider replay state so the next request can
-		// round-trip it. A max_tokens turn is never dispatched, so its
-		// tool calls stay out of history.
-		assistantBlocks := sr.Blocks
-		if sr.StopReason == "max_tokens" {
-			assistantBlocks = withoutToolUse(sr.Blocks)
+		// round-trip it. A turn that leaves no assistant message is
+		// never committed.
+		assistantBlocks, appended := committableAssistantBlocks(sr.StopReason, sr.Blocks)
+		if appended {
+			messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 		}
-		messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
 
 		// The loop makes no judgement — it forwards turn facts to
 		// EscalationPolicy (nil = inert, off by default) and acts on
@@ -1114,6 +1095,9 @@ func (l *AgenticLoop) runInnerLoop(
 				// replay/mining still sees the rejected answer. The retry
 				// turn is recorded separately on its own iteration.
 				l.Trace.RecordTurnRecord(turnRecord)
+				if appended {
+					l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+				}
 				messages = l.applyEscalation(ctx, config, decision, selection.Provider, selection.Model, messages, &pendingToolChoice)
 				escalationsSoFar++
 				continue
@@ -1145,6 +1129,9 @@ func (l *AgenticLoop) runInnerLoop(
 
 					l.Logger.InfoContext(ctx, "postTurn guard requested spotlight; not rewriting in v1")
 				}
+			}
+			if appended {
+				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
 			}
 			// The run does not end while unconsumed operator input
 			// exists: queued user_response text becomes the next user
@@ -1180,6 +1167,9 @@ func (l *AgenticLoop) runInnerLoop(
 			// Non-tool-use, non-end-turn stop reasons still represent
 			// a completed exchange that replay/mining cares about.
 			l.Trace.RecordTurnRecord(turnRecord)
+			if appended {
+				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			}
 			return messages, sr.StopReason, finalAssistantText, sr.StopDetails
 		}
 		if len(toolCalls) == 0 {
@@ -1203,6 +1193,11 @@ func (l *AgenticLoop) runInnerLoop(
 		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
+		// A stall that cuts the batch short leaves calls unanswered, so
+		// the turn is not valid to replay and does not commit.
+		if len(toolResults) == len(toolCalls) {
+			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, len(toolResults))
+		}
 		// Escalation triggers only on the first assistant turn with
 		// no prior tool calls; once non-zero, a later no-tool answer
 		// is a legitimate judgement and left alone.
@@ -1253,13 +1248,8 @@ func (l *AgenticLoop) applyEscalation(
 		*pendingToolChoice = types.ToolChoiceRequired
 	}
 	if decision.PromptMessage != "" {
-		messages = append(messages, types.Message{
-			Role:      "user",
-			Synthetic: true,
-			Content: []types.ContentBlock{
-				{Type: "text", Text: decision.PromptMessage},
-			},
-		})
+		messages = injectSyntheticUserText(messages, decision.PromptMessage)
+		l.emitUserMessage(types.UserMessageSourceToolChoiceEscalation, decision.PromptMessage, "")
 	}
 
 	// tool.name is the bounded empty-sentinel — no tool was involved,
@@ -1319,7 +1309,9 @@ type FollowUpOptions struct {
 
 // RunFollowUpLoop waits for follow-up user_response control events
 // after the primary run completes, re-running the agentic loop with
-// each one as the prompt of a fresh run. Exits on grace-period
+// each one as the prompt of a new run, which starts from that prompt
+// alone or, under followUpHistory "continue", from the previous run's
+// committed history with the prompt appended. Exits on grace-period
 // timeout, ctx cancellation, a "cancel" control event (whenever it
 // arrived: a cancelled session opens no follow-up window), or a
 // follow-up run that fails. Whatever is still queued on exit is
@@ -1372,6 +1364,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			// Issue a fresh run ID so traces don't collide.
 			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 			config.Prompt = next.Text
+			loop.followUpInput = &next
 
 			runCtx, cancelRun := followUpRunContext(ctx, opts.RunTimeout)
 			runTrace, err := loop.Run(runCtx, config)
@@ -1745,6 +1738,108 @@ func guardFailOpen(config *types.RunConfig) bool {
 	return config.GuardRail.FailOpen
 }
 
+// screenArrivedContent screens the untrusted content that ends the
+// history — tool results or verifier feedback — before the model sees
+// it: the Rule-of-Two scan and its abort/redact enforcement first, then
+// the pre-turn guard, whose deny replaces the content and whose
+// spotlight rewraps it. Returns the outcome that ends the run, or "".
+func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.RunConfig, turn int, messages []types.Message) string {
+	chunks := arrivedUntrustedChunks(messages)
+	if len(chunks) == 0 {
+		return ""
+	}
+	feedback := isVerifierFeedback(messages[len(messages)-1])
+	// Deterministic-first, before the guard (see docs/safety-rings.md).
+	source := "tool_result"
+	if feedback {
+		source = types.MessageOriginVerifierFeedback
+	}
+	det := l.observeSensitive(ctx, config, source, turn, chunks)
+	switch l.ruleOfTwoAction() {
+	case "abort":
+		if det.Transition {
+			l.recordRuleOfTwoAction(ctx, "abort")
+			return "rule_of_two_violation"
+		}
+	case "redact":
+		if n := l.redactSensitiveSpans(messages); n > 0 {
+			l.recordRuleOfTwoAction(ctx, "redact")
+			chunks = arrivedUntrustedChunks(messages)
+		}
+	}
+	// The guard sees content after redaction and scrubbing, never the
+	// raw chunks the Rule-of-Two scan observed, so a remote classifier
+	// never receives a secret.
+	last := &messages[len(messages)-1]
+	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+	var spans int
+	var scrubbed []int
+	if feedback {
+		// Feedback is scrubbed in history too; tool results keep their
+		// content for the model and are scrubbed for the guard alone.
+		spans, scrubbed = scrubVerifierFeedback(last)
+		chunks = arrivedUntrustedChunks(messages)
+		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
+	} else {
+		spans, scrubbed = scrubbedToolResults(*last)
+		for i := range chunks {
+			chunks[i] = security.Scrub(chunks[i])
+		}
+	}
+	// A guard cannot judge what the scrubber hid from it, so with one
+	// configured the harness fences every scrubbed block for the model.
+	fence := len(scrubbed) > 0 && guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
+	in := guard.Input{
+		Phase:   guard.PhasePreTurn,
+		Content: batchUntrustedChunks(chunks),
+		Source:  guardSource,
+		Mode:    config.Mode,
+		RunID:   config.RunID,
+		// Feedback arrives at most once per verification retry, so the
+		// per-turn cost the min-chunk gate saves does not apply.
+		IgnoreMinChunk: feedback,
+	}
+	if fence {
+		in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
+	}
+	allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+	l.ratchetRuleOfTwo(ctx, config, decision, turn)
+	switch {
+	case !allow:
+		replaceUntrustedChunks(messages, "[content blocked by guardrail]")
+	case spotlight:
+		spotlightUntrustedChunks(messages)
+		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
+	case fence:
+		fenceBlocks(last, scrubbed)
+		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
+	}
+	return ""
+}
+
+// harnessSpotlightGuardID attributes a spotlight the harness applied
+// itself, for content holding scrubbed spans, in metrics and security
+// events.
+const harnessSpotlightGuardID = "harness:scrubbed-spans"
+
+// appendVerifierFeedback adds feedback to the history and returns the
+// outcome that ends the run when screening stops it. After an inner loop
+// that left no assistant message the history ends on a user message, so
+// the feedback merges into it as a block carrying the feedback's Origin.
+// That message is already screened and is not screened again, so merged
+// feedback is screened on its own first.
+func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.RunConfig, turn int, messages []types.Message, feedback types.Message) ([]types.Message, string) {
+	if n := len(messages); n == 0 || messages[n-1].Role != "user" {
+		return append(messages, feedback), ""
+	}
+	alone := []types.Message{feedback}
+	if outcome := l.screenArrivedContent(ctx, config, turn, alone); outcome != "" {
+		return messages, outcome
+	}
+	merged := types.ContentBlock{Type: "text", Text: alone[0].Content[0].Text, Origin: feedback.Origin}
+	return appendUserBlock(messages, merged, true), ""
+}
+
 // collectUntrustedChunks returns the chunks of untrusted content that
 // just entered the message history at the start of the given turn: on
 // turn 0, the initial prompt plus DynamicContext entries (sorted by
@@ -1774,6 +1869,13 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		}
 		return chunks
 	}
+	return arrivedUntrustedChunks(messages)
+}
+
+// arrivedUntrustedChunks returns the untrusted chunks of the message that
+// ends the history: the text blocks of verifier feedback, or otherwise
+// every tool_result block's Content and Structured payload.
+func arrivedUntrustedChunks(messages []types.Message) []string {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -1814,12 +1916,57 @@ func isVerifierFeedback(m types.Message) bool {
 }
 
 // scrubVerifierFeedback runs the log scrubber over the text blocks of a
-// verifier-feedback message, which can carry workspace command output.
-func scrubVerifierFeedback(m *types.Message) {
+// verifier-feedback message, which can carry workspace command output,
+// and returns the spans it replaced and the blocks they were in.
+func scrubVerifierFeedback(m *types.Message) (int, []int) {
+	spans := 0
+	var blocks []int
 	for i := range m.Content {
-		if m.Content[i].Type == "text" {
-			m.Content[i].Text = security.Scrub(m.Content[i].Text)
+		if m.Content[i].Type != "text" {
+			continue
 		}
+		var stats security.ScrubStats
+		m.Content[i].Text, stats = security.ScrubWithStats(m.Content[i].Text)
+		if stats.Count > 0 {
+			spans += stats.Count
+			blocks = append(blocks, i)
+		}
+	}
+	return spans, blocks
+}
+
+// scrubbedToolResults returns the spans the log scrubber would replace in
+// the tool_result blocks of m, Content and Structured payload alike, and
+// the blocks they are in.
+func scrubbedToolResults(m types.Message) (int, []int) {
+	spans := 0
+	var blocks []int
+	for i, b := range m.Content {
+		if b.Type != "tool_result" {
+			continue
+		}
+		_, content := security.ScrubWithStats(b.Content)
+		_, structured := security.ScrubWithStats(string(b.Structured))
+		if n := content.Count + structured.Count; n > 0 {
+			spans += n
+			blocks = append(blocks, i)
+		}
+	}
+	return spans, blocks
+}
+
+// fenceBlocks spotlights the given blocks of m, dropping their structured
+// payload so adapters send the fenced text rather than the raw JSON.
+func fenceBlocks(m *types.Message, blocks []int) {
+	for _, i := range blocks {
+		b := &m.Content[i]
+		switch b.Type {
+		case "tool_result":
+			b.Content = guard.ApplySpotlight(b.Content)
+		case "text":
+			b.Text = guard.ApplySpotlight(b.Text)
+		}
+		b.Structured, b.Kind = nil, ""
 	}
 }
 
@@ -1844,14 +1991,12 @@ func batchUntrustedChunks(chunks []string) string {
 
 // replaceUntrustedChunks replaces every tool_result block's content in
 // the last message, or every text block of a verifier-feedback last
-// message, with placeholder, for a PhasePreTurn deny on turn N>0.
-// Turn 0 has no tool_result blocks yet (the prompt is the untrusted
-// content) — callers must abort instead; see docs/guardrails.md.
-func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
-	if turn == 0 {
-		// Defensive no-op; callers must abort on turn 0 instead.
-		return
-	}
+// message, with placeholder, for a PhasePreTurn deny of arrived content.
+// A tool result's structured payload is dropped with it, since adapters
+// send that payload beside the text. A prompt message carries neither,
+// so it is left alone: a denied prompt ends the run instead; see
+// docs/guardrails.md.
+func replaceUntrustedChunks(messages []types.Message, placeholder string) {
 	if len(messages) == 0 {
 		return
 	}
@@ -1864,6 +2009,7 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 		switch {
 		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = placeholder
+			last.Content[i].Structured, last.Content[i].Kind = nil, ""
 		case feedback && last.Content[i].Type == "text":
 			last.Content[i].Text = placeholder
 		}
@@ -1874,11 +2020,11 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 // just-arrived tool_result block's Content AND Structured payload (both
 // are model-visible; see docs/architecture.md "Structured tool
 // results"), and in the text blocks of a verifier-feedback last
-// message. Returns the number of spans replaced. Turn 0 is a no-op —
-// its untrusted content is the prompt/dynamic context, handled by
-// redactDynamicContext before Prompt.Build.
-func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) int {
-	if turn == 0 || len(messages) == 0 || l.RuleOfTwo == nil {
+// message. Returns the number of spans replaced. A prompt message is
+// left alone: the prompt is never redacted, and dynamic context is
+// handled by redactDynamicContext before Prompt.Build.
+func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message) int {
+	if len(messages) == 0 || l.RuleOfTwo == nil {
 		return 0
 	}
 	last := &messages[len(messages)-1]
@@ -1979,14 +2125,11 @@ func guidanceContents(docs []prompt.GuidanceDocument) []string {
 
 // spotlightUntrustedChunks rewraps every tool_result block in the last
 // message, or every text block of a verifier-feedback last message,
-// via guard.ApplySpotlight. Used when PhasePreTurn returns
-// VerdictAllowSpot for batched untrusted content. Turn 0 is a no-op
-// because the user prompt already lives in the system input layer; we
-// cannot retroactively spotlight it without rewriting prompts.
-func spotlightUntrustedChunks(messages []types.Message, turn int) {
-	if turn == 0 {
-		return
-	}
+// via guard.ApplySpotlight, dropping a tool result's structured payload
+// so adapters send only the fenced text. Used when PhasePreTurn returns
+// VerdictAllowSpot for batched untrusted content. A prompt message is
+// left alone: the prompt cannot be spotlighted without rewriting it.
+func spotlightUntrustedChunks(messages []types.Message) {
 	if len(messages) == 0 {
 		return
 	}
@@ -1999,6 +2142,7 @@ func spotlightUntrustedChunks(messages []types.Message, turn int) {
 		switch {
 		case last.Content[i].Type == "tool_result":
 			last.Content[i].Content = guard.ApplySpotlight(last.Content[i].Content)
+			last.Content[i].Structured, last.Content[i].Kind = nil, ""
 		case feedback && last.Content[i].Type == "text":
 			last.Content[i].Text = guard.ApplySpotlight(last.Content[i].Text)
 		}

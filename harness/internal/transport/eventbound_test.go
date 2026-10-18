@@ -26,6 +26,24 @@ func TestCapEventText(t *testing.T) {
 	}
 }
 
+func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
+	big := strings.Repeat("é", maxEventFieldBytes)
+
+	for _, typ := range []string{"user_message", "thinking_delta"} {
+		ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
+		boundEventFields(&ev)
+		if len(ev.Text) > maxEventFieldBytes || !utf8.ValidString(ev.Text) || !strings.HasSuffix(ev.Text, fmt.Sprintf(" of %d bytes shown]", len(big))) {
+			t.Errorf("%s text is %d bytes (valid UTF-8: %v) or lacks the marker", typ, len(ev.Text), utf8.ValidString(ev.Text))
+		}
+	}
+
+	delta := types.HarnessEvent{Type: "text_delta", Text: big}
+	boundEventFields(&delta)
+	if delta.Text != big {
+		t.Error("text_delta text was altered; it is not capped")
+	}
+}
+
 func TestCapEventInput(t *testing.T) {
 	small := json.RawMessage(`{"path":"a.go"}`)
 	if got := capEventInput(small); string(got) != string(small) {

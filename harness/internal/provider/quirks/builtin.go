@@ -617,6 +617,25 @@ func BuiltinRules() []Rule {
 			},
 		},
 
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3.1-pro*",
+			Description:  "Gemini 3.1 Pro: accepts thinkingConfig.includeThoughts, so thought summaries are requested by default (probed on Vertex AI and AI Studio)",
+			LastVerified: Date("2026-10-17"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.IncludeThoughts = true
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-2.5-flash",
+			Description:  "Gemini 2.5 Flash: accepts thinkingConfig.includeThoughts, so thought summaries are requested by default (probed on Vertex AI, first turn only)",
+			LastVerified: Date("2026-10-17"),
+			Apply: func(q *ProviderQuirks) {
+				q.BehaviourFlags.Gemini.IncludeThoughts = true
+			},
+		},
+
 		// Context windows are registered only where the documented window
 		// is smaller than the loop's 200k default, which would otherwise
 		// pack requests the model rejects.

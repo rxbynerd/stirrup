@@ -343,6 +343,11 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 	if !allow {
 		return len(inputs), "guardrail_blocked"
 	}
+	// Reported once screening passes, so input that ends the run never
+	// appears on the transcript.
+	for _, in := range inputs {
+		l.emitUserMessage(types.UserMessageSourceUserResponse, in.Text, in.RequestID)
+	}
 	return len(inputs), ""
 }
 
@@ -373,13 +378,26 @@ func injectSyntheticUserText(messages []types.Message, text string) []types.Mess
 }
 
 func appendUserText(messages []types.Message, text string, synthetic bool) []types.Message {
+	return appendUserBlock(messages, types.ContentBlock{Type: "text", Text: text}, synthetic)
+}
+
+// appendUserBlock appends a text block under the appendUserText merge
+// rule. Text joins a trailing text block of the same Origin; otherwise it
+// becomes its own block, opening with the paragraph break adapters that
+// join text parts without a separator would not add.
+func appendUserBlock(messages []types.Message, block types.ContentBlock, synthetic bool) []types.Message {
 	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
 		last := messages[n-1]
 		content := append([]types.ContentBlock(nil), last.Content...)
-		if m := len(content); m > 0 && content[m-1].Type == "text" {
-			content[m-1].Text += "\n\n" + text
-		} else {
-			content = append(content, types.ContentBlock{Type: "text", Text: text})
+		m := len(content)
+		switch {
+		case m > 0 && content[m-1].Type == "text" && content[m-1].Origin == block.Origin:
+			content[m-1].Text += "\n\n" + block.Text
+		case m > 0 && content[m-1].Type == "text":
+			block.Text = "\n\n" + block.Text
+			content = append(content, block)
+		default:
+			content = append(content, block)
 		}
 		last.Content = content
 		if !synthetic {
@@ -395,6 +413,6 @@ func appendUserText(messages []types.Message, text string, synthetic bool) []typ
 	return append(messages, types.Message{
 		Role:      "user",
 		Synthetic: synthetic,
-		Content:   []types.ContentBlock{{Type: "text", Text: text}},
+		Content:   []types.ContentBlock{block},
 	})
 }

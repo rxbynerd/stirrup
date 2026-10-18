@@ -207,6 +207,14 @@ type AgenticLoop struct {
 	// windDown is the per-run wind-down state; see windDownIfDue.
 	windDown windDownState
 
+	// carried is the history the latest top-level run kept for a
+	// follow-up that continues it; see retainHistory.
+	carried *carriedHistory
+
+	// screenedLen is the length of the current run's history at its
+	// latest pre-turn screening: untrusted content past it is unscreened.
+	screenedLen int
+
 	// clock is the wind-down time source; nil means time.Now.
 	clock func() time.Time
 
@@ -232,6 +240,11 @@ type AgenticLoop struct {
 	rejections       chan types.HarnessEvent
 	controlStop      chan struct{}
 	controlStopOnce  sync.Once
+
+	// followUpInput is the queued user_response whose text is the prompt
+	// of the run RunFollowUpLoop is starting; nil for any other run. Run
+	// consumes it at start.
+	followUpInput *queuedUserInput
 
 	// streamLost is set once the control stream has been lost; from then
 	// on lossEmitLogged keeps emit failures to a single warning.
@@ -736,11 +749,26 @@ func boundedResponseModel(model string) string {
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage. On
 // error the result is partial and only its Usage is meaningful: the
-// usage the provider reported before the failure.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, emitFailed func(event string, err error)) (*streamResult, error) {
+// usage the provider reported before the failure. With streamThinking
+// false no thinking_delta reaches the transport; thinking blocks are
+// persisted either way.
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
+
+	// blockStreamed records whether the current thinking block's text
+	// reached the transport as deltas; a block that arrives whole is
+	// forwarded as one delta at its boundary instead.
+	blockStreamed := false
+	forwardThinking := func(text string) {
+		if !streamThinking || text == "" {
+			return
+		}
+		if err := tp.Emit(types.HarnessEvent{Type: "thinking_delta", Text: text}); err != nil {
+			emitFailed("thinking_delta", err)
+		}
+	}
 
 	for event := range ch {
 		select {
@@ -814,9 +842,17 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				}
 			}
 
+		case "thinking_delta":
+			blockStreamed = true
+			forwardThinking(event.Text)
+
 		case "thinking", "redacted_thinking":
-			// Persisted in stream order so the provider can replay them;
-			// never emitted to the transport.
+			// Persisted in stream order so the provider can replay them.
+			// Redacted reasoning is opaque and never forwarded.
+			if event.Type == "thinking" && !blockStreamed {
+				forwardThinking(event.Text)
+			}
+			blockStreamed = false
 			if inText {
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 				inText = false

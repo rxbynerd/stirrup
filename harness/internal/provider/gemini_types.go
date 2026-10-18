@@ -44,8 +44,12 @@ type geminiContent struct {
 // introspected. See docs/provider-quirks.md for the ReplayFields threading.
 // The `thoughtSignature` JSON tag intentionally matches Vertex's camelCase
 // wire format rather than the snake_case used elsewhere — do not "fix" it.
+//
+// Thought marks a response part whose Text is a thought summary rather
+// than answer text; the request builder never sets it.
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
+	Thought          bool                    `json:"thought,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
@@ -138,12 +142,14 @@ type geminiGenerationConfig struct {
 	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
-// geminiThinkingConfig selects how much the model thinks before answering.
-// thinkingLevel is the Gemini 3 successor to the 2.x thinkingBudget token
-// count; the harness exposes only the level because a budget in tokens is
-// not portable across the families the adapter targets.
+// geminiThinkingConfig selects how much the model thinks before answering
+// and whether it returns thought summaries. thinkingLevel is the Gemini 3
+// successor to the 2.x thinkingBudget token count; the harness exposes only
+// the level because a budget in tokens is not portable across the families
+// the adapter targets.
 type geminiThinkingConfig struct {
-	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
 }
 
 // generateContentChunk is a partial GenerateContentResponse delivered as

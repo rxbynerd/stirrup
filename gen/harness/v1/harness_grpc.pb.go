@@ -32,11 +32,14 @@ const (
 //
 // Lifecycle:
 //  1. Harness connects and opens a RunTask stream.
-//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
 //     a RunConfig in the task field.
-//  4. Harness streams HarnessEvents as it works (text_delta, tool_call,
-//     tool_result, heartbeat, permission_request, warning).
+//  4. Harness sends "run_started", then streams the run's live transcript
+//     (user_message, turn_started, text_delta, thinking_delta, tool_call,
+//     tool_result, turn_committed) interleaved with heartbeat, warning,
+//     permission_request and the other request events.
 //  5. Control plane sends ControlEvents as needed (user_response,
 //     permission_response, cancel).
 //  6. Harness sends a final HarnessEvent with type "done" (includes trace),
@@ -44,6 +47,9 @@ const (
 //     so "done" is the terminal signal on every path — including a
 //     task_assignment whose RunConfig is rejected, which reaches step 6
 //     without ever reaching step 4.
+//  7. With a follow-up grace window (RunConfig.follow_up_grace), the stream
+//     stays open after "done" instead: a user_response starts another run,
+//     which repeats steps 4 to 6 under its own run ID.
 type HarnessServiceClient interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams
@@ -83,11 +89,14 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 //
 // Lifecycle:
 //  1. Harness connects and opens a RunTask stream.
-//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
 //     a RunConfig in the task field.
-//  4. Harness streams HarnessEvents as it works (text_delta, tool_call,
-//     tool_result, heartbeat, permission_request, warning).
+//  4. Harness sends "run_started", then streams the run's live transcript
+//     (user_message, turn_started, text_delta, thinking_delta, tool_call,
+//     tool_result, turn_committed) interleaved with heartbeat, warning,
+//     permission_request and the other request events.
 //  5. Control plane sends ControlEvents as needed (user_response,
 //     permission_response, cancel).
 //  6. Harness sends a final HarnessEvent with type "done" (includes trace),
@@ -95,6 +104,9 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 //     so "done" is the terminal signal on every path — including a
 //     task_assignment whose RunConfig is rejected, which reaches step 6
 //     without ever reaching step 4.
+//  7. With a follow-up grace window (RunConfig.follow_up_grace), the stream
+//     stays open after "done" instead: a user_response starts another run,
+//     which repeats steps 4 to 6 under its own run ID.
 type HarnessServiceServer interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams

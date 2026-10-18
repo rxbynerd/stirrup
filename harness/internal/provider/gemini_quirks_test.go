@@ -184,19 +184,19 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 }
 
 // TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry pins that the
-// registry-resolved ProviderQuirks value for any Gemini model is
-// byte-identical, on the wire, to a zero-value ProviderQuirks: the
-// base rule writes StreamArgsOff, which is the zero value of
-// GeminiStreamArgsShape, so callers that bypass the registry would
-// regress silently only if a future rule wrote a non-zero value.
+// registry-resolved ProviderQuirks value for a Gemini model with no
+// model-specific rule is byte-identical, on the wire, to a zero-value
+// ProviderQuirks: the base rule writes StreamArgsOff, which is the zero
+// value of GeminiStreamArgsShape, so callers that bypass the registry
+// would regress silently only if a base rule wrote a non-zero value.
 func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
-	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
+	params := geminiQuirksCanonicalParams("gemini-2.5-pro")
 
 	pre, _, err := BuildGenerateContentRequest(params, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("zero-value build: %v", err)
 	}
-	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview"))
+	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro"))
 	if err != nil {
 		t.Fatalf("registry-resolved build: %v", err)
 	}

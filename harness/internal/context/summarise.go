@@ -263,6 +263,8 @@ func (s *SummariseStrategy) generateSummary(ctx context.Context, input string) (
 		// pointer type, distinguishing "summariser asked for greedy"
 		// from "unset" on the wire.
 		Temperature: types.Float64Ptr(0.0),
+		// Only the answer text is read, so reasoning text is not requested.
+		ReasoningSummary: types.ReasoningSummaryOff,
 	})
 	if err != nil {
 		return "", fmt.Errorf("start summary stream: %w", err)
@@ -341,16 +343,22 @@ func omissionNote(omitted int) string {
 // renderSummaryMessage formats one message for the summary input. Tool
 // results are scrubbed of secrets and stripped of injection phrases,
 // assistant text, which can echo tool output, is stripped, and harness
-// text, which can carry raw command output, is scrubbed. Operator text
-// reaches the summariser as written.
+// text, which can carry raw command output, is scrubbed. A text block with
+// an Origin is harness text merged into another message and is rendered
+// as its own harness line. Operator text reaches the summariser as
+// written.
 func renderSummaryMessage(msg types.Message) string {
 	label := msg.Role
 	if msg.Synthetic {
 		label = "harness"
 	}
-	var sb strings.Builder
+	var sb, merged strings.Builder
 	fmt.Fprintf(&sb, "[%s]: ", label)
 	for _, block := range msg.Content {
+		if block.Type == "text" && block.Origin != "" {
+			fmt.Fprintf(&merged, "[harness]: %s\n", truncateToChars(security.Scrub(strings.TrimSpace(block.Text)), summaryBlockMaxChars))
+			continue
+		}
 		switch block.Type {
 		case "text":
 			text := block.Text
@@ -369,6 +377,7 @@ func renderSummaryMessage(msg types.Message) string {
 		}
 	}
 	sb.WriteString("\n")
+	sb.WriteString(merged.String())
 	return sb.String()
 }
 

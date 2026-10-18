@@ -17,7 +17,7 @@ sequenceDiagram
     CP->>K: Create Job<br/>(env: CONTROL_PLANE_ADDR, ANTHROPIC_API_KEY-equivalent secret)
     K-->>H: Pod scheduled
     H->>CP: Dial gRPC, open RunTask stream
-    H->>CP: HarnessEvent{type:"ready", harness_version}
+    H->>CP: HarnessEvent{type:"ready", harness_version, capabilities}
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
@@ -26,12 +26,13 @@ sequenceDiagram
         CP-->>H: sandbox_token_response
     end
     H->>H: Build AgenticLoop with the supplied RunConfig
-    opt Run records an OTel span
-        H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference}
-    end
+    H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference?}
+    H-->>CP: user_message (the prompt)
     loop For each turn
         H->>CP: heartbeat (every 30s)
-        H-->>CP: text_delta · tool_call · tool_result
+        H-->>CP: turn_started
+        H-->>CP: text_delta · thinking_delta · tool_call · tool_result
+        H-->>CP: turn_committed · user_message
         opt RequiresApproval tool
             H->>CP: permission_request
             CP-->>H: permission_response
@@ -116,9 +117,12 @@ IMDS, GitHub Actions OIDC). See
 1. **Connect.** The harness dials `CONTROL_PLANE_ADDR` over gRPC and
    opens a single `RunTask` bidi stream for the lifetime of the
    task.
-2. **Ready.** The harness sends a `HarnessEvent{type:"ready", harness_version}`
-   so the control plane can verify the binary version before
-   dispatching work.
+2. **Ready.** The harness sends a
+   `HarnessEvent{type:"ready", harness_version, capabilities}`.
+   `capabilities` names the contract features the harness implements,
+   so the control plane can check them before dispatching work;
+   `harness_version` is informational. See
+   [Compatibility](integration-guide.md#compatibility).
 3. **Health probes.** Two marker files are written: `/tmp/healthy`
    (liveness — present from here until process exit) and
    `/tmp/ready` (readiness — present only while idle and waiting for
@@ -155,18 +159,20 @@ IMDS, GitHub Actions OIDC). See
    message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
-7. **Stream events.** When the run records an OTel span, the harness
-   first emits `HarnessEvent{type:"run_started"}` carrying the run ID
-   in `id` and the run span's `trace_reference` (`trace_id`,
-   `run_span_id`, `sampled`), after the git setup and before the first
-   model event. A run that fails setup sends no `run_started`.
-   Throughout the run the harness emits
-   `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
-   s), and — depending on the permission policy — `permission_request`
-   events. Tools declared in `tools.controlPlane` emit
-   `tool_result_request` and block on `tool_result_response`; the
-   request's `trace_context`, when present, is the W3C context of the
-   call's `execute_tool` span. A
+7. **Stream events.** After the git setup the harness first emits
+   `HarnessEvent{type:"run_started"}` carrying the run ID in `id` and,
+   when the run records an OTel span, the run span's `trace_reference`
+   (`trace_id`, `run_span_id`, `sampled`), then a `user_message` with
+   the prompt. A run that fails setup sends no `run_started`.
+   Throughout the run the harness emits a live transcript —
+   `turn_started`, `text_delta`, `thinking_delta`, `tool_call`,
+   `tool_result`, `turn_committed` and `user_message` (see
+   [Watching a run live](integration-guide.md#watching-a-run-live)) —
+   plus `heartbeat` (every 30 s) and, depending on the permission
+   policy, `permission_request` events. Tools declared in
+   `tools.controlPlane` emit `tool_result_request` and block on
+   `tool_result_response`; the request's `trace_context`, when
+   present, is the W3C context of the call's `execute_tool` span. A
    `tool_call` is not guaranteed a matching `tool_result`: a
    cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn
    can orphan one, so `done` is the terminal close for any pending
@@ -207,9 +213,12 @@ IMDS, GitHub Actions OIDC). See
 10. **Follow-up grace** *(optional)*. If `followUpGrace` (or
     `STIRRUP_FOLLOWUP_GRACE`) is positive, the stream stays open for
     that many idle seconds after each run is finalised, so the control
-    plane can deliver a `user_response` that starts a fresh run with a
-    new run ID and its own `timeout` budget. Steps 7–9 repeat for that
-    run. See [Run budgets and precedence](#run-budgets-and-precedence).
+    plane can deliver a `user_response` that starts a new run with a
+    new run ID and its own `timeout` budget; `followUpHistory` decides
+    whether that run continues the previous run's conversation (see
+    [Follow-up turns](integration-guide.md#follow-up-turns)). Steps 7–9
+    repeat for that run. See
+    [Run budgets and precedence](#run-budgets-and-precedence).
 11. **Exit.** The liveness probe file is removed; the process exits 0
     when the primary run succeeded or non-zero on transport / build /
     runtime failure. Before the connection closes the harness

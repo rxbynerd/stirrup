@@ -2259,6 +2259,77 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_FollowupHistoryChangedGated pins that a file's
+// followUpHistory survives an invocation that does not pass
+// --followup-history, and that an explicit flag replaces it.
+func TestApplyOverrides_FollowupHistoryChangedGated(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.FollowUpHistory = types.FollowUpHistoryContinue
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
+		t.Errorf("unset --followup-history rewrote the file value to %q", cfg.FollowUpHistory)
+	}
+
+	if err := cmd.Flags().Set("followup-history", types.FollowUpHistoryReset); err != nil {
+		t.Fatalf("set followup-history: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryReset {
+		t.Errorf("explicit --followup-history=reset: got %q", cfg.FollowUpHistory)
+	}
+}
+
+// TestBuildFlagOnlyRunConfig_FollowupHistory pins the flag-only path for
+// --followup-history onto the top-level RunConfig field.
+func TestBuildFlagOnlyRunConfig_FollowupHistory(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+		"followup-grace": "30", "followup-history": types.FollowUpHistoryContinue,
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
+		t.Errorf("FollowUpHistory = %q, want %q", cfg.FollowUpHistory, types.FollowUpHistoryContinue)
+	}
+}
+
+// TestBuildFlagOnlyRunConfig_ReasoningSummary pins the flag-only path for
+// --reasoning-summary onto the top-level RunConfig field.
+func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+		"reasoning-summary": types.ReasoningSummaryOff,
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, types.ReasoningSummaryOff)
+	}
+}
+
 // TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
 // follows the Changed() discipline: a config file's
 // promptBuilder.promptModel survives when the flag is unset, and an
@@ -3190,6 +3261,82 @@ func TestBuildHarnessRunConfig_ReasoningEffortInvalid(t *testing.T) {
 	if !strings.Contains(err.Error(), "reasoningEffort") {
 		t.Errorf("error must name the offending field: %v", err)
 	}
+}
+
+func TestBuildHarnessRunConfig_ReasoningSummary(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:            "test-run",
+		Mode:             "execution",
+		Prompt:           "test",
+		ProviderType:     "anthropic",
+		Model:            "claude-sonnet-5-5",
+		MaxTurns:         20,
+		Timeout:          600,
+		TransportType:    "stdio",
+		LogLevel:         "info",
+		ReasoningSummary: "off",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.ReasoningSummary != "off" {
+		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, "off")
+	}
+}
+
+// TestBuildHarnessRunConfig_ReasoningSummaryInvalid confirms a value the
+// flag accepts but the schema does not is rejected before the run starts.
+func TestBuildHarnessRunConfig_ReasoningSummaryInvalid(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:            "test-run",
+		Mode:             "execution",
+		Prompt:           "test",
+		ProviderType:     "anthropic",
+		Model:            "claude-sonnet-5-5",
+		MaxTurns:         20,
+		Timeout:          600,
+		TransportType:    "stdio",
+		LogLevel:         "info",
+		ReasoningSummary: "detailed",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	err = types.ValidateRunConfig(cfg)
+	if err == nil {
+		t.Fatal("expected rejection of an unknown reasoningSummary value")
+	}
+	if !strings.Contains(err.Error(), "reasoningSummary") {
+		t.Errorf("error must name the offending field: %v", err)
+	}
+}
+
+func TestApplyOverrides_ReasoningSummary(t *testing.T) {
+	t.Run("flag overrides file", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.ReasoningSummary = "auto"
+		if err := cmd.Flags().Set("reasoning-summary", "off"); err != nil {
+			t.Fatalf("set reasoning-summary: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.ReasoningSummary != "off" {
+			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
+		}
+	})
+	t.Run("unset flag keeps file value", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.ReasoningSummary = "off"
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.ReasoningSummary != "off" {
+			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
+		}
+	})
 }
 
 // TestApplyOverrides_GeminiFlags exercises the --gcp-project,

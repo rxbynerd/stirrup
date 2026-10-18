@@ -157,14 +157,23 @@ func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
-	if !strings.Contains(string(body), `"thinkingConfig":{"thinkingLevel":"HIGH"}`) {
+	if !strings.Contains(string(body), `"thinkingConfig":{"thinkingLevel":"HIGH","includeThoughts":true}`) {
 		t.Errorf("thinkingConfig absent or malformed: %s", body)
 	}
 
-	// Empty effort says nothing on the wire so the model keeps its own
-	// default; an emitted THINKING_LEVEL_UNSPECIFIED would be a
-	// behaviour change disguised as a default.
+	// Empty effort sends no level so the model keeps its own default; an
+	// emitted THINKING_LEVEL_UNSPECIFIED would be a behaviour change
+	// disguised as a default.
 	params.ReasoningEffort = ""
+	summaryOnly, _, err := BuildGenerateContentRequest(params, nil, q)
+	if err != nil {
+		t.Fatalf("BuildGenerateContentRequest (summary only): %v", err)
+	}
+	if !strings.Contains(string(summaryOnly), `"thinkingConfig":{"includeThoughts":true}`) {
+		t.Errorf("empty thinking level did not reduce thinkingConfig to includeThoughts: %s", summaryOnly)
+	}
+
+	params.ReasoningSummary = types.ReasoningSummaryOff
 	bare, _, err := BuildGenerateContentRequest(params, nil, q)
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest (bare): %v", err)

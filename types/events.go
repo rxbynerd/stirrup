@@ -14,6 +14,12 @@ import (
 // ThoughtSignature. Adapters emit each once per block, in stream order,
 // so the loop persists them between the surrounding text and tool calls.
 //
+// A "thinking_delta" event carries one fragment of reasoning text in Text,
+// for live display only: the loop never persists it, so an adapter whose
+// reasoning belongs in history or must be replayed also emits the complete
+// "thinking" block or ReplayFields. Reasoning text never rides on
+// "text_delta".
+//
 // StopReason is only populated on a "message_complete" event: one of
 // "end_turn", "tool_use", "max_tokens", "error", "incomplete", or a
 // provider-specific value (e.g. Anthropic's "refusal") passed through
@@ -28,7 +34,7 @@ import (
 // CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
 // subset of OutputTokens.
 type StreamEvent struct {
-	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking" | "redacted_thinking" | "message_complete" | "error"
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking_delta" | "thinking" | "redacted_thinking" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
@@ -249,6 +255,12 @@ type StreamParams struct {
 	// config stays portable across providers.
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
+	// ReasoningSummary is RunConfig.ReasoningSummary: "auto" asks adapters
+	// with a probed control to return reasoning text, which they stream as
+	// "thinking_delta" events; "off" asks for none. Each adapter projects
+	// an empty value itself.
+	ReasoningSummary string `json:"reasoningSummary,omitempty"`
+
 	// ToolChoice steers tool use for this turn. The zero value
 	// (ToolChoiceAuto) is omitted from the wire by every adapter. An
 	// adapter emits a native tool_choice field only when the resolved
@@ -289,11 +301,13 @@ func Float64Ptr(v float64) *float64 {
 
 // HarnessEvent is an event emitted by the harness to the control plane.
 //
-// Type discriminates the event shape: "text_delta", "tool_call",
-// "tool_result", "done", "error", "warning", "heartbeat", "ready",
+// Type discriminates the event shape: "text_delta", "thinking_delta",
+// "tool_call", "tool_result", "user_message", "turn_started",
+// "turn_committed", "done", "error", "warning", "heartbeat", "ready",
 // "run_started", "permission_request", "tool_result_request",
 // "batch_submission", "batch_waiting", "batch_cancel_request",
-// "sandbox_token_request".
+// "sandbox_token_request". The per-type field table is the HarnessEvent
+// comment in proto/harness/v1/harness.proto.
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
@@ -302,11 +316,15 @@ func Float64Ptr(v float64) *float64 {
 // the control plane derives run identity from the authenticated stream,
 // and Audience only names the intended JWT `aud` claim.
 //
-// "run_started" carries the run ID in ID and the run span's
-// TraceReference. It is sent once per run, before the run's first model
-// event, only when the trace emitter records an OTel run span. Under
+// "run_started" carries the run ID in ID and, when the trace emitter
+// records an OTel run span, that span's TraceReference. It is sent once
+// per run after setup, before the run's first "user_message". Under
 // `stirrup job` "ready" is per session, so a follow-up run's
 // "run_started" follows the previous run's "done".
+//
+// Source takes one of the UserMessageSource* values; the vocabulary is
+// open, so consumers preserve values they do not recognise. Turn is a
+// pointer so turn 0 is present on the wire.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -320,11 +338,52 @@ type HarnessEvent struct {
 	Trace          *RunTrace       `json:"trace,omitempty"`
 	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result/sandbox-token requests with their responses; on a "warning", echoes the dropped user_response's requestId
 	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
-	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
+	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events); informational, not for feature gating
+	Capabilities   []string        `json:"capabilities,omitempty"`   // contract features this harness implements (set on "ready" events); see HarnessCapabilities
 	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
+
+	Source          string      `json:"source,omitempty"`          // where a user_message's text came from (user_message only)
+	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started and turn_committed)
+	Model           string      `json:"model,omitempty"`           // the routed model (turn_started only)
+	Provider        string      `json:"provider,omitempty"`        // the routed provider's adapter type, never a providers-map key (turn_started only)
+	Usage           *TokenUsage `json:"usage,omitempty"`           // the turn's token usage, nil when it reported none (turn_committed only)
+	ToolResultCount int         `json:"toolResultCount,omitempty"` // tool results the turn appended (turn_committed only)
+	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
+	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
 }
+
+// Contract capabilities a harness advertises on "ready".
+const (
+	// CapabilityLiveTranscript: user_message, turn_started, turn_committed
+	// and thinking_delta events, tool_result name/is_error/duration_ms, and
+	// run_started for every run.
+	CapabilityLiveTranscript = "live_transcript"
+	// CapabilityReasoningSummary: RunConfig.ReasoningSummary is honoured.
+	CapabilityReasoningSummary = "reasoning_summary"
+	// CapabilityFollowUpHistory: RunConfig.FollowUpHistory is honoured.
+	CapabilityFollowUpHistory = "follow_up_history"
+)
+
+// HarnessCapabilities returns the capabilities this harness advertises on
+// "ready", as a new slice on every call.
+func HarnessCapabilities() []string {
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory}
+}
+
+// Values of HarnessEvent.Source on a "user_message" event.
+const (
+	UserMessageSourceInitialPrompt              = "initial_prompt"
+	UserMessageSourceFollowUpPrompt             = "followup_prompt"
+	UserMessageSourceUserResponse               = "user_response"
+	UserMessageSourceVerifierFeedback           = "verifier_feedback"
+	UserMessageSourceStructuredOutputCorrection = "structured_output_correction"
+	UserMessageSourceToolChoiceEscalation       = "tool_choice_escalation"
+	UserMessageSourceStallNudge                 = "stall_nudge"
+	UserMessageSourceWindDown                   = "wind_down"
+	UserMessageSourceOutputLimitRecovery        = "output_limit_recovery"
+)
 
 // ControlEvent is an event received from the control plane.
 //

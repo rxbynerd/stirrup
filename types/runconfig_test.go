@@ -926,6 +926,45 @@ func TestValidateRunConfig_FollowUpGraceBound(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_FollowUpHistory(t *testing.T) {
+	for _, value := range []string{"", FollowUpHistoryReset, FollowUpHistoryContinue} {
+		c := validConfig()
+		c.FollowUpHistory = value
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("followUpHistory %q: unexpected error: %v", value, err)
+		}
+	}
+
+	c := validConfig()
+	c.FollowUpHistory = "resume"
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), `followUpHistory "resume"`) {
+		t.Fatalf("expected an unknown followUpHistory to be rejected, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_FollowUpHistoryWithoutGraceIsAccepted(t *testing.T) {
+	c := validConfig()
+	c.FollowUpGrace = nil
+	c.FollowUpHistory = FollowUpHistoryContinue
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("followUpHistory without a follow-up window must be accepted, got: %v", err)
+	}
+}
+
+func TestRunConfig_ContinuesFollowUpHistory(t *testing.T) {
+	cases := map[string]bool{"": false, FollowUpHistoryReset: false, FollowUpHistoryContinue: true}
+	for value, want := range cases {
+		if got := (&RunConfig{FollowUpHistory: value}).ContinuesFollowUpHistory(); got != want {
+			t.Errorf("followUpHistory %q: ContinuesFollowUpHistory() = %v, want %v", value, got, want)
+		}
+	}
+	var nilConfig *RunConfig
+	if nilConfig.ContinuesFollowUpHistory() {
+		t.Error("a nil RunConfig must not continue history")
+	}
+}
+
 func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
 	c := validConfig()
 	tokens := 50_000_001
@@ -1180,6 +1219,28 @@ func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
 			err := ValidateRunConfig(c)
 			if err == nil || !strings.Contains(err.Error(), "reasoningEffort") {
 				t.Fatalf("expected reasoningEffort error for %q, got: %v", v, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ReasoningSummary(t *testing.T) {
+	for _, v := range []string{"", "auto", "off"} {
+		t.Run("accepts/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningSummary = v
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for reasoningSummary=%q, got: %v", v, err)
+			}
+		})
+	}
+	for _, v := range []string{"Auto", "none", "detailed", "concise"} {
+		t.Run("rejects/"+v, func(t *testing.T) {
+			c := validConfig()
+			c.ReasoningSummary = v
+			err := ValidateRunConfig(c)
+			if err == nil || !strings.Contains(err.Error(), "reasoningSummary") {
+				t.Fatalf("expected reasoningSummary error for %q, got: %v", v, err)
 			}
 		})
 	}
@@ -9534,5 +9595,21 @@ func TestRunConfig_WindDown(t *testing.T) {
 	}
 	if strings.Contains(string(data), "windDown") {
 		t.Errorf("nil WindDown must be omitted from JSON, got %s", data)
+	}
+}
+
+func TestResolveReasoningSummary(t *testing.T) {
+	cases := []struct{ providerType, configured, want string }{
+		{"anthropic", "", ReasoningSummaryAuto},
+		{"gemini", "", ReasoningSummaryAuto},
+		{"openai-compatible", "", ReasoningSummaryAuto},
+		{"openai-responses", "", ReasoningSummaryOff},
+		{"openai-responses", ReasoningSummaryAuto, ReasoningSummaryAuto},
+		{"anthropic", ReasoningSummaryOff, ReasoningSummaryOff},
+	}
+	for _, tc := range cases {
+		if got := ResolveReasoningSummary(tc.providerType, tc.configured); got != tc.want {
+			t.Errorf("ResolveReasoningSummary(%q, %q) = %q, want %q", tc.providerType, tc.configured, got, tc.want)
+		}
 	}
 }

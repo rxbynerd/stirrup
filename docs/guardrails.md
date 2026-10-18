@@ -28,7 +28,7 @@ every turn:
 
 | Phase | Where in the loop | What it inspects | What a deny does |
 |---|---|---|---|
-| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, verifier feedback on the turn a verification retry starts, and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
+| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, verifier feedback on the turn a verification retry starts (or when it is appended, if it joins a user message already in history), and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
 | `pre_tool`  | Inside the tool dispatch loop, after the deterministic input checks and before the permission check and executor (see [§ Dispatch order](#dispatch-order)) | The resolved tool name and the cleaned JSON input of a call that passed the deterministic checks | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
 | `post_turn` | After `end_turn` stop reason, before the assistant text leaves the loop | The final assistant message | Aborts the run with outcome `guardrail_blocked` |
 
@@ -79,6 +79,20 @@ outbound request, not one per chunk. Combined with the opt-in
 `minChunkChars` skip threshold (zero, meaning disabled, unless set),
 this keeps the per-turn overhead bounded even when many small tool
 outputs are returned.
+
+The guard receives arrived content with the log scrubber applied, so a
+span the scrubber replaces reaches it as `[REDACTED]`. Since the guard
+cannot judge what it cannot see, the harness spotlights every tool
+result or verifier feedback block that held such a span, whatever the
+verdict. It also sets `Input.Metadata["redacted_spans"]` to the number
+of spans replaced, for guard implementations that want it; the shipped
+adapters do not forward it, so the `[REDACTED]` placeholder in the
+content is the only signal they pass on. A block the guard also
+spotlights is wrapped once. See
+[Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
+A deny or spotlight of arrived tool results, like the harness's own
+fence, drops each result's structured payload, which the Anthropic and
+Gemini adapters would otherwise send beside the rewritten text.
 
 ### `pre_tool` (recommended for production)
 
@@ -651,7 +665,7 @@ Five instruments emitted by `harness/internal/observability/metrics.go`:
 | `stirrup.guard.checks` | counter | `guard.id`, `guard.phase`, `guard.verdict` |
 | `stirrup.guard.errors` | counter | `guard.id`, `guard.phase` |
 | `stirrup.guard.skips` | counter | `guard.id`, `guard.phase`, `reason` |
-| `stirrup.guard.spotlights` | counter | `guard.id` |
+| `stirrup.guard.spotlights` | counter | `guard.id` (`harness:scrubbed-spans` for the harness's own fence) |
 | `stirrup.guard.duration` | histogram | `guard.id`, `guard.phase` |
 
 A healthy production fleet sees `errors` and `skips` at low rates

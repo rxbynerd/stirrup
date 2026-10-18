@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -375,6 +376,7 @@ type recordingControlPlane struct {
 	traceContext *pb.TraceContext
 
 	mu       sync.Mutex
+	ready    *pb.HarnessEvent
 	received []*pb.HarnessEvent
 	doneCh   chan struct{}
 	// With follow-ups enabled each run emits its own "done", so the
@@ -387,9 +389,13 @@ func newRecordingControlPlane(task *pb.RunConfig) *recordingControlPlane {
 }
 
 func (s *recordingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) error {
-	if _, err := stream.Recv(); err != nil {
+	ready, err := stream.Recv()
+	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.ready = ready
+	s.mu.Unlock()
 	if err := stream.Send(&pb.ControlEvent{Type: "task_assignment", Task: s.task, TraceContext: s.traceContext}); err != nil {
 		return err
 	}
@@ -422,6 +428,40 @@ func (s *recordingControlPlane) findEvent(eventType string) *pb.HarnessEvent {
 		}
 	}
 	return nil
+}
+
+func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
+	useTempMarkerPaths(t)
+	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
+	startControlPlane(t, srv)
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+	select {
+	case <-srv.doneCh:
+	case <-time.After(terminalWaitBudget):
+		t.Fatal("control plane never received a done event")
+	}
+	select {
+	case runErr := <-errCh:
+		if runErr == nil {
+			t.Error("runJob returned nil for a rejected config")
+		}
+	case <-time.After(terminalWaitBudget):
+		t.Fatal("runJob did not return")
+	}
+
+	srv.mu.Lock()
+	ready := srv.ready
+	srv.mu.Unlock()
+	if ready.GetType() != "ready" {
+		t.Fatalf("first event = %q, want ready", ready.GetType())
+	}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history"}
+	if got := ready.GetCapabilities(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ready capabilities = %v, want %v", got, want)
+	}
 }
 
 // TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup

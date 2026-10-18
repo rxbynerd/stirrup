@@ -94,7 +94,7 @@ func TestStreamEventsToResult_MarkedToolCallKeepsHistoryValid(t *testing.T) {
 	close(ch)
 
 	tp := &recordingTransport{}
-	sr, err := streamEventsToResult(context.Background(), ch, tp, ignoreEmitFailure)
+	sr, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure)
 	if err != nil {
 		t.Fatalf("streamEventsToResult: %v", err)
 	}

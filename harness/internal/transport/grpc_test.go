@@ -564,6 +564,64 @@ func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 }
 
+func TestGRPCTransport_EmitScrubsThinkingDeltaAndUserMessageText(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	events := []types.HarnessEvent{
+		{Type: "thinking_delta", Text: "the key is sk-ant-abc123-secret and ghp_abcdef1234567890"},
+		{Type: "user_message", Source: types.UserMessageSourceUserResponse, RequestID: "r1", Text: "use sk-ant-abc123-secret and ghp_abcdef1234567890"},
+	}
+	for _, ev := range events {
+		if err := tr.Emit(ev); err != nil {
+			t.Fatalf("Emit %s: %v", ev.Type, err)
+		}
+	}
+
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	received := srv.getReceived()
+	if len(received) != len(events) {
+		t.Fatalf("expected %d received events, got %d", len(events), len(received))
+	}
+	for _, ev := range received {
+		if strings.Contains(ev.Text, "sk-ant-") || strings.Contains(ev.Text, "ghp_") || !strings.Contains(ev.Text, "[REDACTED]") {
+			t.Errorf("%s text was not scrubbed: %q", ev.Type, ev.Text)
+		}
+	}
+	if got := received[1]; got.Source != types.UserMessageSourceUserResponse || got.RequestId != "r1" {
+		t.Errorf("user_message source/request_id = %q/%q, want them unchanged", got.Source, got.RequestId)
+	}
+}
+
+func TestGRPCTransport_EmitCapsScrubbedUserMessageText(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	text := "sk-ant-abc123-secret " + strings.Repeat("u", maxEventFieldBytes)
+	if err := tr.Emit(types.HarnessEvent{Type: "user_message", Source: types.UserMessageSourceInitialPrompt, Text: text}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	received := srv.getReceived()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 received event, got %d", len(received))
+	}
+	got := received[0].Text
+	if len(got) > maxEventFieldBytes || !strings.Contains(got, "bytes shown]") {
+		t.Errorf("user_message text is %d bytes or lacks the truncation marker", len(got))
+	}
+	if !strings.HasPrefix(got, "[REDACTED]") {
+		t.Errorf("capped text does not start with the scrubbed secret: %q", got[:40])
+	}
+}
+
 // TestGRPCTransport_EmitScrubsInput mirrors the stdio Input-scrub fix on
 // the gRPC transport: a permission_request forwarding a tool call's raw
 // input must not leak a latch-tripping secret to the control plane.

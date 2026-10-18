@@ -60,3 +60,31 @@ func TestPhaseGatedEmptyPhasesSkipsEverything(t *testing.T) {
 		t.Fatalf("inner invoked %d times despite empty Phases, want 0", inner.called)
 	}
 }
+
+func TestChecksPhase(t *testing.T) {
+	judge := &stubGuard{d: &Decision{Verdict: VerdictAllow, GuardID: "stub"}}
+	cases := []struct {
+		name string
+		g    GuardRail
+		want bool
+	}{
+		{"nil", nil, false},
+		{"noop", NewNoop(), false},
+		{"adapter", judge, true},
+		{"gated to the phase", &PhaseGated{Phases: []Phase{PhasePreTurn}, Inner: judge}, true},
+		{"gated to another phase", &PhaseGated{Phases: []Phase{PhasePostTurn}, Inner: judge}, false},
+		{"gated noop", &PhaseGated{Phases: []Phase{PhasePreTurn}, Inner: NewNoop()}, false},
+		{"composite with a checking member", &Sequential{Guards: []GuardRail{NewNoop(), &PhaseGated{Phases: []Phase{PhasePreTurn}, Inner: judge}}}, true},
+		{"composite without one", Parallel{Guards: []GuardRail{NewNoop(), &PhaseGated{Phases: []Phase{PhasePreTool}, Inner: judge}}}, false},
+		{"typed nil phase gate", (*PhaseGated)(nil), false},
+		{"typed nil sequential", (*Sequential)(nil), false},
+		{"typed nil parallel", (*Parallel)(nil), false},
+		{"typed nil noop", (*Noop)(nil), false},
+		{"composite holding a typed nil", &Sequential{Guards: []GuardRail{(*PhaseGated)(nil), judge}}, true},
+	}
+	for _, tc := range cases {
+		if got := ChecksPhase(tc.g, PhasePreTurn); got != tc.want {
+			t.Errorf("%s: ChecksPhase = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

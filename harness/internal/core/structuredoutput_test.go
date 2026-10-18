@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -118,6 +119,39 @@ func TestRun_InvalidThenValidAnswerReturnsStructuredOutput(t *testing.T) {
 	done := doneEvent(t, tr.Events())
 	if done.Trace == nil || string(done.Trace.StructuredOutput) != want {
 		t.Errorf("done trace structured output = %v, want %s", done.Trace, want)
+	}
+}
+
+// TestRun_StructuredOutputCorrectionIsReportedBetweenTurns pins that the
+// correction request is reported as the text appended to history, after
+// the rejected answer commits and before the corrected turn opens.
+func TestRun_StructuredOutputCorrectionIsReportedBetweenTurns(t *testing.T) {
+	loop, prov, tr := structuredTestLoop("not json", `{"title":"Fix login","labels":["bug"]}`)
+
+	if _, err := loop.Run(context.Background(), structuredTestConfig()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if prov.calls() != 2 {
+		t.Fatalf("provider calls = %d, want 2", prov.calls())
+	}
+	appended := prov.requests[1][len(prov.requests[1])-1].Content[0].Text
+
+	var order []string
+	for _, ev := range tr.Events() {
+		switch {
+		case ev.Type == "turn_started":
+			order = append(order, fmt.Sprintf("start:%d", *ev.Turn))
+		case ev.Type == "turn_committed":
+			order = append(order, fmt.Sprintf("commit:%d", *ev.Turn))
+		case ev.Type == "user_message" && ev.Source == types.UserMessageSourceStructuredOutputCorrection:
+			order = append(order, "correction")
+			if ev.Text != appended {
+				t.Errorf("correction text = %q, want the appended %q", ev.Text, appended)
+			}
+		}
+	}
+	if want := "[start:0 commit:0 correction start:1 commit:1]"; fmt.Sprint(order) != want {
+		t.Errorf("order = %v, want %s", order, want)
 	}
 }
 

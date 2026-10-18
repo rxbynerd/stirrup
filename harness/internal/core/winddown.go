@@ -82,6 +82,7 @@ func (l *AgenticLoop) windDownIfDue(ctx context.Context, config *types.RunConfig
 		text = windDownReadOnlyText
 	}
 	messages = injectSyntheticUserText(messages, text)
+	l.emitUserMessage(types.UserMessageSourceWindDown, text, "")
 
 	l.Metrics.WindDowns.Add(ctx, 1, l.metricAttrs(
 		attribute.String("run.mode", config.Mode),

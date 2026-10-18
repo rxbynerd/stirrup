@@ -1063,19 +1063,17 @@ func TestBatchUntrustedChunks_DelimiterFormat(t *testing.T) {
 	}
 }
 
-// TestReplaceUntrustedChunks_Turn0IsNoop asserts that replaceUntrustedChunks
-// does not mutate messages on turn 0 — the user prompt is the
-// untrusted content and rewriting it would produce an opaque
-// user-facing failure for v1.
-func TestReplaceUntrustedChunks_Turn0IsNoop(t *testing.T) {
-	original := []types.Message{
+// TestReplaceUntrustedChunks_LeavesPromptText asserts that
+// replaceUntrustedChunks does not rewrite a prompt message — a denied
+// prompt ends the run, since rewriting it would produce an opaque
+// user-facing failure.
+func TestReplaceUntrustedChunks_LeavesPromptText(t *testing.T) {
+	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "original"}}},
 	}
-	cp := make([]types.Message, len(original))
-	copy(cp, original)
-	replaceUntrustedChunks(cp, 0, "[blocked]")
-	if cp[0].Content[0].Text != "original" {
-		t.Errorf("expected turn 0 noop, got %q", cp[0].Content[0].Text)
+	replaceUntrustedChunks(messages, "[blocked]")
+	if messages[0].Content[0].Text != "original" {
+		t.Errorf("expected the prompt text untouched, got %q", messages[0].Content[0].Text)
 	}
 }
 
@@ -1087,7 +1085,7 @@ func TestSpotlightUntrustedChunks_RewrapsToolResults(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "tc_1", Content: "raw payload"},
 		}},
 	}
-	spotlightUntrustedChunks(messages, 1)
+	spotlightUntrustedChunks(messages)
 	got := messages[0].Content[0].Content
 	if !strings.HasPrefix(got, guard.SpotlightOpenTag) || !strings.HasSuffix(got, guard.SpotlightCloseTag) {
 		t.Errorf("expected spotlight wrapping, got: %q", got)

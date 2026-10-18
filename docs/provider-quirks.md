@@ -751,6 +751,37 @@ enum. On `openai-responses` a sent
 Responses adapter only: the Chat Completions `gpt-5*` rules set no
 effort allow-list, so an effort there is dropped with the warning above.
 
+### 3.3 Reasoning summaries
+
+`RunConfig.reasoningSummary` (`auto` or `off`) is projected per adapter
+the same way. Each adapter also decides what an unset value projects
+to; the knob stays provider-neutral because the unset case is part of
+the projection, not a provider-specific field:
+
+| Adapter | `auto` on the wire | Unset on the wire | Probed |
+|---|---|---|---|
+| `anthropic` | nothing; thinking is configured by `reasoningEffort` | as `auto` | n/a |
+| `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | as `auto` | no request control exists |
+| `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | documented, not probed |
+| `gemini` | `generationConfig.thinkingConfig.includeThoughts: true`, for models whose quirks accept a thinking config or when `reasoningEffort` is set | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
+| `bedrock` | nothing; the adapter streams no reasoning text | nothing | n/a |
+
+Gemini models that do not think reject a `thinkingConfig`, so the
+Gemini adapter sends `includeThoughts` by default only where the
+registry says the model accepts one: a model with a `thinkingLevels`
+allow-list (the `gemini-3.6*`, `gemini-3.7*` and `gemini-3.8*` rules),
+or one whose rule sets `includeThoughts` (`gemini-3.1-pro*`, and
+`gemini-2.5-flash`, whose probe covered the first turn only, not a
+replayed tool-calling turn). Any other model receives `includeThoughts`
+only beside a configured `reasoningEffort`, which already sends a
+`thinkingConfig`.
+
+`openai-responses` requests summaries only on an explicit `auto`
+because OpenAI may require organisation verification before it returns
+them on its newest reasoning models, and the control has not been
+probed: a default-on summary could make requests from an unverified
+organisation fail.
+
 ## 4. Composition with the NormalizingAdapter
 
 The `NormalizingAdapter` (PR #303, merged) wraps the concrete

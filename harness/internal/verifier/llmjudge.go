@@ -80,6 +80,8 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: userContent}}}},
 		MaxTokens:   judgeMaxTokens,
 		Temperature: types.Float64Ptr(judgeTemperature),
+		// Only the verdict text is read, so reasoning text is not requested.
+		ReasoningSummary: types.ReasoningSummaryOff,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream request failed: %w", err)
@@ -119,6 +121,10 @@ func (v *LLMJudgeVerifier) buildUserMessage(fence security.DataFence, vc VerifyC
 		}
 		fmt.Fprintf(&sb, "### %s\n\n", msg.Role)
 		for _, block := range msg.Content {
+			// Merged harness output is skipped like a synthetic message.
+			if block.Origin != "" {
+				continue
+			}
 			switch block.Type {
 			case "text":
 				sb.WriteString(security.NeutraliseFenceMarkers(block.Text))

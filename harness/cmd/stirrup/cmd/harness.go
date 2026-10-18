@@ -135,14 +135,15 @@ type harnessCLIOptions struct {
 	// from Model.
 	PromptModel string
 
-	Workspace     string
-	MaxTurns      int
-	Timeout       int
-	TracePath     string
-	TransportType string
-	TransportAddr string
-	FollowUpGrace int
-	LogLevel      string
+	Workspace       string
+	MaxTurns        int
+	Timeout         int
+	TracePath       string
+	TransportType   string
+	TransportAddr   string
+	FollowUpGrace   int
+	FollowUpHistory string
+	LogLevel        string
 
 	// Temperature overrides the loop's default sampling temperature.
 	// Nil means "do not override". A pointer disambiguates an explicit
@@ -154,6 +155,10 @@ type harnessCLIOptions struct {
 	// (minimal/low/medium/high/xhigh/max). Empty leaves the model on its
 	// default.
 	ReasoningEffort string
+
+	// ReasoningSummary selects whether reasoning text is requested and
+	// streamed ("auto" or "off"). Empty leaves it to each adapter.
+	ReasoningSummary string
 
 	// Vertex AI Gemini provider fields; meaningful only when
 	// ProviderType == "gemini" (ValidateRunConfig rejects them otherwise).
@@ -408,11 +413,13 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		grace := opts.FollowUpGrace
 		config.FollowUpGrace = &grace
 	}
+	config.FollowUpHistory = opts.FollowUpHistory
 	if opts.Temperature != nil {
 		t := *opts.Temperature
 		config.Temperature = &t
 	}
 	config.ReasoningEffort = opts.ReasoningEffort
+	config.ReasoningSummary = opts.ReasoningSummary
 
 	// Scoped to gemini so --gcp-* flags left at their defaults do not
 	// leak onto non-gemini runs; the validator rejects them otherwise.
@@ -853,6 +860,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.FollowUpGrace = nil
 		}
 	}
+	if changed("followup-history") {
+		cfg.FollowUpHistory, _ = f.GetString("followup-history")
+	}
 	// See optionalFloat64Flag: without the Changed() check, omitting
 	// --temperature would silently rewrite a file-provided value to 0.
 	if t := optionalFloat64Flag(cmd, "temperature"); t != nil {
@@ -860,6 +870,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("reasoning-effort") {
 		cfg.ReasoningEffort, _ = f.GetString("reasoning-effort")
+	}
+	if changed("reasoning-summary") {
+		cfg.ReasoningSummary, _ = f.GetString("reasoning-summary")
 	}
 	if changed("log-level") {
 		cfg.LogLevel, _ = f.GetString("log-level")

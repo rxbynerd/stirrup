@@ -301,6 +301,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	gcpLocation, _ := f.GetString("gcp-location")
 	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
 	reasoningEffort, _ := f.GetString("reasoning-effort")
+	reasoningSummary, _ := f.GetString("reasoning-summary")
 	anthropicFederationRuleID, _ := f.GetString("anthropic-federation-rule-id")
 	anthropicOrganizationID, _ := f.GetString("anthropic-organization-id")
 	anthropicServiceAccountID, _ := f.GetString("anthropic-service-account-id")
@@ -316,6 +317,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	transportType, _ := f.GetString("transport")
 	transportAddr, _ := f.GetString("transport-addr")
 	followUpGrace, _ := f.GetInt("followup-grace")
+	followUpHistory, _ := f.GetString("followup-history")
 	logLevel, _ := f.GetString("log-level")
 	executorType, _ := f.GetString("executor")
 	editStrategyType, _ := f.GetString("edit-strategy")
@@ -454,8 +456,10 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		TransportType:                transportType,
 		TransportAddr:                transportAddr,
 		FollowUpGrace:                followUpGrace,
+		FollowUpHistory:              followUpHistory,
 		Temperature:                  temperature,
 		ReasoningEffort:              reasoningEffort,
+		ReasoningSummary:             reasoningSummary,
 		LogLevel:                     logLevel,
 		ExecutorType:                 executorType,
 		EditStrategyType:             editStrategyType,

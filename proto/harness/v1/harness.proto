@@ -10,11 +10,14 @@ import "google/protobuf/struct.proto";
 //
 // Lifecycle:
 //   1. Harness connects and opens a RunTask stream.
-//   2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//   2. Harness sends a HarnessEvent with type "ready" (includes harness_version
+//      and capabilities).
 //   3. Control plane sends a ControlEvent with type "task_assignment" containing
 //      a RunConfig in the task field.
-//   4. Harness streams HarnessEvents as it works (text_delta, tool_call,
-//      tool_result, heartbeat, permission_request, warning).
+//   4. Harness sends "run_started", then streams the run's live transcript
+//      (user_message, turn_started, text_delta, thinking_delta, tool_call,
+//      tool_result, turn_committed) interleaved with heartbeat, warning,
+//      permission_request and the other request events.
 //   5. Control plane sends ControlEvents as needed (user_response,
 //      permission_response, cancel).
 //   6. Harness sends a final HarnessEvent with type "done" (includes trace),
@@ -22,6 +25,9 @@ import "google/protobuf/struct.proto";
 //      so "done" is the terminal signal on every path — including a
 //      task_assignment whose RunConfig is rejected, which reaches step 6
 //      without ever reaching step 4.
+//   7. With a follow-up grace window (RunConfig.follow_up_grace), the stream
+//      stays open after "done" instead: a user_response starts another run,
+//      which repeats steps 4 to 6 under its own run ID.
 service HarnessService {
   // RunTask opens a bidirectional stream. The control plane sends a
   // TaskAssignment as the first ControlEvent; the harness streams
@@ -41,18 +47,46 @@ service HarnessService {
 //
 //   "ready"
 //     - harness_version: build version string of the harness binary.
+//     - capabilities:    the contract features this harness implements.
 //
 //   "run_started"
 //     - id:              the run ID (RunConfig.run_id) of the run that started.
 //     - trace_reference: the run span's OTel trace ID, span ID and sampled
-//                        flag.
-//     Sent once per run, before the run's first model event, only when the
-//     run records an OTel span. Under `stirrup job`, "ready" is sent once per
-//     session, so a follow-up run's "run_started" follows the previous run's
-//     "done".
+//                        flag; set only when the run records an OTel span.
+//     Sent once per run, primary and follow-up alike, after the run's setup
+//     and before its first "user_message". A run that fails setup sends
+//     none. Under `stirrup job`, "ready" is sent once per session, so a
+//     follow-up run's "run_started" follows the previous run's "done".
+//
+//   "user_message"
+//     - text:       the text the harness appended to the run's history as a
+//                   user-role message, after sanitisation. When it merged
+//                   into a trailing user message, only the appended text.
+//     - source:     where the text came from; see the source field.
+//     - request_id: the user_response's request_id, when the text came
+//                   from one.
+//     Sent in append order. Reports text appended to history, not that the
+//     model will act on it: a "user_response" input is reported once it
+//     passes screening, while a prompt or verifier feedback is reported
+//     before the screening that can still end the run. Tool results are
+//     reported by "tool_result", never by "user_message".
+//
+//   "turn_started"
+//     - turn:     the run-scoped turn number, starting at 0.
+//     - model:    the model the router selected for the turn.
+//     - provider: the adapter type of the provider the router selected,
+//                 never a providers-map key.
+//     Sent once per turn, before the provider request. A retried or
+//     compacted request within the turn sends no further "turn_started".
 //
 //   "text_delta"
 //     - text: incremental text fragment from the model's response.
+//
+//   "thinking_delta"
+//     - text: incremental reasoning text from the model's response, where
+//             the provider exposes it. Opaque (redacted) reasoning is
+//             never sent.
+//     None are sent when RunConfig.reasoning_summary is "off".
 //
 //   "tool_call"
 //     - id:    unique tool-use ID assigned by the model.
@@ -61,7 +95,20 @@ service HarnessService {
 //
 //   "tool_result"
 //     - tool_use_id: the tool-use ID this result corresponds to.
+//     - name:        the tool name, the same as the matching "tool_call".
 //     - content:     string result returned by the tool.
+//     - is_error:    true when the call failed.
+//     - duration_ms: the call's run time in milliseconds.
+//
+//   "turn_committed"
+//     - turn:              the turn number its "turn_started" carried.
+//     - stop_reason:       the model's stop reason for the turn.
+//     - usage:             the turn's token usage.
+//     - tool_result_count: the number of tool results the turn appended.
+//     Sent once the turn's assistant message and a result for every tool
+//     call in it are in history. A turn whose output was discarded, whose
+//     dispatch was cut short, or whose answer a guardrail rejected sends a
+//     "turn_started" without a "turn_committed".
 //
 //   "permission_request"
 //     - request_id: unique ID for this request; the control plane must echo it
@@ -145,14 +192,20 @@ service HarnessService {
 //     created, on a refresh it stops refreshing and emits a "warning".
 message HarnessEvent {
   // Required. The event type discriminator.
-  // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
-  //              "warning", "heartbeat", "ready", "run_started",
-  //              "permission_request", "tool_result_request",
-  //              "batch_submission", "batch_waiting", "batch_cancel_request",
-  //              "sandbox_token_request".
+  // Valid values: "text_delta", "thinking_delta", "tool_call",
+  //              "tool_result", "user_message", "turn_started",
+  //              "turn_committed", "done", "error", "warning", "heartbeat",
+  //              "ready", "run_started", "permission_request",
+  //              "tool_result_request", "batch_submission", "batch_waiting",
+  //              "batch_cancel_request", "sandbox_token_request".
+  // Consumers should ignore types they do not recognise.
   string type = 1;
 
-  // Incremental text fragment from the model. Set on "text_delta" events.
+  // Incremental text fragment from the model. Set on "text_delta" events,
+  // and on "thinking_delta" events for reasoning text. On "user_message"
+  // events, the appended text. "user_message" and "thinking_delta" text is
+  // capped at 256 KiB; a capped text ends in
+  // "[truncated by harness for the control stream: N of M bytes shown]".
   string text = 2;
 
   // Unique tool-use ID assigned by the model. Set on "tool_call" events.
@@ -160,7 +213,8 @@ message HarnessEvent {
   // started.
   string id = 3;
 
-  // Tool name. Set on "tool_call" events.
+  // Tool name. Set on "tool_call" events, and on "tool_result" events to
+  // the same name as the matching "tool_call".
   string name = 4;
 
   // JSON-encoded tool input parameters. Set on "tool_call",
@@ -182,6 +236,9 @@ message HarnessEvent {
   // Why the run ended. Set on "done" events to the run outcome, the same
   // value as RunTrace.outcome; see that field for the values. A "done"
   // sent for a task rejected before its run started carries "error".
+  // On "turn_committed" events, the model's stop reason for the turn
+  // ("end_turn", "tool_use", "max_tokens", or a provider stop reason),
+  // never the run outcome.
   string stop_reason = 8;
 
   // Human-readable message. Set on "error" and "warning" events.
@@ -196,16 +253,18 @@ message HarnessEvent {
   // Unique request ID for correlation. Set on "permission_request" and
   // "tool_result_request" events. The control plane must echo this back in
   // the corresponding permission_response / tool_result_response ControlEvent.
-  // Also set on a "warning" that reports a dropped user_response, echoing
-  // that ControlEvent's request_id.
+  // Also set on a "warning" that reports a dropped user_response, and on a
+  // "user_message" whose text came from a user_response, echoing that
+  // ControlEvent's request_id.
   string request_id = 11;
 
   // The tool name. Set on "permission_request" (tool requesting permission)
   // and "tool_result_request" (async tool whose result is being requested).
   string tool_name = 12;
 
-  // Build version of the harness binary. Set on "ready" events. The control
-  // plane may use this to verify compatibility before sending a task.
+  // Build version of the harness binary. Set on "ready" events.
+  // Informational: "dev" and "main" builds cannot be ordered against a
+  // release, so gate features on capabilities instead.
   string harness_version = 13;
 
   // The intended JWT `aud` claim for the sandbox identity token. Set on
@@ -213,12 +272,9 @@ message HarnessEvent {
   // which may override it when minting the token.
   string audience = 14;
 
-  // The run span's OTel identity. Set on "run_started" events, which the
-  // harness sends once per run, before the run's first model event, only
-  // when the run records an OTel span. "ready" is per session under
-  // `stirrup job`, so a follow-up run's "run_started" follows the previous
-  // run's "done". The "done" summary carries the same value in
-  // RunTrace.trace_reference.
+  // The run span's OTel identity. Set on "run_started" events when the run
+  // records an OTel span; absent otherwise. The "done" summary carries the
+  // same value in RunTrace.trace_reference.
   TraceReference trace_reference = 15;
 
   // The W3C trace context of the tool call's execute_tool span. Set on
@@ -227,6 +283,63 @@ message HarnessEvent {
   // its own work for the call on it. request_id and tool_use_id remain the
   // reply correlation; this field describes causality only.
   TraceContext trace_context = 16;
+
+  // Where a "user_message" event's text came from. An open vocabulary:
+  // consumers must preserve values they do not recognise.
+  //   "initial_prompt"               the primary run's prompt.
+  //   "followup_prompt"              a follow-up run's prompt, from the
+  //                                  user_response that started it.
+  //   "user_response"                a user_response injected at a turn
+  //                                  boundary of the active run, one
+  //                                  event per ControlEvent.
+  //   "verifier_feedback"            the verifier's feedback after a
+  //                                  failed verification.
+  //   "structured_output_correction" the request to correct a final
+  //                                  answer that failed the output schema.
+  //   "tool_choice_escalation"       the prompt sent after a turn that
+  //                                  should have called a tool.
+  //   "stall_nudge"                  the instruction to change approach
+  //                                  after a repeated tool-call pattern.
+  //   "wind_down"                    the instruction to finish up as a
+  //                                  budget nears exhaustion.
+  //   "output_limit_recovery"        the instruction that follows a turn
+  //                                  cut off at the output limit.
+  //   "compaction_summary"           reserved; not currently emitted.
+  // Every value other than the first three is text the harness wrote.
+  string source = 17;
+
+  // The run-scoped turn number, starting at 0. Set on "turn_started" and
+  // "turn_committed" events.
+  optional int32 turn = 18;
+
+  // The model the router selected for the turn. Set on "turn_started".
+  string model = 19;
+
+  // The adapter type of the provider the router selected for the turn
+  // (for example "anthropic" or "openai-responses"), never a providers-map
+  // key. Set on "turn_started".
+  string provider = 20;
+
+  // The turn's token usage. Set on "turn_committed" events; absent when
+  // the turn reported no usage.
+  TokenUsage usage = 21;
+
+  // The number of tool results the turn appended to history. Set on
+  // "turn_committed" events.
+  int32 tool_result_count = 22;
+
+  // True when the tool call failed. Set on "tool_result" events.
+  bool is_error = 23;
+
+  // The tool call's run time in milliseconds, excluding time it spent
+  // queued for a parallel dispatch slot. Set on "tool_result" events.
+  int64 duration_ms = 24;
+
+  // The contract features this harness implements, such as
+  // "live_transcript", "reasoning_summary" and "follow_up_history". Set on
+  // "ready" events. The vocabulary is open: ignore values that are not
+  // recognised. A harness that sends none implements none of them.
+  repeated string capabilities = 25;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -559,6 +672,14 @@ message RunConfig {
   // unset means disabled (stream closes after done). Max: 3600.
   optional int32 follow_up_grace = 21;
 
+  // Optional. The history a follow-up run starts from. "reset" (the
+  // default, also selected by an empty value) starts each follow-up from
+  // its prompt alone. "continue" starts it from the previous run's
+  // committed history — every turn whose tool calls all have results —
+  // with the follow-up prompt appended to it. The primary run, and a
+  // session without a follow-up window, are unaffected.
+  string follow_up_history = 60;
+
   // Optional. Structured log verbosity for this run.
   // Valid values: "debug", "info", "warn", "error". Default: "info".
   string log_level = 22;
@@ -662,6 +783,16 @@ message RunConfig {
   // rejects "minimal"); the provider quirks registry enforces that
   // before any wire bytes are sent.
   string reasoning_effort = 33;
+
+  // Optional. Provider-neutral switch for the model's reasoning text:
+  // "auto" requests it from providers with a probed control (on Gemini,
+  // only for models that accept a thinking config) and streams it as
+  // thinking_delta events; "off" stops the harness streaming it and,
+  // where the provider has a request control (Gemini, OpenAI Responses),
+  // does not request it.
+  // Empty is "auto" on every adapter except openai-responses, which
+  // requests no summary. Conversation history is unaffected.
+  string reasoning_summary = 59;
 
   // Optional. Destination for the run's *answer* — a small RunResult
   // JSON payload — as distinct from the trace emitter's *evidence*.

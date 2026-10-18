@@ -20,7 +20,7 @@ stirrup/
       cmd/job.go
     harnessapi/              # Public embedding API
     internal/
-      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection
+      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection, live transcript events, follow-up history carry
       credential/            # Cross-cloud credential federation
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
       router/                # ModelRouter: static, per-mode, dynamic
@@ -86,6 +86,7 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 | `--transport` | `stdio` | Transport type: stdio, grpc |
 | `--transport-addr` | (none) | gRPC target address, required when transport is grpc |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: `STIRRUP_FOLLOWUP_GRACE`) |
+| `--followup-history` | (unset → `reset`) | History a follow-up starts from: `reset` (prompt alone) or `continue` (previous run's committed history) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--config` | (none) | JSON `RunConfig` path. Use `-` for stdin; auto-detected on a non-TTY pipe. |
 | `--output-runconfig` | (none) | Write the resolved `RunConfig` JSON to `<path>` (or `-` for stdout) and exit without running. Dry-run capture for replay or post-mortem. |

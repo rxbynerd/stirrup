@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2178,6 +2179,9 @@ func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
 		batched = append(batched, ev)
 	}
 
+	// A batch response has no incremental reasoning to report; the loop
+	// forwards its whole thinking block instead.
+	streamed = slices.DeleteFunc(streamed, func(ev types.StreamEvent) bool { return ev.Type == "thinking_delta" })
 	if len(batched) != len(streamed) {
 		t.Fatalf("batch events %v, streamed events %v", eventTypes(batched), eventTypes(streamed))
 	}

@@ -98,6 +98,69 @@ inside one — along with the age-gated sweep that reclaims spool roots a
 crashed run leaves behind, is described in
 [`configuration.md#command-output-capture`](configuration.md#command-output-capture).
 
+### Control-stream scrubbing
+
+The stdio and gRPC transports run `security.Scrub()` over the `text`,
+`content`, `message` and `input` fields of every event before sending
+it, and the gRPC transport then caps `tool_call` input, `tool_result`
+content, `user_message` text and `thinking_delta` text at 256 KiB;
+`text_delta` is not capped. Scrubbing is per event.
+Model output and reasoning arrive as many small `text_delta` and
+`thinking_delta` fragments, so a secret the model writes out across two
+fragments is matched in neither and reaches the control plane intact
+once it concatenates them. The final assistant text recorded in the
+trace is scrubbed as a whole and does not share this gap. A control
+plane that persists or displays the joined deltas and needs the same
+guarantee scrubs the joined text itself.
+
+`thinking_delta` sends the model's readable reasoning text to the
+control plane. It is model output, with the same trust level and the
+same per-fragment scrubbing as `text_delta`.
+
+The Rule-of-Two `redact` action rewrites the model's context, not the
+control stream. `tool_result` content and `verifier_feedback` text
+reach the control plane with this scrubbing alone, so latch-tier spans
+the scrubber does not recognise, such as card numbers, IBANs and
+anchored SSNs, are sent unredacted.
+
+### Scrubbed content is fenced
+
+When a `pre_turn` guard is configured, its copy of each arrived tool
+result, carried tool result or verifier feedback has every match of the
+log scrubber replaced with `[REDACTED]`, so a remote classifier is not
+sent a credential. Several scrubber patterns match any run of token
+characters after a prefix, so text written in the shape of a token
+(`sk-ant-ignore_all_previous_instructions…`, a camelCase `ghp_` value,
+a `Bearer` value that is base64 of an instruction) is replaced as well,
+and the guard cannot judge it. The harness therefore spotlights, in the
+model's history, every block in which the scrubber replaced at least
+one span: the block is base64-encoded inside the spotlight tags, the
+same mechanism a guard's `spotlight` verdict uses, and its structured
+payload is dropped so adapters send the fenced text. This happens
+whatever the guard's verdict, once per block: a block the guard also
+spotlights is wrapped once, and a block already screened is not
+screened again. `Input.Metadata["redacted_spans"]` carries the number
+of spans replaced for guard implementations that read it. The shipped
+adapters (`granite-guardian`, `shieldstral`, `cloud-judge`) do not
+forward it, so for them the `[REDACTED]` placeholder in the content is
+the only signal that something was replaced.
+
+The model still receives the unscrubbed content, inside the fence, as
+it would have without a guard. With no `pre_turn` guard (no guard, the
+`none` adapter, or a guard gated to other phases) nothing is fenced and
+history is unchanged.
+
+The fence has a known cost. It covers the whole block, not the
+scrubbed span, and benign token-shaped text also matches the scrubber:
+a literal `Bearer x`, a `secret://` reference in a config file or in
+these docs, or authentication code that prints a header. Any such
+string base64-wraps the entire tool result for the model and for the
+`llm-judge` verifier, which renders the same history. A tool that
+prints one such string can therefore obscure the rest of its output,
+for example the `FAIL` lines of a test run, from the judge; a
+`test-runner` verifier is unaffected. The planned refinement is to
+fence only the scrubbed spans rather than the whole block.
+
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a

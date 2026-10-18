@@ -506,7 +506,7 @@ func TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "tc_1", Structured: json.RawMessage(`{"note":"password=` + hex + `"}`)},
 		}},
 	}
-	n := loop.redactSensitiveSpans(messages, 1)
+	n := loop.redactSensitiveSpans(messages)
 	if n == 0 {
 		t.Fatal("expected the latch-tier secret to be redacted")
 	}

@@ -288,9 +288,12 @@ func (l *AgenticLoop) planAndDispatch(
 		l.Trace.RecordToolCall(callTrace)
 
 		if err := l.Transport.Emit(types.HarnessEvent{
-			Type:      "tool_result",
-			ToolUseID: p.call.ID,
-			Content:   p.output,
+			Type:       "tool_result",
+			ToolUseID:  p.call.ID,
+			Name:       p.call.Name,
+			Content:    p.output,
+			IsError:    !p.success,
+			DurationMs: callDuration.Milliseconds(),
 		}); err != nil {
 			l.logEmitFailure("tool_result", err)
 		}

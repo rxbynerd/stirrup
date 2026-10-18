@@ -69,6 +69,24 @@ func TestRunRunConfig_FlagOnlyEmitsValidJSON(t *testing.T) {
 	}
 }
 
+func TestRunRunConfig_ReasoningSummaryFlag(t *testing.T) {
+	out, err := runRunConfigForTest(t, []string{
+		"--mode", "execution",
+		"--provider", "anthropic",
+		"--reasoning-summary", "off",
+	}, "")
+	if err != nil {
+		t.Fatalf("runRunConfig: %v", err)
+	}
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("emitted output is not parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.ReasoningSummary != types.ReasoningSummaryOff {
+		t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
+	}
+}
+
 // TestRunRunConfig_Idempotency pins that piping a config through
 // `stirrup run-config` twice produces byte-identical output the second
 // time: the first pass may apply default mutations, the second must not.

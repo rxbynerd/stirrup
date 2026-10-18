@@ -502,14 +502,17 @@ type ModelInput struct {
 // RequestParams records the sampling and steering parameters of the
 // request sent for one turn, copied from the StreamParams handed to the
 // provider. Temperature is the value after defaulting; nil means the
-// request carried none. CacheKey is the provider-neutral affinity digest,
-// never the run ID itself.
+// request carried none. ReasoningSummary is the value resolved for the
+// selected adapter (see ResolveReasoningSummary), never empty on a turn
+// the loop sent. CacheKey is the provider-neutral affinity digest, never
+// the run ID itself.
 type RequestParams struct {
-	Temperature     *float64       `json:"temperature,omitempty"`
-	MaxTokens       int            `json:"maxTokens"`
-	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
-	ToolChoice      ToolChoiceMode `json:"toolChoice"`
-	CacheKey        string         `json:"cacheKey,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"`
+	MaxTokens        int            `json:"maxTokens"`
+	ReasoningEffort  string         `json:"reasoningEffort,omitempty"`
+	ReasoningSummary string         `json:"reasoningSummary,omitempty"`
+	ToolChoice       ToolChoiceMode `json:"toolChoice"`
+	CacheKey         string         `json:"cacheKey,omitempty"`
 }
 
 // ToolCallRecord records a single tool call and its result.

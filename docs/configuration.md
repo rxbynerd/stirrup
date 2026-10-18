@@ -276,6 +276,7 @@ reference.
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, GPT-5.4-onward models document no `minimal` level, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
+| `--reasoning-summary` | (none) | Whether the model's reasoning text is requested and streamed to the transport as `thinking_delta` events: `auto` or `off`. Empty is treated as `auto`, except that `openai-responses` requests no summary unless the value is explicitly `auto`. Provider-neutral like `--reasoning-effort`: see [Reasoning summaries](#reasoning-summaries) for how each adapter projects it, including the unset value. `off` stops the harness streaming reasoning text and, where the provider has a request control for it (Gemini, OpenAI Responses), does not request it. Conversation history is unaffected either way. JSON path: `reasoningSummary`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Loop behaviour
@@ -495,6 +496,7 @@ the none executor has no capability to back the rest.
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
 | `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. With a window configured, the CLI bounds the whole session at 10 × (`--timeout` + `--followup-grace`) after the primary run — room for ten follow-ups each waited for through a full window — since it has no orchestrator deadline behind it. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
+| `--followup-history` | (unset → `reset`) | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window; it takes effect only through the follow-up loop, so an embedder calling `harnessapi.Loop.Run` repeatedly gets no carried history and no warning. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
 
 ### Tracing
 
@@ -1661,6 +1663,45 @@ probed control, with per-model acceptance enforced by the
 [provider quirks registry](provider-quirks.md#32-reasoning-effort)
 before the request is sent. The Responses adapter omits `temperature`
 from any request that carries `reasoning.effort`.
+
+### Reasoning summaries
+
+`reasoningSummary` is the third provider-neutral model knob. It
+decides whether the run streams the model's reasoning text to the
+transport as `thinking_delta` events, for a control plane that renders
+a live transcript. It accepts `auto` and `off`, validated at startup.
+An empty value is projected by each adapter: every adapter treats it as
+`auto` except `openai-responses`, which treats it as `off` (see below),
+and `bedrock`, which streams no reasoning text whatever the value. It
+never changes what is kept in conversation history: reasoning the
+provider needs replayed (Anthropic thinking blocks, DeepSeek
+`reasoning_content`, OpenAI Responses reasoning items, Gemini thought
+signatures) is persisted and replayed exactly as before.
+
+| Adapter | `auto` | `off` |
+|---|---|---|
+| `anthropic` | Streams thinking the request already enables through `reasoningEffort`; no request change. | No request change; the loop forwards no `thinking_delta`. |
+| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
+| `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
+| `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` when the model's quirks accept a thinking config (Gemini 3.6, 3.7, 3.8, 3.1 Pro and 2.5 Flash) or `reasoningEffort` is set, and streams each `thought: true` part. Other models get no `thinkingConfig`, because models that do not think reject one. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
+| `bedrock` | No effect: the adapter streams no reasoning text and has no request control for it. | No effect. |
+
+`openai-responses` requests summaries only on an explicit `auto`
+because OpenAI may require organisation verification before it returns
+them on its newest reasoning models, and the control has not been
+probed live; an unset value leaves the request as unverified
+organisations can send it.
+
+Each turn record's `request.reasoningSummary` holds the value resolved
+for the selected adapter, so an unset field is recorded as `off` on
+`openai-responses` and `auto` elsewhere. A recorded `auto` on
+`openai-responses` still means no summary was sent when the request
+carried no `reasoning.effort`.
+
+Reasoning text is best-effort: providers summarise rather than
+transcribe, and may return no summary for a short turn. The harness's
+own model calls (the context summariser, the LLM-judge verifier, and
+the cloud guard judge) never request reasoning text.
 
 ## RunConfig examples
 

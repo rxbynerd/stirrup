@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -675,5 +676,28 @@ func TestScrubCorrelation_ScrubsEveryValueAndCopies(t *testing.T) {
 	}
 	if ScrubCorrelation(nil) != nil {
 		t.Error("nil in must be nil out")
+	}
+}
+
+// TestScrub_SelfOverlappingPrefixesStayLinear pins that Scrub stays
+// linear on a tool-result-sized input built from a prefix its own pattern
+// body can contain, where a matcher that re-examines each rejected match
+// from its next byte would go quadratic.
+func TestScrub_SelfOverlappingPrefixesStayLinear(t *testing.T) {
+	const size = 100 << 10
+	shapes := map[string]string{
+		"sk-":             strings.Repeat("sk-", size/3),
+		"sk-ant-":         strings.Repeat("sk-ant-", size/7),
+		"xoxb-":           strings.Repeat("xoxb-", size/5),
+		"eyJ":             strings.Repeat("eyJ", size/3),
+		"Basic long body": "Basic " + strings.Repeat("Basic", size/5),
+		"Basic repeated":  strings.Repeat("Basic ", size/6),
+	}
+	for name, in := range shapes {
+		start := time.Now()
+		Scrub(in)
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("Scrub of 100 KiB of %q took %v", name, elapsed)
+		}
 	}
 }
