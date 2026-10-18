@@ -309,6 +309,25 @@ func TestDetectSensitive_GrafanaDocExampleAllowlisted(t *testing.T) {
 	}
 }
 
+// TestDetectSensitive_PEMBodyWithDocLiteralStillLatches pins that the
+// documentation-literal exemption cannot be reached through a key body: a
+// literal placed on one body line must not suppress the key's finding.
+func TestDetectSensitive_PEMBodyWithDocLiteralStillLatches(t *testing.T) {
+	body := pemBodyLines(6)
+	body[3] = "MTIzNDU2OmdsY18uLi4=" + body[3][20:]
+	fs := DetectSensitive("cat id_rsa\n" + pemKey("RSA PRIVATE KEY", body, "\n") + "\n")
+	var latched bool
+	for _, f := range fs {
+		latched = latched || (f.Name == "secret/pem_private_key" && f.Tier == TierLatch)
+	}
+	if !latched {
+		t.Fatalf("no latch-tier pem_private_key finding for a key body holding a doc literal: %v", fs)
+	}
+	if fs := DetectSensitive("Basic MTIzNDU2OmdsY18uLi4="); hasFinding(fs, "secret/basic_auth") {
+		t.Errorf("bare documentation literal latched: %v", fs)
+	}
+}
+
 func TestDetectSensitive_APIKeyHeaderSecretRef(t *testing.T) {
 	for _, input := range []string{
 		"dd-api-key: secret://DD_API_KEY",
