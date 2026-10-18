@@ -88,16 +88,20 @@ service HarnessService {
 //
 //   "text_delta"
 //     - text: incremental text fragment from the model's response.
-//     Fragments do not follow the provider's deltas: the harness holds
-//     back text a secret pattern could still match across, so a fragment
-//     can join several deltas and trails the model slightly.
+//     Fragments are not the provider's deltas and have no stable size or
+//     count. Concatenated in order they give the model's text with
+//     recognised secrets redacted. Text a secret pattern could still
+//     match is held back and sent no later than the turn's next
+//     non-delta event or the end of the stream; ordinary prose is sent as
+//     it arrives. There is no timer: delta silence is not a stall, use
+//     "heartbeat".
 //
 //   "thinking_delta"
 //     - text: incremental reasoning text from the model's response, where
 //             the provider exposes it. Opaque (redacted) reasoning is
 //             never sent.
 //     None are sent when RunConfig.reasoning_summary is "off". Fragments
-//     are held back as "text_delta" fragments are.
+//     are re-chunked and held back as "text_delta" fragments are.
 //
 //   "tool_call"
 //     - id:    unique tool-use ID assigned by the model.

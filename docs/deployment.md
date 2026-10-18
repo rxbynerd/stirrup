@@ -518,6 +518,14 @@ run joins the caller's trace and follows its sampling decision. The
 trace copies only the span context from `ctx`, never its cancellation
 or deadline. To start a new trace, pass a `ctx` with no span.
 
+Deltas reach a `harnessapi.Transport` re-chunked: `text_delta` and
+`thinking_delta` fragments concatenate to the model's text with
+recognised secrets redacted, and held text is emitted no later than the
+turn's next non-delta event. The harness does not scrub every other
+event's string fields; the shipped transports scrub all of them, so an
+embedder's transport should too. See
+[`security.md`](security.md#control-stream-scrubbing).
+
 Use this when you need the agentic loop in-process — for example, in
 a single-binary tool that bundles its own control-plane logic. For
 typical multi-tenant deployments, run the binary as a Job and let

@@ -76,18 +76,17 @@ type Input struct {
 
 	// IgnoreMinChunk asks an adapter to classify Content even when it is
 	// shorter than its MinChunkChars gate. Set for mid-run user_response
-	// input, where a short turn is the norm and the per-turn cost that
-	// motivates the gate for tool output does not apply.
+	// input and verifier feedback, which arrive at most once per turn, so
+	// the per-turn cost that motivates the gate for tool output does not
+	// apply.
 	IgnoreMinChunk bool
 }
 
-// MetadataRedactedSpans is the Input.Metadata key, set on pre_turn input
-// in which the harness's log scrubber replaced spans with "[REDACTED]",
-// giving how many, for implementations that read it; the shipped adapters
-// do not forward it. The model sees the operator's prompt, dynamic
-// context and user_response unscrubbed; for arrived tool results the
-// harness fences what was replaced whatever the verdict, since the guard
-// could not read it.
+// MetadataRedactedSpans is the Input.Metadata key giving the number of
+// log-scrubber matches the harness replaced with "[REDACTED]" in Content,
+// set when there was at least one. The shipped adapters do not forward
+// it. What the harness does with the original text is described in
+// docs/guardrails.md#guard-input.
 const MetadataRedactedSpans = "redacted_spans"
 
 // GuardRail evaluates Input and returns a Decision. Implementations

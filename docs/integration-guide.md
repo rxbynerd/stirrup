@@ -123,8 +123,8 @@ status.
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
-| `text_delta` | `text` | Render / accumulate. Fragments are incremental model output. |
-| `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it, capped at 256 KiB per event. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
+| `text_delta` | `text` | Render / accumulate. Fragments are incremental model output, re-chunked by the harness's secret carry; see [Secrets](#secrets-on-the-stream). |
+| `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it, capped at 256 KiB per event and re-chunked like `text_delta`. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
 | `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. |
@@ -689,8 +689,10 @@ re-provisioning the sandbox.
   input beyond the queue bound, is rejected with a `warning` echoing the
   event's `request_id`. Each accepted follow-up ends with its own `done`.
   A control plane relaying end-user chat into `user_response` is placing
-  untrusted text on the operator channel; the guard screens it, but the
-  model treats it as the operator's instruction.
+  untrusted text on the operator channel; the guard screens a scrubbed
+  copy of it, but the model treats it as the operator's instruction and
+  reads token-shaped text the guard could not see unfenced (see
+  [Guard input](guardrails.md#guard-input)).
 - Each follow-up is a run in its own right: it receives a fresh `timeout`
   budget when its `user_response` is taken up, and the grace timer
   restarts after it completes, so the window measures idle time and a
@@ -892,14 +894,19 @@ without a marker so equal values stay equal: a capped `tool_call.id`
 still matches its `tool_result.tool_use_id`, but a `request_id` longer
 than 1 KiB comes back shortened and does not match the one sent.
 
-**Secrets.** Every text field is scrubbed of recognised secret formats
-before it is sent, one event at a time. The harness holds back the end
-of the model's text and reasoning until no secret pattern can still
-match across it, so a secret split between two provider deltas is
-redacted. `text_delta` and `thinking_delta` events therefore trail the
-model by about two dozen tokens, and their boundaries do not match the
-provider's deltas. A span longer than 8 KiB can still be cut; see
-[`security.md`](security.md#control-stream-scrubbing).
+<a id="secrets-on-the-stream"></a>**Secrets.** Every text field is scrubbed of recognised secret formats
+before it is sent. `text_delta` and `thinking_delta` fragments are not
+the provider's deltas and have no stable size or count: concatenated
+in order they give the model's text with recognised secrets redacted,
+including a secret split between two provider deltas. Text a secret
+pattern could still match, such as a partly written token or an open
+key block, is held back and sent no later than the turn's next
+non-delta event (`tool_call`, `turn_committed`, `done`, `warning`) or
+the end of the stream; ordinary prose is sent as it arrives. There is
+no timer, so delta silence is not a stall signal: use `heartbeat`. A
+single match longer than 8 KiB is redacted through its first 8 KiB
+only; see [`security.md`](security.md#control-stream-scrubbing) for
+that bound. The `done` trace's final assistant text is scrubbed whole.
 
 **Capability gating.** A harness that predates these events sends none
 of `user_message`, `turn_started`, `turn_committed` or
