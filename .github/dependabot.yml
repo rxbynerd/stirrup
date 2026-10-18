@@ -35,6 +35,26 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: gomod
+    directory: /gen
+    schedule:
+      interval: "daily"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: gomod
+    directory: /examples/controlplane
+    schedule:
+      interval: "daily"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Picks up both Dockerfile and Dockerfile.sandbox, bumping the tag
+  # and the pinned digest together.
   - package-ecosystem: docker
     directory: /
     schedule:
