@@ -82,11 +82,15 @@ status.
    a `user_message` carrying the run's prompt. `id` is the run ID.
    `trace_reference` is set only when the run records an OTel span
    (`traceEmitter.type: "otel"`) and holds the OTel trace ID and
-   run-span ID that a feedback score or trace link targets. A run that
+   run-span ID that a feedback score or trace link targets. A `warning`
+   raised during setup (a Rule-of-Two detection in the prompt, dynamic
+   context or repository guidance, or a `continueOnError` `preRun` hook
+   failure) is held and sent right after `run_started`. A run that
    fails setup (a fatal `preRun` hook, git setup) sends no
-   `run_started`.
+   `run_started`; its held warnings precede its `error`.
 6. During execution the harness streams a live transcript of the run:
-   `turn_started` and `turn_committed` around each model turn, the
+   `turn_started` and then `turn_committed` or `turn_abandoned` around
+   each model turn, the
    model's `text_delta` and `thinking_delta` fragments, each
    `tool_call` and its `tool_result`, and a `user_message` for every
    user-role message the harness appends to the history. Occasional
@@ -123,7 +127,8 @@ status.
 | `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it, capped at 256 KiB per event. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
-| `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. A `turn_started` with no `turn_committed` before the next `turn_started` or `done` is a turn that did not commit. |
+| `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. |
+| `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
 | `heartbeat` | — | Liveness signal every 30 s. Treat sustained absence as a hang and reap the Pod. |
@@ -764,36 +769,45 @@ turn_started           turn 0, model, provider (adapter type)
   tool_call …          one per call the model made
   tool_result …        one per call, in call order
 turn_committed         turn 0, stop_reason, usage, tool_result_count
+                       (or turn_abandoned: turn 0, abandon_reason)
 user_message …         anything the harness appends before the next turn
 turn_started           turn 1 …
 …
 done                   stop_reason (the run outcome), trace
 ```
 
-Deltas and tool events between a `turn_started` and the next
-`turn_committed` belong to that turn. A `user_message` never belongs
-to a turn: it follows the turn's `turn_committed`, or, when the turn
-did not commit, the turn's last event, and it precedes the next
-`turn_started`. `warning` and `heartbeat` events can arrive anywhere.
+Deltas and tool events between a `turn_started` and the turn's
+`turn_committed` or `turn_abandoned` belong to that turn. A
+`user_message` never belongs to a turn: it follows the turn's
+`turn_committed` or `turn_abandoned` and precedes the next
+`turn_started`. `warning` and `heartbeat` events can arrive anywhere
+after `run_started`; a `warning` raised during the run's setup is held
+until `run_started` is sent.
 
 **Committed and uncommitted turns.** `turn_committed` means the
 turn's assistant message, and a result for every tool call in it, are
 in the run's history, which later turns build on. A turn that ends the
 run without dispatching its tool calls commits without them, so a
 `tool_call` event streamed in such a turn has no `tool_result` and is
-not part of the history. A turn that opens with `turn_started` but
-reaches the next `turn_started` or `done` without a `turn_committed`
-did not commit. That happens when the provider request failed, when a
-stall or the consecutive-failure limit ended the run partway through
-the turn's tool calls, when the post-turn guard rejected the answer,
-or when a turn that was not dispatched left nothing to keep: a turn
-cut off at the output limit with no text, or a turn of tool calls
-alone. Its deltas were shown live but are not part of the
-conversation the model continues from. Tools that did run still had
-their effects on the workspace. The missing `turn_committed` is the
-whole signal: the harness does not say why a turn did not commit, and
-a new reason will not be reported by a new event for the same
-condition unless a capability on `ready` announces it.
+not part of the history. A turn that does not commit is closed by
+`turn_abandoned` instead, before the next `turn_started` or `done`.
+Its deltas were shown live but are not part of the conversation the
+model continues from. Tools that did run still had their effects on
+the workspace. `abandon_reason` says why, from an open vocabulary;
+preserve values that are not recognised:
+
+| `abandon_reason` | Meaning |
+|---|---|
+| `no_response` | The turn ended before a usable response arrived: the provider request failed, the run was cancelled or timed out, or the context window or token budget was exhausted. |
+| `empty_response` | The response held nothing that may enter the history: an empty message, or one cut off at the output limit with no text. A turn of tool calls alone that is not dispatched lands here too. |
+| `missing_tool_calls` | The response stopped for tool use but carried no tool calls. |
+| `unanswered_tool_calls` | A stall or the consecutive-failure limit stopped dispatch before every tool call in the turn had a result. |
+| `guardrail_blocked` | The post-turn guard rejected the answer. |
+
+A harness without the `turn_abandoned` capability sends nothing in
+its place: there, a `turn_started` that reaches the next
+`turn_started` or `done` without a `turn_committed` is a turn that did
+not commit.
 
 Within one turn, a provider failure that the harness retries, or a
 request it compacts and resends after a context-window overflow,
@@ -870,6 +884,14 @@ what the model is replayed; see
 [Reasoning summaries](configuration.md#reasoning-summaries) for what
 each provider returns under `"auto"` and when the field is unset.
 
+**Field caps.** Tool payloads, `user_message` text and
+`thinking_delta` text are capped at 256 KiB with a truncation marker.
+The name and ID fields (`id`, `name`, `tool_use_id`, `request_id`,
+`tool_name`) are capped at 1 KiB on every event, cut without a marker
+so equal values stay equal: a capped `tool_call.id` still matches its
+`tool_result.tool_use_id`, but a `request_id` longer than 1 KiB comes
+back shortened and does not match the one sent.
+
 **Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent, one event at a time. A secret split across two
 `text_delta` or `thinking_delta` fragments is not recognised; see
@@ -882,6 +904,8 @@ of `user_message`, `turn_started`, `turn_committed` or
 OTel span. A control plane that depends on the transcript gates task
 assignment on `live_transcript` in `ready.capabilities`, and ignores
 event types it does not recognise so later additions do not break it.
+One that relies on an explicit close for every turn gates on
+`turn_abandoned`.
 
 ### Cancelling a run
 
@@ -1328,6 +1352,9 @@ around silently".
     honoured.
   - `follow_up_history`: `RunConfig.followUpHistory` (field 60) is
     honoured.
+  - `turn_abandoned`: the `turn_abandoned` event and its
+    `abandon_reason` (field 26); every `turn_started` is followed by
+    exactly one `turn_committed` or `turn_abandoned`.
 - `ready.harness_version` carries the build label
   (`v1.2.3 (abc1234)` for releases) and is informational: `dev` and
   `main` builds cannot be ordered against a release, so it is not a
