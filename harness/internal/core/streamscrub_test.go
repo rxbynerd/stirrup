@@ -25,7 +25,7 @@ func stdioWireEvents(t *testing.T, ctx context.Context, events []types.StreamEve
 		ch <- ev
 	}
 	close(ch)
-	_, _ = streamEventsToResult(ctx, ch, tp, true, ignoreEmitFailure)
+	_, _ = streamEventsToResult(ctx, ch, tp, true, ignoreEmitFailure, nil)
 	var out []types.HarnessEvent
 	sc := bufio.NewScanner(&wire)
 	sc.Buffer(nil, 1<<20)
@@ -128,7 +128,7 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 				ch <- ev
 			}
 			close(ch)
-			_, _ = streamEventsToResult(tc.ctx, ch, rec, true, ignoreEmitFailure)
+			_, _ = streamEventsToResult(tc.ctx, ch, rec, true, ignoreEmitFailure, nil)
 			// Deltas of one type in a row are joined: their count is not
 			// part of the contract, their order and text are.
 			var got []string
@@ -165,7 +165,7 @@ func TestStreamEventsToResult_CancellationFlushesHeldText(t *testing.T) {
 	}
 	close(ch)
 	rec := &cancelOnEmitTransport{cancel: cancel}
-	if _, err := streamEventsToResult(ctx, ch, rec, true, ignoreEmitFailure); !errors.Is(err, context.Canceled) {
+	if _, err := streamEventsToResult(ctx, ch, rec, true, ignoreEmitFailure, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the cancellation", err)
 	}
 	if len(rec.events) < 2 {

@@ -245,7 +245,7 @@ func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
 			ch := make(chan types.StreamEvent, 2)
 			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn", ResponseModel: tc.model}
 			close(ch)
-			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure)
+			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, nil)
 			if err != nil {
 				t.Fatalf("streamEventsToResult: %v", err)
 			}

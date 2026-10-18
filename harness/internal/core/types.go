@@ -773,18 +773,23 @@ func boundedResponseModel(model string) string {
 // false no thinking_delta reaches the transport; thinking blocks are
 // persisted either way.
 //
-// Deltas reach the transport through a security.StreamCarry, so a secret
-// split across two provider deltas is in one event when the transport
-// scrubs it. The carry is flushed before any other event is emitted and
-// on every return, which keeps the stream's order and loses no text.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error)) (*streamResult, error) {
+// Deltas reach the transport through a security.StreamCarry, which
+// scrubs them as one stream: a secret split across two provider deltas is
+// redacted before any transport, shipped or embedded, sees it. The carry
+// re-chunks deltas and is flushed before any other event is emitted and on
+// every return, which keeps the stream's order and loses no text. redacted,
+// when non-nil, is told the patterns the carry redacted in each release.
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error), redacted func(event string, patterns []string)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
 
 	var carry security.StreamCarry
 	carriedType := ""
-	emitDelta := func(eventType, text string) {
+	emitDelta := func(eventType, text string, patterns []string) {
+		if len(patterns) > 0 && redacted != nil {
+			redacted(eventType, patterns)
+		}
 		if text == "" {
 			return
 		}
@@ -793,8 +798,8 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		}
 	}
 	flushDeltas := func() {
-		out, _ := carry.Flush()
-		emitDelta(carriedType, out)
+		out, patterns := carry.Flush()
+		emitDelta(carriedType, out, patterns)
 	}
 	defer flushDeltas()
 	// pushDelta releases what the carry can of text; a whole block is
@@ -804,12 +809,13 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			flushDeltas()
 			carriedType = eventType
 		}
-		out, _ := carry.Push(text)
+		out, patterns := carry.Push(text)
 		if whole {
-			rest, _ := carry.Flush()
+			rest, more := carry.Flush()
 			out += rest
+			patterns = append(patterns, more...)
 		}
-		emitDelta(eventType, out)
+		emitDelta(eventType, out, patterns)
 	}
 
 	// blockStreamed records whether the current thinking block's text

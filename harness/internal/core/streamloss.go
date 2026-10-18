@@ -21,6 +21,18 @@ func (l *AgenticLoop) ControlStreamLost(cause error) {
 // logEmitFailure logs a failed transport emit. After the control stream
 // is lost every emit fails, so only the first such failure is a warning
 // and the rest are logged at debug level.
+// reportStreamRedaction records a secret the stream carry redacted from a
+// delta; the transports find nothing left to redact in it, so the security
+// event is raised here.
+func (l *AgenticLoop) reportStreamRedaction(event string, patterns []string) {
+	if l.Security == nil {
+		return
+	}
+	for _, p := range patterns {
+		l.Security.SecretRedactedInOutput(p, "core.stream."+event)
+	}
+}
+
 func (l *AgenticLoop) logEmitFailure(event string, err error) {
 	if l.streamLost.Load() && !l.lossEmitLogged.CompareAndSwap(false, true) {
 		l.Logger.Debug("transport emit failed", "event", event, "error", err)
