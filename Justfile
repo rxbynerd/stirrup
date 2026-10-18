@@ -16,6 +16,11 @@ test:
 test-race:
     go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/... ./harness/internal/sandboxidentity/...
 
+# Short fuzz runs of the secret scrubber, as CI's Verify job runs them.
+fuzz-scrub:
+    go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzStreamCarry$' -fuzztime 20s -fuzzminimizetime 0
+    go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzScrubWithSpans$' -fuzztime 20s -fuzzminimizetime 0
+
 lint:
     golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 

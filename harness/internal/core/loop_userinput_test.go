@@ -632,3 +632,40 @@ func TestLoop_InjectedUserInputGuardCopyIsScrubbed(t *testing.T) {
 		t.Errorf("model's last user text = %q, want the operator's reply verbatim", texts)
 	}
 }
+
+// TestLoop_InjectedUserInputsGuardCopyKeepsOrder pins that two
+// user_response inputs absorbed together reach the guard as chunks in
+// arrival order, only the one with a secret scrubbed, and counted once.
+func TestLoop_InjectedUserInputsGuardCopyKeepsOrder(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
+	loop, tr := buildUserInputTestLoop(prov)
+	g := &inputRecordingGuard{}
+	loop.GuardRail = g
+	prov.onCall = func(i int) {
+		if i == 0 {
+			tr.FireControl(userResponse("first, nothing secret", "r1"))
+			tr.FireControl(userResponse("second, key "+fakeAnthropicKey, "r2"))
+		}
+	}
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	g.mu.Lock()
+	var screened []guard.Input
+	for _, in := range g.inputs {
+		if strings.HasPrefix(in.Source, "user_response:") {
+			screened = append(screened, in)
+		}
+	}
+	g.mu.Unlock()
+	if len(screened) != 1 {
+		t.Fatalf("user_response guard inputs = %d, want both inputs screened together once", len(screened))
+	}
+	if want := batchUntrustedChunks([]string{"first, nothing secret", "second, key [REDACTED]"}); screened[0].Content != want {
+		t.Errorf("user_response guard input = %q, want %q", screened[0].Content, want)
+	}
+	if got := screened[0].Metadata[guard.MetadataRedactedSpans]; got != "1" {
+		t.Errorf("redacted_spans = %q, want 1", got)
+	}
+}

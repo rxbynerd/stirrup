@@ -87,6 +87,15 @@ jobs:
       - name: Run race detector on concurrency-heavy packages
         run: go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/...
 
+      # Short fuzz runs of the scrubber's streaming and span invariants.
+      # A minimise time of zero keeps a failure from stalling the job,
+      # and a failing input is printed for adding to testdata.
+      - name: Fuzz the secret scrubber
+        working-directory: harness
+        run: |
+          go test ./internal/security/ -run '^$' -fuzz '^FuzzStreamCarry$' -fuzztime 20s -fuzzminimizetime 0
+          go test ./internal/security/ -run '^$' -fuzz '^FuzzScrubWithSpans$' -fuzztime 20s -fuzzminimizetime 0
+
       - name: Build stirrup binary
         working-directory: harness
         env:

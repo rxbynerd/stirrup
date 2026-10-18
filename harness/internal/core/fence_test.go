@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -343,4 +344,72 @@ func (g *phaseRecordingGuard) input(t *testing.T, phase guard.Phase) guard.Input
 	}
 	t.Fatalf("the guard saw no %s input", phase)
 	return guard.Input{}
+}
+
+// TestScreenArrivedContent_RedactThenFenceAcrossBlocks pins Rule-of-Two
+// redaction and fencing together on a multi-block result: the clean
+// block is untouched and keeps its payload, the redacted and scrubbed
+// blocks lose theirs, and redacted_spans counts the scrubber's matches.
+func TestScreenArrivedContent_RedactThenFenceAcrossBlocks(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+	g := &verdictRecordingGuard{verdict: guard.VerdictAllow}
+	loop.GuardRail = g
+	cleanPayload := []byte(`{"ok":true}`)
+	messages := []types.Message{userText("task"), assistantToolUse("t1"), {Role: "user", Content: []types.ContentBlock{
+		{Type: "tool_result", ToolUseID: "t1", Content: "clean output", Structured: cleanPayload},
+		{Type: "tool_result", ToolUseID: "t2", Content: "card " + fakeLuhnCard + " header Bearer x", Structured: []byte(`{"auth":"Bearer x"}`)},
+		{Type: "tool_result", ToolUseID: "t3", Content: "just Bearer x"},
+	}}}
+	if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
+		t.Fatalf("outcome = %q", outcome)
+	}
+	blocks := messages[2].Content
+	wants := []string{
+		"clean output",
+		"card " + ruleoftwo.RedactionPlaceholder + " header " + guard.ApplySpotlight("Bearer x"),
+		"just " + guard.ApplySpotlight("Bearer x"),
+	}
+	for i, want := range wants {
+		if blocks[i].Content != want {
+			t.Errorf("block %d = %q, want %q", i, blocks[i].Content, want)
+		}
+	}
+	if string(blocks[0].Structured) != string(cleanPayload) || blocks[1].Structured != nil || blocks[2].Structured != nil {
+		t.Errorf("structured payloads = %s, %s, %s; want only the clean block's kept", blocks[0].Structured, blocks[1].Structured, blocks[2].Structured)
+	}
+	if got := g.inputs[0].Metadata[guard.MetadataRedactedSpans]; got != "3" {
+		t.Errorf("redacted_spans = %q, want 3", got)
+	}
+}
+
+// TestArrivedAndScrubbedChunksHaveSameShape pins that the guard's scrubbed
+// chunks match arrivedUntrustedChunks one for one, since the guard's
+// source label counts the latter.
+func TestArrivedAndScrubbedChunksHaveSameShape(t *testing.T) {
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Content: "a"}}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Structured: []byte(`{}`)}}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result"}, {Type: "text", Text: "x"}, {Type: "tool_result", Content: "b " + fakeAnthropicKey, Structured: []byte(`{"k":"` + fakeAnthropicKey + `"}`)}}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Content: "Bearer x"}, {Type: "tool_result", Content: "plain"}}},
+	}
+	for i, m := range messages {
+		arrived := arrivedUntrustedChunks([]types.Message{m})
+		scrubbed, _, _ := scrubToolResultsForGuard(m)
+		if len(arrived) != len(scrubbed) {
+			t.Errorf("message %d: %d arrived chunks, %d scrubbed", i, len(arrived), len(scrubbed))
+		}
+	}
+}
+
+// TestPreTurnGuardCopy_LeavesCallerChunks pins that the guard's copy is a
+// copy: the caller's slice keeps the unscrubbed text.
+func TestPreTurnGuardCopy_LeavesCallerChunks(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.GuardRail = &verdictRecordingGuard{verdict: guard.VerdictAllow}
+	chunks := []string{"key " + fakeAnthropicKey}
+	copied, n := loop.preTurnGuardCopy(chunks)
+	if chunks[0] != "key "+fakeAnthropicKey || copied[0] != "key [REDACTED]" || n != 1 {
+		t.Errorf("chunks = %q, copy = %q, matches = %d; want the caller's text kept and the copy scrubbed", chunks, copied, n)
+	}
 }

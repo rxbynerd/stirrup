@@ -965,9 +965,11 @@ func TestBeginRunState(t *testing.T) {
 }
 
 // TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce pins that a carried
-// tool result holding a scrubbed span reaches the follow-up's model with
+// tool result holding a scrubbed span reaches the follow-ups' model with
 // that span fenced exactly once, whether the previous run screened the
-// result or left it for the follow-up to screen.
+// result or left it for the follow-up to screen, and that a second
+// follow-up carrying already-fenced history neither re-screens nor
+// re-wraps it.
 func TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce(t *testing.T) {
 	output := "TOOL-OUTPUT key " + fakeAnthropicKey + " end"
 	want := "TOOL-OUTPUT key " + guard.ApplySpotlight(fakeAnthropicKey) + " end"
@@ -994,7 +996,7 @@ func TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce(t *testing.T) {
 			config.MaxTurns = tc.maxTurns
 			config.FollowUpHistory = types.FollowUpHistoryContinue
 
-			traces := followUpSession(t, loop, tr, config, "carry on")
+			traces := followUpSession(t, loop, tr, config, "carry on", "and again")
 			if traces[0].Outcome != tc.outcome {
 				t.Fatalf("primary outcome = %q, want %q", traces[0].Outcome, tc.outcome)
 			}
@@ -1005,11 +1007,11 @@ func TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce(t *testing.T) {
 				}
 			}
 			if screened != 1 {
-				t.Errorf("guard screened the tool result %d times, want 1", screened)
+				t.Errorf("guard screened the tool result %d times across three runs, want 1", screened)
 			}
 			calls := prov.params()
 			if results := toolResultContents(calls[len(calls)-1].Messages); len(results) != 1 || results[0] != want {
-				t.Errorf("follow-up tool result = %q, want %q", results, want)
+				t.Errorf("second follow-up tool result = %q, want %q", results, want)
 			}
 		})
 	}

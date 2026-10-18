@@ -111,6 +111,23 @@ func TestScrubVerifierFeedback_ScrubsTextBlocks(t *testing.T) {
 	}
 }
 
+// TestScrubVerifierFeedback_SkipsNonTextBlocks pins that only text blocks
+// are scrubbed and counted: another block is left as it is.
+func TestScrubVerifierFeedback_SkipsNonTextBlocks(t *testing.T) {
+	msg := feedbackMessage("key " + fakeLiveAWSKey)
+	other := types.ContentBlock{Type: "tool_result", ToolUseID: "t1", Content: "key " + fakeLiveAWSKey}
+	msg.Content = append([]types.ContentBlock{other}, msg.Content...)
+	if n := scrubVerifierFeedback(&msg); n != 1 {
+		t.Errorf("matches = %d, want 1 from the text block alone", n)
+	}
+	if !reflect.DeepEqual(msg.Content[0], other) {
+		t.Errorf("non-text block changed: %+v", msg.Content[0])
+	}
+	if strings.Contains(msg.Content[1].Text, fakeLiveAWSKey) {
+		t.Errorf("text block not scrubbed: %q", msg.Content[1].Text)
+	}
+}
+
 // TestAppendUserBlock_KeepsMergedFeedbackSeparate pins that text merged
 // after a feedback block becomes its own block, so operator words never
 // take on the feedback's origin and the feedback keeps it.
