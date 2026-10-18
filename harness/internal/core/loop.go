@@ -1766,9 +1766,9 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 			chunks = arrivedUntrustedChunks(messages)
 		}
 	}
-	// The guard sees content after redaction and scrubbing, never the
-	// raw chunks the Rule-of-Two scan observed, so a remote classifier
-	// never receives a secret.
+	// The guard sees content after redaction and with credential-shaped
+	// tokens scrubbed, so a remote classifier is not sent a secret, while
+	// text dressed up as a token stays readable to it as to the model.
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
 	if feedback {
 		// Feedback is scrubbed in history too; tool results keep their
@@ -1778,7 +1778,7 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
 	} else {
 		for i := range chunks {
-			chunks[i] = security.Scrub(chunks[i])
+			chunks[i] = security.ScrubLikelyCredentials(chunks[i])
 		}
 	}
 	in := guard.Input{
