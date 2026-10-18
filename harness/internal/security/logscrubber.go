@@ -109,29 +109,41 @@ func isBasicCredential(match string) bool {
 	return ok
 }
 
-// replaceValidated replaces every match of re that valid accepts. A rejected
+// replaceValidated replaces every match of re that valid accepts.
+func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
+	matches := findValidated(re, value, valid)
+	if len(matches) == 0 {
+		return value, 0
+	}
+	var b strings.Builder
+	prev := 0
+	for _, m := range matches {
+		b.WriteString(value[prev:m[0]])
+		b.WriteString(redactedPlaceholder)
+		prev = m[1]
+	}
+	b.WriteString(value[prev:])
+	return b.String(), len(matches)
+}
+
+// findValidated returns the matches of re that valid accepts. A rejected
 // match does not consume the text after its first byte, so a credential
 // directly following a rejected match is still examined.
-func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
-	var b strings.Builder
-	redacted := 0
-	for rest := value; ; {
-		loc := re.FindStringIndex(rest)
+func findValidated(re *regexp.Regexp, value string, valid func(string) bool) [][]int {
+	var matches [][]int
+	for off := 0; ; {
+		loc := re.FindStringIndex(value[off:])
 		if loc == nil {
-			b.WriteString(rest)
-			break
+			return matches
 		}
-		if valid(rest[loc[0]:loc[1]]) {
-			b.WriteString(rest[:loc[0]])
-			b.WriteString(redactedPlaceholder)
-			redacted++
-			rest = rest[loc[1]:]
+		start, end := off+loc[0], off+loc[1]
+		if valid(value[start:end]) {
+			matches = append(matches, []int{start, end})
+			off = end
 			continue
 		}
-		b.WriteString(rest[:loc[0]+1])
-		rest = rest[loc[0]+1:]
+		off = start + 1
 	}
-	return b.String(), redacted
 }
 
 // ScrubStats reports redactions performed by ScrubWithStats. Count is the
