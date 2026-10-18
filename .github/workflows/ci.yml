@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+  # Weekly rebuild of the GHCR dev images from main, so the sandbox
+  # image's apt-installed packages stay current between merges.
+  schedule:
+    - cron: '17 4 * * 1'
   workflow_dispatch:
     inputs:
       run_quirks_suites:
@@ -45,7 +49,10 @@ jobs:
     # neither can read this repository's Actions secrets) still skip
     # gracefully via the check-creds step, so that failure mode never
     # masquerades as an eval regression.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    #
+    # The weekly scheduled rebuild also runs on main but changes no
+    # code, so it skips the eval spend.
+    if: github.event_name != 'schedule' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
     env:
@@ -359,7 +366,7 @@ jobs:
     # line item that made the GCP bill exceed token spend. Releases
     # still dual-publish, and free continuous CVE re-evaluation
     # against loaded SBOMs continues for everything already in GAR.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
     permissions:
       contents: read
       packages: write
@@ -455,7 +462,7 @@ jobs:
     # (Dockerfile.sandbox) is what the container/k8s/k8s-sandbox
     # executors run agent workloads in — it contains no Go build, so
     # there is no VERSION/COMMIT build-arg step to mirror.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
     permissions:
       contents: read
       packages: write
