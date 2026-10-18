@@ -83,8 +83,10 @@ type Input struct {
 
 // MetadataRedactedSpans is the Input.Metadata key, set on pre_turn input,
 // giving how many spans the harness's log scrubber replaced with
-// "[REDACTED]" in Content. The harness fences that content for the model
-// whatever the verdict, since the guard cannot see what was replaced.
+// "[REDACTED]" in Content, for implementations that read it; the shipped
+// adapters do not forward it. The harness fences that content for the
+// model whatever the verdict, since the guard cannot see what was
+// replaced.
 const MetadataRedactedSpans = "redacted_spans"
 
 // GuardRail evaluates Input and returns a Decision. Implementations

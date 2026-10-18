@@ -139,13 +139,27 @@ same mechanism a guard's `spotlight` verdict uses, and its structured
 payload is dropped so adapters send the fenced text. This happens
 whatever the guard's verdict, once per block: a block the guard also
 spotlights is wrapped once, and a block already screened is not
-screened again. The guard is told through
-`Input.Metadata["redacted_spans"]`, the number of spans replaced.
+screened again. `Input.Metadata["redacted_spans"]` carries the number
+of spans replaced for guard implementations that read it. The shipped
+adapters (`granite-guardian`, `shieldstral`, `cloud-judge`) do not
+forward it, so for them the `[REDACTED]` placeholder in the content is
+the only signal that something was replaced.
 
 The model still receives the unscrubbed content, inside the fence, as
 it would have without a guard. With no `pre_turn` guard (no guard, the
 `none` adapter, or a guard gated to other phases) nothing is fenced and
 history is unchanged.
+
+The fence has a known cost. It covers the whole block, not the
+scrubbed span, and benign token-shaped text also matches the scrubber:
+a literal `Bearer x`, a `secret://` reference in a config file or in
+these docs, or authentication code that prints a header. Any such
+string base64-wraps the entire tool result for the model and for the
+`llm-judge` verifier, which renders the same history. A tool that
+prints one such string can therefore obscure the rest of its output,
+for example the `FAIL` lines of a test run, from the judge; a
+`test-runner` verifier is unaffected. The planned refinement is to
+fence only the scrubbed spans rather than the whole block.
 
 ### Transport-error URL unwrapping
 

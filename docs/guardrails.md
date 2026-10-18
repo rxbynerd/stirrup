@@ -84,8 +84,11 @@ The guard receives arrived content with the log scrubber applied, so a
 span the scrubber replaces reaches it as `[REDACTED]`. Since the guard
 cannot judge what it cannot see, the harness spotlights every tool
 result or verifier feedback block that held such a span, whatever the
-verdict, and sets `Input.Metadata["redacted_spans"]` to the number of
-spans replaced. A block the guard also spotlights is wrapped once. See
+verdict. It also sets `Input.Metadata["redacted_spans"]` to the number
+of spans replaced, for guard implementations that want it; the shipped
+adapters do not forward it, so the `[REDACTED]` placeholder in the
+content is the only signal they pass on. A block the guard also
+spotlights is wrapped once. See
 [Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
 A deny or spotlight of arrived tool results, like the harness's own
 fence, drops each result's structured payload, which the Anthropic and
