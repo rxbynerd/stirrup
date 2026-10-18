@@ -2232,9 +2232,9 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 // recoverable; the git final checkpoint does not, since Git.Setup has not
 // completed.
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	l.releaseSetupWarnings()
 	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)
-	l.releaseSetupWarnings()
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),

@@ -825,6 +825,30 @@ func eventTypeList(events []types.HarnessEvent) []string {
 	return out
 }
 
+// TestCommittableAssistantBlocks pins which turns may enter history: an
+// abandoned turn must leave nothing a continued follow-up could replay.
+func TestCommittableAssistantBlocks(t *testing.T) {
+	text := types.ContentBlock{Type: "text", Text: "answer"}
+	call := types.ContentBlock{Type: "tool_use", ID: "tc1", Name: "read_file"}
+	for _, tc := range []struct {
+		name  string
+		stop  string
+		in    []types.ContentBlock
+		keeps bool
+	}{
+		{"tool_use with calls", "tool_use", []types.ContentBlock{text, call}, true},
+		{"tool_use without calls", "tool_use", []types.ContentBlock{text}, false},
+		{"empty stop reason", "", []types.ContentBlock{text}, false},
+		{"end_turn with text", "end_turn", []types.ContentBlock{text}, true},
+		{"end_turn with calls only", "end_turn", []types.ContentBlock{call}, false},
+		{"max_tokens without text", "max_tokens", []types.ContentBlock{{Type: "thinking", Text: "t"}}, false},
+	} {
+		if _, keeps := committableAssistantBlocks(tc.stop, tc.in); keeps != tc.keeps {
+			t.Errorf("%s: keeps = %v, want %v", tc.name, keeps, tc.keeps)
+		}
+	}
+}
+
 // runOrder returns the run-lifecycle events in order, naming each
 // warning by whether its message contains marker.
 func runOrder(events []types.HarnessEvent, marker string) []string {
