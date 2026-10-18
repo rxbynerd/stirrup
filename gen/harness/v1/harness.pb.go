@@ -39,9 +39,13 @@ const (
 //	  - trace_reference: the run span's OTel trace ID, span ID and sampled
 //	                     flag; set only when the run records an OTel span.
 //	  Sent once per run, primary and follow-up alike, after the run's setup
-//	  and before its first "user_message". A run that fails setup sends
-//	  none. Under `stirrup job`, "ready" is sent once per session, so a
-//	  follow-up run's "run_started" follows the previous run's "done".
+//	  and before its first "user_message". A "warning" raised during setup
+//	  (a Rule-of-Two detection in the prompt, dynamic context or repository
+//	  guidance, or a continueOnError pre-run hook failure) is held until
+//	  "run_started" and sent right after it. A run that fails setup sends
+//	  no "run_started"; its held warnings precede its "error". Under
+//	  `stirrup job`, "ready" is sent once per session, so a follow-up run's
+//	  "run_started" follows the previous run's "done".
 //
 //	"user_message"
 //	  - text:       the text the harness appended to the run's history as a

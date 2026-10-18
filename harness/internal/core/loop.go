@@ -181,6 +181,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.startTrace(ctx, config)
 	l.failure = runFailure{}
+	l.holdSetupWarnings()
+	defer l.releaseSetupWarnings()
 	carried := l.takeCarriedHistory(followUp != nil)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
@@ -350,6 +352,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 	l.emitRunStarted(config.RunID)
+	l.releaseSetupWarnings()
 
 	// After run_started, so the withheld-history warning and any screening
 	// of a carried tail are attributed to this run.
@@ -1704,10 +1707,7 @@ func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, ac
 	} else {
 		msg = fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only", source, action)
 	}
-	_ = l.Transport.Emit(types.HarnessEvent{
-		Type:    "warning",
-		Message: msg,
-	})
+	l.emitRunWarning(types.HarnessEvent{Message: msg})
 }
 
 // sortedContextValues returns the non-empty dynamic-context values in
@@ -2193,12 +2193,7 @@ func (l *AgenticLoop) recordHookExecutions(spanCtx context.Context, execs []type
 		if !exec.ContinuedOnError {
 			continue
 		}
-		if err := l.Transport.Emit(types.HarnessEvent{
-			Type:    "warning",
-			Message: formatHookWarning(exec),
-		}); err != nil {
-			l.logEmitFailure("warning", err)
-		}
+		l.emitRunWarning(types.HarnessEvent{Message: formatHookWarning(exec)})
 	}
 }
 
@@ -2239,6 +2234,7 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
 	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)
+	l.releaseSetupWarnings()
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),

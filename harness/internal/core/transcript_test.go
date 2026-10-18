@@ -824,3 +824,81 @@ func eventTypeList(events []types.HarnessEvent) []string {
 	}
 	return out
 }
+
+// runOrder returns the run-lifecycle events in order, naming each
+// warning by whether its message contains marker.
+func runOrder(events []types.HarnessEvent, marker string) []string {
+	var order []string
+	for _, ev := range events {
+		switch ev.Type {
+		case "run_started", "error", "done":
+			order = append(order, ev.Type)
+		case "user_message":
+			if ev.Source == types.UserMessageSourceInitialPrompt {
+				order = append(order, ev.Type)
+			}
+		case "warning":
+			if strings.Contains(ev.Message, marker) {
+				order = append(order, "warning")
+			}
+		}
+	}
+	return order
+}
+
+// TestLoop_SetupWarningsFollowRunStarted pins that warnings raised during
+// run setup arrive after run_started and before the initial prompt's
+// user_message, and that a run failing setup still delivers them, ahead
+// of its error.
+func TestLoop_SetupWarningsFollowRunStarted(t *testing.T) {
+	t.Run("turn-0 rule of two", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+		tp := &recordingTransport{}
+		loop.Transport = tp
+		config := buildTestConfig()
+		config.Prompt = "deploy with AWS_ACCESS_KEY_ID=" + fakeLiveAWSKey
+
+		if _, err := loop.Run(context.Background(), config); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "rule of two")), "[run_started warning user_message done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("continueOnError pre-run hook", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.Hooks = &fakeHookRunner{preResults: []types.HookExecution{
+			{Phase: "preRun", Index: 0, Name: "warm-cache", ContinuedOnError: true, Error: "exit code 1"},
+		}}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "warm-cache")), "[run_started warning user_message done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("setup failure", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.Hooks = &fakeHookRunner{
+			preResults: []types.HookExecution{
+				{Phase: "preRun", Index: 0, Name: "warm-cache", ContinuedOnError: true, Error: "exit code 1"},
+			},
+			preErr: errSentinelPreHookFailure,
+		}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err == nil {
+			t.Fatal("Run: want the pre-run hook failure")
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "warm-cache")), "[warning error done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
+}

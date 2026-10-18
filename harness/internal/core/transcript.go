@@ -1,8 +1,54 @@
 package core
 
 import (
+	"sync"
+
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// setupWarningHold buffers warnings while a run is in setup, so each
+// arrives after the run_started that attributes it to its run.
+type setupWarningHold struct {
+	mu      sync.Mutex
+	holding bool
+	pending []types.HarnessEvent
+}
+
+// holdSetupWarnings starts buffering warnings for a run entering setup.
+func (l *AgenticLoop) holdSetupWarnings() {
+	l.setupWarnings.mu.Lock()
+	defer l.setupWarnings.mu.Unlock()
+	l.setupWarnings.holding = true
+	l.setupWarnings.pending = nil
+}
+
+// releaseSetupWarnings emits the buffered warnings in order and stops
+// buffering. It is called once run_started is sent, or before the error
+// of a run that failed setup and so sends no run_started.
+func (l *AgenticLoop) releaseSetupWarnings() {
+	l.setupWarnings.mu.Lock()
+	pending := l.setupWarnings.pending
+	l.setupWarnings.holding = false
+	l.setupWarnings.pending = nil
+	l.setupWarnings.mu.Unlock()
+	for _, ev := range pending {
+		l.emitWarning(ev)
+	}
+}
+
+// emitRunWarning sends a "warning" raised by the run, buffered while the
+// run is in setup.
+func (l *AgenticLoop) emitRunWarning(ev types.HarnessEvent) {
+	ev.Type = "warning"
+	l.setupWarnings.mu.Lock()
+	if l.setupWarnings.holding {
+		l.setupWarnings.pending = append(l.setupWarnings.pending, ev)
+		l.setupWarnings.mu.Unlock()
+		return
+	}
+	l.setupWarnings.mu.Unlock()
+	l.emitWarning(ev)
+}
 
 // emitUserMessage reports text the loop just appended to the history as a
 // user-role message. Merged appends report only the appended text, so a

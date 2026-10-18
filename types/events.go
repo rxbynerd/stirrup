@@ -320,9 +320,11 @@ func Float64Ptr(v float64) *float64 {
 //
 // "run_started" carries the run ID in ID and, when the trace emitter
 // records an OTel run span, that span's TraceReference. It is sent once
-// per run after setup, before the run's first "user_message". Under
-// `stirrup job` "ready" is per session, so a follow-up run's
-// "run_started" follows the previous run's "done".
+// per run after setup, before the run's first "user_message". Warnings
+// raised during setup are held until it is sent, or until the "error" of
+// a run that fails setup and so sends none. Under `stirrup job` "ready"
+// is per session, so a follow-up run's "run_started" follows the
+// previous run's "done".
 //
 // Source takes one of the UserMessageSource* values; the vocabulary is
 // open, so consumers preserve values they do not recognise. Turn is a

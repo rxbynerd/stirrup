@@ -208,6 +208,10 @@ type AgenticLoop struct {
 	// turn_committed nor turn_abandoned yet; nil between turns.
 	openTurn *int
 
+	// setupWarnings holds the warnings raised during run setup until the
+	// run's run_started is sent; see holdSetupWarnings.
+	setupWarnings setupWarningHold
+
 	// windDown is the per-run wind-down state; see windDownIfDue.
 	windDown windDownState
 
