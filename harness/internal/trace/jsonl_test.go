@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1093,6 +1094,29 @@ func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
 	}
 	if decoded["token"] != "[REDACTED]" {
 		t.Errorf("token field = %q, want [REDACTED]", decoded["token"])
+	}
+}
+
+// TestScrubRawJSON_PEMKeyAsLineArray covers read_file's structured shape:
+// a key held one line per array element is redacted as one match and the
+// payload keeps its object shape rather than taking the string-wrap path.
+func TestScrubRawJSON_PEMKeyAsLineArray(t *testing.T) {
+	body := []string{
+		"MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
+		"VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
+	}
+	lines := append(append([]string{"x", "-----BEGIN RSA PRIVATE KEY-----"}, body...), "-----END RSA PRIVATE KEY-----", "y")
+	in, err := json.Marshal(map[string][]string{"lines": lines})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := scrubRawJSON(in, false)
+	var decoded struct{ Lines []string }
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("scrubbed output should decode as an object: %v (out=%s)", err, out)
+	}
+	if want := []string{"x", "[REDACTED]", "y"}; !slices.Equal(decoded.Lines, want) {
+		t.Errorf("lines = %q, want %q", decoded.Lines, want)
 	}
 }
 

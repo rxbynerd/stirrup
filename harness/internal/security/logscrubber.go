@@ -85,14 +85,34 @@ var secretPatterns = []namedPattern{
 	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
 
-// pemPrivateKeyPattern matches a PEM key from its BEGIN line through its
-// END line. The body admits base64, whitespace, "\n" escapes and
-// encrypted-key header lines, and never "--", so it stops at the next
-// armour line. Without an END line the header is matched with the run of
-// base64 lines after it, which excludes the spaces of following prose.
-const pemPrivateKeyPattern = `-----BEGIN[\s\w]+KEY-----(?:` +
-	`(?:[A-Za-z0-9+/=\s:,\\]|-[A-Za-z0-9])*-----END[\s\w]+KEY-----|` +
-	`(?:\n[ \t]+|[A-Za-z0-9+/=\\\r\n])*)`
+// pemPrivateKeyPattern matches a PEM or PGP key block from its BEGIN line
+// through its END line, or without one through the whole base64 lines after
+// it. Lines may be raw, "\n"-escaped, JSON array elements or line-numbered;
+// the body admits only base64 lines, armour headers directly after BEGIN and
+// the harness's own truncation marker, so a line of prose ends the match.
+const pemPrivateKeyPattern = pemHeader + `(?:` +
+	`(?:` + pemArmour + pemSep + pemItem + `)?(?:` + pemSep + pemItem + `)*` + pemSep + pemEnd + `|` +
+	`(?:` + pemArmour + `(?:` + pemOpenLine + `))?(?:` + pemOpenLine + `)*)`
+
+const (
+	pemHeader    = `-----BEGIN[\s\w]+KEY(?:\s+BLOCK)?-----`
+	pemEnd       = `-----END[\s\w]+KEY(?:\s+BLOCK)?-----`
+	pemHSpace    = `[\t \x{A0}]*`
+	pemEscBreak  = `\\r\\n|\\n|"\s*,\s*"`
+	pemLineBreak = `(?:\r?\n|` + pemEscBreak + `)`
+	pemSep       = pemHSpace + `(?:` + pemLineBreak + pemHSpace + pemLineNumber + `)+`
+	// pemLineNumber is the "12\t" of read_file and cat -n output, or the
+	// "12:" of grep -n, before a line.
+	pemLineNumber = `(?:[0-9]+(?:\t|\\t|:)` + pemHSpace + `)?`
+	pemItem       = `(?:[A-Za-z0-9+/=]+|\[\.\.\.truncated(?: [0-9]+ bytes)?\.\.\.\])`
+	// pemArmour is RFC 1421/4880 armour header lines and the line break
+	// that, with the next line's, makes the blank line before the body.
+	pemArmour = `(?:` + pemSep + `[A-Za-z][A-Za-z0-9-]*:[^\r\n"\\]*)+` + pemHSpace + pemLineBreak
+	// pemOpenLine is a body line of a block with no END line. A raw line
+	// must be base64 to its end; an escaped one ends where base64 does.
+	pemOpenLine = `(?:` + pemHSpace + `\r?\n` + pemHSpace + pemLineNumber + `)+` + pemItem + pemHSpace + `\r?(?m:$)|` +
+		pemHSpace + `(?:(?:` + pemEscBreak + `)` + pemHSpace + `)+` + pemItem
+)
 
 // matchValidators narrows patterns whose regex also matches ordinary prose.
 // A match is redacted only when its validator returns true; patterns absent

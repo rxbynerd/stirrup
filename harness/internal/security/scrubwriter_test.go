@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"math/rand"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -188,6 +189,28 @@ func TestSecretPatternsMatchSingleSpanUnderCarryWindow(t *testing.T) {
 			t.Errorf("pattern %q matches a span that excludes the sensitive value", p.Name)
 		}
 	}
+	// A PEM match spans the whole key, so the largest keys in use must
+	// still fit: RSA-4096 is about 3.3 KiB and RSA-8192 about 6.4 KiB.
+	for name, key := range map[string]string{
+		"RSA-4096": rsa4096PEMFixture(),
+		"RSA-8192": pemKey("RSA PRIVATE KEY", pemBodyLines(100), "\n"),
+	} {
+		span := secretPatternRe(t, "pem_private_key").FindStringIndex(key)
+		if span == nil || span[1]-span[0] != len(key) || len(key) >= ScrubCarryWindow {
+			t.Errorf("%s key of %d bytes is not one match under the %d byte carry window (match %v)", name, len(key), ScrubCarryWindow, span)
+		}
+	}
+}
+
+func secretPatternRe(t *testing.T, name string) *regexp.Regexp {
+	t.Helper()
+	for _, p := range SecretPatterns() {
+		if p.Name == name {
+			return p.Re
+		}
+	}
+	t.Fatalf("no secret pattern %q", name)
+	return nil
 }
 
 // TestScrubWriterResidualExceedsBuffer documents the residual risk the

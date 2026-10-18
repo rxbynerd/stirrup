@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // scrubSpanCorpus is every scrubber fixture in this package plus inputs
@@ -23,6 +24,8 @@ func scrubSpanCorpus() []string {
 		"Bearer eyJhbGciOiJSUzI1NiJ9.abc", "Bearer aaa.bbb.ccc", "Bearer x", "basic documentation",
 		"Basic dXNlcjpwYXNz", "Basic Basic Basic dXNlcjpwYXNz",
 		"-----BEGIN RSA PRIVATE KEY-----", rsa4096PEMFixture(),
+		"-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 1\n\nQUJD\n=ABCD\n-----END PGP PRIVATE KEY BLOCK-----",
+		`{"lines":["-----BEGIN A KEY-----","QUJD","-----END A KEY-----"]}`, "-----BEGIN A KEY-----\nQUJD\nQUJD word",
 		"ref: secret://ANTHROPIC_KEY", "SECRET://x", "api-key: 0123456789abcdef0123456789abcdef",
 		"x-api-key: SOME-VENDOR-VALUE", "Ocp-Apim-Subscription-Key: opaque-token-here",
 		"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.abc123", "ya29.AbCdEfGhIjKl",
@@ -214,6 +217,26 @@ func TestReplaceSegments_MatchEndingInsidePlaceholder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("segments = %+v, want %+v", got, want)
+	}
+}
+
+// TestScrubWithSpans_ManyMatchesStayLinear pins that span tracking stays
+// linear in the number of matches: each shape is about 64 KiB and holds
+// thousands of them, and the bound is relative to Scrub of the same input.
+func TestScrubWithSpans_ManyMatchesStayLinear(t *testing.T) {
+	const size = 64 << 10
+	key := rsa4096PEMFixture() + "\n"
+	shapes := map[string]string{
+		"github tokens":         strings.Repeat("ghp_a ", size/6),
+		"bearer tokens":         strings.Repeat("Bearer x ", size/9),
+		"secret refs in bearer": strings.Repeat("secret://aBearer x!y ", size/21),
+		"PEM keys":              strings.Repeat(key, size/len(key)),
+	}
+	for name, in := range shapes {
+		baseline := fastest(func() { Scrub(in) })
+		if elapsed := fastest(func() { ScrubWithSpans(in) }); elapsed > 20*baseline+100*time.Millisecond {
+			t.Errorf("ScrubWithSpans of %s took %v, over 20 times the %v of Scrub", name, elapsed, baseline)
+		}
 	}
 }
 
