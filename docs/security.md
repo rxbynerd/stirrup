@@ -123,44 +123,6 @@ reach the control plane with this scrubbing alone, so latch-tier spans
 the scrubber does not recognise, such as card numbers, IBANs and
 anchored SSNs, are sent unredacted.
 
-### Guard-input scrubbing
-
-The pre-turn guard receives a copy of each arrived tool result in which
-`security.ScrubLikelyCredentials` has replaced the scrubber matches
-that `security.LooksLikeCredential` accepts. A match counts as a
-credential when its body (the match without any `Bearer`/`Basic`
-scheme, `name=` or `name:` field, or known prefix such as `sk-ant-` or
-`ghp_`) passes two checks. Its character entropy must reach at least
-half of what random output of that length and alphabet would have, and
-it must hold no run of four or more English-looking words, three of
-them common words, either as written (split at spaces, underscores,
-hyphens and camelCase) or after decoding it, or each of its dot-separated
-segments, as base64. PEM headers and `secret://` references are always
-replaced. Logs, transports, traces and the model's history keep the
-full `security.Scrub`.
-
-The point is that a token-shaped string carrying an instruction stays
-readable to the guard, as it is to the model, while a real key is not
-sent to a remote classifier. The heuristic has known limits:
-
-- An instruction written without word separators in lowercase, in a
-  language other than English, with rare words only, or in an encoding
-  other than base64 (hex, rot13, URL encoding) looks like a credential
-  and is hidden from the guard.
-- A real credential whose random body happens to contain such a word
-  run would be passed to the guard. Sampling a million random bodies of
-  each common key format produced none, and
-  `TestLooksLikeCredential_RandomBodies` checks thousands on every run,
-  but the rate is not zero by construction.
-- A match whose body is repetitive filler, such as
-  `sk-ant-api03-AAAA…`, is passed to the guard. Entropy is measured on
-  the body as written, so a `Basic` header still counts as a credential
-  when the password inside it is weak.
-
-The guard is defence in depth on top of the deterministic rings, so a
-miss in either direction degrades the guard's view rather than an
-enforcement decision.
-
 ### Transport-error URL unwrapping
 
 When `http.Client.Do` fails, Go wraps the transport error in a
