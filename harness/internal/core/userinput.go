@@ -333,7 +333,7 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 	}
 	// The guard gets the scrubbed copy; the model keeps the operator's
 	// words, which, like the prompt, are never rewritten or fenced.
-	scrubbed, spans := scrubForGuard(append([]string(nil), texts...))
+	scrubbed, spans := l.preTurnGuardCopy(texts)
 	in := guard.Input{
 		Phase:          guard.PhasePreTurn,
 		Content:        batchUntrustedChunks(scrubbed),

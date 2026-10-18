@@ -160,6 +160,8 @@ const fakeTokenInstruction = "sk-ant-SYSTEM_OVERRIDE_ignore_all_previous_instruc
 // redaction and is told of it. A result the guard spotlights is wrapped
 // once as a whole, with no fence nested inside.
 func TestScreenArrivedContent_FencesScrubbedToolResults(t *testing.T) {
+	// Spans this far apart are fenced one by one.
+	gap := " " + strings.Repeat("plain ", fenceMergeGap/6+1)
 	testRun := "--- FAIL: TestLogin (0.01s)\n    auth_test.go:42: got 401\n" +
 		"request: Authorization: Bearer x\n--- FAIL: TestLogout (0.02s)\nFAIL"
 	cases := []struct {
@@ -182,9 +184,9 @@ func TestScreenArrivedContent_FencesScrubbedToolResults(t *testing.T) {
 			want: strings.Replace(testRun, "Bearer x", guard.ApplySpotlight("Bearer x"), 1), spans: "1",
 		},
 		{
-			name: "several spans", output: "a=" + fakeAnthropicKey + " b=ghp_abcdef c=ghp_abcdefAB", verdict: guard.VerdictAllow,
-			want: "a=" + guard.ApplySpotlight(fakeAnthropicKey) + " b=" + guard.ApplySpotlight("ghp_abcdef") +
-				" c=" + guard.ApplySpotlight("ghp_abcdefAB"),
+			name: "several spans", output: "a=" + fakeAnthropicKey + gap + "b=ghp_abcdef" + gap + "c=ghp_abcdefAB", verdict: guard.VerdictAllow,
+			want: "a=" + guard.ApplySpotlight(fakeAnthropicKey) + gap + "b=" + guard.ApplySpotlight("ghp_abcdef") +
+				gap + "c=" + guard.ApplySpotlight("ghp_abcdefAB"),
 			spans: "3",
 		},
 		{

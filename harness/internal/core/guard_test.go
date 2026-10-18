@@ -1011,9 +1011,11 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 
 // TestTurnZeroGuardChunks_ScrubsPromptThenContext asserts that the turn-0
 // guard copy holds the prompt and then the context values in order, each
-// with the log scrubber applied, and counts the spans replaced.
+// with the log scrubber applied, and counts the matches replaced.
 func TestTurnZeroGuardChunks_ScrubsPromptThenContext(t *testing.T) {
-	chunks, spans := turnZeroGuardChunks("user prompt "+fakeAnthropicKey, []string{"first", "second ghp_abcdefghijklmnop"})
+	loop := buildTestLoop(nil)
+	loop.GuardRail = &inputRecordingGuard{}
+	chunks, spans := loop.preTurnGuardCopy(turnZeroChunks("user prompt "+fakeAnthropicKey, []string{"first", "second ghp_abcdefghijklmnop"}))
 	want := []string{"user prompt [REDACTED]", "first", "second [REDACTED]"}
 	if len(chunks) != len(want) {
 		t.Fatalf("expected %d chunks, got %d: %v", len(want), len(chunks), chunks)

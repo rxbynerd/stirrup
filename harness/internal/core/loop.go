@@ -831,7 +831,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// monitor in Run() under their own labels, so only the guard sees
 		// them here.
 		if turn == 0 {
-			if chunks, spans := turnZeroGuardChunks(config.Prompt, l.turnZeroContext); len(chunks) > 0 {
+			if chunks, spans := l.preTurnGuardCopy(turnZeroChunks(config.Prompt, l.turnZeroContext)); len(chunks) > 0 {
 				in := guard.Input{
 					Phase:   guard.PhasePreTurn,
 					Content: batchUntrustedChunks(chunks),
@@ -1793,22 +1793,24 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	// never receives a secret.
 	last := &messages[len(messages)-1]
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+	checked := guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
 	var spans int
 	var scrubbed []scrubbedToolResult
-	if feedback {
+	switch {
+	case feedback:
 		// Feedback is scrubbed in history too, so the guard reads what
 		// the model will and nothing needs fencing; tool results keep
 		// their content for the model and are scrubbed for the guard
-		// alone.
+		// alone, when one reads them.
 		spans = scrubVerifierFeedback(last)
 		chunks = arrivedUntrustedChunks(messages)
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
-	} else {
+	case checked:
 		chunks, spans, scrubbed = scrubToolResultsForGuard(*last)
 	}
 	// A guard cannot judge what the scrubber hid from it, so with one
 	// configured the harness fences each hidden span for the model.
-	fence := len(scrubbed) > 0 && guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
+	fence := len(scrubbed) > 0 && checked
 	in := guard.Input{
 		Phase:   guard.PhasePreTurn,
 		Content: batchUntrustedChunks(chunks),
@@ -1831,8 +1833,9 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		spotlightUntrustedChunks(messages)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 	case fence:
-		fenceScrubbedSpans(last, scrubbed)
-		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
+		if fenceScrubbedSpans(last, scrubbed) {
+			l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
+		}
 	}
 	return ""
 }
@@ -1860,19 +1863,28 @@ func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.
 	return appendUserBlock(messages, merged, true), ""
 }
 
-// turnZeroGuardChunks returns the guard's copy of the content that enters
-// the run before its first turn, the prompt and then contextValues, and
-// the number of spans the scrubber replaced; see scrubForGuard.
-func turnZeroGuardChunks(prompt string, contextValues []string) ([]string, int) {
+// turnZeroChunks returns the content that enters the run before its first
+// turn: the prompt and then contextValues.
+func turnZeroChunks(prompt string, contextValues []string) []string {
 	chunks := make([]string, 0, 1+len(contextValues))
 	if prompt != "" {
 		chunks = append(chunks, prompt)
 	}
-	return scrubForGuard(append(chunks, contextValues...))
+	return append(chunks, contextValues...)
+}
+
+// preTurnGuardCopy returns the pre_turn guard's copy of chunks and the
+// number of matches the scrubber replaced in it. With no guard checking
+// pre_turn nothing reads the copy, so chunks are returned unscrubbed.
+func (l *AgenticLoop) preTurnGuardCopy(chunks []string) ([]string, int) {
+	if !guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn) {
+		return chunks, 0
+	}
+	return scrubForGuard(append([]string(nil), chunks...))
 }
 
 // scrubForGuard applies the log scrubber to each chunk in place and
-// returns chunks and the number of spans it replaced.
+// returns chunks and the number of matches it replaced.
 func scrubForGuard(chunks []string) ([]string, int) {
 	spans := 0
 	for i := range chunks {
@@ -1942,70 +1954,105 @@ func scrubVerifierFeedback(m *types.Message) int {
 	return spans
 }
 
-// scrubbedToolResult is a tool_result block the log scrubber changed and
-// the ranges of its Content it replaced.
+// scrubbedToolResult is a tool_result block the log scrubber changed: the
+// ranges of its Content it replaced, and its scrubbed Structured payload
+// when that held a match.
 type scrubbedToolResult struct {
-	block int
-	spans []security.ScrubRange
+	block      int
+	ranges     []security.ScrubRange
+	structured string
 }
 
 // scrubToolResultsForGuard returns the guard's copy of the tool_result
 // blocks of m, Content and Structured payload alike in the order
 // arrivedUntrustedChunks gives them, with the log scrubber applied; the
-// number of spans it replaced; and the blocks it changed.
+// number of matches it replaced; and the blocks it changed.
 func scrubToolResultsForGuard(m types.Message) ([]string, int, []scrubbedToolResult) {
 	var chunks []string
-	spans := 0
+	matches := 0
 	var changed []scrubbedToolResult
 	for i, b := range m.Content {
 		if b.Type != "tool_result" {
 			continue
 		}
-		var ranges []security.ScrubRange
+		c := scrubbedToolResult{block: i}
 		n := 0
 		if b.Content != "" {
-			text, r, stats := security.ScrubWithSpans(b.Content)
+			text, ranges, stats := security.ScrubWithSpans(b.Content)
 			chunks = append(chunks, text)
-			ranges = r
+			c.ranges = ranges
 			n += stats.Count
 		}
 		if len(b.Structured) > 0 {
 			text, stats := security.ScrubWithStats(string(b.Structured))
 			chunks = append(chunks, text)
+			if stats.Count > 0 {
+				c.structured = text
+			}
 			n += stats.Count
 		}
 		if n > 0 {
-			spans += n
-			changed = append(changed, scrubbedToolResult{block: i, spans: ranges})
+			matches += n
+			changed = append(changed, c)
 		}
 	}
-	return chunks, spans, changed
+	return chunks, matches, changed
 }
 
 // fenceScrubbedSpans spotlights, in each changed block of m, the original
-// text of every range the scrubber replaced, leaving the rest plain, and
-// drops the block's structured payload so adapters send the fenced text
-// rather than the raw JSON.
-func fenceScrubbedSpans(m *types.Message, changed []scrubbedToolResult) {
+// text of the ranges the scrubber replaced, and drops the block's
+// structured payload so adapters send the fenced text rather than the raw
+// JSON. A block whose only match was in an empty-Content block's payload
+// gets the payload's scrubbed text instead. It reports whether it fenced
+// anything.
+func fenceScrubbedSpans(m *types.Message, changed []scrubbedToolResult) bool {
+	fenced := false
 	for _, c := range changed {
 		b := &m.Content[c.block]
-		b.Content = spotlightSpans(b.Content, c.spans)
+		switch {
+		case len(c.ranges) > 0:
+			b.Content = fenceRanges(b.Content, c.ranges)
+			fenced = true
+		case b.Content == "":
+			b.Content = c.structured
+		}
 		b.Structured, b.Kind = nil, ""
 	}
+	return fenced
 }
 
-// spotlightSpans returns text with each of the ordered, disjoint spans
-// replaced by its guard.ApplySpotlight wrapping.
-func spotlightSpans(text string, spans []security.ScrubRange) string {
-	if len(spans) == 0 {
-		return text
+const (
+	// fenceMergeGap is the plain-text gap below which two scrubbed ranges
+	// share one fence, since a tag pair costs more than the gap.
+	fenceMergeGap = 64
+	// fenceMaxRanges is the number of merged ranges above which a block is
+	// fenced whole, so per-range tags cannot inflate a result: the fenced
+	// text is at most the base64 of the block plus fenceMaxRanges tag
+	// pairs.
+	fenceMaxRanges = 32
+)
+
+// fenceRanges returns text with its ordered, disjoint ranges spotlighted:
+// nearby ranges share a fence, and past fenceMaxRanges the whole text is
+// one fence.
+func fenceRanges(text string, ranges []security.ScrubRange) string {
+	var merged []security.ScrubRange
+	for _, r := range ranges {
+		if n := len(merged); n > 0 && r.Start-merged[n-1].End < fenceMergeGap {
+			merged[n-1].End = r.End
+			continue
+		}
+		merged = append(merged, r)
+	}
+	if len(merged) > fenceMaxRanges {
+		return guard.ApplySpotlight(text)
 	}
 	var b strings.Builder
 	prev := 0
-	for _, s := range spans {
-		b.WriteString(text[prev:s.Start])
-		b.WriteString(guard.ApplySpotlight(text[s.Start:s.End]))
-		prev = s.End
+	for _, r := range merged {
+		b.WriteString(text[prev:r.Start])
+		b.WriteString(guard.ApplySpotlight(text[r.Start:r.End]))
+		prev = r.End
 	}
 	b.WriteString(text[prev:])
 	return b.String()
