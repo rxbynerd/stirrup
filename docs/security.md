@@ -313,8 +313,8 @@ falls under the operator's agreement with the provider; the harness
 makes no claim about it. No opt-out exists: caching is a built-in
 [quirk](provider-quirks.md), and quirks have no `RunConfig` override.
 
-The OpenAI Responses adapter sends a `prompt_cache_key` derived from
-the run ID. It does not send the raw run ID, but the SHA-256 digest is
+The OpenAI Responses adapter sends a `prompt_cache_key` derived from a
+run ID. It does not send the raw run ID, but the SHA-256 digest is
 not an anonymiser: run IDs are not secret, so anyone holding a
 candidate run ID can recompute the key and match it.
 

@@ -34,8 +34,9 @@ var modeRequirements = map[string]modeRequirement{
 }
 
 // defaultEscalationPolicy is the production EscalationPolicy. It is off
-// unless maxRetries > 0. It fires only on the first assistant turn of an
-// inner-loop run when tools were available, none was called, the turn did
+// unless maxRetries > 0. It fires only on turns before any tool call,
+// counting a continued follow-up's carried tool calls, when tools were
+// available, none was called, the turn did
 // not stop on a refusal or a full context window, the mode has a tool
 // requirement, and the retry cap has not been reached; native vs
 // prompt fallback is chosen from the resolved provider tool-choice

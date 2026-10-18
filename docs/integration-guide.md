@@ -641,6 +641,18 @@ re-provisioning the sandbox.
     configured context strategy compacts a long session the same way it
     compacts a long run. The Rule-of-Two latch spans the whole session
     in both modes: once tripped, it stays tripped for every later run.
+    Every run that continues the history sends the prompt-cache key of
+    the run that produced it, normally the primary run's for the whole
+    session, so providers that route on the key keep the shared prefix
+    cached. A follow-up that starts from its prompt alone gets a key of
+    its own, and later continuing follow-ups reuse that key. Tool calls
+    in the carried history count as tool use for tool-choice escalation
+    (`toolChoiceEscalation`): a continued follow-up that answers without
+    a tool is not retried when that history holds at least one tool
+    call. The tool-call count and the retry cap restart in every run,
+    and again after a verification retry or output-schema correction
+    within it, so the count then starts from the carried history's tool
+    calls alone.
 
   The primary run is the same in both modes, and the field does nothing
   without a follow-up window. It takes effect only through the

@@ -215,6 +215,13 @@ type AgenticLoop struct {
 	// latest pre-turn screening: untrusted content past it is unscreened.
 	screenedLen int
 
+	// carriedToolCalls counts the tool calls in the history the current
+	// run started from; it seeds tool-choice escalation's prior tool calls.
+	carriedToolCalls int
+
+	// cacheKey is the provider cache key of the current run's requests.
+	cacheKey string
+
 	// clock is the wind-down time source; nil means time.Now.
 	clock func() time.Time
 

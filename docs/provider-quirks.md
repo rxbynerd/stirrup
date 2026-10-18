@@ -273,7 +273,8 @@ the cache.
 `OpenAIResponsesBehaviourFlags.PromptCacheKey` forwards a non-empty
 `StreamParams.CacheKey` as the top-level `prompt_cache_key`, emitted
 last so every other key keeps its position. The loop sets `CacheKey`
-once per run to a digest of the run ID (not an anonymiser); see the
+once per run to a digest of the run ID (not an anonymiser), or to the
+previous run's key for a follow-up continuing its history; see the
 [Responses section of the provider guide](providers.md#openai-responses-api).
 The Chat Completions adapter has no equivalent flag, because compatible
 servers may reject an unknown top-level key.
