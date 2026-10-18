@@ -449,8 +449,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				l.Logger.InfoContext(runCtx, "final answer failed the output schema; requesting a correction",
 					"attempt", structuredCorrections, "maxAttempts", maxStructuredOutputCorrections)
 				correction := structuredOutputCorrection(violation)
-				messages = append(messages, correction)
-				l.emitUserMessage(types.UserMessageSourceStructuredOutputCorrection, correction.Content[0].Text, "")
+				messages = injectSyntheticUserText(messages, correction)
+				l.emitUserMessage(types.UserMessageSourceStructuredOutputCorrection, correction, "")
 				continue
 			}
 			structuredOutput = doc
@@ -502,8 +502,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		} else {
 			feedbackMsg.Origin = types.MessageOriginVerifierFeedback
 		}
-		messages = append(messages, feedbackMsg)
 		l.emitUserMessage(types.UserMessageSourceVerifierFeedback, feedbackMsg.Content[0].Text, "")
+		var blocked string
+		if messages, blocked = l.appendVerifierFeedback(runCtx, config, nextTurn, messages, feedbackMsg); blocked != "" {
+			outcome = blocked
+			break
+		}
 	}
 	l.retainHistory(config, outcome, messages)
 
@@ -830,8 +834,12 @@ func (l *AgenticLoop) runInnerLoop(
 					return messages, "guardrail_blocked", finalAssistantText, nil
 				}
 			}
-		} else if blocked := l.screenArrivedContent(ctx, config, turn, messages); blocked != "" {
-			return messages, blocked, finalAssistantText, nil
+		} else if len(messages) > l.screenedLen {
+			// Harness text merged into a screened message adds no
+			// message, so only a history that grew holds new content.
+			if blocked := l.screenArrivedContent(ctx, config, turn, messages); blocked != "" {
+				return messages, blocked, finalAssistantText, nil
+			}
 		}
 		l.screenedLen = len(messages)
 
@@ -1793,6 +1801,22 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 	}
 	return ""
+}
+
+// appendVerifierFeedback adds feedback to the history and returns the
+// outcome that ends the run when screening stops it. After an inner loop
+// that left no assistant message the history ends on a user message, so
+// the feedback merges into it. That message is already screened and is
+// not screened again, so merged feedback is screened on its own first.
+func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.RunConfig, turn int, messages []types.Message, feedback types.Message) ([]types.Message, string) {
+	if n := len(messages); n == 0 || messages[n-1].Role != "user" {
+		return append(messages, feedback), ""
+	}
+	alone := []types.Message{feedback}
+	if outcome := l.screenArrivedContent(ctx, config, turn, alone); outcome != "" {
+		return messages, outcome
+	}
+	return injectSyntheticUserText(messages, alone[0].Content[0].Text), ""
 }
 
 // collectUntrustedChunks returns the chunks of untrusted content that

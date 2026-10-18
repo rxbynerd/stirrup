@@ -826,6 +826,16 @@ that the model will act on it:
 - The other sources are harness-authored text, reported exactly as
   appended.
 
+When a run's last turn leaves no assistant message, for example an
+empty `end_turn`, the history ends on a user message. Text the harness
+appends next joins that message rather than following it, so the
+next request never holds two user messages in a row. The output-schema
+check treats the missing answer as a final message with no text and
+asks for a correction, and the verifier runs as after any other
+answer; an `llm-judge` verifier then sees no final answer. Verifier
+feedback merged this way is screened when it is appended, not at the
+next turn.
+
 A Rule-of-Two redaction or guardrail replacement applied to the content
 afterwards, as with tool results, is not re-announced. `onDetect:
 redact` protects the model's context, not the control stream:

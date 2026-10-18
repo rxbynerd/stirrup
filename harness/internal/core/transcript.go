@@ -33,13 +33,19 @@ func (l *AgenticLoop) emitTurnStarted(turn int, model, providerType string) {
 
 // committableAssistantBlocks returns the blocks of a turn ending with
 // stopReason that may enter history, and whether any remain. Only tool_use
-// turns are dispatched, so other stops drop their tool calls; a max_tokens
-// turn needs text, as thinking cut off before its signature cannot replay.
+// turns are dispatched, so other stops drop their tool calls and empty
+// text, which providers reject; a max_tokens turn needs text, as thinking
+// cut off before its signature cannot replay.
 func committableAssistantBlocks(stopReason string, blocks []types.ContentBlock) ([]types.ContentBlock, bool) {
 	if stopReason == "tool_use" {
 		return blocks, true
 	}
-	kept := withoutToolUse(blocks)
+	kept := make([]types.ContentBlock, 0, len(blocks))
+	for _, b := range withoutToolUse(blocks) {
+		if b.Type != "text" || b.Text != "" {
+			kept = append(kept, b)
+		}
+	}
 	if stopReason == "max_tokens" {
 		return kept, lastAssistantText(kept) != ""
 	}

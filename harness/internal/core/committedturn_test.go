@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -166,4 +169,144 @@ func eventsOfTypeIn(events []types.HarnessEvent, typ string) []types.HarnessEven
 		}
 	}
 	return out
+}
+
+func assertRolesAlternate(t *testing.T, label string, msgs []types.Message) {
+	t.Helper()
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == msgs[i-1].Role {
+			t.Errorf("%s: messages %d and %d are both %s: %v", label, i-1, i, msgs[i].Role, rolesOf(msgs))
+		}
+	}
+}
+
+// TestRun_FeedbackAfterNoFinalAnswerMergesIntoTheTrailingUserMessage pins
+// that verifier feedback and a schema correction following a turn that
+// left no assistant message join the trailing user message, so the next
+// request never holds two user messages in a row, and that merged
+// feedback is screened exactly once.
+func TestRun_FeedbackAfterNoFinalAnswerMergesIntoTheTrailingUserMessage(t *testing.T) {
+	empty := []types.StreamEvent{stopWith("end_turn")}
+	toolOnly := []types.StreamEvent{{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}}, stopWith("end_turn")}
+	for name, first := range map[string][]types.StreamEvent{"empty end_turn": empty, "end_turn with only a tool call": toolOnly} {
+		t.Run("verifier feedback after "+name, func(t *testing.T) {
+			prov := &recordingScriptProvider{script: [][]types.StreamEvent{first, scriptEndTurn}}
+			loop, _ := buildUserInputTestLoop(prov)
+			loop.Verifier = &feedbackVerifier{feedback: "tests fail in parser_test.go", failures: 1}
+			g := &feedbackVerdictGuard{verdict: guard.VerdictAllowSpot}
+			loop.GuardRail = g
+
+			rt, err := loop.Run(context.Background(), buildTestConfig())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if rt.Outcome != "success" {
+				t.Fatalf("outcome = %q, want success", rt.Outcome)
+			}
+			calls := prov.params()
+			if len(calls) != 2 {
+				t.Fatalf("provider calls = %d, want 2", len(calls))
+			}
+			retry := calls[1].Messages
+			assertRolesAlternate(t, "retry request", retry)
+			text := strings.Join(textBlocks(retry[len(retry)-1]), "\n")
+			wrapped := base64.StdEncoding.EncodeToString([]byte("tests fail in parser_test.go"))
+			if !strings.HasPrefix(text, buildTestConfig().Prompt) || strings.Count(text, wrapped) != 1 || strings.Count(text, guard.SpotlightOpenTag) != 1 {
+				t.Errorf("retry's last message = %q, want the prompt then the feedback, spotlighted once", text)
+			}
+			if n := len(g.feedbackChecks()); n != 1 {
+				t.Errorf("feedback screened %d times, want 1", n)
+			}
+		})
+	}
+
+	t.Run("schema correction after an empty end_turn", func(t *testing.T) {
+		loop, prov, _ := structuredTestLoop("", `{"title":"Fix login","labels":["bug"]}`)
+
+		rt, err := loop.Run(context.Background(), structuredTestConfig())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rt.Outcome != "success" {
+			t.Fatalf("outcome = %q, want success (error %q)", rt.Outcome, rt.Error)
+		}
+		retry := prov.requests[1]
+		if len(retry) != 1 {
+			t.Fatalf("correction request roles = %v, want the correction merged into the prompt", rolesOf(retry))
+		}
+		if text := strings.Join(textBlocks(retry[len(retry)-1]), "\n"); !strings.Contains(text, "has no text") {
+			t.Errorf("correction request's last message = %q, want the missing-answer correction", text)
+		}
+	})
+}
+
+// turnPromptPolicy escalates with a prompt on one turn only.
+type turnPromptPolicy struct{ turn int }
+
+func (p turnPromptPolicy) Decide(in EscalationInput) EscalationDecision {
+	if in.Turn != p.turn {
+		return EscalationDecision{}
+	}
+	return EscalationDecision{Kind: EscalationPrompt, PromptMessage: "Call a tool now.", Reason: "test"}
+}
+
+// TestRun_HarnessTextMergedIntoScreenedFeedbackIsNotRescreened pins that
+// an escalation prompt merged into verifier feedback that was already
+// screened does not send that feedback through screening again.
+func TestRun_HarnessTextMergedIntoScreenedFeedbackIsNotRescreened(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
+		scriptEndTurn,
+		{stopWith("end_turn")},
+		scriptEndTurn,
+	}}
+	loop, _ := buildUserInputTestLoop(prov)
+	loop.Verifier = &feedbackVerifier{feedback: "tests fail in parser_test.go", failures: 1}
+	loop.Escalation = turnPromptPolicy{turn: 1}
+	g := &feedbackVerdictGuard{verdict: guard.VerdictAllowSpot}
+	loop.GuardRail = g
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	calls := prov.params()
+	if len(calls) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(calls))
+	}
+	if n := len(g.feedbackChecks()); n != 1 {
+		t.Errorf("feedback screened %d times, want 1", n)
+	}
+	last := calls[2].Messages[len(calls[2].Messages)-1]
+	text := strings.Join(textBlocks(last), "\n")
+	if strings.Count(text, guard.SpotlightOpenTag) != 1 || !strings.Contains(text, "Call a tool now.") {
+		t.Errorf("third request's last message = %q, want the feedback spotlighted once and the escalation prompt merged", text)
+	}
+	assertRolesAlternate(t, "third request", calls[2].Messages)
+}
+
+func TestRun_HarnessTextMergedIntoScreenedToolResultsIsNotRescreened(t *testing.T) {
+	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
+		emitToolScript[0],
+		{stopWith("end_turn")},
+		scriptEndTurn,
+	}}
+	loop, _ := buildUserInputTestLoop(prov)
+	registerEmitTool(t, loop, "SPOT-MARKER output")
+	loop.Escalation = turnPromptPolicy{turn: 1}
+	g := &markerGuard{markers: []string{"SPOT-MARKER", guard.SpotlightOpenTag}, verdict: guard.VerdictAllowSpot}
+	loop.GuardRail = g
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	calls := prov.params()
+	if len(calls) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(calls))
+	}
+	if g.matches() != 1 {
+		t.Errorf("tool result screened %d times, want 1", g.matches())
+	}
+	results := toolResultContents(calls[2].Messages)
+	if len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
+		t.Errorf("third request's tool result = %q, want it spotlighted once", results)
+	}
 }
