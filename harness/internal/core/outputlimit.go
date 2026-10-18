@@ -42,7 +42,7 @@ func withoutToolUse(blocks []types.ContentBlock) []types.ContentBlock {
 // its tool calls, under committableAssistantBlocks, and appends a
 // synthetic instruction for the next turn. It reports whether the model
 // was told to continue its cut-off text. A turn whose assistant message
-// is kept commits with usage; one discarded does not.
+// is kept commits with usage; one discarded is abandoned.
 func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit int, sr *streamResult, usage types.TokenUsage, messages []types.Message) ([]types.Message, bool) {
 	l.outputLimitRecoveries++
 
@@ -50,6 +50,8 @@ func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit
 	if hasText {
 		messages = appendAssistantContent(messages, kept, sr.ReplayFields)
 		l.emitTurnCommitted(turn, sr.StopReason, usage, 0)
+	} else {
+		l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)
 	}
 
 	dropped := 0

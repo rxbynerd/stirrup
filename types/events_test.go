@@ -187,7 +187,7 @@ func TestToolChoiceModeUnmarshalErrorTruncates(t *testing.T) {
 }
 
 func TestHarnessCapabilities(t *testing.T) {
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned"}
 	got := HarnessCapabilities()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("HarnessCapabilities() = %v, want %v", got, want)

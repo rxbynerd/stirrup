@@ -91,9 +91,18 @@ const (
 //	  - usage:             the turn's token usage.
 //	  - tool_result_count: the number of tool results the turn appended.
 //	  Sent once the turn's assistant message and a result for every tool
-//	  call in it are in history. A turn whose output was discarded, whose
-//	  dispatch was cut short, or whose answer a guardrail rejected sends a
-//	  "turn_started" without a "turn_committed".
+//	  call in it are in history.
+//
+//	"turn_abandoned"
+//	  - turn:           the turn number its "turn_started" carried.
+//	  - abandon_reason: why the turn left no valid history; see that field.
+//	  Sent for a turn that will not commit: its output was discarded, its
+//	  dispatch was cut short, a guardrail rejected its answer, or the run
+//	  ended before a usable response arrived. Every "turn_started" is
+//	  followed by exactly one "turn_committed" or "turn_abandoned", before
+//	  the next "turn_started" and before "done". Advertised by the
+//	  "turn_abandoned" capability; without it, a turn that does not commit
+//	  sends nothing after "turn_started".
 //
 //	"permission_request"
 //	  - request_id: unique ID for this request; the control plane must echo it
@@ -181,7 +190,8 @@ type HarnessEvent struct {
 	// Valid values: "text_delta", "thinking_delta", "tool_call",
 	//
 	//	"tool_result", "user_message", "turn_started",
-	//	"turn_committed", "done", "error", "warning", "heartbeat",
+	//	"turn_committed", "turn_abandoned", "done", "error",
+	//	"warning", "heartbeat",
 	//	"ready", "run_started", "permission_request",
 	//	"tool_result_request", "batch_submission", "batch_waiting",
 	//	"batch_cancel_request", "sandbox_token_request".
@@ -281,8 +291,8 @@ type HarnessEvent struct {
 	//
 	// Every value other than the first three is text the harness wrote.
 	Source string `protobuf:"bytes,17,opt,name=source,proto3" json:"source,omitempty"`
-	// The run-scoped turn number, starting at 0. Set on "turn_started" and
-	// "turn_committed" events.
+	// The run-scoped turn number, starting at 0. Set on "turn_started",
+	// "turn_committed" and "turn_abandoned" events.
 	Turn *int32 `protobuf:"varint,18,opt,name=turn,proto3,oneof" json:"turn,omitempty"`
 	// The model the router selected for the turn. Set on "turn_started".
 	Model string `protobuf:"bytes,19,opt,name=model,proto3" json:"model,omitempty"`
@@ -305,7 +315,22 @@ type HarnessEvent struct {
 	// "live_transcript", "reasoning_summary" and "follow_up_history". Set on
 	// "ready" events. The vocabulary is open: ignore values that are not
 	// recognised. A harness that sends none implements none of them.
-	Capabilities  []string `protobuf:"bytes,25,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	Capabilities []string `protobuf:"bytes,25,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// Why a turn left no valid history. Set on "turn_abandoned" events. An
+	// open vocabulary: consumers must preserve values they do not recognise.
+	//
+	//	"no_response"           the turn ended before a usable response
+	//	                        arrived: a provider error, cancellation, or
+	//	                        an exhausted context window or token budget.
+	//	"empty_response"        the response held nothing that may enter
+	//	                        history, such as an empty message or one cut
+	//	                        off at the output limit before any text.
+	//	"missing_tool_calls"    the response stopped for tool use but carried
+	//	                        no tool calls.
+	//	"unanswered_tool_calls" dispatch stopped before every tool call in the
+	//	                        turn had a result.
+	//	"guardrail_blocked"     a post-turn guardrail rejected the answer.
+	AbandonReason string `protobuf:"bytes,26,opt,name=abandon_reason,json=abandonReason,proto3" json:"abandon_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -513,6 +538,13 @@ func (x *HarnessEvent) GetCapabilities() []string {
 		return x.Capabilities
 	}
 	return nil
+}
+
+func (x *HarnessEvent) GetAbandonReason() string {
+	if x != nil {
+		return x.AbandonReason
+	}
+	return ""
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -6594,7 +6626,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xdc\x06\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x83\a\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -6624,7 +6656,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bis_error\x18\x17 \x01(\bR\aisError\x12\x1f\n" +
 	"\vduration_ms\x18\x18 \x01(\x03R\n" +
 	"durationMs\x12\"\n" +
-	"\fcapabilities\x18\x19 \x03(\tR\fcapabilitiesB\a\n" +
+	"\fcapabilities\x18\x19 \x03(\tR\fcapabilities\x12%\n" +
+	"\x0eabandon_reason\x18\x1a \x01(\tR\rabandonReasonB\a\n" +
 	"\x05_turn\"e\n" +
 	"\x0eTraceReference\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x1e\n" +

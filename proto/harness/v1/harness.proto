@@ -109,9 +109,18 @@ service HarnessService {
 //     - usage:             the turn's token usage.
 //     - tool_result_count: the number of tool results the turn appended.
 //     Sent once the turn's assistant message and a result for every tool
-//     call in it are in history. A turn whose output was discarded, whose
-//     dispatch was cut short, or whose answer a guardrail rejected sends a
-//     "turn_started" without a "turn_committed".
+//     call in it are in history.
+//
+//   "turn_abandoned"
+//     - turn:           the turn number its "turn_started" carried.
+//     - abandon_reason: why the turn left no valid history; see that field.
+//     Sent for a turn that will not commit: its output was discarded, its
+//     dispatch was cut short, a guardrail rejected its answer, or the run
+//     ended before a usable response arrived. Every "turn_started" is
+//     followed by exactly one "turn_committed" or "turn_abandoned", before
+//     the next "turn_started" and before "done". Advertised by the
+//     "turn_abandoned" capability; without it, a turn that does not commit
+//     sends nothing after "turn_started".
 //
 //   "permission_request"
 //     - request_id: unique ID for this request; the control plane must echo it
@@ -197,7 +206,8 @@ message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "thinking_delta", "tool_call",
   //              "tool_result", "user_message", "turn_started",
-  //              "turn_committed", "done", "error", "warning", "heartbeat",
+  //              "turn_committed", "turn_abandoned", "done", "error",
+  //              "warning", "heartbeat",
   //              "ready", "run_started", "permission_request",
   //              "tool_result_request", "batch_submission", "batch_waiting",
   //              "batch_cancel_request", "sandbox_token_request".
@@ -311,8 +321,8 @@ message HarnessEvent {
   // Every value other than the first three is text the harness wrote.
   string source = 17;
 
-  // The run-scoped turn number, starting at 0. Set on "turn_started" and
-  // "turn_committed" events.
+  // The run-scoped turn number, starting at 0. Set on "turn_started",
+  // "turn_committed" and "turn_abandoned" events.
   optional int32 turn = 18;
 
   // The model the router selected for the turn. Set on "turn_started".
@@ -343,6 +353,21 @@ message HarnessEvent {
   // "ready" events. The vocabulary is open: ignore values that are not
   // recognised. A harness that sends none implements none of them.
   repeated string capabilities = 25;
+
+  // Why a turn left no valid history. Set on "turn_abandoned" events. An
+  // open vocabulary: consumers must preserve values they do not recognise.
+  //   "no_response"           the turn ended before a usable response
+  //                           arrived: a provider error, cancellation, or
+  //                           an exhausted context window or token budget.
+  //   "empty_response"        the response held nothing that may enter
+  //                           history, such as an empty message or one cut
+  //                           off at the output limit before any text.
+  //   "missing_tool_calls"    the response stopped for tool use but carried
+  //                           no tool calls.
+  //   "unanswered_tool_calls" dispatch stopped before every tool call in the
+  //                           turn had a result.
+  //   "guardrail_blocked"     a post-turn guardrail rejected the answer.
+  string abandon_reason = 26;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's

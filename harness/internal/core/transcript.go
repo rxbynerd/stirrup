@@ -19,8 +19,10 @@ func (l *AgenticLoop) emitUserMessage(source, text, requestID string) {
 }
 
 // emitTurnStarted reports the routed model and provider type of a turn
-// about to send its first provider request.
+// about to send its first provider request, and opens the turn until
+// emitTurnCommitted or emitTurnAbandoned closes it.
 func (l *AgenticLoop) emitTurnStarted(turn int, model, providerType string) {
+	l.openTurn = &turn
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:     "turn_started",
 		Turn:     &turn,
@@ -55,6 +57,7 @@ func committableAssistantBlocks(stopReason string, blocks []types.ContentBlock) 
 // emitTurnCommitted reports a turn whose assistant message, and a result
 // for every tool call in it, are in the history.
 func (l *AgenticLoop) emitTurnCommitted(turn int, stopReason string, usage types.TokenUsage, toolResults int) {
+	l.openTurn = nil
 	ev := types.HarnessEvent{
 		Type:            "turn_committed",
 		Turn:            &turn,
@@ -66,5 +69,23 @@ func (l *AgenticLoop) emitTurnCommitted(turn int, stopReason string, usage types
 	}
 	if err := l.Transport.Emit(ev); err != nil {
 		l.logEmitFailure("turn_committed", err)
+	}
+}
+
+// emitTurnAbandoned closes the open turn with reason, one of the
+// types.TurnAbandoned* values. It is a no-op when no turn is open, so a
+// deferred call only reports turns no other path closed.
+func (l *AgenticLoop) emitTurnAbandoned(reason string) {
+	if l.openTurn == nil {
+		return
+	}
+	turn := *l.openTurn
+	l.openTurn = nil
+	if err := l.Transport.Emit(types.HarnessEvent{
+		Type:          "turn_abandoned",
+		Turn:          &turn,
+		AbandonReason: reason,
+	}); err != nil {
+		l.logEmitFailure("turn_abandoned", err)
 	}
 }

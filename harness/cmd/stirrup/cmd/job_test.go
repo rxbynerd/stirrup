@@ -458,7 +458,7 @@ func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
 	if ready.GetType() != "ready" {
 		t.Fatalf("first event = %q, want ready", ready.GetType())
 	}
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned"}
 	if got := ready.GetCapabilities(); !reflect.DeepEqual(got, want) {
 		t.Errorf("ready capabilities = %v, want %v", got, want)
 	}
