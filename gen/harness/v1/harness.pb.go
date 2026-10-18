@@ -26,9 +26,9 @@ const (
 //
 // Each event has a type discriminator; only the fields relevant to that type
 // are populated. The name and ID fields (id, name, tool_use_id, request_id,
-// tool_name) are capped at 1 KiB on every event type, cut on a UTF-8
-// boundary without a marker, so equal values stay equal after capping. The
-// table below documents which fields are set per type:
+// tool_name) and stop_reason are capped at 1 KiB on every event type, cut on
+// a UTF-8 boundary without a marker, so equal values stay equal after
+// capping. The table below documents which fields are set per type:
 //
 //	"ready"
 //	  - harness_version: build version string of the harness binary.
@@ -235,7 +235,9 @@ type HarnessEvent struct {
 	// ("end_turn", "tool_use", "max_tokens", or a provider stop reason),
 	// never the run outcome.
 	StopReason string `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
-	// Human-readable message. Set on "error" and "warning" events.
+	// Human-readable message. Set on "error" and "warning" events. Capped at
+	// 256 KiB; a capped message ends in
+	// "[truncated by harness for the control stream: N of M bytes shown]".
 	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
 	// The run's summary. Set on "done" events. The harness sends "done" only
 	// after the final git checkpoint, the workspace export and the trace
@@ -621,10 +623,7 @@ func (x *TraceReference) GetSampled() bool {
 // ControlEvent is sent from the control plane to the harness.
 //
 // Each event has a type discriminator; only the fields relevant to that type
-// are populated. The name and ID fields (id, name, tool_use_id, request_id,
-// tool_name) are capped at 1 KiB on every event type, cut on a UTF-8
-// boundary without a marker, so equal values stay equal after capping. The
-// table below documents which fields are set per type:
+// are populated. The table below documents which fields are set per type:
 //
 //	"task_assignment"
 //	  - task: the RunConfig describing the work to execute. This must be

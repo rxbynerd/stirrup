@@ -164,6 +164,19 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 		t.Error("a capped tool_result tool_use_id no longer matches its capped tool_call id")
 	}
 
+	done := types.HarnessEvent{Type: "done", StopReason: big}
+	boundEventFields(&done)
+	if len(done.StopReason) > maxEventIdentifierBytes {
+		t.Errorf("done stop_reason is %d bytes", len(done.StopReason))
+	}
+
+	bigMessage := strings.Repeat("m", 6<<20)
+	warning := types.HarnessEvent{Type: "warning", Message: bigMessage}
+	boundEventFields(&warning)
+	if len(warning.Message) > maxEventFieldBytes || !strings.HasSuffix(warning.Message, fmt.Sprintf(" of %d bytes shown]", len(bigMessage))) {
+		t.Errorf("warning message is %d bytes or lacks the marker", len(warning.Message))
+	}
+
 	short := types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "read_file"}
 	boundEventFields(&short)
 	if short.ID != "tc1" || short.Name != "read_file" {
