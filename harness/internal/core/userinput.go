@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -330,13 +331,19 @@ func (l *AgenticLoop) absorbQueuedUserInput(ctx context.Context, config *types.R
 		l.recordRuleOfTwoAction(ctx, "abort")
 		return len(inputs), "rule_of_two_violation"
 	}
+	// The guard gets the scrubbed copy; the model keeps the operator's
+	// words, which, like the prompt, are never rewritten or fenced.
+	scrubbed, spans := scrubForGuard(append([]string(nil), texts...))
 	in := guard.Input{
 		Phase:          guard.PhasePreTurn,
-		Content:        batchUntrustedChunks(texts),
+		Content:        batchUntrustedChunks(scrubbed),
 		Source:         fmt.Sprintf("user_response:n=%d", len(texts)),
 		Mode:           config.Mode,
 		RunID:          config.RunID,
 		IgnoreMinChunk: true,
+	}
+	if spans > 0 {
+		in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
 	}
 	allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
 	l.ratchetRuleOfTwo(ctx, config, decision, turn)

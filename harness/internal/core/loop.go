@@ -1862,14 +1862,19 @@ func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.
 }
 
 // turnZeroGuardChunks returns the guard's copy of the content that enters
-// the run before its first turn, the prompt and then contextValues, with
-// the log scrubber applied, and the number of spans it replaced.
+// the run before its first turn, the prompt and then contextValues, and
+// the number of spans the scrubber replaced; see scrubForGuard.
 func turnZeroGuardChunks(prompt string, contextValues []string) ([]string, int) {
 	chunks := make([]string, 0, 1+len(contextValues))
 	if prompt != "" {
 		chunks = append(chunks, prompt)
 	}
-	chunks = append(chunks, contextValues...)
+	return scrubForGuard(append(chunks, contextValues...))
+}
+
+// scrubForGuard applies the log scrubber to each chunk in place and
+// returns chunks and the number of spans it replaced.
+func scrubForGuard(chunks []string) ([]string, int) {
 	spans := 0
 	for i := range chunks {
 		var stats security.ScrubStats
