@@ -3,9 +3,12 @@ package security
 import (
 	"fmt"
 	"math/rand"
+	"regexp/syntax"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -132,17 +135,82 @@ func TestStreamCarry_EverySecretPatternHasFixture(t *testing.T) {
 
 // TestStreamCarry_SentinelNeverBeginsAMatch pins what carryScan's "_"
 // sentinel relies on: no pattern, and no prefix of one, starts with it.
+// The check reads each pattern's possible first characters, so it covers
+// text no fixture holds.
 func TestStreamCarry_SentinelNeverBeginsAMatch(t *testing.T) {
-	for _, f := range prefixFixtures() {
-		for i, p := range secretPatterns {
+	for i, p := range secretPatterns {
+		re, err := syntax.Parse(p.re.String(), syntax.Perl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first := firstRunes(re.Simplify()); first == nil || slices.ContainsFunc(first, func(r [2]rune) bool { return r[0] <= '_' && '_' <= r[1] }) {
+			t.Errorf("%s can begin with %q", p.name, '_')
+		}
+		for _, f := range prefixFixtures() {
 			in := "_" + f.text
-			if loc := p.re.FindStringIndex(in); loc != nil && loc[0] == 0 {
-				t.Errorf("%s matches from the sentinel in %q", p.name, in)
-			}
 			if loc := streamPrefixes[i].FindStringIndex(in); loc != nil && loc[0] == 0 {
 				t.Errorf("%s prefix matches from the sentinel in %q", p.name, in)
 			}
 		}
+	}
+}
+
+// firstRunes returns ranges holding every rune a match of re can begin
+// with, or nil when re can match the empty string or its first rune
+// cannot be bounded.
+func firstRunes(re *syntax.Regexp) [][2]rune {
+	fold := func(lo, hi rune) [][2]rune {
+		out := [][2]rune{{lo, hi}}
+		for r := lo; r <= hi && r < 0x80; r++ {
+			if u := unicode.SimpleFold(r); u != r {
+				out = append(out, [2]rune{u, u})
+			}
+		}
+		return out
+	}
+	switch re.Op {
+	case syntax.OpLiteral:
+		if len(re.Rune) == 0 {
+			return nil
+		}
+		if re.Flags&syntax.FoldCase != 0 {
+			return fold(re.Rune[0], re.Rune[0])
+		}
+		return [][2]rune{{re.Rune[0], re.Rune[0]}}
+	case syntax.OpCharClass:
+		var out [][2]rune
+		for j := 0; j+1 < len(re.Rune); j += 2 {
+			out = append(out, [2]rune{re.Rune[j], re.Rune[j+1]})
+		}
+		return out
+	case syntax.OpCapture, syntax.OpPlus:
+		return firstRunes(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min == 0 {
+			return nil
+		}
+		return firstRunes(re.Sub[0])
+	case syntax.OpConcat:
+		for _, sub := range re.Sub {
+			switch sub.Op {
+			case syntax.OpWordBoundary, syntax.OpNoWordBoundary, syntax.OpBeginLine, syntax.OpBeginText:
+				continue
+			}
+			return firstRunes(sub)
+		}
+		return nil
+	case syntax.OpAlternate:
+		var out [][2]rune
+		for _, sub := range re.Sub {
+			f := firstRunes(sub)
+			if f == nil {
+				return nil
+			}
+			out = append(out, f...)
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
