@@ -900,13 +900,16 @@ the provider's deltas and have no stable size or count: concatenated
 in order they give the model's text with recognised secrets redacted,
 including a secret split between two provider deltas. Text a secret
 pattern could still match, such as a partly written token or an open
-key block, is held back and sent no later than the turn's next
-non-delta event (`tool_call`, `turn_committed`, `done`, `warning`) or
-the end of the stream; ordinary prose is sent as it arrives. There is
-no timer, so delta silence is not a stall signal: use `heartbeat`. A
-single match longer than 8 KiB is redacted through its first 8 KiB
-only; see [`security.md`](security.md#control-stream-scrubbing) for
-that bound. The `done` trace's final assistant text is scrubbed whole.
+key block, is held back and sent no later than the next event of the
+model's response (`tool_call`, `turn_committed`, `done`) or the end of
+the stream; ordinary prose is sent as it arrives. `heartbeat` and
+`warning` events raised outside the response, such as one for a dropped
+`user_response`, are not ordered against held text and can arrive
+first. There is no timer, so delta silence is not a stall signal: use
+`heartbeat`. A possible match longer than 8 KiB is sent as one
+`[REDACTED]` from its start, and nothing more of it is sent; see
+[`security.md`](security.md#control-stream-scrubbing) for that bound.
+The `done` trace's final assistant text is scrubbed whole.
 
 **Capability gating.** A harness that predates these events sends none
 of `user_message`, `turn_started`, `turn_committed` or

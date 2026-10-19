@@ -59,7 +59,9 @@ covering:
 - Slack tokens
 - GCP API keys and OAuth2 access tokens
 - Key/value-anchored Azure storage keys
-- Bearer tokens including JWTs (Authorization headers)
+- Bearer tokens including JWTs (Authorization headers). A value of
+  letters alone shorter than 16 characters is taken for prose, so
+  "bearer token" and "the Bearer authentication scheme" stay readable
 - Basic-auth credentials (`Basic <base64>`), redacted only when the
   payload decodes to bytes containing the `user:password` colon, so
   prose such as "basic documentation" is left intact. A payload cut off
@@ -72,18 +74,32 @@ covering:
   harness's own mid-result truncation marker (`[...truncated N
   bytes...]`). A line of prose ends the match at the header, so text
   placed between armour lines stays readable. Lines may be raw,
-  line-numbered (`read_file`, `cat -n` and `grep -n` output),
-  `\n`-escaped inside a JSON string, or separate JSON array elements, the
-  shape of `read_file`'s structured payload. A header with no `END` line
+  line-numbered (`read_file`, `cat -n` and `grep -n` output, and the
+  `path:line:` prefix of `grep -rn` and `search_files`), `\n`-escaped
+  inside a JSON string or `\\n`-escaped inside JSON held in a JSON
+  string, separate JSON array elements (the shape of `read_file`'s
+  structured payload) or single-quoted list elements, or string literals
+  joined with `+`. A header with no `END` line
   is redacted with the whole base64 lines after it and stops before the
   first line that is not base64 to its end, so that line, its
   indentation and its first word are kept. In `\n`-escaped text a line's
   end is not visible, so there the next line's leading base64 run is
   redacted with the key. Any other truncation marker inside a key ends
-  the match, and the body lines after it are not redacted
+  the match, and the body lines after it are not redacted. Body lines in
+  other shapes are not redacted either: blockquoted (`> `), with
+  `cat -A` `$` line ends, joined with `<br>` or with spaces on one line,
+  or a line followed by other text, such as a `...` the model appends,
+  which with the lines after it reaches the sinks
 - API-key header values
 - Key/value-anchored 32-character hex secrets
-- `secret://` references themselves
+- `secret://` references themselves, through the reference syntax the
+  secret stores accept (letters, digits and `_./:@+~%=-`)
+
+No pattern's match holds shell syntax (`;`, `|`, `&`, `$`, a backtick,
+parentheses, `<` or `>`), and none but the PEM pattern spans a line
+break, so a redaction cannot hide a command placed after a
+credential-shaped string from a guard;
+`TestSecretPatterns_MatchesHoldNoShellSyntax` pins this.
 
 Because the scrubber sits at the `slog.Handler` boundary, it is
 defence in depth against recognised credential formats — it runs
@@ -140,32 +156,53 @@ with the location `core.stream.<event type>`; the transports' scrub
 stays as defence in depth.
 
 Held text is released as soon as it can no longer begin a match, before
-any other event, when the stream switches between text and reasoning,
-and on every way the provider stream ends: completion, a provider error,
-a stream that closes early, and cancellation. Event order is unchanged
-and no text is lost, but delta boundaries no longer match the
-provider's: one event can join several provider deltas, and one delta
-can be split.
+the next event of the model's response (a `tool_call`, a thinking block,
+the end of the turn), when the stream switches between text and
+reasoning, and on every way the provider stream ends: completion, a
+provider error, a stream that closes early, and cancellation. The order
+of the response's events is unchanged and no text is lost, but delta
+boundaries no longer match the provider's: one event can join several
+provider deltas, and one delta can be split. `heartbeat` events and
+`warning` events raised outside the response, such as one for a dropped
+`user_response`, come from other goroutines and are not ordered against
+held text. A thinking block that arrives whole is scrubbed in one pass,
+together with any text held before it.
+
+While text is held, the cut also stops at each pattern's matches in the
+text as written, not only in the text earlier patterns rewrote, so a
+match that an earlier pattern's placeholder hides cannot surface later
+over text already released. Except where the cap below forces a
+release, the streamed text equals whole-stream `Scrub`, which
+`TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub` and the
+`FuzzStreamCarry` target check.
 
 The latency this adds to ordinary prose is a few bytes that could begin
 a keyword, such as a trailing `s` or `Bea`, waiting for the next
 fragment. While a possible secret is being written (a token, a
 key/value pair, a key block) the stream trails by that text; a held
-span longer than 256 bytes is rescanned only after it grows by a
+span longer than 64 bytes is rescanned only after it grows by a
 quarter, so its release can lag by that much more. There is no timer:
 held text waits for the next fragment or event, so a control plane
 detects a stall with `heartbeat`, not with delta silence.
 
 The hold is capped at 8 KiB, whitespace inside a match included. When
-one possible match outgrows the cap, the held text is released in one
-piece, scrubbed with the head of the match in context, and only what
-could begin a match in its last 8 KiB stays held. A match longer than
-8 KiB, such as a key block over 8 KiB or a `Bearer` keyword followed by
-more than 8 KiB of whitespace before its token, is therefore redacted
-through its first 8 KiB and the rest of it reaches the control plane.
-`TestStreamCarry_SpanOverCapLeaksOnlyBeyondTheCap` and
-`TestStreamCarry_WhitespaceAfterKeyword` pin that bound. The final
-assistant text recorded in the trace is scrubbed as a whole.
+one possible match outgrows the cap, the text before it is released
+scrubbed, and the text from its start is released as one `[REDACTED]`,
+whether or not the scrubber matches it yet: a JWT whose header and
+payload pass 8 KiB before the second dot has no match until the dot
+arrives. Nothing more of that match is sent. The carry keeps holding
+its text, rescanning after each quarter of growth, until a scan shows
+where the match ends, and releases only what follows it. A possible
+match that ends without matching is redacted from its start all the
+same, such as base64 running on past the 40 characters
+`aws_secret_access_key=` takes. A match still open after 1 MiB stops
+the delta stream: nothing more of that text or reasoning run is sent
+until the carry is flushed at the response's next event or its end.
+`TestStreamCarry_SpanOverCapIsRedactedWhole`,
+`TestStreamCarry_UnmatchedHeadOverCapIsWithheld`,
+`TestStreamCarry_RunPastTheCapIsBounded` and
+`TestStreamCarry_WhitespaceAfterKeyword` pin this. The final assistant
+text recorded in the trace is scrubbed as a whole.
 
 `thinking_delta` sends the model's readable reasoning text to the
 control plane. It is model output, with the same trust level, carry
@@ -217,17 +254,22 @@ configured:
   fences inside it. A result already screened, including one carried
   into a continued follow-up, is not screened again.
 - **Turn-0 dynamic context.** The system prompt renders each value with
-  the same ranges fenced, after the value is sanitised and truncated, so
-  a fence is never cut. The guard's input is the unfenced, scrubbed
-  text. A turn-0 deny ends the run, so the fence matters only when the
-  guard allows.
+  the same ranges fenced, after the value is sanitised, rewritten by the
+  Rule-of-Two `redact` action and truncated to the operator-text cap
+  again, so a fence is never cut. A value whose fenced form does not
+  decode to the value the prompt renders is fenced whole instead. The
+  guard's input is the unfenced, scrubbed text. A turn-0 deny ends the
+  run, so the fence matters only when the guard allows.
 
 A fence is the tag `<untrusted_content_b64>`, the standard base64
 encoding of the original bytes, and the tag `</untrusted_content_b64>`,
 the same encoding a guard's `spotlight` verdict uses. Ranges closer than
 64 bytes share one fence, and a block or value with more than 32 fences
 is fenced whole, so fencing adds at most the base64 overhead of the
-text and 32 tag pairs. Traces, recordings and OTel content capture
+text and 32 tag pairs. A tool result holding more than 32
+credential-shaped strings at least 64 bytes apart, such as the header
+examples in authentication documentation, therefore reaches the model
+as one fence. Traces, recordings and OTel content capture
 decode each fence's payload, scrub it and re-encode it before
 persisting, so a fenced secret is stored as base64 of `[REDACTED]`.
 
@@ -255,12 +297,14 @@ What is not fenced, and why:
   fenced.
 - `post_turn` and `pre_tool` content is not rewritten. A guard cannot
   judge what the scrubber hid, and for `pre_tool` the hidden text can be
-  exactly the argument under review.
+  exactly the argument under review. Because no match holds shell
+  syntax, a command written after a credential-shaped string stays
+  visible to the guard.
 - Repository guidance is not part of the turn-0 guard input.
 
 Fencing ranges rather than whole blocks keeps the cost of a false match
 small. Benign token-shaped text also matches the scrubber, such as a
-literal `Bearer x`, a `secret://` reference in a config file or in
+literal `Bearer abc123`, a `secret://` reference in a config file or in
 these docs, or authentication code that prints a header. Such a string
 is base64-wrapped where it stands, for the model and for the
 `llm-judge` verifier, which renders the same history, while the rest of

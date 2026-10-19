@@ -18,7 +18,8 @@ import (
 //
 // text_delta and thinking_delta events are re-chunked: concatenated in
 // order they give the model's text with recognised secrets redacted, and
-// held text is emitted no later than the turn's next non-delta event.
+// held text is emitted no later than the next event of the model's
+// response or the end of the stream.
 // The harness does not scrub every other event's string fields; the shipped
 // transports scrub all of them, and an embedder's Transport should too.
 type Transport = transport.Transport

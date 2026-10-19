@@ -893,7 +893,7 @@ context, so each follow-up starts a new trace.
 Deltas reach a `harnessapi.Transport` re-chunked: `text_delta` and
 `thinking_delta` fragments concatenate to the model's text with
 recognised secrets redacted, and held text is emitted no later than the
-turn's next non-delta event. The harness does not scrub every other
+next event of the model's response or the end of the stream. The harness does not scrub every other
 event's string fields; the shipped transports scrub all of them, so an
 embedder's transport should too. See
 [`security.md`](security.md#control-stream-scrubbing).
