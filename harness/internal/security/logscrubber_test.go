@@ -230,17 +230,22 @@ func TestScrub_KeyValueOnTheNextLine(t *testing.T) {
 	}
 }
 
-// TestScrub_Bearer_RedactsOnlyCredentials pins that a bearer token is
-// redacted while prose about bearer tokens is left readable: a value of
-// letters alone shorter than 16 characters is an English word.
+// TestScrub_Bearer_RedactsOnlyCredentials pins that a bearer value is
+// redacted, short and letters-only ones included, while the words prose
+// about bearer tokens puts after "bearer" are left readable.
 func TestScrub_Bearer_RedactsOnlyCredentials(t *testing.T) {
 	tests := []struct{ input, want string }{
 		{"Authorization: Bearer abc123", "Authorization: [REDACTED]"},
 		{"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "Authorization: [REDACTED]"},
 		{"Bearer ABCDEFGHIJKLMNOP", "[REDACTED]"},
 		{"Bearer x-y", "[REDACTED]"},
+		{"Authorization: Bearer changeme", "Authorization: [REDACTED]"},
+		{`curl -H "Authorization: Bearer letmein" http://x`, `curl -H "Authorization: [REDACTED]" http://x`},
+		{"Bearer hunter", "[REDACTED]"},
+		{"Bearer qZxWvKt", "[REDACTED]"},
 		{"Send a bearer token in the header.", "Send a bearer token in the header."},
 		{"The Bearer authentication scheme", "The Bearer authentication scheme"},
+		{"BEARER Tokens and Bearer credentials", "BEARER Tokens and Bearer credentials"},
 		{"bearer tokens, then Bearer s3cr3t", "bearer tokens, then [REDACTED]"},
 	}
 	for _, tt := range tests {

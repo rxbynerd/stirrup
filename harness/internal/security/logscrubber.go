@@ -133,12 +133,22 @@ var matchValidators = map[string]func(match string) bool{
 	"bearer_token": isBearerCredential,
 }
 
+// bearerProseWords are the words that follow "bearer" in prose about HTTP
+// authentication rather than in a header carrying a token.
+var bearerProseWords = map[string]bool{
+	"token": true, "tokens": true, "auth": true, "authentication": true,
+	"authorization": true, "scheme": true, "schemes": true, "header": true,
+	"headers": true, "credential": true, "credentials": true, "value": true,
+	"values": true, "string": true, "prefix": true, "type": true,
+	"format": true, "and": true, "or": true, "is": true, "the": true,
+	"a": true, "an": true,
+}
+
 // isBearerCredential reports whether a bearer_token match is a credential
-// rather than prose such as "bearer token": a token of letters alone must
-// be at least 16 characters long.
+// rather than prose such as "bearer token": every value is redacted except
+// one of bearerProseWords.
 func isBearerCredential(match string) bool {
-	tok := tokenAfterSpace(match)
-	return len(tok) >= 16 || !isASCIIAlpha(tok)
+	return !bearerProseWords[strings.ToLower(tokenAfterSpace(match))]
 }
 
 // isBasicCredential reports whether a basic_auth match is a credential
