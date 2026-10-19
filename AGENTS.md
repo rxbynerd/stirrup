@@ -243,10 +243,14 @@ the expected flow is:
 
 1. Inspect the issue/task and relevant code.
 2. Keep edits scoped to the selected issue.
-3. Run targeted verification, broadening to `just test` when the blast radius
+3. Write tests to the conventions in
+   [`CONTRIBUTING.md#writing-tests`](CONTRIBUTING.md#writing-tests):
+   `testify/require` assertions in `(t, want, got)` order, and
+   `Test<Subject>_<Behaviour>[_<Detail>]` names that read on their own.
+4. Run targeted verification, broadening to `just test` when the blast radius
    warrants it.
-4. Create a focused branch and commit the verified change.
-5. Push the branch and open a draft pull request for review.
+5. Create a focused branch and commit the verified change.
+6. Push the branch and open a draft pull request for review.
 
 Use branch names like `fix/issue-291-batchpoll-flake` or
 `feat/issue-293-eval-wif`. Commit subjects follow the existing convention:

@@ -101,6 +101,43 @@ code's intent before changing it:
   branch. Grep for the symbol and read surrounding comments before
   deleting.
 
+## Writing tests
+
+Tests are read far more often than they are written, and a failing
+test is usually read by someone who did not write it. Optimise for a
+reader with no context.
+
+- **Assert with testify.** Use `require` from
+  `github.com/stretchr/testify/require` for every assertion, in the
+  order `require.Equal(t, want, got)`. Pick the most specific form
+  (`NoError`, `ErrorIs`, `ErrorContains`, `Len`, `Empty`, `Contains`,
+  `ElementsMatch`, `EqualValues`, `JSONEq`, `WithinDuration`) rather
+  than `True` over a hand-written comparison. Hand-rolled
+  `if got != want { t.Fatalf(...) }` blocks and `reflect.DeepEqual`
+  are not accepted in new tests. `testifylint` runs under `just lint`
+  and rejects swapped arguments, `Equal` on errors, and the other
+  common misuses.
+- **`require` stops the test; keep it on the test goroutine.** Inside
+  `go func` bodies, `httptest` handlers, `require.Eventually`
+  conditions and any other callback that may run off the test
+  goroutine, use `assert` or hand the failure back over a channel.
+  `require` there panics instead of failing the test.
+- **Name each test so it reads on its own.** Test names follow
+  `Test<Subject>_<Behaviour>[_<Detail>]`, for example
+  `TestRunConfig_Validate_RejectsAllowAllInPlanningMode`. JUnit output
+  loses the package, so the name has to carry the subject. Subtest
+  names are short lowercase phrases.
+- **Prefer subtests over loops with `t.Errorf`.** A table-driven test
+  runs each case under `t.Run` with the case's name, uses the subtest's
+  own `t`, and asserts with `require`, so the first failure names the
+  case and stops there.
+- **Helpers build fixtures; assertions stay in the test.** A helper that
+  only wraps an assertion hides what the test checks. Keep helpers for
+  setup and teardown, mark them with `t.Helper()`, and use `t.TempDir`,
+  `t.Setenv` and `t.Cleanup` instead of manual equivalents.
+- **Comments describe the behaviour protected**, not the incident, pull
+  request or session that motivated the test.
+
 ## Commit conventions
 
 Commit subjects in this repo follow `<area>: <imperative subject>` in
